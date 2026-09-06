@@ -16,8 +16,14 @@ from openpilot.sunnypilot.selfdrive.car.tesla.preap.tools.calibrate_pedal import
 )
 from openpilot.sunnypilot.selfdrive.car.tesla.preap.tools.epas_integrity import (
   BOOTLOADER_SIZE,
+  FW_MD5SUM,
+  FW_SHA256,
+  FW_SIZE,
   BootloaderIntegrityError,
+  FirmwareIntegrityError,
+  load_stock_firmware,
   verify_bootloader,
+  verify_firmware,
 )
 from openpilot.sunnypilot.selfdrive.car.tesla.preap.tools.runner import (
   APPROVED_TOOLS, RUN_SCRIPT_MODULE, approved_module, launch_on_device_runner, start_tool,
@@ -261,6 +267,7 @@ def test_negative_response_maps_to_transport_error():
 def test_flash_negative_response_fails_closed_before_write(monkeypatch):
   from opendbc.car.uds import NegativeResponseError
   from openpilot.sunnypilot.selfdrive.car.tesla.preap.tools import flash_epas
+  from openpilot.sunnypilot.selfdrive.car.tesla.preap.tools.epas_integrity import FirmwareIntegrityError
 
   called = []
 
@@ -284,6 +291,9 @@ def test_flash_negative_response_fails_closed_before_write(monkeypatch):
     called.append("extract")
     raise NegativeResponseError("NRC 0x7F service not supported", 0x10, 0x7F)
 
+  def missing_packaged():
+    raise FirmwareIntegrityError("packaged firmware missing")
+
   monkeypatch.setattr(flash_epas, "verify_bootloader", lambda *_a, **_k: called.append("verify") or b"x")
   monkeypatch.setattr(flash_epas, "require_preap_tool_start", lambda **_k: None)
   monkeypatch.setattr(flash_epas, "_consume_ui_risk_ack", lambda: True)
@@ -291,6 +301,7 @@ def test_flash_negative_response_fails_closed_before_write(monkeypatch):
   monkeypatch.setattr(flash_epas, "extract_firmware", boom)
   monkeypatch.setattr(flash_epas, "flash_bootloader", lambda *_a, **_k: called.append("flash_bl"))
   monkeypatch.setattr(flash_epas, "flash_firmware", lambda *_a, **_k: called.append("flash_fw"))
+  monkeypatch.setattr(flash_epas, "load_stock_firmware", missing_packaged)
   monkeypatch.setattr(flash_epas.os.path, "exists", lambda *_a, **_k: False)
 
   assert flash_epas.main(["--accept-risk"]) == 1
@@ -537,9 +548,15 @@ def test_stop_tool_fail_closed_leaves_script_running(monkeypatch):
 
 
 def test_epas_firmware_image_present():
-  path = Path(__file__).resolve().parents[1] / "firmware" / "epas-firmware-0x7000-0x45fff.bin"
-  assert path.is_file()
-  assert path.stat().st_size == 258048
+  data = load_stock_firmware()
+  assert len(data) == FW_SIZE == 258048
+  assert hashlib.md5(data).hexdigest() == FW_MD5SUM
+  assert hashlib.sha256(data).hexdigest() == FW_SHA256
+
+
+def test_epas_firmware_rejects_wrong_payload():
+  with pytest.raises(FirmwareIntegrityError):
+    verify_firmware(b"not-the-epas-image")
 
 
 def test_start_tool_constructs_default_params_for_native_ui(monkeypatch):

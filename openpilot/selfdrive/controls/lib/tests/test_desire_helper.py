@@ -1,7 +1,7 @@
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.controls.lib.desire_helper import (
-  DesireHelper,
+  DesireHelper as _NapDesireHelper,
   LANE_CHANGE_ARM_TIME,
   MAX_QUEUED_LANE_CHANGES,
   LaneChangeDirection,
@@ -13,8 +13,10 @@ from opendbc.car import structs
 # the Pre-AP car. These tests are the nap-dev tests, so hand them that CP.
 _PREAP_CP = structs.CarParams()
 _PREAP_CP.carFingerprint = "TESLA_MODEL_S_PREAP"
-_NapDesireHelper = DesireHelper
-DesireHelper = lambda: _NapDesireHelper(_PREAP_CP)  # noqa: E731
+
+
+def DesireHelper(CP=None):
+  return _NapDesireHelper(_PREAP_CP if CP is None else CP)
 
 
 class FakeCarState:

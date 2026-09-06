@@ -102,3 +102,8 @@ SKILL.md
 !.idea/customTargets.xml
 !.idea/tools/*
 !.run/*
+
+# EPAS extract/modified backups; packaged stock image is the .xz
+openpilot/sunnypilot/selfdrive/car/tesla/preap/tools/firmware/epas-firmware-0x7000-0x45fff.bin
+openpilot/sunnypilot/selfdrive/car/tesla/preap/tools/firmware/*.modified.bin
+!openpilot/sunnypilot/selfdrive/car/tesla/preap/tools/firmware/*.bin.xz

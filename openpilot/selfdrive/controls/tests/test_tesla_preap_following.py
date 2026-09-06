@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from typing import cast
 
 import numpy as np
 import pytest
@@ -14,6 +15,7 @@ from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl
 from openpilot.selfdrive.controls.lib import longitudinal_planner
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
+  LongitudinalMpc,
   LongitudinalPlanSource,
   T_IDXS,
   get_safe_obstacle_distance,
@@ -373,7 +375,8 @@ def test_planner_adaptive_cap_changes_the_delivered_acceleration_for_unequal_spe
   t_follow = 1.9
   params = _MutablePlannerParams(nap_follow_dist=7, adaptive_accel=True)
   planner = LongitudinalPlanner(_make_preap_params(), _cp_sp(), init_v=speed_mps, params=params)
-  planner.mpc = _ConstantAccelerationMpc(speed_mps, acceleration_mps2=1.5)
+  fake_mpc = _ConstantAccelerationMpc(speed_mps, acceleration_mps2=1.5)
+  planner.mpc = cast(LongitudinalMpc, fake_mpc)
   inputs = _make_planner_inputs(speed_mps)
   lead = inputs["radarState"].leadOne
   lead.present = True

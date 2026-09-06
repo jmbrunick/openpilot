@@ -38,7 +38,7 @@ def _get_preap_follow_limit(v_ego):
     except ImportError:
       _preap_follow_cache = (None, None)
   bp, v = _preap_follow_cache
-  if bp is None:
+  if bp is None or v is None:
     return None
   return float(np.interp(v_ego, bp, v))
 

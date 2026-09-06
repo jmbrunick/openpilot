@@ -28,8 +28,11 @@ import binascii
 
 from openpilot.sunnypilot.selfdrive.car.tesla.preap.tools.epas_integrity import (
   bootloader_path,
+  firmware_runtime_path,
+  load_stock_firmware,
   verify_bootloader,
   BootloaderIntegrityError,
+  FirmwareIntegrityError,
 )
 from openpilot.sunnypilot.selfdrive.car.tesla.preap.tools.safety import require_preap_tool_start, require_runtime_path
 from openpilot.sunnypilot.selfdrive.car.tesla.preap.tools.transport import (
@@ -411,7 +414,7 @@ def main(cli_args=None):
   script_dir = os.path.dirname(os.path.realpath(__file__))
   firmware_dir = os.path.join(script_dir, "firmware")
   bl_path = str(bootloader_path(args.bootloader))
-  fw_fn = os.path.join(firmware_dir, f"epas-firmware-{hex(FW_START_ADDR)}-{hex(FW_END_ADDR)}.bin")
+  fw_fn = str(firmware_runtime_path())
 
   require_runtime_path()
   tool_name = "restore_epas" if args.restore else ("extract_epas" if args.extract_only else "flash_epas")
@@ -458,9 +461,8 @@ def main(cli_args=None):
     p("=" * 40)
 
     fw_slice = None
-    if args.extract_only or not os.path.exists(fw_fn):
+    if args.extract_only:
       fw_slice = extract_firmware(uds_client, FW_START_ADDR, FW_END_ADDR)
-      # Undo any previous patches to get clean firmware
       fw_slice = patch_firmware(fw_slice, FW_START_ADDR, restore=True)
       fw_slice = update_checksums(fw_slice, FW_START_ADDR, restore=True)
       p(f"  Saving backup: {fw_fn}")
@@ -468,20 +470,33 @@ def main(cli_args=None):
       with open(fw_fn, "wb") as f:
         f.write(fw_slice)
     else:
-      p(f"  Loading cached firmware: {fw_fn}")
-      with open(fw_fn, "rb") as f:
-        fw_slice = f.read()
-      md5 = hashlib.md5(fw_slice).hexdigest()
-      if md5 != FW_MD5SUM or len(fw_slice) != FW_SIZE:
-        p(f"  Cached firmware invalid (md5={md5}), re-extracting...")
-        fw_slice = extract_firmware(uds_client, FW_START_ADDR, FW_END_ADDR)
-        # Undo any previous patches to get clean firmware
-        fw_slice = patch_firmware(fw_slice, FW_START_ADDR, restore=True)
-        fw_slice = update_checksums(fw_slice, FW_START_ADDR, restore=True)
-        p(f"  Saving backup: {fw_fn}")
-        os.makedirs(os.path.dirname(fw_fn), exist_ok=True)
-        with open(fw_fn, "wb") as f:
-          f.write(fw_slice)
+      try:
+        p("  Loading packaged firmware image")
+        fw_slice = load_stock_firmware()
+      except FirmwareIntegrityError as e:
+        p(f"  Packaged image unavailable ({e})")
+        if os.path.exists(fw_fn):
+          p(f"  Loading cached firmware: {fw_fn}")
+          with open(fw_fn, "rb") as f:
+            fw_slice = f.read()
+          md5 = hashlib.md5(fw_slice).hexdigest()
+          if md5 != FW_MD5SUM or len(fw_slice) != FW_SIZE:
+            p(f"  Cached firmware invalid (md5={md5}), re-extracting...")
+            fw_slice = extract_firmware(uds_client, FW_START_ADDR, FW_END_ADDR)
+            fw_slice = patch_firmware(fw_slice, FW_START_ADDR, restore=True)
+            fw_slice = update_checksums(fw_slice, FW_START_ADDR, restore=True)
+            p(f"  Saving backup: {fw_fn}")
+            os.makedirs(os.path.dirname(fw_fn), exist_ok=True)
+            with open(fw_fn, "wb") as f:
+              f.write(fw_slice)
+        else:
+          fw_slice = extract_firmware(uds_client, FW_START_ADDR, FW_END_ADDR)
+          fw_slice = patch_firmware(fw_slice, FW_START_ADDR, restore=True)
+          fw_slice = update_checksums(fw_slice, FW_START_ADDR, restore=True)
+          p(f"  Saving backup: {fw_fn}")
+          os.makedirs(os.path.dirname(fw_fn), exist_ok=True)
+          with open(fw_fn, "wb") as f:
+            f.write(fw_slice)
 
     # Step 2: Verify firmware
     p("\n" + "=" * 40)

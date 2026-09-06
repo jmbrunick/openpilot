@@ -36,8 +36,15 @@ class TestPreAPIgnitionPandaState(unittest.TestCase):
     self.packer = CANPackerSafety("tesla_preap")
 
   def _msg(self, counter, drive_rail, bus=0):
+    def fix_checksum(msg):
+      addr, dat, bus = msg
+      dat = bytearray(dat)
+      dat[7] = (0x4B + sum(dat[:7])) & 0xFF
+      return addr, bytes(dat), bus
+
     return self.packer.make_can_msg_safety(
       "GTW_status", bus, {"GTW_statusCounter": counter, "GTW_driveRailReq": int(drive_rail)},
+      fix_checksum=fix_checksum,
     )
 
   def test_ignition_can_pkt_feeds_pandastate_ignitionCan(self):
