@@ -44,7 +44,7 @@ After flash, download a **prebuilt US-wide** asset from a GitHub Release on `jmb
 |---|---|
 | Release tag | `osm-us-speed-limits-v1` |
 | Asset | `speed_limits_us.sqlite.zst` |
-| SHA-256 | of the **zst** (`ASSET_SHA256` in `maps_manifest.py`), verified **before** decompress — not the sqlite |
+| SHA-256 | of the **zst** (`ASSET_SHA256`), verified on the downloaded `.zst` **before** decompress. Dest sqlite is not hashed unless `SQLITE_SHA256` is set. `--sha256 ''` skips. |
 | Install path | `/data/media/0/osm/speed_limits.sqlite` |
 | Staging | `/data/media/0/osm/.download/` on the **dest filesystem** (not `/tmp`) |
 | Contents | OSM ways with a numeric `maxspeed` tag (US). Taginfo ~3.4M ways (2026-09). |

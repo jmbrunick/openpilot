@@ -27,6 +27,7 @@ from openpilot.selfdrive.mapd.maps_manifest import (
   MIN_FREE_BYTES,
   MIN_FREE_MIB,
   RELEASE_TAG,
+  SQLITE_SHA256,
   USER_AGENT,
   release_asset_url,
 )
@@ -236,16 +237,70 @@ def _sqlite_ok(path: str) -> bool:
   return ok
 
 
-def _verify_sha256(path: str, sha256: str) -> None:
+def _hash_requested(value: str | None) -> str:
+  """Non-empty stripped digest, or '' to skip. `--sha256 ''` is a valid skip."""
+  if value is None:
+    return ""
+  return str(value).strip()
+
+
+def _verify_sha256(path: str, sha256: str, *, kind: str) -> None:
   got = _sha256_file(path)
   if got.lower() != sha256.lower():
-    raise RuntimeError(f"SHA-256 mismatch for {path} (zst/asset, before decompress): got {got}, expected {sha256}")
+    raise RuntimeError(f"SHA-256 mismatch for {path} ({kind}): got {got}, expected {sha256}")
+
+
+def install_from_file(
+  src: str,
+  dest: str,
+  sha256: str = ASSET_SHA256,
+  sqlite_sha256: str = SQLITE_SHA256,
+) -> str:
+  """Install a local .zst or sqlite onto dest.
+
+  ASSET_SHA256 / sha256 is the **zst** digest and is checked on src **before**
+  decompress. Dest sqlite is never compared to that digest. SQLITE_SHA256 is
+  optional and empty by default.
+  """
+  src = os.path.abspath(src)
+  dest = os.path.abspath(dest)
+  os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+  zst_hash = _hash_requested(sha256)
+  sql_hash = _hash_requested(sqlite_sha256)
+  partial = dest + ".partial"
+  is_zst = src.lower().endswith(".zst")
+  try:
+    if is_zst:
+      if zst_hash:
+        _p("Verifying SHA-256 of downloaded zst (before decompress)…")
+        _verify_sha256(src, zst_hash, kind="zst, before decompress")
+      _p("Decompressing zstd…")
+      _decompress_zst(src, partial)
+    else:
+      # Raw sqlite: ASSET_SHA256 does not apply.
+      if sql_hash:
+        _verify_sha256(src, sql_hash, kind="sqlite")
+      shutil.copyfile(src, partial)
+    if sql_hash and is_zst:
+      _verify_sha256(partial, sql_hash, kind="sqlite")
+    if not _sqlite_ok(partial):
+      raise RuntimeError(f"Downloaded file is not a NAP OSM sqlite: {partial}")
+    os.replace(partial, dest)
+  except Exception:
+    try:
+      if os.path.isfile(partial):
+        os.remove(partial)
+    except OSError:
+      pass
+    raise
+  return dest
 
 
 def fetch_and_install(
   dest: str | None = None,
   url: str | None = None,
   sha256: str = ASSET_SHA256,
+  sqlite_sha256: str = SQLITE_SHA256,
 ) -> str:
   dest = os.path.abspath(dest or default_db_path())
   url = url or os.environ.get("NAP_MAP_RELEASE_URL") or release_asset_url()
@@ -259,7 +314,8 @@ def fetch_and_install(
   cleanup_incomplete(dest)
   # Default Settings path (HTTPS + ASSET_SHA256) needs the US-pack budget.
   # file:// / empty sha256 (tests, Overpass copies) skip the 800 MiB check.
-  us_pack = not url.startswith("file:") and bool(sha256)
+  zst_hash = _hash_requested(sha256)
+  us_pack = not url.startswith("file:") and bool(zst_hash)
   assert_free_space(dest, us_pack=us_pack)
 
   stage = staging_dir(dest)
@@ -268,6 +324,8 @@ def fetch_and_install(
   if not packed_name or packed_name in (".", "/"):
     packed_name = ASSET_NAME
   packed = os.path.join(stage, packed_name)
+  prev_tmpdir = os.environ.get("TMPDIR")
+  os.environ["TMPDIR"] = stage
 
   try:
     n = download_url(url, packed)
@@ -280,25 +338,20 @@ def fetch_and_install(
       _p(f"Free after zst: {free / (1024 * 1024):.0f} MiB (need {need_decomp / (1024 * 1024):.0f} MiB to decompress)")
       if free < need_decomp:
         raise _space_error(dest, free, need_decomp)
-    if sha256:
-      _p("Verifying SHA-256 of downloaded asset…")
-      _verify_sha256(packed, sha256)
-    partial = dest + ".partial"
-    if packed.lower().endswith(".zst"):
-      _p("Decompressing zstd…")
-      _decompress_zst(packed, partial)
-    else:
-      shutil.copyfile(packed, partial)
+    install_from_file(packed, dest, sha256=zst_hash, sqlite_sha256=sqlite_sha256)
+    if not packed.lower().endswith(".zst"):
       try:
         os.remove(packed)
       except OSError:
         pass
-    if not _sqlite_ok(partial):
-      raise RuntimeError(f"Downloaded file is not a NAP OSM sqlite: {partial}")
-    os.replace(partial, dest)
   except Exception:
     cleanup_incomplete(dest)
     raise
+  finally:
+    if prev_tmpdir is None:
+      os.environ.pop("TMPDIR", None)
+    else:
+      os.environ["TMPDIR"] = prev_tmpdir
 
   cleanup_incomplete(dest)
   if not _sqlite_ok(dest):
@@ -316,7 +369,14 @@ def main(argv: list[str] | None = None) -> int:
   p.add_argument("--repo", default=GITHUB_REPO)
   p.add_argument("--asset", default=ASSET_NAME)
   p.add_argument("--out", default=None, help="sqlite destination (default: /data/media/0/osm/speed_limits.sqlite)")
-  p.add_argument("--sha256", default=ASSET_SHA256)
+  p.add_argument(
+    "--sha256", default=ASSET_SHA256,
+    help="SHA-256 of the zst asset (not sqlite). Empty string skips verification.",
+  )
+  p.add_argument(
+    "--sqlite-sha256", default=SQLITE_SHA256,
+    help="Optional SHA-256 of the decompressed sqlite. Empty string skips (default).",
+  )
   p.add_argument("--status", action="store_true", help="Print installed DB summary and exit")
   args = p.parse_args(argv)
 
@@ -326,7 +386,9 @@ def main(argv: list[str] | None = None) -> int:
 
   url = args.url or release_asset_url(args.repo, args.tag, args.asset)
   try:
-    fetch_and_install(dest=args.out, url=url, sha256=args.sha256)
+    fetch_and_install(
+      dest=args.out, url=url, sha256=args.sha256, sqlite_sha256=args.sqlite_sha256,
+    )
   except Exception as e:
     _p(f"ERROR: {e}")
     return 1
