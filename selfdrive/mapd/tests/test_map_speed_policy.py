@@ -1,12 +1,16 @@
 from openpilot.common.constants import CV
 from openpilot.selfdrive.mapd.constants import (
-  LOOKAHEAD_EARLY, LOOKAHEAD_NORMAL, LOOKAHEAD_OFF,
+  ACCEL_DEFAULT, LOOKAHEAD_EARLY, LOOKAHEAD_NORMAL, LOOKAHEAD_OFF,
   MODE_CAP, MODE_DISPLAY, MODE_FOLLOW, MODE_OFF,
+  accel_scale_factor, map_comfort_a_ms2,
 )
 from openpilot.selfdrive.mapd.map_speed_policy import (
   SOURCE_CRUISE, SOURCE_LEAD0, V_CRUISE_UNSET,
   anticipatory_limit_ms, apply_map_speed_kph, cap_planner_v_cruise_ms,
-  effective_map_limit_ms, longitudinal_obstacle_source,
+  effective_map_limit_ms, longitudinal_obstacle_source, slew_map_speed_ms,
+)
+from openpilot.selfdrive.ui.layouts.settings.nap_content import (
+  MAP_SPEED_ACCEL, MAP_SPEED_ACCEL_DEFAULT, MAP_SPEED_LOOKAHEAD,
 )
 
 # Keep in sync with long_mpc (avoid importing cereal/acados here).
@@ -140,6 +144,39 @@ def test_anticipatory_cap_still_loses_to_slower_lead():
   cruise = _cruise_obstacle_m(v_cruise)
   assert longitudinal_obstacle_source(lead, 1e8, cruise) == SOURCE_LEAD0
   assert min(lead, cruise) == lead
+
+
+def test_accel_default_five_matches_prior_normal_curve():
+  assert ACCEL_DEFAULT == 5
+  assert MAP_SPEED_ACCEL_DEFAULT == 5
+  assert MAP_SPEED_ACCEL == list(range(1, 11))
+  assert MAP_SPEED_LOOKAHEAD == [0, 1, 2, 3]
+  assert abs(accel_scale_factor(5) - 1.0) < 1e-9
+  assert abs(map_comfort_a_ms2(LOOKAHEAD_NORMAL, 5) - 0.80) < 1e-9
+  assert abs(map_comfort_a_ms2(LOOKAHEAD_NORMAL, 1) - 0.36) < 1e-9
+  assert abs(map_comfort_a_ms2(LOOKAHEAD_NORMAL, 10) - 1.60) < 1e-9
+  current = 70 * CV.MPH_TO_MS
+  nxt = 45 * CV.MPH_TO_MS
+  a5 = anticipatory_limit_ms(current, nxt, 200.0, current, LOOKAHEAD_NORMAL, 5)
+  a_default = anticipatory_limit_ms(current, nxt, 200.0, current, LOOKAHEAD_NORMAL)
+  assert a5 is not None and a_default is not None
+  assert abs(a5 - a_default) < 1e-9
+  # 100 m is inside the accel=10 window (~119 m); 1 is gentler (lower v) than 10.
+  a1 = anticipatory_limit_ms(current, nxt, 100.0, current, LOOKAHEAD_NORMAL, 1)
+  a10 = anticipatory_limit_ms(current, nxt, 100.0, current, LOOKAHEAD_NORMAL, 10)
+  assert a1 is not None and a10 is not None
+  assert a1 < a10 <= current
+  # Accel 10 starts later: 200 m is inside the default window but past the 10 window.
+  assert anticipatory_limit_ms(current, nxt, 200.0, current, LOOKAHEAD_NORMAL, 10) is None
+  assert anticipatory_limit_ms(current, nxt, 200.0, current, LOOKAHEAD_NORMAL, 5) is not None
+
+
+def test_slew_rate_limits_map_max_steps():
+  # 0.80 m/s² × 0.1 s = 0.08 m/s max step
+  out = slew_map_speed_ms(30.0, 20.0, 0.1, 0.80)
+  assert abs(out - 29.92) < 1e-9
+  done = slew_map_speed_ms(20.05, 20.0, 0.1, 0.80)
+  assert done == 20.0
 
 
 def test_planner_and_mpc_keep_radar_after_map_cap():

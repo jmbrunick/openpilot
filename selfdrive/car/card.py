@@ -20,8 +20,10 @@ from opendbc.car.car_helpers import get_car, interfaces
 from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
 from openpilot.selfdrive.car.cruise import VCruiseHelper, V_CRUISE_UNSET
-from openpilot.selfdrive.mapd.constants import DRIVER_OVERRIDE_S
-from openpilot.selfdrive.mapd.map_speed_policy import apply_map_speed_kph, effective_map_limit_ms, read_map_speed_params
+from openpilot.selfdrive.mapd.constants import DRIVER_OVERRIDE_S, map_comfort_a_ms2
+from openpilot.selfdrive.mapd.map_speed_policy import (
+  apply_map_speed_kph, effective_map_limit_ms, read_map_speed_params, slew_map_speed_ms,
+)
 
 REPLAY = "REPLAY" in os.environ
 
@@ -155,7 +157,10 @@ class Car:
     self.v_cruise_helper = VCruiseHelper(self.CP)
     self._map_override_t = 0.0
     self._last_preap_driver_kph = V_CRUISE_UNSET
-    self._map_speed_mode, self._map_speed_offset_kph, self._map_speed_lookahead = read_map_speed_params(self.params)
+    self._map_slew_ms: float | None = None
+    self._map_speed_mode, self._map_speed_offset_kph, self._map_speed_lookahead, self._map_speed_accel = (
+      read_map_speed_params(self.params)
+    )
 
     self.is_metric = self.params.get_bool("IsMetric")
     self.experimental_mode = self.params.get_bool("ExperimentalMode")
@@ -220,9 +225,19 @@ class Car:
             float(md.nextSpeedLimitDistance),
             float(CS.vEgo),
             self._map_speed_lookahead,
+            self._map_speed_accel,
           )
           if lim is not None and lim > 0:
-            map_kph = lim * CV.MS_TO_KPH
+            a = map_comfort_a_ms2(self._map_speed_lookahead, self._map_speed_accel)
+            if self._map_slew_ms is None:
+              self._map_slew_ms = lim
+            else:
+              self._map_slew_ms = slew_map_speed_ms(self._map_slew_ms, lim, DT_CTRL, a)
+            map_kph = self._map_slew_ms * CV.MS_TO_KPH
+          else:
+            self._map_slew_ms = None
+        else:
+          self._map_slew_ms = None
         preap_v_cruise_kph = apply_map_speed_kph(
           preap_v_cruise_kph,
           map_kph,
@@ -313,7 +328,9 @@ class Car:
     while not evt.is_set():
       self.is_metric = self.params.get_bool("IsMetric")
       self.experimental_mode = self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl
-      self._map_speed_mode, self._map_speed_offset_kph, self._map_speed_lookahead = read_map_speed_params(self.params)
+      self._map_speed_mode, self._map_speed_offset_kph, self._map_speed_lookahead, self._map_speed_accel = (
+        read_map_speed_params(self.params)
+      )
       time.sleep(0.1)
 
   def card_thread(self):
