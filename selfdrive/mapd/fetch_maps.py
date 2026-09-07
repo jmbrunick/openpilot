@@ -101,10 +101,10 @@ def download_url(url: str, dest: str, progress: bool = True) -> int:
 def _decompress_zst(src: str, dest: str) -> None:
   try:
     import zstandard as zstd
-  except ImportError:
+  except ImportError as e:
     zstd_bin = shutil.which("zstd")
     if not zstd_bin:
-      raise RuntimeError("Need the zstandard Python package (or zstd CLI) to decompress maps.")
+      raise RuntimeError("Need the zstandard Python package (or zstd CLI) to decompress maps.") from e
     import subprocess
     subprocess.check_call([zstd_bin, "-d", "-f", src, "-o", dest])
     return
