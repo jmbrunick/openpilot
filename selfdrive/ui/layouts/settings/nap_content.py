@@ -176,10 +176,16 @@ This is not stored in git (too large). After flash, run this once over Wi-Fi.
 PRECONDITIONS:
   1. Device is offroad / parked
   2. Wi-Fi that can reach GitHub Releases
-  3. ~1.5 GB free on /data/media/0/
+  3. 800 MiB free on /data (same filesystem as /data/media/0/osm/)
+     ~204 MiB zst + ~516 MiB sqlite + 80 MiB margin. Stages in
+     /data/media/0/osm/.download/ — not /tmp.
 
-About 200-500 MB compressed (one US-wide file). Takes a few minutes.
-mapd reloads the file onroad within ~15 seconds — no reboot required.
+If a previous download died with ENOSPC / "No space left on device":
+  rm -f /data/media/0/osm/*.partial /data/media/0/osm/.download/*
+  then clear old routes/videos if df -h /data is still short.
+  Smaller region later: python scripts/nap/download_osm_speed_limits.py
+
+Takes a few minutes. mapd reloads onroad within ~15 seconds — no reboot.
 
 Data is © OpenStreetMap contributors (ODbL).
 https://www.openstreetmap.org/copyright
