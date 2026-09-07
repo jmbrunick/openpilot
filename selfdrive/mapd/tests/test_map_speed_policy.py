@@ -2,12 +2,14 @@ from openpilot.common.constants import CV
 from openpilot.selfdrive.mapd.constants import (
   ACCEL_DEFAULT, LOOKAHEAD_EARLY, LOOKAHEAD_NORMAL, LOOKAHEAD_OFF,
   MODE_CAP, MODE_DISPLAY, MODE_FOLLOW, MODE_OFF,
+  TRACK_DEADBAND_MS, TRACK_TAPER_MS,
   accel_scale_factor, map_comfort_a_ms2,
 )
 from openpilot.selfdrive.mapd.map_speed_policy import (
   SOURCE_CRUISE, SOURCE_LEAD0, V_CRUISE_UNSET,
   anticipatory_limit_ms, apply_map_speed_kph, cap_planner_v_cruise_ms,
-  effective_map_limit_ms, longitudinal_obstacle_source, slew_map_speed_ms,
+  effective_map_limit_ms, longitudinal_obstacle_source, map_track_decel_ms2,
+  slew_map_speed_ms,
 )
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   MAP_SPEED_ACCEL, MAP_SPEED_ACCEL_DEFAULT, MAP_SPEED_LOOKAHEAD,
@@ -172,6 +174,37 @@ def test_accel_default_five_matches_prior_normal_curve():
   assert anticipatory_limit_ms(current, nxt, 300.0, current, LOOKAHEAD_NORMAL, 5) is not None
 
 
+def test_map_track_decel_matches_comfort_curve_when_above_max():
+  a5 = map_comfort_a_ms2(LOOKAHEAD_NORMAL, 5)
+  assert abs(a5 - 0.80) < 1e-9
+  v_ego = 70 * CV.MPH_TO_MS
+  v_max = 45 * CV.MPH_TO_MS
+  # Well above MAX → full comfort decel (Accel 5 = 0.80 m/s²).
+  assert v_ego - v_max > TRACK_TAPER_MS
+  assert map_track_decel_ms2(v_ego, v_max, a5) == -a5
+  assert map_track_decel_ms2(v_ego, v_max, 0.36) == -0.36
+  assert map_track_decel_ms2(v_ego, v_max, 1.60) == -1.60
+  # At or below MAX, or within the deadband: do not command extra decel.
+  assert map_track_decel_ms2(v_max, v_max, a5) is None
+  assert map_track_decel_ms2(v_max - 1.0, v_max, a5) is None
+  assert map_track_decel_ms2(v_max + TRACK_DEADBAND_MS, v_max, a5) is None
+  # Taper: halfway through the band is half comfort a.
+  mid = v_max + 0.5 * (TRACK_DEADBAND_MS + TRACK_TAPER_MS)
+  a_mid = map_track_decel_ms2(mid, v_max, a5)
+  assert a_mid is not None
+  assert abs(a_mid - (-0.5 * a5)) < 1e-9
+
+
+def test_map_track_decel_loses_to_stronger_lead_brake():
+  """Planner applies min(mpc, map_track). A slower lead still wins."""
+  a_map = map_track_decel_ms2(31.29, 20.12, 0.80)
+  assert a_map == -0.80
+  a_lead = -2.0
+  assert min(a_lead, a_map) == a_lead
+  # MPC holding ~0 (no-lead cruise obstacle not binding) → map decel wins.
+  assert min(0.0, a_map) == a_map
+
+
 def test_slew_rate_limits_map_max_steps():
   # 0.80 m/s² × 0.1 s = 0.08 m/s max step
   out = slew_map_speed_ms(30.0, 20.0, 0.1, 0.80)
@@ -205,6 +238,9 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   mpc = (root / "selfdrive/controls/lib/longitudinal_mpc_lib/long_mpc.py").read_text()
   cap_at = planner.find("cap_planner_v_cruise_ms")
   mpc_at = planner.find("self.mpc.update(sm['radarState'], v_cruise")
+  track_at = planner.find("a_track = map_track_decel_ms2")
   assert 0 <= cap_at < mpc_at
+  assert 0 <= mpc_at < track_at
+  assert "min(float(output_a_target), a_track)" in planner
   assert "np.column_stack([lead_0_obstacle, lead_1_obstacle, cruise_obstacle])" in mpc
   assert "self.params[:,2] = np.min(x_obstacles, axis=1)" in mpc

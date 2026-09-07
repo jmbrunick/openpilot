@@ -11,7 +11,7 @@ from openpilot.common.constants import CV
 from openpilot.selfdrive.mapd.constants import (
   ACCEL_DEFAULT, ACCEL_MAX, ACCEL_MIN, LOOKAHEAD_NORMAL, LOOKAHEAD_OFF,
   LOOKAHEAD_TUNING, MIN_DECREASE_MS, MODE_CAP, MODE_DISPLAY, MODE_FOLLOW, MODE_OFF,
-  map_comfort_a_ms2,
+  TRACK_DEADBAND_MS, TRACK_TAPER_MS, map_comfort_a_ms2,
 )
 
 # Keep in sync with openpilot.selfdrive.car.cruise (avoid importing cereal here).
@@ -106,6 +106,24 @@ def slew_map_speed_ms(prev_ms: float, target_ms: float, dt: float, a_ms2: float)
   if abs(delta) <= max_dv:
     return float(target_ms)
   return float(prev_ms) + math.copysign(max_dv, delta)
+
+
+def map_track_decel_ms2(v_ego_ms: float, v_cruise_ms: float, a_comfort: float) -> float | None:
+  """Comfort decel (negative m/s²) to track a lower map MAX, or None.
+
+  LongitudinalMpc's cruise column is a virtual lead at
+  get_safe_obstacle_distance(v_ego) with V_EGO_COST=0. Holding 70 mph for
+  10 s after MAX drops to 45 never violates that obstacle, so aTarget stays
+  ~0 unless we command this. Lead/MPC may still request more braking via min().
+  """
+  if a_comfort <= 0 or v_ego_ms <= 0 or v_cruise_ms <= 0:
+    return None
+  dv = float(v_ego_ms) - float(v_cruise_ms)
+  if dv <= TRACK_DEADBAND_MS:
+    return None
+  span = max(1e-6, TRACK_TAPER_MS - TRACK_DEADBAND_MS)
+  scale = min(1.0, (dv - TRACK_DEADBAND_MS) / span)
+  return -float(a_comfort) * scale
 
 
 def apply_map_speed_kph(
