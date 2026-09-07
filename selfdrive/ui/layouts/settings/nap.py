@@ -129,10 +129,10 @@ class NAPLayout(Widget):
     map_mode = int(self._params.get("NAPMapSpeedMode", return_default=True) or 0)
     self._map_speed_mode_buttons = multiple_button_item(
       "Map Speed (MAX)",
-      "OpenStreetMap speed limit for the HUD MAX / cruise set speed. "
-      "Off: unchanged. Display: show OSM limit only. Cap: MAX never exceeds the limit. "
-      "Follow: MAX tracks the limit (stalk +/- pauses follow for 10s). "
-      "Control modes require pedal interceptor longitudinal. No-pedal stock CC is display-only. "
+      "OpenStreetMap speed limit for the HUD MAX / cruise set speed. " +
+      "Off: unchanged. Display: show OSM limit only. Cap: MAX never exceeds the limit. " +
+      "Follow: MAX tracks the limit (stalk +/- pauses follow for 10s). " +
+      "Control modes require pedal interceptor longitudinal. No-pedal stock CC is display-only. " +
       "Requires an OSM sqlite DB at /data/media/0/osm/speed_limits.sqlite.",
       buttons=MAP_SPEED_MODE_LABELS,
       button_width=150,
@@ -508,7 +508,7 @@ class NAPLayout(Widget):
         self._params.put(key, default)
     self._params.put("NAPMapSpeedMode", 0)
     self._params.put("NAPMapSpeedOffsetMph", 0)
-    self._params.put("NAPMapSpeedDbPath", "")
+    self._params.remove("NAPMapSpeedDbPath")
     # Force Pre-AP is locked on in the panel but DEFAULTS keeps it off
     # for non-UI consumers. Re-apply the lock after the wholesale loop
     # so reset doesn't silently flip the invariant.

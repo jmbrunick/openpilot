@@ -66,14 +66,14 @@ def _bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 def _offset_point(lat: float, lon: float, bearing_deg: float, dist_m: float) -> tuple[float, float]:
-  ang = dist_m / EARTH_R
+  theta = dist_m / EARTH_R
   brng = math.radians(bearing_deg)
   phi1 = math.radians(lat)
   lam1 = math.radians(lon)
-  phi2 = math.asin(math.sin(phi1) * math.cos(ang) + math.cos(phi1) * math.sin(ang) * math.cos(brng))
+  phi2 = math.asin(math.sin(phi1) * math.cos(theta) + math.cos(phi1) * math.sin(theta) * math.cos(brng))
   lam2 = lam1 + math.atan2(
-    math.sin(brng) * math.sin(ang) * math.cos(phi1),
-    math.cos(ang) - math.sin(phi1) * math.sin(phi2),
+    math.sin(brng) * math.sin(theta) * math.cos(phi1),
+    math.cos(theta) - math.sin(phi1) * math.sin(phi2),
   )
   return math.degrees(phi2), (math.degrees(lam2) + 540.0) % 360.0 - 180.0
 
@@ -189,8 +189,7 @@ class OsmSpeedLimitDB:
     min_lon, max_lon = min(lons), max(lons)
     blob = _pack_coords(coords)
     con.execute(
-      "INSERT OR REPLACE INTO ways(way_id, name, highway, maxspeed_ms, min_lat, max_lat, min_lon, max_lon, coords) "
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT OR REPLACE INTO ways(way_id, name, highway, maxspeed_ms, min_lat, max_lat, min_lon, max_lon, coords) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
       (int(way_id), name or "", highway or "", float(maxspeed_ms), min_lat, max_lat, min_lon, max_lon, blob),
     )
     con.execute(
