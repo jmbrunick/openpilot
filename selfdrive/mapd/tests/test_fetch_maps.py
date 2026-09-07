@@ -1,18 +1,9 @@
-import http.server
 import os
-import threading
-from functools import partial
+from pathlib import Path
 
 from openpilot.common.constants import CV
 from openpilot.selfdrive.mapd.fetch_maps import fetch_and_install, installed_db_summary
 from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB
-
-
-def _serve(directory: str, port: int) -> http.server.HTTPServer:
-  handler = partial(http.server.SimpleHTTPRequestHandler, directory=directory)
-  httpd = http.server.HTTPServer(("127.0.0.1", port), handler)
-  threading.Thread(target=httpd.serve_forever, daemon=True).start()
-  return httpd
 
 
 def test_fetch_installs_sqlite(tmp_path):
@@ -26,13 +17,8 @@ def test_fetch_installs_sqlite(tmp_path):
   con.commit()
   con.close()
 
-  httpd = _serve(str(tmp_path), 0)
-  port = httpd.server_address[1]
   dest = str(tmp_path / "installed" / "speed_limits.sqlite")
-  try:
-    fetch_and_install(dest=dest, url=f"http://127.0.0.1:{port}/speed_limits.sqlite", sha256="")
-  finally:
-    httpd.shutdown()
+  fetch_and_install(dest=dest, url=Path(src).as_uri(), sha256="")
 
   db = OsmSpeedLimitDB(dest)
   assert db.open()
