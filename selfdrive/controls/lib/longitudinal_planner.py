@@ -159,8 +159,10 @@ class LongitudinalPlanner:
     if force_slow_decel:
       v_cruise = 0.0
 
-    # OSM map speed safety net: never command above the matched limit in cap/follow.
-    # Display/off do not affect the planner. Does not raise v_cruise.
+    # OSM map speed: ceiling on v_cruise only (HUD MAX / cruise target).
+    # Display/off do not affect the planner. Never raises v_cruise.
+    # Lead slowing is unchanged: mpc.update still receives radarState and
+    # constrains to min(lead0, lead1, cruise_obstacle(v_cruise)).
     if self._is_preap and 'liveMapDataNAP' in sm.valid:
       md = sm['liveMapDataNAP']
       map_ms = None

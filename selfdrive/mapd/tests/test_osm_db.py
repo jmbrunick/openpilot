@@ -1,5 +1,5 @@
 from openpilot.common.constants import CV
-from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB
+from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB, _pack_coords, _unpack_coords, simplify_coords
 from openpilot.selfdrive.mapd.overpass import ways_from_overpass
 from openpilot.selfdrive.mapd.speed_limit import parse_maxspeed
 
@@ -78,3 +78,21 @@ def test_overpass_json_import(tmp_path):
   assert db.open()
   m = db.lookup(37.5005, -122.4, bearing_deg=0.0)
   assert m is not None and m.way_id == 42
+
+
+def test_simplify_collinear_and_f64_unpack():
+  # 1 km eastbound straight line at 1 m spacing should collapse to endpoints.
+  coords = [(37.0, -122.0 + i * 1e-5) for i in range(100)]
+  simple = simplify_coords(coords, tol_m=5.0)
+  assert len(simple) == 2
+  assert simple[0] == coords[0] and simple[-1] == coords[-1]
+
+  packed64 = _pack_coords([(37.5, -122.4), (37.6, -122.4)])
+  # Force a legacy float64 blob and ensure unpack still works.
+  import struct
+  n = 2
+  blob = struct.pack("<I", n) + struct.pack("<dd", 37.5, -122.4) + struct.pack("<dd", 37.6, -122.4)
+  pts = _unpack_coords(blob)
+  assert abs(pts[0][0] - 37.5) < 1e-9
+  assert len(_unpack_coords(packed64)) == 2
+

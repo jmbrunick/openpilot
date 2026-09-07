@@ -20,6 +20,10 @@ from openpilot.selfdrive.mapd.constants import (
 
 EARTH_R = 6371000.0
 _COORDS_HDR = struct.Struct("<I")
+_COORD_F64 = struct.Struct("<dd")
+_COORD_F32 = struct.Struct("<ff")
+# Drop vertices closer than this when inserting (keeps US extract under a Release asset).
+SIMPLIFY_TOL_M = 12.0
 
 
 @dataclass(frozen=True)
@@ -34,22 +38,67 @@ class SpeedLimitMatch:
 
 
 def _pack_coords(coords: list[tuple[float, float]]) -> bytes:
-  # coords are (lat, lon)
+  # float32 is ~1 m at US longitudes — enough for MAX_MATCH_DISTANCE_M.
   buf = bytearray(_COORDS_HDR.pack(len(coords)))
   for lat, lon in coords:
-    buf += struct.pack("<dd", float(lat), float(lon))
+    buf += _COORD_F32.pack(float(lat), float(lon))
   return bytes(buf)
 
 
 def _unpack_coords(blob: bytes) -> list[tuple[float, float]]:
   n = _COORDS_HDR.unpack_from(blob)[0]
+  rest = len(blob) - _COORDS_HDR.size
+  if rest == n * _COORD_F32.size:
+    fmt, step = _COORD_F32, _COORD_F32.size
+  elif rest == n * _COORD_F64.size:
+    fmt, step = _COORD_F64, _COORD_F64.size
+  else:
+    return []
   coords = []
   off = _COORDS_HDR.size
   for _ in range(n):
-    lat, lon = struct.unpack_from("<dd", blob, off)
-    coords.append((lat, lon))
-    off += 16
+    lat, lon = fmt.unpack_from(blob, off)
+    coords.append((float(lat), float(lon)))
+    off += step
   return coords
+
+
+def simplify_coords(coords: list[tuple[float, float]], tol_m: float = SIMPLIFY_TOL_M) -> list[tuple[float, float]]:
+  """Douglas-Peucker in local meters. Always keeps endpoints."""
+  if len(coords) <= 2 or tol_m <= 0:
+    return coords
+  lat0, lon0 = coords[0]
+
+  def xy(p: tuple[float, float]) -> tuple[float, float]:
+    return _local_xy(p[0], p[1], lat0, lon0)
+
+  pts = [xy(c) for c in coords]
+  keep = [False] * len(coords)
+  keep[0] = keep[-1] = True
+  stack = [(0, len(coords) - 1)]
+  while stack:
+    i, j = stack.pop()
+    ax, ay = pts[i]
+    bx, by = pts[j]
+    abx, aby = bx - ax, by - ay
+    ab2 = abx * abx + aby * aby
+    max_d = -1.0
+    max_k = -1
+    for k in range(i + 1, j):
+      px, py = pts[k]
+      if ab2 < 1e-6:
+        d = math.hypot(px - ax, py - ay)
+      else:
+        t = max(0.0, min(1.0, ((px - ax) * abx + (py - ay) * aby) / ab2))
+        d = math.hypot(ax + t * abx - px, ay + t * aby - py)
+      if d > max_d:
+        max_d = d
+        max_k = k
+    if max_k >= 0 and max_d > tol_m:
+      keep[max_k] = True
+      stack.append((i, max_k))
+      stack.append((max_k, j))
+  return [c for c, k in zip(coords, keep) if k]
 
 
 def _wrap_heading_delta(a: float, b: float) -> float:
@@ -172,6 +221,7 @@ class OsmSpeedLimitDB:
       [
         ("attribution", "© OpenStreetMap contributors"),
         ("license", "ODbL"),
+        ("license_url", "https://www.openstreetmap.org/copyright"),
         ("format", "nap-osm-speedlimit-v1"),
       ],
     )
@@ -179,8 +229,33 @@ class OsmSpeedLimitDB:
     return con
 
   @staticmethod
+  def meta_get(path: str, key: str) -> str | None:
+    if not path or not os.path.isfile(path):
+      return None
+    try:
+      con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+      try:
+        row = con.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return str(row[0]) if row else None
+      finally:
+        con.close()
+    except sqlite3.Error:
+      return None
+
+  @staticmethod
+  def way_count(path: str) -> int | None:
+    raw = OsmSpeedLimitDB.meta_get(path, "way_count")
+    if raw is None:
+      return None
+    try:
+      return int(raw)
+    except ValueError:
+      return None
+
+  @staticmethod
   def insert_way(con: sqlite3.Connection, way_id: int, name: str, highway: str,
                  maxspeed_ms: float, coords: list[tuple[float, float]]) -> None:
+    coords = simplify_coords(coords)
     if len(coords) < 2 or maxspeed_ms <= 0:
       return
     lats = [c[0] for c in coords]

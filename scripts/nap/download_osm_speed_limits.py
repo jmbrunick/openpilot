@@ -1,10 +1,19 @@
 #!/usr/bin/env python3
-"""Build an offline OSM speed-limit SQLite DB for NAP mapd.
+"""Build a small-region OSM speed-limit SQLite DB for NAP mapd (Overpass).
 
 OpenStreetMap data is ODbL: © OpenStreetMap contributors.
 https://www.openstreetmap.org/copyright
 
-Examples (run on a PC, then copy the sqlite file to the comma 3X):
+For the full United States after flash, use the GitHub Release download instead:
+
+  python -m scripts.nap.fetch_osm_maps
+
+  # or Settings → NAP → Download US Maps
+
+To *publish* that Release from a PC (Geofabrik PBF), see scripts/nap/build_osm_speed_limits.py
+and docs-nap/map-speed.md.
+
+Small bbox / Overpass examples (run on a PC):
 
   # Bounding box (south,west,north,east)
   python scripts/nap/download_osm_speed_limits.py --bbox 37.6,-122.5,37.9,-122.2 \\
@@ -64,8 +73,10 @@ def write_db(path: str, ways: list[dict], extra_meta: dict | None = None) -> int
   for w in ways:
     OsmSpeedLimitDB.insert_way(con, w["way_id"], w["name"], w["highway"], w["maxspeed_ms"], w["coords"])
     n += 1
+  meta = {"way_count": str(n)}
   if extra_meta:
-    con.executemany("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", list(extra_meta.items()))
+    meta.update({str(k): str(v) for k, v in extra_meta.items()})
+  con.executemany("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", list(meta.items()))
   con.commit()
   con.close()
   return n

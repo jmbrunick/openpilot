@@ -1,14 +1,13 @@
 import os
 
 from openpilot.selfdrive.mapd.constants import DB_FILENAME
-from openpilot.system.hardware.hw import Paths
-from openpilot.system.hardware import PC
 
 
 def osm_dir() -> str:
-  if PC:
-    return os.path.join(Paths.comma_home(), "media", "0", "osm")
-  return "/data/media/0/osm"
+  # Avoid hardware/cereal so mapd unit tests and fetch_maps stay importable off-device.
+  if os.path.isdir("/data/media/0"):
+    return "/data/media/0/osm"
+  return os.path.join(os.path.expanduser("~"), ".comma", "media", "0", "osm")
 
 
 def default_db_path() -> str:

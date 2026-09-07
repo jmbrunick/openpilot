@@ -16,6 +16,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   BACKUP_EPAS_INSTRUCTIONS,
   CALIBRATE_PEDAL_INSTRUCTIONS,
   CALIBRATE_RADAR_INSTRUCTIONS,
+  DOWNLOAD_US_MAPS_INSTRUCTIONS,
   FLASH_EPAS_INSTRUCTIONS,
   MAP_SPEED_MODES, MAP_SPEED_MODE_LABELS, MAP_SPEED_OFFSETS_MPH,
   PEDAL_CAN_BUS_VALUES,
@@ -24,6 +25,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   RESTORE_EPAS_INSTRUCTIONS,
   TEST_RADAR_INSTRUCTIONS,
 )
+from openpilot.selfdrive.mapd.fetch_maps import installed_db_summary
 from openpilot.selfdrive.ui.ui_state import ui_state
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys
 
@@ -84,6 +86,14 @@ class NAPLayoutMici(NavScroller):
       labels=["-5 mph", "0", "+5 mph"],
       default_value=0,
     )
+
+    map_db_status = BigButton("osm map data", installed_db_summary())
+    download_maps_btn = BigButton("download us maps", "start")
+    download_maps_btn.set_click_callback(
+      lambda: launch_script("Download US Maps", DOWNLOAD_US_MAPS_INSTRUCTIONS,
+                            "scripts.nap.fetch_osm_maps",
+                            ))
+    download_maps_btn.set_enabled(ui_state.is_offroad)
 
     # ── Pedal hardware ───────────────────────────────
     # default_value=2 matches NAPPedalCanBus declared default in params_keys.h
@@ -183,6 +193,8 @@ class NAPLayoutMici(NavScroller):
       adaptive_accel,
       map_mode,
       map_offset,
+      map_db_status,
+      download_maps_btn,
       pedal_can_bus,
       pedal_calib_status,
       calibrate_pedal_btn,

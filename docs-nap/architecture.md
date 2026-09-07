@@ -70,4 +70,4 @@ See [Tinkla](https://github.com/boggyver/openpilot/tree/tesla_unity_betaC3) and 
 
 ## OSM map speed (MAX)
 
-`selfdrive/mapd` looks up OpenStreetMap `maxspeed` from an offline sqlite DB using GNSS. It publishes `liveMapDataNAP`. In pre-AP **pedal** mode, `card.py` overlays that limit onto the existing software cruise target (`pedal_speed_kph` → `CS.vCruise` / HUD **MAX**). No-pedal stock CC is display-only. Details: [map-speed.md](map-speed.md).
+`selfdrive/mapd` looks up OpenStreetMap `maxspeed` from an offline sqlite DB using GNSS. It publishes `liveMapDataNAP`. In pre-AP **pedal** mode, `card.py` overlays that limit onto the existing software cruise target (`pedal_speed_kph` → `CS.vCruise` / HUD **MAX**). That overlay is a **cruise ceiling only**; `LongitudinalMpc.update(radarState, v_cruise)` still takes `min(lead, cruise)`, so a slower lead is followed as today. No-pedal stock CC is display-only. US maps are a GitHub Release download, not a git blob. Details: [map-speed.md](map-speed.md).
