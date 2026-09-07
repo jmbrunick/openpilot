@@ -161,14 +161,15 @@ def test_accel_default_five_matches_prior_normal_curve():
   a_default = anticipatory_limit_ms(current, nxt, 200.0, current, LOOKAHEAD_NORMAL)
   assert a5 is not None and a_default is not None
   assert abs(a5 - a_default) < 1e-9
-  # 100 m is inside the accel=10 window (~119 m); 1 is gentler (lower v) than 10.
+  # At the same distance, gentler a holds a lower MAX (starts earlier / finishes later).
   a1 = anticipatory_limit_ms(current, nxt, 100.0, current, LOOKAHEAD_NORMAL, 1)
   a10 = anticipatory_limit_ms(current, nxt, 100.0, current, LOOKAHEAD_NORMAL, 10)
   assert a1 is not None and a10 is not None
   assert a1 < a10 <= current
-  # Accel 10 starts later: 200 m is inside the default window but past the 10 window.
-  assert anticipatory_limit_ms(current, nxt, 200.0, current, LOOKAHEAD_NORMAL, 10) is None
-  assert anticipatory_limit_ms(current, nxt, 200.0, current, LOOKAHEAD_NORMAL, 5) is not None
+  # Higher a shortens the braking distance, so accel 10 starts later.
+  # 70→45 mph: Normal+5 is horizon-capped at 400 m; Normal+10 needs ~260 m.
+  assert anticipatory_limit_ms(current, nxt, 300.0, current, LOOKAHEAD_NORMAL, 10) is None
+  assert anticipatory_limit_ms(current, nxt, 300.0, current, LOOKAHEAD_NORMAL, 5) is not None
 
 
 def test_slew_rate_limits_map_max_steps():
@@ -177,6 +178,23 @@ def test_slew_rate_limits_map_max_steps():
   assert abs(out - 29.92) < 1e-9
   done = slew_map_speed_ms(20.05, 20.0, 0.1, 0.80)
   assert done == 20.0
+
+
+def test_map_speed_submenu_wires_params():
+  """Menu wiring without importing raylib / cereal UI."""
+  from pathlib import Path
+  root = Path(__file__).resolve().parents[3]
+  tici = (root / "selfdrive/ui/layouts/settings/map_speed.py").read_text()
+  mici = (root / "selfdrive/ui/mici/layouts/settings/map_speed.py").read_text()
+  nap = (root / "selfdrive/ui/layouts/settings/nap.py").read_text()
+  nap_mici = (root / "selfdrive/ui/mici/layouts/settings/nap.py").read_text()
+  for src in (tici, mici):
+    for key in ("NAPMapSpeedMode", "NAPMapSpeedOffsetMph", "NAPMapSpeedLookahead", "NAPMapSpeedAccel"):
+      assert key in src
+  assert "self._scroller.add_widgets" in mici
+  assert "Map Speed Limit" in nap
+  assert "map speed limit" in nap_mici
+  assert "NAPMapSpeedAccel" in (root / "common/params_keys.h").read_text()
 
 
 def test_planner_and_mpc_keep_radar_after_map_cap():

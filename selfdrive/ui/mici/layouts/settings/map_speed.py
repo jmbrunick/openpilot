@@ -52,7 +52,7 @@ class MapSpeedLimitLayoutMici(NavScroller):
                             "scripts.nap.fetch_osm_maps",
                             ))
     download_maps_btn.set_enabled(ui_state.is_offroad)
-    self.add_widgets([
+    self._scroller.add_widgets([
       map_mode,
       map_offset,
       map_lookahead,
