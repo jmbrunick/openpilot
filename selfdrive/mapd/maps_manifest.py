@@ -31,7 +31,7 @@ APPROX_ZST_MB = 350
 
 # Set after the first published asset so the device can verify the download.
 # Empty means "accept whatever sqlite the release currently serves".
-ASSET_SHA256 = ""
+ASSET_SHA256 = "d45eddf120f2aa733548b8317e6542ed22880025d33b5f606136567a0feaa26e"
 
 USER_AGENT = "NotAutopilot-mapd/1.0 (OSM ODbL; https://github.com/jmbrunick/openpilot)"
 
