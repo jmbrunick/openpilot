@@ -11,9 +11,9 @@ The on-road HUD box labeled **MAX** is the cruise set speed (`carState.vCruiseCl
 ```
 GNSS (ublox/qcom → gpsLocationExternal)
   → mapd (offline SQLite R-tree of OSM ways)
-  → liveMapDataNAP.speedLimit  (m/s)
+  → liveMapDataNAP.speedLimit + nextSpeedLimit / nextSpeedLimitDistance
   → card.py  (pre-AP pedal software cruise only)
-       CS.vCruise / vCruiseCluster   ← HUD MAX  (cruise ceiling)
+       CS.vCruise / vCruiseCluster   ← HUD MAX  (cruise ceiling; decrease-only lookahead)
   → plannerd cap_planner_v_cruise_ms (never raises)
   → LongitudinalMpc.update(radarState, v_cruise)
        constraint = min(lead0, lead1, cruise_obstacle(v_cruise))
@@ -30,6 +30,7 @@ Map data is © OpenStreetMap contributors ([ODbL](https://www.openstreetmap.org/
 - **Cap** (recommended): `MAX = min(driver set, OSM limit + offset)`. Never raises.
 - **Follow**: MAX tracks the OSM limit; stalk +/- pauses follow for 10s then resumes.
 - **Display / Off**: no control change.
+- **Lookahead (Cap/Follow):** if a **lower** OSM maxspeed is ahead on heading, MAX / `vCruise` eases down so you reach about the new limit as you enter that way. A **higher** limit ahead does **not** raise MAX early — Follow still raises only once GPS is on the faster segment.
 - **Lead vehicles outrank map speed.** Map only sets the cruise target ceiling (`vCruise` / planner `v_cruise`). Radar ACC (`radarState.leadOne` / `leadTwo` in `LongitudinalMpc`) still commands **below** that ceiling when a lead is slower. Map speed does not clear, replace, or bypass lead obstacles. `mpc.update` is always `mpc.update(radarState, v_cruise)` after the map cap.
 - Panda TX whitelist, pedal gating, and engagement FSM are unchanged.
 - Default **Off** until US maps are downloaded and you pick a mode.
@@ -98,8 +99,24 @@ Optional override path: param `NAPMapSpeedDbPath`.
 3. **Settings → NAP**:
    - **Map Speed (MAX)**: Off / Display / Cap / Follow
    - **Map Speed Offset**: -5 / 0 / +5 mph (added to the OSM limit)
+   - **Map Speed Lookahead**: Off / Late / Normal (default) / Early — decrease-only preview
    - Pedal interceptor must be on for Cap/Follow to change set speed
-4. `mapd` starts onroad. With GPS fix and a matching way, a **LIMIT** sign appears next to MAX. In Cap/Follow, MAX itself updates as you cross OSM speed changes.
+4. `mapd` starts onroad. With GPS fix and a matching way, a **LIMIT** sign appears next to MAX. In Cap/Follow, MAX eases down before a lower limit ahead (Lookahead ≠ Off), and snaps to the posted limit once you are on that way.
+
+## Anticipatory decreases
+
+`mapd` probes 40–600 m along GPS heading and publishes `nextSpeedLimit` / `nextSpeedLimitDistance`. Policy consumes **decreases only**:
+
+| Lookahead | Comfort decel | Extra margin | Start no farther than |
+|---|---|---|---|
+| Off | — | — | change only after GPS is on the slower way |
+| Late | 1.20 m/s² | 40 m | 250 m |
+| Normal (default) | 0.80 m/s² | 80 m | 400 m |
+| Early | 0.55 m/s² | 120 m | 600 m |
+
+When the upcoming drop is inside that window, MAX follows `v = sqrt(v_next² + 2 a d)` so it falls smoothly (not a cliff). Param: `NAPMapSpeedLookahead` (int 0–3). Rebuild after flash so `params_keys.h` picks it up.
+
+Higher limit ahead: `nextSpeedLimit` may still be published; Cap/Follow **ignore** it until `speedLimit` itself is the higher value.
 
 ## How to test
 
@@ -125,9 +142,10 @@ for _ in range(6):
 
 1. Cap, **no lead**: set MAX above the posted limit; MAX should drop to OSM (+ offset); raising the stalk cannot exceed the cap.
 2. Cap/Follow, **slower lead**: MAX / map ceiling may be 65 while the car still slows to follow radar `leadOne`. Map must not prevent that slowing.
-3. Drive across a limit change (e.g. 45 → 35). MAX should update within ~1s of a good match.
-4. Follow: MAX should rise and fall with OSM; one stalk tap holds your speed for ~10s.
-5. Cancel / brake still uses the existing engagement FSM. Hands-on / panda limits unchanged.
+3. Drive toward a **lower** limit (e.g. 45 → 35) with Lookahead = Normal: MAX should start easing down ~100–400 m before the change, and be near 35 as you enter. Lookahead = Off: MAX drops only after GPS matches the slower way.
+4. Drive toward a **higher** limit (35 → 45): MAX must **not** rise until you are on the faster segment (Follow then tracks it).
+5. Follow: MAX should rise and fall with OSM; one stalk tap holds your speed for ~10s.
+6. Cancel / brake still uses the existing engagement FSM. Hands-on / panda limits unchanged.
 
 **No-pedal:** LIMIT sign only; stock CC set speed is unchanged.
 

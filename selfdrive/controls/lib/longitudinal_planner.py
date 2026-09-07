@@ -13,7 +13,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import Longi
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
-from openpilot.selfdrive.mapd.map_speed_policy import cap_planner_v_cruise_ms, read_map_speed_params
+from openpilot.selfdrive.mapd.map_speed_policy import cap_planner_v_cruise_ms, effective_map_limit_ms, read_map_speed_params
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 
@@ -75,7 +75,9 @@ class LongitudinalPlanner:
     self._params = Params()
     self.nap_follow_dist = self._params.get("NAPFollowDistance", return_default=True) if self._is_preap else None
     self.nap_adaptive_accel = self._params.get_bool("NAPAdaptiveAccel") if self._is_preap else False
-    self._map_speed_mode, self._map_speed_offset_kph = read_map_speed_params(self._params) if self._is_preap else (0, 0.0)
+    self._map_speed_mode, self._map_speed_offset_kph, self._map_speed_lookahead = (
+      read_map_speed_params(self._params) if self._is_preap else (0, 0.0, 0)
+    )
     self._frame = 0
 
     self.a_desired = init_a
@@ -113,7 +115,7 @@ class LongitudinalPlanner:
     if self._is_preap and self._frame % 20 == 0:
       self.nap_follow_dist = self._params.get("NAPFollowDistance", return_default=True)
       self.nap_adaptive_accel = self._params.get_bool("NAPAdaptiveAccel")
-      self._map_speed_mode, self._map_speed_offset_kph = read_map_speed_params(self._params)
+      self._map_speed_mode, self._map_speed_offset_kph, self._map_speed_lookahead = read_map_speed_params(self._params)
 
     if len(sm['carControl'].orientationNED) == 3:
       accel_coast = get_coast_accel(sm['carControl'].orientationNED[1])
@@ -167,7 +169,13 @@ class LongitudinalPlanner:
       md = sm['liveMapDataNAP']
       map_ms = None
       if sm.valid['liveMapDataNAP'] and md.speedLimitValid and md.speedLimit > 0:
-        map_ms = float(md.speedLimit)
+        map_ms = effective_map_limit_ms(
+          float(md.speedLimit),
+          float(md.nextSpeedLimit),
+          float(md.nextSpeedLimitDistance),
+          float(v_ego),
+          self._map_speed_lookahead,
+        )
       v_cruise = cap_planner_v_cruise_ms(
         v_cruise,
         map_ms,

@@ -1,8 +1,12 @@
 from openpilot.common.constants import CV
-from openpilot.selfdrive.mapd.constants import MODE_CAP, MODE_DISPLAY, MODE_FOLLOW, MODE_OFF
+from openpilot.selfdrive.mapd.constants import (
+  LOOKAHEAD_EARLY, LOOKAHEAD_NORMAL, LOOKAHEAD_OFF,
+  MODE_CAP, MODE_DISPLAY, MODE_FOLLOW, MODE_OFF,
+)
 from openpilot.selfdrive.mapd.map_speed_policy import (
   SOURCE_CRUISE, SOURCE_LEAD0, V_CRUISE_UNSET,
-  apply_map_speed_kph, cap_planner_v_cruise_ms, longitudinal_obstacle_source,
+  anticipatory_limit_ms, apply_map_speed_kph, cap_planner_v_cruise_ms,
+  effective_map_limit_ms, longitudinal_obstacle_source,
 )
 
 # Keep in sync with long_mpc (avoid importing cereal/acados here).
@@ -80,6 +84,62 @@ def test_slower_lead_still_commands_below_map_ceiling():
     cruise = _cruise_obstacle_m(capped)
     assert longitudinal_obstacle_source(lead, 1e8, cruise) == SOURCE_LEAD0
     assert min(lead, cruise) == lead
+
+
+def test_upcoming_lower_limit_lowers_target_early():
+  current = 70 * CV.MPH_TO_MS
+  nxt = 45 * CV.MPH_TO_MS
+  # Well inside Normal horizon (400 m) and braking window.
+  early = anticipatory_limit_ms(current, nxt, 200.0, current, LOOKAHEAD_NORMAL)
+  assert early is not None
+  assert nxt - 1e-6 <= early < current
+  # Closer to the sign → closer to the new limit (smooth profile).
+  closer = anticipatory_limit_ms(current, nxt, 60.0, current, LOOKAHEAD_NORMAL)
+  assert closer is not None and closer <= early + 1e-9
+  assert closer < current
+  eff = effective_map_limit_ms(current, nxt, 200.0, current, LOOKAHEAD_NORMAL)
+  assert eff is not None and eff < current
+  # HUD/planner use this as the map ceiling (Cap never raises).
+  assert apply_map_speed_kph(
+    120, eff * CV.MS_TO_KPH, mode=MODE_CAP, engaged=True, op_long_software_cruise=True,
+  ) < 70 * CV.MPH_TO_KPH + 0.1
+
+
+def test_upcoming_higher_limit_does_not_raise_early():
+  current = 45 * CV.MPH_TO_MS
+  nxt = 70 * CV.MPH_TO_MS
+  assert anticipatory_limit_ms(current, nxt, 80.0, current, LOOKAHEAD_EARLY) is None
+  assert effective_map_limit_ms(current, nxt, 80.0, current, LOOKAHEAD_NORMAL) == current
+  # Follow still uses the *current* match (raises only once GPS is on the faster way).
+  assert apply_map_speed_kph(
+    50, current * CV.MS_TO_KPH, mode=MODE_FOLLOW, engaged=True, op_long_software_cruise=True,
+  ) == current * CV.MS_TO_KPH
+
+
+def test_lookahead_off_and_far_away_keep_current():
+  current = 70 * CV.MPH_TO_MS
+  nxt = 35 * CV.MPH_TO_MS
+  assert anticipatory_limit_ms(current, nxt, 80.0, current, LOOKAHEAD_OFF) is None
+  assert effective_map_limit_ms(current, nxt, 80.0, current, LOOKAHEAD_OFF) == current
+  # Beyond Normal horizon (400 m) — do not start yet.
+  assert anticipatory_limit_ms(current, nxt, 500.0, current, LOOKAHEAD_NORMAL) is None
+  # Display never changes MAX even if we computed an anticipatory ceiling.
+  assert apply_map_speed_kph(
+    100, 45, mode=MODE_DISPLAY, engaged=True, op_long_software_cruise=True,
+  ) == 100
+
+
+def test_anticipatory_cap_still_loses_to_slower_lead():
+  current = 70 * CV.MPH_TO_MS
+  nxt = 45 * CV.MPH_TO_MS
+  eff = effective_map_limit_ms(current, nxt, 150.0, current, LOOKAHEAD_NORMAL)
+  assert eff is not None
+  v_cruise = cap_planner_v_cruise_ms(40.0, eff, mode=MODE_CAP)
+  assert v_cruise <= current
+  lead = _lead_obstacle_m(40.0, 15.0)
+  cruise = _cruise_obstacle_m(v_cruise)
+  assert longitudinal_obstacle_source(lead, 1e8, cruise) == SOURCE_LEAD0
+  assert min(lead, cruise) == lead
 
 
 def test_planner_and_mpc_keep_radar_after_map_cap():

@@ -21,7 +21,7 @@ from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
 from openpilot.selfdrive.car.cruise import VCruiseHelper, V_CRUISE_UNSET
 from openpilot.selfdrive.mapd.constants import DRIVER_OVERRIDE_S
-from openpilot.selfdrive.mapd.map_speed_policy import apply_map_speed_kph, read_map_speed_params
+from openpilot.selfdrive.mapd.map_speed_policy import apply_map_speed_kph, effective_map_limit_ms, read_map_speed_params
 
 REPLAY = "REPLAY" in os.environ
 
@@ -155,7 +155,7 @@ class Car:
     self.v_cruise_helper = VCruiseHelper(self.CP)
     self._map_override_t = 0.0
     self._last_preap_driver_kph = V_CRUISE_UNSET
-    self._map_speed_mode, self._map_speed_offset_kph = read_map_speed_params(self.params)
+    self._map_speed_mode, self._map_speed_offset_kph, self._map_speed_lookahead = read_map_speed_params(self.params)
 
     self.is_metric = self.params.get_bool("IsMetric")
     self.experimental_mode = self.params.get_bool("ExperimentalMode")
@@ -213,8 +213,15 @@ class Car:
         map_kph = None
         map_valid = bool(self.sm.valid.get('liveMapDataNAP', False) and self.sm['liveMapDataNAP'].speedLimitValid)
         if map_valid:
-          lim = float(self.sm['liveMapDataNAP'].speedLimit)
-          if lim > 0:
+          md = self.sm['liveMapDataNAP']
+          lim = effective_map_limit_ms(
+            float(md.speedLimit),
+            float(md.nextSpeedLimit),
+            float(md.nextSpeedLimitDistance),
+            float(CS.vEgo),
+            self._map_speed_lookahead,
+          )
+          if lim is not None and lim > 0:
             map_kph = lim * CV.MS_TO_KPH
         preap_v_cruise_kph = apply_map_speed_kph(
           preap_v_cruise_kph,
@@ -306,7 +313,7 @@ class Car:
     while not evt.is_set():
       self.is_metric = self.params.get_bool("IsMetric")
       self.experimental_mode = self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl
-      self._map_speed_mode, self._map_speed_offset_kph = read_map_speed_params(self.params)
+      self._map_speed_mode, self._map_speed_offset_kph, self._map_speed_lookahead = read_map_speed_params(self.params)
       time.sleep(0.1)
 
   def card_thread(self):
