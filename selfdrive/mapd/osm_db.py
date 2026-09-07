@@ -98,7 +98,7 @@ def simplify_coords(coords: list[tuple[float, float]], tol_m: float = SIMPLIFY_T
       keep[max_k] = True
       stack.append((i, max_k))
       stack.append((max_k, j))
-  return [c for c, k in zip(coords, keep) if k]
+  return [c for c, k in zip(coords, keep, strict=True) if k]
 
 
 def _wrap_heading_delta(a: float, b: float) -> float:
