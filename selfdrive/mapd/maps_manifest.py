@@ -37,7 +37,10 @@ APPROX_SQLITE_GB = ASSET_SQLITE_BYTES / (1024 ** 3)
 APPROX_ZST_MB = ASSET_ZST_BYTES / (1024 * 1024)
 
 # SHA-256 of the Release **zst** asset (not the decompressed sqlite).
+# Fetch verifies this on the downloaded .zst BEFORE decompress.
 ASSET_SHA256 = "d45eddf120f2aa733548b8317e6542ed22880025d33b5f606136567a0feaa26e"
+# Optional SHA-256 of the decompressed sqlite. Empty = do not hash dest.
+SQLITE_SHA256 = ""
 
 USER_AGENT = "NotAutopilot-mapd/1.0 (OSM ODbL; https://github.com/jmbrunick/openpilot)"
 
