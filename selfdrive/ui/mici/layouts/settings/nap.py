@@ -17,6 +17,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   CALIBRATE_PEDAL_INSTRUCTIONS,
   CALIBRATE_RADAR_INSTRUCTIONS,
   FLASH_EPAS_INSTRUCTIONS,
+  MAP_SPEED_MODES, MAP_SPEED_MODE_LABELS, MAP_SPEED_OFFSETS_MPH,
   PEDAL_CAN_BUS_VALUES,
   RADAR_OFFSET_MAX,
   RADAR_OFFSET_MIN,
@@ -68,6 +69,21 @@ class NAPLayoutMici(NavScroller):
     pedal_enabled.set_enabled(ui_state.is_offroad)
 
     adaptive_accel = BigParamControl("adaptive accel limits", NAPParamKeys.ADAPTIVE_ACCEL)
+
+    map_mode = BigMultiValueParamToggle(
+      "map speed (max)",
+      "NAPMapSpeedMode",
+      values=MAP_SPEED_MODES,
+      labels=[s.lower() for s in MAP_SPEED_MODE_LABELS],
+      default_value=0,
+    )
+    map_offset = BigMultiValueParamToggle(
+      "map speed offset",
+      "NAPMapSpeedOffsetMph",
+      values=list(MAP_SPEED_OFFSETS_MPH),
+      labels=["-5 mph", "0", "+5 mph"],
+      default_value=0,
+    )
 
     # ── Pedal hardware ───────────────────────────────
     # default_value=2 matches NAPPedalCanBus declared default in params_keys.h
@@ -165,6 +181,8 @@ class NAPLayoutMici(NavScroller):
     self._scroller.add_widgets([
       pedal_enabled,
       adaptive_accel,
+      map_mode,
+      map_offset,
       pedal_can_bus,
       pedal_calib_status,
       calibrate_pedal_btn,
