@@ -66,7 +66,7 @@ A previous good `speed_limits.sqlite` is left in place. After cleanup, run Downl
 ### On the comma 3X (preferred)
 
 1. Flash this branch. Connect **Wi-Fi**. Confirm `df -h /data` shows ≥ 800 MiB free.
-2. **Settings → NAP → Download US Maps** (offroad). Progress prints in the script runner.
+2. **Settings → NAP → Map Speed Limit → Download US Maps** (offroad). Progress prints in the script runner.
 3. Or SSH: `cd /data/openpilot && python -m scripts.nap.fetch_osm_maps`
 
 `mapd` reloads the sqlite every ~15s onroad. No reboot required after a successful download.
@@ -95,15 +95,12 @@ Optional override path: param `NAPMapSpeedDbPath`.
 ## What you must do on the device
 
 1. **Flash** this `nap-dev` build to the comma 3X as usual (installer / `updated` target branch). Rebuild so `params_keys.h` is compiled in.
-2. **Download US maps** (Wi-Fi): Settings → NAP → Download US Maps, or `python -m scripts.nap.fetch_osm_maps`.
-3. **Settings → NAP**:
-   - **Map Speed (MAX)**: Off / Display / Cap / Follow
-   - **Map Speed Offset**: -5 / 0 / +5 mph (added to the OSM limit)
-   - **Map Speed Limit** submenu:
-     - Mode: Off / Display / Cap / Follow
-     - Offset: -5 / 0 / +5 mph
-     - Lookahead: Off / Late / Normal (default) / Early
-     - Acceleration: 1–10 (5 = current comfort curve)
+2. **Download US maps** (Wi-Fi): Settings → NAP → Map Speed Limit → Download US Maps, or `python -m scripts.nap.fetch_osm_maps`.
+3. **Settings → NAP → Map Speed Limit** (all map-speed controls live here; main NAP stays uncluttered):
+   - **Map Speed (MAX)** (`NAPMapSpeedMode`): Off / Display / Cap / Follow
+   - **Map Speed Offset** (`NAPMapSpeedOffsetMph`): -5 / 0 / +5 mph
+   - **Lookahead** (`NAPMapSpeedLookahead`): Off / Late / Normal (default) / Early
+   - **Acceleration** (`NAPMapSpeedAccel`): 1–10 (default 5 = previous comfort curve)
    - Pedal interceptor must be on for Cap/Follow to change set speed
 4. `mapd` starts onroad. With GPS fix and a matching way, a **LIMIT** sign appears next to MAX. In Cap/Follow, MAX eases down before a lower limit ahead (Lookahead ≠ Off), and snaps to the posted limit once you are on that way.
 
