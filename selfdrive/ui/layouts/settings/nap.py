@@ -19,13 +19,12 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   CALIBRATE_PEDAL_INSTRUCTIONS, CALIBRATE_RADAR_INSTRUCTIONS,
   DOWNLOAD_US_MAPS_INSTRUCTIONS,
   FLASH_EPAS_INSTRUCTIONS, PEDAL_CAN_BUS_VALUES,
-  MAP_SPEED_LOOKAHEAD, MAP_SPEED_LOOKAHEAD_LABELS,
-  MAP_SPEED_MODES, MAP_SPEED_MODE_LABELS, MAP_SPEED_OFFSETS_MPH,
+  MAP_SPEED_ACCEL_DEFAULT,
   RADAR_OFFSET_MAX, RADAR_OFFSET_MIN,
   RESTORE_EPAS_INSTRUCTIONS, TEST_RADAR_INSTRUCTIONS,
   acknowledgments_html, find_preset_index,
 )
-from openpilot.selfdrive.mapd.fetch_maps import installed_db_summary
+from openpilot.selfdrive.ui.layouts.settings.map_speed import MapSpeedLimitLayout
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys, DEFAULTS
 from openpilot.selfdrive.ui.ui_state import ui_state
 
@@ -128,63 +127,19 @@ class NAPLayout(Widget):
     )
     self._all_items.append(self._follow_buttons)
 
-    # OSM map speed → HUD MAX / planner vCruise (pedal software cruise only)
-    map_mode = int(self._params.get("NAPMapSpeedMode", return_default=True) or 0)
-    self._map_speed_mode_buttons = multiple_button_item(
-      "Map Speed (MAX)",
-      "OpenStreetMap speed limit for the HUD MAX / cruise set speed. " +
-      "Off: unchanged. Display: show OSM limit only. Cap: MAX never exceeds the limit. " +
-      "Follow: MAX tracks the limit (stalk +/- pauses follow for 10s). " +
-      "Control modes require pedal interceptor longitudinal. No-pedal stock CC is display-only. " +
-      "Download US maps (Wi-Fi) or place a sqlite at /data/media/0/osm/speed_limits.sqlite.",
-      buttons=MAP_SPEED_MODE_LABELS,
-      button_width=150,
-      selected_index=max(0, min(3, map_mode)),
-      callback=self._on_map_speed_mode,
+    self._map_speed_page = MapSpeedLimitLayout(
+      on_back=self._close_map_speed,
+      on_download=self._on_download_us_maps,
     )
-    self._all_items.append(self._map_speed_mode_buttons)
-
-    offset_mph = int(self._params.get("NAPMapSpeedOffsetMph", return_default=True) or 0)
-    self._map_speed_offset_buttons = multiple_button_item(
-      "Map Speed Offset",
-      "Added to the OSM limit before Cap/Follow (miles per hour). Stalk still overrides Follow for 10 seconds.",
-      buttons=["-5 mph", "0", "+5 mph"],
-      button_width=150,
-      selected_index=self._offset_index(offset_mph),
-      callback=self._on_map_speed_offset,
+    self._page = "main"
+    self._map_speed_btn = button_item(
+      "Map Speed Limit",
+      "Open",
+      description="OSM posted limits for HUD MAX: mode, offset, lookahead, and acceleration. " +
+      "Download US maps from this submenu.",
+      callback=self._open_map_speed,
     )
-    self._all_items.append(self._map_speed_offset_buttons)
-
-    lookahead = int(self._params.get("NAPMapSpeedLookahead", return_default=True) or 2)
-    self._map_speed_lookahead_buttons = multiple_button_item(
-      "Map Speed Lookahead",
-      "Cap/Follow only: ease MAX down for a lower posted limit ahead so you arrive near the new " +
-      "limit as you enter that segment. Off: change only after GPS is on the slower way. " +
-      "Late / Normal / Early: farther preview. Never raises MAX early for a higher limit ahead. " +
-      "Radar lead still outranks map speed.",
-      buttons=MAP_SPEED_LOOKAHEAD_LABELS,
-      button_width=150,
-      selected_index=self._lookahead_index(lookahead),
-      callback=self._on_map_speed_lookahead,
-    )
-    self._all_items.append(self._map_speed_lookahead_buttons)
-
-    self._map_db_status = text_item(
-      "OSM Map Data",
-      installed_db_summary,
-      description="US OpenStreetMap maxspeed ways (ODbL, © OpenStreetMap contributors). " +
-      "Not in git — tap Download US Maps over Wi-Fi after flash.",
-    )
-    self._all_items.append(self._map_db_status)
-
-    self._download_maps_btn = button_item(
-      "Download US Maps",
-      "Start",
-      description="Fetch the prebuilt US speed-limit DB from the GitHub Release (~200-500 MB zstd).",
-      callback=self._on_download_us_maps,
-    )
-    self._download_maps_btn.action_item.set_enabled(ui_state.is_offroad)
-    self._all_items.append(self._download_maps_btn)
+    self._all_items.append(self._map_speed_btn)
 
     # ── Section 2: Pedal Hardware ──
     self._all_items.append(section_header_item("Pedal Hardware"))
@@ -379,24 +334,12 @@ class NAPLayout(Widget):
   def _on_follow_distance(self, index: int):
     self._params.put(NAPParamKeys.FOLLOW_DISTANCE, index + 1)
 
-  def _on_map_speed_mode(self, index: int):
-    self._params.put("NAPMapSpeedMode", MAP_SPEED_MODES[index])
+  def _open_map_speed(self):
+    self._page = "map_speed"
+    self._map_speed_page.show_event()
 
-  def _offset_index(self, offset_mph: int) -> int:
-    if offset_mph in MAP_SPEED_OFFSETS_MPH:
-      return MAP_SPEED_OFFSETS_MPH.index(offset_mph)
-    return 1
-
-  def _on_map_speed_offset(self, index: int):
-    self._params.put("NAPMapSpeedOffsetMph", int(MAP_SPEED_OFFSETS_MPH[index]))
-
-  def _lookahead_index(self, value: int) -> int:
-    if value in MAP_SPEED_LOOKAHEAD:
-      return MAP_SPEED_LOOKAHEAD.index(value)
-    return 2
-
-  def _on_map_speed_lookahead(self, index: int):
-    self._params.put("NAPMapSpeedLookahead", MAP_SPEED_LOOKAHEAD[index])
+  def _close_map_speed(self):
+    self._page = "main"
 
   def _on_pedal_can_bus(self, index: int):
     self._params.put(NAPParamKeys.PEDAL_CAN_BUS, PEDAL_CAN_BUS_VALUES[index])
@@ -558,7 +501,9 @@ class NAPLayout(Widget):
     self._params.put("NAPMapSpeedMode", 0)
     self._params.put("NAPMapSpeedOffsetMph", 0)
     self._params.put("NAPMapSpeedLookahead", 2)
+    self._params.put("NAPMapSpeedAccel", MAP_SPEED_ACCEL_DEFAULT)
     self._params.remove("NAPMapSpeedDbPath")
+    self._page = "main"
     # Force Pre-AP is locked on in the panel but DEFAULTS keeps it off
     # for non-UI consumers. Re-apply the lock after the wholesale loop
     # so reset doesn't silently flip the invariant.
@@ -567,7 +512,10 @@ class NAPLayout(Widget):
   # ── Render / lifecycle ──
 
   def _render(self, rect):
-    self._scroller.render(rect)
+    if self._page == "map_speed":
+      self._map_speed_page.render(rect)
+    else:
+      self._scroller.render(rect)
 
   def show_event(self):
     self._scroller.show_event()
@@ -591,9 +539,4 @@ class NAPLayout(Widget):
     self._brake_factor_buttons.action_item.set_selected_button(
       find_preset_index(BRAKE_FACTOR_PRESETS, brake_factor))
 
-    map_mode = int(self._params.get("NAPMapSpeedMode", return_default=True) or 0)
-    self._map_speed_mode_buttons.action_item.set_selected_button(max(0, min(3, map_mode)))
-    offset_mph = int(self._params.get("NAPMapSpeedOffsetMph", return_default=True) or 0)
-    self._map_speed_offset_buttons.action_item.set_selected_button(self._offset_index(offset_mph))
-    lookahead = int(self._params.get("NAPMapSpeedLookahead", return_default=True) or 2)
-    self._map_speed_lookahead_buttons.action_item.set_selected_button(self._lookahead_index(lookahead))
+    self._map_speed_page.refresh()

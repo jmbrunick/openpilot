@@ -152,6 +152,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"NAPMapSpeedMode", {PERSISTENT, INT, "0"}},
     {"NAPMapSpeedOffsetMph", {PERSISTENT, INT, "0"}},
     {"NAPMapSpeedLookahead", {PERSISTENT, INT, "2"}},
+    {"NAPMapSpeedAccel", {PERSISTENT, INT, "5"}},
     {"NAPMapSpeedDbPath", {PERSISTENT, STRING}},
     {"TermsVersion", {PERSISTENT, STRING}},
     {"TrainingVersion", {PERSISTENT, STRING}},

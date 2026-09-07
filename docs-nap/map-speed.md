@@ -99,7 +99,11 @@ Optional override path: param `NAPMapSpeedDbPath`.
 3. **Settings → NAP**:
    - **Map Speed (MAX)**: Off / Display / Cap / Follow
    - **Map Speed Offset**: -5 / 0 / +5 mph (added to the OSM limit)
-   - **Map Speed Lookahead**: Off / Late / Normal (default) / Early — decrease-only preview
+   - **Map Speed Limit** submenu:
+     - Mode: Off / Display / Cap / Follow
+     - Offset: -5 / 0 / +5 mph
+     - Lookahead: Off / Late / Normal (default) / Early
+     - Acceleration: 1–10 (5 = current comfort curve)
    - Pedal interceptor must be on for Cap/Follow to change set speed
 4. `mapd` starts onroad. With GPS fix and a matching way, a **LIMIT** sign appears next to MAX. In Cap/Follow, MAX eases down before a lower limit ahead (Lookahead ≠ Off), and snaps to the posted limit once you are on that way.
 
@@ -115,6 +119,16 @@ Optional override path: param `NAPMapSpeedDbPath`.
 | Early | 0.55 m/s² | 120 m | 600 m |
 
 When the upcoming drop is inside that window, MAX follows `v = sqrt(v_next² + 2 a d)` so it falls smoothly (not a cliff). Param: `NAPMapSpeedLookahead` (int 0–3). Rebuild after flash so `params_keys.h` picks it up.
+
+**Acceleration** (`NAPMapSpeedAccel`, Settings → NAP → Map Speed Limit → Acceleration): 1–10, **default 5**. Scales the comfort decel used by the anticipatory curve and the MAX slew:
+
+| Accel | Factor | a at Lookahead=Normal | Feel |
+|---|---|---|---|
+| 1 | 0.45 | **0.36 m/s²** | gentlest / slowest (starts earlier, finishes later) |
+| 5 | 1.00 | **0.80 m/s²** | current default |
+| 10 | 2.00 | **1.60 m/s²** | quickest (clamped; still below MPC comfort brake) |
+
+`a = clamp(0.30, 1.60, a_lookahead × factor)`. Late/Early change `a_lookahead` first (1.20 / 0.55), then this scale applies. HUD MAX is also slew-limited at that `a` so a new posted limit does not cliff.
 
 Higher limit ahead: `nextSpeedLimit` may still be published; Cap/Follow **ignore** it until `speedLimit` itself is the higher value.
 

@@ -16,17 +16,14 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   BACKUP_EPAS_INSTRUCTIONS,
   CALIBRATE_PEDAL_INSTRUCTIONS,
   CALIBRATE_RADAR_INSTRUCTIONS,
-  DOWNLOAD_US_MAPS_INSTRUCTIONS,
   FLASH_EPAS_INSTRUCTIONS,
-  MAP_SPEED_LOOKAHEAD, MAP_SPEED_LOOKAHEAD_LABELS,
-  MAP_SPEED_MODES, MAP_SPEED_MODE_LABELS, MAP_SPEED_OFFSETS_MPH,
   PEDAL_CAN_BUS_VALUES,
   RADAR_OFFSET_MAX,
   RADAR_OFFSET_MIN,
   RESTORE_EPAS_INSTRUCTIONS,
   TEST_RADAR_INSTRUCTIONS,
 )
-from openpilot.selfdrive.mapd.fetch_maps import installed_db_summary
+from openpilot.selfdrive.ui.mici.layouts.settings.map_speed import MapSpeedLimitLayoutMici
 from openpilot.selfdrive.ui.ui_state import ui_state
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys
 
@@ -73,35 +70,9 @@ class NAPLayoutMici(NavScroller):
 
     adaptive_accel = BigParamControl("adaptive accel limits", NAPParamKeys.ADAPTIVE_ACCEL)
 
-    map_mode = BigMultiValueParamToggle(
-      "map speed (max)",
-      "NAPMapSpeedMode",
-      values=MAP_SPEED_MODES,
-      labels=[s.lower() for s in MAP_SPEED_MODE_LABELS],
-      default_value=0,
-    )
-    map_offset = BigMultiValueParamToggle(
-      "map speed offset",
-      "NAPMapSpeedOffsetMph",
-      values=list(MAP_SPEED_OFFSETS_MPH),
-      labels=["-5 mph", "0", "+5 mph"],
-      default_value=0,
-    )
-    map_lookahead = BigMultiValueParamToggle(
-      "map speed lookahead",
-      "NAPMapSpeedLookahead",
-      values=list(MAP_SPEED_LOOKAHEAD),
-      labels=[s.lower() for s in MAP_SPEED_LOOKAHEAD_LABELS],
-      default_value=2,
-    )
-
-    map_db_status = BigButton("osm map data", installed_db_summary())
-    download_maps_btn = BigButton("download us maps", "start")
-    download_maps_btn.set_click_callback(
-      lambda: launch_script("Download US Maps", DOWNLOAD_US_MAPS_INSTRUCTIONS,
-                            "scripts.nap.fetch_osm_maps",
-                            ))
-    download_maps_btn.set_enabled(ui_state.is_offroad)
+    self._map_speed_page = MapSpeedLimitLayoutMici()
+    map_speed_btn = BigButton("map speed limit", "open")
+    map_speed_btn.set_click_callback(lambda: gui_app.push_widget(self._map_speed_page))
 
     # ── Pedal hardware ───────────────────────────────
     # default_value=2 matches NAPPedalCanBus declared default in params_keys.h
@@ -199,11 +170,7 @@ class NAPLayoutMici(NavScroller):
     self._scroller.add_widgets([
       pedal_enabled,
       adaptive_accel,
-      map_mode,
-      map_offset,
-      map_lookahead,
-      map_db_status,
-      download_maps_btn,
+      map_speed_btn,
       pedal_can_bus,
       pedal_calib_status,
       calibrate_pedal_btn,

@@ -9,8 +9,9 @@ import math
 
 from openpilot.common.constants import CV
 from openpilot.selfdrive.mapd.constants import (
-  LOOKAHEAD_NORMAL, LOOKAHEAD_OFF, LOOKAHEAD_TUNING, MIN_DECREASE_MS,
-  MODE_CAP, MODE_DISPLAY, MODE_FOLLOW, MODE_OFF,
+  ACCEL_DEFAULT, ACCEL_MAX, ACCEL_MIN, LOOKAHEAD_NORMAL, LOOKAHEAD_OFF,
+  LOOKAHEAD_TUNING, MIN_DECREASE_MS, MODE_CAP, MODE_DISPLAY, MODE_FOLLOW, MODE_OFF,
+  map_comfort_a_ms2,
 )
 
 # Keep in sync with openpilot.selfdrive.car.cruise (avoid importing cereal here).
@@ -19,17 +20,22 @@ V_CRUISE_MAX = 145
 V_CRUISE_UNSET = 255
 
 
-def read_map_speed_params(params) -> tuple[int, float, int]:
-  """Return (mode, offset_kph, lookahead). Unknown keys → off / 0 / normal."""
+def _clamp_accel_level(level: int) -> int:
+  return max(ACCEL_MIN, min(ACCEL_MAX, int(level)))
+
+
+def read_map_speed_params(params) -> tuple[int, float, int, int]:
+  """Return (mode, offset_kph, lookahead, accel). Unknown keys → off / 0 / normal / 5."""
   try:
     mode = int(params.get("NAPMapSpeedMode", return_default=True) or 0)
     offset_mph = float(params.get("NAPMapSpeedOffsetMph", return_default=True) or 0)
     lookahead = int(params.get("NAPMapSpeedLookahead", return_default=True) or LOOKAHEAD_NORMAL)
     if lookahead not in LOOKAHEAD_TUNING:
       lookahead = LOOKAHEAD_NORMAL
-    return mode, offset_mph * CV.MPH_TO_KPH, lookahead
+    accel = _clamp_accel_level(int(params.get("NAPMapSpeedAccel", return_default=True) or ACCEL_DEFAULT))
+    return mode, offset_mph * CV.MPH_TO_KPH, lookahead, accel
   except Exception:
-    return MODE_OFF, 0.0, LOOKAHEAD_NORMAL
+    return MODE_OFF, 0.0, LOOKAHEAD_NORMAL, ACCEL_DEFAULT
 
 
 def anticipatory_limit_ms(
@@ -38,6 +44,7 @@ def anticipatory_limit_ms(
   next_dist_m: float,
   v_ego_ms: float,
   lookahead: int,
+  accel: int = ACCEL_DEFAULT,
 ) -> float | None:
   """Decrease-only cruise ceiling for an upcoming lower limit, or None.
 
@@ -51,8 +58,11 @@ def anticipatory_limit_ms(
     return None
   if next_ms >= current_ms - MIN_DECREASE_MS:
     return None
-  a_comfort, margin_m, horizon_m = LOOKAHEAD_TUNING[lookahead]
-  if a_comfort <= 0 or horizon_m <= 0:
+  _a_base, margin_m, horizon_m = LOOKAHEAD_TUNING[lookahead]
+  if horizon_m <= 0:
+    return None
+  a_comfort = map_comfort_a_ms2(lookahead, accel)
+  if a_comfort <= 0:
     return None
   v0 = max(float(v_ego_ms), float(current_ms), 0.0)
   vt = float(next_ms)
@@ -73,17 +83,29 @@ def effective_map_limit_ms(
   next_dist_m: float = 0.0,
   v_ego_ms: float = 0.0,
   lookahead: int = LOOKAHEAD_NORMAL,
+  accel: int = ACCEL_DEFAULT,
 ) -> float | None:
   """Posted limit, optionally eased down for a closer lower limit ahead."""
   if current_ms is None or current_ms <= 0:
     return None
   anticipated = anticipatory_limit_ms(
     float(current_ms), float(next_ms or 0.0), float(next_dist_m or 0.0),
-    float(v_ego_ms or 0.0), lookahead,
+    float(v_ego_ms or 0.0), lookahead, accel,
   )
   if anticipated is None:
     return float(current_ms)
   return min(float(current_ms), anticipated)
+
+
+def slew_map_speed_ms(prev_ms: float, target_ms: float, dt: float, a_ms2: float) -> float:
+  """Rate-limit map-driven MAX (m/s) so a new limit does not cliff the HUD."""
+  if dt <= 0 or a_ms2 <= 0:
+    return float(target_ms)
+  max_dv = float(a_ms2) * float(dt)
+  delta = float(target_ms) - float(prev_ms)
+  if abs(delta) <= max_dv:
+    return float(target_ms)
+  return float(prev_ms) + math.copysign(max_dv, delta)
 
 
 def apply_map_speed_kph(

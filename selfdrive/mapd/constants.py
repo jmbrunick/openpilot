@@ -40,5 +40,34 @@ LOOKAHEAD_TUNING = {
 }
 MIN_DECREASE_MS = 0.45  # ~1 mph; ignore jitter
 
+# NAPMapSpeedAccel: 1=gentlest, 5=current Normal a, 10=quickest. Scales LOOKAHEAD_TUNING a.
+ACCEL_MIN = 1
+ACCEL_DEFAULT = 5
+ACCEL_MAX = 10
+# factor(1)=0.45, factor(5)=1.00, factor(10)=2.00
+ACCEL_FACTOR_LO = 0.45
+ACCEL_FACTOR_HI = 2.00
+A_CLAMP_MIN = 0.30  # m/s²
+A_CLAMP_MAX = 1.60  # m/s²; below MPC cruise min accel magnitude and COMFORT_BRAKE
+
 # Default offline DB location on comma 3X / PC
 DB_FILENAME = "speed_limits.sqlite"
+
+
+def accel_scale_factor(level: int) -> float:
+  lvl = max(ACCEL_MIN, min(ACCEL_MAX, int(level)))
+  if lvl <= ACCEL_DEFAULT:
+    return ACCEL_FACTOR_LO + (1.0 - ACCEL_FACTOR_LO) * (lvl - ACCEL_MIN) / (ACCEL_DEFAULT - ACCEL_MIN)
+  return 1.0 + (ACCEL_FACTOR_HI - 1.0) * (lvl - ACCEL_DEFAULT) / (ACCEL_MAX - ACCEL_DEFAULT)
+
+
+def map_comfort_a_ms2(lookahead: int, accel_level: int = ACCEL_DEFAULT) -> float:
+  """Comfort decel (m/s²) for map-driven MAX changes.
+
+  Lookahead Normal + accel 5 → 0.80 m/s² (the previous hard-coded curve).
+  """
+  if lookahead in LOOKAHEAD_TUNING and LOOKAHEAD_TUNING[lookahead][0] > 0:
+    a_base = LOOKAHEAD_TUNING[lookahead][0]
+  else:
+    a_base = LOOKAHEAD_TUNING[LOOKAHEAD_NORMAL][0]
+  return max(A_CLAMP_MIN, min(A_CLAMP_MAX, a_base * accel_scale_factor(accel_level)))
