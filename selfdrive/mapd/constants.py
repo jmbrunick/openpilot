@@ -49,6 +49,11 @@ ACCEL_FACTOR_LO = 0.45
 ACCEL_FACTOR_HI = 2.00
 A_CLAMP_MIN = 0.30  # m/s²
 A_CLAMP_MAX = 1.60  # m/s²; below MPC cruise min accel magnitude and COMFORT_BRAKE
+# Track HUD MAX when ego is faster. MPC cruise_obstacle sits ~safe-follow
+# distance ahead (~240 m at 70 mph) and does not bind inside the 10 s horizon
+# for a typical posted-limit drop, so v_cruise alone will not command decel.
+TRACK_DEADBAND_MS = 0.40  # ~0.9 mph; ignore set-speed / GPS jitter
+TRACK_TAPER_MS = 2.00     # ~4.5 mph; full comfort a above this error
 
 # Default offline DB location on comma 3X / PC
 DB_FILENAME = "speed_limits.sqlite"

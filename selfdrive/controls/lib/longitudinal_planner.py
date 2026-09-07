@@ -13,9 +13,10 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import Longi
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
-from openpilot.selfdrive.mapd.constants import map_comfort_a_ms2
+from openpilot.selfdrive.mapd.constants import MODE_CAP, MODE_FOLLOW, map_comfort_a_ms2
 from openpilot.selfdrive.mapd.map_speed_policy import (
-  cap_planner_v_cruise_ms, effective_map_limit_ms, read_map_speed_params, slew_map_speed_ms,
+  cap_planner_v_cruise_ms, effective_map_limit_ms, map_track_decel_ms2,
+  read_map_speed_params, slew_map_speed_ms,
 )
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
@@ -131,6 +132,8 @@ class LongitudinalPlanner:
     v_ego = sm['carState'].vEgo
     v_cruise_kph = min(sm['carState'].vCruise, V_CRUISE_MAX)
     v_cruise = v_cruise_kph * CV.KPH_TO_MS
+    # HUD MAX after card's map overlay (Follow stalk override keeps the driver set).
+    v_hud_ms = v_cruise
     v_cruise_initialized = sm['carState'].vCruise != V_CRUISE_UNSET
 
     long_control_off = sm['controlsState'].longControlState == LongCtrlState.off
@@ -252,6 +255,17 @@ class LongitudinalPlanner:
     else:
       output_a_target = output_a_target_mpc
       self.output_should_stop = output_should_stop_mpc
+
+    # Map MAX is a set *speed*. MPC cruise_obstacle will not brake to it
+    # (virtual lead is ~safe-follow distance ahead; V_EGO_COST is 0). Command
+    # the Acceleration 1–10 comfort curve when ego is above HUD MAX. Lead/MPC
+    # can still request more braking. Follow override: HUD stays at stalk set.
+    if self._is_preap and self._map_speed_mode in (MODE_CAP, MODE_FOLLOW):
+      a_track = map_track_decel_ms2(
+        v_ego, v_hud_ms, map_comfort_a_ms2(self._map_speed_lookahead, self._map_speed_accel),
+      )
+      if a_track is not None:
+        output_a_target = min(float(output_a_target), a_track)
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
