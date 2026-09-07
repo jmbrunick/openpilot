@@ -151,7 +151,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // OSM map speed → cruise/MAX set speed. Mode: 0=off, 1=display, 2=cap, 3=follow
     {"NAPMapSpeedMode", {PERSISTENT, INT, "0"}},
     {"NAPMapSpeedOffsetMph", {PERSISTENT, INT, "0"}},
-    {"NAPMapSpeedDbPath", {PERSISTENT, STRING, ""}},
+    {"NAPMapSpeedDbPath", {PERSISTENT, STRING}},
     {"TermsVersion", {PERSISTENT, STRING}},
     {"TrainingVersion", {PERSISTENT, STRING}},
 };
