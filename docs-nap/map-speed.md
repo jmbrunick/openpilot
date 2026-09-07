@@ -36,7 +36,7 @@ Map data is © OpenStreetMap contributors ([ODbL](https://www.openstreetmap.org/
 
 ## How US map data is shipped
 
-The US speed-limits sqlite is **not in git** (a continental extract is hundreds of MB to ~1 GB; GitHub clones would suffer, and ODbL still requires attribution).
+The US speed-limits sqlite is **not in git** (a continental extract is hundreds of MB; GitHub clones would suffer, and ODbL still requires attribution).
 
 After flash, download a **prebuilt US-wide** asset from a GitHub Release on `jmbrunick/openpilot`:
 
@@ -44,13 +44,27 @@ After flash, download a **prebuilt US-wide** asset from a GitHub Release on `jmb
 |---|---|
 | Release tag | `osm-us-speed-limits-v1` |
 | Asset | `speed_limits_us.sqlite.zst` |
+| SHA-256 | of the **zst** (`ASSET_SHA256` in `maps_manifest.py`), verified **before** decompress — not the sqlite |
 | Install path | `/data/media/0/osm/speed_limits.sqlite` |
+| Staging | `/data/media/0/osm/.download/` on the **dest filesystem** (not `/tmp`) |
 | Contents | OSM ways with a numeric `maxspeed` tag (US). Taginfo ~3.4M ways (2026-09). |
-| Expected size | ~0.8–1.5 GB sqlite, **~200–500 MB zstd** — one file, under GitHub's release-asset cap. State packs only if a future extract blows past ~1.5 GB compressed. |
+| Measured size | **~204 MiB zst → ~516 MiB sqlite** (`osm-us-speed-limits-v1`) |
+
+**Free space:** fetch fails early unless the dest filesystem has **800 MiB** free (`800 * 1024 * 1024 = 838,860,800` bytes = 204 + 516 + 80 MiB margin). Peak on `/data` is the zst plus `speed_limits.sqlite.partial`; the zst is deleted as soon as decompress finishes. `/tmp` (tmpfs on device) is not used.
+
+If download dies with `[Errno 28] No space left on device`:
+
+```bash
+rm -f /data/media/0/osm/*.partial /data/media/0/osm/.download/*
+df -h /data /data/media/0/osm
+# still short? delete old routes/videos under /data/media/0/
+```
+
+A previous good `speed_limits.sqlite` is left in place. After cleanup, run Download US Maps again.
 
 ### On the comma 3X (preferred)
 
-1. Flash this branch. Connect **Wi-Fi**.
+1. Flash this branch. Connect **Wi-Fi**. Confirm `df -h /data` shows ≥ 800 MiB free.
 2. **Settings → NAP → Download US Maps** (offroad). Progress prints in the script runner.
 3. Or SSH: `cd /data/openpilot && python -m scripts.nap.fetch_osm_maps`
 
@@ -67,9 +81,9 @@ python scripts/nap/build_osm_speed_limits.py --pbf us-maxspeed.osm.pbf \
 # attach speed_limits_us.sqlite.zst to GitHub Release tag osm-us-speed-limits-v1
 ```
 
-Needs `pyosmium` (`pip install osmium`) for `--pbf`. Optional: put the sqlite SHA-256 in `selfdrive/mapd/maps_manifest.py` (`ASSET_SHA256`).
+Needs `pyosmium` (`pip install osmium`) for `--pbf`. Put the **zst asset** SHA-256 in `selfdrive/mapd/maps_manifest.py` (`ASSET_SHA256`) — fetch verifies the downloaded `.zst` before decompress.
 
-Small regions still work via Overpass (can time out on a whole state):
+If the device does not have 800 MiB free for the US pack, build a **smaller region** on a PC and scp it to `/data/media/0/osm/speed_limits.sqlite`:
 
 ```bash
 python scripts/nap/download_osm_speed_limits.py --lat 37.7749 --lon -122.4194 --radius-km 30
