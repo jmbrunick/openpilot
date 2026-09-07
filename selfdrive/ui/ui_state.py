@@ -54,6 +54,7 @@ class UIState:
         "carOutput",
         "carControl",
         "liveParameters",
+        "liveMapDataNAP",
         "rawAudioData",
       ]
     )

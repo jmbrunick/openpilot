@@ -10,7 +10,21 @@ $Cxx.namespace("cereal");
 # DO rename the structs
 # DON'T change the identifier (e.g. @0x81c2f05a394cf4af)
 
-struct CustomReserved0 @0x81c2f05a394cf4af {
+# NAP live OSM speed-limit sample. SI units. Published by selfdrive.mapd.
+struct LiveMapDataNAP @0x81c2f05a394cf4af {
+  speedLimit @0 :Float32;            # m/s, 0 if unknown
+  speedLimitValid @1 :Bool;
+  nextSpeedLimit @2 :Float32;        # m/s, 0 if unknown
+  nextSpeedLimitDistance @3 :Float32; # m
+  latitude @4 :Float64;
+  longitude @5 :Float64;
+  bearingDeg @6 :Float32;
+  roadName @7 :Text;
+  highway @8 :Text;
+  wayId @9 :UInt64;
+  source @10 :Text;                  # "osm"
+  dbLoaded @11 :Bool;
+  matchDistance @12 :Float32;        # m, distance to matched way
 }
 
 struct CustomReserved1 @0xaedffd8f31e7b55d {

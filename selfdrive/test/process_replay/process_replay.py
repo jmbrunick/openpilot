@@ -457,7 +457,7 @@ CONFIGS = [
   ),
   ProcessConfig(
     proc_name="card",
-    pubs=["pandaStates", "carControl", "onroadEvents", "can"],
+    pubs=["pandaStates", "carControl", "onroadEvents", "can", "liveMapDataNAP"],
     subs=["sendcan", "carState", "carParams", "carOutput", "liveTracks"],
     ignore=["logMonoTime", "carState.cumLagMs"],
     init_callback=card_fingerprint_callback,
@@ -477,7 +477,7 @@ CONFIGS = [
   ),
   ProcessConfig(
     proc_name="plannerd",
-    pubs=["modelV2", "carControl", "carState", "controlsState", "liveParameters", "radarState", "selfdriveState"],
+    pubs=["modelV2", "carControl", "carState", "controlsState", "liveParameters", "radarState", "selfdriveState", "liveMapDataNAP"],
     subs=["longitudinalPlan", "driverAssistance"],
     ignore=["logMonoTime", "longitudinalPlan.processingDelay", "longitudinalPlan.solverExecutionTime"],
     init_callback=get_car_params_callback,

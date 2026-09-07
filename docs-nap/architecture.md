@@ -67,3 +67,7 @@ Any divergence causes the steering angle command limiter to disagree between lay
 NAP tracks upstream openpilot closely. We fork `opendbc` because the pre-AP DBCs, car port, and safety mode all live there and are NAP-only. We track upstream `panda` directly — pre-AP safety changes go through the `opendbc_repo/opendbc/safety/` path that panda pulls in as a submodule.
 
 See [Tinkla](https://github.com/boggyver/openpilot/tree/tesla_unity_betaC3) and [xnor-tech/openpilot](https://github.com/xnor-tech/openpilot) for the prior art NAP builds on.
+
+## OSM map speed (MAX)
+
+`selfdrive/mapd` looks up OpenStreetMap `maxspeed` from an offline sqlite DB using GNSS. It publishes `liveMapDataNAP`. In pre-AP **pedal** mode, `card.py` overlays that limit onto the existing software cruise target (`pedal_speed_kph` → `CS.vCruise` / HUD **MAX**). No-pedal stock CC is display-only. Details: [map-speed.md](map-speed.md).

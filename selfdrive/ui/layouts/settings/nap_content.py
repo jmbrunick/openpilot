@@ -9,9 +9,9 @@ calibration, restore) have a single source.
 BRAKE_FACTOR_PRESETS = [0.5, 1.0, 1.5, 2.0]
 PEDAL_CAN_BUS_VALUES = [0, 2]
 
-# Follow distance is a 1..7 enum; values match the tap-spoof step on the stalk.
-FOLLOW_DISTANCE_MIN = 1
-FOLLOW_DISTANCE_MAX = 7
+MAP_SPEED_MODES = [0, 1, 2, 3]
+MAP_SPEED_MODE_LABELS = ["Off", "Display", "Cap", "Follow"]
+MAP_SPEED_OFFSETS_MPH = [-5, 0, 5]
 
 # Radar lateral offset bounds (meters). Added to radar yRel in
 # radar_interface.py. Negative = shift toward left; positive = toward right.

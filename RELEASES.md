@@ -1,3 +1,7 @@
+NAP map speed (2026-09-07)
+========================
+* OSM map speed limits can drive HUD MAX / cruise set speed (pedal mode). Off by default — see docs-nap/map-speed.md
+
 Version 0.11.1 (2026-04-08)
 ========================
 * New driver monitoring model
