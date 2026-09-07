@@ -18,6 +18,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   CALIBRATE_RADAR_INSTRUCTIONS,
   DOWNLOAD_US_MAPS_INSTRUCTIONS,
   FLASH_EPAS_INSTRUCTIONS,
+  MAP_SPEED_LOOKAHEAD, MAP_SPEED_LOOKAHEAD_LABELS,
   MAP_SPEED_MODES, MAP_SPEED_MODE_LABELS, MAP_SPEED_OFFSETS_MPH,
   PEDAL_CAN_BUS_VALUES,
   RADAR_OFFSET_MAX,
@@ -85,6 +86,13 @@ class NAPLayoutMici(NavScroller):
       values=list(MAP_SPEED_OFFSETS_MPH),
       labels=["-5 mph", "0", "+5 mph"],
       default_value=0,
+    )
+    map_lookahead = BigMultiValueParamToggle(
+      "map speed lookahead",
+      "NAPMapSpeedLookahead",
+      values=list(MAP_SPEED_LOOKAHEAD),
+      labels=[s.lower() for s in MAP_SPEED_LOOKAHEAD_LABELS],
+      default_value=2,
     )
 
     map_db_status = BigButton("osm map data", installed_db_summary())
@@ -193,6 +201,7 @@ class NAPLayoutMici(NavScroller):
       adaptive_accel,
       map_mode,
       map_offset,
+      map_lookahead,
       map_db_status,
       download_maps_btn,
       pedal_can_bus,

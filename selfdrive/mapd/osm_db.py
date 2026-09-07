@@ -327,13 +327,19 @@ class OsmSpeedLimitDB:
 
     next_limit = 0.0
     next_dist = 0.0
+    prev_same_d = 0.0
     for d in LOOKAHEAD_M:
       alat, alon = _offset_point(lat, lon, bearing_deg, d)
       ahead = self._best_match(alat, alon, bearing_deg)
-      if ahead is not None and abs(ahead.speed_limit_ms - match.speed_limit_ms) > 0.3:
-        next_limit = ahead.speed_limit_ms
-        next_dist = d
-        break
+      if ahead is None:
+        continue
+      if abs(ahead.speed_limit_ms - match.speed_limit_ms) <= 0.3:
+        prev_same_d = d
+        continue
+      # Refine: first different probe, then midpoint toward last same-limit probe.
+      next_limit = ahead.speed_limit_ms
+      next_dist = 0.5 * (prev_same_d + d) if prev_same_d > 0 else d
+      break
     if next_limit > 0:
       return SpeedLimitMatch(
         speed_limit_ms=match.speed_limit_ms,

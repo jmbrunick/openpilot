@@ -19,6 +19,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   CALIBRATE_PEDAL_INSTRUCTIONS, CALIBRATE_RADAR_INSTRUCTIONS,
   DOWNLOAD_US_MAPS_INSTRUCTIONS,
   FLASH_EPAS_INSTRUCTIONS, PEDAL_CAN_BUS_VALUES,
+  MAP_SPEED_LOOKAHEAD, MAP_SPEED_LOOKAHEAD_LABELS,
   MAP_SPEED_MODES, MAP_SPEED_MODE_LABELS, MAP_SPEED_OFFSETS_MPH,
   RADAR_OFFSET_MAX, RADAR_OFFSET_MIN,
   RESTORE_EPAS_INSTRUCTIONS, TEST_RADAR_INSTRUCTIONS,
@@ -153,6 +154,20 @@ class NAPLayout(Widget):
       callback=self._on_map_speed_offset,
     )
     self._all_items.append(self._map_speed_offset_buttons)
+
+    lookahead = int(self._params.get("NAPMapSpeedLookahead", return_default=True) or 2)
+    self._map_speed_lookahead_buttons = multiple_button_item(
+      "Map Speed Lookahead",
+      "Cap/Follow only: ease MAX down for a lower posted limit ahead so you arrive near the new " +
+      "limit as you enter that segment. Off: change only after GPS is on the slower way. " +
+      "Late / Normal / Early: farther preview. Never raises MAX early for a higher limit ahead. " +
+      "Radar lead still outranks map speed.",
+      buttons=MAP_SPEED_LOOKAHEAD_LABELS,
+      button_width=150,
+      selected_index=self._lookahead_index(lookahead),
+      callback=self._on_map_speed_lookahead,
+    )
+    self._all_items.append(self._map_speed_lookahead_buttons)
 
     self._map_db_status = text_item(
       "OSM Map Data",
@@ -375,6 +390,14 @@ class NAPLayout(Widget):
   def _on_map_speed_offset(self, index: int):
     self._params.put("NAPMapSpeedOffsetMph", int(MAP_SPEED_OFFSETS_MPH[index]))
 
+  def _lookahead_index(self, value: int) -> int:
+    if value in MAP_SPEED_LOOKAHEAD:
+      return MAP_SPEED_LOOKAHEAD.index(value)
+    return 2
+
+  def _on_map_speed_lookahead(self, index: int):
+    self._params.put("NAPMapSpeedLookahead", MAP_SPEED_LOOKAHEAD[index])
+
   def _on_pedal_can_bus(self, index: int):
     self._params.put(NAPParamKeys.PEDAL_CAN_BUS, PEDAL_CAN_BUS_VALUES[index])
     self._show_reboot_modal()
@@ -534,6 +557,7 @@ class NAPLayout(Widget):
         self._params.put(key, default)
     self._params.put("NAPMapSpeedMode", 0)
     self._params.put("NAPMapSpeedOffsetMph", 0)
+    self._params.put("NAPMapSpeedLookahead", 2)
     self._params.remove("NAPMapSpeedDbPath")
     # Force Pre-AP is locked on in the panel but DEFAULTS keeps it off
     # for non-UI consumers. Re-apply the lock after the wholesale loop
@@ -571,3 +595,5 @@ class NAPLayout(Widget):
     self._map_speed_mode_buttons.action_item.set_selected_button(max(0, min(3, map_mode)))
     offset_mph = int(self._params.get("NAPMapSpeedOffsetMph", return_default=True) or 0)
     self._map_speed_offset_buttons.action_item.set_selected_button(self._offset_index(offset_mph))
+    lookahead = int(self._params.get("NAPMapSpeedLookahead", return_default=True) or 2)
+    self._map_speed_lookahead_buttons.action_item.set_selected_button(self._lookahead_index(lookahead))

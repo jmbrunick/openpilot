@@ -45,6 +45,55 @@ def test_rtree_lookup_and_heading(tmp_path):
   db.close()
 
 
+def test_lookahead_finds_upcoming_lower_limit(tmp_path):
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  # Eastbound 45 mph, then 25 mph after lon=-122.0 (~180 m at this latitude).
+  OsmSpeedLimitDB.insert_way(
+    con, 1, "Main", "primary", 45 * CV.MPH_TO_MS,
+    [(37.0, -122.004), (37.0, -122.000)],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 2, "Main", "primary", 25 * CV.MPH_TO_MS,
+    [(37.0, -122.000), (37.0, -121.996)],
+  )
+  con.commit()
+  con.close()
+
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  m = db.lookup(37.0, -122.002, bearing_deg=90.0)
+  assert m is not None
+  assert m.way_id == 1
+  assert abs(m.speed_limit_ms - 45 * CV.MPH_TO_MS) < 0.2
+  assert abs(m.next_speed_limit_ms - 25 * CV.MPH_TO_MS) < 0.2
+  assert 80.0 <= m.next_distance_m <= 280.0
+  db.close()
+
+
+def test_lookahead_reports_upcoming_higher_but_does_not_hide_current(tmp_path):
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  OsmSpeedLimitDB.insert_way(
+    con, 1, "Main", "primary", 25 * CV.MPH_TO_MS,
+    [(37.0, -122.004), (37.0, -122.000)],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 2, "Main", "primary", 45 * CV.MPH_TO_MS,
+    [(37.0, -122.000), (37.0, -121.996)],
+  )
+  con.commit()
+  con.close()
+
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  m = db.lookup(37.0, -122.002, bearing_deg=90.0)
+  assert m is not None
+  assert abs(m.speed_limit_ms - 25 * CV.MPH_TO_MS) < 0.2
+  assert abs(m.next_speed_limit_ms - 45 * CV.MPH_TO_MS) < 0.2
+  db.close()
+
+
 def test_overpass_json_import(tmp_path):
   payload = {
     "elements": [
