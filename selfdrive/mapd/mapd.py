@@ -5,6 +5,7 @@ Publishes liveMapDataNAP. Does not actuate; card.py / the long planner consume
 the limit through the existing vCruise path.
 """
 import math
+import os
 import time
 
 import cereal.messaging as messaging
@@ -62,6 +63,8 @@ def main():
   last_path = db.path
 
   cloudlog.info("mapd starting, db=%s", db.path)
+  if not os.path.isfile(db.path):
+    cloudlog.warning("mapd: no OSM sqlite at %s — Settings → NAP → Download US Maps (ODbL)", db.path)
 
   while True:
     sm.update(0)

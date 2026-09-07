@@ -13,11 +13,15 @@ GNSS (ublox/qcom → gpsLocationExternal)
   → mapd (offline SQLite R-tree of OSM ways)
   → liveMapDataNAP.speedLimit  (m/s)
   → card.py  (pre-AP pedal software cruise only)
-       CS.vCruise / vCruiseCluster   ← HUD MAX
-  → plannerd (cap safety net, never raises)
+       CS.vCruise / vCruiseCluster   ← HUD MAX  (cruise ceiling)
+  → plannerd cap_planner_v_cruise_ms (never raises)
+  → LongitudinalMpc.update(radarState, v_cruise)
+       constraint = min(lead0, lead1, cruise_obstacle(v_cruise))
 ```
 
 Licenses: pfeiferj/mapd and sunnypilot SLA are MIT; we did **not** vendor the Go `mapd` binary or sunnypilot UI. NAP keeps a Python OSM querier (ODbL map data) on the existing `vCruise` path. The sunnypilot-specific stack stays on `naponsp-dev` per [contributing.md](contributing.md).
+
+Map data is © OpenStreetMap contributors ([ODbL](https://www.openstreetmap.org/copyright)).
 
 ## Safety invariants
 
@@ -26,45 +30,74 @@ Licenses: pfeiferj/mapd and sunnypilot SLA are MIT; we did **not** vendor the Go
 - **Cap** (recommended): `MAX = min(driver set, OSM limit + offset)`. Never raises.
 - **Follow**: MAX tracks the OSM limit; stalk +/- pauses follow for 10s then resumes.
 - **Display / Off**: no control change.
+- **Lead vehicles outrank map speed.** Map only sets the cruise target ceiling (`vCruise` / planner `v_cruise`). Radar ACC (`radarState.leadOne` / `leadTwo` in `LongitudinalMpc`) still commands **below** that ceiling when a lead is slower. Map speed does not clear, replace, or bypass lead obstacles. `mpc.update` is always `mpc.update(radarState, v_cruise)` after the map cap.
 - Panda TX whitelist, pedal gating, and engagement FSM are unchanged.
-- Default **Off** until you download a region DB and pick a mode.
+- Default **Off** until US maps are downloaded and you pick a mode.
 
-## What you must do on the device
+## How US map data is shipped
 
-1. **Flash** this `nap-dev` build to the comma 3X as usual (installer / `updated` target branch).
-2. **Build a region DB** (do this on a PC; Overpass of a whole US state can time out):
+The US speed-limits sqlite is **not in git** (a continental extract is hundreds of MB to ~1 GB; GitHub clones would suffer, and ODbL still requires attribution).
+
+After flash, download a **prebuilt US-wide** asset from a GitHub Release on `jmbrunick/openpilot`:
+
+| | |
+|---|---|
+| Release tag | `osm-us-speed-limits-v1` |
+| Asset | `speed_limits_us.sqlite.zst` |
+| Install path | `/data/media/0/osm/speed_limits.sqlite` |
+| Contents | OSM ways with a numeric `maxspeed` tag (US). Taginfo ~3.4M ways (2026-09). |
+| Expected size | ~0.8–1.5 GB sqlite, **~200–500 MB zstd** — one file, under GitHub's release-asset cap. State packs only if a future extract blows past ~1.5 GB compressed. |
+
+### On the comma 3X (preferred)
+
+1. Flash this branch. Connect **Wi-Fi**.
+2. **Settings → NAP → Download US Maps** (offroad). Progress prints in the script runner.
+3. Or SSH: `cd /data/openpilot && python -m scripts.nap.fetch_osm_maps`
+
+`mapd` reloads the sqlite every ~15s onroad. No reboot required after a successful download.
+
+### Publish the Release (one-time, PC with disk)
+
+Geofabrik `us-latest.osm.pbf` is ~11 GB. Filter to maxspeed ways, then build:
 
 ```bash
-python scripts/nap/download_osm_speed_limits.py \
-  --lat 37.7749 --lon -122.4194 --radius-km 30 \
-  --out speed_limits.sqlite
+osmium tags-filter us-latest.osm.pbf w/highway w/maxspeed -o us-maxspeed.osm.pbf
+python scripts/nap/build_osm_speed_limits.py --pbf us-maxspeed.osm.pbf \
+  --out speed_limits_us.sqlite --zst
+# attach speed_limits_us.sqlite.zst to GitHub Release tag osm-us-speed-limits-v1
 ```
 
-Or `--bbox south,west,north,east`. Data is © OpenStreetMap contributors (ODbL).
+Needs `pyosmium` (`pip install osmium`) for `--pbf`. Optional: put the sqlite SHA-256 in `selfdrive/mapd/maps_manifest.py` (`ASSET_SHA256`).
 
-3. **Copy the DB** onto the 3X:
+Small regions still work via Overpass (can time out on a whole state):
 
 ```bash
-ssh comma@<device> 'mkdir -p /data/media/0/osm'
-scp speed_limits.sqlite comma@<device>:/data/media/0/osm/speed_limits.sqlite
+python scripts/nap/download_osm_speed_limits.py --lat 37.7749 --lon -122.4194 --radius-km 30
 ```
 
 Optional override path: param `NAPMapSpeedDbPath`.
 
-4. **Settings → NAP**:
+## What you must do on the device
+
+1. **Flash** this `nap-dev` build to the comma 3X as usual (installer / `updated` target branch). Rebuild so `params_keys.h` is compiled in.
+2. **Download US maps** (Wi-Fi): Settings → NAP → Download US Maps, or `python -m scripts.nap.fetch_osm_maps`.
+3. **Settings → NAP**:
    - **Map Speed (MAX)**: Off / Display / Cap / Follow
    - **Map Speed Offset**: -5 / 0 / +5 mph (added to the OSM limit)
    - Pedal interceptor must be on for Cap/Follow to change set speed
-
-5. Reboot after flashing. `mapd` starts onroad. With GPS fix and a matching way, a **LIMIT** sign appears next to MAX. In Cap/Follow, MAX itself updates as you cross OSM speed changes.
+4. `mapd` starts onroad. With GPS fix and a matching way, a **LIMIT** sign appears next to MAX. In Cap/Follow, MAX itself updates as you cross OSM speed changes.
 
 ## How to test
 
 **Off-device (this repo):**
 
 ```bash
-pytest selfdrive/mapd/tests/test_map_speed_policy.py selfdrive/mapd/tests/test_osm_db.py -q
+pytest selfdrive/mapd/tests/test_map_speed_policy.py \
+  selfdrive/mapd/tests/test_osm_db.py \
+  selfdrive/mapd/tests/test_fetch_maps.py -q
 ```
+
+Policy tests include lead precedence: no lead → map-capped cruise; slower lead → lead obstacle stays tighter than the map ceiling. Fetch test serves a tiny sqlite over HTTP.
 
 **On comma 3X, parked, GPS lock:**
 
@@ -76,15 +109,16 @@ for _ in range(6):
 
 **On-road, pedal mode:**
 
-1. Cap: set MAX above the posted limit; MAX should drop to OSM (+ offset) when the way matches; raising the stalk cannot exceed the cap.
-2. Drive across a limit change (e.g. 45 → 35). MAX should update within ~1s of a good match.
-3. Follow: MAX should rise and fall with OSM; one stalk tap holds your speed for ~10s.
-4. Cancel / brake still uses the existing engagement FSM. Hands-on / panda limits unchanged.
+1. Cap, **no lead**: set MAX above the posted limit; MAX should drop to OSM (+ offset); raising the stalk cannot exceed the cap.
+2. Cap/Follow, **slower lead**: MAX / map ceiling may be 65 while the car still slows to follow radar `leadOne`. Map must not prevent that slowing.
+3. Drive across a limit change (e.g. 45 → 35). MAX should update within ~1s of a good match.
+4. Follow: MAX should rise and fall with OSM; one stalk tap holds your speed for ~10s.
+5. Cancel / brake still uses the existing engagement FSM. Hands-on / panda limits unchanged.
 
 **No-pedal:** LIMIT sign only; stock CC set speed is unchanged.
 
 ## Build notes
 
-- Python-only `selfdrive/mapd`. No extra native deps (stdlib `sqlite3` R-tree).
+- Python-only `selfdrive/mapd`. No extra native deps (stdlib `sqlite3` R-tree). Device needs `zstandard` (already an openpilot dep) to decompress the Release asset.
 - Cereal: `liveMapDataNAP` on custom reserved 0. Rebuild so `params_keys.h` picks up the new params (`scons` / device compile).
 - `mapd` is an onroad managed process in `system/manager/process_config.py`.

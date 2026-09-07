@@ -201,8 +201,8 @@ class Car:
           self.v_cruise_helper.initialize_v_cruise(self.CS_prev, self.experimental_mode)
       else:
         # Pre-AP pedal mode owns set-speed in carstate via pedal_speed_kph.
-        # Keep planner target aligned to that software-managed target, then
-        # optionally overlay OSM map speed onto the same vCruise/MAX path.
+        # Overlay OSM onto the same vCruise/MAX path only. This is the cruise
+        # ceiling; radar MPC still follows a slower lead below vCruise.
         preap_v_cruise_kph = float(CS.cruiseState.speed * CV.MS_TO_KPH)
         if abs(preap_v_cruise_kph - self._last_preap_driver_kph) > 0.4:
           # Ignore 0 ↔ set transitions from engage/disengage; stalk +/- while

@@ -73,9 +73,30 @@ def cap_planner_v_cruise_ms(
   mode: int,
   offset_ms: float = 0.0,
 ) -> float:
-  """Safety net: never command the long planner above the map limit in cap/follow."""
+  """Ceiling for planner v_cruise only.
+
+  Does not touch radarState. LongitudinalMpc.update still stacks
+  [lead0, lead1, cruise_obstacle(v_cruise)] and constrains to min(...),
+  so a slower lead still commands below this ceiling.
+  """
   if mode not in (MODE_CAP, MODE_FOLLOW):
     return v_cruise_ms
   if map_limit_ms is None or map_limit_ms <= 0:
     return v_cruise_ms
   return min(v_cruise_ms, float(map_limit_ms) + float(offset_ms))
+
+
+# Same column order as LongitudinalMpc.update:
+# x_obstacles = [lead0, lead1, cruise_obstacle(v_cruise)]
+SOURCE_LEAD0 = 0
+SOURCE_LEAD1 = 1
+SOURCE_CRUISE = 2
+
+
+def longitudinal_obstacle_source(lead0_m: float, lead1_m: float, cruise_m: float) -> int:
+  """Return which MPC obstacle is tightest at t=0 (0=lead0, 1=lead1, 2=cruise).
+
+  Map speed only changes the cruise column. A closer/slower lead must still win.
+  """
+  stacked = (float(lead0_m), float(lead1_m), float(cruise_m))
+  return min(range(3), key=lambda i: stacked[i])

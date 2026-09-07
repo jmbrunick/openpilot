@@ -17,12 +17,14 @@ from openpilot.system.ui.widgets.html_render import HtmlRenderer, ElementType
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   BACKUP_EPAS_INSTRUCTIONS, BRAKE_FACTOR_PRESETS,
   CALIBRATE_PEDAL_INSTRUCTIONS, CALIBRATE_RADAR_INSTRUCTIONS,
+  DOWNLOAD_US_MAPS_INSTRUCTIONS,
   FLASH_EPAS_INSTRUCTIONS, PEDAL_CAN_BUS_VALUES,
   MAP_SPEED_MODES, MAP_SPEED_MODE_LABELS, MAP_SPEED_OFFSETS_MPH,
   RADAR_OFFSET_MAX, RADAR_OFFSET_MIN,
   RESTORE_EPAS_INSTRUCTIONS, TEST_RADAR_INSTRUCTIONS,
   acknowledgments_html, find_preset_index,
 )
+from openpilot.selfdrive.mapd.fetch_maps import installed_db_summary
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys, DEFAULTS
 from openpilot.selfdrive.ui.ui_state import ui_state
 
@@ -133,7 +135,7 @@ class NAPLayout(Widget):
       "Off: unchanged. Display: show OSM limit only. Cap: MAX never exceeds the limit. " +
       "Follow: MAX tracks the limit (stalk +/- pauses follow for 10s). " +
       "Control modes require pedal interceptor longitudinal. No-pedal stock CC is display-only. " +
-      "Requires an OSM sqlite DB at /data/media/0/osm/speed_limits.sqlite.",
+      "Download US maps (Wi-Fi) or place a sqlite at /data/media/0/osm/speed_limits.sqlite.",
       buttons=MAP_SPEED_MODE_LABELS,
       button_width=150,
       selected_index=max(0, min(3, map_mode)),
@@ -151,6 +153,23 @@ class NAPLayout(Widget):
       callback=self._on_map_speed_offset,
     )
     self._all_items.append(self._map_speed_offset_buttons)
+
+    self._map_db_status = text_item(
+      "OSM Map Data",
+      installed_db_summary,
+      description="US OpenStreetMap maxspeed ways (ODbL, © OpenStreetMap contributors). " +
+      "Not in git — tap Download US Maps over Wi-Fi after flash.",
+    )
+    self._all_items.append(self._map_db_status)
+
+    self._download_maps_btn = button_item(
+      "Download US Maps",
+      "Start",
+      description="Fetch the prebuilt US speed-limit DB from the GitHub Release (~200-500 MB zstd).",
+      callback=self._on_download_us_maps,
+    )
+    self._download_maps_btn.action_item.set_enabled(ui_state.is_offroad)
+    self._all_items.append(self._download_maps_btn)
 
     # ── Section 2: Pedal Hardware ──
     self._all_items.append(section_header_item("Pedal Hardware"))
@@ -417,6 +436,13 @@ class NAPLayout(Widget):
       )
 
   # ── Action button callbacks ──
+
+  def _on_download_us_maps(self):
+    self._show_script_runner(
+      title="Download US Maps",
+      instructions=DOWNLOAD_US_MAPS_INSTRUCTIONS,
+      script_module="scripts.nap.fetch_osm_maps",
+    )
 
   def _on_calibrate_pedal(self):
     self._show_script_runner(

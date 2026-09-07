@@ -165,6 +165,28 @@ Only proceed if you:
 Press START only if you accept these risks."""
 
 
+DOWNLOAD_US_MAPS_INSTRUCTIONS = """\
+Download US OSM speed-limit maps
+
+Fetches a prebuilt sqlite of OpenStreetMap maxspeed ways for the United States
+and installs it at /data/media/0/osm/speed_limits.sqlite.
+
+This is not stored in git (too large). After flash, run this once over Wi-Fi.
+
+PRECONDITIONS:
+  1. Device is offroad / parked
+  2. Wi-Fi that can reach GitHub Releases
+  3. ~1.5 GB free on /data/media/0/
+
+About 200-500 MB compressed (one US-wide file). Takes a few minutes.
+mapd reloads the file onroad within ~15 seconds — no reboot required.
+
+Data is © OpenStreetMap contributors (ODbL).
+https://www.openstreetmap.org/copyright
+
+Press START to download."""
+
+
 ACKNOWLEDGMENTS_INTRO = "Special thanks to the following members. This project wouldn't be possible without you:"
 
 ACKNOWLEDGMENTS_NAMES = [
