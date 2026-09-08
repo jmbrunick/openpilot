@@ -18,7 +18,9 @@ from openpilot.common.transformations.camera import DEVICE_CAMERAS
 from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
 from openpilot.common.transformations.model import get_warp_matrix
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
-from openpilot.selfdrive.mapd.map_speed_policy import blinker_turn_holds_alc
+from openpilot.selfdrive.mapd.map_speed_policy import (
+  apply_late_apex_curvature, blinker_turn_direction, late_apex_ramp, late_apex_y_offset_m,
+)
 from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, smooth_value, get_curvature_from_plan
 from openpilot.selfdrive.modeld.parse_model_outputs import Parser
 from openpilot.selfdrive.modeld.compile_modeld import make_input_queues, WARP_INPUTS, POLICY_INPUTS
@@ -303,6 +305,29 @@ def main(demo=False):
       frame_delay = DT_MDL # compensate for time passed since the frame was captured: current_time - timestamp_eof is 50ms on average
       action_delay = DT_MDL / 2 # middle of the interval between model output (current state) and next frame (expected state)
       action = get_action_from_model(model_output, prev_action, lat_delay + frame_delay + action_delay, long_delay + frame_delay + action_delay, v_ego)
+      # Late-apex bias only for held stalk + OSM junction. ALC (stalk, no
+      # junction) keeps the raw model curvature and path.
+      turn_dir = 0
+      if sm.valid.get("liveMapDataNAP", False):
+        md = sm["liveMapDataNAP"]
+        turn_dir = blinker_turn_direction(
+          int(getattr(sm["carState"], "turnSignalStalkState", 0) or 0),
+          bool(getattr(md, "intersectionHasLeft", False)),
+          bool(getattr(md, "intersectionHasRight", False)),
+        )
+      if turn_dir != 0:
+        k = apply_late_apex_curvature(float(action.desiredCurvature), v_ego, turn_dir)
+        action = log.ModelDataV2.Action(
+          desiredCurvature=float(k),
+          desiredAcceleration=float(action.desiredAcceleration),
+          shouldStop=bool(action.shouldStop),
+        )
+        y_off = late_apex_y_offset_m(turn_dir)
+        plan = model_output['plan'][0]
+        y_idx = Plan.POSITION.start + 1
+        n = min(plan.shape[0], len(ModelConstants.T_IDXS))
+        for i in range(n):
+          plan[i, y_idx] += y_off * late_apex_ramp(ModelConstants.T_IDXS[i])
       prev_action = action
       fill_model_msg(drivingdata_send, modelv2_send, model_output, action,
                      publish_state, meta_main.frame_id, meta_extra.frame_id, frame_id,
@@ -312,15 +337,7 @@ def main(demo=False):
       l_lane_change_prob = desire_state[log.Desire.laneChangeLeft]
       r_lane_change_prob = desire_state[log.Desire.laneChangeRight]
       lane_change_prob = l_lane_change_prob + r_lane_change_prob
-      hold_for_intersection = False
-      if sm.valid.get("liveMapDataNAP", False):
-        md = sm["liveMapDataNAP"]
-        hold_for_intersection = blinker_turn_holds_alc(
-          int(getattr(sm["carState"], "turnSignalStalkState", 0) or 0),
-          bool(getattr(md, "intersectionHasLeft", False)),
-          bool(getattr(md, "intersectionHasRight", False)),
-          float(getattr(md, "intersectionDistance", 0.0) or 0.0),
-        )
+      hold_for_intersection = turn_dir != 0
       DH.update(sm['carState'], sm['carControl'].latActive, lane_change_prob,
                 hold_for_intersection=hold_for_intersection)
       modelv2_send.modelV2.meta.laneChangeState = DH.lane_change_state

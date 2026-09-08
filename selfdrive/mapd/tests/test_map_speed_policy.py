@@ -1,18 +1,20 @@
 from openpilot.common.constants import CV
 from openpilot.selfdrive.mapd.constants import (
-  ACCEL_DEFAULT, DECREASE_START_MARGIN_M, LOOKAHEAD_EARLY, LOOKAHEAD_NORMAL, LOOKAHEAD_OFF,
+  ACCEL_DEFAULT, DECREASE_START_MARGIN_M, LATE_APEX_CURV_SCALE, LATE_APEX_Y_M,
+  LOOKAHEAD_EARLY, LOOKAHEAD_NORMAL, LOOKAHEAD_OFF,
   LOOKAHEAD_TUNING, MODE_CAP, MODE_DISPLAY, MODE_FOLLOW, MODE_OFF, OSM_SIGN_LEAD_S,
   TRACK_DEADBAND_MS, TRACK_TAPER_MS,
   accel_scale_factor, map_accel_a_ms2, map_brake_a_ms2, map_comfort_a_ms2,
 )
 from openpilot.selfdrive.mapd.map_speed_policy import (
   SOURCE_CRUISE, SOURCE_LEAD0, V_CRUISE_UNSET,
-  MapCruiseHold, anticipatory_limit_ms, apply_map_speed_kph, blinker_turn_direction,
-  blinker_turn_holds_alc, blinker_turn_limit_ms, cap_planner_v_cruise_ms,
-  decide_map_cruise, effective_map_limit_ms, hud_with_blinker_turn_kph,
-  is_cruise_stalk_step, longitudinal_obstacle_source, map_in_track_deadband,
-  map_slew_a_ms2, map_track_accel_ms2, map_track_decel_ms2, should_write_preap_pedal,
-  slew_map_speed_ms, turn_speed_ms,
+  MapCruiseHold, anticipatory_limit_ms, apply_late_apex_curvature, apply_map_speed_kph,
+  blinker_turn_direction, blinker_turn_holds_alc, blinker_turn_limit_ms,
+  cap_planner_v_cruise_ms, decide_map_cruise, effective_map_limit_ms,
+  hud_with_blinker_turn_kph, is_cruise_stalk_step, late_apex_ramp, late_apex_y_offset_m,
+  longitudinal_obstacle_source, map_in_track_deadband, map_slew_a_ms2,
+  map_track_accel_ms2, map_track_decel_ms2, should_write_preap_pedal, slew_map_speed_ms,
+  turn_speed_ms,
 )
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   MAP_SPEED_ACCEL, MAP_SPEED_ACCEL_DEFAULT, MAP_SPEED_LOOKAHEAD,
@@ -971,8 +973,14 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   dh = (root / "selfdrive/controls/lib/desire_helper.py").read_text()
   assert "hold_for_intersection" in dh
   modeld = (root / "selfdrive/modeld/modeld.py").read_text()
-  assert "blinker_turn_holds_alc" in modeld
+  assert "apply_late_apex_curvature" in modeld
+  assert "blinker_turn_direction" in modeld
   assert "Desire.turnLeft" not in modeld
+  lead = (root / "selfdrive/controls/lib/lead_approach.py").read_text()
+  assert "LEAD_APPROACH_A_MS2 = 0.80" in lead
+  assert "LEAD_APPROACH_MARGIN_M = 110.0" in lead
+  assert "LATE_APEX_Y_M = 0.30" in constants
+  assert "LATE_APEX_CURV_SCALE = 0.90" in constants
 
 
 def test_turn_speed_table_12_15_18():
@@ -1081,4 +1089,43 @@ def test_blinker_turn_does_not_add_map_offset():
     dec, posted, turn, mode=MODE_FOLLOW, offset_kph=offset, engaged=True,
   )
   assert abs(hud - turn) < 1e-6
+
+
+def test_late_apex_identity_when_not_intersection_turn():
+  """ALC / idle stalk: curvature and path y must not change."""
+  k = 0.04
+  assert apply_late_apex_curvature(k, 20.0, 0) == k
+  # Stalk on, no OSM junction (multi-lane ALC).
+  assert blinker_turn_direction(1, False, False) == 0
+  assert blinker_turn_direction(2, False, False) == 0
+  assert not blinker_turn_holds_alc(1, False, False, 80.0)
+  assert apply_late_apex_curvature(k, 20.0, blinker_turn_direction(1, False, False)) == k
+  assert late_apex_y_offset_m(0) == 0.0
+  assert blinker_turn_limit_ms(
+    stalk_state=1, has_left=False, has_right=False, dist_m=80.0,
+    left_dest_ms=0.0, right_dest_ms=0.0, posted_ms=25.0, v_ego_ms=20.0,
+    lookahead=LOOKAHEAD_NORMAL,
+  ) is None
+
+
+def test_late_apex_biases_outside_and_does_not_cut_inside():
+  """Left turn: y negative (right/outside), kappa less left. Right is the mirror."""
+  assert abs(LATE_APEX_Y_M - 0.30) < 1e-9
+  assert abs(LATE_APEX_CURV_SCALE - 0.90) < 1e-9
+  assert late_apex_y_offset_m(1) == -LATE_APEX_Y_M
+  assert late_apex_y_offset_m(2) == LATE_APEX_Y_M
+  assert late_apex_ramp(0.0) == 0.0
+  assert late_apex_ramp(2.0) == 1.0
+  assert 0.0 < late_apex_ramp(1.0) < 1.0
+  k_left = 0.05
+  out_left = apply_late_apex_curvature(k_left, 15.0, 1)
+  assert out_left < k_left * LATE_APEX_CURV_SCALE + 1e-9
+  assert out_left < k_left
+  k_right = -0.05
+  out_right = apply_late_apex_curvature(k_right, 15.0, 2)
+  assert out_right > k_right * LATE_APEX_CURV_SCALE - 1e-9
+  assert out_right > k_right
+  # Idle / ALC still identity at the same kappa.
+  assert apply_late_apex_curvature(k_left, 15.0, 0) == k_left
+
 

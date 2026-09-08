@@ -79,6 +79,13 @@ TURN_SPEED_DEFAULT_MPH = 15.0
 TURN_SPEED_FAST_MPH = 18.0
 TURN_DEST_SLOW_MPH = 25.0
 TURN_DEST_FAST_MPH = 40.0
+# Modest late-apex path bias. ONLY held stalk + OSM junction (never ALC).
+# Model path stays the base. y is left-positive: left turn outside = −y.
+# Scale curvature 10% toward 0 so we do not cut the inside.
+LATE_APEX_Y_M = 0.30
+LATE_APEX_CURV_SCALE = 0.90
+LATE_APEX_SHIFT_S = 2.0
+LATE_APEX_MAX_DKAPPA = 0.008
 
 # Default offline DB location on comma 3X / PC
 DB_FILENAME = "speed_limits.sqlite"
