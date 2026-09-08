@@ -130,7 +130,7 @@ class LongitudinalPlanner:
     v_ego = sm['carState'].vEgo
     v_cruise_kph = min(sm['carState'].vCruise, V_CRUISE_MAX)
     v_cruise = v_cruise_kph * CV.KPH_TO_MS
-    # HUD MAX after card's map overlay (Follow stalk override keeps the driver set).
+    # HUD MAX after card's map overlay (seed / sticky / Follow override).
     v_hud_ms = v_cruise
     v_cruise_initialized = sm['carState'].vCruise != V_CRUISE_UNSET
 
@@ -168,9 +168,8 @@ class LongitudinalPlanner:
     if force_slow_decel:
       v_cruise = 0.0
 
-    # OSM map speed: trust card HUD MAX (seed / sticky / lookahead). Safety-cap
-    # at the posted sign so planner never commands above the limit. Lead still
-    # wins via mpc.update(radarState, v_cruise).
+    # OSM map speed: trust card HUD MAX, then safety-cap at the posted sign.
+    # Lead still wins via mpc.update(radarState, v_cruise).
     if (not force_slow_decel) and self._is_preap and self._map_speed_mode in (MODE_CAP, MODE_FOLLOW):
       if 'liveMapDataNAP' in sm.valid and sm.valid.get('liveMapDataNAP', False):
         md = sm['liveMapDataNAP']
@@ -238,10 +237,8 @@ class LongitudinalPlanner:
       output_a_target = output_a_target_mpc
       self.output_should_stop = output_should_stop_mpc
 
-    # Map MAX is a set *speed*. MPC cruise_obstacle will not brake to it
-    # (virtual lead is ~safe-follow distance ahead; V_EGO_COST is 0).
-    # Brake to a lower MAX is locked at Accel 5. Accel 1–10 only caps the
-    # climb when Follow raises MAX. Lead/MPC can still request more braking.
+    # Map MAX is a set speed; MPC cruise_obstacle will not brake to it.
+    # Brake is Accel 5; Accel 1–10 only caps Follow climb. Lead can brake more.
     if self._is_preap and self._map_speed_mode in (MODE_CAP, MODE_FOLLOW):
       a_brake = map_track_decel_ms2(
         v_ego, v_hud_ms, map_brake_a_ms2(self._map_speed_lookahead),

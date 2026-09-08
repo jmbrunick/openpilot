@@ -202,11 +202,7 @@ def test_sha256_is_of_downloaded_zst_not_sqlite(tmp_path):
 
 
 def test_install_from_file_does_not_hash_sqlite_against_zst(tmp_path, monkeypatch):
-  """Device bug: after decompress, hashed dest sqlite vs ASSET_SHA256 (zst).
-
-  Justin 3X: got 264e2f… (sqlite at /data/media/0/osm/speed_limits.sqlite)
-  expected d45edd… (zst). ASSET_SHA256 must never be compared to dest.
-  """
+  """ASSET_SHA256 is the zst digest. Never hash dest sqlite against it."""
   src, zst = _make_zst(tmp_path)
   zst_hash = _sha256(zst)
   sqlite_hash = _sha256(src)

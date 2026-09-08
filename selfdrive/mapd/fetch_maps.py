@@ -126,8 +126,7 @@ def _space_error(dest: str, free: int, need: int) -> RuntimeError:
 def required_free_bytes(zst_bytes: int | None = None, *, us_pack: bool = True) -> int:
   """Bytes that must be free on the dest filesystem before a fetch.
 
-  US pack: max(zst + sqlite + margin, MIN_FREE_BYTES). MIN_FREE_BYTES is
-  800 MiB = 800 * 1024 * 1024 = 838860800 (204 + 516 + 80 MiB).
+  US pack: max(zst + sqlite + margin, MIN_FREE_BYTES) = 800 MiB.
   Local/test installs (file://, empty sha256) only need a small headroom.
   """
   if not us_pack:

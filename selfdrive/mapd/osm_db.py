@@ -186,10 +186,6 @@ class OsmSpeedLimitDB:
       self._con.close()
       self._con = None
 
-  def reload(self) -> bool:
-    self.close()
-    return self.open()
-
   @staticmethod
   def create(path: str) -> sqlite3.Connection:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)

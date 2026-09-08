@@ -179,7 +179,7 @@ class HudRenderer(Widget):
     )
 
   def _draw_map_speed_limit(self, rect: rl.Rectangle) -> None:
-    """MUTCD-style OSM speed-limit sign to the right of MAX (mac speed source)."""
+    """MUTCD-style OSM speed-limit sign to the right of MAX."""
     if not self.map_speed_valid:
       return
     set_speed_width = UI_CONFIG.set_speed_width_metric if ui_state.is_metric else UI_CONFIG.set_speed_width_imperial
