@@ -9,9 +9,16 @@ import pytest
 
 from openpilot.common.constants import CV
 from openpilot.selfdrive.mapd.gps_fix import (
+  GPS_MAX_ACC_M,
+  GPS_MAX_AGE_S,
+  REFRESH_GNSS_WAIT_S,
+  REFRESH_GPS_MAX_ACC_M,
   format_last_gps_position,
+  gps_sample_from_sm,
   is_plausible_lat_lon,
+  last_gps_from_params,
   parse_last_gps_position,
+  persist_last_gps_position,
 )
 from openpilot.selfdrive.mapd.local_refresh import (
   NO_GPS_MESSAGE,
@@ -89,7 +96,10 @@ def test_no_gps_fails_without_guessing_a_city():
     resolve_refresh_location(live_fix=None, last_gps_raw=None)
   msg = str(exc.value)
   assert msg == NO_GPS_MESSAGE
-  assert "drive once" in msg.lower() or "wait for a fix" in msg.lower()
+  assert "onroad" in msg.lower()
+  assert "about a minute" in msg.lower()
+  assert "guess a city" in msg.lower()
+  assert "drive once" not in msg.lower()
   for city in ("San Francisco", "New York", "Los Angeles", "Chicago", "default city"):
     assert city.lower() not in msg.lower()
 
@@ -121,23 +131,25 @@ def test_is_plausible_rejects_null_island():
   assert is_plausible_lat_lon(*SF)
 
 
-def test_gps_sample_prefers_external_and_rejects_stale():
+class _SM:
+  def __init__(self, msgs, frames, times):
+    self._msgs = msgs
+    self.recv_frame = frames
+    self.recv_time = times
+
+  def __getitem__(self, key):
+    return self._msgs[key]
+
+
+def _gps_msg(lat, lon, acc=8.0, speed=0.0, bearing=0.0):
   from types import SimpleNamespace
-  from openpilot.selfdrive.mapd.gps_fix import gps_sample_from_sm
+  return SimpleNamespace(latitude=lat, longitude=lon, horizontalAccuracy=acc, speed=speed, bearingDeg=bearing)
 
-  ext = SimpleNamespace(latitude=SF[0], longitude=SF[1], horizontalAccuracy=8.0, speed=0.0, bearingDeg=0.0)
-  qcom = SimpleNamespace(latitude=NYC[0], longitude=NYC[1], horizontalAccuracy=8.0, speed=0.0, bearingDeg=90.0)
 
-  class SM:
-    def __init__(self, msgs, frames, times):
-      self._msgs = msgs
-      self.recv_frame = frames
-      self.recv_time = times
-
-    def __getitem__(self, key):
-      return self._msgs[key]
-
-  sm = SM(
+def test_gps_sample_prefers_external_and_rejects_stale():
+  ext = _gps_msg(*SF)
+  qcom = _gps_msg(*NYC, bearing=90.0)
+  sm = _SM(
     {"gpsLocationExternal": ext, "gpsLocation": qcom},
     {"gpsLocationExternal": 1, "gpsLocation": 1},
     {"gpsLocationExternal": 100.0, "gpsLocation": 100.0},
@@ -145,17 +157,93 @@ def test_gps_sample_prefers_external_and_rejects_stale():
   lat, lon, _b, ok = gps_sample_from_sm(sm, now=100.5)
   assert ok and abs(lat - SF[0]) < 1e-9 and abs(lon - SF[1]) < 1e-9
 
-  sm.recv_time["gpsLocationExternal"] = 90.0  # stale
+  sm.recv_time["gpsLocationExternal"] = 90.0  # stale for mapd (2.5s)
   lat, lon, _b, ok = gps_sample_from_sm(sm, now=100.5)
   assert ok and abs(lat - NYC[0]) < 1e-9
 
-  null = SimpleNamespace(latitude=0.0, longitude=0.0, horizontalAccuracy=1.0, speed=0.0, bearingDeg=0.0)
+  null = _gps_msg(0.0, 0.0, acc=1.0)
   sm._msgs["gpsLocationExternal"] = null
   sm._msgs["gpsLocation"] = null
   sm.recv_time["gpsLocationExternal"] = 100.0
   sm.recv_time["gpsLocation"] = 100.0
   _lat, _lon, _b, ok = gps_sample_from_sm(sm, now=100.5)
   assert not ok
+
+
+def test_mapd_gps_sample_rejects_stale_and_coarse_accuracy():
+  assert GPS_MAX_AGE_S == 2.5
+  assert GPS_MAX_ACC_M == 50.0
+  sm = _SM(
+    {"gpsLocationExternal": _gps_msg(*SF, acc=8.0), "gpsLocation": _gps_msg(*SF, acc=8.0)},
+    {"gpsLocationExternal": 1, "gpsLocation": 1},
+    {"gpsLocationExternal": 90.0, "gpsLocation": 90.0},
+  )
+  _lat, _lon, _b, ok = gps_sample_from_sm(sm, now=100.5)
+  assert not ok
+
+  sm.recv_time["gpsLocationExternal"] = 100.0
+  sm.recv_time["gpsLocation"] = 100.0
+  sm._msgs["gpsLocationExternal"] = _gps_msg(*SF, acc=150.0)
+  sm._msgs["gpsLocation"] = _gps_msg(*SF, acc=150.0)
+  _lat, _lon, _b, ok = gps_sample_from_sm(sm, now=100.5)
+  assert not ok
+
+
+def test_refresh_gps_sample_accepts_stale_and_yard_accuracy():
+  assert REFRESH_GNSS_WAIT_S == 45.0
+  assert REFRESH_GPS_MAX_ACC_M == 200.0
+  sm = _SM(
+    {"gpsLocationExternal": _gps_msg(*SF, acc=150.0), "gpsLocation": _gps_msg(0.0, 0.0)},
+    {"gpsLocationExternal": 1, "gpsLocation": 1},
+    {"gpsLocationExternal": 90.0, "gpsLocation": 90.0},
+  )
+  lat, lon, _b, ok = gps_sample_from_sm(
+    sm, now=100.5, max_age_s=None, max_acc_m=REFRESH_GPS_MAX_ACC_M,
+  )
+  assert ok and abs(lat - SF[0]) < 1e-9 and abs(lon - SF[1]) < 1e-9
+
+  sm._msgs["gpsLocationExternal"] = _gps_msg(0.0, 0.0, acc=8.0)
+  sm._msgs["gpsLocation"] = _gps_msg(0.0, 0.0, acc=8.0)
+  _lat, _lon, _b, ok = gps_sample_from_sm(
+    sm, now=100.5, max_age_s=None, max_acc_m=REFRESH_GPS_MAX_ACC_M,
+  )
+  assert not ok
+
+
+def test_persist_last_gps_and_param_file_fallback(tmp_path, monkeypatch):
+  stored: dict[str, str] = {}
+
+  class FakeParams:
+    def put(self, key, value):
+      stored[key] = value
+
+    def get(self, key):
+      return stored.get(key)
+
+  persist_last_gps_position(FakeParams(), *SF)
+  pos = parse_last_gps_position(stored["LastGPSPosition"])
+  assert pos is not None
+  assert abs(pos[0] - SF[0]) < 1e-9 and abs(pos[1] - SF[1]) < 1e-9
+
+  p = tmp_path / "LastGPSPosition"
+  p.write_text(format_last_gps_position(*NYC), encoding="utf-8")
+  import sys
+  import types
+  import openpilot.selfdrive.mapd.gps_fix as gf
+  monkeypatch.setattr(gf, "_PARAM_LAST_GPS_PATHS", (str(p),))
+
+  fake_params = types.ModuleType("openpilot.common.params")
+
+  class EmptyParams:
+    def get(self, _key):
+      return None
+
+  fake_params.Params = EmptyParams
+  monkeypatch.setitem(sys.modules, "openpilot.common.params", fake_params)
+  pos = last_gps_from_params()
+  assert pos is not None
+  assert abs(pos[0] - NYC[0]) < 1e-9
+  assert abs(pos[1] - NYC[1]) < 1e-9
 
 
 def test_merge_replaces_way_ids_in_radius_keeps_rest(tmp_path):
@@ -215,8 +303,12 @@ def test_cli_no_gps_prints_error(tmp_path, monkeypatch, capsys):
   rc = refresh_main(["--out", dest])
   assert rc == 1
   out = capsys.readouterr().out
+  assert "Waiting up to 45s for a satellite fix" in out
+  assert "(c) OpenStreetMap contributors" in out
   assert "ERROR:" in out
   assert "guess a city" in out
+  assert "onroad" in out
+  assert "about a minute" in out
   assert Path(dest).read_bytes() == prev
 
 
@@ -357,6 +449,11 @@ def test_docs_and_ui_say_100_miles_not_published_pack():
   assert mici_widgets.index("refresh_maps_btn") < mici_widgets.index("download_maps_btn")
   assert "100 miles" in instructions
   assert "guess a city" in instructions
+  assert "45s" in instructions
+  assert "onroad" in instructions
+  assert "(c) OpenStreetMap" in instructions
+  assert "45s" in docs
+  assert "200 m" in docs or "200m" in docs
 
 
 def test_refresh_stages_merge_beside_dest_not_tmp(tmp_path):

@@ -194,7 +194,7 @@ Takes a few minutes. mapd reloads onroad within ~15 seconds — no reboot.
 
 For later local updates use Refresh maps (live OSM within 100 miles).
 
-Data is © OpenStreetMap contributors (ODbL).
+Data is (c) OpenStreetMap contributors (ODbL).
 https://www.openstreetmap.org/copyright
 
 Press START to download."""
@@ -207,21 +207,22 @@ Queries live OpenStreetMap speed limits within 100 miles (~160.9 km) of
 this car and merges them into the installed US maps. Ways in that radius
 are replaced; the rest of the US pack is kept.
 
-Uses a current GNSS fix if valid, otherwise last stored GPS. Will not
-guess a city. If maps are not installed yet, downloads the US pack first
-and then overlays the 100-mile extract — never a 100-mile-only file.
+Uses a GNSS fix if one arrives (waits up to 45s), otherwise last stored GPS.
+Will not guess a city. If maps are not installed yet, downloads the US pack
+first and then overlays the 100-mile extract -- never a 100-mile-only file.
 
 PRECONDITIONS:
   1. Device is offroad / parked
   2. Wi-Fi that can reach Overpass (overpass-api.de)
-  3. Drive once with GPS, or wait for a fix, so location is known
-  4. Stages the merge on /data/media/0/osm/.download/ — not /tmp.
+  3. GPS: wait for a satellite fix, or start openpilot onroad until the GPS
+     icon/fix is up for about a minute, then retry
+  4. Stages the merge on /data/media/0/osm/.download/ -- not /tmp.
      A previous good sqlite is kept if OSM times out or the merge fails.
 
-Overpass can take several minutes. mapd reloads onroad within ~15s —
+Overpass can take several minutes. mapd reloads onroad within ~15s --
 no reboot.
 
-Data is © OpenStreetMap contributors (ODbL).
+Data is (c) OpenStreetMap contributors (ODbL).
 https://www.openstreetmap.org/copyright
 
 Press START to refresh."""

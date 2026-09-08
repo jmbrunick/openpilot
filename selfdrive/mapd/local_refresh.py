@@ -30,13 +30,15 @@ from openpilot.selfdrive.mapd.fetch_maps import (
   staging_dir,
 )
 from openpilot.selfdrive.mapd.gps_fix import (
+  REFRESH_GNSS_WAIT_S,
+  REFRESH_GPS_MAX_ACC_M,
   is_plausible_lat_lon,
   last_gps_from_params,
   load_last_gps_position,
-  persist_last_gps_position,
+  persist_last_gps_if_possible,
   read_live_gnss,
 )
-from openpilot.selfdrive.mapd.maps_manifest import ATTRIBUTION, LICENSE, LICENSE_URL
+from openpilot.selfdrive.mapd.maps_manifest import LICENSE, LICENSE_URL
 from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB
 from openpilot.selfdrive.mapd.overpass import (
   OVERPASS_URL,
@@ -50,8 +52,9 @@ REFRESH_RADIUS_MILES = 100.0
 REFRESH_RADIUS_KM = REFRESH_RADIUS_MILES * CV.MPH_TO_KPH
 
 NO_GPS_MESSAGE = (
-  "No GPS location. Drive once with a GPS fix, or wait for a fix, then try Refresh maps again. "
-  + "The car's location is required — maps will not guess a city."
+  "No GPS location after waiting for a satellite fix. "
+  + "Start openpilot onroad until the GPS icon/fix is up for about a minute, then retry Refresh maps. "
+  + "The car's location is required -- maps will not guess a city."
 )
 
 _UNSET = object()
@@ -150,7 +153,7 @@ def merge_ways_into_db(
 def _ensure_us_base(dest: str) -> None:
   if sqlite_present(dest):
     return
-  _p("No maps installed yet. Downloading the US pack first (Refresh maps will then overlay 100 miles)…")
+  _p("No maps installed yet. Downloading the US pack first (Refresh maps will then overlay 100 miles)...")
   download_maps(dest=dest)
   if not sqlite_present(dest):
     raise RefreshMapsError(
@@ -195,13 +198,13 @@ def install_merged_overlay(
   os.makedirs(stage, exist_ok=True)
   work = os.path.join(stage, "speed_limits.merge.sqlite")
   try:
-    _p("Merging live OSM ways into a copy of the installed US maps…")
+    _p("Merging live OSM ways into a copy of the installed US maps...")
     shutil.copy2(dest, work)
     deleted, inserted = merge_ways_into_db(work, ways, bbox, extra_meta)
     _p(f"Replaced {deleted} ways in the 100-mile box; inserted {inserted} Overpass ways.")
     if not sqlite_ok(work):
       raise RefreshMapsError("Merged sqlite failed to open. Previous maps were left unchanged.")
-    _p("Installing…")
+    _p("Installing...")
     os.replace(work, dest)
   except Exception:
     try:
@@ -228,8 +231,13 @@ def _resolve_live_fix(
     return live_fix if isinstance(live_fix, tuple) else None
   if lat is not None and lon is not None:
     return None
-  _p("Looking up vehicle location (GNSS, then last stored GPS)…")
-  return read_live_gnss(timeout_s=8.0)
+  _p(f"Waiting up to {REFRESH_GNSS_WAIT_S:.0f}s for a satellite fix...")
+  return read_live_gnss(
+    timeout_s=REFRESH_GNSS_WAIT_S,
+    max_age_s=None,
+    max_acc_m=REFRESH_GPS_MAX_ACC_M,
+    progress=_p,
+  )
 
 
 def _resolve_last_gps_raw(lat: float | None, lon: float | None, last_gps_raw: object) -> object | None:
@@ -259,7 +267,7 @@ def refresh_local_maps(
   Omit live_fix/last_gps_raw to look them up. Pass None to force a miss (tests).
   """
   dest = os.path.abspath(dest or default_db_path())
-  _p(f"OpenStreetMap speed limits ({LICENSE}). {ATTRIBUTION}")
+  _p(f"OpenStreetMap speed limits ({LICENSE}). (c) OpenStreetMap contributors")
   _p(LICENSE_URL)
 
   loc = resolve_refresh_location(
@@ -269,15 +277,13 @@ def refresh_local_maps(
   )
   if loc.source == "gnss":
     _p(f"Using current GNSS fix {loc.lat:.5f}, {loc.lon:.5f}")
-    try:
-      from openpilot.common.params import Params
-      persist_last_gps_position(Params(), loc.lat, loc.lon)
-    except Exception:
-      pass
+    persist_last_gps_if_possible(loc.lat, loc.lon)
   elif loc.source == "last_gps":
     _p(f"No current GNSS fix. Using last stored GPS {loc.lat:.5f}, {loc.lon:.5f}")
+    persist_last_gps_if_possible(loc.lat, loc.lon)
   else:
     _p(f"Using provided location {loc.lat:.5f}, {loc.lon:.5f}")
+    persist_last_gps_if_possible(loc.lat, loc.lon)
 
   bbox = bbox_from_center(loc.lat, loc.lon, radius_km)
   _p(

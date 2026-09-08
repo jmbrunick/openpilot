@@ -22,7 +22,7 @@ import os
 import re
 from dataclasses import dataclass
 
-ATTRIBUTION = "© OpenStreetMap contributors"
+ATTRIBUTION = "(c) OpenStreetMap contributors"
 LICENSE = "ODbL"
 LICENSE_URL = "https://www.openstreetmap.org/copyright"
 
