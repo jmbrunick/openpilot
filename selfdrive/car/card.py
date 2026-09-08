@@ -171,8 +171,11 @@ class Car:
     self.radar_donor_vin = None
     tesla_preap = any(cfg.safetyModel == car.CarParams.SafetyModel.teslaPreap for cfg in self.CP.safetyConfigs)
     if tesla_preap:
+      from openpilot.selfdrive.car.tesla.preap_body_controls import install_body_controls_test
       from opendbc.car.tesla.preap.nap_conf import nap_conf
       from opendbc.car.tesla.preap.radar_donor_vin import RadarDonorVinCommissioner
+
+      install_body_controls_test()
 
       def store_donor_vin(vin: str) -> None:
         nap_conf.radar_donor_vin = vin

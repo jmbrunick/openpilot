@@ -21,14 +21,19 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   CALIBRATE_PEDAL_INSTRUCTIONS,
   DOWNLOAD_US_MAPS_INSTRUCTIONS,
   FLASH_EPAS_INSTRUCTIONS, PEDAL_CAN_BUS_VALUES,
+  HIGH_LOW_BEAM_DESCRIPTION, HIGH_LOW_BEAM_LABELS, HIGH_LOW_BEAM_VALUES,
   MAP_SPEED_ACCEL_DEFAULT,
   RADAR_OFFSET_MAX, RADAR_OFFSET_MIN,
   REFRESH_MAPS_INSTRUCTIONS,
   RESTORE_EPAS_INSTRUCTIONS,
+  WIPER_SPEED_DESCRIPTION, WIPER_SPEED_LABELS, WIPER_SPEED_VALUES,
   acknowledgments_html, find_preset_index,
 )
 from openpilot.selfdrive.ui.layouts.settings.map_speed import MapSpeedLimitLayout
+from openpilot.selfdrive.car.tesla.preap_body_controls import register_nap_body_params
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys, DEFAULTS
+
+register_nap_body_params()
 from openpilot.selfdrive.ui.radar.radar_view import RadarMonitorDialog
 from openpilot.selfdrive.ui.ui_state import ui_state
 from scripts.nap.script_lifecycle import script_reboots_on_exit
@@ -219,7 +224,32 @@ class NAPLayout(Widget):
     self._brake_factor_buttons.action_item.set_enabled(False)
     self._main_items.append(self._brake_factor_buttons)
 
-    # ── Section 5: Advanced ──
+    # ── Section 5: Wipers & lights (car test) ──
+    self._main_items.append(section_header_item("Wipers & Lights (test)"))
+
+    wiper_setting = int(self._params.get(NAPParamKeys.WIPER_SPEED, return_default=True) or 0)
+    self._wiper_buttons = multiple_button_item(
+      "Wiper Control",
+      WIPER_SPEED_DESCRIPTION,
+      buttons=WIPER_SPEED_LABELS,
+      button_width=130,
+      selected_index=max(0, min(len(WIPER_SPEED_VALUES) - 1, wiper_setting)),
+      callback=self._on_wiper_speed,
+    )
+    self._main_items.append(self._wiper_buttons)
+
+    beam_setting = int(self._params.get(NAPParamKeys.HIGH_LOW_BEAM, return_default=True) or 0)
+    self._beam_buttons = multiple_button_item(
+      "High / Low Beam",
+      HIGH_LOW_BEAM_DESCRIPTION,
+      buttons=HIGH_LOW_BEAM_LABELS,
+      button_width=130,
+      selected_index=max(0, min(len(HIGH_LOW_BEAM_VALUES) - 1, beam_setting)),
+      callback=self._on_high_low_beam,
+    )
+    self._main_items.append(self._beam_buttons)
+
+    # ── Section 6: Advanced ──
     self._main_items.append(section_header_item("Advanced"))
 
     # Force Pre-AP is always on for now — grayed out in the ON position
@@ -231,7 +261,7 @@ class NAPLayout(Widget):
       enabled=False,
     )
 
-    # ── Section 6: Actions ──
+    # ── Section 7: Actions ──
     self._main_items.append(section_header_item("Actions"))
 
     self._backup_epas_btn = button_item(
@@ -420,6 +450,12 @@ class NAPLayout(Widget):
 
   def _on_brake_factor(self, index: int):
     self._params.put(NAPParamKeys.BRAKE_FACTOR, BRAKE_FACTOR_PRESETS[index])
+
+  def _on_wiper_speed(self, index: int):
+    self._params.put(NAPParamKeys.WIPER_SPEED, WIPER_SPEED_VALUES[index])
+
+  def _on_high_low_beam(self, index: int):
+    self._params.put(NAPParamKeys.HIGH_LOW_BEAM, HIGH_LOW_BEAM_VALUES[index])
 
   def _get_radar_offset(self) -> float:
     raw = self._params.get(NAPParamKeys.RADAR_OFFSET, return_default=True)
@@ -712,6 +748,13 @@ class NAPLayout(Widget):
     brake_factor = self._params.get(NAPParamKeys.BRAKE_FACTOR, return_default=True)
     self._brake_factor_buttons.action_item.set_selected_button(
       find_preset_index(BRAKE_FACTOR_PRESETS, brake_factor))
+
+    wiper_setting = int(self._params.get(NAPParamKeys.WIPER_SPEED, return_default=True) or 0)
+    self._wiper_buttons.action_item.set_selected_button(
+      max(0, min(len(WIPER_SPEED_VALUES) - 1, wiper_setting)))
+    beam_setting = int(self._params.get(NAPParamKeys.HIGH_LOW_BEAM, return_default=True) or 0)
+    self._beam_buttons.action_item.set_selected_button(
+      max(0, min(len(HIGH_LOW_BEAM_VALUES) - 1, beam_setting)))
 
     self._map_speed_page.refresh()
     radar_position = int(self._params.get(NAPParamKeys.RADAR_POSITION, return_default=True) or 0)
