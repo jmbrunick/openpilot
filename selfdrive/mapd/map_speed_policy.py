@@ -77,8 +77,11 @@ def anticipatory_limit_ms(
   need_m = min(need_m, horizon_m)
   if next_dist_m > need_m:
     return None
-  # Smooth profile: v² = vt² + 2 a d  so MAX falls as the sign approaches.
-  v_cmd = math.sqrt(max(0.0, vt * vt + 2.0 * a_comfort * float(next_dist_m)))
+  # Fall from v0 at need_m to vt at the sign. Using v² = vt² + 2 a d alone
+  # wasted the margin: MAX stayed at the old limit until kinematic d, so a
+  # 50→30 still arrived at the sign ~10 mph hot. Interpolate over the full window.
+  span = max(need_m, 1e-6)
+  v_cmd = math.sqrt(max(0.0, vt * vt + (v0 * v0 - vt * vt) * (float(next_dist_m) / span)))
   return max(vt, min(float(current_ms), v_cmd))
 
 
@@ -141,10 +144,11 @@ def map_track_decel_ms2(v_ego_ms: float, v_cruise_ms: float, a_comfort: float) -
 
 
 def map_track_accel_ms2(v_ego_ms: float, v_cruise_ms: float, a_comfort: float) -> float | None:
-  """Comfort accel cap (positive m/s²) when catching a higher Follow MAX, or None.
+  """Comfort accel (positive m/s²) when catching a higher Follow MAX, or None.
 
-  min() with MPC so Accel 1–10 limits how hard we climb; a slower lead can
-  still command negative a.
+  MPC cruise_obstacle will not climb to a higher MAX (V_EGO_COST=0). The
+  planner commands this a when ego is below MAX and MPC is not braking.
+  Accel 1–10 sets the climb rate. A slower lead (negative aTarget) still wins.
   """
   if a_comfort <= 0 or v_ego_ms <= 0 or v_cruise_ms <= 0:
     return None
@@ -228,7 +232,7 @@ class MapCruiseDecision:
   """Cruise overlay for one card.py cycle.
 
   `seed_kph` is the pedal write-back (engage/posted seed or sticky hold).
-  None means leave `pedal_speed_kph` alone so stalk +/- is not overwritten.
+  None means do not seed; card may still raise pedal when HUD MAX increased.
   """
   driver_kph: float
   follow_override: bool
@@ -265,7 +269,8 @@ def decide_map_cruise(
   "ignore pedal_speed" — pre-AP button events are not reliable.
 
   Returns the driver-set to overlay, whether Follow should hold that set,
-  and optional pedal write-back (`seed_kph`) for seed / sticky only.
+  and optional pedal write-back (`seed_kph`) for seed / sticky. Card also
+  writes pedal when HUD MAX rises (stalk up / Follow posted raise).
   """
   if (not engaged) or mode not in (MODE_CAP, MODE_FOLLOW):
     hold.reset()
@@ -340,6 +345,21 @@ def decide_map_cruise(
     return _sticky_decision(hold, mode, posted_kph)
 
   return MapCruiseDecision(float(hold.policy_kph), override, None, False)
+
+
+def should_write_preap_pedal(seed_kph: float | None, hud_kph: float,
+                             last_pedal_kph: float | None) -> bool:
+  """When to write HUD MAX onto pre-AP pedal_speed.
+
+  Always write seed/sticky. Also write when MAX *rose* vs the last pedal
+  write (stalk up, or Follow because the posted limit increased). Do not
+  write every Follow/Cap frame at the same MAX — that ate stalk +/-.
+  """
+  if seed_kph is not None:
+    return True
+  if last_pedal_kph is None:
+    return False
+  return float(hud_kph) > float(last_pedal_kph) + MANUAL_SET_EPS_KPH
 
 
 def apply_map_speed_kph(

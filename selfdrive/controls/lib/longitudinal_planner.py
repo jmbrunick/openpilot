@@ -254,8 +254,8 @@ class LongitudinalPlanner:
       output_a_target = output_a_target_mpc
       self.output_should_stop = output_should_stop_mpc
 
-    # Map MAX is a set speed; MPC cruise_obstacle will not brake to it.
-    # Brake is Accel 5; Accel 1–10 only caps Follow climb. Lead can brake more.
+    # Map MAX is a set speed; MPC cruise_obstacle will not track it.
+    # Brake is locked Accel 5. Accel 1–10 is Follow climb rate. Lead can brake more.
     if self._is_preap and self._map_speed_mode in (MODE_CAP, MODE_FOLLOW):
       a_brake = map_track_decel_ms2(
         v_ego, v_hud_ms, map_brake_a_ms2(self._map_speed_lookahead),
@@ -266,8 +266,10 @@ class LongitudinalPlanner:
         a_up = map_track_accel_ms2(
           v_ego, v_hud_ms, map_accel_a_ms2(self._map_speed_lookahead, self._map_speed_accel),
         )
-        if a_up is not None:
-          output_a_target = min(float(output_a_target), a_up)
+        if a_up is not None and float(output_a_target) >= 0.0:
+          # min() alone never created climb (MPC holds ~0). Command Accel 1–10
+          # toward MAX; a slower lead (negative aTarget) still outranks map.
+          output_a_target = a_up
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)

@@ -96,6 +96,8 @@ class HudRenderer(Widget):
     if self.is_cruise_set and not ui_state.is_metric:
       self.set_speed *= KM_TO_MILE
 
+    # Current speed is ego/cluster only. OSM maxspeed is LIMIT (and may feed
+    # MAX). Never paint the map limit onto the number the driver reads as now.
     v_ego_cluster = car_state.vEgoCluster
     self.v_ego_cluster_seen = self.v_ego_cluster_seen or v_ego_cluster != 0.0
     v_ego = v_ego_cluster if self.v_ego_cluster_seen else car_state.vEgo

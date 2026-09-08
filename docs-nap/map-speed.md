@@ -23,11 +23,12 @@ Licenses: pfeiferj/mapd and sunnypilot SLA are MIT; we did **not** vendor the Go
 - **No-pedal / stock CC**: display only. We do not spoof stalk +/- to chase map limits.
 - **Cap**: `MAX = min(driver set, OSM limit + offset)`. Never raises.
 - **Follow** (preferred): MAX tracks the OSM limit. A manual set **below** the posted limit is **sticky** (no 10s timeout) until another stalk or the posted value changes. The Follow 10s timer applies only to a set **above** the limit, and must never clear a below-limit hold.
-- **Engage seed:** on `pedalLongActive` rising (second pull, not lateral-only) with Cap/Follow and a valid OSM limit, HUD MAX and `pedal_speed_kph` initialize to that limit (+ offset). No valid limit → existing ego capture. Pedal write-back is **seed / sticky only** — not every Follow/Cap HUD frame (that ate stalk +/-). Stalk +/- is a 1 or 5 mph `pedal_speed` step; button events are extra. An ego jump is not a stalk.
+- **Engage seed:** on `pedalLongActive` rising (second pull, not lateral-only) with Cap/Follow and a valid OSM limit, HUD MAX and `pedal_speed_kph` initialize to that limit (+ offset). No valid limit → existing ego capture. Pedal write-back is **seed / sticky**, plus a **raise** when HUD MAX increased (stalk up, or Follow because the posted limit increased). Do not write the same Follow/Cap MAX every frame (that ate stalk +/-). Stalk +/- is a 1 or 5 mph `pedal_speed` step; button events are extra. An ego jump is not a stalk.
 - **Display / Off**: no control change.
 - **Lookahead (Cap/Follow):** a **lower** OSM maxspeed ahead eases MAX down so you reach about the new limit as you enter that way. A **higher** limit ahead does **not** raise MAX early — Follow raises only once GPS is on the faster segment.
-- **A falling MAX must decelerate** (Cap/Follow, pedal mode, no overriding lead). The stock MPC cruise column is a virtual lead ~`get_safe_obstacle_distance(v_ego)` ahead with `V_EGO_COST=0`, so a 70→45 mph drop would not bind. Planner `min()`s MPC with `map_track_decel` at the **Accel 5** comfort `a` (0.80 m/s² at Normal). Accel 1–10 does not change this brake. Tesla `get_preap_accel_limits` still clips to −1.5 m/s².
-- **Lead outranks map.** Map only sets the cruise ceiling plus comfort decel. `mpc.update` is always `mpc.update(radarState, v_cruise)` after the map cap.
+- **A falling MAX must decelerate** (Cap/Follow, pedal mode, no overriding lead). The stock MPC cruise column is a virtual lead ~`get_safe_obstacle_distance(v_ego)` ahead with `V_EGO_COST=0`, so a 70→45 mph drop would not bind. Planner `min()`s MPC with `map_track_decel` at the **Accel 5** comfort `a` (1.10 m/s² at Normal). Accel 1–10 does not change this brake. Tesla `get_preap_accel_limits` still clips to −1.5 m/s².
+- **A rising MAX must accelerate** (Follow, no overriding lead). MPC also will not climb to a higher MAX. Planner commands `map_track_accel` at Accel 1–10 when ego is below MAX and MPC is not braking. Stalk up / Follow posted raise also writes that higher MAX onto `pedal_speed`.
+- **Lead outranks map.** Map only sets the cruise ceiling plus comfort decel/accel. `mpc.update` is always `mpc.update(radarState, v_cruise)` after the map cap.
 - Panda TX whitelist, pedal gating, and engagement FSM are unchanged.
 - Default **Off** until US maps are downloaded and you pick a mode.
 
@@ -117,18 +118,20 @@ All map-speed controls live in this submenu (main NAP stays uncluttered). TICI a
 | Lookahead | Comfort decel | Extra margin | Start no farther than |
 |---|---|---|---|
 | Off | — | — | change only after GPS is on the slower way |
-| Late | 1.20 m/s² | 40 m | 250 m |
-| Normal (default) | 0.80 m/s² | 80 m | 400 m |
-| Early | 0.55 m/s² | 120 m | 600 m |
+| Late | 1.30 m/s² | 80 m | 350 m |
+| Normal (default) | 1.10 m/s² | 200 m | 550 m |
+| Early | 0.75 m/s² | 240 m | 600 m |
 
-When the upcoming drop is inside that window, MAX follows `v = sqrt(v_next² + 2 a d)`.
+When the upcoming drop is inside that window, MAX interpolates from the current limit at the start distance to the new limit at the sign (`v²` lerp). A 50→30 mph drop at Normal starts falling ~345 m out.
+
+**HUD current speed** is `vEgoCluster` / `vEgo` (mph/kph). OSM `maxspeed` is the LIMIT sign and, in Cap/Follow, may overlay **MAX**. Those are not the same number — a posted 50 while doing ~45 is LIMIT/MAX, not faked ego speed.
 
 **Acceleration** scales **Follow climb only**. Brake uses Accel 5 (`map_brake_a_ms2` / `map_track_decel`).
 
 | Accel | Factor | `a` at Lookahead=Normal | Used for |
 |---|---|---|---|
-| 1 | 0.45 | **0.36 m/s²** | climb only (gentlest) |
-| **5** | 1.00 | **0.80 m/s²** | climb *and* all map braking |
+| 1 | 0.45 | **0.495 m/s²** | climb only (gentlest) |
+| **5** | 1.00 | **1.10 m/s²** | climb *and* all map braking |
 | 10 | 2.00 | **1.60 m/s²** | climb only (quickest, clamped) |
 
 `a = clamp(0.30, 1.60, a_lookahead × factor)`. Changing Accel 1 vs 10 must not change brake feel. A higher limit ahead may still be published as `nextSpeedLimit`; Cap/Follow ignore it until `speedLimit` itself is the higher value.
@@ -159,9 +162,9 @@ Policy tests include lead precedence, fetch of a tiny sqlite over HTTP, and Refr
 
 **On-road, pedal mode:**
 
-1. Cap, **no lead**: set MAX above the posted limit; the car must decelerate toward that MAX (Accel 5 ≈ 0.80 m/s²). Raising the stalk cannot exceed the cap.
+1. Cap, **no lead**: set MAX above the posted limit; the car must decelerate toward that MAX (Accel 5 ≈ 1.10 m/s²). Raising the stalk cannot exceed the cap.
 2. Cap/Follow, **slower lead**: the car still slows for radar `leadOne`.
-3. Follow, Lookahead Normal, **no lead**. On a known drop (45→35), Accel **1 and 10 must feel the same brake**. On a known rise (35→45, after GPS is on the faster way), Accel 1 climbs lazily and Accel 10 quicker. Lookahead = Off: MAX and decel start only after GPS matches the slower way.
+3. Follow, Lookahead Normal, **no lead**. On a known drop (50→30), Accel **1 and 10 must feel the same brake**, and ego should be near 30 at the sign (not still ~42). On a known rise (35→45, after GPS is on the faster way), Accel 1 climbs lazily and Accel 10 quicker — the pedal target and the car must actually speed up. Lookahead = Off: MAX and decel start only after GPS matches the slower way.
 4. Drive toward a **higher** limit: MAX must **not** rise until you are on the faster segment.
 5. Follow: stalk **down** below the posted limit stays past 10 seconds until another stalk or a posted-limit change (then resume at the new limit). Stalk **up** above the limit: 10s hold, then Follow. Double-pull engage with a valid limit: MAX **and** the car start at the posted limit immediately.
 6. Cancel / brake still uses the existing engagement FSM.
