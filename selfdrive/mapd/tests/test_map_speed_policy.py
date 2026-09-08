@@ -3,13 +3,13 @@ from openpilot.selfdrive.mapd.constants import (
   ACCEL_DEFAULT, LOOKAHEAD_EARLY, LOOKAHEAD_NORMAL, LOOKAHEAD_OFF,
   MODE_CAP, MODE_DISPLAY, MODE_FOLLOW, MODE_OFF,
   TRACK_DEADBAND_MS, TRACK_TAPER_MS,
-  accel_scale_factor, map_comfort_a_ms2,
+  accel_scale_factor, map_accel_a_ms2, map_brake_a_ms2, map_comfort_a_ms2,
 )
 from openpilot.selfdrive.mapd.map_speed_policy import (
   SOURCE_CRUISE, SOURCE_LEAD0, V_CRUISE_UNSET,
   anticipatory_limit_ms, apply_map_speed_kph, cap_planner_v_cruise_ms,
-  effective_map_limit_ms, longitudinal_obstacle_source, map_track_decel_ms2,
-  slew_map_speed_ms,
+  effective_map_limit_ms, longitudinal_obstacle_source, map_slew_a_ms2,
+  map_track_accel_ms2, map_track_decel_ms2, slew_map_speed_ms,
 )
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   MAP_SPEED_ACCEL, MAP_SPEED_ACCEL_DEFAULT, MAP_SPEED_LOOKAHEAD,
@@ -163,36 +163,52 @@ def test_accel_default_five_matches_prior_normal_curve():
   a_default = anticipatory_limit_ms(current, nxt, 200.0, current, LOOKAHEAD_NORMAL)
   assert a5 is not None and a_default is not None
   assert abs(a5 - a_default) < 1e-9
-  # At the same distance, gentler a holds a lower MAX (starts earlier / finishes later).
-  a1 = anticipatory_limit_ms(current, nxt, 100.0, current, LOOKAHEAD_NORMAL, 1)
-  a10 = anticipatory_limit_ms(current, nxt, 100.0, current, LOOKAHEAD_NORMAL, 10)
+  # Accel 1–10 must not change anticipatory decreases (brake locked at 5).
+  a1 = anticipatory_limit_ms(current, nxt, 200.0, current, LOOKAHEAD_NORMAL, 1)
+  a10 = anticipatory_limit_ms(current, nxt, 200.0, current, LOOKAHEAD_NORMAL, 10)
   assert a1 is not None and a10 is not None
-  assert a1 < a10 <= current
-  # Higher a shortens the braking distance, so accel 10 starts later.
-  # 70→45 mph: Normal+5 is horizon-capped at 400 m; Normal+10 needs ~260 m.
-  assert anticipatory_limit_ms(current, nxt, 300.0, current, LOOKAHEAD_NORMAL, 10) is None
-  assert anticipatory_limit_ms(current, nxt, 300.0, current, LOOKAHEAD_NORMAL, 5) is not None
+  assert abs(a1 - a5) < 1e-9 and abs(a10 - a5) < 1e-9
+  assert anticipatory_limit_ms(current, nxt, 300.0, current, LOOKAHEAD_NORMAL, 1) is not None
+  assert anticipatory_limit_ms(current, nxt, 300.0, current, LOOKAHEAD_NORMAL, 10) is not None
 
 
 def test_map_track_decel_matches_comfort_curve_when_above_max():
-  a5 = map_comfort_a_ms2(LOOKAHEAD_NORMAL, 5)
+  a5 = map_brake_a_ms2(LOOKAHEAD_NORMAL)
   assert abs(a5 - 0.80) < 1e-9
+  assert abs(map_brake_a_ms2(LOOKAHEAD_NORMAL) - map_comfort_a_ms2(LOOKAHEAD_NORMAL, 5)) < 1e-9
   v_ego = 70 * CV.MPH_TO_MS
   v_max = 45 * CV.MPH_TO_MS
-  # Well above MAX → full comfort decel (Accel 5 = 0.80 m/s²).
+  # Well above MAX → full comfort decel (locked Accel 5 = 0.80 m/s²).
   assert v_ego - v_max > TRACK_TAPER_MS
   assert map_track_decel_ms2(v_ego, v_max, a5) == -a5
+  # Helper still accepts other a for unit math; planner must pass a5.
   assert map_track_decel_ms2(v_ego, v_max, 0.36) == -0.36
-  assert map_track_decel_ms2(v_ego, v_max, 1.60) == -1.60
-  # At or below MAX, or within the deadband: do not command extra decel.
   assert map_track_decel_ms2(v_max, v_max, a5) is None
   assert map_track_decel_ms2(v_max - 1.0, v_max, a5) is None
   assert map_track_decel_ms2(v_max + TRACK_DEADBAND_MS, v_max, a5) is None
-  # Taper: halfway through the band is half comfort a.
   mid = v_max + 0.5 * (TRACK_DEADBAND_MS + TRACK_TAPER_MS)
   a_mid = map_track_decel_ms2(mid, v_max, a5)
   assert a_mid is not None
   assert abs(a_mid - (-0.5 * a5)) < 1e-9
+
+
+def test_accel_setting_does_not_change_brake_a():
+  assert abs(map_brake_a_ms2(LOOKAHEAD_NORMAL) - 0.80) < 1e-9
+  v_ego = 70 * CV.MPH_TO_MS
+  v_max = 45 * CV.MPH_TO_MS
+  locked = map_track_decel_ms2(v_ego, v_max, map_brake_a_ms2(LOOKAHEAD_NORMAL))
+  assert locked == -0.80
+  # Accel 1 vs 10 change climb a only.
+  assert abs(map_accel_a_ms2(LOOKAHEAD_NORMAL, 1) - 0.36) < 1e-9
+  assert abs(map_accel_a_ms2(LOOKAHEAD_NORMAL, 10) - 1.60) < 1e-9
+  assert map_slew_a_ms2(30.0, 20.0, LOOKAHEAD_NORMAL, 1) == map_slew_a_ms2(30.0, 20.0, LOOKAHEAD_NORMAL, 10)
+  assert abs(map_slew_a_ms2(30.0, 20.0, LOOKAHEAD_NORMAL, 10) - 0.80) < 1e-9
+  assert abs(map_slew_a_ms2(20.0, 30.0, LOOKAHEAD_NORMAL, 1) - 0.36) < 1e-9
+  assert abs(map_slew_a_ms2(20.0, 30.0, LOOKAHEAD_NORMAL, 10) - 1.60) < 1e-9
+  a1 = map_track_accel_ms2(20.0, 31.29, map_accel_a_ms2(LOOKAHEAD_NORMAL, 1))
+  a10 = map_track_accel_ms2(20.0, 31.29, map_accel_a_ms2(LOOKAHEAD_NORMAL, 10))
+  assert a1 is not None and a10 is not None
+  assert abs(a1 - 0.36) < 1e-9 and abs(a10 - 1.60) < 1e-9
 
 
 def test_map_track_decel_loses_to_stronger_lead_brake():
@@ -225,6 +241,8 @@ def test_map_speed_submenu_wires_params():
     for key in ("NAPMapSpeedMode", "NAPMapSpeedOffsetMph", "NAPMapSpeedLookahead", "NAPMapSpeedAccel"):
       assert key in src
   assert "self._scroller.add_widgets" in mici
+  assert "Brake to a lower MAX is locked" in tici
+  assert "acceleration only" in mici
   assert "Map Speed Limit" in nap
   assert "map speed limit" in nap_mici
   assert "NAPMapSpeedAccel" in (root / "common/params_keys.h").read_text()
@@ -238,9 +256,11 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   mpc = (root / "selfdrive/controls/lib/longitudinal_mpc_lib/long_mpc.py").read_text()
   cap_at = planner.find("cap_planner_v_cruise_ms")
   mpc_at = planner.find("self.mpc.update(sm['radarState'], v_cruise")
-  track_at = planner.find("a_track = map_track_decel_ms2")
+  track_at = planner.find("a_brake = map_track_decel_ms2")
   assert 0 <= cap_at < mpc_at
   assert 0 <= mpc_at < track_at
-  assert "min(float(output_a_target), a_track)" in planner
+  assert "map_brake_a_ms2" in planner
+  assert "map_track_accel_ms2" in planner
+  assert "min(float(output_a_target), a_brake)" in planner
   assert "np.column_stack([lead_0_obstacle, lead_1_obstacle, cruise_obstacle])" in mpc
   assert "self.params[:,2] = np.min(x_obstacles, axis=1)" in mpc

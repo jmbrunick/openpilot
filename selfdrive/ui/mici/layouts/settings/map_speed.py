@@ -39,7 +39,7 @@ class MapSpeedLimitLayoutMici(NavScroller):
       default_value=2,
     )
     map_accel = BigMultiValueParamToggle(
-      "acceleration",
+      "acceleration only",
       "NAPMapSpeedAccel",
       values=list(MAP_SPEED_ACCEL),
       labels=MAP_SPEED_ACCEL_LABELS,
