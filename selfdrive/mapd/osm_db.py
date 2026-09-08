@@ -268,6 +268,29 @@ class OsmSpeedLimitDB:
       (int(way_id), min_lat, max_lat, min_lon, max_lon),
     )
 
+  @staticmethod
+  def delete_ways_intersecting_bbox(con: sqlite3.Connection, south: float, west: float, north: float, east: float) -> int:
+    """Remove ways whose stored bbox intersects south,west,north,east. Returns deleted count."""
+    rows = con.execute(
+      "SELECT way_id FROM ways_rtree WHERE max_lat >= ? AND min_lat <= ? AND max_lon >= ? AND min_lon <= ?",
+      (south, north, west, east),
+    ).fetchall()
+    ids = [int(r[0]) for r in rows]
+    if not ids:
+      return 0
+    for i in range(0, len(ids), 500):
+      chunk = ids[i:i + 500]
+      q = ",".join("?" * len(chunk))
+      con.execute(f"DELETE FROM ways WHERE way_id IN ({q})", chunk)
+      con.execute(f"DELETE FROM ways_rtree WHERE way_id IN ({q})", chunk)
+    return len(ids)
+
+  @staticmethod
+  def recount_ways(con: sqlite3.Connection) -> int:
+    n = int(con.execute("SELECT COUNT(*) FROM ways").fetchone()[0])
+    con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", ("way_count", str(n)))
+    return n
+
   def _candidates(self, lat: float, lon: float) -> list[sqlite3.Row]:
     if self._con is None:
       return []
