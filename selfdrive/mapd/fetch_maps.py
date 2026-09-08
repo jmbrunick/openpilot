@@ -42,6 +42,7 @@ from openpilot.selfdrive.mapd.maps_manifest import (
   release_asset_url,
 )
 from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB
+from openpilot.selfdrive.ui.layouts.settings.nap_content import DOWNLOAD_US_MAPS_NO_REBOOT_NOTE
 
 CHUNK = 256 * 1024
 STAGING_DIRNAME = ".download"
@@ -491,6 +492,7 @@ def fetch_and_install(
   url = url or os.environ.get("NAP_MAP_RELEASE_URL") or release_asset_url()
   _p(f"OpenStreetMap speed limits ({LICENSE}). {ATTRIBUTION}")
   _p(LICENSE_URL)
+  _p(DOWNLOAD_US_MAPS_NO_REBOOT_NOTE)
   _p(f"Source: {url}")
   _p(f"Install path: {dest}")
 
@@ -543,7 +545,7 @@ def fetch_and_install(
     raise RuntimeError(f"Downloaded file is not a NAP OSM sqlite: {dest}")
 
   _p(installed_db_summary(dest))
-  _p("mapd reloads this file within ~15s onroad. No reboot required.")
+  _p(DOWNLOAD_US_MAPS_NO_REBOOT_NOTE)
   return dest
 
 

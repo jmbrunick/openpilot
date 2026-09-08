@@ -305,6 +305,8 @@ def test_cli_no_gps_prints_error(tmp_path, monkeypatch, capsys):
   out = capsys.readouterr().out
   assert "Waiting up to 45s for a satellite fix" in out
   assert "(c) OpenStreetMap contributors" in out
+  assert "No reboot required after Refresh maps" in out
+  assert "Exit returns to Settings" in out
   assert "ERROR:" in out
   assert "guess a city" in out
   assert "onroad" in out
@@ -452,6 +454,13 @@ def test_docs_and_ui_say_100_miles_not_published_pack():
   assert "45s" in instructions
   assert "onroad" in instructions
   assert "(c) OpenStreetMap" in instructions
+  assert "No reboot required after Refresh maps" in instructions
+  assert "Exit returns to Settings" in instructions
+  assert "mapd reloads the sqlite in about 15 seconds" in instructions
+  assert "REFRESH_MAPS_ROW_DESCRIPTION" in tici
+  assert 'BigButton("refresh maps", "no reboot")' in mici
+  refresh_py = (root / "selfdrive/mapd/local_refresh.py").read_text()
+  assert "REFRESH_MAPS_NO_REBOOT_NOTE" in refresh_py
   assert "45s" in docs
   assert "200 m" in docs or "200m" in docs
 
