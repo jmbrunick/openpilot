@@ -57,7 +57,7 @@ def anticipatory_limit_ms(
   """
   if lookahead <= LOOKAHEAD_OFF or lookahead not in LOOKAHEAD_TUNING:
     return None
-  if current_ms <= 0 or next_ms <= 0 or next_dist_m <= 0:
+  if current_ms <= 0 or next_ms <= 0:
     return None
   if next_ms >= current_ms - MIN_DECREASE_MS:
     return None
@@ -74,6 +74,8 @@ def anticipatory_limit_ms(
   vt = float(next_ms)
   if v0 <= vt:
     return None
+  if next_dist_m <= 0:
+    return vt
   need_m = (v0 * v0 - vt * vt) / (2.0 * a_comfort) + margin_m
   need_m = min(need_m, horizon_m)
   if next_dist_m > need_m:
@@ -307,13 +309,17 @@ def decide_map_cruise(
     return MapCruiseDecision(float(posted_kph), False, float(posted_kph), False)
 
   if posted_ok and hold.last_posted_kph is not None and not posted_limits_same(hold.last_posted_kph, posted_kph):
-    # New posted limit b: drop the set made under a, resume Cap/Follow at b.
+    # New posted limit b: drop the set made under a. A raise seeds MAX to b
+    # (1.5 s GNSS lag). A decrease must not seed — that snapped 60→50 and
+    # skipped kin+110 m ease. Follow uses map_kph / lookahead instead.
+    prev = float(hold.last_posted_kph)
     hold.sticky_set_kph = None
     hold.follow_override_until = 0.0
     hold.last_posted_kph = posted_kph
     hold.last_raw_kph = float(posted_kph)
     hold.policy_kph = float(posted_kph)
-    return MapCruiseDecision(float(posted_kph), False, float(posted_kph), False)
+    raised = float(posted_kph) > prev + POSTED_LIMIT_EPS_KPH
+    return MapCruiseDecision(float(posted_kph), False, float(posted_kph) if raised else None, False)
 
   if posted_ok:
     hold.last_posted_kph = posted_kph

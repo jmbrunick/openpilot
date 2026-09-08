@@ -17,10 +17,10 @@ POSTED_LIMIT_EPS_KPH = 1.0
 # Spatial match
 MAX_MATCH_DISTANCE_M = 35.0
 HEADING_ALIGN_DEG = 55.0
-# Justin measured 1.5 s GNSS lag reading OSM signs. Offset the query
-# position by v_ego * this time along heading — both up and down.
-# Meters scale with speed (50 mph → ~33.5 m, 60 mph → ~40 m); not a
-# fixed meter offset and not decrease anticipation (+110 m is separate).
+# Justin measured 1.5 s GNSS lag. Raises posted when v_ego * this along
+# heading is already in a higher zone. Decreases keep GPS posted and ease
+# with kin+110 m (lead subtracts from next_distance). Meters scale with
+# speed (50 mph → ~33.5 m, 60 mph → ~40 m); not a fixed offset.
 OSM_SIGN_LEAD_S = 1.5
 # Heading-aligned probes for nextSpeedLimit (any change). Policy uses decreases only.
 # Geodesic 40 m steps can skip a short intermediate limit (US 12 60→50 before 30);
