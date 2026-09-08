@@ -21,7 +21,8 @@ from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.selfdrive.mapd.constants import MODE_CAP, MODE_FOLLOW, map_accel_a_ms2, map_brake_a_ms2
 from openpilot.selfdrive.mapd.map_speed_policy import (
-  cap_planner_v_cruise_ms, map_track_accel_ms2, map_track_decel_ms2, read_map_speed_params,
+  cap_planner_v_cruise_ms, map_in_track_deadband, map_track_accel_ms2, map_track_decel_ms2,
+  read_map_speed_params,
 )
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
@@ -188,15 +189,16 @@ class LongitudinalPlanner:
     if force_slow_decel:
       v_cruise = 0.0
 
-    # OSM map speed: trust card HUD MAX, then safety-cap at the posted sign.
-    # Lead still wins via mpc.update(radarState, v_cruise).
+    # OSM map speed: trust card HUD MAX. Cap still min()s with posted.
+    # Follow must not clip a sticky set to posted — that fought map_track_accel
+    # (climb toward HUD, MPC brake toward posted). Lead still wins via mpc.update.
     if (not force_slow_decel) and self._is_preap and self._map_speed_mode in (MODE_CAP, MODE_FOLLOW):
       if 'liveMapDataNAP' in sm.valid and sm.valid.get('liveMapDataNAP', False):
         md = sm['liveMapDataNAP']
         if md.speedLimitValid and md.speedLimit > 0:
           v_cruise = cap_planner_v_cruise_ms(
             v_hud_ms,
-            float(md.speedLimit),
+            float(md.speedLimit),  # Cap only; Follow returns HUD unchanged
             mode=self._map_speed_mode,
             offset_ms=self._map_speed_offset_kph * CV.KPH_TO_MS,
           )
@@ -255,21 +257,27 @@ class LongitudinalPlanner:
       self.output_should_stop = output_should_stop_mpc
 
     # Map MAX is a set speed; MPC cruise_obstacle will not track it.
-    # Brake is locked Accel 5. Accel 1–10 is Follow climb rate. Lead can brake more.
+    # Climb at Accel 1–10 until the deadband, then hold so we do not surge
+    # past MAX and map_track_decel below it. Brake is locked Accel 5.
+    # Lead (negative aTarget) still wins.
     if self._is_preap and self._map_speed_mode in (MODE_CAP, MODE_FOLLOW):
-      a_brake = map_track_decel_ms2(
-        v_ego, v_hud_ms, map_brake_a_ms2(self._map_speed_lookahead),
-      )
-      if a_brake is not None:
-        output_a_target = min(float(output_a_target), a_brake)
+      if map_in_track_deadband(v_ego, v_hud_ms):
+        if float(output_a_target) >= 0.0:
+          output_a_target = 0.0
       else:
-        a_up = map_track_accel_ms2(
-          v_ego, v_hud_ms, map_accel_a_ms2(self._map_speed_lookahead, self._map_speed_accel),
+        a_brake = map_track_decel_ms2(
+          v_ego, v_hud_ms, map_brake_a_ms2(self._map_speed_lookahead),
         )
-        if a_up is not None and float(output_a_target) >= 0.0:
-          # min() alone never created climb (MPC holds ~0). Command Accel 1–10
-          # toward MAX; a slower lead (negative aTarget) still outranks map.
-          output_a_target = a_up
+        if a_brake is not None:
+          output_a_target = min(float(output_a_target), a_brake)
+        else:
+          a_up = map_track_accel_ms2(
+            v_ego, v_hud_ms, map_accel_a_ms2(self._map_speed_lookahead, self._map_speed_accel),
+          )
+          if a_up is not None and float(output_a_target) >= 0.0:
+            # min() alone never created climb (MPC holds ~0). Command Accel 1–10
+            # toward MAX; a slower lead (negative aTarget) still outranks map.
+            output_a_target = a_up
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
