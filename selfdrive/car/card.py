@@ -19,7 +19,7 @@ from opendbc.car.fw_versions import ObdCallback
 from opendbc.car.car_helpers import get_car, interfaces
 from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
-from openpilot.selfdrive.car.cruise import VCruiseHelper
+from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET, VCruiseHelper
 from openpilot.selfdrive.mapd.map_speed_policy import (
   MapCruiseHold, apply_map_speed_kph, decide_map_cruise, effective_map_limit_ms,
   map_slew_a_ms2, read_map_speed_params, should_write_preap_pedal, slew_map_speed_ms,
@@ -231,38 +231,9 @@ class Car:
         posted_kph = None
         map_kph = None
         map_valid = bool(self.sm.valid.get('liveMapDataNAP', False) and self.sm['liveMapDataNAP'].speedLimitValid)
-        sticky_hold = self._map_hold.sticky_set_kph is not None
-        if map_valid:
-          md = self.sm['liveMapDataNAP']
-          if md.speedLimit > 0:
-            posted_kph = float(md.speedLimit) * CV.MS_TO_KPH + self._map_speed_offset_kph
-          if sticky_hold:
-            # Hold the stalk set. Do not slew MAX toward an upcoming lower OSM
-            # limit — that lookahead fights the hold (surge then brake).
-            map_kph = posted_kph
-          else:
-            lim = effective_map_limit_ms(
-              float(md.speedLimit),
-              float(md.nextSpeedLimit),
-              float(md.nextSpeedLimitDistance),
-              float(CS.vEgo),
-              self._map_speed_lookahead,
-              self._map_speed_accel,
-              sticky=False,
-            )
-            if lim is not None and lim > 0:
-              if self._map_slew_ms is None:
-                self._map_slew_ms = lim
-              else:
-                a = map_slew_a_ms2(
-                  self._map_slew_ms, lim, self._map_speed_lookahead, self._map_speed_accel,
-                )
-                self._map_slew_ms = slew_map_speed_ms(self._map_slew_ms, lim, DT_CTRL, a)
-              map_kph = self._map_slew_ms * CV.MS_TO_KPH
-            else:
-              self._map_slew_ms = None
-        else:
-          self._map_slew_ms = None
+        md = self.sm['liveMapDataNAP'] if map_valid else None
+        if md is not None and md.speedLimit > 0:
+          posted_kph = float(md.speedLimit) * CV.MS_TO_KPH + self._map_speed_offset_kph
         dec = decide_map_cruise(
           self._map_hold,
           engaged=long_active,
@@ -273,6 +244,34 @@ class Car:
           now=time.monotonic(),
           stalk_pressed=stalk_pressed,
         )
+        if map_valid and md is not None and not dec.sticky:
+          # Any posted decrease: kin+110 m ease, never assign the new limit in one shot.
+          lim = effective_map_limit_ms(
+            float(md.speedLimit),
+            float(md.nextSpeedLimit),
+            float(md.nextSpeedLimitDistance),
+            float(CS.vEgo),
+            self._map_speed_lookahead,
+            self._map_speed_accel,
+            sticky=False,
+          )
+          if lim is not None and lim > 0:
+            if self._map_slew_ms is None:
+              prev_kph = float(self.v_cruise_helper.v_cruise_kph)
+              prev_ms = prev_kph * CV.KPH_TO_MS
+              if 0.0 < prev_kph < V_CRUISE_UNSET and prev_ms > lim + 0.3:
+                self._map_slew_ms = prev_ms
+              else:
+                self._map_slew_ms = lim
+            a = map_slew_a_ms2(
+              self._map_slew_ms, lim, self._map_speed_lookahead, self._map_speed_accel,
+            )
+            self._map_slew_ms = slew_map_speed_ms(self._map_slew_ms, lim, DT_CTRL, a)
+            map_kph = self._map_slew_ms * CV.MS_TO_KPH
+          else:
+            self._map_slew_ms = None
+        elif not map_valid:
+          self._map_slew_ms = None
         # seed_kph is a one-shot write (engage, posted raise, stalk step).
         # Sticky hold uses driver_kph / follow_override — do not write pedal
         # every frame or CI.update's stalk step is undone.

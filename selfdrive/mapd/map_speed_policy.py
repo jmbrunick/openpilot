@@ -310,8 +310,9 @@ def decide_map_cruise(
 
   if posted_ok and hold.last_posted_kph is not None and not posted_limits_same(hold.last_posted_kph, posted_kph):
     # New posted limit b: drop the set made under a. A raise seeds MAX to b
-    # (1.5 s GNSS lag). A decrease must not seed — that snapped 60→50 and
-    # skipped kin+110 m ease. Follow uses map_kph / lookahead instead.
+    # (1.5 s GNSS lag). Any decrease (10/15/20 mph, short zones) must not
+    # seed — that snapped MAX when GPS or the offset crossed the boundary.
+    # Cap/Follow ease via map_kph (kin+110 m, brake 0.80) instead.
     prev = float(hold.last_posted_kph)
     hold.sticky_set_kph = None
     hold.follow_override_until = 0.0
@@ -319,7 +320,12 @@ def decide_map_cruise(
     hold.last_raw_kph = float(posted_kph)
     hold.policy_kph = float(posted_kph)
     raised = float(posted_kph) > prev + POSTED_LIMIT_EPS_KPH
-    return MapCruiseDecision(float(posted_kph), False, float(posted_kph) if raised else None, False)
+    return MapCruiseDecision(
+      float(posted_kph) if raised else prev,
+      False,
+      float(posted_kph) if raised else None,
+      False,
+    )
 
   if posted_ok:
     hold.last_posted_kph = posted_kph
@@ -414,21 +420,14 @@ def cap_planner_v_cruise_ms(
   mode: int,
   offset_ms: float = 0.0,
 ) -> float:
-  """Planner v_cruise from card HUD MAX.
+  """HUD MAX is already card policy.
 
-  Follow trusts HUD (sticky above or below posted `a`, or Follow map slew
-  including +110 m decreases). Do not min() Follow with posted — that clipped
-  a sticky 66 mph to posted 60 while map_track_accel still climbed to 66
-  (surge then brake below the set). Cap still never exceeds the posted sign.
-  Lead still wins via mpc.update(radarState, v_cruise).
+  Trust HUD for Cap and Follow. min() with posted snapped MAX when GPS or
+  the 1.5 s offset entered a lower zone, skipping kin+110 m ease. Card Cap
+  still never exceeds the eased ceiling. Lead still wins via mpc.update.
   """
-  if mode == MODE_FOLLOW:
-    return v_cruise_ms
-  if mode != MODE_CAP:
-    return v_cruise_ms
-  if map_limit_ms is None or map_limit_ms <= 0:
-    return v_cruise_ms
-  return min(v_cruise_ms, float(map_limit_ms) + float(offset_ms))
+  _ = map_limit_ms, mode, offset_ms
+  return v_cruise_ms
 
 
 # Same column order as LongitudinalMpc.update:
