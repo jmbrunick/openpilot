@@ -19,15 +19,26 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   FOLLOW_DISTANCE_DEFAULT,
   FOLLOW_DISTANCE_LABELS,
   FOLLOW_DISTANCE_VALUES,
+  HIGH_LOW_BEAM_LABELS,
+  HIGH_LOW_BEAM_VALUES,
   PEDAL_CAN_BUS_VALUES,
   RADAR_OFFSET_MAX,
   RADAR_OFFSET_MIN,
   RESTORE_EPAS_INSTRUCTIONS,
+  WIPER_SPEED_LABELS,
+  WIPER_SPEED_VALUES,
 )
 from openpilot.selfdrive.ui.mici.layouts.settings.map_speed import MapSpeedLimitLayoutMici
+from openpilot.selfdrive.car.tesla.preap_body_controls import (
+  NAP_HIGH_LOW_BEAM,
+  NAP_WIPER_SPEED,
+  register_nap_body_params,
+)
 from openpilot.selfdrive.ui.radar.radar_view import RadarMonitorDialog
 from openpilot.selfdrive.ui.ui_state import ui_state
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys
+
+register_nap_body_params()
 
 
 def _reboot_dialog() -> None:
@@ -250,6 +261,22 @@ class NAPLayoutMici(NavScroller):
     radar_settings_btn.set_click_callback(lambda: gui_app.push_widget(RadarSettingsLayoutMici()))
 
     # ── iBooster (locked off) ────────────────────────
+    wiper_control = BigMultiValueParamToggle(
+      "wiper control",
+      NAP_WIPER_SPEED,
+      values=WIPER_SPEED_VALUES,
+      labels=WIPER_SPEED_LABELS,
+      default_value=0,
+    )
+
+    high_low_beam = BigMultiValueParamToggle(
+      "high / low beam",
+      NAP_HIGH_LOW_BEAM,
+      values=HIGH_LOW_BEAM_VALUES,
+      labels=HIGH_LOW_BEAM_LABELS,
+      default_value=0,
+    )
+
     ibooster_enabled = BigParamControl("ibooster enabled", NAPParamKeys.IBOOSTER_ENABLED)
     ibooster_enabled.set_enabled(False)
 
@@ -290,6 +317,8 @@ class NAPLayoutMici(NavScroller):
       pedal_calib_status,
       calibrate_pedal_btn,
       radar_settings_btn,
+      wiper_control,
+      high_low_beam,
       ibooster_enabled,
       force_pre_ap,
       backup_epas_btn,

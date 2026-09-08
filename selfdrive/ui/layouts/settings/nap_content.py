@@ -21,6 +21,26 @@ FOLLOW_DISTANCE_VALUES = list(range(1, 8))
 FOLLOW_DISTANCE_LABELS = [str(i) for i in FOLLOW_DISTANCE_VALUES]
 FOLLOW_DISTANCE_DEFAULT = 4
 
+# DAS_bodyControls wiper / high-low beam test. 0 = off (today's TX).
+WIPER_SPEED_VALUES = [0, 1, 2]
+WIPER_SPEED_LABELS = ["Off", "Int", "On"]
+HIGH_LOW_BEAM_VALUES = [0, 1, 2]
+HIGH_LOW_BEAM_LABELS = ["Off", "Low", "High"]
+WIPER_SPEED_DESCRIPTION = (
+  "Request windshield wipers on DAS_bodyControls (same message as the "
+  "lane-change blinker). Off sends speed 0. Int/On send a fixed non-zero "
+  "speed so you can see if the body controller obeys. No rain sensing. "
+  "Pre-AP body controllers often ignore Autopilot wiper requests — this is "
+  "a car test, not a promise it works. Engage NAP to TX."
+)
+HIGH_LOW_BEAM_DESCRIPTION = (
+  "Request high or low beams on DAS_bodyControls. Off leaves the field "
+  "undecided (0). Low/High send a steady decision so you can see if the "
+  "beams change — it does not flash and does not switch headlights on/off. "
+  "Pre-AP body controllers often ignore Autopilot beam requests — this is "
+  "a car test, not a promise it works. Engage NAP to TX."
+)
+
 # Radar lateral offset bounds (meters). Added to radar yRel in
 # radar_interface.py. Negative = shift toward left; positive = toward right.
 # ~0.27 is typical for the 3D-printed factory-location mount.
@@ -210,7 +230,7 @@ Queries live OpenStreetMap speed limits within 100 miles (~160.9 km) of
 this car and merges them into the installed US maps. Ways in that radius
 are replaced; the rest of the US pack is kept.
 
-Uses a GNSS fix if one arrives (waits up to 45s), otherwise last stored GPS.
+Uses a GNSS fix if one arrives (waits up to 10s), otherwise last stored GPS.
 Will not guess a city. If maps are not installed yet, downloads the US pack
 first and then overlays the 100-mile extract -- never a 100-mile-only file.
 
