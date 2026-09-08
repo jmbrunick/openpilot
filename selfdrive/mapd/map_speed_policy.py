@@ -63,9 +63,9 @@ def anticipatory_limit_ms(
   _a_base, margin_m, horizon_m = LOOKAHEAD_TUNING[lookahead]
   if horizon_m <= 0:
     return None
-  # Brake / anticipatory decreases are locked at Accel 5. `accel` only
-  # scales Follow speed-up (MAX rising); keep the arg for call-site compat.
-  del accel
+  # Brake / anticipatory decreases are locked at Accel 5. `accel` is unused
+  # (climb-only); kept so call sites can pass NAPMapSpeedAccel unchanged.
+  _ = accel
   a_comfort = map_brake_a_ms2(lookahead)
   if a_comfort <= 0:
     return None
@@ -222,12 +222,14 @@ class MapCruiseHold:
     self.sticky_set_kph = None
     self.follow_override_until = 0.0
 
-  def clear_sticky(self) -> None:
-    self.sticky_set_kph = None
-
 
 @dataclass
 class MapCruiseDecision:
+  """Cruise overlay for one card.py cycle.
+
+  `seed_kph` is the pedal write-back (engage/posted seed or sticky hold).
+  None means leave `pedal_speed_kph` alone so stalk +/- is not overwritten.
+  """
   driver_kph: float
   follow_override: bool
   seed_kph: float | None
@@ -263,7 +265,7 @@ def decide_map_cruise(
   "ignore pedal_speed" — pre-AP button events are not reliable.
 
   Returns the driver-set to overlay, whether Follow should hold that set,
-  and an optional pedal_speed write-back for seed / sticky only.
+  and optional pedal write-back (`seed_kph`) for seed / sticky only.
   """
   if (not engaged) or mode not in (MODE_CAP, MODE_FOLLOW):
     hold.reset()

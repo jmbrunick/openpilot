@@ -36,11 +36,10 @@ class MapSpeedLimitLayout(Widget):
     map_mode = int(self._params.get("NAPMapSpeedMode", return_default=True) or 0)
     self._mode_buttons = multiple_button_item(
       "Map Speed (MAX)",
-      "OpenStreetMap speed limit for HUD MAX / cruise set speed. " +
-      "Off: unchanged. Display: show OSM limit only. Cap: MAX never exceeds the limit. " +
-      "Follow: MAX tracks the limit. Stalk below the limit holds that set until you stalk again or the sign changes. " +
-      "Stalk above the limit pauses Follow for 10s. " +
-      "Control modes require pedal interceptor longitudinal. No-pedal stock CC is display-only.",
+      "OpenStreetMap posted limit for HUD MAX. " +
+      "Off: no change. Display: LIMIT sign only. Cap: never exceed the limit. " +
+      "Follow (preferred): track the limit. Stalk below holds that set until you stalk again or the sign changes. " +
+      "Stalk above pauses Follow for 10s. Cap/Follow need the pedal interceptor; stock CC stays display-only.",
       buttons=MAP_SPEED_MODE_LABELS,
       button_width=150,
       selected_index=max(0, min(3, map_mode)),
@@ -51,7 +50,7 @@ class MapSpeedLimitLayout(Widget):
     offset_mph = int(self._params.get("NAPMapSpeedOffsetMph", return_default=True) or 0)
     self._offset_buttons = multiple_button_item(
       "Map Speed Offset",
-      "Added to the OSM limit before Cap/Follow (miles per hour). A set below the limit stays put; above-limit Follow override is 10 seconds.",
+      "Added to the OSM limit for Cap/Follow (mph). Below-limit sets stay put; above-limit Follow override lasts 10 seconds.",
       buttons=["-5 mph", "0", "+5 mph"],
       button_width=150,
       selected_index=self._offset_index(offset_mph),
@@ -62,9 +61,9 @@ class MapSpeedLimitLayout(Widget):
     lookahead = int(self._params.get("NAPMapSpeedLookahead", return_default=True) or 2)
     self._lookahead_buttons = multiple_button_item(
       "Lookahead",
-      "Cap/Follow only: ease MAX down for a lower posted limit ahead. " +
-      "Off: change only after GPS is on the slower way. Late / Normal / Early: farther preview. " +
-      "Never raises MAX early for a higher limit ahead. Radar lead still outranks map speed.",
+      "Cap/Follow: ease MAX down for a lower limit ahead. " +
+      "Off: wait until GPS is on that way. Late / Normal / Early: farther preview. " +
+      "A higher limit ahead never raises MAX early. Radar lead still outranks map.",
       buttons=MAP_SPEED_LOOKAHEAD_LABELS,
       button_width=150,
       selected_index=self._lookahead_index(lookahead),
@@ -75,9 +74,9 @@ class MapSpeedLimitLayout(Widget):
     accel = int(self._params.get("NAPMapSpeedAccel", return_default=True) or MAP_SPEED_ACCEL_DEFAULT)
     self._accel_buttons = multiple_button_item(
       "Acceleration",
-      "Follow only: how quickly the car speeds up when MAX rises. " +
+      "Follow only: how quickly the car climbs when MAX rises. " +
       "1=gentlest (0.36 m/s² at Normal), 5=0.80, 10=quickest (1.60, clamped). " +
-      "Brake to a lower MAX is locked at the Accel 5 feel (0.80 m/s² at Normal). " +
+      "Brake to a lower MAX is locked at Accel 5 (0.80 m/s² at Normal). " +
       "A slower lead can still brake harder.",
       buttons=MAP_SPEED_ACCEL_LABELS,
       button_width=72,

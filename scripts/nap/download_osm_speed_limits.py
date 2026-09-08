@@ -38,11 +38,11 @@ import urllib.parse
 import urllib.request
 
 from openpilot.selfdrive.mapd.db_paths import default_db_path
+from openpilot.selfdrive.mapd.maps_manifest import USER_AGENT
 from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB
 from openpilot.selfdrive.mapd.overpass import ways_from_overpass
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
-USER_AGENT = "NotAutopilot-mapd/1.0 (OSM ODbL; https://github.com/NotAutopilot/openpilot)"
 
 
 def bbox_from_center(lat: float, lon: float, radius_km: float) -> tuple[float, float, float, float]:
