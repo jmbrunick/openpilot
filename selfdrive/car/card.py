@@ -273,15 +273,17 @@ class Car:
             self._map_slew_ms = None
         elif not map_valid:
           self._map_slew_ms = None
-        # Blinker turn: held TurnIndLvr_Stat + OSM junction in that direction.
-        # Sticky must not block this drop; sticky_set_kph is kept. Lamps ignored.
+        # Blinker turn: lit lamp + OSM junction on that lamp's side.
+        # Sticky must not block this drop; sticky_set_kph is kept.
         # turn_kph is an absolute ceiling (do not add map offset).
         turn_kph = None
         if map_valid and md is not None and long_active:
           turn_ms = blinker_turn_limit_ms(
-            stalk_state=int(getattr(CS, 'turnSignalStalkState', 0) or 0),
+            left_blinker=bool(getattr(CS, 'leftBlinker', False)),
+            right_blinker=bool(getattr(CS, 'rightBlinker', False)),
             has_left=bool(getattr(md, 'intersectionHasLeft', False)),
             has_right=bool(getattr(md, 'intersectionHasRight', False)),
+            stalk_state=int(getattr(CS, 'turnSignalStalkState', 0) or 0),
             dist_m=float(getattr(md, 'intersectionDistance', 0.0) or 0.0),
             left_dest_ms=float(getattr(md, 'intersectionLeftSpeed', 0.0) or 0.0),
             right_dest_ms=float(getattr(md, 'intersectionRightSpeed', 0.0) or 0.0),

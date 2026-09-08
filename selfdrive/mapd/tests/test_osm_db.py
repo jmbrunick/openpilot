@@ -534,8 +534,12 @@ def test_highway_without_junction_does_not_flag_turn(tmp_path):
   ix = db.lookup_intersection(37.0, -122.002, bearing_deg=90.0)
   assert ix is None
   db.close()
-  assert blinker_turn_direction(1, False, False) == 0
-  assert blinker_turn_direction(2, False, False) == 0
-  assert not blinker_turn_holds_alc(1, False, False, 80.0)
-  assert not blinker_turn_holds_alc(2, False, False, 80.0)
+  assert blinker_turn_direction(left_blinker=True, right_blinker=False, has_left=False, has_right=False) == 0
+  assert blinker_turn_direction(left_blinker=False, right_blinker=True, has_left=False, has_right=False) == 0
+  assert not blinker_turn_holds_alc(
+    left_blinker=True, right_blinker=False, has_left=False, has_right=False, dist_m=80.0,
+  )
+  assert not blinker_turn_holds_alc(
+    left_blinker=False, right_blinker=True, has_left=False, has_right=False, dist_m=80.0,
+  )
 

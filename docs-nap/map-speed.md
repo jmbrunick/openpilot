@@ -38,7 +38,7 @@ This is a **speed** overlay plus a **path yaw** of the existing model plan so th
 
 **Detect.** `mapd` walks the matched OSM way (same sqlite / GPS path as MAX, including the 1.5 s GNSS lead on distance). A junction is another stored highway way within ~20 m whose heading is 35–145° off the current road (both directions of that way), or a sharp same-way bend. Parallel / dual-carriageway headings do not count. A cross street with no `maxspeed` still counts as a junction; it is never posted LIMIT (`speedLimitValid` stays false for that way; a real LIMIT on the road you are on is not cleared). The published US pack is maxspeed-only; **Refresh maps** overlays local junction geometry so a 3X does not need a full pack rebuild.
 
-**Trigger.** Held `STW_ACTN_RQ.TurnIndLvr_Stat` (`CS.turnSignalStalkState` 1=left, 2=right), **and** that side exists at the junction. Lamps (`BC_indicator*`) are ignored because openpilot can drive them during a lane change.
+**Trigger.** The **lit lamp** (`CS.leftBlinker` / `rightBlinker`) is the turn side, **and** OSM has a junction on that same side. If the lamp and the planned side disagree, do nothing (fail closed) — never yaw across opposing traffic. A 1/2 stalk enum that disagrees with the lamp is also a no-op.
 
 **Target MAX** (never above dest or posted):
 
@@ -53,7 +53,7 @@ Ease uses the same kin+110 m / Accel-5 0.80 curve as posted decreases. Lookahead
 
 **Sticky / Follow / Cap.** While the stalk is held, a sticky set must not block the drop (`sticky_set_kph` is kept). When the stalk returns to idle or the junction is behind the match, Cap/Follow resume, including that sticky set. Lead still wins.
 
-**Lateral.** While stalk+junction, ALC is not armed (a wheel nudge must not `laneChangeLeft/Right` and cut the corner). Desire stays `none`. Blinker is the cue to take the mapped junction; the hood camera is not. `modeld` yaws the stock model plan into that side (90° over a comfort-radius arc at `intersectionDistance`) so **modelV2.position** and **desiredCurvature** show and follow the turn — not a 0.15 m nudge on the straight camera line. Highway ALC — stalk on a multi-lane road with **no** OSM junction — is unchanged. No `Desire.turnLeft/Right`. No Tesla cluster nav.
+**Lateral.** While lamp+junction on that side, ALC is not armed. Desire stays `none`. The hood camera is not the turn cue. `modeld` yaws the stock model plan into the **lamp** side (90° over a comfort-radius arc at `intersectionDistance`): left lamp → +y / +ψ, right lamp → −y / −ψ. A right blinker cannot produce a leftward plan. Highway ALC — blinker with **no** OSM junction on that side — is unchanged. No `Desire.turnLeft/Right`. No Tesla cluster nav.
 
 ## US map data
 

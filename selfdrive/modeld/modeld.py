@@ -304,22 +304,29 @@ def main(demo=False):
 
       frame_delay = DT_MDL # compensate for time passed since the frame was captured: current_time - timestamp_eof is 50ms on average
       action_delay = DT_MDL / 2 # middle of the interval between model output (current state) and next frame (expected state)
-      # Held stalk + OSM junction: yaw the plan into that side street so the
-      # on-screen path and desiredCurvature take the turn. Highway ALC (stalk,
-      # no junction) keeps the raw model plan.
+      # Lit lamp + OSM junction on that side: yaw the plan into that street.
+      # Side is CS.leftBlinker / rightBlinker. Fail closed if lamps and the
+      # planned side disagree. Highway ALC (no junction) keeps the raw plan.
       turn_dir = 0
       turn_dist_m = 0.0
+      left_lamp = right_lamp = False
       if sm.valid.get("liveMapDataNAP", False):
         md = sm["liveMapDataNAP"]
+        cs = sm["carState"]
+        left_lamp = bool(getattr(cs, "leftBlinker", False))
+        right_lamp = bool(getattr(cs, "rightBlinker", False))
         turn_dir = blinker_turn_direction(
-          int(getattr(sm["carState"], "turnSignalStalkState", 0) or 0),
-          bool(getattr(md, "intersectionHasLeft", False)),
-          bool(getattr(md, "intersectionHasRight", False)),
+          left_blinker=left_lamp,
+          right_blinker=right_lamp,
+          has_left=bool(getattr(md, "intersectionHasLeft", False)),
+          has_right=bool(getattr(md, "intersectionHasRight", False)),
+          stalk_state=int(getattr(cs, "turnSignalStalkState", 0) or 0),
         )
         turn_dist_m = float(getattr(md, "intersectionDistance", 0.0) or 0.0)
       if turn_dir != 0:
         apply_junction_turn_plan(model_output['plan'][0], ModelConstants.T_IDXS,
-                                 turn_dir, turn_dist_m, v_ego)
+                                 turn_dir, turn_dist_m, v_ego,
+                                 left_blinker=left_lamp, right_blinker=right_lamp)
       action = get_action_from_model(model_output, prev_action, lat_delay + frame_delay + action_delay, long_delay + frame_delay + action_delay, v_ego)
       prev_action = action
       fill_model_msg(drivingdata_send, modelv2_send, model_output, action,
