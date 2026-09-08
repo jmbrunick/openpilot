@@ -456,6 +456,21 @@ def test_docs_and_ui_say_100_miles_not_published_pack():
   assert "200 m" in docs or "200m" in docs
 
 
+def test_map_scripts_do_not_reboot_on_exit():
+  from scripts.nap.script_lifecycle import script_reboots_on_exit
+  assert not script_reboots_on_exit("scripts.nap.refresh_osm_maps")
+  assert not script_reboots_on_exit("scripts.nap.fetch_osm_maps")
+  assert script_reboots_on_exit("scripts.nap.calibrate_pedal")
+  assert script_reboots_on_exit("scripts.nap.flash_epas")
+  assert script_reboots_on_exit("scripts.nap.extract_epas")
+  assert script_reboots_on_exit("scripts.nap.restore_epas")
+  root = Path(__file__).resolve().parents[3]
+  for rel in ("scripts/nap/run_script.py", "scripts/nap/run_script_mici.py"):
+    src = (root / rel).read_text()
+    assert "script_reboots_on_exit" in src
+    assert "HARDWARE.reboot()" in src
+
+
 def test_refresh_stages_merge_beside_dest_not_tmp(tmp_path):
   dest = str(tmp_path / "osm" / "speed_limits.sqlite")
   os.makedirs(os.path.dirname(dest), exist_ok=True)
