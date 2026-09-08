@@ -17,6 +17,9 @@ MAP_SPEED_LOOKAHEAD_LABELS = ["Off", "Late", "Normal", "Early"]
 MAP_SPEED_ACCEL = list(range(1, 11))
 MAP_SPEED_ACCEL_LABELS = [str(i) for i in MAP_SPEED_ACCEL]
 MAP_SPEED_ACCEL_DEFAULT = 5
+FOLLOW_DISTANCE_VALUES = list(range(1, 8))
+FOLLOW_DISTANCE_LABELS = [str(i) for i in FOLLOW_DISTANCE_VALUES]
+FOLLOW_DISTANCE_DEFAULT = 4
 
 # Radar lateral offset bounds (meters). Added to radar yRel in
 # radar_interface.py. Negative = shift toward left; positive = toward right.
