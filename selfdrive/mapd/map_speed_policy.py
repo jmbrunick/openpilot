@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 from openpilot.common.constants import CV
 from openpilot.selfdrive.mapd.constants import (
-  ACCEL_DEFAULT, ACCEL_MAX, ACCEL_MIN, DRIVER_OVERRIDE_S, LOOKAHEAD_NORMAL, LOOKAHEAD_OFF,
+  ACCEL_DEFAULT, ACCEL_MAX, ACCEL_MIN, LOOKAHEAD_NORMAL, LOOKAHEAD_OFF,
   LOOKAHEAD_TUNING, MANUAL_SET_EPS_KPH, MIN_DECREASE_MS, MODE_CAP, MODE_DISPLAY,
   MODE_FOLLOW, MODE_OFF, POSTED_LIMIT_EPS_KPH, TRACK_DEADBAND_MS, TRACK_TAPER_MS,
   map_accel_a_ms2, map_brake_a_ms2,
@@ -176,8 +176,7 @@ def is_manual_set_change(prev_kph: float, cur_kph: float) -> bool:
 def is_cruise_stalk_step(prev_kph: float, cur_kph: float) -> bool:
   """True if delta matches Tesla pedal stalk +/- (1 or 5 mph / kph).
 
-  An ego / DI_digitalSpeed jump is not a stalk step and must not arm
-  sticky or the Follow 10s timer.
+  An ego / DI_digitalSpeed jump is not a stalk step and must not arm sticky.
   """
   if not is_manual_set_change(prev_kph, cur_kph):
     return False
@@ -200,18 +199,12 @@ def is_below_posted(set_kph: float, posted_kph: float | None) -> bool:
   return float(set_kph) < float(posted_kph) - MANUAL_SET_EPS_KPH
 
 
-def is_above_posted(set_kph: float, posted_kph: float | None) -> bool:
-  if posted_kph is None or posted_kph <= 0:
-    return False
-  return float(set_kph) > float(posted_kph) + MANUAL_SET_EPS_KPH
-
-
 @dataclass
 class MapCruiseHold:
   """Engage-seed + sticky manual set while the posted OSM limit is unchanged.
 
-  Below-limit sticky and the Follow raise-above 10s timer are separate:
-  `follow_override_until` must never clear or replace a below-limit hold.
+  Follow holds the stalk set (above or below `a`) until posted leaves `a`.
+  Cap still never exceeds the posted sign. No 10s raise-above timer.
   """
   last_posted_kph: float | None = None
   last_raw_kph: float = V_CRUISE_UNSET
@@ -268,10 +261,15 @@ def decide_map_cruise(
   stalk; an ego jump does not. Do not treat `stalk_pressed=False` as
   "ignore pedal_speed" — pre-AP button events are not reliable.
 
+  Follow: a manual set while posted is `a` holds that absolute MAX until
+  posted changes to `b`, then Cap/Follow resume at `b`. Cap never exceeds
+  the posted sign. `now` is unused (no 10s timer); kept for call sites.
+
   Returns the driver-set to overlay, whether Follow should hold that set,
   and optional pedal write-back (`seed_kph`) for seed / sticky. Card also
   writes pedal when HUD MAX rises (stalk up / Follow posted raise).
   """
+  _ = now
   if (not engaged) or mode not in (MODE_CAP, MODE_FOLLOW):
     hold.reset()
     return MapCruiseDecision(raw_kph, False, None, False)
@@ -290,22 +288,13 @@ def decide_map_cruise(
     return MapCruiseDecision(float(posted_kph), False, float(posted_kph), False)
 
   if posted_ok and hold.last_posted_kph is not None and not posted_limits_same(hold.last_posted_kph, posted_kph):
-    # New posted limit b: drop a-5 hold and resume Cap/Follow at b.
+    # New posted limit b: drop the set made under a, resume Cap/Follow at b.
     hold.sticky_set_kph = None
     hold.follow_override_until = 0.0
     hold.last_posted_kph = posted_kph
     hold.last_raw_kph = float(posted_kph)
     hold.policy_kph = float(posted_kph)
     return MapCruiseDecision(float(posted_kph), False, float(posted_kph), False)
-
-  if posted_ok and hold.last_posted_kph is None:
-    hold.last_posted_kph = posted_kph
-    if hold.sticky_set_kph is not None and not is_below_posted(hold.sticky_set_kph, posted_kph):
-      hold.sticky_set_kph = None
-      hold.follow_override_until = 0.0
-      hold.last_raw_kph = float(posted_kph)
-      hold.policy_kph = float(posted_kph)
-      return MapCruiseDecision(float(posted_kph), False, float(posted_kph), False)
 
   if posted_ok:
     hold.last_posted_kph = posted_kph
@@ -314,37 +303,22 @@ def decide_map_cruise(
 
   if manual:
     hold.policy_kph = float(raw_kph)
-    if is_below_posted(raw_kph, ref_posted) or ref_posted is None:
-      # Sticky below-limit (or no sign yet): never arm DRIVER_OVERRIDE_S.
-      # Timeout must not Follow-raise back to `a` after a stalk to a-5.
+    hold.follow_override_until = 0.0
+    if mode == MODE_FOLLOW:
       hold.sticky_set_kph = float(raw_kph)
-      hold.follow_override_until = 0.0
+    elif is_below_posted(raw_kph, ref_posted) or ref_posted is None:
+      hold.sticky_set_kph = float(raw_kph)
     else:
+      # Cap: stalk at or above posted is not sticky; apply_map_speed caps.
       hold.sticky_set_kph = None
-      if mode == MODE_FOLLOW and is_above_posted(raw_kph, ref_posted):
-        hold.follow_override_until = now + DRIVER_OVERRIDE_S
-      else:
-        hold.follow_override_until = 0.0
 
   if hold.policy_kph is None:
     hold.policy_kph = float(raw_kph)
 
-  # Promote a below-limit set off the 10s timer if anything armed it.
-  if hold.sticky_set_kph is None and is_below_posted(float(hold.policy_kph), ref_posted):
-    if hold.follow_override_until > 0.0 or manual:
-      hold.sticky_set_kph = float(hold.policy_kph)
-      hold.follow_override_until = 0.0
-
   if hold.sticky_set_kph is not None:
     return _sticky_decision(hold, mode, posted_kph)
 
-  override = mode == MODE_FOLLOW and now < hold.follow_override_until
-  if override and is_below_posted(float(hold.policy_kph), ref_posted):
-    hold.sticky_set_kph = float(hold.policy_kph)
-    hold.follow_override_until = 0.0
-    return _sticky_decision(hold, mode, posted_kph)
-
-  return MapCruiseDecision(float(hold.policy_kph), override, None, False)
+  return MapCruiseDecision(float(hold.policy_kph), False, None, False)
 
 
 def should_write_preap_pedal(seed_kph: float | None, hud_kph: float,
@@ -397,8 +371,8 @@ def apply_map_speed_kph(
     return min(driver, map_target)
 
   if mode == MODE_FOLLOW:
-    # driver_override is the raise-above-limit 10s hold only. Below-limit
-    # sticky is applied by decide_map_cruise before this function runs.
+    # driver_override is a sticky hold backup. Card usually applies sticky
+    # via seed_kph before this function. No 10s snap-back to posted.
     if driver_override:
       return max(v_min, min(v_max, driver))
     return map_target
