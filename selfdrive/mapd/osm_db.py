@@ -1,7 +1,8 @@
 """Offline OSM speed-limit SQLite (R-tree) for comma 3X.
 
 Schema is NAP-owned. Data is OpenStreetMap (ODbL). Query path is GPS → nearest
-heading-aligned way with an explicit maxspeed tag.
+heading-aligned way with an explicit maxspeed tag. Ways with maxspeed_ms=0 are
+junction geometry only (cross streets with no posted tag) and never LIMIT.
 """
 from __future__ import annotations
 
@@ -424,7 +425,8 @@ class OsmSpeedLimitDB:
   def insert_way(con: sqlite3.Connection, way_id: int, name: str, highway: str,
                  maxspeed_ms: float, coords: list[tuple[float, float]]) -> None:
     coords = simplify_coords(coords)
-    if len(coords) < 2 or maxspeed_ms <= 0:
+    # maxspeed_ms=0 is geometry-only (junction detect, never posted LIMIT).
+    if len(coords) < 2 or maxspeed_ms < 0:
       return
     lats = [c[0] for c in coords]
     lons = [c[1] for c in coords]
@@ -496,6 +498,8 @@ class OsmSpeedLimitDB:
     best: SpeedLimitMatch | None = None
     best_score = 1e12
     for row in self._candidates(lat, lon):
+      if float(row["maxspeed_ms"]) <= 0:
+        continue
       coords = _unpack_coords(row["coords"])
       dist, seg_heading = _point_to_polyline_m(lat, lon, coords)
       if dist > MAX_MATCH_DISTANCE_M:
@@ -658,19 +662,22 @@ class OsmSpeedLimitDB:
       dest = float(row["maxspeed_ms"])
       if left:
         has_left = True
-        left_ms = dest if left_ms <= 0.0 else min(left_ms, dest)
+        if dest > 0.0:
+          left_ms = dest if left_ms <= 0.0 else min(left_ms, dest)
       if right:
         has_right = True
-        right_ms = dest if right_ms <= 0.0 else min(right_ms, dest)
+        if dest > 0.0:
+          right_ms = dest if right_ms <= 0.0 else min(right_ms, dest)
     return has_left, has_right, left_ms, right_ms
 
   def lookup_intersection(self, lat: float, lon: float, bearing_deg: float | None = None,
                           v_ego_ms: float = 0.0) -> IntersectionAhead | None:
     """Nearest turn junction along the matched way, or None.
 
-    A junction is another maxspeed way within JUNCTION_RADIUS_M whose heading
-    is 35–145° off the current road (both directions of that way), or a sharp
-    bend on the current way. Distance is along-way from GPS, minus v*1.5 s.
+    A junction is another stored highway way within JUNCTION_RADIUS_M whose
+    heading is 35–145° off the current road (both directions of that way), or a
+    sharp bend on the current way. Cross streets with maxspeed_ms=0 still count
+    (never as posted LIMIT). Distance is along-way from GPS, minus v*1.5 s.
     """
     if self._con is None or bearing_deg is None:
       return None

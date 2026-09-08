@@ -970,6 +970,10 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   assert "lookup_intersection" in mapd
   assert "lookup_intersection" in osm
   assert "TURN_SPEED_DEFAULT_MPH = 15.0" in constants
+  assert "JUNCTION_GEOMETRY_HIGHWAY" in constants
+  overpass = (root / "selfdrive/mapd/overpass.py").read_text()
+  assert '["!maxspeed"]' in overpass
+  assert "maxspeed_ms < 0" in osm
   dh = (root / "selfdrive/controls/lib/desire_helper.py").read_text()
   assert "hold_for_intersection" in dh
   modeld = (root / "selfdrive/modeld/modeld.py").read_text()
@@ -979,8 +983,8 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   lead = (root / "selfdrive/controls/lib/lead_approach.py").read_text()
   assert "LEAD_APPROACH_A_MS2 = 0.80" in lead
   assert "LEAD_APPROACH_MARGIN_M = 110.0" in lead
-  assert "LATE_APEX_Y_M = 0.30" in constants
-  assert "LATE_APEX_CURV_SCALE = 0.90" in constants
+  assert "LATE_APEX_Y_M = 0.15" in constants
+  assert "LATE_APEX_CURV_SCALE = 0.95" in constants
 
 
 def test_turn_speed_table_12_15_18():
@@ -1110,8 +1114,11 @@ def test_late_apex_identity_when_not_intersection_turn():
 
 def test_late_apex_biases_outside_and_does_not_cut_inside():
   """Left turn: y negative (right/outside), kappa less left. Right is the mirror."""
-  assert abs(LATE_APEX_Y_M - 0.30) < 1e-9
-  assert abs(LATE_APEX_CURV_SCALE - 0.90) < 1e-9
+  # Slightly outside the model line — not the 0.30 m / 0.90 swing Justin called too wide.
+  assert abs(LATE_APEX_Y_M - 0.15) < 1e-9
+  assert abs(LATE_APEX_CURV_SCALE - 0.95) < 1e-9
+  assert 0.0 < LATE_APEX_Y_M < 0.30
+  assert 0.90 < LATE_APEX_CURV_SCALE < 1.0
   assert late_apex_y_offset_m(1) == -LATE_APEX_Y_M
   assert late_apex_y_offset_m(2) == LATE_APEX_Y_M
   assert late_apex_ramp(0.0) == 0.0

@@ -1,7 +1,7 @@
 from openpilot.common.constants import CV
 from openpilot.selfdrive.mapd.constants import OSM_SIGN_LEAD_S, osm_sign_lead_m
 from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB, _offset_point, _pack_coords, _unpack_coords, simplify_coords
-from openpilot.selfdrive.mapd.overpass import ways_from_overpass
+from openpilot.selfdrive.mapd.overpass import overpass_query, ways_from_overpass
 from openpilot.selfdrive.mapd.speed_limit import parse_maxspeed
 
 
@@ -297,11 +297,30 @@ def test_overpass_json_import(tmp_path):
         "tags": {"highway": "service", "maxspeed": "signals"},
         "geometry": [{"lat": 37.5, "lon": -122.4}, {"lat": 37.5, "lon": -122.401}],
       },
+      {
+        "type": "way",
+        "id": 44,
+        "tags": {"highway": "residential", "name": "Elm"},
+        "geometry": [
+          {"lat": 37.5, "lon": -122.41},
+          {"lat": 37.501, "lon": -122.41},
+        ],
+      },
+      {
+        "type": "way",
+        "id": 45,
+        "tags": {"highway": "footway", "name": "Path"},
+        "geometry": [
+          {"lat": 37.5, "lon": -122.42},
+          {"lat": 37.501, "lon": -122.42},
+        ],
+      },
     ]
   }
   ways = ways_from_overpass(payload)
-  assert len(ways) == 1
-  assert ways[0]["way_id"] == 42
+  assert {w["way_id"] for w in ways} == {42, 44}
+  elm = next(w for w in ways if w["way_id"] == 44)
+  assert elm["maxspeed_ms"] == 0.0
   out = str(tmp_path / "out.sqlite")
   con = OsmSpeedLimitDB.create(out)
   for w in ways:
@@ -312,6 +331,9 @@ def test_overpass_json_import(tmp_path):
   assert db.open()
   m = db.lookup(37.5005, -122.4, bearing_deg=0.0)
   assert m is not None and m.way_id == 42
+  # Geometry-only Elm is stored for junctions, never posted LIMIT.
+  assert db.lookup(37.5005, -122.41, bearing_deg=0.0) is None
+  db.close()
 
 
 def test_delete_ways_intersecting_bbox(tmp_path):
@@ -427,4 +449,93 @@ def test_simplify_collinear_and_f64_unpack():
   pts = _unpack_coords(blob)
   assert abs(pts[0][0] - 37.5) < 1e-9
   assert len(_unpack_coords(packed64)) == 2
+
+
+def test_overpass_query_pulls_untagged_driveable_streets():
+  q = overpass_query(37.0, -122.1, 37.1, -122.0)
+  assert 'way["highway"]["maxspeed"]' in q
+  assert '["!maxspeed"]' in q
+  assert "residential" in q
+  assert "unclassified" in q
+  assert "footway" not in q
+  assert "cycleway" not in q
+
+
+def test_intersection_untagged_cross_street_sets_side(tmp_path):
+  """Cross street with no maxspeed still flags the junction (Justin's 3X miss)."""
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  OsmSpeedLimitDB.insert_way(
+    con, 1, "Main", "primary", 45 * CV.MPH_TO_MS,
+    [(37.0, -122.004), (37.0, -121.996)],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 2, "Cross", "residential", 0.0,
+    [(36.997, -122.0), (37.003, -122.0)],
+  )
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  ix = db.lookup_intersection(37.0, -122.002, bearing_deg=90.0)
+  assert ix is not None
+  assert ix.has_left and ix.has_right
+  assert 80.0 <= ix.distance_m <= 280.0
+  assert ix.left_speed_ms == 0.0
+  assert ix.right_speed_ms == 0.0
+  db.close()
+
+
+def test_geometry_only_way_is_never_posted_limit(tmp_path):
+  """maxspeed_ms=0 is junction geometry. It must not become LIMIT or clear a real one."""
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  OsmSpeedLimitDB.insert_way(
+    con, 1, "Main", "primary", 45 * CV.MPH_TO_MS,
+    [(37.0, -122.004), (37.0, -121.996)],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 2, "Cross", "residential", 0.0,
+    [(36.997, -122.0), (37.003, -122.0)],
+  )
+  # Untagged collinear overlay — closer duplicate must not steal posted 45.
+  OsmSpeedLimitDB.insert_way(
+    con, 3, "Main", "primary", 0.0,
+    [(37.0, -122.004), (37.0, -121.996)],
+  )
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  on_main = db.lookup(37.0, -122.002, bearing_deg=90.0)
+  assert on_main is not None
+  assert on_main.way_id == 1
+  assert abs(on_main.speed_limit_ms - 45 * CV.MPH_TO_MS) < 0.2
+  # Standing on the untagged cross street, away from Main: no LIMIT.
+  on_cross = db.lookup(37.002, -122.0, bearing_deg=0.0)
+  assert on_cross is None
+  db.close()
+
+
+def test_highway_without_junction_does_not_flag_turn(tmp_path):
+  """Blinker on a road with no crossing OSM way: no turn_dir, ALC may arm."""
+  from openpilot.selfdrive.mapd.map_speed_policy import blinker_turn_direction, blinker_turn_holds_alc
+
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  OsmSpeedLimitDB.insert_way(
+    con, 1, "US 12", "trunk", 60 * CV.MPH_TO_MS,
+    [(37.0, -122.004), (37.0, -121.996)],
+  )
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  ix = db.lookup_intersection(37.0, -122.002, bearing_deg=90.0)
+  assert ix is None
+  db.close()
+  assert blinker_turn_direction(1, False, False) == 0
+  assert blinker_turn_direction(2, False, False) == 0
+  assert not blinker_turn_holds_alc(1, False, False, 80.0)
+  assert not blinker_turn_holds_alc(2, False, False, 80.0)
 
