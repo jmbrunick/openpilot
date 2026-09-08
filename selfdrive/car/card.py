@@ -222,7 +222,7 @@ class Car:
       else:
         # Pre-AP pedal mode owns set-speed via pedal_speed_kph. Overlay OSM
         # onto vCruise/MAX only while pedalLongActive (second pull). The first
-        # pull is lateral-only and must not seed or arm the Follow timer.
+        # pull is lateral-only and must not seed or arm a sticky hold.
         raw_kph = float(CS.cruiseState.speed * CV.MS_TO_KPH)
         long_active = bool(getattr(CS, 'pedalLongActive', False))
         long_active_prev = bool(getattr(self.CS_prev, 'pedalLongActive', False))

@@ -1,6 +1,6 @@
 from openpilot.common.constants import CV
 from openpilot.selfdrive.mapd.constants import (
-  ACCEL_DEFAULT, DECREASE_START_MARGIN_M, DRIVER_OVERRIDE_S, LOOKAHEAD_EARLY, LOOKAHEAD_NORMAL, LOOKAHEAD_OFF,
+  ACCEL_DEFAULT, DECREASE_START_MARGIN_M, LOOKAHEAD_EARLY, LOOKAHEAD_NORMAL, LOOKAHEAD_OFF,
   LOOKAHEAD_TUNING, MODE_CAP, MODE_DISPLAY, MODE_FOLLOW, MODE_OFF,
   TRACK_DEADBAND_MS, TRACK_TAPER_MS,
   accel_scale_factor, map_accel_a_ms2, map_brake_a_ms2, map_comfort_a_ms2,
@@ -291,7 +291,7 @@ def test_engage_seeds_max_to_posted_limit():
   assert not dec.sticky
   assert hold.follow_override_until == 0.0
   # Failed pedal write-back / DI_digitalSpeed next frames must not look like a
-  # stalk and must not arm the 10s Follow timer.
+  # stalk and must not arm a sticky hold.
   for t in (0.05, 5.0, 11.0):
     dec = decide_map_cruise(
       hold, engaged=True, mode=MODE_FOLLOW, raw_kph=ego, posted_kph=posted,
@@ -367,11 +367,8 @@ def test_disengage_clears_sticky_and_follow_timer():
   assert hold.follow_override_until == 0.0
 
 
-def test_sticky_below_limit_survives_past_ten_second_override():
-  """Regression: stalk to a-5 must still be a-5 after >10s with unchanged limit.
-
-  The Follow raise-above timer (DRIVER_OVERRIDE_S) must never clear this.
-  """
+def test_sticky_below_limit_survives_past_ten_seconds():
+  """Stalk to a-5 must still be a-5 after >10s with unchanged posted limit."""
   hold = MapCruiseHold()
   a = 45 * CV.MPH_TO_KPH
   decide_map_cruise(
@@ -385,8 +382,7 @@ def test_sticky_below_limit_survives_past_ten_second_override():
   )
   assert dec.sticky
   assert hold.follow_override_until == 0.0
-  assert DRIVER_OVERRIDE_S == 10.0
-  for t in (1.0 + DRIVER_OVERRIDE_S + 0.5, 15.0, 60.0):
+  for t in (11.5, 15.0, 60.0):
     dec = decide_map_cruise(
       hold, engaged=True, mode=MODE_FOLLOW, raw_kph=below, posted_kph=a,
       engage_rising=False, now=t, stalk_pressed=False,
@@ -394,12 +390,12 @@ def test_sticky_below_limit_survives_past_ten_second_override():
     assert dec.sticky, f"sticky lost at t={t}"
     assert hold.follow_override_until == 0.0
     assert abs(_follow_hud(dec, a) - below) < 1e-6
-    # Passing driver_override=False (expired timer) must not be how card runs.
+    # apply_map_speed without sticky would Follow-raise to a; card must not.
     expired = apply_map_speed_kph(
       dec.driver_kph, a, mode=MODE_FOLLOW, engaged=True,
       op_long_software_cruise=True, driver_override=False,
     )
-    assert abs(expired - a) < 1e-6  # what the old 10s path would do
+    assert abs(expired - a) < 1e-6
     assert abs(_follow_hud(dec, a) - expired) > 1.0
 
 
@@ -439,7 +435,7 @@ def test_stalk_plus_minus_changes_set_without_button_events():
     hold, engaged=True, mode=MODE_FOLLOW, raw_kph=above, posted_kph=a,
     engage_rising=False, now=3.0, stalk_pressed=False,
   )
-  assert not dec.sticky
+  assert dec.sticky
   assert abs(_follow_hud(dec, a) - above) < 1e-6
   # Cap: stalk up cannot exceed posted; stalk down still lowers MAX.
   hold_c = MapCruiseHold()
@@ -468,27 +464,63 @@ def test_stalk_plus_minus_changes_set_without_button_events():
   assert abs(dec.driver_kph - down) < 1e-6
 
 
-def test_follow_ten_second_override_is_raise_above_limit_only():
+def test_follow_holds_absolute_set_until_posted_changes():
+  """Justin: set 55 in a 50 stays 55 until posted changes; set 45 in a 50, same."""
   hold = MapCruiseHold()
-  a = 45 * CV.MPH_TO_KPH
+  a = 50 * CV.MPH_TO_KPH
   decide_map_cruise(
     hold, engaged=True, mode=MODE_FOLLOW, raw_kph=a, posted_kph=a,
     engage_rising=True, now=0.0,
   )
-  above = a + 5 * CV.MPH_TO_KPH
+  above = 55 * CV.MPH_TO_KPH
   dec = decide_map_cruise(
     hold, engaged=True, mode=MODE_FOLLOW, raw_kph=above, posted_kph=a,
     engage_rising=False, now=1.0, stalk_pressed=True,
   )
-  assert not dec.sticky
-  assert hold.follow_override_until == 1.0 + DRIVER_OVERRIDE_S
+  assert dec.sticky
+  assert hold.follow_override_until == 0.0
   assert abs(_follow_hud(dec, a) - above) < 1e-6
+  for t in (11.1, 15.0, 60.0):
+    dec = decide_map_cruise(
+      hold, engaged=True, mode=MODE_FOLLOW, raw_kph=above, posted_kph=a,
+      engage_rising=False, now=t, stalk_pressed=False,
+    )
+    assert dec.sticky, f"55 mph sticky lost at t={t}"
+    assert abs(_follow_hud(dec, a) - above) < 1e-6
+  b = 35 * CV.MPH_TO_KPH
   dec = decide_map_cruise(
-    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=above, posted_kph=a,
-    engage_rising=False, now=1.0 + DRIVER_OVERRIDE_S + 0.1, stalk_pressed=False,
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=above, posted_kph=b,
+    engage_rising=False, now=61.0, stalk_pressed=False,
   )
   assert not dec.sticky
-  assert abs(_follow_hud(dec, a) - a) < 1e-6
+  assert dec.seed_kph is not None
+  assert abs(dec.seed_kph - b) < 1e-6
+  assert abs(_follow_hud(dec, b) - b) < 1e-6
+
+  hold2 = MapCruiseHold()
+  decide_map_cruise(
+    hold2, engaged=True, mode=MODE_FOLLOW, raw_kph=a, posted_kph=a,
+    engage_rising=True, now=0.0,
+  )
+  below = 45 * CV.MPH_TO_KPH
+  dec = decide_map_cruise(
+    hold2, engaged=True, mode=MODE_FOLLOW, raw_kph=below, posted_kph=a,
+    engage_rising=False, now=1.0, stalk_pressed=True,
+  )
+  assert dec.sticky
+  assert abs(_follow_hud(dec, a) - below) < 1e-6
+  dec = decide_map_cruise(
+    hold2, engaged=True, mode=MODE_FOLLOW, raw_kph=below, posted_kph=a,
+    engage_rising=False, now=60.0, stalk_pressed=False,
+  )
+  assert dec.sticky
+  assert abs(_follow_hud(dec, a) - below) < 1e-6
+  dec = decide_map_cruise(
+    hold2, engaged=True, mode=MODE_FOLLOW, raw_kph=below, posted_kph=b,
+    engage_rising=False, now=61.0, stalk_pressed=False,
+  )
+  assert not dec.sticky
+  assert abs(_follow_hud(dec, b) - b) < 1e-6
 
 
 def test_cap_does_not_exceed_limit_when_raising():
@@ -575,6 +607,8 @@ def test_map_speed_submenu_wires_params():
   assert "Brake to a lower MAX is locked" in tici
   assert "0.80 m/s² at Normal" in tici
   assert "1.20 m/s² at Normal" not in tici
+  assert "pauses Follow for 10s" not in tici
+  assert "holds until the posted limit changes" in tici
   assert "acceleration only" in mici
   assert "Map Speed Limit" in nap
   assert "Radar Settings" in nap
