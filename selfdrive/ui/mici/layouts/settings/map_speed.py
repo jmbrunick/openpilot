@@ -48,13 +48,13 @@ class MapSpeedLimitLayoutMici(NavScroller):
     )
     self._map_db_status = BigButton("osm map data", installed_db_summary())
     self._map_revision = BigButton("map revision", installed_revision_summary())
-    refresh_maps_btn = BigButton("refresh maps", "no reboot")
+    refresh_maps_btn = BigButton("refresh maps", "start")
     refresh_maps_btn.set_click_callback(
       lambda: launch_script("Refresh maps", REFRESH_MAPS_INSTRUCTIONS,
                             "scripts.nap.refresh_osm_maps",
                             ))
     refresh_maps_btn.set_enabled(ui_state.is_offroad)
-    download_maps_btn = BigButton("download us maps", "no reboot")
+    download_maps_btn = BigButton("download us maps", "start")
     download_maps_btn.set_click_callback(
       lambda: launch_script("Download US Maps", DOWNLOAD_US_MAPS_INSTRUCTIONS,
                             "scripts.nap.fetch_osm_maps",
