@@ -64,7 +64,6 @@ class HudRenderer(Widget):
     self.is_cruise_available: bool = True
     self.set_speed: float = SET_SPEED_NA
     self.speed: float = 0.0
-    self.v_ego_cluster_seen: bool = False
     self.map_speed_valid: bool = False
     self.map_speed_limit: float = 0.0
 
@@ -96,13 +95,12 @@ class HudRenderer(Widget):
     if self.is_cruise_set and not ui_state.is_metric:
       self.set_speed *= KM_TO_MILE
 
-    # Current speed is ego/cluster only. OSM maxspeed is LIMIT (and may feed
-    # MAX). Never paint the map limit onto the number the driver reads as now.
-    v_ego_cluster = car_state.vEgoCluster
-    self.v_ego_cluster_seen = self.v_ego_cluster_seen or v_ego_cluster != 0.0
-    v_ego = v_ego_cluster if self.v_ego_cluster_seen else car_state.vEgo
+    # Top-middle live speed is wheel/ESP vEgo only. vEgoCluster is Tesla
+    # DI_digitalSpeed, which pre-AP also uses as cruiseState.speed. Map-speed
+    # writes MAX into vCruise / pedal_speed / cruiseState.speed (90 kph = 56 mph).
+    # That set-speed path must not appear here.
     speed_conversion = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
-    self.speed = max(0.0, v_ego * speed_conversion)
+    self.speed = max(0.0, float(car_state.vEgo) * speed_conversion)
 
     self.map_speed_valid = False
     self.map_speed_limit = 0.0

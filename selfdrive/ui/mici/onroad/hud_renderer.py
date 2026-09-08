@@ -104,7 +104,6 @@ class HudRenderer(Widget):
     self.set_speed: float = SET_SPEED_NA
     self._set_speed_changed_time: float = 0
     self.speed: float = 0.0
-    self.v_ego_cluster_seen: bool = False
     self._engaged: bool = False
     self.map_speed_valid: bool = False
     self.map_speed_limit: float = 0.0
@@ -165,12 +164,9 @@ class HudRenderer(Widget):
     self.is_cruise_set = 0 < self.set_speed < SET_SPEED_NA
     self.is_cruise_available = self.set_speed != -1
 
-    # Current speed is ego/cluster only. OSM maxspeed feeds LIMIT/MAX, not this.
-    v_ego_cluster = car_state.vEgoCluster
-    self.v_ego_cluster_seen = self.v_ego_cluster_seen or v_ego_cluster != 0.0
-    v_ego = v_ego_cluster if self.v_ego_cluster_seen else car_state.vEgo
+    # Top-middle live speed is wheel/ESP vEgo only, never vEgoCluster / vCruise / map.
     speed_conversion = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
-    self.speed = max(0.0, v_ego * speed_conversion)
+    self.speed = max(0.0, float(car_state.vEgo) * speed_conversion)
 
     self.map_speed_valid = False
     self.map_speed_limit = 0.0
