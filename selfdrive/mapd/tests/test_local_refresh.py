@@ -18,6 +18,7 @@ from openpilot.selfdrive.mapd.local_refresh import (
   REFRESH_RADIUS_KM,
   REFRESH_RADIUS_MILES,
   NoGpsError,
+  RefreshMapsError,
   bbox_intersects,
   install_merged_overlay,
   main as refresh_main,
@@ -120,6 +121,43 @@ def test_is_plausible_rejects_null_island():
   assert is_plausible_lat_lon(*SF)
 
 
+def test_gps_sample_prefers_external_and_rejects_stale():
+  from types import SimpleNamespace
+  from openpilot.selfdrive.mapd.gps_fix import gps_sample_from_sm
+
+  ext = SimpleNamespace(latitude=SF[0], longitude=SF[1], horizontalAccuracy=8.0, speed=0.0, bearingDeg=0.0)
+  qcom = SimpleNamespace(latitude=NYC[0], longitude=NYC[1], horizontalAccuracy=8.0, speed=0.0, bearingDeg=90.0)
+
+  class SM:
+    def __init__(self, msgs, frames, times):
+      self._msgs = msgs
+      self.recv_frame = frames
+      self.recv_time = times
+
+    def __getitem__(self, key):
+      return self._msgs[key]
+
+  sm = SM(
+    {"gpsLocationExternal": ext, "gpsLocation": qcom},
+    {"gpsLocationExternal": 1, "gpsLocation": 1},
+    {"gpsLocationExternal": 100.0, "gpsLocation": 100.0},
+  )
+  lat, lon, _b, ok = gps_sample_from_sm(sm, now=100.5)
+  assert ok and abs(lat - SF[0]) < 1e-9 and abs(lon - SF[1]) < 1e-9
+
+  sm.recv_time["gpsLocationExternal"] = 90.0  # stale
+  lat, lon, _b, ok = gps_sample_from_sm(sm, now=100.5)
+  assert ok and abs(lat - NYC[0]) < 1e-9
+
+  null = SimpleNamespace(latitude=0.0, longitude=0.0, horizontalAccuracy=1.0, speed=0.0, bearingDeg=0.0)
+  sm._msgs["gpsLocationExternal"] = null
+  sm._msgs["gpsLocation"] = null
+  sm.recv_time["gpsLocationExternal"] = 100.0
+  sm.recv_time["gpsLocation"] = 100.0
+  _lat, _lon, _b, ok = gps_sample_from_sm(sm, now=100.5)
+  assert not ok
+
+
 def test_merge_replaces_way_ids_in_radius_keeps_rest(tmp_path):
   dest = str(tmp_path / "osm" / "speed_limits.sqlite")
   os.makedirs(os.path.dirname(dest), exist_ok=True)
@@ -173,7 +211,7 @@ def test_cli_no_gps_prints_error(tmp_path, monkeypatch, capsys):
   prev = Path(dest).read_bytes()
   import openpilot.selfdrive.mapd.local_refresh as lr
   monkeypatch.setattr(lr, "read_live_gnss", lambda **_k: None)
-  monkeypatch.setattr(lr, "load_last_gps_position", lambda **_k: None)
+  monkeypatch.setattr(lr, "last_gps_from_params", lambda: None)
   rc = refresh_main(["--out", dest])
   assert rc == 1
   out = capsys.readouterr().out
@@ -226,7 +264,7 @@ def test_empty_overpass_does_not_wipe_radius(tmp_path):
   os.makedirs(os.path.dirname(dest), exist_ok=True)
   _tiny_us(dest)
   prev = Path(dest).read_bytes()
-  with pytest.raises(Exception, match="No maxspeed ways"):
+  with pytest.raises(RefreshMapsError, match="No maxspeed ways"):
     refresh_local_maps(dest=dest, live_fix=SF, last_gps_raw=None, payload={"elements": []})
   assert Path(dest).read_bytes() == prev
 
@@ -300,7 +338,6 @@ def test_refresh_cli_from_json(tmp_path):
 
 
 def test_docs_and_ui_say_100_miles_not_published_pack():
-  from pathlib import Path
   root = Path(__file__).resolve().parents[3]
   docs = (root / "docs-nap/map-speed.md").read_text()
   assert "100 miles" in docs
@@ -320,3 +357,16 @@ def test_docs_and_ui_say_100_miles_not_published_pack():
   assert mici_widgets.index("refresh_maps_btn") < mici_widgets.index("download_maps_btn")
   assert "100 miles" in instructions
   assert "guess a city" in instructions
+
+
+def test_refresh_stages_merge_beside_dest_not_tmp(tmp_path):
+  dest = str(tmp_path / "osm" / "speed_limits.sqlite")
+  os.makedirs(os.path.dirname(dest), exist_ok=True)
+  _tiny_us(dest)
+  payload = {"elements": [_overpass_way(1, SF[0], SF[1], 40, "Market")]}
+  refresh_local_maps(dest=dest, live_fix=SF, last_gps_raw=None, payload=payload)
+  from openpilot.selfdrive.mapd.fetch_maps import STAGING_DIRNAME, staging_dir
+  stage = staging_dir(dest)
+  assert os.path.dirname(stage) == os.path.dirname(dest)
+  assert os.path.basename(stage) == STAGING_DIRNAME
+  assert not os.path.isfile(os.path.join(stage, "speed_limits.merge.sqlite"))

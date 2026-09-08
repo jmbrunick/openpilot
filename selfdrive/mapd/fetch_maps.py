@@ -60,6 +60,9 @@ def _sqlite_present(path: str | None) -> bool:
     return False
 
 
+sqlite_present = _sqlite_present
+
+
 def installed_db_summary(path: str | None = None) -> str:
   path = path or default_db_path()
   if not _sqlite_present(path):
@@ -414,6 +417,9 @@ def _sqlite_ok(path: str) -> bool:
   ok = db.open()
   db.close()
   return ok
+
+
+sqlite_ok = _sqlite_ok
 
 
 def _hash_requested(value: str | None) -> str:

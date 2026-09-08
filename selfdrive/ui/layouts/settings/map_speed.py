@@ -156,8 +156,8 @@ class MapSpeedLimitLayout(Widget):
     self._lookahead_buttons.action_item.set_selected_button(self._lookahead_index(lookahead))
     accel = int(self._params.get("NAPMapSpeedAccel", return_default=True) or MAP_SPEED_ACCEL_DEFAULT)
     self._accel_buttons.action_item.set_selected_button(self._accel_index(accel))
-    self._download_btn.action_item.set_enabled(ui_state.is_offroad)
     self._refresh_btn.action_item.set_enabled(ui_state.is_offroad)
+    self._download_btn.action_item.set_enabled(ui_state.is_offroad)
 
   def show_event(self):
     self._scroller.show_event()

@@ -17,19 +17,21 @@ import shutil
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Literal
 
+from openpilot.common.constants import CV
 from openpilot.selfdrive.mapd.db_paths import default_db_path
 from openpilot.selfdrive.mapd.fetch_maps import (
-  _p,
-  _sqlite_ok,
-  _sqlite_present,
   cleanup_incomplete,
   download_maps,
   installed_db_summary,
+  sqlite_ok,
+  sqlite_present,
   staging_dir,
 )
 from openpilot.selfdrive.mapd.gps_fix import (
   is_plausible_lat_lon,
+  last_gps_from_params,
   load_last_gps_position,
   persist_last_gps_position,
   read_live_gnss,
@@ -43,11 +45,9 @@ from openpilot.selfdrive.mapd.overpass import (
   ways_from_overpass,
 )
 
-# Justin's requested refresh radius. The Overpass bbox is the square that
-# contains this circle (~200 miles on a side). Documented in docs-nap/map-speed.md.
+# Bounding box covering 100 miles (~160.9 km) around the vehicle. See docs-nap/map-speed.md.
 REFRESH_RADIUS_MILES = 100.0
-MILES_TO_KM = 1.609344
-REFRESH_RADIUS_KM = REFRESH_RADIUS_MILES * MILES_TO_KM  # 160.9344 km ≈ 160.9 km
+REFRESH_RADIUS_KM = REFRESH_RADIUS_MILES * CV.MPH_TO_KPH
 
 NO_GPS_MESSAGE = (
   "No GPS location. Drive once with a GPS fix, or wait for a fix, then try Refresh maps again. "
@@ -73,7 +73,11 @@ class NoGpsError(RefreshMapsError):
 class RefreshLocation:
   lat: float
   lon: float
-  source: str  # "gnss" | "last_gps" | "cli"
+  source: Literal["gnss", "last_gps", "cli"]
+
+
+def _p(msg: str) -> None:
+  print(msg, flush=True)
 
 
 def bbox_intersects(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> bool:
@@ -83,18 +87,10 @@ def bbox_intersects(a: tuple[float, float, float, float], b: tuple[float, float,
   return a_n >= b_s and a_s <= b_n and a_e >= b_w and a_w <= b_e
 
 
-def way_bbox(coords: list[tuple[float, float]]) -> tuple[float, float, float, float] | None:
-  if not coords:
-    return None
-  lats = [c[0] for c in coords]
-  lons = [c[1] for c in coords]
-  return min(lats), min(lons), max(lats), max(lons)
-
-
 def merge_decision_for_way(
   way_min_lat: float, way_max_lat: float, way_min_lon: float, way_max_lon: float,
   refresh_bbox: tuple[float, float, float, float],
-) -> str:
+) -> Literal["replace", "keep"]:
   """'replace' if the way's stored bbox intersects the refresh bbox, else 'keep'."""
   way = (way_min_lat, way_min_lon, way_max_lat, way_max_lon)
   return "replace" if bbox_intersects(way, refresh_bbox) else "keep"
@@ -128,7 +124,7 @@ def merge_ways_into_db(
   bbox: tuple[float, float, float, float],
   extra_meta: dict | None = None,
 ) -> tuple[int, int]:
-  """Delete ways intersecting bbox, insert/replace incoming way_ids. Returns (deleted, inserted)."""
+  """Delete ways intersecting bbox, insert incoming way_ids. Returns (deleted, inserted)."""
   con = sqlite3.connect(db_path)
   try:
     deleted = OsmSpeedLimitDB.delete_ways_intersecting_bbox(con, *bbox)
@@ -137,9 +133,11 @@ def merge_ways_into_db(
       OsmSpeedLimitDB.insert_way(con, w["way_id"], w["name"], w["highway"], w["maxspeed_ms"], w["coords"])
       inserted += 1
     OsmSpeedLimitDB.recount_ways(con)
-    meta = extra_meta or {}
-    if meta:
-      con.executemany("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", [(str(k), str(v)) for k, v in meta.items()])
+    if extra_meta:
+      con.executemany(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+        [(str(k), str(v)) for k, v in extra_meta.items()],
+      )
     con.commit()
   except Exception:
     con.rollback()
@@ -150,13 +148,14 @@ def merge_ways_into_db(
 
 
 def _ensure_us_base(dest: str) -> None:
-  if _sqlite_present(dest):
+  if sqlite_present(dest):
     return
   _p("No maps installed yet. Downloading the US pack first (Refresh maps will then overlay 100 miles)…")
   download_maps(dest=dest)
-  if not _sqlite_present(dest):
+  if not sqlite_present(dest):
     raise RefreshMapsError(
-      f"US pack download did not leave a usable sqlite at {dest}. Refresh maps will not install a 100-mile-only extract."
+      f"US pack download did not leave a usable sqlite at {dest}. "
+      + "Refresh maps will not install a 100-mile-only extract."
     )
 
 
@@ -183,11 +182,12 @@ def install_merged_overlay(
   bbox: tuple[float, float, float, float],
   extra_meta: dict | None = None,
 ) -> str:
-  """Copy dest onto the dest filesystem, merge, then atomically replace. Dest is untouched on failure."""
+  """Copy dest on the dest filesystem, merge, then atomically replace. Dest is untouched on failure."""
   dest = os.path.abspath(dest)
-  if not _sqlite_present(dest):
+  if not sqlite_present(dest):
     raise RefreshMapsError(
-      f"No US sqlite at {dest} to merge into. Download US Maps first. Refresh maps will not replace the US file with a 100-mile extract."
+      f"No US sqlite at {dest} to merge into. Download US Maps first. "
+      + "Refresh maps will not replace the US file with a 100-mile extract."
     )
   _assert_merge_space(dest)
   cleanup_incomplete(dest)
@@ -199,7 +199,7 @@ def install_merged_overlay(
     shutil.copy2(dest, work)
     deleted, inserted = merge_ways_into_db(work, ways, bbox, extra_meta)
     _p(f"Replaced {deleted} ways in the 100-mile box; inserted {inserted} Overpass ways.")
-    if not _sqlite_ok(work):
+    if not sqlite_ok(work):
       raise RefreshMapsError("Merged sqlite failed to open. Previous maps were left unchanged.")
     _p("Installing…")
     os.replace(work, dest)
@@ -219,6 +219,30 @@ def install_merged_overlay(
   return dest
 
 
+def _resolve_live_fix(
+  lat: float | None,
+  lon: float | None,
+  live_fix: object,
+) -> tuple[float, float] | None:
+  if live_fix is not _UNSET:
+    return live_fix if isinstance(live_fix, tuple) else None
+  if lat is not None and lon is not None:
+    return None
+  _p("Looking up vehicle location (GNSS, then last stored GPS)…")
+  return read_live_gnss(timeout_s=8.0)
+
+
+def _resolve_last_gps_raw(lat: float | None, lon: float | None, last_gps_raw: object) -> object | None:
+  if last_gps_raw is not _UNSET:
+    return last_gps_raw
+  if lat is not None and lon is not None:
+    return None
+  stored = last_gps_from_params()
+  if stored is None:
+    return None
+  return {"latitude": stored[0], "longitude": stored[1]}
+
+
 def refresh_local_maps(
   dest: str | None = None,
   *,
@@ -232,30 +256,16 @@ def refresh_local_maps(
 ) -> str:
   """Query OSM around the vehicle and merge into dest. Network skipped when payload is given.
 
-  live_fix/last_gps_raw default to unset meaning "look them up". Pass None to force a miss.
+  Omit live_fix/last_gps_raw to look them up. Pass None to force a miss (tests).
   """
   dest = os.path.abspath(dest or default_db_path())
   _p(f"OpenStreetMap speed limits ({LICENSE}). {ATTRIBUTION}")
   _p(LICENSE_URL)
 
-  if live_fix is _UNSET:
-    if lat is not None and lon is not None:
-      live_fix = None
-    else:
-      _p("Looking up vehicle location (GNSS, then last stored GPS)…")
-      live_fix = read_live_gnss(timeout_s=8.0)
-  if last_gps_raw is _UNSET:
-    last_gps_raw = None
-    try:
-      from openpilot.common.params import Params
-      last_gps_raw = Params().get("LastGPSPosition")
-    except Exception:
-      last_gps_raw = None
-
   loc = resolve_refresh_location(
     lat=lat, lon=lon,
-    live_fix=live_fix if isinstance(live_fix, tuple) else None,
-    last_gps_raw=last_gps_raw,
+    live_fix=_resolve_live_fix(lat, lon, live_fix),
+    last_gps_raw=_resolve_last_gps_raw(lat, lon, last_gps_raw),
   )
   if loc.source == "gnss":
     _p(f"Using current GNSS fix {loc.lat:.5f}, {loc.lon:.5f}")
@@ -311,7 +321,8 @@ def main(argv: list[str] | None = None) -> int:
   )
   p.add_argument("--lat", type=float, default=None, help="Override latitude (skips GNSS / LastGPSPosition)")
   p.add_argument("--lon", type=float, default=None, help="Override longitude")
-  p.add_argument("--radius-km", type=float, default=REFRESH_RADIUS_KM, help=f"Refresh radius km (default {REFRESH_RADIUS_KM:.1f} = 100 miles)")
+  p.add_argument("--radius-km", type=float, default=REFRESH_RADIUS_KM,
+                 help=f"Refresh radius km (default {REFRESH_RADIUS_KM:.1f} = 100 miles)")
   p.add_argument("--from-json", help="Saved Overpass JSON instead of the network")
   p.add_argument("--out", default=None, help="sqlite destination (default: /data/media/0/osm/speed_limits.sqlite)")
   p.add_argument("--overpass-url", default=OVERPASS_URL)

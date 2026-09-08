@@ -15,6 +15,7 @@ from openpilot.selfdrive.mapd.maps_manifest import USER_AGENT
 from openpilot.selfdrive.mapd.speed_limit import parse_maxspeed
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+_KEEP = "Previous maps were left unchanged. You can retry Refresh maps."
 
 
 def bbox_from_center(lat: float, lon: float, radius_km: float) -> tuple[float, float, float, float]:
@@ -47,30 +48,20 @@ def fetch_overpass(
     with urllib.request.urlopen(req, timeout=timeout_s) as resp:
       raw = resp.read().decode("utf-8")
   except urllib.error.HTTPError as e:
-    raise RuntimeError(
-      f"OSM Overpass failed HTTP {e.code}. Previous maps were left unchanged. You can retry Refresh maps."
-    ) from e
+    raise RuntimeError(f"OSM Overpass failed HTTP {e.code}. {_KEEP}") from e
   except urllib.error.URLError as e:
-    raise RuntimeError(
-      f"OSM Overpass failed: {e}. Need Wi-Fi to overpass-api.de. Previous maps were left unchanged. You can retry Refresh maps."
-    ) from e
+    raise RuntimeError(f"OSM Overpass failed: {e}. Need Wi-Fi to overpass-api.de. {_KEEP}") from e
   except TimeoutError as e:
-    raise RuntimeError(
-      "OSM Overpass timed out. Previous maps were left unchanged. You can retry Refresh maps."
-    ) from e
+    raise RuntimeError(f"OSM Overpass timed out. {_KEEP}") from e
   try:
     payload = json.loads(raw)
   except json.JSONDecodeError as e:
-    raise RuntimeError(
-      f"OSM Overpass returned invalid JSON: {e}. Previous maps were left unchanged. You can retry Refresh maps."
-    ) from e
+    raise RuntimeError(f"OSM Overpass returned invalid JSON: {e}. {_KEEP}") from e
   if not isinstance(payload, dict):
-    raise RuntimeError("OSM Overpass returned a non-object JSON payload. Previous maps were left unchanged.")
+    raise RuntimeError(f"OSM Overpass returned a non-object JSON payload. {_KEEP}")
   remark = str(payload.get("remark") or "")
   if "timed out" in remark.lower() or payload.get("timeout"):
-    raise RuntimeError(
-      f"OSM Overpass timed out ({remark or 'query timeout'}). Previous maps were left unchanged. You can retry Refresh maps."
-    )
+    raise RuntimeError(f"OSM Overpass timed out ({remark or 'query timeout'}). {_KEEP}")
   return payload
 
 

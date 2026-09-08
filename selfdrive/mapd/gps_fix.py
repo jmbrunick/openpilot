@@ -73,6 +73,14 @@ def load_last_gps_position(params: Any = None, raw: Any = None) -> tuple[float, 
   return parse_last_gps_position(raw)
 
 
+def last_gps_from_params() -> tuple[float, float] | None:
+  try:
+    from openpilot.common.params import Params
+    return load_last_gps_position(params=Params())
+  except Exception:
+    return None
+
+
 def gps_sample_from_sm(sm: Any, *, now: float | None = None, max_age_s: float = GPS_MAX_AGE_S) -> tuple[float, float, float | None, bool]:
   """Return (lat, lon, bearing_deg or None, ok). Prefer external GNSS."""
   now = time.monotonic() if now is None else now
@@ -82,15 +90,13 @@ def gps_sample_from_sm(sm: Any, *, now: float | None = None, max_age_s: float = 
     if (now - sm.recv_time[sock]) > max_age_s:
       continue
     g = sm[sock]
-    lat = float(g.latitude)
-    lon = float(g.longitude)
+    lat, lon = float(g.latitude), float(g.longitude)
     if not is_plausible_lat_lon(lat, lon):
       continue
-    acc = float(getattr(g, "horizontalAccuracy", 0.0) or 0.0)
+    acc = float(g.horizontalAccuracy)
     if acc > GPS_MAX_ACC_M and acc > 0:
       continue
-    speed = float(getattr(g, "speed", 0.0) or 0.0)
-    bearing = float(getattr(g, "bearingDeg", 0.0) or 0.0) if (speed > 1.0 or getattr(g, "bearingDeg", None)) else None
+    bearing = float(g.bearingDeg) if (g.speed > 1.0 or g.bearingDeg) else None
     if bearing is not None and (math.isnan(bearing) or bearing < 0):
       bearing = None
     return lat, lon, bearing, True
@@ -99,7 +105,6 @@ def gps_sample_from_sm(sm: Any, *, now: float | None = None, max_age_s: float = 
 
 def read_live_gnss(*, timeout_s: float = 8.0, sm: Any = None) -> tuple[float, float] | None:
   """Wait briefly for a valid GNSS fix. Returns None if cereal/GPS is unavailable."""
-  owns_sm = sm is None
   if sm is None:
     try:
       import cereal.messaging as messaging
@@ -107,17 +112,10 @@ def read_live_gnss(*, timeout_s: float = 8.0, sm: Any = None) -> tuple[float, fl
     except Exception:
       return None
   deadline = time.monotonic() + max(0.0, timeout_s)
-  try:
-    while True:
-      sm.update(200)
-      lat, lon, _bearing, ok = gps_sample_from_sm(sm)
-      if ok:
-        return lat, lon
-      if time.monotonic() >= deadline:
-        return None
-  finally:
-    if owns_sm:
-      try:
-        sm.stop()
-      except Exception:
-        pass
+  while True:
+    sm.update(200)
+    lat, lon, _bearing, ok = gps_sample_from_sm(sm)
+    if ok:
+      return lat, lon
+    if time.monotonic() >= deadline:
+      return None
