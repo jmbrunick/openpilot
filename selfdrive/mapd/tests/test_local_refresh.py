@@ -190,7 +190,7 @@ def test_mapd_gps_sample_rejects_stale_and_coarse_accuracy():
 
 
 def test_refresh_gps_sample_accepts_stale_and_yard_accuracy():
-  assert REFRESH_GNSS_WAIT_S == 45.0
+  assert REFRESH_GNSS_WAIT_S == 15.0
   assert REFRESH_GPS_MAX_ACC_M == 200.0
   sm = _SM(
     {"gpsLocationExternal": _gps_msg(*SF, acc=150.0), "gpsLocation": _gps_msg(0.0, 0.0)},
@@ -303,7 +303,7 @@ def test_cli_no_gps_prints_error(tmp_path, monkeypatch, capsys):
   rc = refresh_main(["--out", dest])
   assert rc == 1
   out = capsys.readouterr().out
-  assert "Waiting up to 45s for a satellite fix" in out
+  assert "Waiting up to 15s for a satellite fix" in out
   assert "(c) OpenStreetMap contributors" in out
   assert "ERROR:" in out
   assert "guess a city" in out
@@ -449,10 +449,10 @@ def test_docs_and_ui_say_100_miles_not_published_pack():
   assert mici_widgets.index("refresh_maps_btn") < mici_widgets.index("download_maps_btn")
   assert "100 miles" in instructions
   assert "guess a city" in instructions
-  assert "45s" in instructions
+  assert "waits up to 15s" in instructions
   assert "onroad" in instructions
   assert "(c) OpenStreetMap" in instructions
-  assert "45s" in docs
+  assert "Wait up to **15s**" in docs
   assert "200 m" in docs or "200m" in docs
 
 
