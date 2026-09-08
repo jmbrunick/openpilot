@@ -17,9 +17,10 @@ POSTED_LIMIT_EPS_KPH = 1.0
 # Spatial match
 MAX_MATCH_DISTANCE_M = 35.0
 HEADING_ALIGN_DEG = 55.0
-# Justin measured 1.5 s delay reading OSM signs. Advance match / next-limit
-# probes by v_ego * this time along heading. Meters scale with speed
-# (50 mph → ~33.5 m, 60 mph → ~40 m); not a fixed meter offset.
+# Justin measured 1.5 s GNSS lag reading OSM signs. Offset the query
+# position by v_ego * this time along heading — both up and down.
+# Meters scale with speed (50 mph → ~33.5 m, 60 mph → ~40 m); not a
+# fixed meter offset and not decrease anticipation (+110 m is separate).
 OSM_SIGN_LEAD_S = 1.5
 # Heading-aligned probes for nextSpeedLimit (any change). Policy uses decreases only.
 # Geodesic 40 m steps can skip a short intermediate limit (US 12 60→50 before 30);
@@ -94,7 +95,7 @@ def map_comfort_a_ms2(lookahead: int, accel_level: int = ACCEL_DEFAULT) -> float
 
 
 def osm_sign_lead_m(v_ego_ms: float) -> float:
-  """Meters to treat OSM match/probes as farther along heading: v_ego * 1.5 s."""
+  """GNSS-lag meters: v_ego * 1.5 s. Not a fixed offset and not +110 m lookahead."""
   if v_ego_ms <= 0 or OSM_SIGN_LEAD_S <= 0:
     return 0.0
   return float(v_ego_ms) * OSM_SIGN_LEAD_S

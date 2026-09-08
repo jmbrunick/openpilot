@@ -181,7 +181,7 @@ def test_osm_sign_lead_is_speed_times_1_5s_not_fixed_meters():
 
 
 def test_sign_lead_advances_limit_and_next_distance(tmp_path):
-  """Match / next-limit probe 1.5 s along heading: LIMIT and decreases earlier."""
+  """GNSS lag offset: posted match and remaining-to-next are at v*1.5 s."""
   path = str(tmp_path / "speed_limits.sqlite")
   con = OsmSpeedLimitDB.create(path)
   OsmSpeedLimitDB.insert_way(
@@ -208,11 +208,11 @@ def test_sign_lead_advances_limit_and_next_distance(tmp_path):
   assert abs(hot.speed_limit_ms - 45 * CV.MPH_TO_MS) < 0.2
   assert abs(hot.next_speed_limit_ms - 25 * CV.MPH_TO_MS) < 0.2
   assert abs(cold.next_speed_limit_ms - 25 * CV.MPH_TO_MS) < 0.2
-  # Probe is v*1.5 farther along heading, so remaining to the 25 is ~lead_m less.
+  # Remaining is from the lag-corrected point; +110 m decrease margin is separate.
   assert hot.next_distance_m < cold.next_distance_m
   assert abs((cold.next_distance_m - hot.next_distance_m) - lead_m) < 12.0
 
-  # Close enough that 1.5 s at 60 mph is already on the 25: LIMIT updates early.
+  # Close enough that 1.5 s at 60 mph is already on the 25: LIMIT updates (down).
   qlat, qlon = _offset_point(37.0, -122.000, 270.0, 20.0)
   at_sign = db.lookup(qlat, qlon, bearing_deg=90.0)
   early = db.lookup(qlat, qlon, bearing_deg=90.0, v_ego_ms=v60)
@@ -221,8 +221,33 @@ def test_sign_lead_advances_limit_and_next_distance(tmp_path):
   db.close()
 
 
-def test_sign_lead_does_not_raise_current_for_higher_ahead(tmp_path):
-  """Higher limit 180 m ahead stays nextSpeedLimit; Follow must not raise MAX early."""
+def test_sign_lead_raises_posted_when_offset_already_in_higher_zone(tmp_path):
+  """Same 1.5 s offset both ways: 20 m before 25→45, lag-corrected posted is 45."""
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  OsmSpeedLimitDB.insert_way(
+    con, 1, "Main", "primary", 25 * CV.MPH_TO_MS,
+    [(37.0, -122.004), (37.0, -122.000)],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 2, "Main", "primary", 45 * CV.MPH_TO_MS,
+    [(37.0, -122.000), (37.0, -121.996)],
+  )
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  v60 = 60 * CV.MPH_TO_MS
+  qlat, qlon = _offset_point(37.0, -122.000, 270.0, 20.0)
+  at_gps = db.lookup(qlat, qlon, bearing_deg=90.0)
+  lagged = db.lookup(qlat, qlon, bearing_deg=90.0, v_ego_ms=v60)
+  assert at_gps is not None and abs(at_gps.speed_limit_ms - 25 * CV.MPH_TO_MS) < 0.2
+  assert lagged is not None and abs(lagged.speed_limit_ms - 45 * CV.MPH_TO_MS) < 0.2
+  db.close()
+
+
+def test_higher_limit_far_ahead_stays_next_not_posted(tmp_path):
+  """~180 m of 25 then 45: 1.5 s offset (~40 m) is still on 25. Not lookahead raise."""
   path = str(tmp_path / "speed_limits.sqlite")
   con = OsmSpeedLimitDB.create(path)
   OsmSpeedLimitDB.insert_way(
