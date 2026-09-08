@@ -97,9 +97,9 @@ TURN_DEST_SLOW_MPH = 25.0
 TURN_DEST_FAST_MPH = 40.0
 # Modest late-apex path bias. ONLY held stalk + OSM junction (never ALC).
 # Model path stays the base. y is left-positive: left turn outside = −y.
-# Scale curvature 10% toward 0 so we do not cut the inside.
-LATE_APEX_Y_M = 0.30
-LATE_APEX_CURV_SCALE = 0.90
+# Slightly outside the stock line (not a wide swing; 0.30/0.90 was too far out).
+LATE_APEX_Y_M = 0.15
+LATE_APEX_CURV_SCALE = 0.95
 LATE_APEX_SHIFT_S = 2.0
 LATE_APEX_MAX_DKAPPA = 0.008
 

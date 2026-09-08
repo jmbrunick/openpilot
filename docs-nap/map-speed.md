@@ -53,7 +53,7 @@ Ease uses the same kin+110 m / Accel-5 0.80 curve as posted decreases. Lookahead
 
 **Sticky / Follow / Cap.** While the stalk is held, a sticky set must not block the drop (`sticky_set_kph` is kept). When the stalk returns to idle or the junction is behind the match, Cap/Follow resume, including that sticky set. Lead still wins.
 
-**Lateral.** While stalk+junction, ALC is not armed (a wheel nudge must not `laneChangeLeft/Right` and cut the corner). Desire stays `none`. The stock 3X model path remains the base. A **modest late-apex bias** applies only in that window: path `y` is shifted 0.30 m toward the outside of the turn (left-positive; ramped in over 2 s so t=0 does not jerk), and `desiredCurvature` is scaled by 0.90 plus a small outside κ (`2 y / s²`, capped at 0.008 /m). Highway ALC — stalk on a multi-lane road with **no** OSM junction — gets neither the slowdown nor this bias. No `Desire.turnLeft/Right`.
+**Lateral.** While stalk+junction, ALC is not armed (a wheel nudge must not `laneChangeLeft/Right` and cut the corner). Desire stays `none`. The stock 3X model path remains the base. A **modest late-apex bias** applies only in that window: path `y` is shifted 0.15 m toward the outside of the turn (left-positive; ramped in over 2 s so t=0 does not jerk), and `desiredCurvature` is scaled by 0.95 plus a small outside κ (`2 y / s²`, capped at 0.008 /m). Highway ALC — stalk on a multi-lane road with **no** OSM junction — gets neither the slowdown nor this bias. No `Desire.turnLeft/Right`.
 
 ## US map data
 
