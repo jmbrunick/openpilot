@@ -224,8 +224,9 @@ class MapCruiseHold:
 class MapCruiseDecision:
   """Cruise overlay for one card.py cycle.
 
-  `seed_kph` is the pedal write-back (engage/posted seed or sticky hold).
-  None means do not seed; card may still raise pedal when HUD MAX increased.
+  `seed_kph` is a one-shot pedal write (engage, posted-limit raise, or a
+  real stalk step). None on a continuing sticky hold — writing every
+  sticky frame undoes CI.update's 1/5 mph stalk step.
   """
   driver_kph: float
   follow_override: bool
@@ -233,14 +234,15 @@ class MapCruiseDecision:
   sticky: bool
 
 
-def _sticky_decision(hold: MapCruiseHold, mode: int, posted_kph: float | None) -> MapCruiseDecision:
+def _sticky_decision(hold: MapCruiseHold, mode: int, posted_kph: float | None,
+                     write_pedal: bool = False) -> MapCruiseDecision:
   held = float(hold.sticky_set_kph)
   if mode == MODE_CAP and posted_kph is not None and posted_kph > 0:
     held = min(held, float(posted_kph))
   hold.policy_kph = held
   # follow_override True so apply_map_speed cannot Follow-raise if a caller
   # ignores `sticky` and only passes the override flag.
-  return MapCruiseDecision(held, True, held, True)
+  return MapCruiseDecision(held, True, held if write_pedal else None, True)
 
 
 def decide_map_cruise(
@@ -265,9 +267,10 @@ def decide_map_cruise(
   posted changes to `b`, then Cap/Follow resume at `b`. Cap never exceeds
   the posted sign. `now` is unused (no 10s timer); kept for call sites.
 
-  Returns the driver-set to overlay, whether Follow should hold that set,
-  and optional pedal write-back (`seed_kph`) for seed / sticky. Card also
-  writes pedal when HUD MAX rises (stalk up / Follow posted raise).
+  Pedal write (`seed_kph`) only on engage seed, a real 1/5 mph stalk step,
+  or posted-limit change. A continuing sticky hold must not write — that
+  overwrites CI.update's stalk step on the same frame. `stalk_pressed` is
+  extra; never treat False as "ignore pedal_speed".
   """
   _ = now
   if (not engaged) or mode not in (MODE_CAP, MODE_FOLLOW):
@@ -276,7 +279,8 @@ def decide_map_cruise(
 
   posted_ok = posted_kph is not None and posted_kph > 0
   # Button OR a real stalk-sized pedal step. Never OR-in an ego jump.
-  manual = is_cruise_stalk_step(hold.last_raw_kph, raw_kph) or bool(stalk_pressed)
+  stalk_step = is_cruise_stalk_step(hold.last_raw_kph, raw_kph)
+  manual = stalk_step or bool(stalk_pressed)
   hold.last_raw_kph = raw_kph
 
   if engage_rising and posted_ok:
@@ -316,7 +320,9 @@ def decide_map_cruise(
     hold.policy_kph = float(raw_kph)
 
   if hold.sticky_set_kph is not None:
-    return _sticky_decision(hold, mode, posted_kph)
+    # Write once when pedal_speed actually stepped. stalk_pressed with
+    # unchanged raw must not write the old hold over CI's in-flight step.
+    return _sticky_decision(hold, mode, posted_kph, write_pedal=stalk_step)
 
   return MapCruiseDecision(float(hold.policy_kph), False, None, False)
 
@@ -325,9 +331,9 @@ def should_write_preap_pedal(seed_kph: float | None, hud_kph: float,
                              last_pedal_kph: float | None) -> bool:
   """When to write HUD MAX onto pre-AP pedal_speed.
 
-  Always write seed/sticky. Also write when MAX *rose* vs the last pedal
-  write (stalk up, or Follow because the posted limit increased). Do not
-  write every Follow/Cap frame at the same MAX — that ate stalk +/-.
+  Write on engage/posted seed or a real stalk step (`seed_kph`). Also write
+  when MAX *rose* vs the last pedal write (Follow posted raise backup).
+  Do not write every sticky/Follow frame — that ate stalk +/-.
   """
   if seed_kph is not None:
     return True
