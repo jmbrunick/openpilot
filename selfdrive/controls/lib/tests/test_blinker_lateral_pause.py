@@ -1,4 +1,5 @@
 from openpilot.selfdrive.controls.lib.blinker_lateral_pause import (
+  BlinkerLateralHold,
   blinker_pauses_lateral,
   lat_active_with_blinker_pause,
 )
@@ -33,6 +34,41 @@ def test_hazards_do_not_pause():
 def test_resume_when_lamp_clears():
   assert not lat_active_with_blinker_pause(**_lat_kwargs(left_blinker=True))
   assert lat_active_with_blinker_pause(**_lat_kwargs(left_blinker=False, right_blinker=False))
+
+
+def test_hold_does_not_resume_while_hand_on_wheel():
+  hold = BlinkerLateralHold()
+  assert not lat_active_with_blinker_pause(
+    **_lat_kwargs(left_blinker=True, steering_pressed=True, hold=hold))
+  assert not lat_active_with_blinker_pause(
+    **_lat_kwargs(steering_pressed=True, hold=hold))
+  assert hold.holding
+
+
+def test_hold_resumes_after_hand_release():
+  hold = BlinkerLateralHold()
+  assert not lat_active_with_blinker_pause(
+    **_lat_kwargs(left_blinker=True, steering_pressed=True, hold=hold))
+  assert not lat_active_with_blinker_pause(
+    **_lat_kwargs(steering_pressed=True, hold=hold))
+  assert lat_active_with_blinker_pause(**_lat_kwargs(hold=hold))
+  assert not hold.holding
+
+
+def test_hold_without_prior_blinker_does_not_pause():
+  hold = BlinkerLateralHold()
+  assert lat_active_with_blinker_pause(**_lat_kwargs(steering_pressed=True, hold=hold))
+  assert not hold.holding
+
+
+def test_hold_clears_when_not_engaged():
+  hold = BlinkerLateralHold()
+  assert not lat_active_with_blinker_pause(
+    **_lat_kwargs(left_blinker=True, steering_pressed=True, hold=hold))
+  assert not lat_active_with_blinker_pause(
+    **_lat_kwargs(active=False, steering_pressed=True, hold=hold))
+  assert not hold.holding
+  assert lat_active_with_blinker_pause(**_lat_kwargs(steering_pressed=True, hold=hold))
 
 
 def test_long_stays_active_inputs():

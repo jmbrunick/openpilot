@@ -40,8 +40,9 @@ def _cs(*, left=False, right=False, steering_disengage=False, steering_pressed=F
   return cs
 
 
-def _events(cs, cs_prev=None):
-  return CarSpecificEvents(_cp()).update(cs, cs_prev or _cs(), car.CarControl.new_message())
+def _events(cs, cs_prev=None, cse=None):
+  helper = cse or CarSpecificEvents(_cp())
+  return helper.update(cs, cs_prev or _cs(), car.CarControl.new_message())
 
 
 def test_one_lamp_steering_does_not_user_disable():
@@ -72,3 +73,21 @@ def test_blinker_pause_predicate():
   assert blinker_pauses_lateral(False, True)
   assert not blinker_pauses_lateral(True, True)
   assert not blinker_pauses_lateral(False, False)
+
+
+def test_lamp_off_hand_still_on_does_not_user_disable():
+  cse = CarSpecificEvents(_cp())
+  _events(_cs(left=True), _cs(left=True), cse=cse)
+  # Lamp just cleared on the same frame the wheel is grabbed.
+  events = _events(_cs(steering_disengage=True, steering_pressed=True),
+                   _cs(left=True), cse=cse)
+  assert EventName.steerDisengage not in events.names
+
+
+def test_steer_disengage_after_hand_release_still_fires():
+  cse = CarSpecificEvents(_cp())
+  _events(_cs(left=True, steering_disengage=True, steering_pressed=True),
+          _cs(left=True), cse=cse)
+  _events(_cs(), _cs(left=True, steering_disengage=True, steering_pressed=True), cse=cse)
+  events = _events(_cs(steering_disengage=True, steering_pressed=True), _cs(), cse=cse)
+  assert EventName.steerDisengage in events.names
