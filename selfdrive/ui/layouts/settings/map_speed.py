@@ -102,15 +102,6 @@ class MapSpeedLimitLayout(Widget):
     )
     self._all_items.append(self._revision_status)
 
-    self._download_btn = button_item(
-      "Download US Maps",
-      "Start",
-      description=DOWNLOAD_US_MAPS_INSTRUCTIONS.split("\n", 1)[0],
-      callback=self._on_download,
-    )
-    self._download_btn.action_item.set_enabled(ui_state.is_offroad)
-    self._all_items.append(self._download_btn)
-
     self._refresh_btn = button_item(
       "Refresh maps",
       "Start",
@@ -119,6 +110,15 @@ class MapSpeedLimitLayout(Widget):
     )
     self._refresh_btn.action_item.set_enabled(ui_state.is_offroad)
     self._all_items.append(self._refresh_btn)
+
+    self._download_btn = button_item(
+      "Download US Maps",
+      "Start",
+      description=DOWNLOAD_US_MAPS_INSTRUCTIONS.split("\n", 1)[0],
+      callback=self._on_download,
+    )
+    self._download_btn.action_item.set_enabled(ui_state.is_offroad)
+    self._all_items.append(self._download_btn)
 
   def _offset_index(self, offset_mph: int) -> int:
     if offset_mph in MAP_SPEED_OFFSETS_MPH:

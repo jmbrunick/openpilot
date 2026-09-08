@@ -315,5 +315,8 @@ def test_docs_and_ui_say_100_miles_not_published_pack():
   assert "check for map updates" not in mici
   assert "scripts.nap.refresh_osm_maps" in nap
   assert "scripts.nap.refresh_osm_maps" in mici
+  assert tici.index("_all_items.append(self._refresh_btn)") < tici.index("_all_items.append(self._download_btn)")
+  mici_widgets = mici.split("self._scroller.add_widgets", 1)[1]
+  assert mici_widgets.index("refresh_maps_btn") < mici_widgets.index("download_maps_btn")
   assert "100 miles" in instructions
   assert "guess a city" in instructions
