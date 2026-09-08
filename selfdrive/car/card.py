@@ -19,11 +19,10 @@ from opendbc.car.fw_versions import ObdCallback
 from opendbc.car.car_helpers import get_car, interfaces
 from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
-from openpilot.selfdrive.car.cruise import VCruiseHelper, V_CRUISE_UNSET
-from openpilot.selfdrive.mapd.constants import DRIVER_OVERRIDE_S
+from openpilot.selfdrive.car.cruise import VCruiseHelper
 from openpilot.selfdrive.mapd.map_speed_policy import (
-  apply_map_speed_kph, effective_map_limit_ms, map_slew_a_ms2,
-  read_map_speed_params, slew_map_speed_ms,
+  MapCruiseHold, apply_map_speed_kph, decide_map_cruise, effective_map_limit_ms,
+  map_slew_a_ms2, read_map_speed_params, slew_map_speed_ms,
 )
 
 REPLAY = "REPLAY" in os.environ
@@ -156,8 +155,7 @@ class Car:
     self.params.put_nonblocking("CarParamsPersistent", cp_bytes)
 
     self.v_cruise_helper = VCruiseHelper(self.CP)
-    self._map_override_t = 0.0
-    self._last_preap_driver_kph = V_CRUISE_UNSET
+    self._map_hold = MapCruiseHold()
     self._map_slew_ms: float | None = None
     self._map_speed_mode, self._map_speed_offset_kph, self._map_speed_lookahead, self._map_speed_accel = (
       read_map_speed_params(self.params)
@@ -206,20 +204,18 @@ class Car:
           # Use CarState w/ buttons from the step selfdrived enables on
           self.v_cruise_helper.initialize_v_cruise(self.CS_prev, self.experimental_mode)
       else:
-        # Pre-AP pedal mode owns set-speed in carstate via pedal_speed_kph.
-        # Overlay OSM onto the same vCruise/MAX path only. This is the cruise
-        # ceiling; radar MPC still follows a slower lead below vCruise.
-        preap_v_cruise_kph = float(CS.cruiseState.speed * CV.MS_TO_KPH)
-        if abs(preap_v_cruise_kph - self._last_preap_driver_kph) > 0.4:
-          # Ignore 0 ↔ set transitions from engage/disengage; stalk +/- while
-          # already cruising is a real driver override of Follow.
-          if self._last_preap_driver_kph not in (0, V_CRUISE_UNSET) and preap_v_cruise_kph > 0:
-            self._map_override_t = time.monotonic()
-          self._last_preap_driver_kph = preap_v_cruise_kph
+        # Pre-AP pedal mode owns set-speed in carstate via pedal_speed_kph
+        # (double-pull captures v_ego). Overlay OSM onto vCruise/MAX.
+        raw_kph = float(CS.cruiseState.speed * CV.MS_TO_KPH)
+        engaged = bool(self.sm['carControl'].enabled)
+        engage_rising = engaged and not bool(self.CC_prev.enabled)
+        posted_kph = None
         map_kph = None
         map_valid = bool(self.sm.valid.get('liveMapDataNAP', False) and self.sm['liveMapDataNAP'].speedLimitValid)
         if map_valid:
           md = self.sm['liveMapDataNAP']
+          if md.speedLimit > 0:
+            posted_kph = float(md.speedLimit) * CV.MS_TO_KPH + self._map_speed_offset_kph
           lim = effective_map_limit_ms(
             float(md.speedLimit),
             float(md.nextSpeedLimit),
@@ -241,15 +237,32 @@ class Car:
             self._map_slew_ms = None
         else:
           self._map_slew_ms = None
-        preap_v_cruise_kph = apply_map_speed_kph(
-          preap_v_cruise_kph,
-          map_kph,
+        dec = decide_map_cruise(
+          self._map_hold,
+          engaged=engaged,
           mode=self._map_speed_mode,
-          offset_kph=self._map_speed_offset_kph,
-          engaged=bool(self.sm['carControl'].enabled),
-          op_long_software_cruise=True,
-          driver_override=(time.monotonic() - self._map_override_t) < DRIVER_OVERRIDE_S,
+          raw_kph=raw_kph,
+          posted_kph=posted_kph,
+          engage_rising=engage_rising,
+          now=time.monotonic(),
         )
+        if dec.seed_kph is not None:
+          self._seed_preap_pedal_speed(CS, dec.seed_kph)
+          self._map_slew_ms = dec.seed_kph * CV.KPH_TO_MS
+          preap_v_cruise_kph = dec.seed_kph
+        elif dec.sticky:
+          preap_v_cruise_kph = dec.driver_kph
+          self._map_slew_ms = dec.driver_kph * CV.KPH_TO_MS
+        else:
+          preap_v_cruise_kph = apply_map_speed_kph(
+            dec.driver_kph,
+            map_kph,
+            mode=self._map_speed_mode,
+            offset_kph=self._map_speed_offset_kph,
+            engaged=engaged,
+            op_long_software_cruise=True,
+            driver_override=dec.follow_override,
+          )
         self.v_cruise_helper.v_cruise_kph_last = self.v_cruise_helper.v_cruise_kph
         self.v_cruise_helper.v_cruise_kph = preap_v_cruise_kph
         self.v_cruise_helper.v_cruise_cluster_kph = preap_v_cruise_kph
@@ -265,6 +278,22 @@ class Car:
     CS.vCruiseCluster = float(self.v_cruise_helper.v_cruise_cluster_kph)
 
     return CS, RD
+
+  def _seed_preap_pedal_speed(self, CS, kph: float) -> None:
+    """Write the engage/limit-change seed into pre-AP pedal_speed so stalk +/- starts from MAX."""
+    kph = float(kph)
+    try:
+      CS.cruiseState.speed = kph * CV.KPH_TO_MS
+    except Exception:
+      pass
+    inner = getattr(self.CI, 'CS', None)
+    if inner is None:
+      return
+    if hasattr(inner, 'pedal_speed_kph'):
+      inner.pedal_speed_kph = kph
+    eng = getattr(inner, 'engagement', None)
+    if eng is not None and hasattr(eng, 'pedal_speed_kph'):
+      eng.pedal_speed_kph = kph
 
   def state_publish(self, CS: car.CarState, RD: structs.RadarDataT | None):
     """carState and carParams publish loop"""
