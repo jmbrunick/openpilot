@@ -52,6 +52,7 @@ class _NAPMiciRunner:
         stderr=subprocess.STDOUT,
         cwd="/data/openpilot",
         text=True,
+        encoding="utf-8",
         bufsize=1,
       )
     except Exception as e:

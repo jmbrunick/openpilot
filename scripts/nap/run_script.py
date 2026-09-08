@@ -133,6 +133,7 @@ class ScriptRunnerApp:
         stderr=subprocess.STDOUT,
         cwd="/data/openpilot",
         text=True,
+        encoding="utf-8",
         bufsize=1
       )
 
