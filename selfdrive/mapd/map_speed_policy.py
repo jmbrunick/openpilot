@@ -163,10 +163,23 @@ def posted_limits_same(a_kph: float | None, b_kph: float | None) -> bool:
 
 
 def is_manual_set_change(prev_kph: float, cur_kph: float) -> bool:
-  """True when stalk +/- changed set speed (not engage 0↔set)."""
+  """True when set speed moved (not engage 0↔set). Includes ego jumps."""
   if prev_kph in (0, V_CRUISE_UNSET) or cur_kph <= 0 or cur_kph >= V_CRUISE_UNSET:
     return False
   return abs(float(cur_kph) - float(prev_kph)) > MANUAL_SET_EPS_KPH
+
+
+def is_cruise_stalk_step(prev_kph: float, cur_kph: float) -> bool:
+  """True if delta matches Tesla pedal stalk +/- (1 or 5 mph / kph).
+
+  An ego / DI_digitalSpeed jump is not a stalk step and must not arm
+  sticky or the Follow 10s timer.
+  """
+  if not is_manual_set_change(prev_kph, cur_kph):
+    return False
+  delta = abs(float(cur_kph) - float(prev_kph))
+  steps = (1.0, 5.0, CV.MPH_TO_KPH, 5.0 * CV.MPH_TO_KPH)
+  return any(abs(delta - step) < 0.55 for step in steps)
 
 
 def _ref_posted_kph(hold: MapCruiseHold, posted_kph: float | None) -> float | None:
@@ -245,21 +258,20 @@ def decide_map_cruise(
   """Engage seed + sticky hold. posted_kph is OSM current maxspeed + offset.
 
   `engaged` must be pedal-long active (not lateral-only). `stalk_pressed`
-  is the stalk +/- button when the caller has it; omit to infer from raw_kph.
+  is extra (button edge). A 1/5 mph pedal_speed step always counts as a
+  stalk; an ego jump does not. Do not treat `stalk_pressed=False` as
+  "ignore pedal_speed" — pre-AP button events are not reliable.
 
   Returns the driver-set to overlay, whether Follow should hold that set,
-  and an optional pedal_speed write-back so the long path tracks MAX.
+  and an optional pedal_speed write-back for seed / sticky only.
   """
   if (not engaged) or mode not in (MODE_CAP, MODE_FOLLOW):
     hold.reset()
     return MapCruiseDecision(raw_kph, False, None, False)
 
   posted_ok = posted_kph is not None and posted_kph > 0
-  raw_manual = is_manual_set_change(hold.last_raw_kph, raw_kph)
-  # Button edge is authoritative. Raw-delta only when the caller has no stalk
-  # bits — otherwise DI_digitalSpeed / a failed pedal write-back looks like a
-  # stalk and used to start the 10s Follow timer.
-  manual = raw_manual if stalk_pressed is None else bool(stalk_pressed)
+  # Button OR a real stalk-sized pedal step. Never OR-in an ego jump.
+  manual = is_cruise_stalk_step(hold.last_raw_kph, raw_kph) or bool(stalk_pressed)
   hold.last_raw_kph = raw_kph
 
   if engage_rising and posted_ok:
