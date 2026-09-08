@@ -145,7 +145,7 @@ class NAPLayout(Widget):
     self._map_speed_btn = button_item(
       "Map Speed Limit",
       "Open",
-      description="OSM posted limits for HUD MAX — mode, offset, lookahead, acceleration, and US map download.",
+      description="OSM posted limits for HUD MAX — mode, offset, lookahead, acceleration, US download, and Refresh maps.",
       callback=self._open_map_speed,
     )
     self._main_items.append(self._map_speed_btn)
