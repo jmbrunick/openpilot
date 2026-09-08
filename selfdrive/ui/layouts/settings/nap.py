@@ -17,11 +17,14 @@ from openpilot.system.ui.widgets.html_render import HtmlRenderer, ElementType
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   BACKUP_EPAS_INSTRUCTIONS, BRAKE_FACTOR_PRESETS,
   CALIBRATE_PEDAL_INSTRUCTIONS, CALIBRATE_RADAR_INSTRUCTIONS,
+  DOWNLOAD_US_MAPS_INSTRUCTIONS,
   FLASH_EPAS_INSTRUCTIONS, PEDAL_CAN_BUS_VALUES,
+  MAP_SPEED_ACCEL_DEFAULT,
   RADAR_OFFSET_MAX, RADAR_OFFSET_MIN,
   RESTORE_EPAS_INSTRUCTIONS, TEST_RADAR_INSTRUCTIONS,
   acknowledgments_html, find_preset_index,
 )
+from openpilot.selfdrive.ui.layouts.settings.map_speed import MapSpeedLimitLayout
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys, DEFAULTS
 from openpilot.selfdrive.ui.ui_state import ui_state
 
@@ -123,6 +126,20 @@ class NAPLayout(Widget):
       callback=self._on_follow_distance,
     )
     self._all_items.append(self._follow_buttons)
+
+    self._map_speed_page = MapSpeedLimitLayout(
+      on_back=self._close_map_speed,
+      on_download=self._on_download_us_maps,
+    )
+    self._page = "main"
+    self._map_speed_btn = button_item(
+      "Map Speed Limit",
+      "Open",
+      description="OSM posted limits for HUD MAX: mode, offset, lookahead, and acceleration. " +
+      "Download US maps from this submenu.",
+      callback=self._open_map_speed,
+    )
+    self._all_items.append(self._map_speed_btn)
 
     # ── Section 2: Pedal Hardware ──
     self._all_items.append(section_header_item("Pedal Hardware"))
@@ -317,6 +334,13 @@ class NAPLayout(Widget):
   def _on_follow_distance(self, index: int):
     self._params.put(NAPParamKeys.FOLLOW_DISTANCE, index + 1)
 
+  def _open_map_speed(self):
+    self._page = "map_speed"
+    self._map_speed_page.show_event()
+
+  def _close_map_speed(self):
+    self._page = "main"
+
   def _on_pedal_can_bus(self, index: int):
     self._params.put(NAPParamKeys.PEDAL_CAN_BUS, PEDAL_CAN_BUS_VALUES[index])
     self._show_reboot_modal()
@@ -378,6 +402,13 @@ class NAPLayout(Widget):
       )
 
   # ── Action button callbacks ──
+
+  def _on_download_us_maps(self):
+    self._show_script_runner(
+      title="Download US Maps",
+      instructions=DOWNLOAD_US_MAPS_INSTRUCTIONS,
+      script_module="scripts.nap.fetch_osm_maps",
+    )
 
   def _on_calibrate_pedal(self):
     self._show_script_runner(
@@ -467,6 +498,12 @@ class NAPLayout(Widget):
         self._params.put_bool(key, default)
       elif isinstance(default, (int, float)):
         self._params.put(key, default)
+    self._params.put("NAPMapSpeedMode", 0)
+    self._params.put("NAPMapSpeedOffsetMph", 0)
+    self._params.put("NAPMapSpeedLookahead", 2)
+    self._params.put("NAPMapSpeedAccel", MAP_SPEED_ACCEL_DEFAULT)
+    self._params.remove("NAPMapSpeedDbPath")
+    self._page = "main"
     # Force Pre-AP is locked on in the panel but DEFAULTS keeps it off
     # for non-UI consumers. Re-apply the lock after the wholesale loop
     # so reset doesn't silently flip the invariant.
@@ -475,7 +512,10 @@ class NAPLayout(Widget):
   # ── Render / lifecycle ──
 
   def _render(self, rect):
-    self._scroller.render(rect)
+    if self._page == "map_speed":
+      self._map_speed_page.render(rect)
+    else:
+      self._scroller.render(rect)
 
   def show_event(self):
     self._scroller.show_event()
@@ -498,3 +538,5 @@ class NAPLayout(Widget):
     brake_factor = self._params.get(NAPParamKeys.BRAKE_FACTOR, return_default=True)
     self._brake_factor_buttons.action_item.set_selected_button(
       find_preset_index(BRAKE_FACTOR_PRESETS, brake_factor))
+
+    self._map_speed_page.refresh()

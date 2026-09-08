@@ -65,6 +65,8 @@ class HudRenderer(Widget):
     self.set_speed: float = SET_SPEED_NA
     self.speed: float = 0.0
     self.v_ego_cluster_seen: bool = False
+    self.map_speed_valid: bool = False
+    self.map_speed_limit: float = 0.0
 
     self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
     self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
@@ -100,6 +102,14 @@ class HudRenderer(Widget):
     speed_conversion = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
     self.speed = max(0.0, v_ego * speed_conversion)
 
+    self.map_speed_valid = False
+    self.map_speed_limit = 0.0
+    if "liveMapDataNAP" in sm.valid and sm.valid["liveMapDataNAP"]:
+      md = sm["liveMapDataNAP"]
+      if md.speedLimitValid and md.speedLimit > 0:
+        self.map_speed_valid = True
+        self.map_speed_limit = md.speedLimit * speed_conversion
+
   def _render(self, rect: rl.Rectangle) -> None:
     """Render HUD elements to the screen."""
     # Draw the header background
@@ -114,6 +124,7 @@ class HudRenderer(Widget):
 
     if self.is_cruise_available:
       self._draw_set_speed(rect)
+      self._draw_map_speed_limit(rect)
 
     self._draw_current_speed(rect)
 
@@ -166,6 +177,24 @@ class HudRenderer(Widget):
       0,
       set_speed_color,
     )
+
+  def _draw_map_speed_limit(self, rect: rl.Rectangle) -> None:
+    """MUTCD-style OSM speed-limit sign to the right of MAX (mac speed source)."""
+    if not self.map_speed_valid:
+      return
+    set_speed_width = UI_CONFIG.set_speed_width_metric if ui_state.is_metric else UI_CONFIG.set_speed_width_imperial
+    x = rect.x + 60 + (UI_CONFIG.set_speed_width_imperial - set_speed_width) // 2 + set_speed_width + 18
+    y = rect.y + 45
+    w, h = 132, 168
+    sign = rl.Rectangle(x, y, w, h)
+    rl.draw_rectangle_rounded(sign, 0.12, 8, rl.WHITE)
+    rl.draw_rectangle_rounded_lines_ex(sign, 0.12, 8, 4, rl.Color(180, 40, 40, 255))
+    label = tr("LIMIT")
+    label_w = measure_text_cached(self._font_semi_bold, label, 28).x
+    rl.draw_text_ex(self._font_semi_bold, label, rl.Vector2(x + (w - label_w) / 2, y + 14), 28, 0, rl.Color(40, 40, 40, 255))
+    num = str(round(self.map_speed_limit))
+    num_w = measure_text_cached(self._font_bold, num, 64).x
+    rl.draw_text_ex(self._font_bold, num, rl.Vector2(x + (w - num_w) / 2, y + 52), 64, 0, rl.BLACK)
 
   def _draw_current_speed(self, rect: rl.Rectangle) -> None:
     """Draw the current vehicle speed and unit."""

@@ -13,6 +13,10 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import Longi
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
+from openpilot.selfdrive.mapd.constants import MODE_CAP, MODE_FOLLOW, map_accel_a_ms2, map_brake_a_ms2
+from openpilot.selfdrive.mapd.map_speed_policy import (
+  cap_planner_v_cruise_ms, map_track_accel_ms2, map_track_decel_ms2, read_map_speed_params,
+)
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 
@@ -74,6 +78,9 @@ class LongitudinalPlanner:
     self._params = Params()
     self.nap_follow_dist = self._params.get("NAPFollowDistance", return_default=True) if self._is_preap else None
     self.nap_adaptive_accel = self._params.get_bool("NAPAdaptiveAccel") if self._is_preap else False
+    self._map_speed_mode, self._map_speed_offset_kph, self._map_speed_lookahead, self._map_speed_accel = (
+      read_map_speed_params(self._params) if self._is_preap else (0, 0.0, 0, 5)
+    )
     self._frame = 0
 
     self.a_desired = init_a
@@ -111,6 +118,9 @@ class LongitudinalPlanner:
     if self._is_preap and self._frame % 20 == 0:
       self.nap_follow_dist = self._params.get("NAPFollowDistance", return_default=True)
       self.nap_adaptive_accel = self._params.get_bool("NAPAdaptiveAccel")
+      self._map_speed_mode, self._map_speed_offset_kph, self._map_speed_lookahead, self._map_speed_accel = (
+        read_map_speed_params(self._params)
+      )
 
     if len(sm['carControl'].orientationNED) == 3:
       accel_coast = get_coast_accel(sm['carControl'].orientationNED[1])
@@ -120,6 +130,8 @@ class LongitudinalPlanner:
     v_ego = sm['carState'].vEgo
     v_cruise_kph = min(sm['carState'].vCruise, V_CRUISE_MAX)
     v_cruise = v_cruise_kph * CV.KPH_TO_MS
+    # HUD MAX after card's map overlay (Follow stalk override keeps the driver set).
+    v_hud_ms = v_cruise
     v_cruise_initialized = sm['carState'].vCruise != V_CRUISE_UNSET
 
     long_control_off = sm['controlsState'].longControlState == LongCtrlState.off
@@ -155,6 +167,24 @@ class LongitudinalPlanner:
 
     if force_slow_decel:
       v_cruise = 0.0
+
+    # OSM map speed: trust card HUD MAX (seed / sticky / lookahead). Safety-cap
+    # at the posted sign so planner never commands above the limit. Lead still
+    # wins via mpc.update(radarState, v_cruise).
+    if (not force_slow_decel) and self._is_preap and self._map_speed_mode in (MODE_CAP, MODE_FOLLOW):
+      if 'liveMapDataNAP' in sm.valid and sm.valid.get('liveMapDataNAP', False):
+        md = sm['liveMapDataNAP']
+        if md.speedLimitValid and md.speedLimit > 0:
+          v_cruise = cap_planner_v_cruise_ms(
+            v_hud_ms,
+            float(md.speedLimit),
+            mode=self._map_speed_mode,
+            offset_ms=self._map_speed_offset_kph * CV.KPH_TO_MS,
+          )
+        else:
+          v_cruise = v_hud_ms
+      else:
+        v_cruise = v_hud_ms
 
     # Pre-AP adaptive accel: only limit accel when close to a lead.
     # When the lead is far (>1.5x safe distance), full profile for gap closing.
@@ -207,6 +237,23 @@ class LongitudinalPlanner:
     else:
       output_a_target = output_a_target_mpc
       self.output_should_stop = output_should_stop_mpc
+
+    # Map MAX is a set *speed*. MPC cruise_obstacle will not brake to it
+    # (virtual lead is ~safe-follow distance ahead; V_EGO_COST is 0).
+    # Brake to a lower MAX is locked at Accel 5. Accel 1–10 only caps the
+    # climb when Follow raises MAX. Lead/MPC can still request more braking.
+    if self._is_preap and self._map_speed_mode in (MODE_CAP, MODE_FOLLOW):
+      a_brake = map_track_decel_ms2(
+        v_ego, v_hud_ms, map_brake_a_ms2(self._map_speed_lookahead),
+      )
+      if a_brake is not None:
+        output_a_target = min(float(output_a_target), a_brake)
+      else:
+        a_up = map_track_accel_ms2(
+          v_ego, v_hud_ms, map_accel_a_ms2(self._map_speed_lookahead, self._map_speed_accel),
+        )
+        if a_up is not None:
+          output_a_target = min(float(output_a_target), a_up)
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)

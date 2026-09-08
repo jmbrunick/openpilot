@@ -106,6 +106,8 @@ class HudRenderer(Widget):
     self.speed: float = 0.0
     self.v_ego_cluster_seen: bool = False
     self._engaged: bool = False
+    self.map_speed_valid: bool = False
+    self.map_speed_limit: float = 0.0
 
     self._can_draw_top_icons = True
     self._show_wheel_critical = False
@@ -168,6 +170,14 @@ class HudRenderer(Widget):
     v_ego = v_ego_cluster if self.v_ego_cluster_seen else car_state.vEgo
     speed_conversion = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
     self.speed = max(0.0, v_ego * speed_conversion)
+
+    self.map_speed_valid = False
+    self.map_speed_limit = 0.0
+    if "liveMapDataNAP" in sm.valid and sm.valid["liveMapDataNAP"]:
+      md = sm["liveMapDataNAP"]
+      if md.speedLimitValid and md.speedLimit > 0:
+        self.map_speed_valid = True
+        self.map_speed_limit = md.speedLimit * speed_conversion
 
   def _render(self, rect: rl.Rectangle) -> None:
     """Render HUD elements to the screen."""
@@ -262,6 +272,17 @@ class HudRenderer(Widget):
       0,
       max_color,
     )
+
+    if self.map_speed_valid:
+      lim = str(round(self.map_speed_limit))
+      rl.draw_text_ex(
+        self._font_semi_bold,
+        f"OSM {lim}",
+        rl.Vector2(x + 25, y + FONT_SIZES.set_speed + FONT_SIZES.max_speed - 4),
+        22,
+        0,
+        rl.Color(255, 255, 255, int(200 * alpha)),
+      )
 
   def _draw_current_speed(self, rect: rl.Rectangle) -> None:
     """Draw the current vehicle speed and unit."""

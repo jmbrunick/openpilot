@@ -9,9 +9,14 @@ calibration, restore) have a single source.
 BRAKE_FACTOR_PRESETS = [0.5, 1.0, 1.5, 2.0]
 PEDAL_CAN_BUS_VALUES = [0, 2]
 
-# Follow distance is a 1..7 enum; values match the tap-spoof step on the stalk.
-FOLLOW_DISTANCE_MIN = 1
-FOLLOW_DISTANCE_MAX = 7
+MAP_SPEED_MODES = [0, 1, 2, 3]
+MAP_SPEED_MODE_LABELS = ["Off", "Display", "Cap", "Follow"]
+MAP_SPEED_OFFSETS_MPH = [-5, 0, 5]
+MAP_SPEED_LOOKAHEAD = [0, 1, 2, 3]
+MAP_SPEED_LOOKAHEAD_LABELS = ["Off", "Late", "Normal", "Early"]
+MAP_SPEED_ACCEL = list(range(1, 11))
+MAP_SPEED_ACCEL_LABELS = [str(i) for i in MAP_SPEED_ACCEL]
+MAP_SPEED_ACCEL_DEFAULT = 5
 
 # Radar lateral offset bounds (meters). Added to radar yRel in
 # radar_interface.py. Negative = shift toward left; positive = toward right.
@@ -163,6 +168,34 @@ Only proceed if you:
   - Understand and accept the risks
 
 Press START only if you accept these risks."""
+
+
+DOWNLOAD_US_MAPS_INSTRUCTIONS = """\
+Download US OSM speed-limit maps
+
+Fetches a prebuilt sqlite of OpenStreetMap maxspeed ways for the United States
+and installs it at /data/media/0/osm/speed_limits.sqlite.
+
+This is not stored in git (too large). After flash, run this once over Wi-Fi.
+
+PRECONDITIONS:
+  1. Device is offroad / parked
+  2. Wi-Fi that can reach GitHub Releases
+  3. 800 MiB free on /data (same filesystem as /data/media/0/osm/)
+     ~204 MiB zst + ~516 MiB sqlite + 80 MiB margin. Stages in
+     /data/media/0/osm/.download/ — not /tmp.
+
+If a previous download died with ENOSPC / "No space left on device":
+  rm -f /data/media/0/osm/*.partial /data/media/0/osm/.download/*
+  then clear old routes/videos if df -h /data is still short.
+  Smaller region later: python scripts/nap/download_osm_speed_limits.py
+
+Takes a few minutes. mapd reloads onroad within ~15 seconds — no reboot.
+
+Data is © OpenStreetMap contributors (ODbL).
+https://www.openstreetmap.org/copyright
+
+Press START to download."""
 
 
 ACKNOWLEDGMENTS_INTRO = "Special thanks to the following members. This project wouldn't be possible without you:"
