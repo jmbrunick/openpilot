@@ -91,16 +91,25 @@ class MapSpeedLimitLayout(Widget):
       "OSM Map Data",
       installed_db_summary,
       description="US OpenStreetMap maxspeed ways (ODbL, © OpenStreetMap contributors). " +
-      "Not in git — tap Download US Maps over Wi-Fi after flash.",
+      "Not in git — tap Download US Maps over Wi-Fi after flash. Refresh maps then overlays live OSM within 100 miles.",
     )
     self._all_items.append(self._db_status)
 
     self._revision_status = text_item(
       "Map revision",
       installed_revision_summary,
-      description="Published US pack revision recorded after a successful download or refresh.",
+      description="Published US pack revision after Download US Maps. Refresh maps overlays live OSM within 100 miles and does not bump this number.",
     )
     self._all_items.append(self._revision_status)
+
+    self._refresh_btn = button_item(
+      "Refresh maps",
+      "Start",
+      description=REFRESH_MAPS_INSTRUCTIONS.split("\n", 1)[0],
+      callback=self._on_refresh,
+    )
+    self._refresh_btn.action_item.set_enabled(ui_state.is_offroad)
+    self._all_items.append(self._refresh_btn)
 
     self._download_btn = button_item(
       "Download US Maps",
@@ -110,15 +119,6 @@ class MapSpeedLimitLayout(Widget):
     )
     self._download_btn.action_item.set_enabled(ui_state.is_offroad)
     self._all_items.append(self._download_btn)
-
-    self._refresh_btn = button_item(
-      "Check for map updates",
-      "Refresh maps",
-      description=REFRESH_MAPS_INSTRUCTIONS.split("\n", 1)[0],
-      callback=self._on_refresh,
-    )
-    self._refresh_btn.action_item.set_enabled(ui_state.is_offroad)
-    self._all_items.append(self._refresh_btn)
 
   def _offset_index(self, offset_mph: int) -> int:
     if offset_mph in MAP_SPEED_OFFSETS_MPH:
@@ -156,8 +156,8 @@ class MapSpeedLimitLayout(Widget):
     self._lookahead_buttons.action_item.set_selected_button(self._lookahead_index(lookahead))
     accel = int(self._params.get("NAPMapSpeedAccel", return_default=True) or MAP_SPEED_ACCEL_DEFAULT)
     self._accel_buttons.action_item.set_selected_button(self._accel_index(accel))
-    self._download_btn.action_item.set_enabled(ui_state.is_offroad)
     self._refresh_btn.action_item.set_enabled(ui_state.is_offroad)
+    self._download_btn.action_item.set_enabled(ui_state.is_offroad)
 
   def show_event(self):
     self._scroller.show_event()

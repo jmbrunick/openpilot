@@ -1,3 +1,7 @@
+NAP map speed (2026-09-08)
+========================
+* Refresh maps queries live OSM within 100 miles of the car and merges into the installed US sqlite. Download US Maps remains the first-install of the published pack.
+
 NAP map speed (2026-09-07)
 ========================
 * OSM map speed can drive HUD MAX (pedal mode). Off by default. Download US maps from Settings → NAP → Map Speed Limit (ODbL). Map speed sets the cruise ceiling; radar still follows a slower lead.

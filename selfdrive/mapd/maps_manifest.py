@@ -4,9 +4,9 @@ The sqlite is not in git (too large). Clone/flash stays small; after install,
 Settings → NAP → Download US Maps (or `python -m scripts.nap.fetch_osm_maps`)
 pulls a GitHub Release asset onto `/data/media/0/osm/speed_limits.sqlite`.
 
-Refresh maps fetches this module's `MAPS_INDEX_URL` (small JSON, not Overpass
-and not the sqlite) and downloads the asset only when the published revision
-or zst SHA-256 differs from what is installed.
+Refresh maps (Settings or `python -m scripts.nap.refresh_osm_maps`) queries
+live OSM via Overpass within 100 miles of the vehicle and merges those ways
+into the installed sqlite. It does not download maps-index.json.
 
 OpenStreetMap data is ODbL: © OpenStreetMap contributors.
 https://www.openstreetmap.org/copyright
@@ -33,14 +33,13 @@ ASSET_NAME = "speed_limits_us.sqlite.zst"
 # First-install revision; must match committed maps-index.json.
 RELEASE_REVISION = "2"
 
-# Live index the 3X fetches for Refresh maps (small JSON, not the sqlite).
-# Pointed at raw nap-dev so a county refresh is a JSON bump + new Release
-# asset — no software reflash. Override with NAP_MAPS_INDEX_URL.
+# Live index Download US Maps fetches when GitHub is reachable (small JSON).
+# Refresh maps does not use this URL — it queries Overpass around the vehicle.
 MAPS_INDEX_REF = "nap-dev"
 MAPS_INDEX_FILENAME = "maps-index.json"
 MAPS_INDEX_URL = (
   f"https://raw.githubusercontent.com/{GITHUB_REPO}/{MAPS_INDEX_REF}"
-  f"/selfdrive/mapd/{MAPS_INDEX_FILENAME}"
+  + f"/selfdrive/mapd/{MAPS_INDEX_FILENAME}"
 )
 
 # Measured osm-us-speed-limits-v1 (~204 MiB zst → ~516 MiB sqlite).
@@ -70,7 +69,7 @@ def release_asset_url(repo: str = GITHUB_REPO, tag: str = RELEASE_TAG, asset: st
 
 @dataclass(frozen=True)
 class MapsIndex:
-  """Published US pack metadata. The 3X downloads this JSON, not Overpass."""
+  """Published US pack metadata. Download US Maps uses this JSON, not Overpass."""
   revision: str
   asset_url: str
   asset_name: str

@@ -60,6 +60,9 @@ def _sqlite_present(path: str | None) -> bool:
     return False
 
 
+sqlite_present = _sqlite_present
+
+
 def installed_db_summary(path: str | None = None) -> str:
   path = path or default_db_path()
   if not _sqlite_present(path):
@@ -195,7 +198,7 @@ def resolve_published_index(*, index_url: str | None = None, fallback: bool = Tr
 
 
 def fetch_and_install_from_index(index: MapsIndex, dest: str | None = None) -> str:
-  """Shared US-pack fetch used by Download US Maps and Refresh maps."""
+  """Shared US-pack fetch used by Download US Maps."""
   dest = fetch_and_install(
     dest=dest,
     url=index.asset_url,
@@ -213,9 +216,10 @@ def download_maps(dest: str | None = None, *, index_url: str | None = None) -> s
 
 
 def refresh_maps(dest: str | None = None, *, index_url: str | None = None) -> str | None:
-  """Version-check the published index; download only if missing or newer.
+  """CLI: version-check the published US index; download only if missing or newer.
 
-  Returns dest when a fetch ran, None when already up to date.
+  Settings → Refresh maps is live Overpass (`local_refresh.refresh_local_maps`),
+  not this function. Keep this for `python -m scripts.nap.fetch_osm_maps --refresh`.
   """
   dest = os.path.abspath(dest or default_db_path())
   index = resolve_published_index(index_url=index_url, fallback=False)
@@ -413,6 +417,9 @@ def _sqlite_ok(path: str) -> bool:
   ok = db.open()
   db.close()
   return ok
+
+
+sqlite_ok = _sqlite_ok
 
 
 def _hash_requested(value: str | None) -> str:

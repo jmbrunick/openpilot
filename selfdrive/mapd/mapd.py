@@ -4,7 +4,6 @@
 Publishes liveMapDataNAP. Does not actuate; card.py / the long planner consume
 the limit through the existing vCruise path.
 """
-import math
 import os
 import time
 
@@ -13,32 +12,15 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.mapd.db_paths import default_db_path
+from openpilot.selfdrive.mapd.gps_fix import (
+  LAST_GPS_WRITE_PERIOD_S,
+  gps_sample_from_sm,
+  persist_last_gps_position,
+)
 from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB
 
 MAPD_HZ = 2.0
-GPS_MAX_AGE_S = 2.5
-GPS_MAX_ACC_M = 50.0
 RELOAD_PERIOD_S = 15.0
-
-
-def _gps_sample(sm) -> tuple[float, float, float | None, bool]:
-  """Return (lat, lon, bearing_deg or None, ok). Prefer external GNSS."""
-  now = time.monotonic()
-  for sock in ("gpsLocationExternal", "gpsLocation"):
-    if sm.recv_frame.get(sock, -1) <= 0:
-      continue
-    if (now - sm.recv_time[sock]) > GPS_MAX_AGE_S:
-      continue
-    g = sm[sock]
-    if abs(g.latitude) < 1e-6 and abs(g.longitude) < 1e-6:
-      continue
-    if g.horizontalAccuracy > GPS_MAX_ACC_M and g.horizontalAccuracy > 0:
-      continue
-    bearing = float(g.bearingDeg) if (g.speed > 1.0 or g.bearingDeg) else None
-    if bearing is not None and (math.isnan(bearing) or bearing < 0):
-      bearing = None
-    return float(g.latitude), float(g.longitude), bearing, True
-  return 0.0, 0.0, None, False
 
 
 def _db_path(params: Params) -> str:
@@ -60,6 +42,7 @@ def main():
 
   db = OsmSpeedLimitDB(_db_path(params))
   last_reload = 0.0
+  last_gps_write = 0.0
   last_path = db.path
 
   cloudlog.info("mapd starting, db=%s", db.path)
@@ -78,7 +61,10 @@ def main():
       db.open()
       last_reload = now
 
-    lat, lon, bearing, gps_ok = _gps_sample(sm)
+    lat, lon, bearing, gps_ok = gps_sample_from_sm(sm, now=now)
+    if gps_ok and (now - last_gps_write) >= LAST_GPS_WRITE_PERIOD_S:
+      persist_last_gps_position(params, lat, lon)
+      last_gps_write = now
     match = db.lookup(lat, lon, bearing) if gps_ok and db.loaded else None
 
     msg = messaging.new_message("liveMapDataNAP")

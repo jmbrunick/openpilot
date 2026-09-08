@@ -10,7 +10,11 @@ For the full United States after flash, use the GitHub Release download instead:
 
   # or Settings → NAP → Download US Maps
 
-To *publish* that Release from a PC (Geofabrik PBF), see scripts/nap/build_osm_speed_limits.py
+On the 3X, Settings → NAP → Map Speed Limit → Refresh maps overlays live OSM
+within 100 miles of the vehicle onto that US sqlite (see
+python -m scripts.nap.refresh_osm_maps). This script is the PC / bbox builder.
+
+To *publish* a US Release from a PC (Geofabrik PBF), see scripts/nap/build_osm_speed_limits.py
 and docs-nap/map-speed.md.
 
 Small bbox / Overpass examples (run on a PC):
@@ -32,39 +36,16 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import sys
-import urllib.parse
-import urllib.request
 
 from openpilot.selfdrive.mapd.db_paths import default_db_path
-from openpilot.selfdrive.mapd.maps_manifest import USER_AGENT
 from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB
-from openpilot.selfdrive.mapd.overpass import ways_from_overpass
-
-OVERPASS_URL = "https://overpass-api.de/api/interpreter"
-
-
-def bbox_from_center(lat: float, lon: float, radius_km: float) -> tuple[float, float, float, float]:
-  dlat = radius_km / 111.0
-  dlon = radius_km / (111.0 * max(0.2, abs(math.cos(math.radians(lat)))))
-  return lat - dlat, lon - dlon, lat + dlat, lon + dlon
-
-
-def overpass_query(south: float, west: float, north: float, east: float) -> str:
-  return f"""
-[out:json][timeout:180];
-way["highway"]["maxspeed"]({south},{west},{north},{east});
-out geom;
-""".strip()
-
-
-def fetch_overpass(bbox: tuple[float, float, float, float], url: str = OVERPASS_URL) -> dict:
-  q = overpass_query(*bbox)
-  data = urllib.parse.urlencode({"data": q}).encode()
-  req = urllib.request.Request(url, data=data, headers={"User-Agent": USER_AGENT})
-  with urllib.request.urlopen(req, timeout=240) as resp:
-    return json.loads(resp.read().decode("utf-8"))
+from openpilot.selfdrive.mapd.overpass import (
+  OVERPASS_URL,
+  bbox_from_center,
+  fetch_overpass,
+  ways_from_overpass,
+)
 
 
 def write_db(path: str, ways: list[dict], extra_meta: dict | None = None) -> int:
@@ -90,6 +71,7 @@ def main(argv: list[str] | None = None) -> int:
   p.add_argument("--radius-km", type=float, default=20.0)
   p.add_argument("--from-json", help="Use a saved Overpass JSON instead of the network")
   p.add_argument("--out", default=default_db_path(), help="Output sqlite path")
+  p.add_argument("--overpass-url", default=OVERPASS_URL)
   args = p.parse_args(argv)
 
   if args.from_json:
@@ -107,7 +89,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
       p.error("provide --bbox or --lat/--lon (or --from-json)")
     print(f"Overpass bbox={bbox} …", file=sys.stderr)
-    payload = fetch_overpass(bbox)
+    payload = fetch_overpass(bbox, url=args.overpass_url)
     bbox_s = ",".join(str(x) for x in bbox)
 
   ways = ways_from_overpass(payload)

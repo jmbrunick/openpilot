@@ -44,7 +44,7 @@ The US speed-limits sqlite is **not in git** (too large; ODbL still requires att
 | Staging | `/data/media/0/osm/.download/` on the dest filesystem (not `/tmp`) |
 | Size | **~204 MiB zst → ~516 MiB sqlite**. Fetch needs **800 MiB** free on `/data`. |
 
-On the comma 3X: **Settings → NAP → Map Speed Limit → Download US Maps** (offroad), or `python -m scripts.nap.fetch_osm_maps`. Later county refreshes: **Refresh maps** (or `python -m scripts.nap.refresh_osm_maps`) — that is a version check of `maps-index.json`, not Overpass. `mapd` reloads the sqlite every ~15s onroad — no reboot.
+On the comma 3X: **Settings → NAP → Map Speed Limit → Download US Maps** (offroad), or `python -m scripts.nap.fetch_osm_maps`. That is the first-install of the published US pack. Frequent local updates: **Refresh maps** (or `python -m scripts.nap.refresh_osm_maps`) — live OSM within **100 miles** (~160.9 km), merged into the installed sqlite. `mapd` reloads the sqlite every ~15s onroad — no reboot.
 
 If a previous download died with ENOSPC, remove leftovers then retry:
 
@@ -63,13 +63,26 @@ python scripts/nap/build_osm_speed_limits.py --pbf us-maxspeed.osm.pbf \
   --out speed_limits_us.sqlite --zst
 ```
 
-Put the **zst** SHA-256 in `selfdrive/mapd/maps_manifest.py` **and** bump `selfdrive/mapd/maps-index.json` (see [Publishing a map refresh](#publishing-a-map-refresh)). For a smaller region: `python scripts/nap/download_osm_speed_limits.py --lat … --lon … --radius-km 30`.
+Put the **zst** SHA-256 in `selfdrive/mapd/maps_manifest.py` **and** bump `selfdrive/mapd/maps-index.json` (see [Publishing a US pack](#publishing-a-us-pack)). For a PC-only smaller region file: `python scripts/nap/download_osm_speed_limits.py --lat … --lon … --radius-km 30`.
 
-## Publishing a map refresh
+## Refresh maps (100 miles)
 
-The 3X does **not** query Overpass. **Refresh maps** downloads a small published JSON, compares revision/SHA to what is installed, and only then fetches the zst.
+**Refresh maps** is one button: a local Overpass update, not a published-pack download. Radius is **100 miles** (~160.9 km) around the vehicle — the bounding box that contains that circle.
 
-1. Build a new US (or county-updated) sqlite and zst on a PC (same `build_osm_speed_limits.py` flow as above).
+On the 3X (offroad, Wi-Fi):
+
+1. **Location.** Prefer a current GNSS fix (`gpsLocationExternal`, then `gpsLocation`) if valid. Otherwise last stored GPS (`LastGPSPosition` — comma JSON `latitude`/`longitude`, written by mapd about once a minute while driving). If neither is available, fail with a clear message: drive once with GPS, or wait for a fix. Maps will **not** guess a city.
+2. **Query OSM.** Reuses Overpass / `scripts.nap.download_osm_speed_limits` / mapd builders for highway+maxspeed ways in that box. Does **not** download the full US Geofabrik PBF on the 3X.
+3. **Merge.** Copy the installed `/data/media/0/osm/speed_limits.sqlite` onto `/data` (not `/tmp`), delete/replace `way_id`s whose bbox intersects the 100-mile box, insert the Overpass ways, keep the rest of the US pack. If no sqlite is installed yet, Download US Maps runs first, then the overlay — never a 100-mile-only dest file.
+4. **Atomic install.** `os.replace` onto dest. Overpass timeout / HTTP / merge failure prints a real error and leaves the previous good sqlite. Retry-safe. mapd reloads ~15s onroad — no reboot. Progress (querying OSM, merging, installing) shows on the existing script-runner UI.
+
+Overpass can be slow in a dense metro. Wait or retry; the old maps stay put.
+
+## Publishing a US pack
+
+Download US Maps still uses the GitHub Release + `maps-index.json`. Bump those when you republish a full US sqlite from a PC:
+
+1. Build a new US sqlite and zst on a PC (same `build_osm_speed_limits.py` flow as above).
 2. Attach `speed_limits_us.sqlite.zst` to a **new** GitHub Release on `jmbrunick/openpilot` (e.g. `osm-us-speed-limits-v3`). Do not replace the in-git JSON with the 204MB zst.
 3. SHA-256 the **zst** (`sha256sum speed_limits_us.sqlite.zst`).
 4. Bump `selfdrive/mapd/maps-index.json`:
@@ -78,34 +91,23 @@ The 3X does **not** query Overpass. **Refresh maps** downloads a small published
    - `asset_name` — usually `speed_limits_us.sqlite.zst`
    - `sha256` — hex digest of the zst
    - `bytes` — zst size (optional)
-   - `notes` — optional (shown during Refresh)
+   - `notes` — optional
 5. Keep first-install constants in `selfdrive/mapd/maps_manifest.py` in sync when you intend a new clone/flash to get this pack (`RELEASE_TAG`, `ASSET_SHA256`, `RELEASE_REVISION`, sizes).
-6. Merge the JSON (and manifest) to `nap-dev`. The device fetches:
+6. Merge the JSON (and manifest) to `nap-dev`. Download US Maps fetches:
 
    `https://raw.githubusercontent.com/jmbrunick/openpilot/nap-dev/selfdrive/mapd/maps-index.json`
 
-   Cars already flashed with this Refresh button pick up the new revision **without a software reflash**. They still need Wi-Fi.
-
-**Refresh maps** on the 3X (offroad, Wi-Fi):
-
-- Fetches that JSON (not the sqlite, not Overpass).
-- Compares installed `NAPMapSpeedDbRevision` / recorded zst SHA (sidecar `maps-revision.json` next to the sqlite) to the index.
-- Same revision and SHA → **Maps are up to date (revision …)** — no download.
-- Newer revision or different SHA → same staging rules as Download US Maps (`/data/media/0/osm/.download/`, never `/tmp`, SHA-256 of the zst before decompress, previous good sqlite kept on failure).
-- No sqlite yet → performs the first install (shared `fetch_and_install`).
-- After a successful install, saves the new revision; mapd reloads within ~15s — no reboot.
-
 ## Settings → NAP → Map Speed Limit
 
-All map-speed controls live in this submenu (main NAP stays uncluttered):
+All map-speed controls live in this submenu (main NAP stays uncluttered). TICI and mici:
 
 - **Map Speed (MAX)** (`NAPMapSpeedMode`): Off / Display / Cap / Follow
 - **Map Speed Offset** (`NAPMapSpeedOffsetMph`): -5 / 0 / +5 mph
 - **Lookahead** (`NAPMapSpeedLookahead`): Off / Late / Normal (default) / Early
 - **Acceleration** (`NAPMapSpeedAccel`): 1–10, Follow climb only (default 5). Brake to a lower MAX is locked at 5.
-- **Map revision**: published US pack revision after a successful download or refresh
+- **Map revision**: published US pack revision after Download US Maps (Refresh maps does not bump this)
+- **Refresh maps**: live OSM within 100 miles, merged into the installed US sqlite (listed above Download)
 - **Download US Maps**: first install of the current published pack
-- **Check for map updates** / **Refresh maps**: version check + download if newer
 - Cap/Follow require the pedal interceptor
 
 ## Anticipatory decreases and Accel
@@ -138,12 +140,22 @@ When the upcoming drop is inside that window, MAX follows `v = sqrt(v_next² + 2
 ```bash
 pytest selfdrive/mapd/tests/test_map_speed_policy.py \
   selfdrive/mapd/tests/test_osm_db.py \
-  selfdrive/mapd/tests/test_fetch_maps.py -q
+  selfdrive/mapd/tests/test_fetch_maps.py \
+  selfdrive/mapd/tests/test_local_refresh.py -q
 ```
 
-Policy tests include lead precedence and fetch of a tiny sqlite over HTTP.
+Policy tests include lead precedence, fetch of a tiny sqlite over HTTP, and Refresh maps location/merge (no network).
 
-**On comma 3X, parked, GPS lock:** Mode = Display. Confirm the LIMIT sign matches a known posted limit (OSM, not NAR).
+**Offroad Refresh maps (3X, Wi-Fi):**
+
+1. After a drive with GPS (so `LastGPSPosition` is stored), park, Settings → NAP → Map Speed Limit → **Refresh maps** → Start.
+2. Script runner should show location source (GNSS or last stored GPS), querying OSM, merging, installing. Must not name a guessed city.
+3. `ls -l --time-style=full-iso /data/media/0/osm/speed_limits.sqlite` — mtime updates; size stays US-pack scale (hundreds of MB), not a tiny 100-mile-only file.
+4. Unplug GPS / no LastGPSPosition (fresh flash, never driven): Refresh maps must error and leave any existing sqlite.
+5. Airplane mode / Overpass down: error text, previous sqlite kept. Retry later.
+6. No sqlite yet: Refresh maps downloads the US pack first, then overlays. Download US Maps still does first-install only.
+
+**On comma 3X, parked, GPS lock:** Mode = Display. Confirm the LIMIT sign matches a known posted limit (OSM, not NAR). After Refresh maps, a local OSM edit (new maxspeed) should show within ~15s onroad — no reboot.
 
 **On-road, pedal mode:**
 
