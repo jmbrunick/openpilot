@@ -1,0 +1,8 @@
+{
+  "revision": "2",
+  "asset_name": "speed_limits_us.sqlite.zst",
+  "asset_url": "https://github.com/jmbrunick/openpilot/releases/download/osm-us-speed-limits-v2/speed_limits_us.sqlite.zst",
+  "sha256": "59085d830b5694f2c867ac11c18a0599be815ba463ff6b3104cd63eba3a5ca71",
+  "bytes": 203717126,
+  "notes": "Swift + Kandiyohi refresh; US 12 Benson is 60 then 50 then 30"
+}

@@ -8,19 +8,21 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   MAP_SPEED_ACCEL, MAP_SPEED_ACCEL_DEFAULT, MAP_SPEED_ACCEL_LABELS,
   MAP_SPEED_LOOKAHEAD, MAP_SPEED_LOOKAHEAD_LABELS,
   MAP_SPEED_MODES, MAP_SPEED_MODE_LABELS, MAP_SPEED_OFFSETS_MPH,
+  REFRESH_MAPS_INSTRUCTIONS,
 )
-from openpilot.selfdrive.mapd.fetch_maps import installed_db_summary
+from openpilot.selfdrive.mapd.fetch_maps import installed_db_summary, installed_revision_summary
 from openpilot.selfdrive.ui.ui_state import ui_state
 
 
 class MapSpeedLimitLayout(Widget):
   """Nested NAP page for OSM map-speed mode, offset, lookahead, and accel."""
 
-  def __init__(self, on_back, on_download):
+  def __init__(self, on_back, on_download, on_refresh):
     super().__init__()
     self._params = Params()
     self._on_back = on_back
     self._on_download = on_download
+    self._on_refresh = on_refresh
     self._build_items()
     self._scroller = Scroller(self._all_items, line_separator=True, spacing=0)
 
@@ -93,6 +95,13 @@ class MapSpeedLimitLayout(Widget):
     )
     self._all_items.append(self._db_status)
 
+    self._revision_status = text_item(
+      "Map revision",
+      installed_revision_summary,
+      description="Published US pack revision recorded after a successful download or refresh.",
+    )
+    self._all_items.append(self._revision_status)
+
     self._download_btn = button_item(
       "Download US Maps",
       "Start",
@@ -101,6 +110,15 @@ class MapSpeedLimitLayout(Widget):
     )
     self._download_btn.action_item.set_enabled(ui_state.is_offroad)
     self._all_items.append(self._download_btn)
+
+    self._refresh_btn = button_item(
+      "Check for map updates",
+      "Refresh maps",
+      description=REFRESH_MAPS_INSTRUCTIONS.split("\n", 1)[0],
+      callback=self._on_refresh,
+    )
+    self._refresh_btn.action_item.set_enabled(ui_state.is_offroad)
+    self._all_items.append(self._refresh_btn)
 
   def _offset_index(self, offset_mph: int) -> int:
     if offset_mph in MAP_SPEED_OFFSETS_MPH:
@@ -139,6 +157,7 @@ class MapSpeedLimitLayout(Widget):
     accel = int(self._params.get("NAPMapSpeedAccel", return_default=True) or MAP_SPEED_ACCEL_DEFAULT)
     self._accel_buttons.action_item.set_selected_button(self._accel_index(accel))
     self._download_btn.action_item.set_enabled(ui_state.is_offroad)
+    self._refresh_btn.action_item.set_enabled(ui_state.is_offroad)
 
   def show_event(self):
     self._scroller.show_event()

@@ -22,6 +22,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   FLASH_EPAS_INSTRUCTIONS, PEDAL_CAN_BUS_VALUES,
   MAP_SPEED_ACCEL_DEFAULT,
   RADAR_OFFSET_MAX, RADAR_OFFSET_MIN,
+  REFRESH_MAPS_INSTRUCTIONS,
   RESTORE_EPAS_INSTRUCTIONS,
   acknowledgments_html, find_preset_index,
 )
@@ -138,6 +139,7 @@ class NAPLayout(Widget):
     self._map_speed_page = MapSpeedLimitLayout(
       on_back=self._close_map_speed,
       on_download=self._on_download_us_maps,
+      on_refresh=self._on_refresh_maps,
     )
     self._page = "main"
     self._map_speed_btn = button_item(
@@ -561,6 +563,13 @@ class NAPLayout(Widget):
       title="Download US Maps",
       instructions=DOWNLOAD_US_MAPS_INSTRUCTIONS,
       script_module="scripts.nap.fetch_osm_maps",
+    )
+
+  def _on_refresh_maps(self):
+    self._show_script_runner(
+      title="Refresh maps",
+      instructions=REFRESH_MAPS_INSTRUCTIONS,
+      script_module="scripts.nap.refresh_osm_maps",
     )
 
   def _on_calibrate_pedal(self):
