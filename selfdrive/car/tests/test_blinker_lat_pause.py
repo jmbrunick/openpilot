@@ -3,13 +3,9 @@
 from cereal import car, log
 from opendbc.car.toyota.values import CAR as TOYOTA
 
-from openpilot.common.constants import CV
 from openpilot.selfdrive.car.car_specific import CarSpecificEvents
 from openpilot.selfdrive.controls.lib.blinker_lateral_pause import blinker_pauses_lateral
 from openpilot.selfdrive.selfdrived.events import ET, EVENTS
-
-TURN_SPEED = 15 * CV.MPH_TO_MS
-HIGHWAY_SPEED = 30 * CV.MPH_TO_MS
 
 
 EventName = log.OnroadEvent.EventName
@@ -27,12 +23,11 @@ def _cp():
 
 
 def _cs(*, left=False, right=False, steering_disengage=False, steering_pressed=False,
-        cancel=False, cruise_enabled=True, v_ego=TURN_SPEED):
+        cancel=False, cruise_enabled=True):
   cs = car.CarState.new_message()
   cs.cruiseState.available = True
   cs.cruiseState.enabled = cruise_enabled
   cs.gearShifter = "drive"
-  cs.vEgo = v_ego
   cs.leftBlinker = left
   cs.rightBlinker = right
   cs.steeringDisengage = steering_disengage
@@ -72,15 +67,8 @@ def test_stalk_cancel_still_fires_during_pause():
   assert EventName.buttonCancel in events.names
 
 
-def test_highway_blinker_steer_disengage_still_fires():
-  events = _events(_cs(left=True, steering_disengage=True, v_ego=HIGHWAY_SPEED),
-                   _cs(left=True, v_ego=HIGHWAY_SPEED))
-  assert EventName.steerDisengage in events.names
-
-
 def test_blinker_pause_predicate():
-  assert blinker_pauses_lateral(True, False, TURN_SPEED)
-  assert blinker_pauses_lateral(False, True, TURN_SPEED)
-  assert not blinker_pauses_lateral(True, False, HIGHWAY_SPEED)
-  assert not blinker_pauses_lateral(True, True, TURN_SPEED)
-  assert not blinker_pauses_lateral(False, False, TURN_SPEED)
+  assert blinker_pauses_lateral(True, False)
+  assert blinker_pauses_lateral(False, True)
+  assert not blinker_pauses_lateral(True, True)
+  assert not blinker_pauses_lateral(False, False)
