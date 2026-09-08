@@ -40,7 +40,8 @@ LOOKAHEAD_TUNING = {
 }
 MIN_DECREASE_MS = 0.45  # ~1 mph; ignore jitter
 
-# NAPMapSpeedAccel: 1=gentlest, 5=current Normal a, 10=quickest. Scales LOOKAHEAD_TUNING a.
+# NAPMapSpeedAccel: 1=gentlest, 5=default, 10=quickest. Scales Follow *accel*
+# (MAX rising / speeding up). Brake to a lower MAX is locked at ACCEL_DEFAULT.
 ACCEL_MIN = 1
 ACCEL_DEFAULT = 5
 ACCEL_MAX = 10
@@ -66,11 +67,18 @@ def accel_scale_factor(level: int) -> float:
   return 1.0 + (ACCEL_FACTOR_HI - 1.0) * (lvl - ACCEL_DEFAULT) / (ACCEL_MAX - ACCEL_DEFAULT)
 
 
-def map_comfort_a_ms2(lookahead: int, accel_level: int = ACCEL_DEFAULT) -> float:
-  """Comfort decel (m/s²) for map-driven MAX changes.
+def map_brake_a_ms2(lookahead: int) -> float:
+  """Fixed comfort |a| for map-driven decreases (locked at Accel 5)."""
+  return map_comfort_a_ms2(lookahead, ACCEL_DEFAULT)
 
-  Lookahead Normal + accel 5 → 0.80 m/s² (the previous hard-coded curve).
-  """
+
+def map_accel_a_ms2(lookahead: int, accel_level: int) -> float:
+  """Comfort |a| for Follow speeding up toward a higher MAX (Accel 1–10)."""
+  return map_comfort_a_ms2(lookahead, accel_level)
+
+
+def map_comfort_a_ms2(lookahead: int, accel_level: int = ACCEL_DEFAULT) -> float:
+  """Comfort |a| (m/s²). Lookahead Normal + accel 5 → 0.80 m/s²."""
   if lookahead in LOOKAHEAD_TUNING and LOOKAHEAD_TUNING[lookahead][0] > 0:
     a_base = LOOKAHEAD_TUNING[lookahead][0]
   else:

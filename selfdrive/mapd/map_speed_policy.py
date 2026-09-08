@@ -11,7 +11,7 @@ from openpilot.common.constants import CV
 from openpilot.selfdrive.mapd.constants import (
   ACCEL_DEFAULT, ACCEL_MAX, ACCEL_MIN, LOOKAHEAD_NORMAL, LOOKAHEAD_OFF,
   LOOKAHEAD_TUNING, MIN_DECREASE_MS, MODE_CAP, MODE_DISPLAY, MODE_FOLLOW, MODE_OFF,
-  TRACK_DEADBAND_MS, TRACK_TAPER_MS, map_comfort_a_ms2,
+  TRACK_DEADBAND_MS, TRACK_TAPER_MS, map_accel_a_ms2, map_brake_a_ms2,
 )
 
 # Keep in sync with openpilot.selfdrive.car.cruise (avoid importing cereal here).
@@ -61,7 +61,10 @@ def anticipatory_limit_ms(
   _a_base, margin_m, horizon_m = LOOKAHEAD_TUNING[lookahead]
   if horizon_m <= 0:
     return None
-  a_comfort = map_comfort_a_ms2(lookahead, accel)
+  # Brake / anticipatory decreases are locked at Accel 5. `accel` only
+  # scales Follow speed-up (MAX rising); keep the arg for call-site compat.
+  del accel
+  a_comfort = map_brake_a_ms2(lookahead)
   if a_comfort <= 0:
     return None
   v0 = max(float(v_ego_ms), float(current_ms), 0.0)
@@ -97,6 +100,13 @@ def effective_map_limit_ms(
   return min(float(current_ms), anticipated)
 
 
+def map_slew_a_ms2(prev_ms: float, target_ms: float, lookahead: int, accel_level: int) -> float:
+  """Slew rate for HUD/planner MAX: brake-locked a on decreases, Accel 1–10 on rises."""
+  if float(target_ms) < float(prev_ms):
+    return map_brake_a_ms2(lookahead)
+  return map_accel_a_ms2(lookahead, accel_level)
+
+
 def slew_map_speed_ms(prev_ms: float, target_ms: float, dt: float, a_ms2: float) -> float:
   """Rate-limit map-driven MAX (m/s) so a new limit does not cliff the HUD."""
   if dt <= 0 or a_ms2 <= 0:
@@ -115,6 +125,8 @@ def map_track_decel_ms2(v_ego_ms: float, v_cruise_ms: float, a_comfort: float) -
   get_safe_obstacle_distance(v_ego) with V_EGO_COST=0. Holding 70 mph for
   10 s after MAX drops to 45 never violates that obstacle, so aTarget stays
   ~0 unless we command this. Lead/MPC may still request more braking via min().
+  Callers must pass Accel-5 comfort a (map_brake_a_ms2); Accel 1–10 does not
+  change brake rate.
   """
   if a_comfort <= 0 or v_ego_ms <= 0 or v_cruise_ms <= 0:
     return None
@@ -124,6 +136,22 @@ def map_track_decel_ms2(v_ego_ms: float, v_cruise_ms: float, a_comfort: float) -
   span = max(1e-6, TRACK_TAPER_MS - TRACK_DEADBAND_MS)
   scale = min(1.0, (dv - TRACK_DEADBAND_MS) / span)
   return -float(a_comfort) * scale
+
+
+def map_track_accel_ms2(v_ego_ms: float, v_cruise_ms: float, a_comfort: float) -> float | None:
+  """Comfort accel cap (positive m/s²) when catching a higher Follow MAX, or None.
+
+  min() with MPC so Accel 1–10 limits how hard we climb; a slower lead can
+  still command negative a.
+  """
+  if a_comfort <= 0 or v_ego_ms <= 0 or v_cruise_ms <= 0:
+    return None
+  dv = float(v_cruise_ms) - float(v_ego_ms)
+  if dv <= TRACK_DEADBAND_MS:
+    return None
+  span = max(1e-6, TRACK_TAPER_MS - TRACK_DEADBAND_MS)
+  scale = min(1.0, (dv - TRACK_DEADBAND_MS) / span)
+  return float(a_comfort) * scale
 
 
 def apply_map_speed_kph(

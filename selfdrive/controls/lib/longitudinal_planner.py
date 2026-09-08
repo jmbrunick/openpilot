@@ -13,10 +13,10 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import Longi
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
-from openpilot.selfdrive.mapd.constants import MODE_CAP, MODE_FOLLOW, map_comfort_a_ms2
+from openpilot.selfdrive.mapd.constants import MODE_CAP, MODE_FOLLOW, map_accel_a_ms2, map_brake_a_ms2
 from openpilot.selfdrive.mapd.map_speed_policy import (
-  cap_planner_v_cruise_ms, effective_map_limit_ms, map_track_decel_ms2,
-  read_map_speed_params, slew_map_speed_ms,
+  cap_planner_v_cruise_ms, effective_map_limit_ms, map_slew_a_ms2,
+  map_track_accel_ms2, map_track_decel_ms2, read_map_speed_params, slew_map_speed_ms,
 )
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
@@ -187,10 +187,12 @@ class LongitudinalPlanner:
           self._map_speed_accel,
         )
         if map_ms is not None:
-          a = map_comfort_a_ms2(self._map_speed_lookahead, self._map_speed_accel)
           if self._map_slew_ms is None:
             self._map_slew_ms = map_ms
           else:
+            a = map_slew_a_ms2(
+              self._map_slew_ms, map_ms, self._map_speed_lookahead, self._map_speed_accel,
+            )
             self._map_slew_ms = slew_map_speed_ms(self._map_slew_ms, map_ms, self.dt, a)
           map_ms = self._map_slew_ms
         else:
@@ -257,15 +259,21 @@ class LongitudinalPlanner:
       self.output_should_stop = output_should_stop_mpc
 
     # Map MAX is a set *speed*. MPC cruise_obstacle will not brake to it
-    # (virtual lead is ~safe-follow distance ahead; V_EGO_COST is 0). Command
-    # the Acceleration 1–10 comfort curve when ego is above HUD MAX. Lead/MPC
-    # can still request more braking. Follow override: HUD stays at stalk set.
+    # (virtual lead is ~safe-follow distance ahead; V_EGO_COST is 0).
+    # Brake to a lower MAX is locked at Accel 5. Accel 1–10 only caps the
+    # climb when Follow raises MAX. Lead/MPC can still request more braking.
     if self._is_preap and self._map_speed_mode in (MODE_CAP, MODE_FOLLOW):
-      a_track = map_track_decel_ms2(
-        v_ego, v_hud_ms, map_comfort_a_ms2(self._map_speed_lookahead, self._map_speed_accel),
+      a_brake = map_track_decel_ms2(
+        v_ego, v_hud_ms, map_brake_a_ms2(self._map_speed_lookahead),
       )
-      if a_track is not None:
-        output_a_target = min(float(output_a_target), a_track)
+      if a_brake is not None:
+        output_a_target = min(float(output_a_target), a_brake)
+      else:
+        a_up = map_track_accel_ms2(
+          v_ego, v_hud_ms, map_accel_a_ms2(self._map_speed_lookahead, self._map_speed_accel),
+        )
+        if a_up is not None:
+          output_a_target = min(float(output_a_target), a_up)
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)

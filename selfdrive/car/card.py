@@ -20,9 +20,10 @@ from opendbc.car.car_helpers import get_car, interfaces
 from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
 from openpilot.selfdrive.car.cruise import VCruiseHelper, V_CRUISE_UNSET
-from openpilot.selfdrive.mapd.constants import DRIVER_OVERRIDE_S, map_comfort_a_ms2
+from openpilot.selfdrive.mapd.constants import DRIVER_OVERRIDE_S
 from openpilot.selfdrive.mapd.map_speed_policy import (
-  apply_map_speed_kph, effective_map_limit_ms, read_map_speed_params, slew_map_speed_ms,
+  apply_map_speed_kph, effective_map_limit_ms, map_slew_a_ms2,
+  read_map_speed_params, slew_map_speed_ms,
 )
 
 REPLAY = "REPLAY" in os.environ
@@ -228,10 +229,12 @@ class Car:
             self._map_speed_accel,
           )
           if lim is not None and lim > 0:
-            a = map_comfort_a_ms2(self._map_speed_lookahead, self._map_speed_accel)
             if self._map_slew_ms is None:
               self._map_slew_ms = lim
             else:
+              a = map_slew_a_ms2(
+                self._map_slew_ms, lim, self._map_speed_lookahead, self._map_speed_accel,
+              )
               self._map_slew_ms = slew_map_speed_ms(self._map_slew_ms, lim, DT_CTRL, a)
             map_kph = self._map_slew_ms * CV.MS_TO_KPH
           else:

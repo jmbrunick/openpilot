@@ -74,9 +74,10 @@ class MapSpeedLimitLayout(Widget):
     accel = int(self._params.get("NAPMapSpeedAccel", return_default=True) or MAP_SPEED_ACCEL_DEFAULT)
     self._accel_buttons = multiple_button_item(
       "Acceleration",
-      "How quickly MAX follows map limit changes. 1=gentlest (0.36 m/s² at Normal lookahead), " +
-      "5=current default (0.80 m/s²), 10=quickest (1.60 m/s², clamped). Scales anticipatory " +
-      "decreases and rate-limits MAX steps.",
+      "Follow only: how quickly the car speeds up when MAX rises. " +
+      "1=gentlest (0.36 m/s² at Normal), 5=0.80, 10=quickest (1.60, clamped). " +
+      "Brake to a lower MAX is locked at the Accel 5 feel (0.80 m/s² at Normal). " +
+      "A slower lead can still brake harder.",
       buttons=MAP_SPEED_ACCEL_LABELS,
       button_width=72,
       selected_index=self._accel_index(accel),
