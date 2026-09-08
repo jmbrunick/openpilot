@@ -165,6 +165,7 @@ class HudRenderer(Widget):
     self.is_cruise_set = 0 < self.set_speed < SET_SPEED_NA
     self.is_cruise_available = self.set_speed != -1
 
+    # Current speed is ego/cluster only. OSM maxspeed feeds LIMIT/MAX, not this.
     v_ego_cluster = car_state.vEgoCluster
     self.v_ego_cluster_seen = self.v_ego_cluster_seen or v_ego_cluster != 0.0
     v_ego = v_ego_cluster if self.v_ego_cluster_seen else car_state.vEgo

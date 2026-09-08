@@ -31,11 +31,13 @@ LOOKAHEAD_LATE = 1
 LOOKAHEAD_NORMAL = 2
 LOOKAHEAD_EARLY = 3
 # (comfort decel m/s², extra margin m, max start distance m)
+# Brake a is locked (Accel slider does not change it). Stay under Tesla pre-AP
+# clip (−1.5 m/s²). Margin stretches when MAX starts falling (not wasted).
 LOOKAHEAD_TUNING = {
   LOOKAHEAD_OFF: (0.0, 0.0, 0.0),
-  LOOKAHEAD_LATE: (1.20, 40.0, 250.0),
-  LOOKAHEAD_NORMAL: (0.80, 80.0, 400.0),
-  LOOKAHEAD_EARLY: (0.55, 120.0, 600.0),
+  LOOKAHEAD_LATE: (1.30, 80.0, 350.0),
+  LOOKAHEAD_NORMAL: (1.10, 200.0, 550.0),
+  LOOKAHEAD_EARLY: (0.75, 240.0, 600.0),
 }
 MIN_DECREASE_MS = 0.45  # ~1 mph; ignore jitter
 
@@ -77,7 +79,7 @@ def map_accel_a_ms2(lookahead: int, accel_level: int) -> float:
 
 
 def map_comfort_a_ms2(lookahead: int, accel_level: int = ACCEL_DEFAULT) -> float:
-  """Comfort |a| (m/s²). Lookahead Normal + accel 5 → 0.80 m/s²."""
+  """Comfort |a| (m/s²). Lookahead Normal + accel 5 → 1.10 m/s²."""
   if lookahead in LOOKAHEAD_TUNING and LOOKAHEAD_TUNING[lookahead][0] > 0:
     a_base = LOOKAHEAD_TUNING[lookahead][0]
   else:

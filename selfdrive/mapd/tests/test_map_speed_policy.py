@@ -1,7 +1,7 @@
 from openpilot.common.constants import CV
 from openpilot.selfdrive.mapd.constants import (
   ACCEL_DEFAULT, DRIVER_OVERRIDE_S, LOOKAHEAD_EARLY, LOOKAHEAD_NORMAL, LOOKAHEAD_OFF,
-  MODE_CAP, MODE_DISPLAY, MODE_FOLLOW, MODE_OFF,
+  LOOKAHEAD_TUNING, MODE_CAP, MODE_DISPLAY, MODE_FOLLOW, MODE_OFF,
   TRACK_DEADBAND_MS, TRACK_TAPER_MS,
   accel_scale_factor, map_accel_a_ms2, map_brake_a_ms2, map_comfort_a_ms2,
 )
@@ -10,7 +10,7 @@ from openpilot.selfdrive.mapd.map_speed_policy import (
   MapCruiseHold, anticipatory_limit_ms, apply_map_speed_kph, cap_planner_v_cruise_ms,
   decide_map_cruise, effective_map_limit_ms, is_cruise_stalk_step,
   longitudinal_obstacle_source, map_slew_a_ms2, map_track_accel_ms2,
-  map_track_decel_ms2, slew_map_speed_ms,
+  map_track_decel_ms2, should_write_preap_pedal, slew_map_speed_ms,
 )
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   MAP_SPEED_ACCEL, MAP_SPEED_ACCEL_DEFAULT, MAP_SPEED_LOOKAHEAD,
@@ -128,8 +128,8 @@ def test_lookahead_off_and_far_away_keep_current():
   nxt = 35 * CV.MPH_TO_MS
   assert anticipatory_limit_ms(current, nxt, 80.0, current, LOOKAHEAD_OFF) is None
   assert effective_map_limit_ms(current, nxt, 80.0, current, LOOKAHEAD_OFF) == current
-  # Beyond Normal horizon (400 m) — do not start yet.
-  assert anticipatory_limit_ms(current, nxt, 500.0, current, LOOKAHEAD_NORMAL) is None
+  # Beyond Normal horizon (550 m) — do not start yet.
+  assert anticipatory_limit_ms(current, nxt, 580.0, current, LOOKAHEAD_NORMAL) is None
   # Display never changes MAX even if we computed an anticipatory ceiling.
   assert apply_map_speed_kph(
     100, 45, mode=MODE_DISPLAY, engaged=True, op_long_software_cruise=True,
@@ -155,8 +155,8 @@ def test_accel_default_five_matches_prior_normal_curve():
   assert MAP_SPEED_ACCEL == list(range(1, 11))
   assert MAP_SPEED_LOOKAHEAD == [0, 1, 2, 3]
   assert abs(accel_scale_factor(5) - 1.0) < 1e-9
-  assert abs(map_comfort_a_ms2(LOOKAHEAD_NORMAL, 5) - 0.80) < 1e-9
-  assert abs(map_comfort_a_ms2(LOOKAHEAD_NORMAL, 1) - 0.36) < 1e-9
+  assert abs(map_comfort_a_ms2(LOOKAHEAD_NORMAL, 5) - 1.10) < 1e-9
+  assert abs(map_comfort_a_ms2(LOOKAHEAD_NORMAL, 1) - 0.495) < 1e-9
   assert abs(map_comfort_a_ms2(LOOKAHEAD_NORMAL, 10) - 1.60) < 1e-9
   current = 70 * CV.MPH_TO_MS
   nxt = 45 * CV.MPH_TO_MS
@@ -173,13 +173,40 @@ def test_accel_default_five_matches_prior_normal_curve():
   assert anticipatory_limit_ms(current, nxt, 300.0, current, LOOKAHEAD_NORMAL, 10) is not None
 
 
+def test_fifty_to_thirty_starts_before_kinematic_only():
+  """50→30 must ease MAX down before the old v²=vt²+2ad point so ego is near 30 at the sign."""
+  v50 = 50 * CV.MPH_TO_MS
+  v30 = 30 * CV.MPH_TO_MS
+  a = map_brake_a_ms2(LOOKAHEAD_NORMAL)
+  assert abs(a - 1.10) < 1e-9
+  assert a < 1.5  # Tesla pre-AP clip
+  for _la, tun in LOOKAHEAD_TUNING.items():
+    if tun[0] > 0:
+      assert tun[0] < 1.5
+  kin_m = (v50 * v50 - v30 * v30) / (2.0 * a)
+  # Old profile held 50 until kin_m (~145 m). New profile is already below 50 there.
+  at_kin = anticipatory_limit_ms(v50, v30, kin_m, v50, LOOKAHEAD_NORMAL)
+  assert at_kin is not None
+  assert at_kin < v50 - 1.0
+  # Window opens ~200 m of margin before kin (~345 m).
+  far = anticipatory_limit_ms(v50, v30, kin_m + 150.0, v50, LOOKAHEAD_NORMAL)
+  assert far is not None
+  assert far < v50
+  assert far > at_kin
+  near_sign = anticipatory_limit_ms(v50, v30, 5.0, v50, LOOKAHEAD_NORMAL)
+  assert near_sign is not None
+  assert abs(near_sign - v30) < 1.5
+  # Higher limit ahead still does not raise MAX.
+  assert anticipatory_limit_ms(v30, v50, 80.0, v30, LOOKAHEAD_EARLY) is None
+
+
 def test_map_track_decel_matches_comfort_curve_when_above_max():
   a5 = map_brake_a_ms2(LOOKAHEAD_NORMAL)
-  assert abs(a5 - 0.80) < 1e-9
+  assert abs(a5 - 1.10) < 1e-9
   assert abs(map_brake_a_ms2(LOOKAHEAD_NORMAL) - map_comfort_a_ms2(LOOKAHEAD_NORMAL, 5)) < 1e-9
   v_ego = 70 * CV.MPH_TO_MS
   v_max = 45 * CV.MPH_TO_MS
-  # Well above MAX → full comfort decel (locked Accel 5 = 0.80 m/s²).
+  # Well above MAX → full comfort decel (locked Accel 5 = 1.10 m/s²).
   assert v_ego - v_max > TRACK_TAPER_MS
   assert map_track_decel_ms2(v_ego, v_max, a5) == -a5
   # Helper still accepts other a for unit math; planner must pass a5.
@@ -194,28 +221,28 @@ def test_map_track_decel_matches_comfort_curve_when_above_max():
 
 
 def test_accel_setting_does_not_change_brake_a():
-  assert abs(map_brake_a_ms2(LOOKAHEAD_NORMAL) - 0.80) < 1e-9
+  assert abs(map_brake_a_ms2(LOOKAHEAD_NORMAL) - 1.10) < 1e-9
   v_ego = 70 * CV.MPH_TO_MS
   v_max = 45 * CV.MPH_TO_MS
   locked = map_track_decel_ms2(v_ego, v_max, map_brake_a_ms2(LOOKAHEAD_NORMAL))
-  assert locked == -0.80
+  assert locked == -1.10
   # Accel 1 vs 10 change climb a only.
-  assert abs(map_accel_a_ms2(LOOKAHEAD_NORMAL, 1) - 0.36) < 1e-9
+  assert abs(map_accel_a_ms2(LOOKAHEAD_NORMAL, 1) - 0.495) < 1e-9
   assert abs(map_accel_a_ms2(LOOKAHEAD_NORMAL, 10) - 1.60) < 1e-9
   assert map_slew_a_ms2(30.0, 20.0, LOOKAHEAD_NORMAL, 1) == map_slew_a_ms2(30.0, 20.0, LOOKAHEAD_NORMAL, 10)
-  assert abs(map_slew_a_ms2(30.0, 20.0, LOOKAHEAD_NORMAL, 10) - 0.80) < 1e-9
-  assert abs(map_slew_a_ms2(20.0, 30.0, LOOKAHEAD_NORMAL, 1) - 0.36) < 1e-9
+  assert abs(map_slew_a_ms2(30.0, 20.0, LOOKAHEAD_NORMAL, 10) - 1.10) < 1e-9
+  assert abs(map_slew_a_ms2(20.0, 30.0, LOOKAHEAD_NORMAL, 1) - 0.495) < 1e-9
   assert abs(map_slew_a_ms2(20.0, 30.0, LOOKAHEAD_NORMAL, 10) - 1.60) < 1e-9
   a1 = map_track_accel_ms2(20.0, 31.29, map_accel_a_ms2(LOOKAHEAD_NORMAL, 1))
   a10 = map_track_accel_ms2(20.0, 31.29, map_accel_a_ms2(LOOKAHEAD_NORMAL, 10))
   assert a1 is not None and a10 is not None
-  assert abs(a1 - 0.36) < 1e-9 and abs(a10 - 1.60) < 1e-9
+  assert abs(a1 - 0.495) < 1e-9 and abs(a10 - 1.60) < 1e-9
 
 
 def test_map_track_decel_loses_to_stronger_lead_brake():
   """Planner applies min(mpc, map_track). A slower lead still wins."""
-  a_map = map_track_decel_ms2(31.29, 20.12, 0.80)
-  assert a_map == -0.80
+  a_map = map_track_decel_ms2(31.29, 20.12, 1.10)
+  assert a_map == -1.10
   a_lead = -2.0
   assert min(a_lead, a_map) == a_lead
   # MPC holding ~0 (no-lead cruise obstacle not binding) → map decel wins.
@@ -476,6 +503,43 @@ def test_slew_rate_limits_map_max_steps():
   assert done == 20.0
 
 
+def test_should_write_preap_pedal_on_raise_not_every_frame():
+  a = 45 * CV.MPH_TO_KPH
+  b = 50 * CV.MPH_TO_KPH
+  # Seed/sticky always write.
+  assert should_write_preap_pedal(a, a, a)
+  assert should_write_preap_pedal(a, a, None)
+  # Same MAX every Follow frame: do not write (that ate stalk).
+  assert not should_write_preap_pedal(None, a, a)
+  # Stalk up / Follow posted raise: HUD rose vs last pedal write.
+  assert should_write_preap_pedal(None, b, a)
+  # No last write yet and no seed: leave CI pedal alone.
+  assert not should_write_preap_pedal(None, b, None)
+  # Decrease without seed: planner brakes from HUD MAX; do not clobber stalk down.
+  assert not should_write_preap_pedal(None, a, b)
+
+
+def test_hud_current_speed_is_ego_not_map_limit():
+  """The 50 on Justin's photo was OSM LIMIT/MAX, not current speed.
+
+  HUD current speed is vEgoCluster/vEgo. liveMapDataNAP.speedLimit is LIMIT
+  (and Cap/Follow overlay onto MAX). Do not fake ego from the map.
+  """
+  from pathlib import Path
+  root = Path(__file__).resolve().parents[3]
+  for rel in (
+    "selfdrive/ui/onroad/hud_renderer.py",
+    "selfdrive/ui/mici/onroad/hud_renderer.py",
+  ):
+    src = (root / rel).read_text()
+    assert "v_ego = v_ego_cluster if self.v_ego_cluster_seen else car_state.vEgo" in src
+    assert "self.speed = max(0.0, v_ego * speed_conversion)" in src
+    assert "self.map_speed_limit = md.speedLimit * speed_conversion" in src
+    assert "self.speed = md.speedLimit" not in src
+    assert "self.speed = self.map_speed_limit" not in src
+    assert "self.speed = self.set_speed" not in src
+
+
 def test_map_speed_submenu_wires_params():
   """Menu wiring without importing raylib / cereal UI."""
   from pathlib import Path
@@ -530,7 +594,12 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   assert "pedalLongActive" in card
   assert "stalk_pressed=stalk_pressed" in card
   assert "_write_preap_pedal_speed" in card
+  assert "should_write_preap_pedal" in card
   # Must not seed/overlay on lateral-only first pull (CC.enabled).
   assert "engage_rising = long_active and not long_active_prev" in card
   # Must not clobber stalk by writing Follow HUD onto pedal every frame.
-  assert "if long_active and dec.seed_kph is not None:" in card
+  assert "should_write_preap_pedal(dec.seed_kph, preap_v_cruise_kph, self._last_pedal_kph)" in card
+  assert "if long_active and dec.seed_kph is not None:" not in card
+  planner_src = planner
+  assert "output_a_target = a_up" in planner_src
+  assert "min(float(output_a_target), a_up)" not in planner_src
