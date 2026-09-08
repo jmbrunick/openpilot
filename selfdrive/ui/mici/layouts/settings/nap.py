@@ -16,6 +16,9 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   BACKUP_EPAS_INSTRUCTIONS,
   CALIBRATE_PEDAL_INSTRUCTIONS,
   FLASH_EPAS_INSTRUCTIONS,
+  FOLLOW_DISTANCE_DEFAULT,
+  FOLLOW_DISTANCE_LABELS,
+  FOLLOW_DISTANCE_VALUES,
   PEDAL_CAN_BUS_VALUES,
   RADAR_OFFSET_MAX,
   RADAR_OFFSET_MIN,
@@ -198,6 +201,14 @@ class NAPLayoutMici(NavScroller):
 
     adaptive_accel = BigParamControl("adaptive accel limits", NAPParamKeys.ADAPTIVE_ACCEL)
 
+    follow_distance = BigMultiValueParamToggle(
+      "follow distance",
+      NAPParamKeys.FOLLOW_DISTANCE,
+      values=FOLLOW_DISTANCE_VALUES,
+      labels=FOLLOW_DISTANCE_LABELS,
+      default_value=FOLLOW_DISTANCE_DEFAULT,
+    )
+
     self._map_speed_page = MapSpeedLimitLayoutMici()
     map_speed_btn = BigButton("map speed limit", "open")
     map_speed_btn.set_click_callback(lambda: gui_app.push_widget(self._map_speed_page))
@@ -273,6 +284,7 @@ class NAPLayoutMici(NavScroller):
     self._scroller.add_widgets([
       pedal_enabled,
       adaptive_accel,
+      follow_distance,
       map_speed_btn,
       pedal_can_bus,
       pedal_calib_status,

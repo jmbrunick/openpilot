@@ -16,6 +16,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_stopped_equivalence_factor,
   get_T_FOLLOW,
 )
+from openpilot.selfdrive.controls.lib.lead_approach import lead_approach_decel_ms2
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
@@ -266,6 +267,15 @@ class LongitudinalPlanner:
             # min() alone never created climb (MPC holds ~0). Command Accel 1–10
             # toward MAX; a slower lead (negative aTarget) still outranks map.
             output_a_target = a_up
+
+    # Slower radar lead: ease off at 1.0 m/s² starting at kin + Follow Distance.
+    # MPC 2.5 m/s² close-in may still brake harder. Map MAX overlay cannot
+    # cancel this (lead still wins for vehicle braking).
+    if self._is_preap and sm['radarState'].leadOne.status:
+      lead = sm['radarState'].leadOne
+      a_lead = lead_approach_decel_ms2(v_ego, lead.vLead, lead.dRel, self.t_follow)
+      if a_lead is not None:
+        output_a_target = min(float(output_a_target), a_lead)
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
