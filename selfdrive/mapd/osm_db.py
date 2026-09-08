@@ -463,7 +463,8 @@ class OsmSpeedLimitDB:
       lead_match = self._best_match(qlat, qlon, bearing_deg)
 
     # GNSS lag: raise posted when the 1.5 s point is already in a higher zone.
-    # Do not snap posted down — that bypasses kin+110 m ease (60→50 all at once).
+    # Do not snap posted down — any decrease (10/15/20 mph, short zones) must
+    # ease with kin+110 m, not jump when GPS or the offset crosses the boundary.
     raised = (
       lead_match is not None and gps_match is not None
       and float(lead_match.speed_limit_ms) > float(gps_match.speed_limit_ms) + 0.3

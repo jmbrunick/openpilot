@@ -92,26 +92,27 @@ def test_offset_applies_to_map_target():
 
 def test_planner_cap_is_down_only():
   lim = 25.0  # m/s
-  assert cap_planner_v_cruise_ms(30.0, lim, mode=MODE_CAP) == lim
+  # Trust HUD: min() with posted snapped Cap/Follow when GPS entered a lower zone.
+  assert cap_planner_v_cruise_ms(30.0, lim, mode=MODE_CAP) == 30.0
   assert cap_planner_v_cruise_ms(20.0, lim, mode=MODE_CAP) == 20.0
   assert cap_planner_v_cruise_ms(30.0, lim, mode=MODE_DISPLAY) == 30.0
   assert cap_planner_v_cruise_ms(30.0, None, mode=MODE_FOLLOW) == 30.0
 
 
 def test_follow_planner_trusts_hud_not_posted():
-  """Sticky 66 with posted 60 must not clip MPC v_cruise to 60."""
+  """Sticky 66 with posted 60 must not clip MPC v_cruise to 60. Cap eases the same."""
   hud = 66 * CV.MPH_TO_MS
   posted = 60 * CV.MPH_TO_MS
   assert cap_planner_v_cruise_ms(hud, posted, mode=MODE_FOLLOW) == hud
   below = 55 * CV.MPH_TO_MS
   assert cap_planner_v_cruise_ms(below, posted, mode=MODE_FOLLOW) == below
-  assert cap_planner_v_cruise_ms(hud, posted, mode=MODE_CAP) == posted
+  assert cap_planner_v_cruise_ms(hud, posted, mode=MODE_CAP) == hud
 
 
 def test_no_lead_tracks_map_capped_cruise():
   """No radar lead: fake far/fast lead, so cruise (map ceiling) is the tightest obstacle."""
   v_ego = 31.29  # ~70 mph
-  v_cruise = cap_planner_v_cruise_ms(40.0, 31.29, mode=MODE_CAP)
+  v_cruise = cap_planner_v_cruise_ms(31.29, 31.29, mode=MODE_CAP)
   assert abs(v_cruise - 31.29) < 1e-6
   cruise = _cruise_obstacle_m(v_cruise)
   fake = _lead_obstacle_m(50.0, v_ego + 10.0)
@@ -176,8 +177,10 @@ def test_anticipatory_cap_still_loses_to_slower_lead():
   nxt = 45 * CV.MPH_TO_MS
   eff = effective_map_limit_ms(current, nxt, 150.0, current, LOOKAHEAD_NORMAL)
   assert eff is not None
-  v_cruise = cap_planner_v_cruise_ms(40.0, eff, mode=MODE_CAP)
-  assert v_cruise <= current
+  # Planner trusts HUD (already eased); min() with posted would snap at the zone.
+  v_cruise = cap_planner_v_cruise_ms(eff, current, mode=MODE_CAP)
+  assert v_cruise == eff
+  assert v_cruise < current
   lead = _lead_obstacle_m(40.0, 15.0)
   cruise = _cruise_obstacle_m(v_cruise)
   assert longitudinal_obstacle_source(lead, 1e8, cruise) == SOURCE_LEAD0
@@ -300,6 +303,41 @@ def test_sixty_to_fifty_eases_with_lookahead_not_posted_cliff():
   )
   assert raise_dec.seed_kph is not None
   assert abs(raise_dec.seed_kph - a_kph) < 1e-6
+
+
+def test_all_posted_decreases_ease_like_fifty_to_thirty():
+  """10/15/20 mph and 50→30: kin+110 m interpolate; Cap/Follow must not seed-snap."""
+  a = map_brake_a_ms2(LOOKAHEAD_NORMAL)
+  assert abs(a - 0.80) < 1e-9
+  for hi_mph, lo_mph in ((50, 30), (60, 50), (60, 45), (60, 40)):
+    v_hi = hi_mph * CV.MPH_TO_MS
+    v_lo = lo_mph * CV.MPH_TO_MS
+    kin_m = (v_hi * v_hi - v_lo * v_lo) / (2.0 * a)
+    at_open = anticipatory_limit_ms(v_hi, v_lo, kin_m + DECREASE_START_MARGIN_M, v_hi, LOOKAHEAD_NORMAL)
+    assert at_open is not None, (hi_mph, lo_mph)
+    assert abs(at_open - v_hi) < 0.6
+    mid = anticipatory_limit_ms(v_hi, v_lo, max(25.0, 0.35 * kin_m), v_hi, LOOKAHEAD_NORMAL)
+    assert mid is not None and v_lo < mid < v_hi, (hi_mph, lo_mph, mid)
+    hi_kph, lo_kph = hi_mph * CV.MPH_TO_KPH, lo_mph * CV.MPH_TO_KPH
+    for mode in (MODE_FOLLOW, MODE_CAP):
+      hold = MapCruiseHold()
+      decide_map_cruise(
+        hold, engaged=True, mode=mode, raw_kph=hi_kph, posted_kph=hi_kph,
+        engage_rising=True, now=0.0,
+      )
+      dec = decide_map_cruise(
+        hold, engaged=True, mode=mode, raw_kph=hi_kph, posted_kph=lo_kph,
+        engage_rising=False, now=1.0, stalk_pressed=False,
+      )
+      assert not dec.sticky
+      assert dec.seed_kph is None
+      # Driver stays previous so Cap min(driver, eased map) cannot cliff to lo.
+      assert abs(dec.driver_kph - hi_kph) < 1e-6
+      eased = (v_hi + v_lo) * 0.5 * CV.MS_TO_KPH
+      cap_out = apply_map_speed_kph(
+        dec.driver_kph, eased, mode=MODE_CAP, engaged=True, op_long_software_cruise=True,
+      )
+      assert abs(cap_out - eased) < 1e-6
 
 
 def test_sticky_skips_anticipatory_lookahead():
@@ -844,8 +882,9 @@ def test_map_speed_submenu_wires_params():
   assert "pauses Follow for 10s" not in tici
   assert "holds until the posted limit changes" in tici
   assert "lookahead pauses while that set is active" in tici
+  assert "decreases still ease with lookahead" not in tici
+  assert "every decrease eases with kin+110 m" in tici
   assert "1.5 s GPS lag raises posted at the" in tici
-  assert "decreases still ease with lookahead" in tici
   assert "A higher limit far ahead never raises MAX" in tici
   assert "A higher limit ahead never raises MAX early" not in tici
   assert "acceleration only" in mici
@@ -899,8 +938,8 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   assert "should_write_preap_pedal(dec.seed_kph, preap_v_cruise_kph, self._last_pedal_kph)" in card
   assert "if long_active and dec.seed_kph is not None:" not in card
   # Sticky hold must not slew toward nextSpeedLimit.
-  assert "sticky_hold = self._map_hold.sticky_set_kph is not None" in card
-  assert "if sticky_hold:" in card
+  assert "not dec.sticky:" in card
+  assert "sticky_hold = self._map_hold.sticky_set_kph is not None" not in card
   planner_src = planner
   assert "output_a_target = a_up" in planner_src
   assert "min(float(output_a_target), a_up)" not in planner_src

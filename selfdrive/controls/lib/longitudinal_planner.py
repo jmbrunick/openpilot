@@ -189,23 +189,11 @@ class LongitudinalPlanner:
     if force_slow_decel:
       v_cruise = 0.0
 
-    # OSM map speed: trust card HUD MAX. Cap still min()s with posted.
-    # Follow must not clip a sticky set to posted — that fought map_track_accel
-    # (climb toward HUD, MPC brake toward posted). Lead still wins via mpc.update.
+    # OSM map speed: trust card HUD MAX (eased decreases, lag-corrected raises).
+    # Do not min() with posted — that snapped when GPS entered a lower zone.
+    # Lead still wins via mpc.update(radarState, v_cruise).
     if (not force_slow_decel) and self._is_preap and self._map_speed_mode in (MODE_CAP, MODE_FOLLOW):
-      if 'liveMapDataNAP' in sm.valid and sm.valid.get('liveMapDataNAP', False):
-        md = sm['liveMapDataNAP']
-        if md.speedLimitValid and md.speedLimit > 0:
-          v_cruise = cap_planner_v_cruise_ms(
-            v_hud_ms,
-            float(md.speedLimit),  # Cap only; Follow returns HUD unchanged
-            mode=self._map_speed_mode,
-            offset_ms=self._map_speed_offset_kph * CV.KPH_TO_MS,
-          )
-        else:
-          v_cruise = v_hud_ms
-      else:
-        v_cruise = v_hud_ms
+      v_cruise = cap_planner_v_cruise_ms(v_hud_ms, None, mode=self._map_speed_mode)
 
     self.active_nap_follow_dist = self.nap_follow_dist if self._is_preap and self.nap_follow_dist in NAP_FOLLOW_DISTANCE_RANGE else None
     self.t_follow = get_T_FOLLOW(sm['selfdriveState'].personality, self.active_nap_follow_dist)
