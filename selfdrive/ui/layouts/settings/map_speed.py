@@ -91,14 +91,14 @@ class MapSpeedLimitLayout(Widget):
       "OSM Map Data",
       installed_db_summary,
       description="US OpenStreetMap maxspeed ways (ODbL, © OpenStreetMap contributors). " +
-      "Not in git — tap Download US Maps over Wi-Fi after flash.",
+      "Not in git — tap Download US Maps over Wi-Fi after flash. Refresh maps then overlays live OSM within 100 miles.",
     )
     self._all_items.append(self._db_status)
 
     self._revision_status = text_item(
       "Map revision",
       installed_revision_summary,
-      description="Published US pack revision recorded after a successful download or refresh.",
+      description="Published US pack revision after Download US Maps. Refresh maps overlays live OSM within 100 miles and does not bump this number.",
     )
     self._all_items.append(self._revision_status)
 
@@ -112,8 +112,8 @@ class MapSpeedLimitLayout(Widget):
     self._all_items.append(self._download_btn)
 
     self._refresh_btn = button_item(
-      "Check for map updates",
       "Refresh maps",
+      "Start",
       description=REFRESH_MAPS_INSTRUCTIONS.split("\n", 1)[0],
       callback=self._on_refresh,
     )

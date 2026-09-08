@@ -54,7 +54,7 @@ class MapSpeedLimitLayoutMici(NavScroller):
                             "scripts.nap.fetch_osm_maps",
                             ))
     download_maps_btn.set_enabled(ui_state.is_offroad)
-    refresh_maps_btn = BigButton("check for map updates", "refresh maps")
+    refresh_maps_btn = BigButton("refresh maps", "start")
     refresh_maps_btn.set_click_callback(
       lambda: launch_script("Refresh maps", REFRESH_MAPS_INSTRUCTIONS,
                             "scripts.nap.refresh_osm_maps",

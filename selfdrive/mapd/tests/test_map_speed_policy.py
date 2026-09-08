@@ -495,9 +495,11 @@ def test_map_speed_submenu_wires_params():
   assert "map speed limit" in nap_mici
   assert "radar settings" in nap_mici
   assert "Refresh maps" in tici
-  assert "Check for map updates" in tici
+  assert "Check for map updates" not in tici
   assert "refresh maps" in mici
-  assert "check for map updates" in mici
+  assert "check for map updates" not in mici
+  assert "scripts.nap.refresh_osm_maps" in nap
+  assert "scripts.nap.refresh_osm_maps" in mici
   assert "NAPMapSpeedAccel" in (root / "common/params_keys.h").read_text()
   assert "NAPMapSpeedDbRevision" in (root / "common/params_keys.h").read_text()
   assert "NAPMapSpeedDbSha256" in (root / "common/params_keys.h").read_text()

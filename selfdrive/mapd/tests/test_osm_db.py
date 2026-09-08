@@ -129,6 +129,31 @@ def test_overpass_json_import(tmp_path):
   assert m is not None and m.way_id == 42
 
 
+def test_delete_ways_intersecting_bbox(tmp_path):
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  OsmSpeedLimitDB.insert_way(
+    con, 1, "Near", "primary", 35 * CV.MPH_TO_MS,
+    [(37.0, -122.001), (37.0, -121.999)],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 2, "Far", "primary", 25 * CV.MPH_TO_MS,
+    [(40.7, -74.001), (40.7, -73.999)],
+  )
+  n = OsmSpeedLimitDB.delete_ways_intersecting_bbox(con, 36.9, -122.1, 37.1, -121.9)
+  assert n == 1
+  OsmSpeedLimitDB.recount_ways(con)
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  assert db.lookup(37.0, -122.0, bearing_deg=90.0) is None
+  far = db.lookup(40.7, -74.0, bearing_deg=90.0)
+  assert far is not None and far.way_id == 2
+  db.close()
+  assert OsmSpeedLimitDB.way_count(path) == 1
+
+
 def test_simplify_collinear_and_f64_unpack():
   # 1 km eastbound straight line at 1 m spacing should collapse to endpoints.
   coords = [(37.0, -122.0 + i * 1e-5) for i in range(100)]
