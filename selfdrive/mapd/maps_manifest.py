@@ -39,7 +39,7 @@ MAPS_INDEX_REF = "nap-dev"
 MAPS_INDEX_FILENAME = "maps-index.json"
 MAPS_INDEX_URL = (
   f"https://raw.githubusercontent.com/{GITHUB_REPO}/{MAPS_INDEX_REF}"
-  f"/selfdrive/mapd/{MAPS_INDEX_FILENAME}"
+  + f"/selfdrive/mapd/{MAPS_INDEX_FILENAME}"
 )
 
 # Measured osm-us-speed-limits-v1 (~204 MiB zst → ~516 MiB sqlite).
