@@ -216,6 +216,19 @@ def test_fifty_to_thirty_starts_one_hundred_ten_m_before_kinematic():
   assert anticipatory_limit_ms(v45, v70, 80.0, v45, LOOKAHEAD_EARLY) is None
 
 
+def test_sixty_to_fifty_uses_kin_plus_110_not_min_decrease_skip():
+  """10 mph 60→50 must open at kin+110 m. MIN_DECREASE is ~1 mph, not 10."""
+  v60 = 60 * CV.MPH_TO_MS
+  v50 = 50 * CV.MPH_TO_MS
+  assert (v60 - v50) > 4.0
+  a = map_brake_a_ms2(LOOKAHEAD_NORMAL)
+  assert abs(a - 0.80) < 1e-9
+  kin_m = (v60 * v60 - v50 * v50) / (2.0 * a)
+  assert abs(kin_m - 137.0) < 2.0
+  assert anticipatory_limit_ms(v60, v50, kin_m + DECREASE_START_MARGIN_M, v60, LOOKAHEAD_NORMAL) is not None
+  assert anticipatory_limit_ms(v60, v50, kin_m + DECREASE_START_MARGIN_M + 5.0, v60, LOOKAHEAD_NORMAL) is None
+
+
 def test_map_track_decel_matches_comfort_curve_when_above_max():
   a5 = map_brake_a_ms2(LOOKAHEAD_NORMAL)
   assert abs(a5 - 0.80) < 1e-9
