@@ -495,6 +495,8 @@ def test_map_speed_submenu_wires_params():
   assert "map speed limit" in nap_mici
   assert "radar settings" in nap_mici
   assert "Refresh maps" in tici
+  assert '"Back To"' in tici
+  assert "←" not in tici
   assert "Check for map updates" not in tici
   assert "refresh maps" in mici
   assert "check for map updates" not in mici
