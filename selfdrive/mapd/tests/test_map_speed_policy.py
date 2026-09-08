@@ -1,6 +1,6 @@
 from openpilot.common.constants import CV
 from openpilot.selfdrive.mapd.constants import (
-  ACCEL_DEFAULT, LOOKAHEAD_EARLY, LOOKAHEAD_NORMAL, LOOKAHEAD_OFF,
+  ACCEL_DEFAULT, DRIVER_OVERRIDE_S, LOOKAHEAD_EARLY, LOOKAHEAD_NORMAL, LOOKAHEAD_OFF,
   MODE_CAP, MODE_DISPLAY, MODE_FOLLOW, MODE_OFF,
   TRACK_DEADBAND_MS, TRACK_TAPER_MS,
   accel_scale_factor, map_accel_a_ms2, map_brake_a_ms2, map_comfort_a_ms2,
@@ -221,6 +221,18 @@ def test_map_track_decel_loses_to_stronger_lead_brake():
   assert min(0.0, a_map) == a_map
 
 
+def _follow_hud(dec, map_kph: float) -> float:
+  """Mirror card.py: seed / sticky win; else apply_map_speed (Follow)."""
+  if dec.seed_kph is not None:
+    return dec.seed_kph
+  if dec.sticky:
+    return dec.driver_kph
+  return apply_map_speed_kph(
+    dec.driver_kph, map_kph, mode=MODE_FOLLOW, engaged=True,
+    op_long_software_cruise=True, driver_override=dec.follow_override,
+  )
+
+
 def test_engage_seeds_max_to_posted_limit():
   hold = MapCruiseHold()
   posted = 45 * CV.MPH_TO_KPH
@@ -233,6 +245,17 @@ def test_engage_seeds_max_to_posted_limit():
   assert abs(dec.seed_kph - posted) < 1e-6
   assert abs(dec.driver_kph - posted) < 1e-6
   assert not dec.sticky
+  assert hold.follow_override_until == 0.0
+  # Failed pedal write-back / DI_digitalSpeed next frames must not look like a
+  # stalk and must not arm the 10s Follow timer.
+  for t in (0.05, 5.0, 11.0):
+    dec = decide_map_cruise(
+      hold, engaged=True, mode=MODE_FOLLOW, raw_kph=ego, posted_kph=posted,
+      engage_rising=False, now=t, stalk_pressed=False,
+    )
+    assert not dec.sticky
+    assert hold.follow_override_until == 0.0
+    assert abs(_follow_hud(dec, posted) - posted) < 1e-6
   # No map: keep ego capture.
   hold2 = MapCruiseHold()
   dec2 = decide_map_cruise(
@@ -253,14 +276,15 @@ def test_sticky_manual_below_limit_until_posted_changes():
   below = a - 5 * CV.MPH_TO_KPH
   dec = decide_map_cruise(
     hold, engaged=True, mode=MODE_FOLLOW, raw_kph=below, posted_kph=a,
-    engage_rising=False, now=1.0,
+    engage_rising=False, now=1.0, stalk_pressed=True,
   )
   assert dec.sticky
   assert abs(dec.driver_kph - below) < 1e-6
+  assert hold.follow_override_until == 0.0
   # Still a: hold, do not Follow back to a.
   dec = decide_map_cruise(
     hold, engaged=True, mode=MODE_FOLLOW, raw_kph=below, posted_kph=a,
-    engage_rising=False, now=20.0,
+    engage_rising=False, now=20.0, stalk_pressed=False,
   )
   assert dec.sticky
   assert abs(dec.driver_kph - below) < 1e-6
@@ -268,11 +292,70 @@ def test_sticky_manual_below_limit_until_posted_changes():
   b = 35 * CV.MPH_TO_KPH
   dec = decide_map_cruise(
     hold, engaged=True, mode=MODE_FOLLOW, raw_kph=below, posted_kph=b,
-    engage_rising=False, now=21.0,
+    engage_rising=False, now=21.0, stalk_pressed=False,
   )
   assert not dec.sticky
   assert dec.seed_kph is not None
   assert abs(dec.seed_kph - b) < 1e-6
+
+
+def test_sticky_below_limit_survives_past_ten_second_override():
+  """Regression: stalk to a-5 must still be a-5 after >10s with unchanged limit.
+
+  The Follow raise-above timer (DRIVER_OVERRIDE_S) must never clear this.
+  """
+  hold = MapCruiseHold()
+  a = 45 * CV.MPH_TO_KPH
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=a, posted_kph=a,
+    engage_rising=True, now=0.0,
+  )
+  below = a - 5 * CV.MPH_TO_KPH
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=below, posted_kph=a,
+    engage_rising=False, now=1.0, stalk_pressed=True,
+  )
+  assert dec.sticky
+  assert hold.follow_override_until == 0.0
+  assert DRIVER_OVERRIDE_S == 10.0
+  for t in (1.0 + DRIVER_OVERRIDE_S + 0.5, 15.0, 60.0):
+    dec = decide_map_cruise(
+      hold, engaged=True, mode=MODE_FOLLOW, raw_kph=below, posted_kph=a,
+      engage_rising=False, now=t, stalk_pressed=False,
+    )
+    assert dec.sticky, f"sticky lost at t={t}"
+    assert hold.follow_override_until == 0.0
+    assert abs(_follow_hud(dec, a) - below) < 1e-6
+    # Passing driver_override=False (expired timer) must not be how card runs.
+    expired = apply_map_speed_kph(
+      dec.driver_kph, a, mode=MODE_FOLLOW, engaged=True,
+      op_long_software_cruise=True, driver_override=False,
+    )
+    assert abs(expired - a) < 1e-6  # what the old 10s path would do
+    assert abs(_follow_hud(dec, a) - expired) > 1.0
+
+
+def test_follow_ten_second_override_is_raise_above_limit_only():
+  hold = MapCruiseHold()
+  a = 45 * CV.MPH_TO_KPH
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=a, posted_kph=a,
+    engage_rising=True, now=0.0,
+  )
+  above = a + 5 * CV.MPH_TO_KPH
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=above, posted_kph=a,
+    engage_rising=False, now=1.0, stalk_pressed=True,
+  )
+  assert not dec.sticky
+  assert hold.follow_override_until == 1.0 + DRIVER_OVERRIDE_S
+  assert abs(_follow_hud(dec, a) - above) < 1e-6
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=above, posted_kph=a,
+    engage_rising=False, now=1.0 + DRIVER_OVERRIDE_S + 0.1, stalk_pressed=False,
+  )
+  assert not dec.sticky
+  assert abs(_follow_hud(dec, a) - a) < 1e-6
 
 
 def test_cap_does_not_exceed_limit_when_raising():
@@ -338,3 +421,9 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   assert "min(float(output_a_target), a_brake)" in planner
   assert "np.column_stack([lead_0_obstacle, lead_1_obstacle, cruise_obstacle])" in mpc
   assert "self.params[:,2] = np.min(x_obstacles, axis=1)" in mpc
+  card = (root / "selfdrive/car/card.py").read_text()
+  assert "pedalLongActive" in card
+  assert "stalk_pressed=stalk_pressed" in card
+  assert "_write_preap_pedal_speed" in card
+  # Must not seed/overlay on lateral-only first pull (CC.enabled).
+  assert "engage_rising = long_active and not long_active_prev" in card

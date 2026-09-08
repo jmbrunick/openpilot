@@ -169,9 +169,33 @@ def is_manual_set_change(prev_kph: float, cur_kph: float) -> bool:
   return abs(float(cur_kph) - float(prev_kph)) > MANUAL_SET_EPS_KPH
 
 
+def _ref_posted_kph(hold: MapCruiseHold, posted_kph: float | None) -> float | None:
+  if posted_kph is not None and posted_kph > 0:
+    return float(posted_kph)
+  if hold.last_posted_kph is not None and hold.last_posted_kph > 0:
+    return float(hold.last_posted_kph)
+  return None
+
+
+def is_below_posted(set_kph: float, posted_kph: float | None) -> bool:
+  if posted_kph is None or posted_kph <= 0:
+    return False
+  return float(set_kph) < float(posted_kph) - MANUAL_SET_EPS_KPH
+
+
+def is_above_posted(set_kph: float, posted_kph: float | None) -> bool:
+  if posted_kph is None or posted_kph <= 0:
+    return False
+  return float(set_kph) > float(posted_kph) + MANUAL_SET_EPS_KPH
+
+
 @dataclass
 class MapCruiseHold:
-  """Engage-seed + sticky manual set while the posted OSM limit is unchanged."""
+  """Engage-seed + sticky manual set while the posted OSM limit is unchanged.
+
+  Below-limit sticky and the Follow raise-above 10s timer are separate:
+  `follow_override_until` must never clear or replace a below-limit hold.
+  """
   last_posted_kph: float | None = None
   last_raw_kph: float = V_CRUISE_UNSET
   policy_kph: float | None = None
@@ -197,6 +221,16 @@ class MapCruiseDecision:
   sticky: bool
 
 
+def _sticky_decision(hold: MapCruiseHold, mode: int, posted_kph: float | None) -> MapCruiseDecision:
+  held = float(hold.sticky_set_kph)
+  if mode == MODE_CAP and posted_kph is not None and posted_kph > 0:
+    held = min(held, float(posted_kph))
+  hold.policy_kph = held
+  # follow_override True so apply_map_speed cannot Follow-raise if a caller
+  # ignores `sticky` and only passes the override flag.
+  return MapCruiseDecision(held, True, held, True)
+
+
 def decide_map_cruise(
   hold: MapCruiseHold,
   *,
@@ -206,18 +240,26 @@ def decide_map_cruise(
   posted_kph: float | None,
   engage_rising: bool,
   now: float,
+  stalk_pressed: bool | None = None,
 ) -> MapCruiseDecision:
   """Engage seed + sticky hold. posted_kph is OSM current maxspeed + offset.
 
+  `engaged` must be pedal-long active (not lateral-only). `stalk_pressed`
+  is the stalk +/- button when the caller has it; omit to infer from raw_kph.
+
   Returns the driver-set to overlay, whether Follow should hold that set,
-  and an optional pedal_speed seed (write-back so stalk +/- starts from MAX).
+  and an optional pedal_speed write-back so the long path tracks MAX.
   """
   if (not engaged) or mode not in (MODE_CAP, MODE_FOLLOW):
     hold.reset()
     return MapCruiseDecision(raw_kph, False, None, False)
 
   posted_ok = posted_kph is not None and posted_kph > 0
-  manual = is_manual_set_change(hold.last_raw_kph, raw_kph)
+  raw_manual = is_manual_set_change(hold.last_raw_kph, raw_kph)
+  # Button edge is authoritative. Raw-delta only when the caller has no stalk
+  # bits — otherwise DI_digitalSpeed / a failed pedal write-back looks like a
+  # stalk and used to start the 10s Follow timer.
+  manual = raw_manual if stalk_pressed is None else bool(stalk_pressed)
   hold.last_raw_kph = raw_kph
 
   if engage_rising and posted_ok:
@@ -237,29 +279,52 @@ def decide_map_cruise(
     hold.policy_kph = float(posted_kph)
     return MapCruiseDecision(float(posted_kph), False, float(posted_kph), False)
 
+  if posted_ok and hold.last_posted_kph is None:
+    hold.last_posted_kph = posted_kph
+    if hold.sticky_set_kph is not None and not is_below_posted(hold.sticky_set_kph, posted_kph):
+      hold.sticky_set_kph = None
+      hold.follow_override_until = 0.0
+      hold.last_raw_kph = float(posted_kph)
+      hold.policy_kph = float(posted_kph)
+      return MapCruiseDecision(float(posted_kph), False, float(posted_kph), False)
+
   if posted_ok:
     hold.last_posted_kph = posted_kph
 
+  ref_posted = _ref_posted_kph(hold, posted_kph)
+
   if manual:
     hold.policy_kph = float(raw_kph)
-    if posted_ok and raw_kph < float(posted_kph) - MANUAL_SET_EPS_KPH:
+    if is_below_posted(raw_kph, ref_posted) or ref_posted is None:
+      # Sticky below-limit (or no sign yet): never arm DRIVER_OVERRIDE_S.
+      # Timeout must not Follow-raise back to `a` after a stalk to a-5.
       hold.sticky_set_kph = float(raw_kph)
       hold.follow_override_until = 0.0
     else:
       hold.sticky_set_kph = None
-      if mode == MODE_FOLLOW:
+      if mode == MODE_FOLLOW and is_above_posted(raw_kph, ref_posted):
         hold.follow_override_until = now + DRIVER_OVERRIDE_S
+      else:
+        hold.follow_override_until = 0.0
 
   if hold.policy_kph is None:
     hold.policy_kph = float(raw_kph)
 
-  if hold.sticky_set_kph is not None and posted_ok:
-    held = float(hold.sticky_set_kph)
-    if mode == MODE_CAP:
-      held = min(held, float(posted_kph))
-    return MapCruiseDecision(held, True, None, True)
+  # Promote a below-limit set off the 10s timer if anything armed it.
+  if hold.sticky_set_kph is None and is_below_posted(float(hold.policy_kph), ref_posted):
+    if hold.follow_override_until > 0.0 or manual:
+      hold.sticky_set_kph = float(hold.policy_kph)
+      hold.follow_override_until = 0.0
+
+  if hold.sticky_set_kph is not None:
+    return _sticky_decision(hold, mode, posted_kph)
 
   override = mode == MODE_FOLLOW and now < hold.follow_override_until
+  if override and is_below_posted(float(hold.policy_kph), ref_posted):
+    hold.sticky_set_kph = float(hold.policy_kph)
+    hold.follow_override_until = 0.0
+    return _sticky_decision(hold, mode, posted_kph)
+
   return MapCruiseDecision(float(hold.policy_kph), override, None, False)
 
 
@@ -298,6 +363,8 @@ def apply_map_speed_kph(
     return min(driver, map_target)
 
   if mode == MODE_FOLLOW:
+    # driver_override is the raise-above-limit 10s hold only. Below-limit
+    # sticky is applied by decide_map_cruise before this function runs.
     if driver_override:
       return max(v_min, min(v_max, driver))
     return map_target

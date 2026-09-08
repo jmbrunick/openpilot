@@ -20,6 +20,7 @@ from opendbc.car.car_helpers import get_car, interfaces
 from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
 from openpilot.selfdrive.car.cruise import VCruiseHelper
+from openpilot.selfdrive.mapd.constants import MODE_CAP, MODE_FOLLOW
 from openpilot.selfdrive.mapd.map_speed_policy import (
   MapCruiseHold, apply_map_speed_kph, decide_map_cruise, effective_map_limit_ms,
   map_slew_a_ms2, read_map_speed_params, slew_map_speed_ms,
@@ -206,9 +207,14 @@ class Car:
       else:
         # Pre-AP pedal mode owns set-speed in carstate via pedal_speed_kph
         # (double-pull captures v_ego). Overlay OSM onto vCruise/MAX.
+        # Use pedalLongActive, not carControl.enabled: the first stalk pull is
+        # lateral-only (cruiseState.speed = DI_digitalSpeed). Seeding then
+        # treated ego as a stalk and armed the 10s Follow timer.
         raw_kph = float(CS.cruiseState.speed * CV.MS_TO_KPH)
-        engaged = bool(self.sm['carControl'].enabled)
-        engage_rising = engaged and not bool(self.CC_prev.enabled)
+        long_active = bool(getattr(CS, 'pedalLongActive', False))
+        long_active_prev = bool(getattr(self.CS_prev, 'pedalLongActive', False))
+        engage_rising = long_active and not long_active_prev
+        stalk_pressed = self._preap_stalk_set_pressed(CS)
         posted_kph = None
         map_kph = None
         map_valid = bool(self.sm.valid.get('liveMapDataNAP', False) and self.sm['liveMapDataNAP'].speedLimitValid)
@@ -239,17 +245,17 @@ class Car:
           self._map_slew_ms = None
         dec = decide_map_cruise(
           self._map_hold,
-          engaged=engaged,
+          engaged=long_active,
           mode=self._map_speed_mode,
           raw_kph=raw_kph,
           posted_kph=posted_kph,
           engage_rising=engage_rising,
           now=time.monotonic(),
+          stalk_pressed=stalk_pressed,
         )
         if dec.seed_kph is not None:
-          self._seed_preap_pedal_speed(CS, dec.seed_kph)
-          self._map_slew_ms = dec.seed_kph * CV.KPH_TO_MS
           preap_v_cruise_kph = dec.seed_kph
+          self._map_slew_ms = dec.seed_kph * CV.KPH_TO_MS
         elif dec.sticky:
           preap_v_cruise_kph = dec.driver_kph
           self._map_slew_ms = dec.driver_kph * CV.KPH_TO_MS
@@ -259,10 +265,14 @@ class Car:
             map_kph,
             mode=self._map_speed_mode,
             offset_kph=self._map_speed_offset_kph,
-            engaged=engaged,
+            engaged=long_active,
             op_long_software_cruise=True,
             driver_override=dec.follow_override,
           )
+        if long_active and self._map_speed_mode in (MODE_CAP, MODE_FOLLOW) and preap_v_cruise_kph > 0:
+          # Keep pedal_speed on the HUD target so the long path and stalk +/-
+          # track MAX immediately (not ego for 10s).
+          self._write_preap_pedal_speed(CS, preap_v_cruise_kph)
         self.v_cruise_helper.v_cruise_kph_last = self.v_cruise_helper.v_cruise_kph
         self.v_cruise_helper.v_cruise_kph = preap_v_cruise_kph
         self.v_cruise_helper.v_cruise_cluster_kph = preap_v_cruise_kph
@@ -279,8 +289,24 @@ class Car:
 
     return CS, RD
 
-  def _seed_preap_pedal_speed(self, CS, kph: float) -> None:
-    """Write the engage/limit-change seed into pre-AP pedal_speed so stalk +/- starts from MAX."""
+  @staticmethod
+  def _preap_stalk_set_pressed(CS) -> bool:
+    """True on stalk +/- (not MAIN engage / cancel)."""
+    try:
+      accel = car.CarState.ButtonEvent.Type.accelCruise
+      decel = car.CarState.ButtonEvent.Type.decelCruise
+    except Exception:
+      return False
+    for be in getattr(CS, 'buttonEvents', None) or []:
+      try:
+        if be.pressed and be.type in (accel, decel):
+          return True
+      except Exception:
+        continue
+    return False
+
+  def _write_preap_pedal_speed(self, CS, kph: float) -> None:
+    """Write HUD MAX into pre-AP pedal_speed so long / stalk +/- track that set."""
     kph = float(kph)
     try:
       CS.cruiseState.speed = kph * CV.KPH_TO_MS
@@ -294,6 +320,9 @@ class Car:
     eng = getattr(inner, 'engagement', None)
     if eng is not None and hasattr(eng, 'pedal_speed_kph'):
       eng.pedal_speed_kph = kph
+
+  def _seed_preap_pedal_speed(self, CS, kph: float) -> None:
+    self._write_preap_pedal_speed(CS, kph)
 
   def state_publish(self, CS: car.CarState, RD: structs.RadarDataT | None):
     """carState and carParams publish loop"""
