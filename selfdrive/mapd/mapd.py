@@ -4,6 +4,7 @@
 Publishes liveMapDataNAP. Does not actuate; card.py / the long planner consume
 the limit through the existing vCruise path.
 """
+import math
 import os
 import time
 
@@ -34,9 +35,30 @@ def _db_path(params: Params) -> str:
   return raw or default_db_path()
 
 
+def _v_ego_ms(sm) -> float:
+  """Wheel vEgo when carState is live; else GNSS speed. Used as OSM 1.5 s lead."""
+  if sm.recv_frame.get("carState", -1) > 0:
+    try:
+      v = float(sm["carState"].vEgo)
+      if math.isfinite(v) and v > 0.0:
+        return v
+    except Exception:
+      pass
+  for sock in ("gpsLocationExternal", "gpsLocation"):
+    if sm.recv_frame.get(sock, -1) <= 0:
+      continue
+    try:
+      v = float(sm[sock].speed)
+    except Exception:
+      continue
+    if math.isfinite(v) and v > 0.0:
+      return v
+  return 0.0
+
+
 def main():
   params = Params()
-  sm = messaging.SubMaster(["gpsLocationExternal", "gpsLocation"])
+  sm = messaging.SubMaster(["gpsLocationExternal", "gpsLocation", "carState"])
   pm = messaging.PubMaster(["liveMapDataNAP"])
   rk = Ratekeeper(MAPD_HZ, print_delay_threshold=None)
 
@@ -65,7 +87,8 @@ def main():
     if gps_ok and (last_gps_write == 0.0 or (now - last_gps_write) >= LAST_GPS_WRITE_PERIOD_S):
       persist_last_gps_position(params, lat, lon)
       last_gps_write = now
-    match = db.lookup(lat, lon, bearing) if gps_ok and db.loaded else None
+    v_ego_ms = _v_ego_ms(sm) if gps_ok else 0.0
+    match = db.lookup(lat, lon, bearing, v_ego_ms=v_ego_ms) if gps_ok and db.loaded else None
 
     msg = messaging.new_message("liveMapDataNAP")
     msg.valid = gps_ok and db.loaded and match is not None
