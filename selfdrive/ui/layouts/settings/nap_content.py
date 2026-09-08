@@ -198,6 +198,32 @@ https://www.openstreetmap.org/copyright
 Press START to download."""
 
 
+REFRESH_MAPS_INSTRUCTIONS = """\
+Check for map updates
+
+Looks up the published US OSM speed-limit pack (small JSON on GitHub,
+not Overpass) and downloads it only if a newer revision is available.
+
+If maps are not installed yet, this downloads the current US pack — same
+fetch as Download US Maps.
+
+PRECONDITIONS:
+  1. Device is offroad / parked
+  2. Wi-Fi that can reach GitHub
+  3. 800 MiB free on /data if a download is needed
+     Stages in /data/media/0/osm/.download/ — not /tmp.
+     SHA-256 of the zst is checked before decompress.
+     A previous good sqlite is kept if the download fails.
+
+If maps are already current, this reports the revision and does not
+re-download. mapd reloads onroad within ~15 seconds — no reboot.
+
+Data is © OpenStreetMap contributors (ODbL).
+https://www.openstreetmap.org/copyright
+
+Press START to check."""
+
+
 ACKNOWLEDGMENTS_INTRO = "Special thanks to the following members. This project wouldn't be possible without you:"
 
 ACKNOWLEDGMENTS_NAMES = [

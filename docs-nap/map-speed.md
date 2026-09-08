@@ -44,7 +44,7 @@ The US speed-limits sqlite is **not in git** (too large; ODbL still requires att
 | Staging | `/data/media/0/osm/.download/` on the dest filesystem (not `/tmp`) |
 | Size | **~204 MiB zst → ~516 MiB sqlite**. Fetch needs **800 MiB** free on `/data`. |
 
-On the comma 3X: **Settings → NAP → Map Speed Limit → Download US Maps** (offroad), or `python -m scripts.nap.fetch_osm_maps`. `mapd` reloads the sqlite every ~15s onroad — no reboot.
+On the comma 3X: **Settings → NAP → Map Speed Limit → Download US Maps** (offroad), or `python -m scripts.nap.fetch_osm_maps`. Later county refreshes: **Refresh maps** (or `python -m scripts.nap.refresh_osm_maps`) — that is a version check of `maps-index.json`, not Overpass. `mapd` reloads the sqlite every ~15s onroad — no reboot.
 
 If a previous download died with ENOSPC, remove leftovers then retry:
 
@@ -63,7 +63,37 @@ python scripts/nap/build_osm_speed_limits.py --pbf us-maxspeed.osm.pbf \
   --out speed_limits_us.sqlite --zst
 ```
 
-Put the **zst** SHA-256 in `selfdrive/mapd/maps_manifest.py`. For a smaller region: `python scripts/nap/download_osm_speed_limits.py --lat … --lon … --radius-km 30`.
+Put the **zst** SHA-256 in `selfdrive/mapd/maps_manifest.py` **and** bump `selfdrive/mapd/maps-index.json` (see [Publishing a map refresh](#publishing-a-map-refresh)). For a smaller region: `python scripts/nap/download_osm_speed_limits.py --lat … --lon … --radius-km 30`.
+
+## Publishing a map refresh
+
+The 3X does **not** query Overpass. **Refresh maps** downloads a small published JSON, compares revision/SHA to what is installed, and only then fetches the zst.
+
+1. Build a new US (or county-updated) sqlite and zst on a PC (same `build_osm_speed_limits.py` flow as above).
+2. Attach `speed_limits_us.sqlite.zst` to a **new** GitHub Release on `jmbrunick/openpilot` (e.g. `osm-us-speed-limits-v2`). Do not replace the in-git JSON with the 204MB zst.
+3. SHA-256 the **zst** (`sha256sum speed_limits_us.sqlite.zst`).
+4. Bump `selfdrive/mapd/maps-index.json`:
+   - `revision` — integer or dotted semver, must be **greater** than the previous value (current first-install is `"1"`)
+   - `asset_url` — Release download URL for the new zst
+   - `asset_name` — usually `speed_limits_us.sqlite.zst`
+   - `sha256` — hex digest of the zst
+   - `bytes` — zst size (optional)
+   - `notes` — optional (shown during Refresh)
+5. Keep first-install constants in `selfdrive/mapd/maps_manifest.py` in sync when you intend a new clone/flash to get this pack (`RELEASE_TAG`, `ASSET_SHA256`, `RELEASE_REVISION`, sizes).
+6. Merge the JSON (and manifest) to `nap-dev`. The device fetches:
+
+   `https://raw.githubusercontent.com/jmbrunick/openpilot/nap-dev/selfdrive/mapd/maps-index.json`
+
+   Cars already flashed with this Refresh button pick up the new revision **without a software reflash**. They still need Wi-Fi.
+
+**Refresh maps** on the 3X (offroad, Wi-Fi):
+
+- Fetches that JSON (not the sqlite, not Overpass).
+- Compares installed `NAPMapSpeedDbRevision` / recorded zst SHA (sidecar `maps-revision.json` next to the sqlite) to the index.
+- Same revision and SHA → **Maps are up to date (revision …)** — no download.
+- Newer revision or different SHA → same staging rules as Download US Maps (`/data/media/0/osm/.download/`, never `/tmp`, SHA-256 of the zst before decompress, previous good sqlite kept on failure).
+- No sqlite yet → performs the first install (shared `fetch_and_install`).
+- After a successful install, saves the new revision; mapd reloads within ~15s — no reboot.
 
 ## Settings → NAP → Map Speed Limit
 
@@ -73,6 +103,9 @@ All map-speed controls live in this submenu (main NAP stays uncluttered):
 - **Map Speed Offset** (`NAPMapSpeedOffsetMph`): -5 / 0 / +5 mph
 - **Lookahead** (`NAPMapSpeedLookahead`): Off / Late / Normal (default) / Early
 - **Acceleration** (`NAPMapSpeedAccel`): 1–10, Follow climb only (default 5). Brake to a lower MAX is locked at 5.
+- **Map revision**: published US pack revision after a successful download or refresh
+- **Download US Maps**: first install of the current published pack
+- **Check for map updates** / **Refresh maps**: version check + download if newer
 - Cap/Follow require the pedal interceptor
 
 ## Anticipatory decreases and Accel

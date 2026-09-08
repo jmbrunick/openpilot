@@ -8,10 +8,12 @@ from __future__ import annotations
 import argparse
 import errno
 import hashlib
+import json
 import os
 import shutil
 import urllib.error
 import urllib.request
+from urllib.parse import unquote, urlparse
 
 from openpilot.selfdrive.mapd.db_paths import default_db_path
 from openpilot.selfdrive.mapd.maps_manifest import (
@@ -24,11 +26,19 @@ from openpilot.selfdrive.mapd.maps_manifest import (
   GITHUB_REPO,
   LICENSE,
   LICENSE_URL,
+  MAPS_INDEX_URL,
   MIN_FREE_BYTES,
   MIN_FREE_MIB,
+  PARAM_REVISION,
+  PARAM_SHA256,
   RELEASE_TAG,
+  REVISION_SIDECAR,
   SQLITE_SHA256,
   USER_AGENT,
+  MapsIndex,
+  bundled_maps_index,
+  maps_update_decision,
+  parse_maps_index,
   release_asset_url,
 )
 from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB
@@ -41,21 +51,190 @@ def _p(msg: str) -> None:
   print(msg, flush=True)
 
 
+def _sqlite_present(path: str | None) -> bool:
+  if not path or not os.path.isfile(path):
+    return False
+  try:
+    return os.path.getsize(path) >= 1024
+  except OSError:
+    return False
+
+
 def installed_db_summary(path: str | None = None) -> str:
   path = path or default_db_path()
-  if not path or not os.path.isfile(path):
+  if not _sqlite_present(path):
     return "Not installed"
   try:
     sz = os.path.getsize(path)
   except OSError:
-    return "Not installed"
-  if sz < 1024:
     return "Not installed"
   mb = sz / (1024 * 1024)
   ways = OsmSpeedLimitDB.way_count(path)
   if ways is None:
     return f"Installed ({mb:.0f} MB)"
   return f"Installed ({mb:.0f} MB, {ways:,} ways)"
+
+
+def _sidecar_path(dest: str) -> str:
+  return os.path.join(os.path.dirname(os.path.abspath(dest)) or ".", REVISION_SIDECAR)
+
+
+def _params_get(key: str) -> str:
+  try:
+    from openpilot.common.params import Params
+    raw = Params().get(key)
+  except Exception:
+    return ""
+  if raw is None:
+    return ""
+  if isinstance(raw, bytes):
+    raw = raw.decode("utf-8", errors="replace")
+  return str(raw).strip()
+
+
+def _params_put(key: str, value: str) -> None:
+  try:
+    from openpilot.common.params import Params
+    Params().put(key, value)
+  except Exception:
+    pass
+
+
+def load_installed_revision(dest: str | None = None) -> tuple[str, str]:
+  """Return (revision, zst sha256) recorded after a successful install.
+
+  Prefers the sidecar next to the sqlite so the check works without a
+  params rebuild. Falls back to NAPMapSpeedDbRevision / NAPMapSpeedDbSha256.
+  """
+  dest = os.path.abspath(dest or default_db_path())
+  sidecar = _sidecar_path(dest)
+  if os.path.isfile(sidecar):
+    try:
+      with open(sidecar, encoding="utf-8") as f:
+        data = json.load(f)
+      if isinstance(data, dict):
+        rev = str(data.get("revision") or "").strip()
+        sha = str(data.get("sha256") or "").strip().lower()
+        return rev, sha
+    except (OSError, ValueError, TypeError):
+      pass
+  return _params_get(PARAM_REVISION), _params_get(PARAM_SHA256).lower()
+
+
+def record_installed_maps(index: MapsIndex, dest: str | None = None) -> None:
+  """Persist revision + zst sha after a successful fetch. Sidecar + params."""
+  dest = os.path.abspath(dest or default_db_path())
+  payload = {
+    "revision": index.revision,
+    "sha256": (index.sha256 or "").lower(),
+    "asset_name": index.asset_name,
+    "asset_url": index.asset_url,
+  }
+  sidecar = _sidecar_path(dest)
+  try:
+    os.makedirs(os.path.dirname(sidecar) or ".", exist_ok=True)
+    tmp = sidecar + ".partial"
+    with open(tmp, "w", encoding="utf-8") as f:
+      json.dump(payload, f, indent=2)
+      f.write("\n")
+    os.replace(tmp, sidecar)
+  except OSError:
+    pass
+  if index.revision:
+    _params_put(PARAM_REVISION, index.revision)
+  if index.sha256:
+    _params_put(PARAM_SHA256, index.sha256.lower())
+
+
+def installed_revision_summary(path: str | None = None) -> str:
+  path = path or default_db_path()
+  if not _sqlite_present(path):
+    return "Not installed"
+  rev, _sha = load_installed_revision(path)
+  if rev:
+    return rev
+  return "Unversioned"
+
+
+def fetch_maps_index(url: str | None = None) -> MapsIndex:
+  """Download and parse the published maps-index JSON (not the sqlite)."""
+  url = url or os.environ.get("NAP_MAPS_INDEX_URL") or MAPS_INDEX_URL
+  if url.startswith("file:"):
+    path = unquote(urlparse(url).path)
+    try:
+      with open(path, encoding="utf-8") as f:
+        raw = f.read()
+    except OSError as e:
+      raise RuntimeError(f"Could not read maps index {url}: {e}") from e
+    return parse_maps_index(raw)
+
+  req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
+  try:
+    with urllib.request.urlopen(req, timeout=30) as resp:
+      raw = resp.read()
+  except urllib.error.HTTPError as e:
+    raise RuntimeError(
+      f"Maps index failed HTTP {e.code} for {url}. Need Wi-Fi to GitHub."
+    ) from e
+  except urllib.error.URLError as e:
+    raise RuntimeError(f"Maps index download failed: {e}. Need Wi-Fi to GitHub.") from e
+  return parse_maps_index(raw)
+
+
+def resolve_published_index(*, index_url: str | None = None, fallback: bool = True) -> MapsIndex:
+  """Live index, or bundled first-install constants if fallback is allowed."""
+  try:
+    index = fetch_maps_index(index_url)
+    _p(f"Maps index: revision {index.revision} ({index.asset_name})")
+    return index
+  except Exception as e:
+    if not fallback:
+      raise
+    _p(f"Published maps index unavailable ({e}). Using first-install constants.")
+    return bundled_maps_index()
+
+
+def fetch_and_install_from_index(index: MapsIndex, dest: str | None = None) -> str:
+  """Shared US-pack fetch used by Download US Maps and Refresh maps."""
+  dest = fetch_and_install(
+    dest=dest,
+    url=index.asset_url,
+    sha256=index.sha256,
+    sqlite_sha256=SQLITE_SHA256,
+  )
+  record_installed_maps(index, dest)
+  return dest
+
+
+def download_maps(dest: str | None = None, *, index_url: str | None = None) -> str:
+  """Install the current published US pack (index if reachable, else bundled)."""
+  index = resolve_published_index(index_url=index_url, fallback=True)
+  return fetch_and_install_from_index(index, dest)
+
+
+def refresh_maps(dest: str | None = None, *, index_url: str | None = None) -> str | None:
+  """Version-check the published index; download only if missing or newer.
+
+  Returns dest when a fetch ran, None when already up to date.
+  """
+  dest = os.path.abspath(dest or default_db_path())
+  index = resolve_published_index(index_url=index_url, fallback=False)
+  if index.notes:
+    _p(index.notes)
+  has_sqlite = _sqlite_present(dest)
+  installed_rev, installed_sha = load_installed_revision(dest)
+  decision = maps_update_decision(has_sqlite, installed_rev, installed_sha, index)
+  if decision == "up_to_date":
+    if has_sqlite and (not installed_rev or not installed_sha):
+      record_installed_maps(index, dest)
+    _p(f"Maps are up to date (revision {index.revision})")
+    return None
+  if decision == "install":
+    _p("No maps installed yet. Downloading the current US pack…")
+  else:
+    from_rev = installed_rev or "unversioned"
+    _p(f"Update available: {from_rev} → {index.revision}")
+  return fetch_and_install_from_index(index, dest)
 
 
 def _sha256_file(path: str) -> str:
@@ -377,17 +556,28 @@ def main(argv: list[str] | None = None) -> int:
     help="Optional SHA-256 of the decompressed sqlite. Empty string skips (default).",
   )
   p.add_argument("--status", action="store_true", help="Print installed DB summary and exit")
+  p.add_argument(
+    "--refresh", action="store_true",
+    help="Check published maps-index.json; download only if missing or newer",
+  )
+  p.add_argument("--index-url", default=None, help="Override maps-index.json URL")
   args = p.parse_args(argv)
 
   if args.status:
     _p(installed_db_summary(args.out))
+    _p(f"Revision: {installed_revision_summary(args.out)}")
     return 0
 
-  url = args.url or release_asset_url(args.repo, args.tag, args.asset)
   try:
-    fetch_and_install(
-      dest=args.out, url=url, sha256=args.sha256, sqlite_sha256=args.sqlite_sha256,
-    )
+    if args.refresh:
+      refresh_maps(dest=args.out, index_url=args.index_url)
+    elif args.url or args.tag != RELEASE_TAG or args.repo != GITHUB_REPO or args.asset != ASSET_NAME:
+      fetch_and_install(
+        dest=args.out, url=args.url or release_asset_url(args.repo, args.tag, args.asset),
+        sha256=args.sha256, sqlite_sha256=args.sqlite_sha256,
+      )
+    else:
+      download_maps(dest=args.out, index_url=args.index_url)
   except Exception as e:
     _p(f"ERROR: {e}")
     return 1
