@@ -892,6 +892,8 @@ def test_map_speed_submenu_wires_params():
   assert "Radar Settings" in nap
   assert "map speed limit" in nap_mici
   assert "radar settings" in nap_mici
+  assert "gradual ease-off farther back" in nap
+  assert "follow distance" in nap_mici
   assert "Refresh maps" in tici
   assert '"Back To"' in tici
   assert "←" not in tici
@@ -918,8 +920,9 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   mpc_at = planner.find("self.mpc.update(sm['radarState'], v_cruise")
   hold_at = planner.find("map_in_track_deadband(v_ego, v_hud_ms)")
   track_at = planner.find("a_brake = map_track_decel_ms2")
+  lead_at = planner.find("a_lead = lead_approach_decel_ms2")
   assert 0 <= cap_at < mpc_at
-  assert 0 <= mpc_at < hold_at < track_at
+  assert 0 <= mpc_at < hold_at < track_at < lead_at
   assert "map_brake_a_ms2" in planner
   assert "map_track_accel_ms2" in planner
   assert "min(float(output_a_target), a_brake)" in planner

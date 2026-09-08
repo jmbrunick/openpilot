@@ -11,6 +11,7 @@ from opendbc.car.tesla.pedal.controller import PEDAL_RAMP_RATE_DOWN, PEDAL_RAMP_
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl
 from openpilot.selfdrive.controls.lib import longitudinal_planner
+from openpilot.selfdrive.controls.lib.lead_approach import LEAD_APPROACH_A_MS2
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   LongitudinalPlanSource,
   T_IDXS,
@@ -568,3 +569,33 @@ def test_plant_aligned_full_closed_loop_grade_compensation_holds_speed(monkeypat
     assert np.mean(np.abs(
       accelerations_mps2[tracking_window] - vdas_targets_mps2[tracking_window]
     )) <= 0.12
+
+
+def test_planner_eases_for_slower_lead_before_mpc_and_lead_can_brake_harder():
+  v_ego = 26.8
+  v_lead = 22.4
+  t_follow = get_T_FOLLOW(nap_follow_dist=4)
+  d_follow = t_follow * v_lead + STOP_DISTANCE_M
+  need = (v_ego * v_ego - v_lead * v_lead) / (2.0 * LEAD_APPROACH_A_MS2)
+  d_rel = d_follow + 0.5 * need
+
+  params = _MutablePlannerParams(nap_follow_dist=4)
+  planner = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=0.0)
+  inputs = _make_planner_inputs(v_ego)
+  lead = inputs["radarState"].leadOne
+  lead.status = True
+  lead.dRel = d_rel
+  lead.vLead = v_lead
+  planner.update(inputs)
+  assert planner.output_a_target == pytest.approx(-LEAD_APPROACH_A_MS2, abs=0.08)
+
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
+  planner.update(inputs)
+  assert planner.output_a_target == pytest.approx(-2.0, abs=0.08)
+
+  # Outside the window: no extra crawl.
+  lead.dRel = d_follow + need + 20.0
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=0.0)
+  planner.update(inputs)
+  assert planner.output_a_target == pytest.approx(0.0, abs=0.08)
