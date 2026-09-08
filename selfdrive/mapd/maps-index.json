@@ -1,8 +1,8 @@
 {
-  "revision": "1",
+  "revision": "2",
   "asset_name": "speed_limits_us.sqlite.zst",
-  "asset_url": "https://github.com/jmbrunick/openpilot/releases/download/osm-us-speed-limits-v1/speed_limits_us.sqlite.zst",
-  "sha256": "d45eddf120f2aa733548b8317e6542ed22880025d33b5f606136567a0feaa26e",
-  "bytes": 203815064,
-  "notes": "US OSM maxspeed ways, osm-us-speed-limits-v1 (Geofabrik us-260906.osm.pbf, 3,235,583 highway+maxspeed ways)."
+  "asset_url": "https://github.com/jmbrunick/openpilot/releases/download/osm-us-speed-limits-v2/speed_limits_us.sqlite.zst",
+  "sha256": "59085d830b5694f2c867ac11c18a0599be815ba463ff6b3104cd63eba3a5ca71",
+  "bytes": 203717126,
+  "notes": "Swift + Kandiyohi refresh; US 12 Benson is 60 then 50 then 30"
 }

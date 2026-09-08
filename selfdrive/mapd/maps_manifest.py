@@ -28,10 +28,10 @@ LICENSE_URL = "https://www.openstreetmap.org/copyright"
 
 # Host + tag for the prebuilt DB. Bump the tag when republishing a newer extract.
 GITHUB_REPO = "jmbrunick/openpilot"
-RELEASE_TAG = "osm-us-speed-limits-v1"
+RELEASE_TAG = "osm-us-speed-limits-v2"
 ASSET_NAME = "speed_limits_us.sqlite.zst"
 # First-install revision; must match committed maps-index.json.
-RELEASE_REVISION = "1"
+RELEASE_REVISION = "2"
 
 # Live index the 3X fetches for Refresh maps (small JSON, not the sqlite).
 # Pointed at raw nap-dev so a county refresh is a JSON bump + new Release
@@ -53,7 +53,7 @@ MIN_FREE_BYTES = MIN_FREE_MIB * 1024 * 1024  # 204+516+80 MiB
 
 # SHA-256 of the Release **zst** asset (not the decompressed sqlite).
 # Fetch verifies this on the downloaded .zst BEFORE decompress.
-ASSET_SHA256 = "d45eddf120f2aa733548b8317e6542ed22880025d33b5f606136567a0feaa26e"
+ASSET_SHA256 = "59085d830b5694f2c867ac11c18a0599be815ba463ff6b3104cd63eba3a5ca71"
 # Optional SHA-256 of the decompressed sqlite. Empty = do not hash dest.
 SQLITE_SHA256 = ""
 
@@ -204,17 +204,14 @@ def maps_update_decision(
   installed_revision: str,
   installed_sha256: str,
   remote: MapsIndex,
-  *,
-  bundled: MapsIndex | None = None,
 ) -> str:
   """Return 'install', 'update', or 'up_to_date'.
 
   SHA-256 of the published zst is the file identity. A newer revision or a
-  different SHA means download. Missing sqlite means first install. A legacy
-  sqlite with no recorded revision is treated as the bundled first-install
-  pack when the remote index still matches those constants.
+  different SHA means download. Missing sqlite means first install. A sqlite
+  with no recorded revision/SHA is treated as unknown (update) so a device
+  still on v1 picks up v2 instead of being stamped current.
   """
-  bundled = bundled or bundled_maps_index()
   if not has_sqlite:
     return "install"
 
@@ -230,6 +227,4 @@ def maps_update_decision(
     return "update" if revision_is_newer(remote.revision, inst_rev) else "up_to_date"
 
   # Legacy install (sqlite present, no revision/hash recorded).
-  if remote_sha == (bundled.sha256 or "").strip().lower() and not revision_is_newer(remote.revision, bundled.revision):
-    return "up_to_date"
   return "update"
