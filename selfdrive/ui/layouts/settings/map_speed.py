@@ -29,7 +29,7 @@ class MapSpeedLimitLayout(Widget):
   def _build_items(self):
     self._all_items = []
     self._all_items.append(button_item(
-      "← Back",
+      "Back To",
       "NAP",
       description="Return to NAP settings.",
       callback=self._on_back,
