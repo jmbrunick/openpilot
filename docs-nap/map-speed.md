@@ -34,7 +34,7 @@ Licenses: pfeiferj/mapd and sunnypilot SLA are MIT; we did **not** vendor the Go
 
 ## Blinker + intersection turn slowdown
 
-This is a **speed** overlay so the 3X model path can take a corner. It is not a nav route and does not invent a turn polyline. Tesla cluster nav is not on CAN.
+This is a **speed** overlay plus a **path yaw** of the existing model plan so the 3X can take a mapped corner. It is not a nav route and does not invent an OSM turn polyline. Tesla cluster nav is not on CAN.
 
 **Detect.** `mapd` walks the matched OSM way (same sqlite / GPS path as MAX, including the 1.5 s GNSS lead on distance). A junction is another stored highway way within ~20 m whose heading is 35–145° off the current road (both directions of that way), or a sharp same-way bend. Parallel / dual-carriageway headings do not count. A cross street with no `maxspeed` still counts as a junction; it is never posted LIMIT (`speedLimitValid` stays false for that way; a real LIMIT on the road you are on is not cleared). The published US pack is maxspeed-only; **Refresh maps** overlays local junction geometry so a 3X does not need a full pack rebuild.
 
@@ -53,7 +53,7 @@ Ease uses the same kin+110 m / Accel-5 0.80 curve as posted decreases. Lookahead
 
 **Sticky / Follow / Cap.** While the stalk is held, a sticky set must not block the drop (`sticky_set_kph` is kept). When the stalk returns to idle or the junction is behind the match, Cap/Follow resume, including that sticky set. Lead still wins.
 
-**Lateral.** While stalk+junction, ALC is not armed (a wheel nudge must not `laneChangeLeft/Right` and cut the corner). Desire stays `none`. The stock 3X model path remains the base. A **modest late-apex bias** applies only in that window: path `y` is shifted 0.15 m toward the outside of the turn (left-positive; ramped in over 2 s so t=0 does not jerk), and `desiredCurvature` is scaled by 0.95 plus a small outside κ (`2 y / s²`, capped at 0.008 /m). Highway ALC — stalk on a multi-lane road with **no** OSM junction — gets neither the slowdown nor this bias. No `Desire.turnLeft/Right`.
+**Lateral.** While stalk+junction, ALC is not armed (a wheel nudge must not `laneChangeLeft/Right` and cut the corner). Desire stays `none`. Blinker is the cue to take the mapped junction; the hood camera is not. `modeld` yaws the stock model plan into that side (90° over a comfort-radius arc at `intersectionDistance`) so **modelV2.position** and **desiredCurvature** show and follow the turn — not a 0.15 m nudge on the straight camera line. Highway ALC — stalk on a multi-lane road with **no** OSM junction — is unchanged. No `Desire.turnLeft/Right`. No Tesla cluster nav.
 
 ## US map data
 

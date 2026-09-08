@@ -19,7 +19,7 @@ from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
 from openpilot.common.transformations.model import get_warp_matrix
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.selfdrive.mapd.map_speed_policy import (
-  apply_late_apex_curvature, blinker_turn_direction, late_apex_ramp, late_apex_y_offset_m,
+  apply_junction_turn_plan, blinker_turn_direction,
 )
 from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, smooth_value, get_curvature_from_plan
 from openpilot.selfdrive.modeld.parse_model_outputs import Parser
@@ -304,10 +304,11 @@ def main(demo=False):
 
       frame_delay = DT_MDL # compensate for time passed since the frame was captured: current_time - timestamp_eof is 50ms on average
       action_delay = DT_MDL / 2 # middle of the interval between model output (current state) and next frame (expected state)
-      action = get_action_from_model(model_output, prev_action, lat_delay + frame_delay + action_delay, long_delay + frame_delay + action_delay, v_ego)
-      # Late-apex bias only for held stalk + OSM junction. ALC (stalk, no
-      # junction) keeps the raw model curvature and path.
+      # Held stalk + OSM junction: yaw the plan into that side street so the
+      # on-screen path and desiredCurvature take the turn. Highway ALC (stalk,
+      # no junction) keeps the raw model plan.
       turn_dir = 0
+      turn_dist_m = 0.0
       if sm.valid.get("liveMapDataNAP", False):
         md = sm["liveMapDataNAP"]
         turn_dir = blinker_turn_direction(
@@ -315,19 +316,11 @@ def main(demo=False):
           bool(getattr(md, "intersectionHasLeft", False)),
           bool(getattr(md, "intersectionHasRight", False)),
         )
+        turn_dist_m = float(getattr(md, "intersectionDistance", 0.0) or 0.0)
       if turn_dir != 0:
-        k = apply_late_apex_curvature(float(action.desiredCurvature), v_ego, turn_dir)
-        action = log.ModelDataV2.Action(
-          desiredCurvature=float(k),
-          desiredAcceleration=float(action.desiredAcceleration),
-          shouldStop=bool(action.shouldStop),
-        )
-        y_off = late_apex_y_offset_m(turn_dir)
-        plan = model_output['plan'][0]
-        y_idx = Plan.POSITION.start + 1
-        n = min(plan.shape[0], len(ModelConstants.T_IDXS))
-        for i in range(n):
-          plan[i, y_idx] += y_off * late_apex_ramp(ModelConstants.T_IDXS[i])
+        apply_junction_turn_plan(model_output['plan'][0], ModelConstants.T_IDXS,
+                                 turn_dir, turn_dist_m, v_ego)
+      action = get_action_from_model(model_output, prev_action, lat_delay + frame_delay + action_delay, long_delay + frame_delay + action_delay, v_ego)
       prev_action = action
       fill_model_msg(drivingdata_send, modelv2_send, model_output, action,
                      publish_state, meta_main.frame_id, meta_extra.frame_id, frame_id,

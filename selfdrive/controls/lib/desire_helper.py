@@ -103,7 +103,7 @@ class DesireHelper:
 
       # LaneChangeState.off
       # Held stalk + OSM intersection: do not arm ALC (that cuts the corner).
-      # Stock model path takes the turn once speed is down. Desire stays none.
+      # modeld yaws the plan into the mapped side street. Desire stays none.
       if hold_for_intersection and self.lane_change_state == LaneChangeState.preLaneChange:
         self._reset()
       if (not just_cancelled and self.lane_change_state == LaneChangeState.off and one_blinker
