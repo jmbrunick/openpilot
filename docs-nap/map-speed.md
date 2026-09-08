@@ -106,8 +106,8 @@ All map-speed controls live in this submenu (main NAP stays uncluttered). TICI a
 - **Lookahead** (`NAPMapSpeedLookahead`): Off / Late / Normal (default) / Early
 - **Acceleration** (`NAPMapSpeedAccel`): 1–10, Follow climb only (default 5). Brake to a lower MAX is locked at 5.
 - **Map revision**: published US pack revision after Download US Maps (Refresh maps does not bump this)
+- **Refresh maps**: live OSM within 100 miles, merged into the installed US sqlite (listed above Download)
 - **Download US Maps**: first install of the current published pack
-- **Refresh maps**: live OSM within 100 miles, merged into the installed US sqlite
 - Cap/Follow require the pedal interceptor
 
 ## Anticipatory decreases and Accel

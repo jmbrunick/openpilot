@@ -500,6 +500,9 @@ def test_map_speed_submenu_wires_params():
   assert "check for map updates" not in mici
   assert "scripts.nap.refresh_osm_maps" in nap
   assert "scripts.nap.refresh_osm_maps" in mici
+  assert tici.index("_all_items.append(self._refresh_btn)") < tici.index("_all_items.append(self._download_btn)")
+  mici_widgets = mici.split("self._scroller.add_widgets", 1)[1]
+  assert mici_widgets.index("refresh_maps_btn") < mici_widgets.index("download_maps_btn")
   assert "NAPMapSpeedAccel" in (root / "common/params_keys.h").read_text()
   assert "NAPMapSpeedDbRevision" in (root / "common/params_keys.h").read_text()
   assert "NAPMapSpeedDbSha256" in (root / "common/params_keys.h").read_text()
