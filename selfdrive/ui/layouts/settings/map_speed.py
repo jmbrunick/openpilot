@@ -38,7 +38,8 @@ class MapSpeedLimitLayout(Widget):
       "Map Speed (MAX)",
       "OpenStreetMap speed limit for HUD MAX / cruise set speed. " +
       "Off: unchanged. Display: show OSM limit only. Cap: MAX never exceeds the limit. " +
-      "Follow: MAX tracks the limit (stalk +/- pauses follow for 10s). " +
+      "Follow: MAX tracks the limit. Stalk below the limit holds that set until you stalk again or the sign changes. " +
+      "Stalk above the limit pauses Follow for 10s. " +
       "Control modes require pedal interceptor longitudinal. No-pedal stock CC is display-only.",
       buttons=MAP_SPEED_MODE_LABELS,
       button_width=150,
@@ -50,7 +51,7 @@ class MapSpeedLimitLayout(Widget):
     offset_mph = int(self._params.get("NAPMapSpeedOffsetMph", return_default=True) or 0)
     self._offset_buttons = multiple_button_item(
       "Map Speed Offset",
-      "Added to the OSM limit before Cap/Follow (miles per hour). Stalk still overrides Follow for 10 seconds.",
+      "Added to the OSM limit before Cap/Follow (miles per hour). A set below the limit stays put; above-limit Follow override is 10 seconds.",
       buttons=["-5 mph", "0", "+5 mph"],
       button_width=150,
       selected_index=self._offset_index(offset_mph),
