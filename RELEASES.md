@@ -1,3 +1,7 @@
+NAP map speed (2026-09-07)
+========================
+* OSM map speed can drive HUD MAX (pedal mode). Off by default. Download US maps from Settings → NAP (ODbL). Map speed caps vCruise only; radar still follows a slower lead.
+
 Version 0.11.1 (2026-04-08)
 ========================
 * New driver monitoring model

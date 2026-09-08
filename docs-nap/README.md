@@ -7,6 +7,7 @@ Documentation for contributors working on NotAutopilot. These are NAP-specific �
 - **[contributing.md](contributing.md)** — branch structure, pre-push checklist, submodules, how to submit bugs
 - **[architecture.md](architecture.md)** — Pre-AP Model S design overview: standalone safety model, radar emulation, pedal interceptor
 - **[safety-model.md](safety-model.md)** — panda safety invariants for the Pre-AP target
+- **[map-speed.md](map-speed.md)** — OSM map speed → HUD MAX / cruise set speed (comma 3X)
 - **[engagement.md](engagement.md)** — stalk FSM, pedal-vs-no-pedal engagement paths, brake behavior
 
 ## Layout

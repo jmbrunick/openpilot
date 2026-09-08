@@ -23,6 +23,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   RESTORE_EPAS_INSTRUCTIONS,
   TEST_RADAR_INSTRUCTIONS,
 )
+from openpilot.selfdrive.ui.mici.layouts.settings.map_speed import MapSpeedLimitLayoutMici
 from openpilot.selfdrive.ui.ui_state import ui_state
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys
 
@@ -68,6 +69,10 @@ class NAPLayoutMici(NavScroller):
     pedal_enabled.set_enabled(ui_state.is_offroad)
 
     adaptive_accel = BigParamControl("adaptive accel limits", NAPParamKeys.ADAPTIVE_ACCEL)
+
+    self._map_speed_page = MapSpeedLimitLayoutMici()
+    map_speed_btn = BigButton("map speed limit", "open")
+    map_speed_btn.set_click_callback(lambda: gui_app.push_widget(self._map_speed_page))
 
     # ── Pedal hardware ───────────────────────────────
     # default_value=2 matches NAPPedalCanBus declared default in params_keys.h
@@ -165,6 +170,7 @@ class NAPLayoutMici(NavScroller):
     self._scroller.add_widgets([
       pedal_enabled,
       adaptive_accel,
+      map_speed_btn,
       pedal_can_bus,
       pedal_calib_status,
       calibrate_pedal_btn,
