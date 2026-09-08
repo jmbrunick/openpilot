@@ -21,11 +21,13 @@ import threading
 from openpilot.common.params import Params
 from openpilot.system.hardware import HARDWARE, PC
 from openpilot.system.ui.mici.widgets.script_runner_app import MiciScriptRunnerApp, ScriptState
+from scripts.nap.script_lifecycle import script_reboots_on_exit
 
 
 class _NAPMiciRunner:
   def __init__(self, title: str, module: str, instructions: str):
     self._module = module
+    self._reboot_on_exit = script_reboots_on_exit(module)
     self._params = Params()
     self._process: subprocess.Popen | None = None
     self._reader_thread: threading.Thread | None = None
@@ -44,7 +46,8 @@ class _NAPMiciRunner:
   # ── start ─────────────────────────────────────────
 
   def _on_start(self) -> None:
-    self._params.put_bool("NAPScriptRunning", True)
+    if self._reboot_on_exit:
+      self._params.put_bool("NAPScriptRunning", True)
     try:
       self._process = subprocess.Popen(
         ["python", "-m", self._module],
@@ -56,7 +59,8 @@ class _NAPMiciRunner:
         bufsize=1,
       )
     except Exception as e:
-      self._params.put_bool("NAPScriptRunning", False)
+      if self._reboot_on_exit:
+        self._params.put_bool("NAPScriptRunning", False)
       self._app.append_output(f"Error starting script: {e}")
       self._app.set_state(ScriptState.ERROR)
       return
@@ -115,12 +119,13 @@ class _NAPMiciRunner:
             self._app.set_state(ScriptState.ERROR)
             return
 
-    self._params.put_bool("NAPScriptRunning", False)
+    if self._reboot_on_exit:
+      self._params.put_bool("NAPScriptRunning", False)
 
-    if not PC:
-      HARDWARE.reboot()
     from openpilot.system.ui.lib.application import gui_app
     gui_app.request_close()
+    if self._reboot_on_exit and not PC:
+      HARDWARE.reboot()
 
 
 def main():
@@ -133,10 +138,12 @@ def main():
   instructions = sys.argv[3]
 
   # Kill the comma tmux session so we own the screen (no-op on dev hosts).
-  try:
-    subprocess.run(["tmux", "kill-session", "-t", "comma"], capture_output=True)
-  except FileNotFoundError:
-    pass
+  # Map sqlite jobs leave the session up so Exit can return to Settings.
+  if script_reboots_on_exit(module):
+    try:
+      subprocess.run(["tmux", "kill-session", "-t", "comma"], capture_output=True)
+    except FileNotFoundError:
+      pass
 
   runner = _NAPMiciRunner(title, module, instructions)
   runner.run()
