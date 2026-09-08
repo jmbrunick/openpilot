@@ -40,12 +40,12 @@ class ScriptRunner(Widget):
 
   Usage:
       runner = ScriptRunner(
-          title="Pedal Calibration",
+          title="Refresh maps",
           instructions="Instructions for the user...",
-          script_module="scripts.nap.calibrate_pedal",
-          on_close=lambda: gui_app.set_modal_overlay(None)
+          script_module="scripts.nap.refresh_osm_maps",
+          on_close=lambda: gui_app.pop_widget(),
       )
-      gui_app.set_modal_overlay(runner)
+      gui_app.push_widget(runner)
   """
 
   def __init__(
@@ -134,6 +134,7 @@ class ScriptRunner(Widget):
         stderr=subprocess.STDOUT,
         cwd=self._cwd,
         text=True,
+        encoding="utf-8",
         bufsize=1  # Line buffered
       )
 
@@ -181,6 +182,8 @@ class ScriptRunner(Widget):
 
     if self._on_close:
       self._on_close()
+    else:
+      gui_app.pop_widget()
 
   def _process_output_queue(self):
     """Process any pending output from the queue"""

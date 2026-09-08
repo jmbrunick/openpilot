@@ -469,6 +469,13 @@ def test_map_scripts_do_not_reboot_on_exit():
     src = (root / rel).read_text()
     assert "script_reboots_on_exit" in src
     assert "HARDWARE.reboot()" in src
+  nap = (root / "selfdrive/ui/layouts/settings/nap.py").read_text()
+  mici_launch = (root / "selfdrive/ui/mici/layouts/settings/nap_script.py").read_text()
+  assert "ScriptRunner" in nap
+  assert "gui_app.push_widget" in nap
+  assert "_MapScriptOverlay" in mici_launch
+  assert "script_reboots_on_exit" in nap
+  assert "script_reboots_on_exit" in mici_launch
 
 
 def test_refresh_stages_merge_beside_dest_not_tmp(tmp_path):
