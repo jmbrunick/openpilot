@@ -23,9 +23,20 @@ def _peek_blinker_lamps(can_parsers):
     return False, False
 
 
+def _peek_v_ego(can_parsers):
+  try:
+    from opendbc.car import Bus
+    from opendbc.car.common.conversions import Conversions as CV
+    return float(can_parsers[Bus.chassis].vl["ESP_B"]["ESP_vehicleSpeed"]) * CV.KPH_TO_MS
+  except Exception:
+    return 0.0
+
+
 def _handle_steering_disengage(self, steering_disengage):
   if blinker_pauses_lateral(getattr(self, "_nap_left_blinker", False),
-                            getattr(self, "_nap_right_blinker", False)):
+                            getattr(self, "_nap_right_blinker", False),
+                            getattr(self, "_nap_v_ego", 0.0),
+                            getattr(self, "_nap_junction_on_blinker_side", False)):
     # Keep prev in sync so lamp-off with hands still on is not a rising edge.
     self.prev_steering_disengage = steering_disengage
     return
@@ -38,6 +49,9 @@ def _update_preap(cs, can_parsers):
   if engagement is not None:
     engagement._nap_left_blinker = left
     engagement._nap_right_blinker = right
+    engagement._nap_v_ego = _peek_v_ego(can_parsers)
+    # liveMapDataNAP has no junction-side flag; stay false.
+    engagement._nap_junction_on_blinker_side = False
   return _ORIG_UPDATE(cs, can_parsers)
 
 
