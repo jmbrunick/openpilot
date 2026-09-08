@@ -231,29 +231,36 @@ class Car:
         posted_kph = None
         map_kph = None
         map_valid = bool(self.sm.valid.get('liveMapDataNAP', False) and self.sm['liveMapDataNAP'].speedLimitValid)
+        sticky_hold = self._map_hold.sticky_set_kph is not None
         if map_valid:
           md = self.sm['liveMapDataNAP']
           if md.speedLimit > 0:
             posted_kph = float(md.speedLimit) * CV.MS_TO_KPH + self._map_speed_offset_kph
-          lim = effective_map_limit_ms(
-            float(md.speedLimit),
-            float(md.nextSpeedLimit),
-            float(md.nextSpeedLimitDistance),
-            float(CS.vEgo),
-            self._map_speed_lookahead,
-            self._map_speed_accel,
-          )
-          if lim is not None and lim > 0:
-            if self._map_slew_ms is None:
-              self._map_slew_ms = lim
-            else:
-              a = map_slew_a_ms2(
-                self._map_slew_ms, lim, self._map_speed_lookahead, self._map_speed_accel,
-              )
-              self._map_slew_ms = slew_map_speed_ms(self._map_slew_ms, lim, DT_CTRL, a)
-            map_kph = self._map_slew_ms * CV.MS_TO_KPH
+          if sticky_hold:
+            # Hold the stalk set. Do not slew MAX toward an upcoming lower OSM
+            # limit — that lookahead fights the hold (surge then brake).
+            map_kph = posted_kph
           else:
-            self._map_slew_ms = None
+            lim = effective_map_limit_ms(
+              float(md.speedLimit),
+              float(md.nextSpeedLimit),
+              float(md.nextSpeedLimitDistance),
+              float(CS.vEgo),
+              self._map_speed_lookahead,
+              self._map_speed_accel,
+              sticky=False,
+            )
+            if lim is not None and lim > 0:
+              if self._map_slew_ms is None:
+                self._map_slew_ms = lim
+              else:
+                a = map_slew_a_ms2(
+                  self._map_slew_ms, lim, self._map_speed_lookahead, self._map_speed_accel,
+                )
+                self._map_slew_ms = slew_map_speed_ms(self._map_slew_ms, lim, DT_CTRL, a)
+              map_kph = self._map_slew_ms * CV.MS_TO_KPH
+            else:
+              self._map_slew_ms = None
         else:
           self._map_slew_ms = None
         dec = decide_map_cruise(

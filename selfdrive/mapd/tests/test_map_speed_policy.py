@@ -9,7 +9,7 @@ from openpilot.selfdrive.mapd.map_speed_policy import (
   SOURCE_CRUISE, SOURCE_LEAD0, V_CRUISE_UNSET,
   MapCruiseHold, anticipatory_limit_ms, apply_map_speed_kph, cap_planner_v_cruise_ms,
   decide_map_cruise, effective_map_limit_ms, is_cruise_stalk_step,
-  longitudinal_obstacle_source, map_slew_a_ms2, map_track_accel_ms2,
+  longitudinal_obstacle_source, map_in_track_deadband, map_slew_a_ms2, map_track_accel_ms2,
   map_track_decel_ms2, should_write_preap_pedal, slew_map_speed_ms,
 )
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
@@ -71,6 +71,16 @@ def test_planner_cap_is_down_only():
   assert cap_planner_v_cruise_ms(20.0, lim, mode=MODE_CAP) == 20.0
   assert cap_planner_v_cruise_ms(30.0, lim, mode=MODE_DISPLAY) == 30.0
   assert cap_planner_v_cruise_ms(30.0, None, mode=MODE_FOLLOW) == 30.0
+
+
+def test_follow_planner_trusts_hud_not_posted():
+  """Sticky 66 with posted 60 must not clip MPC v_cruise to 60."""
+  hud = 66 * CV.MPH_TO_MS
+  posted = 60 * CV.MPH_TO_MS
+  assert cap_planner_v_cruise_ms(hud, posted, mode=MODE_FOLLOW) == hud
+  below = 55 * CV.MPH_TO_MS
+  assert cap_planner_v_cruise_ms(below, posted, mode=MODE_FOLLOW) == below
+  assert cap_planner_v_cruise_ms(hud, posted, mode=MODE_CAP) == posted
 
 
 def test_no_lead_tracks_map_capped_cruise():
@@ -227,6 +237,49 @@ def test_sixty_to_fifty_uses_kin_plus_110_not_min_decrease_skip():
   assert abs(kin_m - 137.0) < 2.0
   assert anticipatory_limit_ms(v60, v50, kin_m + DECREASE_START_MARGIN_M, v60, LOOKAHEAD_NORMAL) is not None
   assert anticipatory_limit_ms(v60, v50, kin_m + DECREASE_START_MARGIN_M + 5.0, v60, LOOKAHEAD_NORMAL) is None
+
+
+def test_sticky_skips_anticipatory_lookahead():
+  """Upcoming 50 must not lower the ceiling while a sticky set is active."""
+  current = 60 * CV.MPH_TO_MS
+  nxt = 50 * CV.MPH_TO_MS
+  a = map_brake_a_ms2(LOOKAHEAD_NORMAL)
+  kin_m = (current * current - nxt * nxt) / (2.0 * a)
+  dist = kin_m  # well inside the kin+110 m window
+  lowered = effective_map_limit_ms(current, nxt, dist, current, LOOKAHEAD_NORMAL)
+  assert lowered is not None and lowered < current
+  held = effective_map_limit_ms(current, nxt, dist, current, LOOKAHEAD_NORMAL, sticky=True)
+  assert held == current
+  # map_track_decel tracks HUD, not nextSpeedLimit. At the sticky set, hold.
+  sticky = 66 * CV.MPH_TO_MS
+  assert map_track_decel_ms2(sticky, sticky, a) is None
+  assert map_track_accel_ms2(sticky, sticky, a) is None
+  assert map_in_track_deadband(sticky, sticky)
+  # Ego at sticky MAX: do not brake toward upcoming 50 just because OSM is lower.
+  assert map_track_decel_ms2(sticky, sticky, a) is None
+  # After posted changes, lookahead resumes (sticky=False).
+  assert effective_map_limit_ms(current, nxt, dist, current, LOOKAHEAD_NORMAL, sticky=False) == lowered
+
+
+def test_hold_deadband_does_not_climb_or_brake():
+  """Inside the band: no Accel climb and no map_track_decel (lead still wins)."""
+  v_set = 66 * CV.MPH_TO_MS
+  a5 = map_brake_a_ms2(LOOKAHEAD_NORMAL)
+  a10 = map_accel_a_ms2(LOOKAHEAD_NORMAL, 10)
+  assert map_in_track_deadband(v_set, v_set)
+  assert map_in_track_deadband(v_set + TRACK_DEADBAND_MS, v_set)
+  assert map_in_track_deadband(v_set - TRACK_DEADBAND_MS, v_set)
+  assert not map_in_track_deadband(v_set + TRACK_DEADBAND_MS + 0.01, v_set)
+  assert map_track_accel_ms2(v_set, v_set, a10) is None
+  assert map_track_decel_ms2(v_set, v_set, a5) is None
+  # Below the band: climb at Accel 1–10. Above: brake at locked Accel 5.
+  below = v_set - TRACK_TAPER_MS
+  assert map_track_accel_ms2(below, v_set, a10) == a10
+  assert map_track_decel_ms2(below, v_set, a5) is None
+  above = v_set + TRACK_TAPER_MS
+  assert map_track_decel_ms2(above, v_set, a5) == -a5
+  # Lead still wins vs map brake.
+  assert min(-2.0, -a5) == -2.0
 
 
 def test_map_track_decel_matches_comfort_curve_when_above_max():
@@ -480,6 +533,33 @@ def test_stalk_plus_minus_changes_set_without_button_events():
   assert abs(dec.driver_kph - down) < 1e-6
 
 
+def test_sticky_hud_ignores_anticipatory_map_kph():
+  """Card sticky path must keep 66 even if map_kph slewed toward upcoming 50."""
+  hold = MapCruiseHold()
+  a = 60 * CV.MPH_TO_KPH
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=a, posted_kph=a,
+    engage_rising=True, now=0.0,
+  )
+  above = a + 5 * CV.MPH_TO_KPH
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=above, posted_kph=a,
+    engage_rising=False, now=1.0, stalk_pressed=False,
+  )
+  assert dec.sticky
+  anticipated = 50 * CV.MPH_TO_KPH
+  assert abs(_follow_hud(dec, anticipated) - above) < 1e-6
+  assert dec.seed_kph is not None  # real 5 mph stalk step writes once
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=above, posted_kph=a,
+    engage_rising=False, now=2.0, stalk_pressed=False,
+  )
+  assert dec.sticky
+  assert dec.seed_kph is None
+  assert abs(_follow_hud(dec, anticipated) - above) < 1e-6
+  assert not should_write_preap_pedal(dec.seed_kph, _follow_hud(dec, anticipated), above)
+
+
 def test_follow_holds_absolute_set_until_posted_changes():
   """Justin: set 55 in a 50 stays 55 until posted changes; set 45 in a 50, same."""
   hold = MapCruiseHold()
@@ -676,6 +756,7 @@ def test_hud_current_speed_is_wheel_ego_not_cluster_or_max():
     assert "self.speed = md.speedLimit" not in src
     assert "self.speed = self.map_speed_limit" not in src
     assert "self.speed = self.set_speed" not in src
+    # MAX box is vCruiseCluster; LIMIT sign is OSM. Do not paint either as live.
   card = (root / "selfdrive/car/card.py").read_text()
   assert "vEgoCluster" not in card
   assert "CS.vEgo =" not in card
@@ -699,6 +780,7 @@ def test_map_speed_submenu_wires_params():
   assert "1.20 m/s² at Normal" not in tici
   assert "pauses Follow for 10s" not in tici
   assert "holds until the posted limit changes" in tici
+  assert "lookahead pauses while that set is active" in tici
   assert "acceleration only" in mici
   assert "Map Speed Limit" in nap
   assert "Radar Settings" in nap
@@ -728,12 +810,15 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   mpc = (root / "selfdrive/controls/lib/longitudinal_mpc_lib/long_mpc.py").read_text()
   cap_at = planner.find("cap_planner_v_cruise_ms")
   mpc_at = planner.find("self.mpc.update(sm['radarState'], v_cruise")
+  hold_at = planner.find("map_in_track_deadband(v_ego, v_hud_ms)")
   track_at = planner.find("a_brake = map_track_decel_ms2")
   assert 0 <= cap_at < mpc_at
-  assert 0 <= mpc_at < track_at
+  assert 0 <= mpc_at < hold_at < track_at
   assert "map_brake_a_ms2" in planner
   assert "map_track_accel_ms2" in planner
   assert "min(float(output_a_target), a_brake)" in planner
+  assert "if float(output_a_target) >= 0.0:" in planner
+  assert "output_a_target = 0.0" in planner
   assert "np.column_stack([lead_0_obstacle, lead_1_obstacle, cruise_obstacle])" in mpc
   assert "self.params[:,2] = np.min(x_obstacles, axis=1)" in mpc
   card = (root / "selfdrive/car/card.py").read_text()
@@ -746,6 +831,9 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   # Must not clobber stalk by writing Follow HUD onto pedal every frame.
   assert "should_write_preap_pedal(dec.seed_kph, preap_v_cruise_kph, self._last_pedal_kph)" in card
   assert "if long_active and dec.seed_kph is not None:" not in card
+  # Sticky hold must not slew toward nextSpeedLimit.
+  assert "sticky_hold = self._map_hold.sticky_set_kph is not None" in card
+  assert "if sticky_hold:" in card
   planner_src = planner
   assert "output_a_target = a_up" in planner_src
   assert "min(float(output_a_target), a_up)" not in planner_src

@@ -92,10 +92,17 @@ def effective_map_limit_ms(
   v_ego_ms: float = 0.0,
   lookahead: int = LOOKAHEAD_NORMAL,
   accel: int = ACCEL_DEFAULT,
+  sticky: bool = False,
 ) -> float | None:
-  """Posted limit, optionally eased down for a closer lower limit ahead."""
+  """Posted limit, optionally eased down for a closer lower limit ahead.
+
+  A sticky stalk set must hold until posted `a` changes. Do not ease toward
+  an upcoming lower OSM limit while that set is active — that fights the hold.
+  """
   if current_ms is None or current_ms <= 0:
     return None
+  if sticky:
+    return float(current_ms)
   anticipated = anticipatory_limit_ms(
     float(current_ms), float(next_ms or 0.0), float(next_dist_m or 0.0),
     float(v_ego_ms or 0.0), lookahead, accel,
@@ -158,6 +165,13 @@ def map_track_accel_ms2(v_ego_ms: float, v_cruise_ms: float, a_comfort: float) -
   span = max(1e-6, TRACK_TAPER_MS - TRACK_DEADBAND_MS)
   scale = min(1.0, (dv - TRACK_DEADBAND_MS) / span)
   return float(a_comfort) * scale
+
+
+def map_in_track_deadband(v_ego_ms: float, v_set_ms: float) -> bool:
+  """True when ego is close enough to MAX to hold, not climb or map-brake."""
+  if v_ego_ms <= 0 or v_set_ms <= 0:
+    return False
+  return abs(float(v_ego_ms) - float(v_set_ms)) <= TRACK_DEADBAND_MS
 
 
 def posted_limits_same(a_kph: float | None, b_kph: float | None) -> bool:
@@ -393,13 +407,17 @@ def cap_planner_v_cruise_ms(
   mode: int,
   offset_ms: float = 0.0,
 ) -> float:
-  """Ceiling for planner v_cruise only.
+  """Planner v_cruise from card HUD MAX.
 
-  Does not touch radarState. LongitudinalMpc.update still stacks
-  [lead0, lead1, cruise_obstacle(v_cruise)] and constrains to min(...),
-  so a slower lead still commands below this ceiling.
+  Follow trusts HUD (sticky above or below posted `a`, or Follow map slew
+  including +110 m decreases). Do not min() Follow with posted — that clipped
+  a sticky 66 mph to posted 60 while map_track_accel still climbed to 66
+  (surge then brake below the set). Cap still never exceeds the posted sign.
+  Lead still wins via mpc.update(radarState, v_cruise).
   """
-  if mode not in (MODE_CAP, MODE_FOLLOW):
+  if mode == MODE_FOLLOW:
+    return v_cruise_ms
+  if mode != MODE_CAP:
     return v_cruise_ms
   if map_limit_ms is None or map_limit_ms <= 0:
     return v_cruise_ms
