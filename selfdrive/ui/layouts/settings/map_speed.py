@@ -77,8 +77,8 @@ class MapSpeedLimitLayout(Widget):
     self._accel_buttons = multiple_button_item(
       "Acceleration",
       "Follow only: how quickly the car climbs when MAX rises. " +
-      "1=gentlest (0.50 m/s² at Normal), 5=1.10, 10=quickest (1.60, clamped). " +
-      "Brake to a lower MAX is locked at Accel 5 (1.10 m/s² at Normal). " +
+      "1=gentlest (0.36 m/s² at Normal), 5=0.80, 10=quickest (1.60, clamped). " +
+      "Brake to a lower MAX is locked at Accel 5 (0.80 m/s² at Normal). " +
       "A slower lead can still brake harder.",
       buttons=MAP_SPEED_ACCEL_LABELS,
       button_width=72,
