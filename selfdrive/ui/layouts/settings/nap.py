@@ -12,6 +12,7 @@ from openpilot.system.ui.widgets.list_view import (
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 from openpilot.system.ui.widgets.button import Button
 from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog
+from openpilot.system.ui.widgets.script_runner import ScriptRunner
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets.html_render import HtmlRenderer, ElementType
@@ -30,6 +31,7 @@ from openpilot.selfdrive.ui.layouts.settings.map_speed import MapSpeedLimitLayou
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys, DEFAULTS
 from openpilot.selfdrive.ui.radar.radar_view import RadarMonitorDialog
 from openpilot.selfdrive.ui.ui_state import ui_state
+from scripts.nap.script_lifecycle import script_reboots_on_exit
 
 
 
@@ -543,7 +545,17 @@ class NAPLayout(Widget):
   # ── Script runner ──
 
   def _show_script_runner(self, title: str, instructions: str, script_module: str):
-    """Launch the script runner as a separate process that takes over the screen."""
+    """Map sqlite jobs overlay in-process (one screen). Hardware scripts spawn run_script.py."""
+    if not script_reboots_on_exit(script_module):
+      gui_app.push_widget(ScriptRunner(
+        title=title,
+        instructions=instructions,
+        script_module=script_module,
+        on_close=lambda: gui_app.pop_widget(),
+        cwd=BASEDIR,
+      ))
+      return
+
     script_path = os.path.join(BASEDIR, "scripts", "nap", "run_script.py")
     log_path = "/tmp/nap_script_runner.log"
 

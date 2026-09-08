@@ -1,9 +1,8 @@
 """Mici full-screen script runner.
 
-Standalone app: owns its own ``gui_app`` window because the device's main UI
-gets torn down before the runner takes over (the consumer typically sets a
-param that asks the manager to stop driving processes). It is not a widget
-you embed.
+Standalone app by default: ``run()`` owns a ``gui_app`` window. It can also
+be embedded via ``prepare()`` / ``render_overlay()`` on an already-open window
+(Settings overlay) so the main UI is not drawn underneath.
 
 The UI is plain raylib at mici-scaled sizes — title and status at the top,
 a clipped scrollable text region in the body for instructions (before
@@ -22,6 +21,8 @@ objects from one thread only.
 
 Generic primitive: no NAP, subprocess, or hardware knowledge. The consumer
 wires ``on_start`` and ``on_exit`` callbacks and decides what those mean.
+Use ``run()`` as a standalone window, or ``prepare()`` + ``render_overlay()``
+as a pushed widget on an already-open ``gui_app``.
 """
 import enum
 import queue
@@ -98,10 +99,18 @@ class MiciScriptRunnerApp:
 
   def run(self, window_title: str = "Script Runner") -> None:
     gui_app.init_window(window_title)
-    self._init_ui()
+    self.prepare()
     for _ in gui_app.render():
-      self._drain_queues()
-      self._render_frame()
+      self.render_overlay()
+
+  def prepare(self) -> None:
+    """Bind fonts/buttons to an already-open gui_app window."""
+    self._init_ui()
+
+  def render_overlay(self) -> None:
+    """Draw one opaque frame. Call from the UI thread only."""
+    self._drain_queues()
+    self._render_frame()
 
   def append_output(self, line: str) -> None:
     """Push a line into the output area. Safe from any thread."""
