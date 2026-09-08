@@ -1,5 +1,7 @@
 """Map-speed policy and OSM lookup constants."""
 
+import math
+
 # NAPMapSpeedMode
 MODE_OFF = 0
 MODE_DISPLAY = 1
@@ -95,13 +97,14 @@ TURN_SPEED_DEFAULT_MPH = 15.0
 TURN_SPEED_FAST_MPH = 18.0
 TURN_DEST_SLOW_MPH = 25.0
 TURN_DEST_FAST_MPH = 40.0
-# Modest late-apex path bias. ONLY held stalk + OSM junction (never ALC).
-# Model path stays the base. y is left-positive: left turn outside = −y.
-# Slightly outside the stock line (not a wide swing; 0.30/0.90 was too far out).
-LATE_APEX_Y_M = 0.15
-LATE_APEX_CURV_SCALE = 0.95
-LATE_APEX_SHIFT_S = 2.0
-LATE_APEX_MAX_DKAPPA = 0.008
+# Held stalk + OSM junction: yaw the stock model plan into the side street.
+# Not a nav stack. Blinker is the cue; map supplies side + distance.
+# y is left-positive. 90° heading change over a comfort-radius arc.
+# Highway ALC (stalk, no junction) must not use this path.
+TURN_HEADING_RAD = math.pi / 2
+TURN_LAT_ACCEL_MS2 = 2.0
+TURN_RADIUS_MIN_M = 8.0
+TURN_RADIUS_MAX_M = 28.0
 
 # Default offline DB location on comma 3X / PC
 DB_FILENAME = "speed_limits.sqlite"

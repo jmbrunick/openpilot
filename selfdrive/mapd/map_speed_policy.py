@@ -13,9 +13,9 @@ from openpilot.selfdrive.mapd.constants import (
   ACCEL_DEFAULT, ACCEL_MAX, ACCEL_MIN, LOOKAHEAD_NORMAL, LOOKAHEAD_OFF,
   LOOKAHEAD_TUNING, MANUAL_SET_EPS_KPH, MIN_DECREASE_MS, MODE_CAP, MODE_DISPLAY,
   MODE_FOLLOW, MODE_OFF, POSTED_LIMIT_EPS_KPH, TRACK_DEADBAND_MS, TRACK_TAPER_MS,
-  TURN_DEST_FAST_MPH, TURN_DEST_SLOW_MPH, TURN_SPEED_DEFAULT_MPH, TURN_SPEED_FAST_MPH,
-  TURN_SPEED_SLOW_MPH, LATE_APEX_CURV_SCALE, LATE_APEX_MAX_DKAPPA, LATE_APEX_SHIFT_S,
-  LATE_APEX_Y_M, map_accel_a_ms2, map_brake_a_ms2,
+  TURN_DEST_FAST_MPH, TURN_DEST_SLOW_MPH, TURN_HEADING_RAD, TURN_LAT_ACCEL_MS2,
+  TURN_RADIUS_MAX_M, TURN_RADIUS_MIN_M, TURN_SPEED_DEFAULT_MPH, TURN_SPEED_FAST_MPH,
+  TURN_SPEED_SLOW_MPH, map_accel_a_ms2, map_brake_a_ms2,
 )
 
 # Keep in sync with openpilot.selfdrive.car.cruise (avoid importing cereal here).
@@ -453,36 +453,70 @@ def blinker_turn_holds_alc(stalk_state: int, has_left: bool, has_right: bool,
   return float(dist_m) >= 0.0
 
 
-def late_apex_y_offset_m(direction: int) -> float:
-  """Signed lateral offset (m, left-positive) toward the outside of the turn."""
-  if int(direction) == 1:
-    return -float(LATE_APEX_Y_M)
-  if int(direction) == 2:
-    return float(LATE_APEX_Y_M)
-  return 0.0
+# Matches selfdrive.modeld.constants.Plan slices (x, y, vx, vy, yaw, yaw_rate).
+_PLAN_X, _PLAN_Y = 0, 1
+_PLAN_VX, _PLAN_VY = 3, 4
+_PLAN_YAW = 11
+_PLAN_YAWRATE = 14
 
 
-def late_apex_ramp(t_s: float) -> float:
-  """0 at now, 1 by LATE_APEX_SHIFT_S — do not jerk t=0."""
-  if t_s <= 0.0:
-    return 0.0
-  return min(1.0, float(t_s) / LATE_APEX_SHIFT_S)
-
-
-def apply_late_apex_curvature(kappa: float, v_ego: float, direction: int) -> float:
-  """Widen the model curvature and walk ~LATE_APEX_Y_M outside. Identity if not a turn.
-
-  direction is blinker_turn_direction (0=none/ALC, 1=left, 2=right). Highway
-  ALC must pass direction=0 so this is a no-op.
-  """
-  if int(direction) == 0:
-    return float(kappa)
-  y_off = late_apex_y_offset_m(direction)
+def junction_turn_radius_m(v_ego: float) -> float:
+  """Comfort turn radius from v²/a. Clamped so the 10 s plan can show the bend."""
   v = max(float(v_ego), 3.0)
-  s = v * LATE_APEX_SHIFT_S
-  k_out = (2.0 * y_off) / (s * s) if s > 1e-6 else 0.0
-  k_out = max(-LATE_APEX_MAX_DKAPPA, min(LATE_APEX_MAX_DKAPPA, k_out))
-  return float(kappa) * LATE_APEX_CURV_SCALE + k_out
+  r = (v * v) / TURN_LAT_ACCEL_MS2 if TURN_LAT_ACCEL_MS2 > 1e-6 else TURN_RADIUS_MAX_M
+  return max(TURN_RADIUS_MIN_M, min(TURN_RADIUS_MAX_M, r))
+
+
+def junction_turn_pose(s_m: float, dist_m: float, radius_m: float,
+                       sign: float) -> tuple[float, float, float, float]:
+  """Vehicle-frame pose on a 90° turn onto the mapped side street.
+
+  s_m is along the current road. sign +1 = left (+y), -1 = right. Returns
+  (x, y, psi, dpsi/ds). t=0 / s=0 stays at the origin with heading 0.
+  """
+  R = max(float(radius_m), 1.0)
+  D = max(float(dist_m), 0.0)
+  s = max(float(s_m), 0.0)
+  s0 = max(0.0, D - R)
+  s1 = s0 + TURN_HEADING_RAD * R
+  if s <= s0:
+    return s, 0.0, 0.0, 0.0
+  if s >= s1:
+    rest = s - s1
+    return s0 + R, float(sign) * (R + rest), float(sign) * TURN_HEADING_RAD, 0.0
+  theta = (s - s0) / R
+  x = s0 + R * math.sin(theta)
+  y = float(sign) * R * (1.0 - math.cos(theta))
+  psi = float(sign) * theta
+  return x, y, psi, float(sign) / R
+
+
+def apply_junction_turn_plan(plan, t_idxs, direction: int, dist_m: float,
+                             v_ego: float) -> None:
+  """Yaw/curve the model plan into the junction heading. Identity if not a turn.
+
+  Overwrites x, y, vx, vy, yaw, yaw_rate so modelV2.position shows the side
+  street and desiredCurvature follows the arc. Highway ALC must pass
+  direction=0.
+  """
+  if int(direction) == 1:
+    sign = 1.0
+  elif int(direction) == 2:
+    sign = -1.0
+  else:
+    return
+  R = junction_turn_radius_m(v_ego)
+  v = max(float(v_ego), 3.0)
+  n = min(len(plan), len(t_idxs))
+  for i in range(n):
+    s = max(v * float(t_idxs[i]), max(0.0, float(plan[i][_PLAN_X])))
+    x, y, psi, dpsi_ds = junction_turn_pose(s, dist_m, R, sign)
+    plan[i][_PLAN_X] = x
+    plan[i][_PLAN_Y] = y
+    plan[i][_PLAN_VX] = v * math.cos(psi)
+    plan[i][_PLAN_VY] = v * math.sin(psi)
+    plan[i][_PLAN_YAW] = psi
+    plan[i][_PLAN_YAWRATE] = dpsi_ds * v
 
 
 def turn_speed_ms(dest_ms: float, posted_ms: float) -> float:
