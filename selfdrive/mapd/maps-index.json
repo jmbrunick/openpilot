@@ -1,0 +1,8 @@
+{
+  "revision": "1",
+  "asset_name": "speed_limits_us.sqlite.zst",
+  "asset_url": "https://github.com/jmbrunick/openpilot/releases/download/osm-us-speed-limits-v1/speed_limits_us.sqlite.zst",
+  "sha256": "d45eddf120f2aa733548b8317e6542ed22880025d33b5f606136567a0feaa26e",
+  "bytes": 203815064,
+  "notes": "US OSM maxspeed ways, osm-us-speed-limits-v1 (Geofabrik us-260906.osm.pbf, 3,235,583 highway+maxspeed ways)."
+}

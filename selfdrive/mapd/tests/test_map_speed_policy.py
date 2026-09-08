@@ -494,7 +494,13 @@ def test_map_speed_submenu_wires_params():
   assert "Radar Settings" in nap
   assert "map speed limit" in nap_mici
   assert "radar settings" in nap_mici
+  assert "Refresh maps" in tici
+  assert "Check for map updates" in tici
+  assert "refresh maps" in mici
+  assert "check for map updates" in mici
   assert "NAPMapSpeedAccel" in (root / "common/params_keys.h").read_text()
+  assert "NAPMapSpeedDbRevision" in (root / "common/params_keys.h").read_text()
+  assert "NAPMapSpeedDbSha256" in (root / "common/params_keys.h").read_text()
 
 
 def test_planner_and_mpc_keep_radar_after_map_cap():

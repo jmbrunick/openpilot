@@ -9,8 +9,9 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   MAP_SPEED_ACCEL, MAP_SPEED_ACCEL_DEFAULT, MAP_SPEED_ACCEL_LABELS,
   MAP_SPEED_LOOKAHEAD, MAP_SPEED_LOOKAHEAD_LABELS,
   MAP_SPEED_MODES, MAP_SPEED_MODE_LABELS, MAP_SPEED_OFFSETS_MPH,
+  REFRESH_MAPS_INSTRUCTIONS,
 )
-from openpilot.selfdrive.mapd.fetch_maps import installed_db_summary
+from openpilot.selfdrive.mapd.fetch_maps import installed_db_summary, installed_revision_summary
 from openpilot.selfdrive.ui.ui_state import ui_state
 
 
@@ -45,21 +46,35 @@ class MapSpeedLimitLayoutMici(NavScroller):
       labels=MAP_SPEED_ACCEL_LABELS,
       default_value=MAP_SPEED_ACCEL_DEFAULT,
     )
-    map_db_status = BigButton("osm map data", installed_db_summary())
+    self._map_db_status = BigButton("osm map data", installed_db_summary())
+    self._map_revision = BigButton("map revision", installed_revision_summary())
     download_maps_btn = BigButton("download us maps", "start")
     download_maps_btn.set_click_callback(
       lambda: launch_script("Download US Maps", DOWNLOAD_US_MAPS_INSTRUCTIONS,
                             "scripts.nap.fetch_osm_maps",
                             ))
     download_maps_btn.set_enabled(ui_state.is_offroad)
+    refresh_maps_btn = BigButton("check for map updates", "refresh maps")
+    refresh_maps_btn.set_click_callback(
+      lambda: launch_script("Refresh maps", REFRESH_MAPS_INSTRUCTIONS,
+                            "scripts.nap.refresh_osm_maps",
+                            ))
+    refresh_maps_btn.set_enabled(ui_state.is_offroad)
     self._scroller.add_widgets([
       map_mode,
       map_offset,
       map_lookahead,
       map_accel,
-      map_db_status,
+      self._map_db_status,
+      self._map_revision,
       download_maps_btn,
+      refresh_maps_btn,
     ])
+
+  def show_event(self):
+    super().show_event()
+    self._map_db_status.set_value(installed_db_summary())
+    self._map_revision.set_value(installed_revision_summary())
 
 
 def open_map_speed_limit_menu(page: MapSpeedLimitLayoutMici | None = None) -> MapSpeedLimitLayoutMici:
