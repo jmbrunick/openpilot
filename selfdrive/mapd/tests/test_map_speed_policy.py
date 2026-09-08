@@ -1,7 +1,7 @@
 from openpilot.common.constants import CV
 from openpilot.selfdrive.mapd.constants import (
   ACCEL_DEFAULT, DECREASE_START_MARGIN_M, LOOKAHEAD_EARLY, LOOKAHEAD_NORMAL, LOOKAHEAD_OFF,
-  LOOKAHEAD_TUNING, MODE_CAP, MODE_DISPLAY, MODE_FOLLOW, MODE_OFF,
+  LOOKAHEAD_TUNING, MODE_CAP, MODE_DISPLAY, MODE_FOLLOW, MODE_OFF, OSM_SIGN_LEAD_S,
   TRACK_DEADBAND_MS, TRACK_TAPER_MS,
   accel_scale_factor, map_accel_a_ms2, map_brake_a_ms2, map_comfort_a_ms2,
 )
@@ -193,6 +193,8 @@ def test_fifty_to_thirty_starts_one_hundred_ten_m_before_kinematic():
   a = map_brake_a_ms2(LOOKAHEAD_NORMAL)
   assert abs(a - 0.80) < 1e-9
   assert abs(DECREASE_START_MARGIN_M - 110.0) < 1e-9
+  assert abs(OSM_SIGN_LEAD_S - 1.5) < 1e-9
+  # Sign lead is time*speed, not an extra meter constant on decreases.
   assert a < 1.5  # Tesla pre-AP clip
   for la, tun in LOOKAHEAD_TUNING.items():
     if tun[0] <= 0:
@@ -837,3 +839,13 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   planner_src = planner
   assert "output_a_target = a_up" in planner_src
   assert "min(float(output_a_target), a_up)" not in planner_src
+  mapd = (root / "selfdrive/mapd/mapd.py").read_text()
+  osm = (root / "selfdrive/mapd/osm_db.py").read_text()
+  constants = (root / "selfdrive/mapd/constants.py").read_text()
+  assert "v_ego_ms=v_ego_ms" in mapd
+  assert "osm_sign_lead_m(v_ego_ms)" in osm
+  assert "OSM_SIGN_LEAD_S = 1.5" in constants
+  assert "OSM_SIGN_LEAD_M" not in constants
+  assert "DECREASE_START_MARGIN_M = 110.0" in constants
+  # Sticky / stalk path unchanged.
+  assert "should_write_preap_pedal(dec.seed_kph, preap_v_cruise_kph, self._last_pedal_kph)" in card
