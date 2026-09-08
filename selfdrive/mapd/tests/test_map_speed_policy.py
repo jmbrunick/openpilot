@@ -893,6 +893,7 @@ def test_map_speed_submenu_wires_params():
   assert "map speed limit" in nap_mici
   assert "radar settings" in nap_mici
   assert "gradual ease-off farther back" in nap
+  assert "not a harder brake" in nap
   assert "follow distance" in nap_mici
   assert "Refresh maps" in tici
   assert '"Back To"' in tici

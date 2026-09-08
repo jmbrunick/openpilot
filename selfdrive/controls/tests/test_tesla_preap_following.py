@@ -11,7 +11,7 @@ from opendbc.car.tesla.pedal.controller import PEDAL_RAMP_RATE_DOWN, PEDAL_RAMP_
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl
 from openpilot.selfdrive.controls.lib import longitudinal_planner
-from openpilot.selfdrive.controls.lib.lead_approach import LEAD_APPROACH_A_MS2
+from openpilot.selfdrive.controls.lib.lead_approach import LEAD_APPROACH_A_MS2, lead_approach_need_m
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   LongitudinalPlanSource,
   T_IDXS,
@@ -576,7 +576,7 @@ def test_planner_eases_for_slower_lead_before_mpc_and_lead_can_brake_harder():
   v_lead = 22.4
   t_follow = get_T_FOLLOW(nap_follow_dist=4)
   d_follow = t_follow * v_lead + STOP_DISTANCE_M
-  need = (v_ego * v_ego - v_lead * v_lead) / (2.0 * LEAD_APPROACH_A_MS2)
+  need = lead_approach_need_m(v_ego, v_lead)
   d_rel = d_follow + 0.5 * need
 
   params = _MutablePlannerParams(nap_follow_dist=4)
