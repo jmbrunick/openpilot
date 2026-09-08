@@ -6,12 +6,14 @@ card.py already publishes as CS.vCruise / vCruiseCluster (HUD "MAX").
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 from openpilot.common.constants import CV
 from openpilot.selfdrive.mapd.constants import (
-  ACCEL_DEFAULT, ACCEL_MAX, ACCEL_MIN, LOOKAHEAD_NORMAL, LOOKAHEAD_OFF,
-  LOOKAHEAD_TUNING, MIN_DECREASE_MS, MODE_CAP, MODE_DISPLAY, MODE_FOLLOW, MODE_OFF,
-  TRACK_DEADBAND_MS, TRACK_TAPER_MS, map_accel_a_ms2, map_brake_a_ms2,
+  ACCEL_DEFAULT, ACCEL_MAX, ACCEL_MIN, DRIVER_OVERRIDE_S, LOOKAHEAD_NORMAL, LOOKAHEAD_OFF,
+  LOOKAHEAD_TUNING, MANUAL_SET_EPS_KPH, MIN_DECREASE_MS, MODE_CAP, MODE_DISPLAY,
+  MODE_FOLLOW, MODE_OFF, POSTED_LIMIT_EPS_KPH, TRACK_DEADBAND_MS, TRACK_TAPER_MS,
+  map_accel_a_ms2, map_brake_a_ms2,
 )
 
 # Keep in sync with openpilot.selfdrive.car.cruise (avoid importing cereal here).
@@ -152,6 +154,113 @@ def map_track_accel_ms2(v_ego_ms: float, v_cruise_ms: float, a_comfort: float) -
   span = max(1e-6, TRACK_TAPER_MS - TRACK_DEADBAND_MS)
   scale = min(1.0, (dv - TRACK_DEADBAND_MS) / span)
   return float(a_comfort) * scale
+
+
+def posted_limits_same(a_kph: float | None, b_kph: float | None) -> bool:
+  if a_kph is None or b_kph is None:
+    return False
+  return abs(float(a_kph) - float(b_kph)) < POSTED_LIMIT_EPS_KPH
+
+
+def is_manual_set_change(prev_kph: float, cur_kph: float) -> bool:
+  """True when stalk +/- changed set speed (not engage 0↔set)."""
+  if prev_kph in (0, V_CRUISE_UNSET) or cur_kph <= 0 or cur_kph >= V_CRUISE_UNSET:
+    return False
+  return abs(float(cur_kph) - float(prev_kph)) > MANUAL_SET_EPS_KPH
+
+
+@dataclass
+class MapCruiseHold:
+  """Engage-seed + sticky manual set while the posted OSM limit is unchanged."""
+  last_posted_kph: float | None = None
+  last_raw_kph: float = V_CRUISE_UNSET
+  policy_kph: float | None = None
+  sticky_set_kph: float | None = None
+  follow_override_until: float = 0.0
+
+  def reset(self) -> None:
+    self.last_posted_kph = None
+    self.last_raw_kph = V_CRUISE_UNSET
+    self.policy_kph = None
+    self.sticky_set_kph = None
+    self.follow_override_until = 0.0
+
+  def clear_sticky(self) -> None:
+    self.sticky_set_kph = None
+
+
+@dataclass
+class MapCruiseDecision:
+  driver_kph: float
+  follow_override: bool
+  seed_kph: float | None
+  sticky: bool
+
+
+def decide_map_cruise(
+  hold: MapCruiseHold,
+  *,
+  engaged: bool,
+  mode: int,
+  raw_kph: float,
+  posted_kph: float | None,
+  engage_rising: bool,
+  now: float,
+) -> MapCruiseDecision:
+  """Engage seed + sticky hold. posted_kph is OSM current maxspeed + offset.
+
+  Returns the driver-set to overlay, whether Follow should hold that set,
+  and an optional pedal_speed seed (write-back so stalk +/- starts from MAX).
+  """
+  if (not engaged) or mode not in (MODE_CAP, MODE_FOLLOW):
+    hold.reset()
+    return MapCruiseDecision(raw_kph, False, None, False)
+
+  posted_ok = posted_kph is not None and posted_kph > 0
+  manual = is_manual_set_change(hold.last_raw_kph, raw_kph)
+  hold.last_raw_kph = raw_kph
+
+  if engage_rising and posted_ok:
+    hold.sticky_set_kph = None
+    hold.follow_override_until = 0.0
+    hold.last_posted_kph = posted_kph
+    hold.last_raw_kph = float(posted_kph)
+    hold.policy_kph = float(posted_kph)
+    return MapCruiseDecision(float(posted_kph), False, float(posted_kph), False)
+
+  if posted_ok and hold.last_posted_kph is not None and not posted_limits_same(hold.last_posted_kph, posted_kph):
+    # New posted limit b: drop a-5 hold and resume Cap/Follow at b.
+    hold.sticky_set_kph = None
+    hold.follow_override_until = 0.0
+    hold.last_posted_kph = posted_kph
+    hold.last_raw_kph = float(posted_kph)
+    hold.policy_kph = float(posted_kph)
+    return MapCruiseDecision(float(posted_kph), False, float(posted_kph), False)
+
+  if posted_ok:
+    hold.last_posted_kph = posted_kph
+
+  if manual:
+    hold.policy_kph = float(raw_kph)
+    if posted_ok and raw_kph < float(posted_kph) - MANUAL_SET_EPS_KPH:
+      hold.sticky_set_kph = float(raw_kph)
+      hold.follow_override_until = 0.0
+    else:
+      hold.sticky_set_kph = None
+      if mode == MODE_FOLLOW:
+        hold.follow_override_until = now + DRIVER_OVERRIDE_S
+
+  if hold.policy_kph is None:
+    hold.policy_kph = float(raw_kph)
+
+  if hold.sticky_set_kph is not None and posted_ok:
+    held = float(hold.sticky_set_kph)
+    if mode == MODE_CAP:
+      held = min(held, float(posted_kph))
+    return MapCruiseDecision(held, True, None, True)
+
+  override = mode == MODE_FOLLOW and now < hold.follow_override_until
+  return MapCruiseDecision(float(hold.policy_kph), override, None, False)
 
 
 def apply_map_speed_kph(

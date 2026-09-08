@@ -28,8 +28,9 @@ Map data is © OpenStreetMap contributors ([ODbL](https://www.openstreetmap.org/
 
 - **Pedal mode** (`openpilotLongitudinalControl`, not `pcmCruise`): Cap/Follow may change `vCruise`. Same field card.py already copies from `pedal_speed_kph`.
 - **No-pedal / stock CC**: display only. We do not spoof stalk +/- to chase map limits.
-- **Cap** (recommended): `MAX = min(driver set, OSM limit + offset)`. Never raises.
-- **Follow**: MAX tracks the OSM limit; stalk +/- pauses follow for 10s then resumes.
+- **Cap** (recommended): `MAX = min(driver set, OSM limit + offset)`. Never raises. Manually raising above the limit is still capped.
+- **Follow**: MAX tracks the OSM limit. A manual set **below** the current posted limit is **sticky** (held absolute) until the driver stalks again or the posted limit changes. Raising above the limit still uses the 10s override, then Follow resumes.
+- **Engage seed:** double-pull pedal cruise with Cap/Follow and a valid current OSM limit initializes MAX / `pedal_speed` to that limit (+ offset), not ego speed. No valid limit → existing ego capture.
 - **Display / Off**: no control change.
 - **Lookahead (Cap/Follow):** if a **lower** OSM maxspeed is ahead on heading, MAX / `vCruise` eases down so you reach about the new limit as you enter that way. A **higher** limit ahead does **not** raise MAX early — Follow still raises only once GPS is on the faster segment.
 - **A falling MAX must decelerate the car** (Cap/Follow, pedal mode, no overriding lead). HUD `vCruise` is a set *speed*. The stock MPC cruise column is a virtual lead ~`get_safe_obstacle_distance(v_ego)` ahead with `V_EGO_COST=0`; a 70→45 mph drop does not bind that obstacle inside the 10 s horizon, so `aTarget` would stay ~0 (MAX ticks down, car holds gas / coasts). Planner therefore `min()`s MPC with `map_track_decel` at the **Accel 5** comfort `a` (0.80 m/s² at Normal; tapered in the last ~4.5 mph). Accel 1–10 does not change this brake. Tesla `get_preap_accel_limits` still clips to −1.5 m/s².
@@ -157,7 +158,7 @@ for _ in range(6):
 2. Cap/Follow, **slower lead**: MAX / map ceiling may be 65 while the car still slows to follow radar `leadOne`. Map must not prevent that slowing.
 3. **Retest (Justin):** Follow, Lookahead Normal, **no lead**. On a known **drop** (45→35), Accel **1 and 10 must feel the same brake** (~0.80 m/s²). On a known **rise** (35→45, after GPS is on the faster way), Accel 1 should climb lazily and Accel 10 quicker. Lookahead = Off: MAX and decel start only after GPS matches the slower way.
 4. Drive toward a **higher** limit (35 → 45): MAX must **not** rise until you are on the faster segment (Follow then tracks it). Accel 1–10 then changes only the climb.
-5. Follow: MAX should rise and fall with OSM; one stalk tap holds your speed for ~10s.
+5. Follow: MAX should rise and fall with OSM. Stalk **down** below the posted limit: MAX stays at that set until you stalk again or the posted limit changes (then resume at the new limit — do not keep the old a−5). Stalk **up** above the limit: 10s hold, then Follow. Double-pull engage with a valid limit: MAX starts at the posted limit, not ego.
 6. Cancel / brake still uses the existing engagement FSM. Hands-on / panda limits unchanged.
 
 **No-pedal:** LIMIT sign only; stock CC set speed is unchanged.

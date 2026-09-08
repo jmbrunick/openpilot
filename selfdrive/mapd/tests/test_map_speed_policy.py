@@ -7,9 +7,9 @@ from openpilot.selfdrive.mapd.constants import (
 )
 from openpilot.selfdrive.mapd.map_speed_policy import (
   SOURCE_CRUISE, SOURCE_LEAD0, V_CRUISE_UNSET,
-  anticipatory_limit_ms, apply_map_speed_kph, cap_planner_v_cruise_ms,
-  effective_map_limit_ms, longitudinal_obstacle_source, map_slew_a_ms2,
-  map_track_accel_ms2, map_track_decel_ms2, slew_map_speed_ms,
+  MapCruiseHold, anticipatory_limit_ms, apply_map_speed_kph, cap_planner_v_cruise_ms,
+  decide_map_cruise, effective_map_limit_ms, longitudinal_obstacle_source,
+  map_slew_a_ms2, map_track_accel_ms2, map_track_decel_ms2, slew_map_speed_ms,
 )
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   MAP_SPEED_ACCEL, MAP_SPEED_ACCEL_DEFAULT, MAP_SPEED_LOOKAHEAD,
@@ -219,6 +219,80 @@ def test_map_track_decel_loses_to_stronger_lead_brake():
   assert min(a_lead, a_map) == a_lead
   # MPC holding ~0 (no-lead cruise obstacle not binding) → map decel wins.
   assert min(0.0, a_map) == a_map
+
+
+def test_engage_seeds_max_to_posted_limit():
+  hold = MapCruiseHold()
+  posted = 45 * CV.MPH_TO_KPH
+  ego = 70 * CV.MPH_TO_KPH
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=ego, posted_kph=posted,
+    engage_rising=True, now=0.0,
+  )
+  assert dec.seed_kph is not None
+  assert abs(dec.seed_kph - posted) < 1e-6
+  assert abs(dec.driver_kph - posted) < 1e-6
+  assert not dec.sticky
+  # No map: keep ego capture.
+  hold2 = MapCruiseHold()
+  dec2 = decide_map_cruise(
+    hold2, engaged=True, mode=MODE_CAP, raw_kph=ego, posted_kph=None,
+    engage_rising=True, now=0.0,
+  )
+  assert dec2.seed_kph is None
+  assert abs(dec2.driver_kph - ego) < 1e-6
+
+
+def test_sticky_manual_below_limit_until_posted_changes():
+  hold = MapCruiseHold()
+  a = 45 * CV.MPH_TO_KPH
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=a, posted_kph=a,
+    engage_rising=True, now=0.0,
+  )
+  below = a - 5 * CV.MPH_TO_KPH
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=below, posted_kph=a,
+    engage_rising=False, now=1.0,
+  )
+  assert dec.sticky
+  assert abs(dec.driver_kph - below) < 1e-6
+  # Still a: hold, do not Follow back to a.
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=below, posted_kph=a,
+    engage_rising=False, now=20.0,
+  )
+  assert dec.sticky
+  assert abs(dec.driver_kph - below) < 1e-6
+  # Limit changes to b: resume at b, drop a-5.
+  b = 35 * CV.MPH_TO_KPH
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=below, posted_kph=b,
+    engage_rising=False, now=21.0,
+  )
+  assert not dec.sticky
+  assert dec.seed_kph is not None
+  assert abs(dec.seed_kph - b) < 1e-6
+
+
+def test_cap_does_not_exceed_limit_when_raising():
+  hold = MapCruiseHold()
+  a = 45 * CV.MPH_TO_KPH
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_CAP, raw_kph=a, posted_kph=a,
+    engage_rising=True, now=0.0,
+  )
+  above = a + 5 * CV.MPH_TO_KPH
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_CAP, raw_kph=above, posted_kph=a,
+    engage_rising=False, now=1.0,
+  )
+  assert not dec.sticky
+  out = apply_map_speed_kph(
+    dec.driver_kph, a, mode=MODE_CAP, engaged=True, op_long_software_cruise=True,
+    driver_override=dec.follow_override,
+  )
+  assert abs(out - a) < 1e-6
 
 
 def test_slew_rate_limits_map_max_steps():

@@ -16,6 +16,10 @@ MODE_NAMES = {
 # Pedal-mode software cruise is the only path that may change vCruise from maps.
 # No-pedal / pcmCruise stock CC is display-only (do not spoof stalk to chase limits).
 DRIVER_OVERRIDE_S = 10.0
+# Stalk +/- while engaged. 0.4 kph ≈ 0.25 mph; ignore noise / engage 0↔set.
+MANUAL_SET_EPS_KPH = 0.4
+# Posted OSM maxspeed treated as the same sign (limits are 5 mph / 10 kph steps).
+POSTED_LIMIT_EPS_KPH = 1.0
 
 # Spatial match
 MAX_MATCH_DISTANCE_M = 35.0

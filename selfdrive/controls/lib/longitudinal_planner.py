@@ -15,8 +15,7 @@ from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.selfdrive.mapd.constants import MODE_CAP, MODE_FOLLOW, map_accel_a_ms2, map_brake_a_ms2
 from openpilot.selfdrive.mapd.map_speed_policy import (
-  cap_planner_v_cruise_ms, effective_map_limit_ms, map_slew_a_ms2,
-  map_track_accel_ms2, map_track_decel_ms2, read_map_speed_params, slew_map_speed_ms,
+  cap_planner_v_cruise_ms, map_track_accel_ms2, map_track_decel_ms2, read_map_speed_params,
 )
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
@@ -79,7 +78,6 @@ class LongitudinalPlanner:
     self._params = Params()
     self.nap_follow_dist = self._params.get("NAPFollowDistance", return_default=True) if self._is_preap else None
     self.nap_adaptive_accel = self._params.get_bool("NAPAdaptiveAccel") if self._is_preap else False
-    self._map_slew_ms: float | None = None
     self._map_speed_mode, self._map_speed_offset_kph, self._map_speed_lookahead, self._map_speed_accel = (
       read_map_speed_params(self._params) if self._is_preap else (0, 0.0, 0, 5)
     )
@@ -170,41 +168,23 @@ class LongitudinalPlanner:
     if force_slow_decel:
       v_cruise = 0.0
 
-    # OSM map speed: ceiling on v_cruise only (HUD MAX / cruise target).
-    # Display/off do not affect the planner. Never raises v_cruise.
-    # Lead slowing is unchanged: mpc.update still receives radarState and
-    # constrains to min(lead0, lead1, cruise_obstacle(v_cruise)).
-    if self._is_preap and 'liveMapDataNAP' in sm.valid:
-      md = sm['liveMapDataNAP']
-      map_ms = None
-      if sm.valid['liveMapDataNAP'] and md.speedLimitValid and md.speedLimit > 0:
-        map_ms = effective_map_limit_ms(
-          float(md.speedLimit),
-          float(md.nextSpeedLimit),
-          float(md.nextSpeedLimitDistance),
-          float(v_ego),
-          self._map_speed_lookahead,
-          self._map_speed_accel,
-        )
-        if map_ms is not None:
-          if self._map_slew_ms is None:
-            self._map_slew_ms = map_ms
-          else:
-            a = map_slew_a_ms2(
-              self._map_slew_ms, map_ms, self._map_speed_lookahead, self._map_speed_accel,
-            )
-            self._map_slew_ms = slew_map_speed_ms(self._map_slew_ms, map_ms, self.dt, a)
-          map_ms = self._map_slew_ms
+    # OSM map speed: trust card HUD MAX (seed / sticky / lookahead). Safety-cap
+    # at the posted sign so planner never commands above the limit. Lead still
+    # wins via mpc.update(radarState, v_cruise).
+    if (not force_slow_decel) and self._is_preap and self._map_speed_mode in (MODE_CAP, MODE_FOLLOW):
+      if 'liveMapDataNAP' in sm.valid and sm.valid.get('liveMapDataNAP', False):
+        md = sm['liveMapDataNAP']
+        if md.speedLimitValid and md.speedLimit > 0:
+          v_cruise = cap_planner_v_cruise_ms(
+            v_hud_ms,
+            float(md.speedLimit),
+            mode=self._map_speed_mode,
+            offset_ms=self._map_speed_offset_kph * CV.KPH_TO_MS,
+          )
         else:
-          self._map_slew_ms = None
+          v_cruise = v_hud_ms
       else:
-        self._map_slew_ms = None
-      v_cruise = cap_planner_v_cruise_ms(
-        v_cruise,
-        map_ms,
-        mode=self._map_speed_mode,
-        offset_ms=self._map_speed_offset_kph * CV.KPH_TO_MS,
-      )
+        v_cruise = v_hud_ms
 
     # Pre-AP adaptive accel: only limit accel when close to a lead.
     # When the lead is far (>1.5x safe distance), full profile for gap closing.
