@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from openpilot.selfdrive.mapd.constants import (
   HEADING_ALIGN_DEG,
   LOOKAHEAD_M,
+  LOOKAHEAD_MAX_M,
   MAX_MATCH_DISTANCE_M,
   SEARCH_PAD_DEG,
 )
@@ -35,6 +36,7 @@ class SpeedLimitMatch:
   distance_m: float
   next_speed_limit_ms: float = 0.0
   next_distance_m: float = 0.0
+  coords: tuple[tuple[float, float], ...] = ()
 
 
 def _pack_coords(coords: list[tuple[float, float]]) -> bytes:
@@ -155,6 +157,57 @@ def _point_to_polyline_m(lat: float, lon: float, coords: list[tuple[float, float
       best = dist
       best_heading = _bearing_deg(coords[i][0], coords[i][1], coords[i + 1][0], coords[i + 1][1])
   return best, best_heading
+
+
+def _seg_len_m(a: tuple[float, float], b: tuple[float, float]) -> float:
+  x, y = _local_xy(b[0], b[1], a[0], a[1])
+  return math.hypot(x, y)
+
+
+def _remaining_ahead(
+  lat: float, lon: float, bearing_deg: float, coords: list[tuple[float, float]] | tuple[tuple[float, float], ...],
+) -> tuple[float, tuple[float, float], float] | None:
+  """Meters along the way from the closest point to the ahead endpoint.
+
+  Ahead is the digitization direction if GPS heading agrees (<90°), else reverse.
+  Returns (remaining_m, end_latlon, end_heading_deg) or None.
+  """
+  if len(coords) < 2:
+    return None
+  best = 1e12
+  best_i = 0
+  best_t = 0.0
+  best_hdg = 0.0
+  px, py = 0.0, 0.0
+  for i in range(len(coords) - 1):
+    ax, ay = _local_xy(coords[i][0], coords[i][1], lat, lon)
+    bx, by = _local_xy(coords[i + 1][0], coords[i + 1][1], lat, lon)
+    abx, aby = bx - ax, by - ay
+    ab2 = abx * abx + aby * aby
+    t = 0.0 if ab2 < 1e-6 else max(0.0, min(1.0, ((px - ax) * abx + (py - ay) * aby) / ab2))
+    dist = math.hypot(ax + t * abx - px, ay + t * aby - py)
+    if dist < best:
+      best = dist
+      best_i = i
+      best_t = t
+      best_hdg = _bearing_deg(coords[i][0], coords[i][1], coords[i + 1][0], coords[i + 1][1])
+  s = 0.0
+  for i in range(best_i):
+    s += _seg_len_m(coords[i], coords[i + 1])
+  s += best_t * _seg_len_m(coords[best_i], coords[best_i + 1])
+  total = 0.0
+  for i in range(len(coords) - 1):
+    total += _seg_len_m(coords[i], coords[i + 1])
+  with_digitization = _wrap_heading_delta(bearing_deg, best_hdg) <= 90.0
+  if with_digitization:
+    remaining = max(0.0, total - s)
+    end = coords[-1]
+    end_hdg = _bearing_deg(coords[-2][0], coords[-2][1], coords[-1][0], coords[-1][1])
+  else:
+    remaining = max(0.0, s)
+    end = coords[0]
+    end_hdg = (_bearing_deg(coords[0][0], coords[0][1], coords[1][0], coords[1][1]) + 180.0) % 360.0
+  return remaining, (float(end[0]), float(end[1])), float(end_hdg)
 
 
 class OsmSpeedLimitDB:
@@ -332,8 +385,69 @@ class OsmSpeedLimitDB:
           road_name=row["name"] or "",
           highway=row["highway"] or "",
           distance_m=float(dist),
+          coords=tuple((float(c[0]), float(c[1])) for c in coords),
         )
     return best
+
+  def _geodesic_next(self, lat: float, lon: float, bearing_deg: float,
+                     current_ms: float) -> tuple[float, float] | None:
+    """Heading-ray probes. Can skip a short way if GPS heading is off the road."""
+    prev_same_d = 0.0
+    for d in LOOKAHEAD_M:
+      alat, alon = _offset_point(lat, lon, bearing_deg, d)
+      ahead = self._best_match(alat, alon, bearing_deg)
+      if ahead is None:
+        continue
+      if abs(ahead.speed_limit_ms - current_ms) <= 0.3:
+        prev_same_d = d
+        continue
+      next_dist = 0.5 * (prev_same_d + d) if prev_same_d > 0 else d
+      return float(ahead.speed_limit_ms), float(next_dist)
+    return None
+
+  def _along_way_next(self, lat: float, lon: float, bearing_deg: float,
+                      match: SpeedLimitMatch) -> tuple[float, float] | None:
+    """Follow the matched way to its end, then the next way, within LOOKAHEAD_MAX_M.
+
+    Catches a short intermediate limit (US 12 60→50 before 30) that geodesic
+    40 m heading probes skip when the road curves or the 50 way is short.
+    """
+    if not match.coords:
+      return None
+    current_ms = float(match.speed_limit_ms)
+    traveled = 0.0
+    cur_lat, cur_lon = float(lat), float(lon)
+    cur_brg = float(bearing_deg)
+    cur_coords: list[tuple[float, float]] | tuple[tuple[float, float], ...] = match.coords
+    seen = {int(match.way_id)}
+    for _ in range(24):
+      ahead_info = _remaining_ahead(cur_lat, cur_lon, cur_brg, cur_coords)
+      if ahead_info is None:
+        return None
+      rem, end_ll, end_hdg = ahead_info
+      if traveled + rem > LOOKAHEAD_MAX_M + 1.0:
+        return None
+      traveled += rem
+      nxt = None
+      # Step past the end; 12 m can still match the way we just left
+      # (MAX_MATCH_DISTANCE_M=35).
+      for step_m in (12.0, 25.0, 40.0):
+        plat, plon = _offset_point(end_ll[0], end_ll[1], end_hdg, step_m)
+        cand = self._best_match(plat, plon, end_hdg)
+        if cand is not None and int(cand.way_id) not in seen:
+          nxt = cand
+          break
+      if nxt is None:
+        return None
+      seen.add(int(nxt.way_id))
+      if abs(nxt.speed_limit_ms - current_ms) > 0.3:
+        return float(nxt.speed_limit_ms), float(traveled)
+      if not nxt.coords:
+        return None
+      cur_coords = nxt.coords
+      cur_lat, cur_lon = plat, plon
+      cur_brg = end_hdg
+    return None
 
   def lookup(self, lat: float, lon: float, bearing_deg: float | None = None) -> SpeedLimitMatch | None:
     if self._con is None:
@@ -344,29 +458,22 @@ class OsmSpeedLimitDB:
     if bearing_deg is None:
       return match
 
-    next_limit = 0.0
-    next_dist = 0.0
-    prev_same_d = 0.0
-    for d in LOOKAHEAD_M:
-      alat, alon = _offset_point(lat, lon, bearing_deg, d)
-      ahead = self._best_match(alat, alon, bearing_deg)
-      if ahead is None:
-        continue
-      if abs(ahead.speed_limit_ms - match.speed_limit_ms) <= 0.3:
-        prev_same_d = d
-        continue
-      # Refine: first different probe, then midpoint toward last same-limit probe.
-      next_limit = ahead.speed_limit_ms
-      next_dist = 0.5 * (prev_same_d + d) if prev_same_d > 0 else d
-      break
-    if next_limit > 0:
-      return SpeedLimitMatch(
-        speed_limit_ms=match.speed_limit_ms,
-        way_id=match.way_id,
-        road_name=match.road_name,
-        highway=match.highway,
-        distance_m=match.distance_m,
-        next_speed_limit_ms=next_limit,
-        next_distance_m=next_dist,
-      )
-    return match
+    along = self._along_way_next(lat, lon, float(bearing_deg), match)
+    geo = self._geodesic_next(lat, lon, float(bearing_deg), match.speed_limit_ms)
+    # Prefer along-way (true road distance, does not skip short ways). If it
+    # finds nothing, geodesic may still see a nearby different-speed way.
+    picked = along if along is not None else geo
+    if picked is None:
+      return match
+    next_limit, next_dist = picked
+    if next_limit <= 0:
+      return match
+    return SpeedLimitMatch(
+      speed_limit_ms=match.speed_limit_ms,
+      way_id=match.way_id,
+      road_name=match.road_name,
+      highway=match.highway,
+      distance_m=match.distance_m,
+      next_speed_limit_ms=next_limit,
+      next_distance_m=next_dist,
+    )

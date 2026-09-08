@@ -113,7 +113,7 @@ All map-speed controls live in this submenu (main NAP stays uncluttered). TICI a
 
 ## Anticipatory decreases and Accel
 
-`mapd` probes 40–600 m along GPS heading and publishes `nextSpeedLimit` / `nextSpeedLimitDistance`. Policy uses **decreases only**.
+`mapd` probes 40–600 m along GPS heading **and** walks the matched OSM way to its end (then the next way) so a short intermediate maxspeed is published as `nextSpeedLimit`. Policy uses **decreases only**.
 
 | Lookahead | Comfort decel | Extra margin | Start no farther than |
 |---|---|---|---|
@@ -122,7 +122,7 @@ All map-speed controls live in this submenu (main NAP stays uncluttered). TICI a
 | Normal (default) | 0.80 m/s² | 110 m | 600 m |
 | Early | 0.55 m/s² | 230 m | 600 m |
 
-When the upcoming drop is inside that window, MAX interpolates from the current limit at `d = kinematic + margin` to the new limit at the sign. Brake stays Accel-5 **0.80 m/s²** at Normal (not raised). The +110 m is the measured 50→30 shortfall (42 mph at the sign vs 30); every decrease starts at `kin + 110 m`, not a 50→30-only window.
+When the upcoming drop is inside that window, MAX interpolates from the current limit at `d = kinematic + margin` to the new limit at the sign. Brake stays Accel-5 **0.80 m/s²** at Normal (not raised). The +110 m is the measured 50→30 shortfall (42 mph at the sign vs 30); every decrease starts at `kin + 110 m`, not a 50→30-only window. A 10 mph drop (60→50) is not filtered. `mapd` walks the matched OSM way to its end (then the next way) so a short intermediate limit is not skipped by 40 m heading probes.
 
 **HUD current speed** (top-middle on the 3X) is wheel/ESP `vEgo` only. `vEgoCluster` is Tesla `DI_digitalSpeed`, which pre-AP also uses as `cruiseState.speed`. Map-speed writes MAX into `vCruise` / `pedal_speed` / `cruiseState.speed` (90 kph = **56 mph**). LIMIT/MAX may show the map limit; the live number must not.
 

@@ -94,6 +94,77 @@ def test_lookahead_reports_upcoming_higher_but_does_not_hide_current(tmp_path):
   db.close()
 
 
+def test_lookahead_does_not_skip_short_intermediate_limit(tmp_path):
+  """Geodesic 40 m probes skip a ~15 m 50 between 60 and 30; along-way must not.
+
+  US 12 near Benson: 60→50 (short)→30. Justin saw no 60→50 anticipatory; 50→30 worked.
+  """
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  # ~178 m of 60, ~15 m of 50, then 30. Probes at 160 m (60) and 200 m (30).
+  OsmSpeedLimitDB.insert_way(
+    con, 1, "US 12", "trunk", 60 * CV.MPH_TO_MS,
+    [(37.0, -122.004), (37.0, -122.000)],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 2, "US 12", "trunk", 50 * CV.MPH_TO_MS,
+    [(37.0, -122.000), (37.0, -121.99983)],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 3, "US 12", "trunk", 30 * CV.MPH_TO_MS,
+    [(37.0, -121.99983), (37.0, -121.996)],
+  )
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  m = db.lookup(37.0, -122.002, bearing_deg=90.0)
+  assert m is not None
+  assert abs(m.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3
+  assert abs(m.next_speed_limit_ms - 50 * CV.MPH_TO_MS) < 0.3, m.next_speed_limit_ms * CV.MS_TO_MPH
+  assert m.next_distance_m < 250.0
+  db.close()
+
+
+def test_benson_us12_60_to_50_is_next_not_30(tmp_path):
+  """Way 1557241351 (60) then 1227205099 (50, ~760 m) westbound toward Benson MN."""
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  OsmSpeedLimitDB.insert_way(
+    con, 1557241351, "US 12", "trunk", 60 * CV.MPH_TO_MS,
+    [
+      (45.3079280, -95.5767060),
+      (45.3084190, -95.5784110),
+      (45.3087680, -95.5796230),
+      (45.3088579, -95.5799336),
+    ],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 1227205099, "US 12", "trunk", 50 * CV.MPH_TO_MS,
+    [
+      (45.3088579, -95.5799336),
+      (45.3093400, -95.5816000),
+      (45.3103910, -95.5852260),
+      (45.3114806, -95.5888992),
+    ],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 99, "US 12", "trunk", 30 * CV.MPH_TO_MS,
+    [(45.3114806, -95.5888992), (45.3122, -95.5930)],
+  )
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  m = db.lookup(45.3079280, -95.5767060, bearing_deg=290.0)
+  assert m is not None
+  assert m.way_id == 1557241351
+  assert abs(m.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3
+  assert abs(m.next_speed_limit_ms - 50 * CV.MPH_TO_MS) < 0.3, m.next_speed_limit_ms * CV.MS_TO_MPH
+  assert 180.0 <= m.next_distance_m <= 320.0
+  db.close()
+
+
 def test_overpass_json_import(tmp_path):
   payload = {
     "elements": [
