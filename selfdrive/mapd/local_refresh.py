@@ -1,8 +1,9 @@
 """Refresh installed OSM speed limits from live Overpass around the vehicle.
 
 Settings → NAP → Map Speed Limit → Refresh maps (offroad, Wi-Fi) overlays
-OpenStreetMap maxspeed ways within 100 miles (~160.9 km) of a GNSS / last-GPS
-fix onto the already-installed US sqlite. It does not download a published
+OpenStreetMap highway ways within 100 miles (~160.9 km) of a GNSS / last-GPS
+fix onto the already-installed US sqlite. Maxspeed ways update LIMIT; streets
+without maxspeed are junction geometry only. It does not download a published
 pack and never replaces the US file with only the local extract.
 
 OpenStreetMap data is ODbL: © OpenStreetMap contributors.
@@ -301,10 +302,10 @@ def refresh_local_maps(
       query_timeout=OVERPASS_QUERY_TIMEOUT_S,
     )
   ways = ways_from_overpass(payload)
-  _p(f"Received {len(ways)} maxspeed ways from OSM.")
+  _p(f"Received {len(ways)} OSM ways from Overpass (maxspeed + junction geometry).")
   if not ways:
     raise RefreshMapsError(
-      "No maxspeed ways found in OSM for this 100-mile area. Previous maps were left unchanged."
+      "No OSM highway ways found in this 100-mile area. Previous maps were left unchanged."
     )
 
   extra_meta = {

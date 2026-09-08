@@ -970,6 +970,10 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   assert "lookup_intersection" in mapd
   assert "lookup_intersection" in osm
   assert "TURN_SPEED_DEFAULT_MPH = 15.0" in constants
+  assert "JUNCTION_GEOMETRY_HIGHWAY" in constants
+  overpass = (root / "selfdrive/mapd/overpass.py").read_text()
+  assert '["!maxspeed"]' in overpass
+  assert "maxspeed_ms < 0" in osm
   dh = (root / "selfdrive/controls/lib/desire_helper.py").read_text()
   assert "hold_for_intersection" in dh
   modeld = (root / "selfdrive/modeld/modeld.py").read_text()

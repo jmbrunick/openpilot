@@ -36,7 +36,7 @@ Licenses: pfeiferj/mapd and sunnypilot SLA are MIT; we did **not** vendor the Go
 
 This is a **speed** overlay so the 3X model path can take a corner. It is not a nav route and does not invent a turn polyline. Tesla cluster nav is not on CAN.
 
-**Detect.** `mapd` walks the matched OSM way (same sqlite / GPS path as MAX, including the 1.5 s GNSS lead on distance). A junction is another `maxspeed` way within ~20 m whose heading is 35–145° off the current road (both directions of that way), or a sharp same-way bend. Parallel / dual-carriageway headings do not count. Side streets with no `maxspeed` are not in the pack, so they are invisible.
+**Detect.** `mapd` walks the matched OSM way (same sqlite / GPS path as MAX, including the 1.5 s GNSS lead on distance). A junction is another stored highway way within ~20 m whose heading is 35–145° off the current road (both directions of that way), or a sharp same-way bend. Parallel / dual-carriageway headings do not count. A cross street with no `maxspeed` still counts as a junction; it is never posted LIMIT (`speedLimitValid` stays false for that way; a real LIMIT on the road you are on is not cleared). The published US pack is maxspeed-only; **Refresh maps** overlays local junction geometry so a 3X does not need a full pack rebuild.
 
 **Trigger.** Held `STW_ACTN_RQ.TurnIndLvr_Stat` (`CS.turnSignalStalkState` 1=left, 2=right), **and** that side exists at the junction. Lamps (`BC_indicator*`) are ignored because openpilot can drive them during a lane change.
 
@@ -96,7 +96,7 @@ Put the **zst** SHA-256 in `selfdrive/mapd/maps_manifest.py` **and** bump `selfd
 On the 3X (offroad, Wi-Fi):
 
 1. **Location.** Wait up to **45s** for a GNSS fix (`gpsLocationExternal`, then `gpsLocation`). Refresh accepts the last received plausible lat/lon (not 0,0), including samples older than 2.5s and accuracy up to 200 m (yard/tree cover). mapd's onroad MAX match still uses 2.5s / 50 m. Otherwise last stored GPS (`LastGPSPosition` param or `/data/params/d/LastGPSPosition`). A successful fix is persisted so the next offroad tap works. If still nothing: start openpilot onroad until the GPS icon/fix is up for about a minute, then retry. Maps will **not** guess a city.
-2. **Query OSM.** Reuses Overpass / `scripts.nap.download_osm_speed_limits` / mapd builders for highway+maxspeed ways in that box. Does **not** download the full US Geofabrik PBF on the 3X.
+2. **Query OSM.** Reuses Overpass / `scripts.nap.download_osm_speed_limits` / mapd builders for highway+maxspeed ways **and** driveable streets with no maxspeed (junction geometry) in that box. Geometry-only ways are not LIMIT. Does **not** download the full US Geofabrik PBF on the 3X.
 3. **Merge.** Copy the installed `/data/media/0/osm/speed_limits.sqlite` onto `/data` (not `/tmp`), delete/replace `way_id`s whose bbox intersects the 100-mile box, insert the Overpass ways, keep the rest of the US pack. If no sqlite is installed yet, Download US Maps runs first, then the overlay — never a 100-mile-only dest file.
 4. **Atomic install.** `os.replace` onto dest. Overpass timeout / HTTP / merge failure prints a real error and leaves the previous good sqlite. Retry-safe. mapd reloads ~15s onroad — no reboot. Progress (querying OSM, merging, installing) shows on the existing script-runner UI.
 

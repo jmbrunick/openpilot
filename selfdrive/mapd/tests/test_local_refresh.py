@@ -356,7 +356,7 @@ def test_empty_overpass_does_not_wipe_radius(tmp_path):
   os.makedirs(os.path.dirname(dest), exist_ok=True)
   _tiny_us(dest)
   prev = Path(dest).read_bytes()
-  with pytest.raises(RefreshMapsError, match="No maxspeed ways"):
+  with pytest.raises(RefreshMapsError, match="No OSM highway ways"):
     refresh_local_maps(dest=dest, live_fix=SF, last_gps_raw=None, payload={"elements": []})
   assert Path(dest).read_bytes() == prev
 
@@ -489,3 +489,36 @@ def test_refresh_stages_merge_beside_dest_not_tmp(tmp_path):
   assert os.path.dirname(stage) == os.path.dirname(dest)
   assert os.path.basename(stage) == STAGING_DIRNAME
   assert not os.path.isfile(os.path.join(stage, "speed_limits.merge.sqlite"))
+
+
+def test_refresh_overlays_untagged_cross_street_without_clearing_limit(tmp_path):
+  """Refresh maps must pull no-maxspeed cross streets; they must not become LIMIT."""
+  dest = str(tmp_path / "osm" / "speed_limits.sqlite")
+  os.makedirs(os.path.dirname(dest), exist_ok=True)
+  _tiny_us(dest)
+  payload = {"elements": [
+    _overpass_way(1, SF[0], SF[1], 35, "Market"),
+    {
+      "type": "way",
+      "id": 80,
+      "tags": {"highway": "residential", "name": "Side"},
+      "geometry": [
+        {"lat": SF[0] - 0.002, "lon": SF[1]},
+        {"lat": SF[0] + 0.002, "lon": SF[1]},
+      ],
+    },
+  ]}
+  refresh_local_maps(dest=dest, live_fix=SF, last_gps_raw=None, payload=payload)
+  db = OsmSpeedLimitDB(dest)
+  assert db.open()
+  posted = db.lookup(SF[0], SF[1], bearing_deg=90.0)
+  assert posted is not None and posted.way_id == 1
+  assert abs(posted.speed_limit_ms - 35 * CV.MPH_TO_MS) < 0.2
+  ix = db.lookup_intersection(SF[0], SF[1] - 0.0005, bearing_deg=90.0)
+  assert ix is not None
+  assert ix.has_left and ix.has_right
+  # Geometry-only Side is not a posted LIMIT.
+  assert db.lookup(SF[0] + 0.0015, SF[1], bearing_deg=0.0) is None
+  nyc = db.lookup(NYC[0], NYC[1], bearing_deg=90.0)
+  assert nyc is not None and nyc.way_id == 2
+  db.close()

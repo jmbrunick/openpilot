@@ -1,4 +1,4 @@
-"""Overpass JSON → NAP OSM speed-limit ways.
+"""Overpass JSON → NAP OSM speed-limit and junction-geometry ways.
 
 OpenStreetMap data is ODbL: © OpenStreetMap contributors.
 https://www.openstreetmap.org/copyright
@@ -11,6 +11,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from openpilot.selfdrive.mapd.constants import JUNCTION_GEOMETRY_HIGHWAY, JUNCTION_GEOMETRY_OVERPASS
 from openpilot.selfdrive.mapd.maps_manifest import USER_AGENT
 from openpilot.selfdrive.mapd.speed_limit import parse_maxspeed
 
@@ -26,9 +27,14 @@ def bbox_from_center(lat: float, lon: float, radius_km: float) -> tuple[float, f
 
 
 def overpass_query(south: float, west: float, north: float, east: float, *, timeout_s: int = 180) -> str:
+  """Highway+maxspeed (LIMIT) plus driveable streets with no maxspeed (junctions)."""
+  bbox = f"({south},{west},{north},{east})"
   return f"""
 [out:json][timeout:{int(timeout_s)}];
-way["highway"]["maxspeed"]({south},{west},{north},{east});
+(
+  way["highway"]["maxspeed"]{bbox};
+  way["highway"~"^({JUNCTION_GEOMETRY_OVERPASS})$"]["!maxspeed"]{bbox};
+);
 out geom;
 """.strip()
 
@@ -40,7 +46,7 @@ def fetch_overpass(
   timeout_s: float = 240,
   query_timeout: int = 180,
 ) -> dict:
-  """POST a bbox maxspeed query. Raises RuntimeError with a retryable message on timeout/HTTP failure."""
+  """POST a bbox highway query. Raises RuntimeError with a retryable message on timeout/HTTP failure."""
   q = overpass_query(*bbox, timeout_s=query_timeout)
   data = urllib.parse.urlencode({"data": q}).encode()
   req = urllib.request.Request(url, data=data, headers={"User-Agent": USER_AGENT})
@@ -75,15 +81,19 @@ def ways_from_overpass(payload: dict) -> list[dict]:
     coords = [(float(p["lat"]), float(p["lon"])) for p in geom if "lat" in p and "lon" in p]
     if len(coords) < 2:
       continue
+    highway = tags.get("highway") or ""
     ms = parse_maxspeed(tags.get("maxspeed"))
     if ms is None:
       ms = parse_maxspeed(tags.get("maxspeed:forward"))
     if ms is None:
-      continue
+      # Geometry-only: junction detect, never posted LIMIT.
+      if highway not in JUNCTION_GEOMETRY_HIGHWAY:
+        continue
+      ms = 0.0
     out.append({
       "way_id": int(el["id"]),
       "name": tags.get("name") or tags.get("ref") or "",
-      "highway": tags.get("highway") or "",
+      "highway": highway,
       "maxspeed_ms": ms,
       "coords": coords,
     })

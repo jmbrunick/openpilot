@@ -64,10 +64,26 @@ A_CLAMP_MAX = 1.60  # m/s²; below MPC cruise min accel magnitude and COMFORT_BR
 TRACK_DEADBAND_MS = 0.40  # ~0.9 mph; ignore set-speed / GPS jitter
 TRACK_TAPER_MS = 2.00     # ~4.5 mph; full comfort a above this error
 
+# Driveable OSM highway types stored without maxspeed for junction geometry only.
+# Not posted LIMIT. Excludes service (driveways), footway, path, cycleway, ...
+JUNCTION_GEOMETRY_HIGHWAY = frozenset({
+  "motorway", "motorway_link",
+  "trunk", "trunk_link",
+  "primary", "primary_link",
+  "secondary", "secondary_link",
+  "tertiary", "tertiary_link",
+  "unclassified",
+  "residential",
+  "living_street",
+  "road",
+})
+JUNCTION_GEOMETRY_OVERPASS = "|".join(sorted(JUNCTION_GEOMETRY_HIGHWAY))
+
 # Blinker + OSM intersection turn slowdown (not a nav route).
-# Junctions are other speed_limits ways (or a sharp same-way bend) whose heading
+# Junctions are other stored highway ways (or a sharp same-way bend) whose heading
 # differs 35–145° from the matched road — a real turn, not a parallel or dual
-# carriageway. Distance uses the same v_ego * 1.5 s GNSS lead as nextSpeedLimit.
+# carriageway. A cross street with no maxspeed still counts; it is never LIMIT.
+# Distance uses the same v_ego * 1.5 s GNSS lead as nextSpeedLimit.
 INTERSECTION_LOOKAHEAD_M = LOOKAHEAD_MAX_M
 JUNCTION_RADIUS_M = 20.0
 JUNCTION_CLUSTER_M = 28.0

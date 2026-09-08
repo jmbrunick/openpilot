@@ -8,7 +8,8 @@ Run on the device (offroad, Wi-Fi):
 
   python -m scripts.nap.refresh_osm_maps
 
-Queries OSM maxspeed ways within 100 miles (~160.9 km) of a current GNSS fix
+Queries OSM highway ways (posted maxspeed plus untagged cross streets for
+junctions) within 100 miles (~160.9 km) of a current GNSS fix
 or last stored GPS, then merges those way_ids into the already-installed
 `/data/media/0/osm/speed_limits.sqlite`. The rest of the US pack is kept.
 
