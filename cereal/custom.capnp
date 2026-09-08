@@ -25,6 +25,11 @@ struct LiveMapDataNAP @0x81c2f05a394cf4af {
   source @10 :Text;                  # "osm"
   dbLoaded @11 :Bool;
   matchDistance @12 :Float32;        # m, distance to matched way
+  intersectionDistance @13 :Float32; # m along way to nearest turn junction; 0 if none
+  intersectionHasLeft @14 :Bool;
+  intersectionHasRight @15 :Bool;
+  intersectionLeftSpeed @16 :Float32;  # dest way m/s, 0 if none
+  intersectionRightSpeed @17 :Float32; # dest way m/s, 0 if none
 }
 
 struct CustomReserved1 @0xaedffd8f31e7b55d {

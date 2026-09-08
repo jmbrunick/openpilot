@@ -13,10 +13,15 @@ from dataclasses import dataclass
 
 from openpilot.selfdrive.mapd.constants import (
   HEADING_ALIGN_DEG,
+  INTERSECTION_LOOKAHEAD_M,
+  JUNCTION_CLUSTER_M,
+  JUNCTION_RADIUS_M,
   LOOKAHEAD_M,
   LOOKAHEAD_MAX_M,
   MAX_MATCH_DISTANCE_M,
   SEARCH_PAD_DEG,
+  TURN_MAX_DEG,
+  TURN_MIN_DEG,
   osm_sign_lead_m,
 )
 
@@ -38,6 +43,16 @@ class SpeedLimitMatch:
   next_speed_limit_ms: float = 0.0
   next_distance_m: float = 0.0
   coords: tuple[tuple[float, float], ...] = ()
+
+
+@dataclass(frozen=True)
+class IntersectionAhead:
+  """Nearest turn junction along the matched OSM way. Distances are meters."""
+  distance_m: float
+  has_left: bool
+  has_right: bool
+  left_speed_ms: float = 0.0
+  right_speed_ms: float = 0.0
 
 
 def _pack_coords(coords: list[tuple[float, float]]) -> bytes:
@@ -107,6 +122,109 @@ def simplify_coords(coords: list[tuple[float, float]], tol_m: float = SIMPLIFY_T
 def _wrap_heading_delta(a: float, b: float) -> float:
   d = abs(a - b) % 360.0
   return min(d, 360.0 - d)
+
+
+def _signed_heading_delta(from_deg: float, to_deg: float) -> float:
+  """[-180, 180]: positive is clockwise (right) from current heading."""
+  return ((float(to_deg) - float(from_deg) + 180.0) % 360.0) - 180.0
+
+
+def _turn_sides(current_hdg: float, way_hdg: float) -> tuple[bool, bool]:
+  """Left/right turn possible onto a bidirectional way from current_hdg."""
+  left = right = False
+  for h in (float(way_hdg), (float(way_hdg) + 180.0) % 360.0):
+    d = _signed_heading_delta(current_hdg, h)
+    ad = abs(d)
+    if TURN_MIN_DEG <= ad <= TURN_MAX_DEG:
+      if d < 0.0:
+        left = True
+      else:
+        right = True
+  return left, right
+
+
+def _interp_ll(a: tuple[float, float], b: tuple[float, float], t: float) -> tuple[float, float]:
+  return (float(a[0]) + t * (float(b[0]) - float(a[0])),
+          float(a[1]) + t * (float(b[1]) - float(a[1])))
+
+
+def _closest_on_way(
+  lat: float, lon: float, coords: list[tuple[float, float]] | tuple[tuple[float, float], ...],
+) -> tuple[int, float, float, float] | None:
+  """(seg_index, t in [0,1], dist_m, segment_heading_deg) or None."""
+  if len(coords) < 2:
+    return None
+  best = 1e12
+  best_i = 0
+  best_t = 0.0
+  best_hdg = 0.0
+  px, py = 0.0, 0.0
+  for i in range(len(coords) - 1):
+    ax, ay = _local_xy(coords[i][0], coords[i][1], lat, lon)
+    bx, by = _local_xy(coords[i + 1][0], coords[i + 1][1], lat, lon)
+    abx, aby = bx - ax, by - ay
+    ab2 = abx * abx + aby * aby
+    t = 0.0 if ab2 < 1e-6 else max(0.0, min(1.0, ((px - ax) * abx + (py - ay) * aby) / ab2))
+    dist = math.hypot(ax + t * abx - px, ay + t * aby - py)
+    if dist < best:
+      best = dist
+      best_i = i
+      best_t = t
+      best_hdg = _bearing_deg(coords[i][0], coords[i][1], coords[i + 1][0], coords[i + 1][1])
+  return best_i, best_t, float(best), float(best_hdg)
+
+
+def _ahead_segments(
+  lat: float, lon: float, bearing_deg: float,
+  coords: list[tuple[float, float]] | tuple[tuple[float, float], ...],
+) -> list[tuple[tuple[float, float], tuple[float, float]]] | None:
+  """Polyline segments from the closest point toward the heading-ahead end."""
+  hit = _closest_on_way(lat, lon, coords)
+  if hit is None:
+    return None
+  best_i, best_t, _, best_hdg = hit
+  start = _interp_ll(coords[best_i], coords[best_i + 1], best_t)
+  with_digitization = _wrap_heading_delta(bearing_deg, best_hdg) <= 90.0
+  segs: list[tuple[tuple[float, float], tuple[float, float]]] = []
+  if with_digitization:
+    segs.append((start, coords[best_i + 1]))
+    for k in range(best_i + 1, len(coords) - 1):
+      segs.append((coords[k], coords[k + 1]))
+  else:
+    segs.append((start, coords[best_i]))
+    for k in range(best_i - 1, -1, -1):
+      segs.append((coords[k + 1], coords[k]))
+  return [(a, b) for a, b in segs if _seg_len_m(a, b) > 0.3]
+
+
+def _sample_ahead(
+  lat: float, lon: float, bearing_deg: float,
+  coords: list[tuple[float, float]] | tuple[tuple[float, float], ...],
+  max_m: float, step_m: float = 12.0,
+) -> list[tuple[float, float, float, float]]:
+  """(along_m, lat, lon, heading_deg) from the closest point up to max_m."""
+  segs = _ahead_segments(lat, lon, bearing_deg, coords)
+  if not segs or max_m <= 0.0:
+    return []
+  out: list[tuple[float, float, float, float]] = []
+  h0 = _bearing_deg(segs[0][0][0], segs[0][0][1], segs[0][1][0], segs[0][1][1])
+  out.append((0.0, float(segs[0][0][0]), float(segs[0][0][1]), float(h0)))
+  dist = 0.0
+  next_d = step_m
+  for a, b in segs:
+    slen = _seg_len_m(a, b)
+    if slen < 1e-6:
+      continue
+    hdg = _bearing_deg(a[0], a[1], b[0], b[1])
+    while next_d <= dist + slen + 1e-6 and next_d <= max_m + 1e-6:
+      t = (next_d - dist) / slen
+      plat, plon = _interp_ll(a, b, min(1.0, max(0.0, t)))
+      out.append((float(next_d), float(plat), float(plon), float(hdg)))
+      next_d += step_m
+    dist += slen
+    if dist >= max_m:
+      break
+  return out
 
 
 def _bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -360,6 +478,20 @@ class OsmSpeedLimitDB:
     q = f"SELECT * FROM ways WHERE way_id IN ({','.join('?' * len(ids))})"
     return list(self._con.execute(q, ids))
 
+  def _ways_in_bbox(self, min_lat: float, max_lat: float, min_lon: float, max_lon: float) -> list[sqlite3.Row]:
+    if self._con is None:
+      return []
+    ids = [
+      int(r[0]) for r in self._con.execute(
+        "SELECT way_id FROM ways_rtree WHERE max_lat >= ? AND min_lat <= ? AND max_lon >= ? AND min_lon <= ?",
+        (min_lat, max_lat, min_lon, max_lon),
+      )
+    ]
+    if not ids:
+      return []
+    q = f"SELECT * FROM ways WHERE way_id IN ({','.join('?' * len(ids))})"
+    return list(self._con.execute(q, ids))
+
   def _best_match(self, lat: float, lon: float, bearing_deg: float | None) -> SpeedLimitMatch | None:
     best: SpeedLimitMatch | None = None
     best_score = 1e12
@@ -507,3 +639,154 @@ class OsmSpeedLimitDB:
       next_speed_limit_ms=next_limit,
       next_distance_m=next_dist,
     )
+
+  def _junction_at_sample(
+    self, plat: float, plon: float, heading: float, seen: set[int], rows: list[sqlite3.Row],
+  ) -> tuple[bool, bool, float, float]:
+    """Left/right flags and dest speeds for turn-ways within JUNCTION_RADIUS_M of a sample."""
+    has_left = has_right = False
+    left_ms = right_ms = 0.0
+    for row in rows:
+      wid = int(row["way_id"])
+      if wid in seen:
+        continue
+      coords = _unpack_coords(row["coords"])
+      dist, seg_hdg = _point_to_polyline_m(plat, plon, coords)
+      if dist > JUNCTION_RADIUS_M or seg_hdg is None:
+        continue
+      left, right = _turn_sides(heading, seg_hdg)
+      dest = float(row["maxspeed_ms"])
+      if left:
+        has_left = True
+        left_ms = dest if left_ms <= 0.0 else min(left_ms, dest)
+      if right:
+        has_right = True
+        right_ms = dest if right_ms <= 0.0 else min(right_ms, dest)
+    return has_left, has_right, left_ms, right_ms
+
+  def lookup_intersection(self, lat: float, lon: float, bearing_deg: float | None = None,
+                          v_ego_ms: float = 0.0) -> IntersectionAhead | None:
+    """Nearest turn junction along the matched way, or None.
+
+    A junction is another maxspeed way within JUNCTION_RADIUS_M whose heading
+    is 35–145° off the current road (both directions of that way), or a sharp
+    bend on the current way. Distance is along-way from GPS, minus v*1.5 s.
+    """
+    if self._con is None or bearing_deg is None:
+      return None
+    match = self._best_match(float(lat), float(lon), bearing_deg)
+    if match is None or not match.coords:
+      return None
+
+    horizon = float(INTERSECTION_LOOKAHEAD_M)
+    lead_m = osm_sign_lead_m(v_ego_ms)
+    traveled = 0.0
+    cur_lat, cur_lon = float(lat), float(lon)
+    cur_brg = float(bearing_deg)
+    cur_coords: list[tuple[float, float]] | tuple[tuple[float, float], ...] = match.coords
+    seen = {int(match.way_id)}
+    current_ms = float(match.speed_limit_ms)
+
+    for _ in range(12):
+      remain = horizon - traveled
+      if remain <= 1.0:
+        break
+      samples = _sample_ahead(cur_lat, cur_lon, cur_brg, cur_coords, remain, step_m=12.0)
+      if samples:
+        lats = [s[1] for s in samples]
+        lons = [s[2] for s in samples]
+        dlat = 30.0 / 111000.0
+        dlon = 30.0 / (111000.0 * max(0.2, math.cos(math.radians(samples[0][1]))))
+        rows = self._ways_in_bbox(min(lats) - dlat, max(lats) + dlat, min(lons) - dlon, max(lons) + dlon)
+        # Same-way sharp bend: heading change 35–145° at a vertex.
+        prev_hdg = samples[0][3]
+        bend_at: tuple[float, bool, bool] | None = None
+        for along, _slat, _slon, hdg in samples:
+          # Same-way bend uses the outgoing heading only (not bidirectional).
+          d = _signed_heading_delta(prev_hdg, hdg)
+          ad = abs(d)
+          if TURN_MIN_DEG <= ad <= TURN_MAX_DEG:
+            bend_at = (along, d < 0.0, d > 0.0)
+            break
+          prev_hdg = hdg
+
+        first: IntersectionAhead | None = None
+        for along, slat, slon, hdg in samples:
+          hl, hr, lms, rms = self._junction_at_sample(slat, slon, hdg, seen, rows)
+          if bend_at is not None and abs(along - bend_at[0]) <= JUNCTION_CLUSTER_M:
+            if bend_at[1]:
+              hl = True
+              lms = current_ms if lms <= 0.0 else min(lms, current_ms)
+            if bend_at[2]:
+              hr = True
+              rms = current_ms if rms <= 0.0 else min(rms, current_ms)
+          if hl or hr:
+            first = IntersectionAhead(
+              distance_m=traveled + along,
+              has_left=hl,
+              has_right=hr,
+              left_speed_ms=lms,
+              right_speed_ms=rms,
+            )
+            break
+        if first is None and bend_at is not None:
+          along, is_left, is_right = bend_at
+          first = IntersectionAhead(
+            distance_m=traveled + along,
+            has_left=is_left,
+            has_right=is_right,
+            left_speed_ms=current_ms if is_left else 0.0,
+            right_speed_ms=current_ms if is_right else 0.0,
+          )
+        if first is not None:
+          dist = max(0.0, float(first.distance_m) - lead_m)
+          return IntersectionAhead(
+            distance_m=dist,
+            has_left=first.has_left,
+            has_right=first.has_right,
+            left_speed_ms=first.left_speed_ms,
+            right_speed_ms=first.right_speed_ms,
+          )
+
+      ahead_info = _remaining_ahead(cur_lat, cur_lon, cur_brg, cur_coords)
+      if ahead_info is None:
+        return None
+      rem, end_ll, end_hdg = ahead_info
+      if traveled + rem > horizon + 1.0:
+        return None
+      traveled += rem
+      nxt = None
+      plat, plon = float(end_ll[0]), float(end_ll[1])
+      for step_m in (12.0, 25.0, 40.0):
+        plat, plon = _offset_point(end_ll[0], end_ll[1], end_hdg, step_m)
+        cand = self._best_match(plat, plon, end_hdg)
+        if cand is not None and int(cand.way_id) not in seen:
+          nxt = cand
+          break
+      if nxt is None:
+        return None
+      nxt_hdg = None
+      if nxt.coords and len(nxt.coords) >= 2:
+        _, nxt_hdg = _point_to_polyline_m(plat, plon, list(nxt.coords))
+      if nxt_hdg is not None:
+        d = _signed_heading_delta(end_hdg, nxt_hdg)
+        ad = abs(d)
+        if TURN_MIN_DEG <= ad <= TURN_MAX_DEG:
+          dist = max(0.0, traveled - lead_m)
+          left, right = d < 0.0, d > 0.0
+          dest = float(nxt.speed_limit_ms)
+          return IntersectionAhead(
+            distance_m=dist,
+            has_left=left,
+            has_right=right,
+            left_speed_ms=dest if left else 0.0,
+            right_speed_ms=dest if right else 0.0,
+          )
+      seen.add(int(nxt.way_id))
+      if not nxt.coords:
+        return None
+      cur_coords = nxt.coords
+      cur_lat, cur_lon = plat, plon
+      cur_brg = end_hdg
+      current_ms = float(nxt.speed_limit_ms)
+    return None

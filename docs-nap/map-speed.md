@@ -32,6 +32,29 @@ Licenses: pfeiferj/mapd and sunnypilot SLA are MIT; we did **not** vendor the Go
 - Panda TX whitelist, pedal gating, and engagement FSM are unchanged.
 - Default **Off** until US maps are downloaded and you pick a mode.
 
+## Blinker + intersection turn slowdown
+
+This is a **speed** overlay so the 3X model path can take a corner. It is not a nav route and does not invent a turn polyline. Tesla cluster nav is not on CAN.
+
+**Detect.** `mapd` walks the matched OSM way (same sqlite / GPS path as MAX, including the 1.5 s GNSS lead on distance). A junction is another `maxspeed` way within ~20 m whose heading is 35–145° off the current road (both directions of that way), or a sharp same-way bend. Parallel / dual-carriageway headings do not count. Side streets with no `maxspeed` are not in the pack, so they are invisible.
+
+**Trigger.** Held `STW_ACTN_RQ.TurnIndLvr_Stat` (`CS.turnSignalStalkState` 1=left, 2=right), **and** that side exists at the junction. Lamps (`BC_indicator*`) are ignored because openpilot can drive them during a lane change.
+
+**Target MAX** (never above dest or posted):
+
+| Dest way posted | Turn MAX |
+|---|---|
+| ≤25 mph | **12 mph** |
+| 30–35 mph | **15 mph** |
+| ≥40 mph | **18 mph** |
+| unknown dest | **15 mph** |
+
+Ease uses the same kin+110 m / Accel-5 0.80 curve as posted decreases. Lookahead Off still eases a blinker turn (Normal).
+
+**Sticky / Follow / Cap.** While the stalk is held, a sticky set must not block the drop (`sticky_set_kph` is kept). When the stalk returns to idle or the junction is behind the match, Cap/Follow resume, including that sticky set. Lead still wins.
+
+**Lateral.** While stalk+junction, ALC is not armed (a wheel nudge must not `laneChangeLeft/Right` and cut the corner). Desire stays `none`. The stock model path takes the turn at the lower speed. No `Desire.turnLeft/Right` and no path offset in this version. If a later drive still apexes early, a small documented outside bias can be added only while stalk+junction.
+
 ## US map data
 
 The US speed-limits sqlite is **not in git** (too large; ODbL still requires attribution). After flash, download the prebuilt asset over Wi-Fi:
@@ -144,7 +167,8 @@ When the upcoming drop is inside that window, MAX interpolates from the current 
 pytest selfdrive/mapd/tests/test_map_speed_policy.py \
   selfdrive/mapd/tests/test_osm_db.py \
   selfdrive/mapd/tests/test_fetch_maps.py \
-  selfdrive/mapd/tests/test_local_refresh.py -q
+  selfdrive/mapd/tests/test_local_refresh.py \
+  selfdrive/controls/lib/tests/test_desire_helper.py -q
 ```
 
 Policy tests include lead precedence, fetch of a tiny sqlite over HTTP, and Refresh maps location/merge (no network).
@@ -169,6 +193,7 @@ Policy tests include lead precedence, fetch of a tiny sqlite over HTTP, and Refr
 5. Follow: set 55 in a 50 — MAX stays 55 until the posted limit changes; set 45 in a 50 — same. Then resume Follow at the new limit. Double-pull engage with a valid limit: MAX **and** the car start at the posted limit immediately.
 6. Top-middle live speed must match wheel/ESP (about 45 if that is actual), not MAX (56) and not LIMIT.
 7. Cancel / brake still uses the existing engagement FSM.
+8. **Intersection turn, Follow, no lead.** Approach a mapped cross street. Hold the turn stalk left, then right. MAX should ease toward 12/15/18 mph (dest table) using the usual map brake feel. Cancel the stalk or pass the junction: MAX returns to Follow/Cap (including a sticky set). A slower radar lead must still brake more. A lamp-only / ALC tap on a straight must **not** dump to 15. A known 50→30 no-lead drop and the 1.5 s GNSS lead must still behave as before.
 
 **No-pedal:** LIMIT sign only; stock CC set speed is unchanged.
 

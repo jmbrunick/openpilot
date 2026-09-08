@@ -89,6 +89,7 @@ def main():
       last_gps_write = now
     v_ego_ms = _v_ego_ms(sm) if gps_ok else 0.0
     match = db.lookup(lat, lon, bearing, v_ego_ms=v_ego_ms) if gps_ok and db.loaded else None
+    ix = db.lookup_intersection(lat, lon, bearing, v_ego_ms=v_ego_ms) if gps_ok and db.loaded else None
 
     msg = messaging.new_message("liveMapDataNAP")
     msg.valid = gps_ok and db.loaded and match is not None
@@ -107,6 +108,12 @@ def main():
       d.highway = match.highway
       d.wayId = int(match.way_id)
       d.matchDistance = float(match.distance_m)
+    if ix is not None:
+      d.intersectionDistance = float(ix.distance_m)
+      d.intersectionHasLeft = bool(ix.has_left)
+      d.intersectionHasRight = bool(ix.has_right)
+      d.intersectionLeftSpeed = float(ix.left_speed_ms)
+      d.intersectionRightSpeed = float(ix.right_speed_ms)
     pm.send("liveMapDataNAP", msg)
     rk.keep_time()
 
