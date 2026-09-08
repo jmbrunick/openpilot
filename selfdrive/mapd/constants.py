@@ -6,13 +6,6 @@ MODE_DISPLAY = 1
 MODE_CAP = 2
 MODE_FOLLOW = 3
 
-MODE_NAMES = {
-  MODE_OFF: "off",
-  MODE_DISPLAY: "display",
-  MODE_CAP: "cap",
-  MODE_FOLLOW: "follow",
-}
-
 # Pedal-mode software cruise is the only path that may change vCruise from maps.
 # No-pedal / pcmCruise stock CC is display-only (do not spoof stalk to chase limits).
 # Follow only, and only for a manual set *above* the posted limit. A set below

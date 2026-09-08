@@ -22,19 +22,13 @@ GITHUB_REPO = "jmbrunick/openpilot"
 RELEASE_TAG = "osm-us-speed-limits-v1"
 ASSET_NAME = "speed_limits_us.sqlite.zst"
 
-# Taginfo north-america:us key=maxspeed ways (2026-09-06 extract).
-US_MAXSPEED_WAYS_TAGINFO = 3403120
-
-# Measured osm-us-speed-limits-v1 (Justin 3X download: 203.8 MB zst, ~516 MB sqlite).
+# Measured osm-us-speed-limits-v1 (~204 MiB zst → ~516 MiB sqlite).
 # Peak on dest fs is zst + sqlite.partial before the zst is deleted.
-ASSET_ZST_BYTES = 204 * 1024 * 1024       # 214015488
-ASSET_SQLITE_BYTES = 516 * 1024 * 1024    # 541065216
-FREE_MARGIN_BYTES = 80 * 1024 * 1024      # 83886080
+ASSET_ZST_BYTES = 204 * 1024 * 1024
+ASSET_SQLITE_BYTES = 516 * 1024 * 1024
+FREE_MARGIN_BYTES = 80 * 1024 * 1024
 MIN_FREE_MIB = 800
-MIN_FREE_BYTES = MIN_FREE_MIB * 1024 * 1024  # 838860800; 204+516+80 MiB
-
-APPROX_SQLITE_GB = ASSET_SQLITE_BYTES / (1024 ** 3)
-APPROX_ZST_MB = ASSET_ZST_BYTES / (1024 * 1024)
+MIN_FREE_BYTES = MIN_FREE_MIB * 1024 * 1024  # 204+516+80 MiB
 
 # SHA-256 of the Release **zst** asset (not the decompressed sqlite).
 # Fetch verifies this on the downloaded .zst BEFORE decompress.

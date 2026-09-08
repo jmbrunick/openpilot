@@ -148,7 +148,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"NAPRadarEnabled", {PERSISTENT, BOOL}},
     {"NAPRadarOffset", {PERSISTENT, FLOAT, "0.0"}},
     {"NAPScriptRunning", {CLEAR_ON_MANAGER_START, BOOL}},
-    // OSM map speed → cruise/MAX set speed. Mode: 0=off, 1=display, 2=cap, 3=follow
+    // OSM map speed → HUD MAX. Mode: 0=off 1=display 2=cap 3=follow. Lookahead 2=normal. Accel 5=default.
     {"NAPMapSpeedMode", {PERSISTENT, INT, "0"}},
     {"NAPMapSpeedOffsetMph", {PERSISTENT, INT, "0"}},
     {"NAPMapSpeedLookahead", {PERSISTENT, INT, "2"}},

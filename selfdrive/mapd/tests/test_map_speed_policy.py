@@ -280,6 +280,7 @@ def test_sticky_manual_below_limit_until_posted_changes():
     engage_rising=False, now=1.0, stalk_pressed=True,
   )
   assert dec.sticky
+  assert dec.seed_kph is not None  # pedal write-back for sticky
   assert abs(dec.driver_kph - below) < 1e-6
   assert hold.follow_override_until == 0.0
   # Still a: hold, do not Follow back to a.
@@ -298,6 +299,29 @@ def test_sticky_manual_below_limit_until_posted_changes():
   assert not dec.sticky
   assert dec.seed_kph is not None
   assert abs(dec.seed_kph - b) < 1e-6
+
+
+def test_disengage_clears_sticky_and_follow_timer():
+  hold = MapCruiseHold()
+  a = 45 * CV.MPH_TO_KPH
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=a, posted_kph=a,
+    engage_rising=True, now=0.0,
+  )
+  below = a - 5 * CV.MPH_TO_KPH
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=below, posted_kph=a,
+    engage_rising=False, now=1.0, stalk_pressed=True,
+  )
+  assert hold.sticky_set_kph is not None
+  dec = decide_map_cruise(
+    hold, engaged=False, mode=MODE_FOLLOW, raw_kph=below, posted_kph=a,
+    engage_rising=False, now=2.0,
+  )
+  assert not dec.sticky
+  assert dec.seed_kph is None
+  assert hold.sticky_set_kph is None
+  assert hold.follow_override_until == 0.0
 
 
 def test_sticky_below_limit_survives_past_ten_second_override():
