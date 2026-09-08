@@ -164,6 +164,11 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"NAPMapSpeedDbPath", {PERSISTENT, STRING}},
     {"NAPMapSpeedDbRevision", {PERSISTENT, STRING}},
     {"NAPMapSpeedDbSha256", {PERSISTENT, STRING}},
+    // Pre-AP DAS_bodyControls test. Default 0 = today's blinker-only TX.
+    // Wiper: 0=off 1=intermittent 2=on. Beam: 0=undecided 1=low 2=high.
+    // Pre-AP body controllers often ignore Autopilot wiper/beam requests.
+    {"NAPWiperSpeed", {PERSISTENT, INT, "0"}},
+    {"NAPHighLowBeam", {PERSISTENT, INT, "0"}},
     {"TermsVersion", {PERSISTENT, STRING}},
     {"TrainingVersion", {PERSISTENT, STRING}},
 };
