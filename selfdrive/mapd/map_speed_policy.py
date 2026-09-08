@@ -14,7 +14,8 @@ from openpilot.selfdrive.mapd.constants import (
   LOOKAHEAD_TUNING, MANUAL_SET_EPS_KPH, MIN_DECREASE_MS, MODE_CAP, MODE_DISPLAY,
   MODE_FOLLOW, MODE_OFF, POSTED_LIMIT_EPS_KPH, TRACK_DEADBAND_MS, TRACK_TAPER_MS,
   TURN_DEST_FAST_MPH, TURN_DEST_SLOW_MPH, TURN_SPEED_DEFAULT_MPH, TURN_SPEED_FAST_MPH,
-  TURN_SPEED_SLOW_MPH, map_accel_a_ms2, map_brake_a_ms2,
+  TURN_SPEED_SLOW_MPH, LATE_APEX_CURV_SCALE, LATE_APEX_MAX_DKAPPA, LATE_APEX_SHIFT_S,
+  LATE_APEX_Y_M, map_accel_a_ms2, map_brake_a_ms2,
 )
 
 # Keep in sync with openpilot.selfdrive.car.cruise (avoid importing cereal here).
@@ -450,6 +451,38 @@ def blinker_turn_holds_alc(stalk_state: int, has_left: bool, has_right: bool,
   if blinker_turn_direction(stalk_state, has_left, has_right) == 0:
     return False
   return float(dist_m) >= 0.0
+
+
+def late_apex_y_offset_m(direction: int) -> float:
+  """Signed lateral offset (m, left-positive) toward the outside of the turn."""
+  if int(direction) == 1:
+    return -float(LATE_APEX_Y_M)
+  if int(direction) == 2:
+    return float(LATE_APEX_Y_M)
+  return 0.0
+
+
+def late_apex_ramp(t_s: float) -> float:
+  """0 at now, 1 by LATE_APEX_SHIFT_S — do not jerk t=0."""
+  if t_s <= 0.0:
+    return 0.0
+  return min(1.0, float(t_s) / LATE_APEX_SHIFT_S)
+
+
+def apply_late_apex_curvature(kappa: float, v_ego: float, direction: int) -> float:
+  """Widen the model curvature and walk ~LATE_APEX_Y_M outside. Identity if not a turn.
+
+  direction is blinker_turn_direction (0=none/ALC, 1=left, 2=right). Highway
+  ALC must pass direction=0 so this is a no-op.
+  """
+  if int(direction) == 0:
+    return float(kappa)
+  y_off = late_apex_y_offset_m(direction)
+  v = max(float(v_ego), 3.0)
+  s = v * LATE_APEX_SHIFT_S
+  k_out = (2.0 * y_off) / (s * s) if s > 1e-6 else 0.0
+  k_out = max(-LATE_APEX_MAX_DKAPPA, min(LATE_APEX_MAX_DKAPPA, k_out))
+  return float(kappa) * LATE_APEX_CURV_SCALE + k_out
 
 
 def turn_speed_ms(dest_ms: float, posted_ms: float) -> float:
