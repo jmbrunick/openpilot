@@ -8,8 +8,9 @@ from openpilot.selfdrive.mapd.constants import (
 from openpilot.selfdrive.mapd.map_speed_policy import (
   SOURCE_CRUISE, SOURCE_LEAD0, V_CRUISE_UNSET,
   MapCruiseHold, anticipatory_limit_ms, apply_map_speed_kph, cap_planner_v_cruise_ms,
-  decide_map_cruise, effective_map_limit_ms, longitudinal_obstacle_source,
-  map_slew_a_ms2, map_track_accel_ms2, map_track_decel_ms2, slew_map_speed_ms,
+  decide_map_cruise, effective_map_limit_ms, is_cruise_stalk_step,
+  longitudinal_obstacle_source, map_slew_a_ms2, map_track_accel_ms2,
+  map_track_decel_ms2, slew_map_speed_ms,
 )
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   MAP_SPEED_ACCEL, MAP_SPEED_ACCEL_DEFAULT, MAP_SPEED_LOOKAHEAD,
@@ -335,6 +336,71 @@ def test_sticky_below_limit_survives_past_ten_second_override():
     assert abs(_follow_hud(dec, a) - expired) > 1.0
 
 
+def test_cruise_stalk_step_is_1_or_5_not_ego_jump():
+  a = 45 * CV.MPH_TO_KPH
+  assert is_cruise_stalk_step(a, a - 5 * CV.MPH_TO_KPH)
+  assert is_cruise_stalk_step(a, a + 1 * CV.MPH_TO_KPH)
+  assert is_cruise_stalk_step(a, a - 1.0)  # metric 1 kph
+  assert is_cruise_stalk_step(a, a + 5.0)
+  assert not is_cruise_stalk_step(a, 70 * CV.MPH_TO_KPH)
+  assert not is_cruise_stalk_step(a, a)
+
+
+def test_stalk_plus_minus_changes_set_without_button_events():
+  """pre-AP buttonEvents are unreliable; a 5 mph pedal_speed step must move MAX."""
+  hold = MapCruiseHold()
+  a = 45 * CV.MPH_TO_KPH
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=a, posted_kph=a,
+    engage_rising=True, now=0.0,
+  )
+  down = a - 5 * CV.MPH_TO_KPH
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=down, posted_kph=a,
+    engage_rising=False, now=1.0, stalk_pressed=False,
+  )
+  assert dec.sticky
+  assert abs(_follow_hud(dec, a) - down) < 1e-6
+  up = down + 5 * CV.MPH_TO_KPH
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=up, posted_kph=a,
+    engage_rising=False, now=2.0, stalk_pressed=False,
+  )
+  assert abs(_follow_hud(dec, a) - up) < 1e-6
+  above = a + 5 * CV.MPH_TO_KPH
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=above, posted_kph=a,
+    engage_rising=False, now=3.0, stalk_pressed=False,
+  )
+  assert not dec.sticky
+  assert abs(_follow_hud(dec, a) - above) < 1e-6
+  # Cap: stalk up cannot exceed posted; stalk down still lowers MAX.
+  hold_c = MapCruiseHold()
+  decide_map_cruise(
+    hold_c, engaged=True, mode=MODE_CAP, raw_kph=a, posted_kph=a,
+    engage_rising=True, now=0.0,
+  )
+  dec = decide_map_cruise(
+    hold_c, engaged=True, mode=MODE_CAP, raw_kph=above, posted_kph=a,
+    engage_rising=False, now=1.0, stalk_pressed=False,
+  )
+  cap_out = apply_map_speed_kph(
+    dec.driver_kph, a, mode=MODE_CAP, engaged=True, op_long_software_cruise=True,
+    driver_override=dec.follow_override,
+  )
+  assert abs(cap_out - a) < 1e-6
+  decide_map_cruise(
+    hold_c, engaged=True, mode=MODE_CAP, raw_kph=a, posted_kph=a,
+    engage_rising=False, now=2.0, stalk_pressed=False,
+  )
+  dec = decide_map_cruise(
+    hold_c, engaged=True, mode=MODE_CAP, raw_kph=down, posted_kph=a,
+    engage_rising=False, now=3.0, stalk_pressed=False,
+  )
+  assert dec.sticky
+  assert abs(dec.driver_kph - down) < 1e-6
+
+
 def test_follow_ten_second_override_is_raise_above_limit_only():
   hold = MapCruiseHold()
   a = 45 * CV.MPH_TO_KPH
@@ -427,3 +493,5 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   assert "_write_preap_pedal_speed" in card
   # Must not seed/overlay on lateral-only first pull (CC.enabled).
   assert "engage_rising = long_active and not long_active_prev" in card
+  # Must not clobber stalk by writing Follow HUD onto pedal every frame.
+  assert "if long_active and dec.seed_kph is not None:" in card

@@ -20,7 +20,6 @@ from opendbc.car.car_helpers import get_car, interfaces
 from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
 from openpilot.selfdrive.car.cruise import VCruiseHelper
-from openpilot.selfdrive.mapd.constants import MODE_CAP, MODE_FOLLOW
 from openpilot.selfdrive.mapd.map_speed_policy import (
   MapCruiseHold, apply_map_speed_kph, decide_map_cruise, effective_map_limit_ms,
   map_slew_a_ms2, read_map_speed_params, slew_map_speed_ms,
@@ -269,9 +268,10 @@ class Car:
             op_long_software_cruise=True,
             driver_override=dec.follow_override,
           )
-        if long_active and self._map_speed_mode in (MODE_CAP, MODE_FOLLOW) and preap_v_cruise_kph > 0:
-          # Keep pedal_speed on the HUD target so the long path and stalk +/-
-          # track MAX immediately (not ego for 10s).
+        # Write pedal only for engage/posted-change seed and sticky hold.
+        # Writing the Follow/Cap HUD overlay every frame ate stalk +/-
+        # (CI.update applied the step, then we put map MAX back).
+        if long_active and dec.seed_kph is not None:
           self._write_preap_pedal_speed(CS, preap_v_cruise_kph)
         self.v_cruise_helper.v_cruise_kph_last = self.v_cruise_helper.v_cruise_kph
         self.v_cruise_helper.v_cruise_kph = preap_v_cruise_kph
@@ -291,15 +291,12 @@ class Car:
 
   @staticmethod
   def _preap_stalk_set_pressed(CS) -> bool:
-    """True on stalk +/- (not MAIN engage / cancel)."""
-    try:
-      accel = car.CarState.ButtonEvent.Type.accelCruise
-      decel = car.CarState.ButtonEvent.Type.decelCruise
-    except Exception:
-      return False
+    """True on stalk +/-. Extra signal; pedal_speed 1/5 mph steps also count."""
     for be in getattr(CS, 'buttonEvents', None) or []:
       try:
-        if be.pressed and be.type in (accel, decel):
+        typ = getattr(be, 'type', None)
+        name = str(getattr(typ, 'name', typ)).lower().replace('_', '')
+        if 'accelcruise' in name or 'decelcruise' in name or name in ('accel', 'decel'):
           return True
       except Exception:
         continue
