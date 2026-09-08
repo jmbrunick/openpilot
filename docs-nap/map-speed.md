@@ -37,7 +37,7 @@ The US speed-limits sqlite is **not in git** (too large; ODbL still requires att
 
 | | |
 |---|---|
-| Release tag | `osm-us-speed-limits-v1` on `jmbrunick/openpilot` |
+| Release tag | `osm-us-speed-limits-v2` on `jmbrunick/openpilot` |
 | Asset | `speed_limits_us.sqlite.zst` |
 | SHA-256 | of the **zst** (`ASSET_SHA256`), verified **before** decompress. Dest sqlite is not hashed unless `SQLITE_SHA256` is set. `--sha256 ''` skips. |
 | Install path | `/data/media/0/osm/speed_limits.sqlite` |
@@ -70,10 +70,10 @@ Put the **zst** SHA-256 in `selfdrive/mapd/maps_manifest.py` **and** bump `selfd
 The 3X does **not** query Overpass. **Refresh maps** downloads a small published JSON, compares revision/SHA to what is installed, and only then fetches the zst.
 
 1. Build a new US (or county-updated) sqlite and zst on a PC (same `build_osm_speed_limits.py` flow as above).
-2. Attach `speed_limits_us.sqlite.zst` to a **new** GitHub Release on `jmbrunick/openpilot` (e.g. `osm-us-speed-limits-v2`). Do not replace the in-git JSON with the 204MB zst.
+2. Attach `speed_limits_us.sqlite.zst` to a **new** GitHub Release on `jmbrunick/openpilot` (e.g. `osm-us-speed-limits-v3`). Do not replace the in-git JSON with the 204MB zst.
 3. SHA-256 the **zst** (`sha256sum speed_limits_us.sqlite.zst`).
 4. Bump `selfdrive/mapd/maps-index.json`:
-   - `revision` — integer or dotted semver, must be **greater** than the previous value (current first-install is `"1"`)
+   - `revision` — integer or dotted semver, must be **greater** than the previous value (current first-install is `"2"`)
    - `asset_url` — Release download URL for the new zst
    - `asset_name` — usually `speed_limits_us.sqlite.zst`
    - `sha256` — hex digest of the zst

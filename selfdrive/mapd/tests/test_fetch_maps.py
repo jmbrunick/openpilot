@@ -152,7 +152,7 @@ def test_insufficient_space_fails_before_download(tmp_path, monkeypatch):
   with pytest.raises(RuntimeError, match="Not enough free space"):
     fetch_and_install(
       dest=dest,
-      url="https://github.com/jmbrunick/openpilot/releases/download/osm-us-speed-limits-v1/speed_limits_us.sqlite.zst",
+      url="https://github.com/jmbrunick/openpilot/releases/download/osm-us-speed-limits-v2/speed_limits_us.sqlite.zst",
       sha256=ASSET_SHA256,
     )
   assert downloaded["n"] == 0
@@ -363,12 +363,13 @@ def test_maps_update_decision_up_to_date_vs_newer():
   assert maps_update_decision(True, remote.revision, remote.sha256.upper(), remote) == "up_to_date"
 
   newer = parse_maps_index({
-    "revision": "2",
+    "revision": "3",
     "asset_url": remote.asset_url,
     "asset_name": remote.asset_name,
     "sha256": "b" * 64,
   })
   assert maps_update_decision(True, "1", remote.sha256, newer) == "update"
+  assert maps_update_decision(True, "2", remote.sha256, newer) == "update"
   assert maps_update_decision(True, "1", "b" * 64, newer) == "up_to_date"
 
   # Same revision but different zst SHA → republish, still download.
@@ -380,8 +381,8 @@ def test_maps_update_decision_up_to_date_vs_newer():
   })
   assert maps_update_decision(True, remote.revision, remote.sha256, republish) == "update"
 
-  # Legacy sqlite (no recorded revision): still the bundled v1 pack → up to date.
-  assert maps_update_decision(True, "", "", remote) == "up_to_date"
+  # Legacy sqlite (no recorded revision): unknown pack — download.
+  assert maps_update_decision(True, "", "", remote) == "update"
   assert maps_update_decision(True, "", "", newer) == "update"
 
   assert revision_is_newer("2", "1")
@@ -434,7 +435,7 @@ def test_refresh_newer_downloads_and_records_revision(tmp_path, monkeypatch):
   _src, zst = _make_zst(tmp_path)
   zst_hash = _sha256(zst)
   remote = parse_maps_index({
-    "revision": "2",
+    "revision": "3",
     "asset_url": Path(zst).as_uri(),
     "asset_name": os.path.basename(zst),
     "sha256": zst_hash,
@@ -445,9 +446,9 @@ def test_refresh_newer_downloads_and_records_revision(tmp_path, monkeypatch):
   monkeypatch.setattr(fm, "fetch_maps_index", lambda url=None: remote)
   assert refresh_maps(dest=dest) == dest
   rev, sha = load_installed_revision(dest)
-  assert rev == "2"
+  assert rev == "3"
   assert sha == zst_hash
-  assert installed_revision_summary(dest) == "2"
+  assert installed_revision_summary(dest) == "3"
 
 
 def test_refresh_sha_mismatch_keeps_sqlite(tmp_path, monkeypatch):
@@ -460,7 +461,7 @@ def test_refresh_sha_mismatch_keeps_sqlite(tmp_path, monkeypatch):
 
   _src, zst = _make_zst(tmp_path)
   remote = parse_maps_index({
-    "revision": "2",
+    "revision": "3",
     "asset_url": Path(zst).as_uri(),
     "asset_name": os.path.basename(zst),
     "sha256": "e" * 64,
@@ -492,6 +493,27 @@ def test_refresh_without_sqlite_does_first_install(tmp_path, monkeypatch):
   assert refresh_maps(dest=dest) == dest
   assert os.path.isfile(dest)
   assert load_installed_revision(dest) == ("1", zst_hash)
+
+
+def test_refresh_unversioned_sqlite_downloads_current_pack(tmp_path, monkeypatch):
+  """v1 sqlite with no recorded revision must not be treated as up to date."""
+  dest = str(tmp_path / "osm" / "speed_limits.sqlite")
+  os.makedirs(os.path.dirname(dest), exist_ok=True)
+  _tiny_sqlite(dest)
+  _src, zst = _make_zst(tmp_path)
+  zst_hash = _sha256(zst)
+  remote = bundled_maps_index()
+  remote = parse_maps_index({
+    "revision": remote.revision,
+    "asset_url": Path(zst).as_uri(),
+    "asset_name": os.path.basename(zst),
+    "sha256": zst_hash,
+    "notes": remote.notes,
+  })
+  import openpilot.selfdrive.mapd.fetch_maps as fm
+  monkeypatch.setattr(fm, "fetch_maps_index", lambda url=None: remote)
+  assert refresh_maps(dest=dest) == dest
+  assert load_installed_revision(dest) == (bundled_maps_index().revision, zst_hash)
 
 
 def test_fetch_maps_index_from_file(tmp_path):
