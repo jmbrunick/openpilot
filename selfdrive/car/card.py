@@ -22,7 +22,7 @@ from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
 from openpilot.selfdrive.car.cruise import VCruiseHelper
 from openpilot.selfdrive.mapd.map_speed_policy import (
   MapCruiseHold, apply_map_speed_kph, decide_map_cruise, effective_map_limit_ms,
-  map_slew_a_ms2, read_map_speed_params, slew_map_speed_ms,
+  map_slew_a_ms2, read_map_speed_params, should_write_preap_pedal, slew_map_speed_ms,
 )
 
 REPLAY = "REPLAY" in os.environ
@@ -156,6 +156,7 @@ class Car:
     self.v_cruise_helper = VCruiseHelper(self.CP)
     self._map_hold = MapCruiseHold()
     self._map_slew_ms: float | None = None
+    self._last_pedal_kph: float | None = None
     self._map_speed_mode, self._map_speed_offset_kph, self._map_speed_lookahead, self._map_speed_accel = (
       read_map_speed_params(self.params)
     )
@@ -279,10 +280,13 @@ class Car:
             op_long_software_cruise=True,
             driver_override=dec.follow_override,
           )
-        # Write pedal only for seed/sticky. A per-frame Follow/Cap write-back
-        # overwrites the stalk +/- that CI.update just applied.
-        if long_active and dec.seed_kph is not None:
+        # Seed/sticky always. Also raise pedal when HUD MAX increased (stalk up
+        # or Follow posted raise). Never write the same MAX every frame.
+        if long_active and should_write_preap_pedal(dec.seed_kph, preap_v_cruise_kph, self._last_pedal_kph):
           self._write_preap_pedal_speed(CS, preap_v_cruise_kph)
+          self._last_pedal_kph = float(preap_v_cruise_kph)
+        elif not long_active:
+          self._last_pedal_kph = None
         self.v_cruise_helper.v_cruise_kph_last = self.v_cruise_helper.v_cruise_kph
         self.v_cruise_helper.v_cruise_kph = preap_v_cruise_kph
         self.v_cruise_helper.v_cruise_cluster_kph = preap_v_cruise_kph
