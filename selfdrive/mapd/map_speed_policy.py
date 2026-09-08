@@ -51,8 +51,9 @@ def anticipatory_limit_ms(
   """Decrease-only cruise ceiling for an upcoming lower limit, or None.
 
   Uses comfort decel + margin so MAX eases down and the car is near the new
-  limit as GPS enters that way. A higher limit ahead never raises the ceiling;
-  Follow still raises when the current match is the faster way.
+  limit as the lag-corrected position enters that way. A higher nextSpeedLimit
+  far ahead never raises this ceiling; Follow still raises when the posted
+  match at v_ego * 1.5 s is already the faster way (GNSS lag, not lookahead).
   """
   if lookahead <= LOOKAHEAD_OFF or lookahead not in LOOKAHEAD_TUNING:
     return None

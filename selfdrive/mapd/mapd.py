@@ -36,7 +36,7 @@ def _db_path(params: Params) -> str:
 
 
 def _v_ego_ms(sm) -> float:
-  """Wheel vEgo when carState is live; else GNSS speed. Used as OSM 1.5 s lead."""
+  """Wheel vEgo when carState is live; else GNSS speed. OSM 1.5 s lag offset."""
   if sm.recv_frame.get("carState", -1) > 0:
     try:
       v = float(sm["carState"].vEgo)

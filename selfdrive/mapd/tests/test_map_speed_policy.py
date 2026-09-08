@@ -47,6 +47,31 @@ def test_follow_tracks_map_unless_override():
                              driver_override=True) == 100
 
 
+def test_follow_raises_when_offset_posted_is_already_higher():
+  """GNSS lag: posted at v*1.5 s is already 45 → Follow MAX 45. Far-ahead next does not."""
+  a = 25 * CV.MPH_TO_KPH
+  b = 45 * CV.MPH_TO_KPH
+  assert apply_map_speed_kph(a, b, mode=MODE_FOLLOW, engaged=True, op_long_software_cruise=True) == b
+  hold = MapCruiseHold()
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=a, posted_kph=a,
+    engage_rising=True, now=0.0,
+  )
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=a, posted_kph=b,
+    engage_rising=False, now=1.0, stalk_pressed=False,
+  )
+  assert not dec.sticky
+  assert dec.seed_kph is not None
+  assert abs(dec.seed_kph - b) < 1e-6
+  assert abs(_follow_hud(dec, b) - b) < 1e-6
+  # Lookahead path is still decrease-only (not this 1.5 s offset).
+  v25 = 25 * CV.MPH_TO_MS
+  v45 = 45 * CV.MPH_TO_MS
+  assert anticipatory_limit_ms(v25, v45, 80.0, v25, LOOKAHEAD_EARLY) is None
+  assert effective_map_limit_ms(v25, v45, 80.0, v25, LOOKAHEAD_NORMAL) == v25
+
+
 def test_pcm_cruise_never_gets_control_overlay():
   # No-pedal stock CC: do not invent a parallel set-speed path
   assert apply_map_speed_kph(100, 70, mode=MODE_CAP, engaged=True, op_long_software_cruise=False) == 100
@@ -223,7 +248,8 @@ def test_fifty_to_thirty_starts_one_hundred_ten_m_before_kinematic():
   kin_7045 = (v70 * v70 - v45 * v45) / (2.0 * a)
   assert anticipatory_limit_ms(v70, v45, kin_7045 + DECREASE_START_MARGIN_M, v70, LOOKAHEAD_NORMAL) is not None
   assert anticipatory_limit_ms(v70, v45, kin_7045 + DECREASE_START_MARGIN_M + 5.0, v70, LOOKAHEAD_NORMAL) is None
-  # Higher limit ahead must not raise MAX early.
+  # Higher nextSpeedLimit far ahead must not raise MAX (lookahead is decrease-only).
+  # The 1.5 s GNSS offset raising posted is tested separately.
   assert anticipatory_limit_ms(v30, v50, 80.0, v30, LOOKAHEAD_EARLY) is None
   assert anticipatory_limit_ms(v45, v70, 80.0, v45, LOOKAHEAD_EARLY) is None
 
@@ -783,6 +809,9 @@ def test_map_speed_submenu_wires_params():
   assert "pauses Follow for 10s" not in tici
   assert "holds until the posted limit changes" in tici
   assert "lookahead pauses while that set is active" in tici
+  assert "1.5 s GPS lag applies both ways" in tici
+  assert "A higher limit far ahead never raises MAX" in tici
+  assert "A higher limit ahead never raises MAX early" not in tici
   assert "acceleration only" in mici
   assert "Map Speed Limit" in nap
   assert "Radar Settings" in nap

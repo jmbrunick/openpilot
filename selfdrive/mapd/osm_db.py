@@ -456,7 +456,9 @@ class OsmSpeedLimitDB:
       return None
     qlat, qlon = float(lat), float(lon)
     lead_m = osm_sign_lead_m(v_ego_ms)
-    # Treat match and next-limit probes as 1.5 s farther along heading.
+    # GNSS lag, not anticipation: match posted LIMIT at v_ego * 1.5 s along
+    # heading (higher and lower). Next-limit probes start from that same
+    # position; decrease +110 m / 0.80 brake is a separate policy path.
     if lead_m > 0.0 and bearing_deg is not None:
       qlat, qlon = _offset_point(qlat, qlon, float(bearing_deg), lead_m)
     match = self._best_match(qlat, qlon, bearing_deg)
