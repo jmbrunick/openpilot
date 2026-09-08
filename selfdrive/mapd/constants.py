@@ -18,6 +18,8 @@ POSTED_LIMIT_EPS_KPH = 1.0
 MAX_MATCH_DISTANCE_M = 35.0
 HEADING_ALIGN_DEG = 55.0
 # Heading-aligned probes for nextSpeedLimit (any change). Policy uses decreases only.
+# Geodesic 40 m steps can skip a short intermediate limit (US 12 60→50 before 30);
+# lookup also walks the matched way to its end, then the next way.
 LOOKAHEAD_STEP_M = 40.0
 LOOKAHEAD_MAX_M = 600.0
 LOOKAHEAD_M = tuple(float(d) for d in range(int(LOOKAHEAD_STEP_M), int(LOOKAHEAD_MAX_M) + 1, int(LOOKAHEAD_STEP_M)))
@@ -39,7 +41,7 @@ LOOKAHEAD_TUNING = {
   LOOKAHEAD_NORMAL: (0.80, DECREASE_START_MARGIN_M, 600.0),
   LOOKAHEAD_EARLY: (0.55, DECREASE_START_MARGIN_M + 120.0, 600.0),
 }
-MIN_DECREASE_MS = 0.45  # ~1 mph; ignore jitter
+MIN_DECREASE_MS = 0.45  # ~1 mph; ignore jitter. A 10 mph drop (60→50) is not filtered.
 
 # NAPMapSpeedAccel: 1=gentlest, 5=default, 10=quickest. Scales Follow *accel*
 # (MAX rising / speeding up). Brake to a lower MAX is locked at ACCEL_DEFAULT.
