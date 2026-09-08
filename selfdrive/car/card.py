@@ -266,7 +266,9 @@ class Car:
           now=time.monotonic(),
           stalk_pressed=stalk_pressed,
         )
-        # seed_kph covers engage/posted seed and sticky hold (both write pedal).
+        # seed_kph is a one-shot write (engage, posted raise, stalk step).
+        # Sticky hold uses driver_kph / follow_override — do not write pedal
+        # every frame or CI.update's stalk step is undone.
         if dec.seed_kph is not None:
           preap_v_cruise_kph = dec.seed_kph
           self._map_slew_ms = dec.seed_kph * CV.KPH_TO_MS
@@ -280,8 +282,8 @@ class Car:
             op_long_software_cruise=True,
             driver_override=dec.follow_override,
           )
-        # Seed/sticky always. Also raise pedal when HUD MAX increased (stalk up
-        # or Follow posted raise). Never write the same MAX every frame.
+        # Write engage/posted/stalk seed, or when HUD MAX rose. Never write
+        # the same sticky MAX every frame.
         if long_active and should_write_preap_pedal(dec.seed_kph, preap_v_cruise_kph, self._last_pedal_kph):
           self._write_preap_pedal_speed(CS, preap_v_cruise_kph)
           self._last_pedal_kph = float(preap_v_cruise_kph)

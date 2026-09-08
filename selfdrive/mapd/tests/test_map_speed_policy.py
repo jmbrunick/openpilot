@@ -323,16 +323,18 @@ def test_sticky_manual_below_limit_until_posted_changes():
     engage_rising=False, now=1.0, stalk_pressed=True,
   )
   assert dec.sticky
-  assert dec.seed_kph is not None  # pedal write-back for sticky
+  assert dec.seed_kph is not None  # one-shot write of the stalk step
   assert abs(dec.driver_kph - below) < 1e-6
   assert hold.follow_override_until == 0.0
-  # Still a: hold, do not Follow back to a.
+  # Still a: hold, do not Follow back to a, do not write pedal every frame.
   dec = decide_map_cruise(
     hold, engaged=True, mode=MODE_FOLLOW, raw_kph=below, posted_kph=a,
     engage_rising=False, now=20.0, stalk_pressed=False,
   )
   assert dec.sticky
+  assert dec.seed_kph is None
   assert abs(dec.driver_kph - below) < 1e-6
+  assert not should_write_preap_pedal(dec.seed_kph, _follow_hud(dec, a), below)
   # Limit changes to b: resume at b, drop a-5.
   b = 35 * CV.MPH_TO_KPH
   dec = decide_map_cruise(
@@ -389,6 +391,7 @@ def test_sticky_below_limit_survives_past_ten_seconds():
     )
     assert dec.sticky, f"sticky lost at t={t}"
     assert hold.follow_override_until == 0.0
+    assert dec.seed_kph is None
     assert abs(_follow_hud(dec, a) - below) < 1e-6
     # apply_map_speed without sticky would Follow-raise to a; card must not.
     expired = apply_map_speed_kph(
@@ -486,6 +489,7 @@ def test_follow_holds_absolute_set_until_posted_changes():
       engage_rising=False, now=t, stalk_pressed=False,
     )
     assert dec.sticky, f"55 mph sticky lost at t={t}"
+    assert dec.seed_kph is None
     assert abs(_follow_hud(dec, a) - above) < 1e-6
   b = 35 * CV.MPH_TO_KPH
   dec = decide_map_cruise(
@@ -514,6 +518,7 @@ def test_follow_holds_absolute_set_until_posted_changes():
     engage_rising=False, now=60.0, stalk_pressed=False,
   )
   assert dec.sticky
+  assert dec.seed_kph is None
   assert abs(_follow_hud(dec, a) - below) < 1e-6
   dec = decide_map_cruise(
     hold2, engaged=True, mode=MODE_FOLLOW, raw_kph=below, posted_kph=b,
@@ -554,10 +559,10 @@ def test_slew_rate_limits_map_max_steps():
 def test_should_write_preap_pedal_on_raise_not_every_frame():
   a = 45 * CV.MPH_TO_KPH
   b = 50 * CV.MPH_TO_KPH
-  # Seed/sticky always write.
+  # Engage / posted / stalk-step seed writes once.
   assert should_write_preap_pedal(a, a, a)
   assert should_write_preap_pedal(a, a, None)
-  # Same MAX every Follow frame: do not write (that ate stalk).
+  # Sticky hold / same MAX every Follow frame: do not write (that ate stalk).
   assert not should_write_preap_pedal(None, a, a)
   # Stalk up / Follow posted raise: HUD rose vs last pedal write.
   assert should_write_preap_pedal(None, b, a)
@@ -565,6 +570,78 @@ def test_should_write_preap_pedal_on_raise_not_every_frame():
   assert not should_write_preap_pedal(None, b, None)
   # Decrease without seed: planner brakes from HUD MAX; do not clobber stalk down.
   assert not should_write_preap_pedal(None, a, b)
+
+
+def test_sticky_hold_does_not_overwrite_ci_stalk_step():
+  """After CI.update steps pedal, card must not write the old sticky hold.
+
+  Order in card.py: CI.update (stalk +/-) then overlay. Writing seed_kph
+  every sticky frame undoes that 1/5 mph step.
+  """
+  hold = MapCruiseHold()
+  a = 50 * CV.MPH_TO_KPH
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=a, posted_kph=a,
+    engage_rising=True, now=0.0,
+  )
+  last_pedal = a
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=a, posted_kph=a,
+    engage_rising=False, now=1.0, stalk_pressed=False,
+  )
+  hud = _follow_hud(dec, a)
+  assert not dec.sticky
+  assert dec.seed_kph is None
+  assert not should_write_preap_pedal(dec.seed_kph, hud, last_pedal)
+
+  above = a + 5 * CV.MPH_TO_KPH
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=above, posted_kph=a,
+    engage_rising=False, now=2.0, stalk_pressed=False,
+  )
+  hud = _follow_hud(dec, a)
+  assert dec.sticky
+  assert abs(hud - above) < 1e-6
+  assert should_write_preap_pedal(dec.seed_kph, hud, last_pedal)
+  write_val = dec.seed_kph if dec.seed_kph is not None else hud
+  assert abs(write_val - above) < 1e-6
+
+  last_pedal = above
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=above, posted_kph=a,
+    engage_rising=False, now=3.0, stalk_pressed=False,
+  )
+  hud = _follow_hud(dec, a)
+  assert dec.sticky
+  assert dec.seed_kph is None
+  assert abs(hud - above) < 1e-6
+  assert not should_write_preap_pedal(dec.seed_kph, hud, last_pedal)
+
+  down = above - 5 * CV.MPH_TO_KPH
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=down, posted_kph=a,
+    engage_rising=False, now=4.0, stalk_pressed=False,
+  )
+  hud = _follow_hud(dec, a)
+  assert dec.sticky
+  assert abs(hud - down) < 1e-6
+  write_val = dec.seed_kph if dec.seed_kph is not None else hud
+  assert abs(write_val - down) < 1e-6
+
+  # Button event this frame, CS.speed still the old hold: do not write `a`
+  # over CI's in-flight +5.
+  hold2 = MapCruiseHold()
+  decide_map_cruise(
+    hold2, engaged=True, mode=MODE_FOLLOW, raw_kph=a, posted_kph=a,
+    engage_rising=True, now=0.0,
+  )
+  dec = decide_map_cruise(
+    hold2, engaged=True, mode=MODE_FOLLOW, raw_kph=a, posted_kph=a,
+    engage_rising=False, now=2.0, stalk_pressed=True,
+  )
+  hud = _follow_hud(dec, a)
+  assert not should_write_preap_pedal(dec.seed_kph, hud, a)
+  assert dec.seed_kph is None
 
 
 def test_hud_current_speed_is_wheel_ego_not_cluster_or_max():
