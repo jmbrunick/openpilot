@@ -11,6 +11,7 @@ from openpilot.common.swaglog import cloudlog
 
 from opendbc.car.car_helpers import interfaces
 from opendbc.car.vehicle_model import VehicleModel
+from openpilot.selfdrive.controls.lib.blinker_lateral_pause import lat_active_with_blinker_pause
 from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
@@ -93,8 +94,17 @@ class Controls:
 
     # Check which actuators can be enabled
     standstill = abs(CS.vEgo) <= max(self.CP.minSteerSpeed, 0.3) or CS.standstill
-    CC.latActive = self.sm['selfdriveState'].active and not CS.steerFaultTemporary and not CS.steerFaultPermanent and \
-                   (not standstill or self.CP.steerAtStandstill)
+    # One lit blinker lamp releases lateral only. Long / cruise stay engaged.
+    # desired_curvature tracks the wheel while paused so resume is rate-limited.
+    CC.latActive = lat_active_with_blinker_pause(
+      active=self.sm['selfdriveState'].active,
+      steer_fault_temporary=CS.steerFaultTemporary,
+      steer_fault_permanent=CS.steerFaultPermanent,
+      standstill=standstill,
+      steer_at_standstill=self.CP.steerAtStandstill,
+      left_blinker=CS.leftBlinker,
+      right_blinker=CS.rightBlinker,
+    )
     CC.longActive = CC.enabled and not any(e.overrideLongitudinal for e in self.sm['onroadEvents']) and self.CP.openpilotLongitudinalControl
 
     actuators = CC.actuators

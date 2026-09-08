@@ -43,3 +43,13 @@ class TestLatControl:
     for _ in range(1000):
       _, _, lac_log = controller.update(True, CS, VM, params, False, 1, False, 0.2)
     assert lac_log.saturated
+
+    # Blinker pause sets latActive false. Inactive must release the request
+    # so the driver can turn without fighting the last command.
+    CS.steeringAngleDeg = 18.0
+    steer, steering_angle_deg, inactive_log = controller.update(False, CS, VM, params, False, 1, False, 0.2)
+    assert inactive_log.active is False
+    if isinstance(controller, LatControlTorque):
+      assert steer == 0.0
+    if isinstance(controller, LatControlAngle):
+      assert steering_angle_deg == 18.0
