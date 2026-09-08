@@ -31,15 +31,15 @@ LOOKAHEAD_LATE = 1
 LOOKAHEAD_NORMAL = 2
 LOOKAHEAD_EARLY = 3
 # Locked Accel-5 brake a (slider is climb-only). Stay under Tesla pre-AP clip (−1.5).
-# Justin 50→30: 42 mph at the sign (u=22.352, leftover 18.776→13.411 ≈ 108 m at 0.80).
-# Combined: start kin+110 m earlier, and lock map_track_decel at 1.20 m/s² (kin ≈ 133 m).
+# Margin is extra start distance on kinematic d=(u²−v²)/(2a). Justin's 50→30 was
+# ~110 m late at the sign (42 mph vs 30); every decrease gets kin + this margin.
 DECREASE_START_MARGIN_M = 110.0
 # (comfort decel m/s², extra margin m, max start distance m)
 LOOKAHEAD_TUNING = {
   LOOKAHEAD_OFF: (0.0, 0.0, 0.0),
-  LOOKAHEAD_LATE: (1.35, DECREASE_START_MARGIN_M, 360.0),
-  LOOKAHEAD_NORMAL: (1.20, DECREASE_START_MARGIN_M, 600.0),
-  LOOKAHEAD_EARLY: (0.80, DECREASE_START_MARGIN_M + 120.0, 600.0),
+  LOOKAHEAD_LATE: (1.20, DECREASE_START_MARGIN_M, 360.0),
+  LOOKAHEAD_NORMAL: (0.80, DECREASE_START_MARGIN_M, 600.0),
+  LOOKAHEAD_EARLY: (0.55, DECREASE_START_MARGIN_M + 120.0, 600.0),
 }
 MIN_DECREASE_MS = 0.45  # ~1 mph; ignore jitter
 
@@ -81,7 +81,7 @@ def map_accel_a_ms2(lookahead: int, accel_level: int) -> float:
 
 
 def map_comfort_a_ms2(lookahead: int, accel_level: int = ACCEL_DEFAULT) -> float:
-  """Comfort |a| (m/s²). Lookahead Normal + accel 5 → 1.20 m/s²."""
+  """Comfort |a| (m/s²). Lookahead Normal + accel 5 → 0.80 m/s²."""
   if lookahead in LOOKAHEAD_TUNING and LOOKAHEAD_TUNING[lookahead][0] > 0:
     a_base = LOOKAHEAD_TUNING[lookahead][0]
   else:
