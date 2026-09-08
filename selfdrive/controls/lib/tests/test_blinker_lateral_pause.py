@@ -31,9 +31,20 @@ def test_hazards_do_not_pause():
   assert lat_active_with_blinker_pause(**_lat_kwargs(left_blinker=True, right_blinker=True))
 
 
-def test_resume_when_lamp_clears():
-  assert not lat_active_with_blinker_pause(**_lat_kwargs(left_blinker=True))
-  assert lat_active_with_blinker_pause(**_lat_kwargs(left_blinker=False, right_blinker=False))
+def test_justin_corner_does_not_auto_resume_on_lamp_off():
+  """Lamp off is not enough. Resume only after the hand leaves the wheel."""
+  hold = BlinkerLateralHold()
+  # 1. Single lamp: release lat. Long is not this helper.
+  assert not lat_active_with_blinker_pause(**_lat_kwargs(left_blinker=True, hold=hold))
+  # 3. Hand-steer while the lamp is on: stay paused.
+  assert not lat_active_with_blinker_pause(
+    **_lat_kwargs(left_blinker=True, steering_pressed=True, hold=hold))
+  # 4. Lamp clears, hand still on: do not resume.
+  assert not lat_active_with_blinker_pause(**_lat_kwargs(steering_pressed=True, hold=hold))
+  assert hold.holding
+  # 4. Hand released: resume lat by itself. No stalk pull.
+  assert lat_active_with_blinker_pause(**_lat_kwargs(hold=hold))
+  assert not hold.holding
 
 
 def test_hold_does_not_resume_while_hand_on_wheel():
@@ -71,11 +82,10 @@ def test_hold_clears_when_not_engaged():
   assert lat_active_with_blinker_pause(**_lat_kwargs(steering_pressed=True, hold=hold))
 
 
-def test_long_stays_active_inputs():
-  paused = lat_active_with_blinker_pause(**_lat_kwargs(left_blinker=True, active=True))
-  resumed = lat_active_with_blinker_pause(**_lat_kwargs(active=True))
-  assert paused is False
-  assert resumed is True
+def test_lamp_off_without_hand_resumes():
+  hold = BlinkerLateralHold()
+  assert not lat_active_with_blinker_pause(**_lat_kwargs(left_blinker=True, hold=hold))
+  assert lat_active_with_blinker_pause(**_lat_kwargs(hold=hold))
 
 
 def test_inactive_or_fault_still_blocks_lat():
