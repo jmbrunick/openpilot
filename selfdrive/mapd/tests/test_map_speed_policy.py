@@ -7,10 +7,12 @@ from openpilot.selfdrive.mapd.constants import (
 )
 from openpilot.selfdrive.mapd.map_speed_policy import (
   SOURCE_CRUISE, SOURCE_LEAD0, V_CRUISE_UNSET,
-  MapCruiseHold, anticipatory_limit_ms, apply_map_speed_kph, cap_planner_v_cruise_ms,
-  decide_map_cruise, effective_map_limit_ms, is_cruise_stalk_step,
-  longitudinal_obstacle_source, map_in_track_deadband, map_slew_a_ms2, map_track_accel_ms2,
-  map_track_decel_ms2, should_write_preap_pedal, slew_map_speed_ms,
+  MapCruiseHold, anticipatory_limit_ms, apply_map_speed_kph, blinker_turn_direction,
+  blinker_turn_holds_alc, blinker_turn_limit_ms, cap_planner_v_cruise_ms,
+  decide_map_cruise, effective_map_limit_ms, hud_with_blinker_turn_kph,
+  is_cruise_stalk_step, longitudinal_obstacle_source, map_in_track_deadband,
+  map_slew_a_ms2, map_track_accel_ms2, map_track_decel_ms2, should_write_preap_pedal,
+  slew_map_speed_ms, turn_speed_ms,
 )
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   MAP_SPEED_ACCEL, MAP_SPEED_ACCEL_DEFAULT, MAP_SPEED_LOOKAHEAD,
@@ -960,3 +962,123 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   assert "float(posted_kph) if raised else None" in policy
   # Sticky / stalk path unchanged.
   assert "should_write_preap_pedal(dec.seed_kph, preap_v_cruise_kph, self._last_pedal_kph)" in card
+  assert "blinker_turn_limit_ms" in card
+  assert "hud_with_blinker_turn_kph" in card
+  assert "turnSignalStalkState" in card
+  assert "lookup_intersection" in mapd
+  assert "lookup_intersection" in osm
+  assert "TURN_SPEED_DEFAULT_MPH = 15.0" in constants
+  dh = (root / "selfdrive/controls/lib/desire_helper.py").read_text()
+  assert "hold_for_intersection" in dh
+  modeld = (root / "selfdrive/modeld/modeld.py").read_text()
+  assert "blinker_turn_holds_alc" in modeld
+  assert "Desire.turnLeft" not in modeld
+
+
+def test_turn_speed_table_12_15_18():
+  posted = 45 * CV.MPH_TO_MS
+  assert abs(turn_speed_ms(25 * CV.MPH_TO_MS, posted) - 12 * CV.MPH_TO_MS) < 0.05
+  assert abs(turn_speed_ms(35 * CV.MPH_TO_MS, posted) - 15 * CV.MPH_TO_MS) < 0.05
+  assert abs(turn_speed_ms(45 * CV.MPH_TO_MS, posted) - 18 * CV.MPH_TO_MS) < 0.05
+  assert abs(turn_speed_ms(0.0, posted) - 15 * CV.MPH_TO_MS) < 0.05
+  # Never above dest or posted.
+  assert abs(turn_speed_ms(10 * CV.MPH_TO_MS, posted) - 10 * CV.MPH_TO_MS) < 0.05
+  slow_posted = 12 * CV.MPH_TO_MS
+  assert abs(turn_speed_ms(45 * CV.MPH_TO_MS, slow_posted) - slow_posted) < 0.05
+
+
+def test_blinker_turn_uses_stalk_not_lamp():
+  assert blinker_turn_direction(1, True, True) == 1
+  assert blinker_turn_direction(2, True, True) == 2
+  assert blinker_turn_direction(0, True, True) == 0  # lamp-only / idle lever
+  assert blinker_turn_direction(1, False, True) == 0  # left stalk, only right junction
+  assert blinker_turn_direction(2, True, False) == 0
+  assert blinker_turn_holds_alc(1, True, False, 80.0)
+  assert not blinker_turn_holds_alc(0, True, True, 80.0)
+
+
+def test_blinker_turn_eases_like_map_decrease_and_yields_sticky():
+  posted = 45 * CV.MPH_TO_MS
+  dest = 25 * CV.MPH_TO_MS
+  target = turn_speed_ms(dest, posted)
+  v_ego = 45 * CV.MPH_TO_MS
+  far = blinker_turn_limit_ms(
+    stalk_state=1, has_left=True, has_right=True, dist_m=2000.0,
+    left_dest_ms=dest, right_dest_ms=dest, posted_ms=posted, v_ego_ms=v_ego,
+    lookahead=LOOKAHEAD_NORMAL,
+  )
+  assert far is None
+  close = blinker_turn_limit_ms(
+    stalk_state=1, has_left=True, has_right=True, dist_m=80.0,
+    left_dest_ms=dest, right_dest_ms=dest, posted_ms=posted, v_ego_ms=v_ego,
+    lookahead=LOOKAHEAD_NORMAL,
+  )
+  assert close is not None
+  assert target - 0.2 <= close < posted
+  at = blinker_turn_limit_ms(
+    stalk_state=1, has_left=True, has_right=True, dist_m=0.0,
+    left_dest_ms=dest, right_dest_ms=dest, posted_ms=posted, v_ego_ms=v_ego,
+    lookahead=LOOKAHEAD_NORMAL,
+  )
+  assert at is not None and abs(at - target) < 0.2
+  # Idle stalk: no turn ceiling.
+  assert blinker_turn_limit_ms(
+    stalk_state=0, has_left=True, has_right=True, dist_m=80.0,
+    left_dest_ms=dest, right_dest_ms=dest, posted_ms=posted, v_ego_ms=v_ego,
+    lookahead=LOOKAHEAD_NORMAL,
+  ) is None
+  # Lookahead Off still slows for a blinker turn (uses Normal ease).
+  off = blinker_turn_limit_ms(
+    stalk_state=2, has_left=True, has_right=True, dist_m=80.0,
+    left_dest_ms=dest, right_dest_ms=dest, posted_ms=posted, v_ego_ms=v_ego,
+    lookahead=LOOKAHEAD_OFF,
+  )
+  assert off is not None and off < posted
+
+  hold = MapCruiseHold()
+  a = 45 * CV.MPH_TO_KPH
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=a, posted_kph=a,
+    engage_rising=True, now=0.0,
+  )
+  above = a + 5 * CV.MPH_TO_KPH
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=above, posted_kph=a,
+    engage_rising=False, now=1.0, stalk_pressed=False,
+  )
+  assert dec.sticky
+  # Without blinker, sticky still ignores upcoming posted 30.
+  assert abs(_follow_hud(dec, 30 * CV.MPH_TO_KPH) - above) < 1e-6
+  turn_kph = close * CV.MS_TO_KPH
+  hud = hud_with_blinker_turn_kph(
+    dec, 30 * CV.MPH_TO_KPH, turn_kph,
+    mode=MODE_FOLLOW, offset_kph=0.0, engaged=True,
+  )
+  assert abs(hud - turn_kph) < 1e-6
+  # Blinker cancel restores sticky.
+  restored = hud_with_blinker_turn_kph(
+    dec, 30 * CV.MPH_TO_KPH, None,
+    mode=MODE_FOLLOW, offset_kph=0.0, engaged=True,
+  )
+  assert abs(restored - above) < 1e-6
+  assert hold.sticky_set_kph is not None
+
+
+def test_blinker_turn_does_not_add_map_offset():
+  hold = MapCruiseHold()
+  posted = 45 * CV.MPH_TO_KPH
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=posted, posted_kph=posted,
+    engage_rising=True, now=0.0,
+  )
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=posted, posted_kph=posted,
+    engage_rising=False, now=1.0, stalk_pressed=False,
+  )
+  turn = 15 * CV.MPH_TO_KPH
+  offset = 5 * CV.MPH_TO_KPH
+  hud = hud_with_blinker_turn_kph(
+    dec, posted, turn, mode=MODE_FOLLOW, offset_kph=offset, engaged=True,
+  )
+  assert abs(hud - turn) < 1e-6
+

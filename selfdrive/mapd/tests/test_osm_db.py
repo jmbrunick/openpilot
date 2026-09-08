@@ -339,6 +339,79 @@ def test_delete_ways_intersecting_bbox(tmp_path):
   assert OsmSpeedLimitDB.way_count(path) == 1
 
 
+def test_intersection_four_way_left_and_right(tmp_path):
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  OsmSpeedLimitDB.insert_way(
+    con, 1, "Main", "primary", 45 * CV.MPH_TO_MS,
+    [(37.0, -122.004), (37.0, -121.996)],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 2, "Cross", "residential", 25 * CV.MPH_TO_MS,
+    [(36.997, -122.0), (37.003, -122.0)],
+  )
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  ix = db.lookup_intersection(37.0, -122.002, bearing_deg=90.0)
+  assert ix is not None
+  assert ix.has_left and ix.has_right
+  assert 80.0 <= ix.distance_m <= 280.0
+  assert abs(ix.left_speed_ms - 25 * CV.MPH_TO_MS) < 0.2
+  assert abs(ix.right_speed_ms - 25 * CV.MPH_TO_MS) < 0.2
+  v60 = 60 * CV.MPH_TO_MS
+  lead = osm_sign_lead_m(v60)
+  lagged = db.lookup_intersection(37.0, -122.002, bearing_deg=90.0, v_ego_ms=v60)
+  assert lagged is not None
+  assert lagged.distance_m < ix.distance_m
+  assert abs((ix.distance_m - lagged.distance_m) - lead) < 15.0
+  db.close()
+
+
+def test_intersection_ignores_parallel_way(tmp_path):
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  OsmSpeedLimitDB.insert_way(
+    con, 1, "Main", "primary", 45 * CV.MPH_TO_MS,
+    [(37.0, -122.004), (37.0, -121.996)],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 2, "Frontage", "tertiary", 35 * CV.MPH_TO_MS,
+    [(37.0004, -122.004), (37.0004, -121.996)],
+  )
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  ix = db.lookup_intersection(37.0, -122.002, bearing_deg=90.0)
+  assert ix is None
+  db.close()
+
+
+def test_intersection_t_junction_one_side(tmp_path):
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  OsmSpeedLimitDB.insert_way(
+    con, 1, "Main", "primary", 35 * CV.MPH_TO_MS,
+    [(37.0, -122.004), (37.0, -122.000)],
+  )
+  # Only north of the T — a left from eastbound.
+  OsmSpeedLimitDB.insert_way(
+    con, 2, "Side", "residential", 25 * CV.MPH_TO_MS,
+    [(37.0, -122.0), (37.003, -122.0)],
+  )
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  ix = db.lookup_intersection(37.0, -122.002, bearing_deg=90.0)
+  assert ix is not None
+  assert ix.has_left
+  assert 80.0 <= ix.distance_m <= 280.0
+  db.close()
+
+
 def test_simplify_collinear_and_f64_unpack():
   # 1 km eastbound straight line at 1 m spacing should collapse to endpoints.
   coords = [(37.0, -122.0 + i * 1e-5) for i in range(100)]

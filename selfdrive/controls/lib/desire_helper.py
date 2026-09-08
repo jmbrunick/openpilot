@@ -70,7 +70,7 @@ class DesireHelper:
     self.queued_changes = 0
     self.lane_changes_remaining = 0
 
-  def update(self, carstate, lateral_active, lane_change_prob):
+  def update(self, carstate, lateral_active, lane_change_prob, hold_for_intersection=False):
     v_ego = carstate.vEgo
     one_blinker = carstate.leftBlinker != carstate.rightBlinker
     below_lane_change_speed = v_ego < LANE_CHANGE_SPEED_MIN
@@ -102,7 +102,12 @@ class DesireHelper:
           self.queued_changes = min(self.queued_changes + 1, MAX_QUEUED_LANE_CHANGES)
 
       # LaneChangeState.off
-      if not just_cancelled and self.lane_change_state == LaneChangeState.off and one_blinker and not self.prev_one_blinker and not below_lane_change_speed:
+      # Held stalk + OSM intersection: do not arm ALC (that cuts the corner).
+      # Stock model path takes the turn once speed is down. Desire stays none.
+      if hold_for_intersection and self.lane_change_state == LaneChangeState.preLaneChange:
+        self._reset()
+      if (not just_cancelled and self.lane_change_state == LaneChangeState.off and one_blinker
+          and not self.prev_one_blinker and not below_lane_change_speed and not hold_for_intersection):
         self.lane_change_state = LaneChangeState.preLaneChange
         self.lane_change_ll_prob = 1.0
         # Initialize lane change direction to prevent UI alert flicker

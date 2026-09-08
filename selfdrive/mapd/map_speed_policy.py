@@ -13,7 +13,8 @@ from openpilot.selfdrive.mapd.constants import (
   ACCEL_DEFAULT, ACCEL_MAX, ACCEL_MIN, LOOKAHEAD_NORMAL, LOOKAHEAD_OFF,
   LOOKAHEAD_TUNING, MANUAL_SET_EPS_KPH, MIN_DECREASE_MS, MODE_CAP, MODE_DISPLAY,
   MODE_FOLLOW, MODE_OFF, POSTED_LIMIT_EPS_KPH, TRACK_DEADBAND_MS, TRACK_TAPER_MS,
-  map_accel_a_ms2, map_brake_a_ms2,
+  TURN_DEST_FAST_MPH, TURN_DEST_SLOW_MPH, TURN_SPEED_DEFAULT_MPH, TURN_SPEED_FAST_MPH,
+  TURN_SPEED_SLOW_MPH, map_accel_a_ms2, map_brake_a_ms2,
 )
 
 # Keep in sync with openpilot.selfdrive.car.cruise (avoid importing cereal here).
@@ -428,6 +429,99 @@ def cap_planner_v_cruise_ms(
   """
   _ = map_limit_ms, mode, offset_ms
   return v_cruise_ms
+
+
+def blinker_turn_direction(stalk_state: int, has_left: bool, has_right: bool) -> int:
+  """0=none, 1=left, 2=right. Stalk is TurnIndLvr_Stat / CS.turnSignalStalkState.
+
+  Lamps are ignored: openpilot can drive BC_indicator* during a lane change.
+  """
+  stalk = int(stalk_state)
+  if stalk == 1 and has_left:
+    return 1
+  if stalk == 2 and has_right:
+    return 2
+  return 0
+
+
+def blinker_turn_holds_alc(stalk_state: int, has_left: bool, has_right: bool,
+                           dist_m: float) -> bool:
+  """True while a held stalk + mapped junction should not arm ALC."""
+  if blinker_turn_direction(stalk_state, has_left, has_right) == 0:
+    return False
+  return float(dist_m) >= 0.0
+
+
+def turn_speed_ms(dest_ms: float, posted_ms: float) -> float:
+  """Intersection turn MAX (m/s) from dest-way posted and current posted."""
+  dest = float(dest_ms) if dest_ms > 0.0 else 0.0
+  if dest <= 0.0:
+    t = TURN_SPEED_DEFAULT_MPH * CV.MPH_TO_MS
+  else:
+    dest_mph = dest * CV.MS_TO_MPH
+    if dest_mph <= TURN_DEST_SLOW_MPH + 0.6:
+      t = TURN_SPEED_SLOW_MPH * CV.MPH_TO_MS
+    elif dest_mph >= TURN_DEST_FAST_MPH - 0.6:
+      t = TURN_SPEED_FAST_MPH * CV.MPH_TO_MS
+    else:
+      t = TURN_SPEED_DEFAULT_MPH * CV.MPH_TO_MS
+  cap = float(posted_ms) if posted_ms > 0.0 else t
+  if dest > 0.0:
+    cap = min(cap, dest)
+  return min(t, cap) if cap > 0.0 else t
+
+
+def blinker_turn_limit_ms(
+  *,
+  stalk_state: int,
+  has_left: bool,
+  has_right: bool,
+  dist_m: float,
+  left_dest_ms: float,
+  right_dest_ms: float,
+  posted_ms: float,
+  v_ego_ms: float,
+  lookahead: int,
+) -> float | None:
+  """Eased turn ceiling (m/s) while stalk is held at an approaching junction.
+
+  Uses the same kin+110 m / Accel-5 ease as posted decreases. Lookahead Off
+  still eases (Normal) — a blinker turn must slow even if map lookahead is off.
+  None when the stalk is idle, the junction is not in that direction, or the
+  junction is still outside the ease window.
+  """
+  direction = blinker_turn_direction(stalk_state, has_left, has_right)
+  if direction == 0:
+    return None
+  dest = float(left_dest_ms if direction == 1 else right_dest_ms)
+  target = turn_speed_ms(dest, float(posted_ms or 0.0))
+  current = max(float(posted_ms or 0.0), float(v_ego_ms or 0.0), target)
+  la = int(lookahead) if lookahead > LOOKAHEAD_OFF else LOOKAHEAD_NORMAL
+  return anticipatory_limit_ms(current, target, float(dist_m), float(v_ego_ms or 0.0), la)
+
+
+def hud_with_blinker_turn_kph(
+  dec: MapCruiseDecision,
+  map_kph: float | None,
+  turn_kph: float | None,
+  *,
+  mode: int,
+  offset_kph: float,
+  engaged: bool,
+) -> float:
+  """HUD MAX. Turn kph is an absolute ceiling (no map offset); sticky cannot block it."""
+  if dec.seed_kph is not None:
+    hud = float(dec.seed_kph)
+  elif dec.sticky:
+    hud = float(dec.driver_kph)
+  else:
+    hud = apply_map_speed_kph(
+      dec.driver_kph, map_kph, mode=mode, offset_kph=offset_kph,
+      engaged=engaged, op_long_software_cruise=True, driver_override=dec.follow_override,
+    )
+  if turn_kph is None:
+    return hud
+  return min(hud, float(turn_kph))
 
 
 # Same column order as LongitudinalMpc.update:

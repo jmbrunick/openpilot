@@ -21,8 +21,9 @@ from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET, VCruiseHelper
 from openpilot.selfdrive.mapd.map_speed_policy import (
-  MapCruiseHold, apply_map_speed_kph, decide_map_cruise, effective_map_limit_ms,
-  map_slew_a_ms2, read_map_speed_params, should_write_preap_pedal, slew_map_speed_ms,
+  MapCruiseHold, blinker_turn_limit_ms, decide_map_cruise, effective_map_limit_ms,
+  hud_with_blinker_turn_kph, map_slew_a_ms2, read_map_speed_params,
+  should_write_preap_pedal, slew_map_speed_ms,
 )
 
 REPLAY = "REPLAY" in os.environ
@@ -272,22 +273,36 @@ class Car:
             self._map_slew_ms = None
         elif not map_valid:
           self._map_slew_ms = None
+        # Blinker turn: held TurnIndLvr_Stat + OSM junction in that direction.
+        # Sticky must not block this drop; sticky_set_kph is kept. Lamps ignored.
+        # turn_kph is an absolute ceiling (do not add map offset).
+        turn_kph = None
+        if map_valid and md is not None and long_active:
+          turn_ms = blinker_turn_limit_ms(
+            stalk_state=int(getattr(CS, 'turnSignalStalkState', 0) or 0),
+            has_left=bool(getattr(md, 'intersectionHasLeft', False)),
+            has_right=bool(getattr(md, 'intersectionHasRight', False)),
+            dist_m=float(getattr(md, 'intersectionDistance', 0.0) or 0.0),
+            left_dest_ms=float(getattr(md, 'intersectionLeftSpeed', 0.0) or 0.0),
+            right_dest_ms=float(getattr(md, 'intersectionRightSpeed', 0.0) or 0.0),
+            posted_ms=float(md.speedLimit),
+            v_ego_ms=float(CS.vEgo),
+            lookahead=self._map_speed_lookahead,
+          )
+          if turn_ms is not None:
+            turn_kph = turn_ms * CV.MS_TO_KPH
         # seed_kph is a one-shot write (engage, posted raise, stalk step).
         # Sticky hold uses driver_kph / follow_override — do not write pedal
-        # every frame or CI.update's stalk step is undone.
-        if dec.seed_kph is not None:
-          preap_v_cruise_kph = dec.seed_kph
+        # every frame or CI.update's stalk step is undone. Blinker-turn overlay
+        # may still lower HUD while sticky is armed.
+        preap_v_cruise_kph = hud_with_blinker_turn_kph(
+          dec, map_kph, turn_kph,
+          mode=self._map_speed_mode,
+          offset_kph=self._map_speed_offset_kph,
+          engaged=long_active,
+        )
+        if dec.seed_kph is not None and turn_kph is None:
           self._map_slew_ms = dec.seed_kph * CV.KPH_TO_MS
-        else:
-          preap_v_cruise_kph = apply_map_speed_kph(
-            dec.driver_kph,
-            map_kph,
-            mode=self._map_speed_mode,
-            offset_kph=self._map_speed_offset_kph,
-            engaged=long_active,
-            op_long_software_cruise=True,
-            driver_override=dec.follow_override,
-          )
         # Write engage/posted/stalk seed, or when HUD MAX rose. Never write
         # the same sticky MAX every frame.
         if long_active and should_write_preap_pedal(dec.seed_kph, preap_v_cruise_kph, self._last_pedal_kph):

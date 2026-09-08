@@ -64,6 +64,22 @@ A_CLAMP_MAX = 1.60  # m/s²; below MPC cruise min accel magnitude and COMFORT_BR
 TRACK_DEADBAND_MS = 0.40  # ~0.9 mph; ignore set-speed / GPS jitter
 TRACK_TAPER_MS = 2.00     # ~4.5 mph; full comfort a above this error
 
+# Blinker + OSM intersection turn slowdown (not a nav route).
+# Junctions are other speed_limits ways (or a sharp same-way bend) whose heading
+# differs 35–145° from the matched road — a real turn, not a parallel or dual
+# carriageway. Distance uses the same v_ego * 1.5 s GNSS lead as nextSpeedLimit.
+INTERSECTION_LOOKAHEAD_M = LOOKAHEAD_MAX_M
+JUNCTION_RADIUS_M = 20.0
+JUNCTION_CLUSTER_M = 28.0
+TURN_MIN_DEG = 35.0
+TURN_MAX_DEG = 145.0
+# Dest posted (mph) → turn MAX. Never above dest or current posted.
+TURN_SPEED_SLOW_MPH = 12.0
+TURN_SPEED_DEFAULT_MPH = 15.0
+TURN_SPEED_FAST_MPH = 18.0
+TURN_DEST_SLOW_MPH = 25.0
+TURN_DEST_FAST_MPH = 40.0
+
 # Default offline DB location on comma 3X / PC
 DB_FILENAME = "speed_limits.sqlite"
 

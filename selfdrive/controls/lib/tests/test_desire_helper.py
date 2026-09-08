@@ -1,3 +1,4 @@
+from cereal import log
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.controls.lib.desire_helper import (
@@ -205,6 +206,22 @@ def test_single_change_resets_after_completion():
   assert dh.lane_change_state == LaneChangeState.off
   assert dh.lane_change_direction == LaneChangeDirection.none
   assert dh.queued_changes == 0
+
+
+def test_intersection_hold_does_not_arm_alc():
+  dh = DesireHelper()
+  dh.update(FakeCarState(), True, 0.0)
+  dh.update(FakeCarState(left=True, lever=1), True, 0.0, hold_for_intersection=True)
+  assert dh.lane_change_state == LaneChangeState.off
+  assert dh.desire == log.Desire.none
+
+
+def test_intersection_hold_cancels_pre_lane_change():
+  dh = DesireHelper()
+  _arm_left(dh)
+  assert dh.lane_change_state == LaneChangeState.preLaneChange
+  dh.update(FakeCarState(left=True, lever=1), True, 0.0, hold_for_intersection=True)
+  assert dh.lane_change_state == LaneChangeState.off
 
 
 def test_queued_change_timeout_resets_everything():
