@@ -18,7 +18,7 @@ LAST_GPS_WRITE_PERIOD_S = 60.0
 
 # Offroad Refresh maps: ublox may not be publishing yet, and yard/trees are
 # coarser than mapd's 50 m match. Accept last received plausible lat/lon.
-REFRESH_GNSS_WAIT_S = 45.0
+REFRESH_GNSS_WAIT_S = 10.0
 REFRESH_GPS_MAX_ACC_M = 200.0
 
 _PARAM_LAST_GPS_PATHS = (

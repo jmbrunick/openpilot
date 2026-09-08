@@ -230,7 +230,7 @@ Queries live OpenStreetMap speed limits within 100 miles (~160.9 km) of
 this car and merges them into the installed US maps. Ways in that radius
 are replaced; the rest of the US pack is kept.
 
-Uses a GNSS fix if one arrives (waits up to 45s), otherwise last stored GPS.
+Uses a GNSS fix if one arrives (waits up to 10s), otherwise last stored GPS.
 Will not guess a city. If maps are not installed yet, downloads the US pack
 first and then overlays the 100-mile extract -- never a 100-mile-only file.
 
