@@ -17,6 +17,7 @@ from openpilot.selfdrive.mapd.constants import (
   LOOKAHEAD_MAX_M,
   MAX_MATCH_DISTANCE_M,
   SEARCH_PAD_DEG,
+  osm_sign_lead_m,
 )
 
 EARTH_R = 6371000.0
@@ -449,17 +450,23 @@ class OsmSpeedLimitDB:
       cur_brg = end_hdg
     return None
 
-  def lookup(self, lat: float, lon: float, bearing_deg: float | None = None) -> SpeedLimitMatch | None:
+  def lookup(self, lat: float, lon: float, bearing_deg: float | None = None,
+             v_ego_ms: float = 0.0) -> SpeedLimitMatch | None:
     if self._con is None:
       return None
-    match = self._best_match(lat, lon, bearing_deg)
+    qlat, qlon = float(lat), float(lon)
+    lead_m = osm_sign_lead_m(v_ego_ms)
+    # Treat match and next-limit probes as 1.5 s farther along heading.
+    if lead_m > 0.0 and bearing_deg is not None:
+      qlat, qlon = _offset_point(qlat, qlon, float(bearing_deg), lead_m)
+    match = self._best_match(qlat, qlon, bearing_deg)
     if match is None:
       return match
     if bearing_deg is None:
       return match
 
-    along = self._along_way_next(lat, lon, float(bearing_deg), match)
-    geo = self._geodesic_next(lat, lon, float(bearing_deg), match.speed_limit_ms)
+    along = self._along_way_next(qlat, qlon, float(bearing_deg), match)
+    geo = self._geodesic_next(qlat, qlon, float(bearing_deg), match.speed_limit_ms)
     # Prefer along-way (true road distance, does not skip short ways). If it
     # finds nothing, geodesic may still see a nearby different-speed way.
     picked = along if along is not None else geo

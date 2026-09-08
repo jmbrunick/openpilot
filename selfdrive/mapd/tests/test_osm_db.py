@@ -1,5 +1,6 @@
 from openpilot.common.constants import CV
-from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB, _pack_coords, _unpack_coords, simplify_coords
+from openpilot.selfdrive.mapd.constants import OSM_SIGN_LEAD_S, osm_sign_lead_m
+from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB, _offset_point, _pack_coords, _unpack_coords, simplify_coords
 from openpilot.selfdrive.mapd.overpass import ways_from_overpass
 from openpilot.selfdrive.mapd.speed_limit import parse_maxspeed
 
@@ -162,6 +163,85 @@ def test_benson_us12_60_to_50_is_next_not_30(tmp_path):
   assert abs(m.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3
   assert abs(m.next_speed_limit_ms - 50 * CV.MPH_TO_MS) < 0.3, m.next_speed_limit_ms * CV.MS_TO_MPH
   assert 180.0 <= m.next_distance_m <= 320.0
+  db.close()
+
+
+def test_osm_sign_lead_is_speed_times_1_5s_not_fixed_meters():
+  """Justin: 1.5 s delay. 50 mph → ~33.5 m, 60 mph → ~40 m. Not a constant offset."""
+  assert abs(OSM_SIGN_LEAD_S - 1.5) < 1e-9
+  m50 = osm_sign_lead_m(50 * CV.MPH_TO_MS)
+  m60 = osm_sign_lead_m(60 * CV.MPH_TO_MS)
+  assert abs(m50 - 50 * CV.MPH_TO_MS * 1.5) < 1e-9
+  assert abs(m60 - 60 * CV.MPH_TO_MS * 1.5) < 1e-9
+  assert abs(m50 - 33.5) < 0.1
+  assert abs(m60 - 40.2) < 0.1
+  assert m60 > m50 + 5.0
+  assert osm_sign_lead_m(0.0) == 0.0
+  assert osm_sign_lead_m(-5.0) == 0.0
+
+
+def test_sign_lead_advances_limit_and_next_distance(tmp_path):
+  """Match / next-limit probe 1.5 s along heading: LIMIT and decreases earlier."""
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  OsmSpeedLimitDB.insert_way(
+    con, 1, "Main", "primary", 45 * CV.MPH_TO_MS,
+    [(37.0, -122.004), (37.0, -122.000)],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 2, "Main", "primary", 25 * CV.MPH_TO_MS,
+    [(37.0, -122.000), (37.0, -121.996)],
+  )
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  v60 = 60 * CV.MPH_TO_MS
+  lead_m = osm_sign_lead_m(v60)
+  assert abs(lead_m - v60 * OSM_SIGN_LEAD_S) < 1e-9
+
+  gps_lat, gps_lon = 37.0, -122.002
+  cold = db.lookup(gps_lat, gps_lon, bearing_deg=90.0)
+  hot = db.lookup(gps_lat, gps_lon, bearing_deg=90.0, v_ego_ms=v60)
+  assert cold is not None and hot is not None
+  assert abs(cold.speed_limit_ms - 45 * CV.MPH_TO_MS) < 0.2
+  assert abs(hot.speed_limit_ms - 45 * CV.MPH_TO_MS) < 0.2
+  assert abs(hot.next_speed_limit_ms - 25 * CV.MPH_TO_MS) < 0.2
+  assert abs(cold.next_speed_limit_ms - 25 * CV.MPH_TO_MS) < 0.2
+  # Probe is v*1.5 farther along heading, so remaining to the 25 is ~lead_m less.
+  assert hot.next_distance_m < cold.next_distance_m
+  assert abs((cold.next_distance_m - hot.next_distance_m) - lead_m) < 12.0
+
+  # Close enough that 1.5 s at 60 mph is already on the 25: LIMIT updates early.
+  qlat, qlon = _offset_point(37.0, -122.000, 270.0, 20.0)
+  at_sign = db.lookup(qlat, qlon, bearing_deg=90.0)
+  early = db.lookup(qlat, qlon, bearing_deg=90.0, v_ego_ms=v60)
+  assert at_sign is not None and abs(at_sign.speed_limit_ms - 45 * CV.MPH_TO_MS) < 0.2
+  assert early is not None and abs(early.speed_limit_ms - 25 * CV.MPH_TO_MS) < 0.2
+  db.close()
+
+
+def test_sign_lead_does_not_raise_current_for_higher_ahead(tmp_path):
+  """Higher limit 180 m ahead stays nextSpeedLimit; Follow must not raise MAX early."""
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  OsmSpeedLimitDB.insert_way(
+    con, 1, "Main", "primary", 25 * CV.MPH_TO_MS,
+    [(37.0, -122.004), (37.0, -122.000)],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 2, "Main", "primary", 45 * CV.MPH_TO_MS,
+    [(37.0, -122.000), (37.0, -121.996)],
+  )
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  v60 = 60 * CV.MPH_TO_MS
+  m = db.lookup(37.0, -122.002, bearing_deg=90.0, v_ego_ms=v60)
+  assert m is not None
+  assert abs(m.speed_limit_ms - 25 * CV.MPH_TO_MS) < 0.2
+  assert abs(m.next_speed_limit_ms - 45 * CV.MPH_TO_MS) < 0.2
   db.close()
 
 
