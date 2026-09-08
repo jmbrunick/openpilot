@@ -2,12 +2,14 @@
 
 opendbc's handle_steering_disengage tears down the FSM on hands-on ≥ 2.
 During a lamp-on turn we have already released steering, so a wheel input
-must not drop cruiseEnabled / enableLongControl. Stalk cancel is unchanged.
+must not drop cruiseEnabled / enableLongControl. After the lamp clears,
+keep that suppression until torque is released so a finishing hand-steer
+does not fully disengage NAP. Stalk cancel is unchanged.
 
 This follows the same install-from-card pattern as preap_body_controls.
 """
 
-from openpilot.selfdrive.controls.lib.blinker_lateral_pause import blinker_pauses_lateral
+from openpilot.selfdrive.controls.lib.blinker_lateral_pause import BlinkerLateralHold
 
 _ORIG_HANDLE = None
 _ORIG_UPDATE = None
@@ -23,10 +25,32 @@ def _peek_blinker_lamps(can_parsers):
     return False, False
 
 
+def _peek_steering_pressed(can_parsers):
+  try:
+    from opendbc.car import Bus
+    from opendbc.car.tesla.values import STEER_THRESHOLD
+    epas = can_parsers[Bus.chassis].vl["EPAS_sysStatus"]
+    return abs(epas["EPAS_torsionBarTorque"]) > STEER_THRESHOLD
+  except Exception:
+    return False
+
+
+def _hold_for(engagement):
+  hold = getattr(engagement, "_nap_lat_hold", None)
+  if hold is None:
+    hold = BlinkerLateralHold()
+    engagement._nap_lat_hold = hold
+  return hold
+
+
 def _handle_steering_disengage(self, steering_disengage):
-  if blinker_pauses_lateral(getattr(self, "_nap_left_blinker", False),
-                            getattr(self, "_nap_right_blinker", False)):
-    # Keep prev in sync so lamp-off with hands still on is not a rising edge.
+  left = getattr(self, "_nap_left_blinker", False)
+  right = getattr(self, "_nap_right_blinker", False)
+  pressed = bool(getattr(self, "_nap_steering_pressed", False) or steering_disengage)
+  paused = _hold_for(self).update(
+    left, right, pressed, engaged=bool(getattr(self, "cruiseEnabled", False)))
+  if paused:
+    # Keep prev in sync so lamp-off / hand-release is not a rising edge.
     self.prev_steering_disengage = steering_disengage
     return
   return _ORIG_HANDLE(self, steering_disengage)
@@ -34,10 +58,14 @@ def _handle_steering_disengage(self, steering_disengage):
 
 def _update_preap(cs, can_parsers):
   left, right = _peek_blinker_lamps(can_parsers)
+  pressed = _peek_steering_pressed(can_parsers)
   engagement = getattr(cs, "engagement", None)
   if engagement is not None:
     engagement._nap_left_blinker = left
     engagement._nap_right_blinker = right
+    engagement._nap_steering_pressed = pressed
+    _hold_for(engagement).update(
+      left, right, pressed, engaged=bool(getattr(engagement, "cruiseEnabled", False)))
   return _ORIG_UPDATE(cs, can_parsers)
 
 
