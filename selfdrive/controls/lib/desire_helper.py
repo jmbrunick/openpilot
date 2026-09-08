@@ -93,26 +93,17 @@ class DesireHelper:
     if not lateral_active or self.lane_change_timer > LANE_CHANGE_TIME_MAX:
       self._reset()
     else:
-      just_cancelled = False
       if self.lane_change_state != LaneChangeState.off:
         if opposite_direction_tap:
           self._reset()
-          just_cancelled = True
         elif same_direction_tap:
           self.queued_changes = min(self.queued_changes + 1, MAX_QUEUED_LANE_CHANGES)
 
-      # LaneChangeState.off
-      if not just_cancelled and self.lane_change_state == LaneChangeState.off and one_blinker and not self.prev_one_blinker and not below_lane_change_speed:
-        self.lane_change_state = LaneChangeState.preLaneChange
-        self.lane_change_ll_prob = 1.0
-        # Initialize lane change direction to prevent UI alert flicker
-        self.lane_change_direction = self.get_lane_change_direction(carstate)
-        # Start a fresh arming window. The first tap queues one change.
-        self.arm_timer = 0.0
-        self.queued_changes = 1
+      # LaneChangeState.off: do not arm ALC from a blinker lamp. A lamp now
+      # pauses lateral for a driver-steered turn, not a lane change.
 
       # LaneChangeState.preLaneChange
-      elif self.lane_change_state == LaneChangeState.preLaneChange:
+      if self.lane_change_state == LaneChangeState.preLaneChange:
         torque_applied = carstate.steeringPressed and \
                          ((carstate.steeringTorque > 0 and self.lane_change_direction == LaneChangeDirection.left) or
                           (carstate.steeringTorque < 0 and self.lane_change_direction == LaneChangeDirection.right))

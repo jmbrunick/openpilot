@@ -4,6 +4,7 @@ from opendbc.car.car_helpers import interfaces
 from opendbc.car.interfaces import MAX_CTRL_SPEED
 from opendbc.car.toyota.values import ToyotaFlags
 
+from openpilot.selfdrive.controls.lib.blinker_lateral_pause import blinker_pauses_lateral
 from openpilot.selfdrive.selfdrived.events import Events
 
 ButtonType = structs.CarState.ButtonEvent.Type
@@ -157,8 +158,11 @@ class CarSpecificEvents:
       events.add(EventName.accFaulted)
     if CS.steeringPressed:
       events.add(EventName.steerOverride)
+    # Wheel input during a blinker-lamp turn must not USER_DISABLE cruise.
+    # Lateral is already released; a firm stalk cancel still fully disengages.
     if CS.steeringDisengage and not CS_prev.steeringDisengage:
-      events.add(EventName.steerDisengage)
+      if not blinker_pauses_lateral(getattr(CS, 'leftBlinker', False), getattr(CS, 'rightBlinker', False)):
+        events.add(EventName.steerDisengage)
     if CS.brakePressed and CS.standstill:
       events.add(EventName.preEnableStandstill)
     if CS.gasPressed:
