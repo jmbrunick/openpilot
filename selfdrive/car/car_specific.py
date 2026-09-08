@@ -161,7 +161,8 @@ class CarSpecificEvents:
     # Wheel input during a blinker-lamp turn must not USER_DISABLE cruise.
     # Lateral is already released; a firm stalk cancel still fully disengages.
     if CS.steeringDisengage and not CS_prev.steeringDisengage:
-      if not blinker_pauses_lateral(getattr(CS, 'leftBlinker', False), getattr(CS, 'rightBlinker', False)):
+      if not blinker_pauses_lateral(getattr(CS, 'leftBlinker', False), getattr(CS, 'rightBlinker', False),
+                                    getattr(CS, 'vEgo', 0.0)):
         events.add(EventName.steerDisengage)
     if CS.brakePressed and CS.standstill:
       events.add(EventName.preEnableStandstill)

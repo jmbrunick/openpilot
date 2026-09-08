@@ -29,14 +29,8 @@ def _tick(dh, cs, n=1, lane_change_prob=0.0):
 
 
 def _arm_left(dh):
-  # Blinker lamps no longer arm ALC. Force the armed state so the rest of
-  # the state machine can still be tested in isolation.
   dh.update(FakeCarState(), True, 0.0)
-  dh.lane_change_state = LaneChangeState.preLaneChange
-  dh.lane_change_direction = LaneChangeDirection.left
-  dh.queued_changes = 1
-  dh.lane_change_ll_prob = 1.0
-  dh.arm_timer = 0.0
+  dh.update(FakeCarState(left=True, lever=1), True, 0.0)
   dh.update(FakeCarState(left=True), True, 0.0)
 
 
@@ -63,16 +57,22 @@ def _complete_maneuver(dh, cs_after):
       break
 
 
-def test_blinker_lamp_does_not_arm_alc():
+def test_tap_arms_pre_lane_change():
   dh = DesireHelper()
-  dh.update(FakeCarState(), True, 0.0)
-  dh.update(FakeCarState(left=True, lever=1), True, 0.0)
-  dh.update(FakeCarState(right=True, lever=2), True, 0.0)
-  dh.update(FakeCarState(left=True, right=True), True, 0.0)
+  _arm_left(dh)
 
-  assert dh.lane_change_state == LaneChangeState.off
-  assert dh.lane_change_direction == LaneChangeDirection.none
-  assert dh.queued_changes == 0
+  assert dh.lane_change_state == LaneChangeState.preLaneChange
+  assert dh.lane_change_direction == LaneChangeDirection.left
+  assert dh.queued_changes == 1
+
+
+def test_highway_blinker_with_no_junction_still_arms_alc():
+  dh = DesireHelper()
+  dh.update(FakeCarState(v_ego=30.0), True, 0.0)
+  dh.update(FakeCarState(v_ego=30.0, left=True, lever=1), True, 0.0)
+
+  assert dh.lane_change_state == LaneChangeState.preLaneChange
+  assert dh.lane_change_direction == LaneChangeDirection.left
 
 
 def test_latch_survives_blinker_lamp_off():
