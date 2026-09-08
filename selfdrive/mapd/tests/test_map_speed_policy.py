@@ -267,6 +267,41 @@ def test_sixty_to_fifty_uses_kin_plus_110_not_min_decrease_skip():
   assert anticipatory_limit_ms(v60, v50, kin_m + DECREASE_START_MARGIN_M + 5.0, v60, LOOKAHEAD_NORMAL) is None
 
 
+def test_sixty_to_fifty_eases_with_lookahead_not_posted_cliff():
+  """10 mph 60→50 must interpolate MAX, not seed-snap to 50."""
+  v60 = 60 * CV.MPH_TO_MS
+  v50 = 50 * CV.MPH_TO_MS
+  a = map_brake_a_ms2(LOOKAHEAD_NORMAL)
+  kin_m = (v60 * v60 - v50 * v50) / (2.0 * a)
+  at_open = anticipatory_limit_ms(v60, v50, kin_m + DECREASE_START_MARGIN_M, v60, LOOKAHEAD_NORMAL)
+  assert at_open is not None
+  assert abs(at_open - v60) < 0.6
+  mid = anticipatory_limit_ms(v60, v50, 80.0, v60, LOOKAHEAD_NORMAL)
+  assert mid is not None
+  assert v50 < mid < v60
+  at_zone = anticipatory_limit_ms(v60, v50, 0.0, v60, LOOKAHEAD_NORMAL)
+  assert at_zone is not None and abs(at_zone - v50) < 1e-6
+  hold = MapCruiseHold()
+  a_kph = 60 * CV.MPH_TO_KPH
+  b_kph = 50 * CV.MPH_TO_KPH
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=a_kph, posted_kph=a_kph,
+    engage_rising=True, now=0.0,
+  )
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=a_kph, posted_kph=b_kph,
+    engage_rising=False, now=1.0, stalk_pressed=False,
+  )
+  assert not dec.sticky
+  assert dec.seed_kph is None
+  raise_dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=b_kph, posted_kph=a_kph,
+    engage_rising=False, now=2.0, stalk_pressed=False,
+  )
+  assert raise_dec.seed_kph is not None
+  assert abs(raise_dec.seed_kph - a_kph) < 1e-6
+
+
 def test_sticky_skips_anticipatory_lookahead():
   """Upcoming 50 must not lower the ceiling while a sticky set is active."""
   current = 60 * CV.MPH_TO_MS
@@ -429,15 +464,15 @@ def test_sticky_manual_below_limit_until_posted_changes():
   assert dec.seed_kph is None
   assert abs(dec.driver_kph - below) < 1e-6
   assert not should_write_preap_pedal(dec.seed_kph, _follow_hud(dec, a), below)
-  # Limit changes to b: resume at b, drop a-5.
+  # Limit changes to b: drop sticky. Do not seed-snap MAX to b.
   b = 35 * CV.MPH_TO_KPH
   dec = decide_map_cruise(
     hold, engaged=True, mode=MODE_FOLLOW, raw_kph=below, posted_kph=b,
     engage_rising=False, now=21.0, stalk_pressed=False,
   )
   assert not dec.sticky
-  assert dec.seed_kph is not None
-  assert abs(dec.seed_kph - b) < 1e-6
+  assert dec.seed_kph is None
+  assert abs(_follow_hud(dec, b) - b) < 1e-6
 
 
 def test_disengage_clears_sticky_and_follow_timer():
@@ -618,8 +653,7 @@ def test_follow_holds_absolute_set_until_posted_changes():
     engage_rising=False, now=61.0, stalk_pressed=False,
   )
   assert not dec.sticky
-  assert dec.seed_kph is not None
-  assert abs(dec.seed_kph - b) < 1e-6
+  assert dec.seed_kph is None  # decrease must not cliff MAX to posted
   assert abs(_follow_hud(dec, b) - b) < 1e-6
 
   hold2 = MapCruiseHold()
@@ -646,6 +680,7 @@ def test_follow_holds_absolute_set_until_posted_changes():
     engage_rising=False, now=61.0, stalk_pressed=False,
   )
   assert not dec.sticky
+  assert dec.seed_kph is None
   assert abs(_follow_hud(dec, b) - b) < 1e-6
 
 
@@ -809,7 +844,8 @@ def test_map_speed_submenu_wires_params():
   assert "pauses Follow for 10s" not in tici
   assert "holds until the posted limit changes" in tici
   assert "lookahead pauses while that set is active" in tici
-  assert "1.5 s GPS lag applies both ways" in tici
+  assert "1.5 s GPS lag raises posted at the" in tici
+  assert "decreases still ease with lookahead" in tici
   assert "A higher limit far ahead never raises MAX" in tici
   assert "A higher limit ahead never raises MAX early" not in tici
   assert "acceleration only" in mici
@@ -876,5 +912,8 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   assert "OSM_SIGN_LEAD_S = 1.5" in constants
   assert "OSM_SIGN_LEAD_M" not in constants
   assert "DECREASE_START_MARGIN_M = 110.0" in constants
+  assert "Do not snap posted down" in osm
+  policy = (root / "selfdrive/mapd/map_speed_policy.py").read_text()
+  assert "float(posted_kph) if raised else None" in policy
   # Sticky / stalk path unchanged.
   assert "should_write_preap_pedal(dec.seed_kph, preap_v_cruise_kph, self._last_pedal_kph)" in card

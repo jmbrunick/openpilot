@@ -66,8 +66,8 @@ class MapSpeedLimitLayout(Widget):
       "Cap/Follow: ease MAX down for a lower limit ahead. " +
       "Off: wait until GPS is on that way. Late / Normal / Early: farther preview. " +
       "A stalk set holds until posted changes; lookahead pauses while that set is active. " +
-      "A higher limit far ahead never raises MAX. 1.5 s GPS lag applies both ways at the " +
-      "offset position. Radar lead still outranks map.",
+      "A higher limit far ahead never raises MAX. 1.5 s GPS lag raises posted at the " +
+      "offset position; decreases still ease with lookahead. Radar lead still outranks map.",
       buttons=MAP_SPEED_LOOKAHEAD_LABELS,
       button_width=150,
       selected_index=self._lookahead_index(lookahead),
