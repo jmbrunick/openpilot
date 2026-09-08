@@ -454,24 +454,44 @@ class OsmSpeedLimitDB:
              v_ego_ms: float = 0.0) -> SpeedLimitMatch | None:
     if self._con is None:
       return None
+    gps_match = self._best_match(float(lat), float(lon), bearing_deg)
     qlat, qlon = float(lat), float(lon)
     lead_m = osm_sign_lead_m(v_ego_ms)
-    # GNSS lag, not anticipation: match posted LIMIT at v_ego * 1.5 s along
-    # heading (higher and lower). Next-limit probes start from that same
-    # position; decrease +110 m / 0.80 brake is a separate policy path.
+    lead_match = gps_match
     if lead_m > 0.0 and bearing_deg is not None:
       qlat, qlon = _offset_point(qlat, qlon, float(bearing_deg), lead_m)
-    match = self._best_match(qlat, qlon, bearing_deg)
+      lead_match = self._best_match(qlat, qlon, bearing_deg)
+
+    # GNSS lag: raise posted when the 1.5 s point is already in a higher zone.
+    # Do not snap posted down — that bypasses kin+110 m ease (60→50 all at once).
+    raised = (
+      lead_match is not None and gps_match is not None
+      and float(lead_match.speed_limit_ms) > float(gps_match.speed_limit_ms) + 0.3
+    )
+    if raised or gps_match is None:
+      match = lead_match
+    else:
+      match = gps_match
     if match is None:
-      return match
+      return None
     if bearing_deg is None:
       return match
 
-    along = self._along_way_next(qlat, qlon, float(bearing_deg), match)
-    geo = self._geodesic_next(qlat, qlon, float(bearing_deg), match.speed_limit_ms)
+    # Decrease lookahead is separate: remaining to the next lower from GPS,
+    # minus v*1.5 s so ease starts at the lag-corrected zone (not a posted cliff).
+    if raised:
+      along = self._along_way_next(qlat, qlon, float(bearing_deg), match)
+      geo = self._geodesic_next(qlat, qlon, float(bearing_deg), match.speed_limit_ms)
+      picked = along if along is not None else geo
+    else:
+      along = self._along_way_next(float(lat), float(lon), float(bearing_deg), match)
+      geo = self._geodesic_next(float(lat), float(lon), float(bearing_deg), match.speed_limit_ms)
+      picked = along if along is not None else geo
+      if picked is not None:
+        nxt, dist = picked
+        picked = (nxt, max(0.0, float(dist) - lead_m))
     # Prefer along-way (true road distance, does not skip short ways). If it
     # finds nothing, geodesic may still see a nearby different-speed way.
-    picked = along if along is not None else geo
     if picked is None:
       return match
     next_limit, next_dist = picked

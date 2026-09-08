@@ -163,6 +163,12 @@ def test_benson_us12_60_to_50_is_next_not_30(tmp_path):
   assert abs(m.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3
   assert abs(m.next_speed_limit_ms - 50 * CV.MPH_TO_MS) < 0.3, m.next_speed_limit_ms * CV.MS_TO_MPH
   assert 180.0 <= m.next_distance_m <= 320.0
+  # 1.5 s offset into the short 50 must not snap posted to 50.
+  v60 = 60 * CV.MPH_TO_MS
+  near50 = db.lookup(45.3087680, -95.5796230, bearing_deg=290.0, v_ego_ms=v60)
+  assert near50 is not None
+  assert abs(near50.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3
+  assert abs(near50.next_speed_limit_ms - 50 * CV.MPH_TO_MS) < 0.3
   db.close()
 
 
@@ -208,16 +214,19 @@ def test_sign_lead_advances_limit_and_next_distance(tmp_path):
   assert abs(hot.speed_limit_ms - 45 * CV.MPH_TO_MS) < 0.2
   assert abs(hot.next_speed_limit_ms - 25 * CV.MPH_TO_MS) < 0.2
   assert abs(cold.next_speed_limit_ms - 25 * CV.MPH_TO_MS) < 0.2
-  # Remaining is from the lag-corrected point; +110 m decrease margin is separate.
+  # Remaining is from GPS minus v*1.5 s; +110 m decrease margin is separate.
   assert hot.next_distance_m < cold.next_distance_m
   assert abs((cold.next_distance_m - hot.next_distance_m) - lead_m) < 12.0
 
-  # Close enough that 1.5 s at 60 mph is already on the 25: LIMIT updates (down).
+  # Offset already in the 25: do not snap posted to 25. Keep 45 and next=25
+  # so kin+110 m can ease MAX (the 60→50 snap).
   qlat, qlon = _offset_point(37.0, -122.000, 270.0, 20.0)
   at_sign = db.lookup(qlat, qlon, bearing_deg=90.0)
   early = db.lookup(qlat, qlon, bearing_deg=90.0, v_ego_ms=v60)
   assert at_sign is not None and abs(at_sign.speed_limit_ms - 45 * CV.MPH_TO_MS) < 0.2
-  assert early is not None and abs(early.speed_limit_ms - 25 * CV.MPH_TO_MS) < 0.2
+  assert early is not None and abs(early.speed_limit_ms - 45 * CV.MPH_TO_MS) < 0.2
+  assert abs(early.next_speed_limit_ms - 25 * CV.MPH_TO_MS) < 0.2
+  assert early.next_distance_m < at_sign.next_distance_m
   db.close()
 
 
