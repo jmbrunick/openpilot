@@ -173,6 +173,9 @@ Press START only if you accept these risks."""
 DOWNLOAD_US_MAPS_INSTRUCTIONS = """\
 Download US OSM speed-limit maps
 
+No reboot required after Download US Maps. Exit returns to Settings.
+mapd reloads the sqlite in about 15 seconds.
+
 Fetches a prebuilt sqlite of OpenStreetMap maxspeed ways for the United States
 and installs it at /data/media/0/osm/speed_limits.sqlite.
 
@@ -184,13 +187,13 @@ PRECONDITIONS:
   2. Wi-Fi that can reach GitHub Releases
   3. 800 MiB free on /data (same filesystem as /data/media/0/osm/)
      ~204 MiB zst + ~516 MiB sqlite + 80 MiB margin. Stages in
-     /data/media/0/osm/.download/ — not /tmp.
+     /data/media/0/osm/.download/ -- not /tmp.
 
 If a previous download died with ENOSPC / "No space left on device":
   rm -f /data/media/0/osm/*.partial /data/media/0/osm/.download/*
   then clear old routes/videos if df -h /data is still short.
 
-Takes a few minutes. mapd reloads onroad within ~15 seconds — no reboot.
+Takes a few minutes.
 
 For later local updates use Refresh maps (live OSM within 100 miles).
 
@@ -200,8 +203,30 @@ https://www.openstreetmap.org/copyright
 Press START to download."""
 
 
+REFRESH_MAPS_NO_REBOOT_NOTE = (
+  "No reboot required after Refresh maps. Exit returns to Settings. "
+  + "mapd reloads the sqlite in about 15 seconds."
+)
+
+DOWNLOAD_US_MAPS_NO_REBOOT_NOTE = (
+  "No reboot required after Download US Maps. Exit returns to Settings. "
+  + "mapd reloads the sqlite in about 15 seconds."
+)
+
+REFRESH_MAPS_ROW_DESCRIPTION = (
+  "Live OSM within 100 miles. No reboot required. Exit returns to Settings."
+)
+
+DOWNLOAD_US_MAPS_ROW_DESCRIPTION = (
+  "Install the US pack. No reboot required. Exit returns to Settings."
+)
+
+
 REFRESH_MAPS_INSTRUCTIONS = """\
 Query live OSM within 100 miles and merge into the US pack
+
+No reboot required after Refresh maps. Exit returns to Settings.
+mapd reloads the sqlite in about 15 seconds.
 
 Queries live OpenStreetMap speed limits within 100 miles (~160.9 km) of
 this car and merges them into the installed US maps. Ways in that radius
@@ -219,8 +244,7 @@ PRECONDITIONS:
   4. Stages the merge on /data/media/0/osm/.download/ -- not /tmp.
      A previous good sqlite is kept if OSM times out or the merge fails.
 
-Overpass can take several minutes. mapd reloads onroad within ~15s --
-no reboot.
+Overpass can take several minutes.
 
 Data is (c) OpenStreetMap contributors (ODbL).
 https://www.openstreetmap.org/copyright

@@ -39,6 +39,7 @@ from openpilot.selfdrive.mapd.gps_fix import (
   read_live_gnss,
 )
 from openpilot.selfdrive.mapd.maps_manifest import LICENSE, LICENSE_URL
+from openpilot.selfdrive.ui.layouts.settings.nap_content import REFRESH_MAPS_NO_REBOOT_NOTE
 from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB
 from openpilot.selfdrive.mapd.overpass import (
   OVERPASS_URL,
@@ -269,6 +270,7 @@ def refresh_local_maps(
   dest = os.path.abspath(dest or default_db_path())
   _p(f"OpenStreetMap speed limits ({LICENSE}). (c) OpenStreetMap contributors")
   _p(LICENSE_URL)
+  _p(REFRESH_MAPS_NO_REBOOT_NOTE)
 
   loc = resolve_refresh_location(
     lat=lat, lon=lon,
@@ -317,7 +319,7 @@ def refresh_local_maps(
   }
   install_merged_overlay(dest, ways, bbox, extra_meta)
   _p(installed_db_summary(dest))
-  _p("mapd reloads this file within ~15s onroad. No reboot required.")
+  _p(REFRESH_MAPS_NO_REBOOT_NOTE)
   return dest
 
 

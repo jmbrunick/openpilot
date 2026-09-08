@@ -4,11 +4,11 @@ from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.list_view import multiple_button_item, button_item, text_item
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
-  DOWNLOAD_US_MAPS_INSTRUCTIONS,
+  DOWNLOAD_US_MAPS_ROW_DESCRIPTION,
   MAP_SPEED_ACCEL, MAP_SPEED_ACCEL_DEFAULT, MAP_SPEED_ACCEL_LABELS,
   MAP_SPEED_LOOKAHEAD, MAP_SPEED_LOOKAHEAD_LABELS,
   MAP_SPEED_MODES, MAP_SPEED_MODE_LABELS, MAP_SPEED_OFFSETS_MPH,
-  REFRESH_MAPS_INSTRUCTIONS,
+  REFRESH_MAPS_ROW_DESCRIPTION,
 )
 from openpilot.selfdrive.mapd.fetch_maps import installed_db_summary, installed_revision_summary
 from openpilot.selfdrive.ui.ui_state import ui_state
@@ -105,7 +105,7 @@ class MapSpeedLimitLayout(Widget):
     self._refresh_btn = button_item(
       "Refresh maps",
       "Start",
-      description=REFRESH_MAPS_INSTRUCTIONS.split("\n", 1)[0],
+      description=REFRESH_MAPS_ROW_DESCRIPTION,
       callback=self._on_refresh,
     )
     self._refresh_btn.action_item.set_enabled(ui_state.is_offroad)
@@ -114,7 +114,7 @@ class MapSpeedLimitLayout(Widget):
     self._download_btn = button_item(
       "Download US Maps",
       "Start",
-      description=DOWNLOAD_US_MAPS_INSTRUCTIONS.split("\n", 1)[0],
+      description=DOWNLOAD_US_MAPS_ROW_DESCRIPTION,
       callback=self._on_download,
     )
     self._download_btn.action_item.set_enabled(ui_state.is_offroad)
