@@ -204,11 +204,9 @@ class Car:
           # Use CarState w/ buttons from the step selfdrived enables on
           self.v_cruise_helper.initialize_v_cruise(self.CS_prev, self.experimental_mode)
       else:
-        # Pre-AP pedal mode owns set-speed in carstate via pedal_speed_kph
-        # (double-pull captures v_ego). Overlay OSM onto vCruise/MAX.
-        # Use pedalLongActive, not carControl.enabled: the first stalk pull is
-        # lateral-only (cruiseState.speed = DI_digitalSpeed). Seeding then
-        # treated ego as a stalk and armed the 10s Follow timer.
+        # Pre-AP pedal mode owns set-speed via pedal_speed_kph. Overlay OSM
+        # onto vCruise/MAX only while pedalLongActive (second pull). The first
+        # pull is lateral-only and must not seed or arm the Follow timer.
         raw_kph = float(CS.cruiseState.speed * CV.MS_TO_KPH)
         long_active = bool(getattr(CS, 'pedalLongActive', False))
         long_active_prev = bool(getattr(self.CS_prev, 'pedalLongActive', False))
@@ -252,12 +250,10 @@ class Car:
           now=time.monotonic(),
           stalk_pressed=stalk_pressed,
         )
+        # seed_kph covers engage/posted seed and sticky hold (both write pedal).
         if dec.seed_kph is not None:
           preap_v_cruise_kph = dec.seed_kph
           self._map_slew_ms = dec.seed_kph * CV.KPH_TO_MS
-        elif dec.sticky:
-          preap_v_cruise_kph = dec.driver_kph
-          self._map_slew_ms = dec.driver_kph * CV.KPH_TO_MS
         else:
           preap_v_cruise_kph = apply_map_speed_kph(
             dec.driver_kph,
@@ -268,9 +264,8 @@ class Car:
             op_long_software_cruise=True,
             driver_override=dec.follow_override,
           )
-        # Write pedal only for engage/posted-change seed and sticky hold.
-        # Writing the Follow/Cap HUD overlay every frame ate stalk +/-
-        # (CI.update applied the step, then we put map MAX back).
+        # Write pedal only for seed/sticky. A per-frame Follow/Cap write-back
+        # overwrites the stalk +/- that CI.update just applied.
         if long_active and dec.seed_kph is not None:
           self._write_preap_pedal_speed(CS, preap_v_cruise_kph)
         self.v_cruise_helper.v_cruise_kph_last = self.v_cruise_helper.v_cruise_kph
@@ -317,9 +312,6 @@ class Car:
     eng = getattr(inner, 'engagement', None)
     if eng is not None and hasattr(eng, 'pedal_speed_kph'):
       eng.pedal_speed_kph = kph
-
-  def _seed_preap_pedal_speed(self, CS, kph: float) -> None:
-    self._write_preap_pedal_speed(CS, kph)
 
   def state_publish(self, CS: car.CarState, RD: structs.RadarDataT | None):
     """carState and carParams publish loop"""
