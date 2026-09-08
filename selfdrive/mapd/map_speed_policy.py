@@ -432,23 +432,41 @@ def cap_planner_v_cruise_ms(
   return v_cruise_ms
 
 
-def blinker_turn_direction(stalk_state: int, has_left: bool, has_right: bool) -> int:
-  """0=none, 1=left, 2=right. Stalk is TurnIndLvr_Stat / CS.turnSignalStalkState.
+def blinker_turn_direction(*, left_blinker: bool, right_blinker: bool,
+                           has_left: bool, has_right: bool,
+                           stalk_state: int = 0) -> int:
+  """0=none, 1=left, 2=right. Side is the lit lamp (CS.leftBlinker / rightBlinker).
 
-  Lamps are ignored: openpilot can drive BC_indicator* during a lane change.
+  Fail closed: both/neither lamp, no junction on the lit side, or a 1/2 stalk
+  enum that disagrees with the lamp (inverted TurnIndLvr_Stat must not yaw
+  the opposite way).
   """
+  left_lamp = bool(left_blinker)
+  right_lamp = bool(right_blinker)
+  if left_lamp == right_lamp:
+    return 0
   stalk = int(stalk_state)
-  if stalk == 1 and has_left:
+  if left_lamp:
+    if not has_left:
+      return 0
+    if stalk in (1, 2) and stalk != 1:
+      return 0
     return 1
-  if stalk == 2 and has_right:
-    return 2
-  return 0
+  if not has_right:
+    return 0
+  if stalk in (1, 2) and stalk != 2:
+    return 0
+  return 2
 
 
-def blinker_turn_holds_alc(stalk_state: int, has_left: bool, has_right: bool,
-                           dist_m: float) -> bool:
-  """True while a held stalk + mapped junction should not arm ALC."""
-  if blinker_turn_direction(stalk_state, has_left, has_right) == 0:
+def blinker_turn_holds_alc(*, left_blinker: bool, right_blinker: bool,
+                           has_left: bool, has_right: bool, dist_m: float,
+                           stalk_state: int = 0) -> bool:
+  """True while a lamp + mapped junction on that side should not arm ALC."""
+  if blinker_turn_direction(
+    left_blinker=left_blinker, right_blinker=right_blinker,
+    has_left=has_left, has_right=has_right, stalk_state=stalk_state,
+  ) == 0:
     return False
   return float(dist_m) >= 0.0
 
@@ -492,16 +510,20 @@ def junction_turn_pose(s_m: float, dist_m: float, radius_m: float,
 
 
 def apply_junction_turn_plan(plan, t_idxs, direction: int, dist_m: float,
-                             v_ego: float) -> None:
+                             v_ego: float, *, left_blinker: bool = False,
+                             right_blinker: bool = False) -> None:
   """Yaw/curve the model plan into the junction heading. Identity if not a turn.
 
   Overwrites x, y, vx, vy, yaw, yaw_rate so modelV2.position shows the side
-  street and desiredCurvature follows the arc. Highway ALC must pass
-  direction=0.
+  street and desiredCurvature follows the arc. Left lamp → +y/+psi; right
+  lamp → −y/−psi. Mismatched lamp vs planned side is a no-op (never cross
+  traffic). Highway ALC must pass direction=0.
   """
-  if int(direction) == 1:
+  left_lamp = bool(left_blinker) and not bool(right_blinker)
+  right_lamp = bool(right_blinker) and not bool(left_blinker)
+  if int(direction) == 1 and left_lamp:
     sign = 1.0
-  elif int(direction) == 2:
+  elif int(direction) == 2 and right_lamp:
     sign = -1.0
   else:
     return
@@ -540,7 +562,8 @@ def turn_speed_ms(dest_ms: float, posted_ms: float) -> float:
 
 def blinker_turn_limit_ms(
   *,
-  stalk_state: int,
+  left_blinker: bool,
+  right_blinker: bool,
   has_left: bool,
   has_right: bool,
   dist_m: float,
@@ -549,15 +572,19 @@ def blinker_turn_limit_ms(
   posted_ms: float,
   v_ego_ms: float,
   lookahead: int,
+  stalk_state: int = 0,
 ) -> float | None:
-  """Eased turn ceiling (m/s) while stalk is held at an approaching junction.
+  """Eased turn ceiling (m/s) while the lamp + junction side match.
 
   Uses the same kin+110 m / Accel-5 ease as posted decreases. Lookahead Off
   still eases (Normal) — a blinker turn must slow even if map lookahead is off.
-  None when the stalk is idle, the junction is not in that direction, or the
-  junction is still outside the ease window.
+  None when lamps are idle/both, the junction is not on the lit side, stalk
+  disagrees with the lamp, or the junction is still outside the ease window.
   """
-  direction = blinker_turn_direction(stalk_state, has_left, has_right)
+  direction = blinker_turn_direction(
+    left_blinker=left_blinker, right_blinker=right_blinker,
+    has_left=has_left, has_right=has_right, stalk_state=stalk_state,
+  )
   if direction == 0:
     return None
   dest = float(left_dest_ms if direction == 1 else right_dest_ms)

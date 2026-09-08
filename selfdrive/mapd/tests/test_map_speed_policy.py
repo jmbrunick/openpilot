@@ -965,7 +965,8 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   assert "should_write_preap_pedal(dec.seed_kph, preap_v_cruise_kph, self._last_pedal_kph)" in card
   assert "blinker_turn_limit_ms" in card
   assert "hud_with_blinker_turn_kph" in card
-  assert "turnSignalStalkState" in card
+  assert "leftBlinker" in card
+  assert "rightBlinker" in card
   assert "lookup_intersection" in mapd
   assert "lookup_intersection" in osm
   assert "TURN_SPEED_DEFAULT_MPH = 15.0" in constants
@@ -978,6 +979,8 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   modeld = (root / "selfdrive/modeld/modeld.py").read_text()
   assert "apply_junction_turn_plan" in modeld
   assert "blinker_turn_direction" in modeld
+  assert "leftBlinker" in modeld
+  assert "rightBlinker" in modeld
   assert "intersectionDistance" in modeld
   assert "Desire.turnLeft" not in modeld
   lead = (root / "selfdrive/controls/lib/lead_approach.py").read_text()
@@ -999,14 +1002,28 @@ def test_turn_speed_table_12_15_18():
   assert abs(turn_speed_ms(45 * CV.MPH_TO_MS, slow_posted) - slow_posted) < 0.05
 
 
-def test_blinker_turn_uses_stalk_not_lamp():
-  assert blinker_turn_direction(1, True, True) == 1
-  assert blinker_turn_direction(2, True, True) == 2
-  assert blinker_turn_direction(0, True, True) == 0  # lamp-only / idle lever
-  assert blinker_turn_direction(1, False, True) == 0  # left stalk, only right junction
-  assert blinker_turn_direction(2, True, False) == 0
-  assert blinker_turn_holds_alc(1, True, False, 80.0)
-  assert not blinker_turn_holds_alc(0, True, True, 80.0)
+def test_blinker_turn_uses_lamps_and_fails_closed():
+  """Turn side is the lit lamp. Stalk enum / OSM mismatch must not yaw the other way."""
+  assert blinker_turn_direction(left_blinker=True, right_blinker=False, has_left=True, has_right=True) == 1
+  assert blinker_turn_direction(left_blinker=False, right_blinker=True, has_left=True, has_right=True) == 2
+  assert blinker_turn_direction(left_blinker=False, right_blinker=False, has_left=True, has_right=True) == 0
+  assert blinker_turn_direction(left_blinker=True, right_blinker=True, has_left=True, has_right=True) == 0
+  # Lamp vs junction side disagree.
+  assert blinker_turn_direction(left_blinker=True, right_blinker=False, has_left=False, has_right=True) == 0
+  assert blinker_turn_direction(left_blinker=False, right_blinker=True, has_left=True, has_right=False) == 0
+  # Stalk 1/2 disagrees with the lamp (inverted TurnIndLvr_Stat).
+  assert blinker_turn_direction(
+    left_blinker=False, right_blinker=True, has_left=True, has_right=True, stalk_state=1,
+  ) == 0
+  assert blinker_turn_direction(
+    left_blinker=True, right_blinker=False, has_left=True, has_right=True, stalk_state=2,
+  ) == 0
+  assert blinker_turn_holds_alc(
+    left_blinker=True, right_blinker=False, has_left=True, has_right=False, dist_m=80.0,
+  )
+  assert not blinker_turn_holds_alc(
+    left_blinker=False, right_blinker=False, has_left=True, has_right=True, dist_m=80.0,
+  )
 
 
 def test_blinker_turn_eases_like_map_decrease_and_yields_sticky():
@@ -1015,33 +1032,33 @@ def test_blinker_turn_eases_like_map_decrease_and_yields_sticky():
   target = turn_speed_ms(dest, posted)
   v_ego = 45 * CV.MPH_TO_MS
   far = blinker_turn_limit_ms(
-    stalk_state=1, has_left=True, has_right=True, dist_m=2000.0,
+    left_blinker=True, right_blinker=False, has_left=True, has_right=True, dist_m=2000.0,
     left_dest_ms=dest, right_dest_ms=dest, posted_ms=posted, v_ego_ms=v_ego,
     lookahead=LOOKAHEAD_NORMAL,
   )
   assert far is None
   close = blinker_turn_limit_ms(
-    stalk_state=1, has_left=True, has_right=True, dist_m=80.0,
+    left_blinker=True, right_blinker=False, has_left=True, has_right=True, dist_m=80.0,
     left_dest_ms=dest, right_dest_ms=dest, posted_ms=posted, v_ego_ms=v_ego,
     lookahead=LOOKAHEAD_NORMAL,
   )
   assert close is not None
   assert target - 0.2 <= close < posted
   at = blinker_turn_limit_ms(
-    stalk_state=1, has_left=True, has_right=True, dist_m=0.0,
+    left_blinker=True, right_blinker=False, has_left=True, has_right=True, dist_m=0.0,
     left_dest_ms=dest, right_dest_ms=dest, posted_ms=posted, v_ego_ms=v_ego,
     lookahead=LOOKAHEAD_NORMAL,
   )
   assert at is not None and abs(at - target) < 0.2
-  # Idle stalk: no turn ceiling.
+  # Idle lamps: no turn ceiling.
   assert blinker_turn_limit_ms(
-    stalk_state=0, has_left=True, has_right=True, dist_m=80.0,
+    left_blinker=False, right_blinker=False, has_left=True, has_right=True, dist_m=80.0,
     left_dest_ms=dest, right_dest_ms=dest, posted_ms=posted, v_ego_ms=v_ego,
     lookahead=LOOKAHEAD_NORMAL,
   ) is None
   # Lookahead Off still slows for a blinker turn (uses Normal ease).
   off = blinker_turn_limit_ms(
-    stalk_state=2, has_left=True, has_right=True, dist_m=80.0,
+    left_blinker=False, right_blinker=True, has_left=True, has_right=True, dist_m=80.0,
     left_dest_ms=dest, right_dest_ms=dest, posted_ms=posted, v_ego_ms=v_ego,
     lookahead=LOOKAHEAD_OFF,
   )
@@ -1096,33 +1113,38 @@ def test_blinker_turn_does_not_add_map_offset():
 
 
 def test_junction_turn_identity_when_not_intersection_turn():
-  """ALC / idle stalk: plan y and heading must not change."""
+  """ALC / idle lamps: plan y and heading must not change."""
   plan = [[float(i * 10), 0.0] + [0.0] * 13 for i in range(6)]
   orig = [row[:] for row in plan]
-  apply_junction_turn_plan(plan, [0.0, 0.5, 1.0, 1.5, 2.0, 2.5], 0, 40.0, 15.0)
+  apply_junction_turn_plan(plan, [0.0, 0.5, 1.0, 1.5, 2.0, 2.5], 0, 40.0, 15.0,
+                           left_blinker=True, right_blinker=False)
   assert plan == orig
-  # Stalk on, no OSM junction (multi-lane ALC).
-  assert blinker_turn_direction(1, False, False) == 0
-  assert blinker_turn_direction(2, False, False) == 0
-  assert not blinker_turn_holds_alc(1, False, False, 80.0)
-  apply_junction_turn_plan(plan, [0.0, 0.5, 1.0, 1.5, 2.0, 2.5],
-                           blinker_turn_direction(1, False, False), 80.0, 20.0)
+  # Lamp on, no OSM junction (multi-lane ALC).
+  assert blinker_turn_direction(left_blinker=True, right_blinker=False, has_left=False, has_right=False) == 0
+  assert blinker_turn_direction(left_blinker=False, right_blinker=True, has_left=False, has_right=False) == 0
+  assert not blinker_turn_holds_alc(
+    left_blinker=True, right_blinker=False, has_left=False, has_right=False, dist_m=80.0,
+  )
+  apply_junction_turn_plan(
+    plan, [0.0, 0.5, 1.0, 1.5, 2.0, 2.5],
+    blinker_turn_direction(left_blinker=True, right_blinker=False, has_left=False, has_right=False),
+    80.0, 20.0, left_blinker=True, right_blinker=False,
+  )
   assert plan == orig
   assert blinker_turn_limit_ms(
-    stalk_state=1, has_left=False, has_right=False, dist_m=80.0,
+    left_blinker=True, right_blinker=False, has_left=False, has_right=False, dist_m=80.0,
     left_dest_ms=0.0, right_dest_ms=0.0, posted_ms=25.0, v_ego_ms=20.0,
     lookahead=LOOKAHEAD_NORMAL,
   ) is None
 
 
-def test_junction_turn_plan_bends_into_side_street():
-  """Left turn: path y goes left by meters (not 0.15 m). Right is the mirror. t=0 stays put."""
+def test_junction_turn_plan_follows_lamp_side_and_fails_closed():
+  """Right blinker → y<0 yaw<0. Left → y>0 yaw>0. Mismatched lamp vs side is a no-op."""
   import math
   R = junction_turn_radius_m(10.0)
   assert TURN_RADIUS_MIN_M <= R <= 28.0
   x0, y0, psi0, k0 = junction_turn_pose(0.0, 40.0, R, 1.0)
   assert abs(x0) < 1e-9 and abs(y0) < 1e-9 and abs(psi0) < 1e-9 and abs(k0) < 1e-9
-  # After the arc, heading is 90° and y is about a street width, not a nudge.
   s_end = max(0.0, 40.0 - R) + TURN_HEADING_RAD * R + 5.0
   xl, yl, psil, _ = junction_turn_pose(s_end, 40.0, R, 1.0)
   assert yl > 5.0
@@ -1132,16 +1154,34 @@ def test_junction_turn_plan_bends_into_side_street():
   assert abs(psir + math.pi / 2) < 1e-6
 
   t_idxs = [0.0, 1.0, 2.0, 4.0, 6.0, 8.0, 10.0]
-  plan = [[10.0 * t, 0.0] + [0.0] * 13 for t in t_idxs]
-  apply_junction_turn_plan(plan, t_idxs, 1, 40.0, 10.0)
-  assert abs(plan[0][0]) < 1e-6 and abs(plan[0][1]) < 1e-6
-  ys = [row[1] for row in plan]
-  assert max(ys) > 5.0
-  assert plan[-1][11] > 0.5  # yaw left
-  # Right turn mirrors y and yaw.
+  plan_l = [[10.0 * t, 0.0] + [0.0] * 13 for t in t_idxs]
+  apply_junction_turn_plan(plan_l, t_idxs, 1, 40.0, 10.0, left_blinker=True, right_blinker=False)
+  assert abs(plan_l[0][0]) < 1e-6 and abs(plan_l[0][1]) < 1e-6
+  ys_l = [row[1] for row in plan_l]
+  yaws_l = [row[11] for row in plan_l]
+  assert max(ys_l) > 5.0
+  assert min(ys_l) >= -1e-6
+  assert max(yaws_l) > 0.5
+  assert min(yaws_l) >= -1e-6
+
   plan_r = [[10.0 * t, 0.0] + [0.0] * 13 for t in t_idxs]
-  apply_junction_turn_plan(plan_r, t_idxs, 2, 40.0, 10.0)
-  assert min(row[1] for row in plan_r) < -5.0
-  assert plan_r[-1][11] < -0.5
+  apply_junction_turn_plan(plan_r, t_idxs, 2, 40.0, 10.0, left_blinker=False, right_blinker=True)
+  ys_r = [row[1] for row in plan_r]
+  yaws_r = [row[11] for row in plan_r]
+  assert min(ys_r) < -5.0
+  assert max(ys_r) <= 1e-6
+  assert min(yaws_r) < -0.5
+  assert max(yaws_r) <= 1e-6
+
+  # Right lamp must never accept a left planned side (Justin's across-traffic miss).
+  plan_bad = [[10.0 * t, 0.0] + [0.0] * 13 for t in t_idxs]
+  orig_bad = [row[:] for row in plan_bad]
+  apply_junction_turn_plan(plan_bad, t_idxs, 1, 40.0, 10.0, left_blinker=False, right_blinker=True)
+  assert plan_bad == orig_bad
+  apply_junction_turn_plan(plan_bad, t_idxs, 2, 40.0, 10.0, left_blinker=True, right_blinker=False)
+  assert plan_bad == orig_bad
+  # Missing lamp args fail closed (defaults False).
+  apply_junction_turn_plan(plan_bad, t_idxs, 2, 40.0, 10.0)
+  assert plan_bad == orig_bad
 
 
