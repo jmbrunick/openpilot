@@ -489,8 +489,10 @@ def junction_turn_pose(s_m: float, dist_m: float, radius_m: float,
                        sign: float) -> tuple[float, float, float, float]:
   """Vehicle-frame pose on a 90° turn onto the mapped side street.
 
-  s_m is along the current road. sign +1 = left (+y), -1 = right. Returns
-  (x, y, psi, dpsi/ds). t=0 / s=0 stays at the origin with heading 0.
+  s_m is along the current road. sign +1 = +y / +psi, -1 = −y / −psi.
+  Which sign the car follows as left is chosen by apply_junction_turn_plan
+  (on-road: +y/+psi steered right on the 3X). Returns (x, y, psi, dpsi/ds).
+  t=0 / s=0 stays at the origin with heading 0.
   """
   R = max(float(radius_m), 1.0)
   D = max(float(dist_m), 0.0)
@@ -515,16 +517,18 @@ def apply_junction_turn_plan(plan, t_idxs, direction: int, dist_m: float,
   """Yaw/curve the model plan into the junction heading. Identity if not a turn.
 
   Overwrites x, y, vx, vy, yaw, yaw_rate so modelV2.position shows the side
-  street and desiredCurvature follows the arc. Left lamp → +y/+psi; right
-  lamp → −y/−psi. Mismatched lamp vs planned side is a no-op (never cross
-  traffic). Highway ALC must pass direction=0.
+  street and desiredCurvature follows the arc. On-road after PR #30, the
+  textbook +y=left mapping steered the opposite way on this 3X. Left lamp
+  → −y/−psi (the pose the car actually follows left); right lamp → +y/+psi.
+  Mismatched lamp vs planned side, or both lamps, is a no-op. Highway ALC
+  must pass direction=0.
   """
   left_lamp = bool(left_blinker) and not bool(right_blinker)
   right_lamp = bool(right_blinker) and not bool(left_blinker)
   if int(direction) == 1 and left_lamp:
-    sign = 1.0
-  elif int(direction) == 2 and right_lamp:
     sign = -1.0
+  elif int(direction) == 2 and right_lamp:
+    sign = 1.0
   else:
     return
   R = junction_turn_radius_m(v_ego)

@@ -53,7 +53,7 @@ Ease uses the same kin+110 m / Accel-5 0.80 curve as posted decreases. Lookahead
 
 **Sticky / Follow / Cap.** While the stalk is held, a sticky set must not block the drop (`sticky_set_kph` is kept). When the stalk returns to idle or the junction is behind the match, Cap/Follow resume, including that sticky set. Lead still wins.
 
-**Lateral.** While lamp+junction on that side, ALC is not armed. Desire stays `none`. The hood camera is not the turn cue. `modeld` yaws the stock model plan into the **lamp** side (90° over a comfort-radius arc at `intersectionDistance`): left lamp → +y / +ψ, right lamp → −y / −ψ. A right blinker cannot produce a leftward plan. Highway ALC — blinker with **no** OSM junction on that side — is unchanged. No `Desire.turnLeft/Right`. No Tesla cluster nav.
+**Lateral.** While lamp+junction on that side, ALC is not armed. Desire stays `none`. The hood camera is not the turn cue. `modeld` yaws the stock model plan into the **lamp** side (90° over a comfort-radius arc at `intersectionDistance`). On this 3X the car follows −y/−ψ as left and +y/+ψ as right (the textbook +y=left mapping steered the opposite way). A left blinker cannot produce a rightward plan; a right blinker cannot produce a leftward plan. Highway ALC — blinker with **no** OSM junction on that side — is unchanged. No `Desire.turnLeft/Right`. No Tesla cluster nav.
 
 ## US map data
 

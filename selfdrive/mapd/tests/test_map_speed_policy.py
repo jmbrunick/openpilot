@@ -1139,48 +1139,53 @@ def test_junction_turn_identity_when_not_intersection_turn():
 
 
 def test_junction_turn_plan_follows_lamp_side_and_fails_closed():
-  """Right blinker → y<0 yaw<0. Left → y>0 yaw>0. Mismatched lamp vs side is a no-op."""
+  """3X on-road: left lamp → y<0 yaw<0; right → y>0 yaw>0. Mismatch / both lamps is a no-op."""
   import math
   R = junction_turn_radius_m(10.0)
   assert TURN_RADIUS_MIN_M <= R <= 28.0
   x0, y0, psi0, k0 = junction_turn_pose(0.0, 40.0, R, 1.0)
   assert abs(x0) < 1e-9 and abs(y0) < 1e-9 and abs(psi0) < 1e-9 and abs(k0) < 1e-9
   s_end = max(0.0, 40.0 - R) + TURN_HEADING_RAD * R + 5.0
-  xl, yl, psil, _ = junction_turn_pose(s_end, 40.0, R, 1.0)
-  assert yl > 5.0
-  assert abs(psil - math.pi / 2) < 1e-6
-  xr, yr, psir, _ = junction_turn_pose(s_end, 40.0, R, -1.0)
-  assert yr < -5.0
-  assert abs(psir + math.pi / 2) < 1e-6
+  # Pose helper: +sign is +y/+psi. Lamp mapping is inverted vs textbook left.
+  xp, yp, psip, _ = junction_turn_pose(s_end, 40.0, R, 1.0)
+  assert yp > 5.0
+  assert abs(psip - math.pi / 2) < 1e-6
+  xn, yn, psin, _ = junction_turn_pose(s_end, 40.0, R, -1.0)
+  assert yn < -5.0
+  assert abs(psin + math.pi / 2) < 1e-6
 
   t_idxs = [0.0, 1.0, 2.0, 4.0, 6.0, 8.0, 10.0]
+  # Left lamp must yaw the pose the 3X follows as left (−y/−psi), not +y.
   plan_l = [[10.0 * t, 0.0] + [0.0] * 13 for t in t_idxs]
   apply_junction_turn_plan(plan_l, t_idxs, 1, 40.0, 10.0, left_blinker=True, right_blinker=False)
   assert abs(plan_l[0][0]) < 1e-6 and abs(plan_l[0][1]) < 1e-6
   ys_l = [row[1] for row in plan_l]
   yaws_l = [row[11] for row in plan_l]
-  assert max(ys_l) > 5.0
-  assert min(ys_l) >= -1e-6
-  assert max(yaws_l) > 0.5
-  assert min(yaws_l) >= -1e-6
+  assert min(ys_l) < -5.0
+  assert max(ys_l) <= 1e-6
+  assert min(yaws_l) < -0.5
+  assert max(yaws_l) <= 1e-6
 
   plan_r = [[10.0 * t, 0.0] + [0.0] * 13 for t in t_idxs]
   apply_junction_turn_plan(plan_r, t_idxs, 2, 40.0, 10.0, left_blinker=False, right_blinker=True)
   ys_r = [row[1] for row in plan_r]
   yaws_r = [row[11] for row in plan_r]
-  assert min(ys_r) < -5.0
-  assert max(ys_r) <= 1e-6
-  assert min(yaws_r) < -0.5
-  assert max(yaws_r) <= 1e-6
+  assert max(ys_r) > 5.0
+  assert min(ys_r) >= -1e-6
+  assert max(yaws_r) > 0.5
+  assert min(yaws_r) >= -1e-6
 
-  # Right lamp must never accept a left planned side (Justin's across-traffic miss).
+  # Lamp vs planned side disagree, both lamps, or missing lamps: no-op.
   plan_bad = [[10.0 * t, 0.0] + [0.0] * 13 for t in t_idxs]
   orig_bad = [row[:] for row in plan_bad]
   apply_junction_turn_plan(plan_bad, t_idxs, 1, 40.0, 10.0, left_blinker=False, right_blinker=True)
   assert plan_bad == orig_bad
   apply_junction_turn_plan(plan_bad, t_idxs, 2, 40.0, 10.0, left_blinker=True, right_blinker=False)
   assert plan_bad == orig_bad
-  # Missing lamp args fail closed (defaults False).
+  apply_junction_turn_plan(plan_bad, t_idxs, 1, 40.0, 10.0, left_blinker=True, right_blinker=True)
+  assert plan_bad == orig_bad
+  apply_junction_turn_plan(plan_bad, t_idxs, 2, 40.0, 10.0, left_blinker=True, right_blinker=True)
+  assert plan_bad == orig_bad
   apply_junction_turn_plan(plan_bad, t_idxs, 2, 40.0, 10.0)
   assert plan_bad == orig_bad
 
