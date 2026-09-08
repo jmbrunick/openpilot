@@ -104,6 +104,7 @@ class Controls:
       steer_at_standstill=self.CP.steerAtStandstill,
       left_blinker=CS.leftBlinker,
       right_blinker=CS.rightBlinker,
+      v_ego=CS.vEgo,
     )
     CC.longActive = CC.enabled and not any(e.overrideLongitudinal for e in self.sm['onroadEvents']) and self.CP.openpilotLongitudinalControl
 
