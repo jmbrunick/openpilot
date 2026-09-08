@@ -62,7 +62,7 @@ def main():
       last_reload = now
 
     lat, lon, bearing, gps_ok = gps_sample_from_sm(sm, now=now)
-    if gps_ok and (now - last_gps_write) >= LAST_GPS_WRITE_PERIOD_S:
+    if gps_ok and (last_gps_write == 0.0 or (now - last_gps_write) >= LAST_GPS_WRITE_PERIOD_S):
       persist_last_gps_position(params, lat, lon)
       last_gps_write = now
     match = db.lookup(lat, lon, bearing) if gps_ok and db.loaded else None
