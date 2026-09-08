@@ -30,6 +30,7 @@ from openpilot.system.ui.lib.scroll_panel import GuiScrollPanel
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets.button import Button, ButtonStyle
 from openpilot.system.hardware import HARDWARE, PC
+from scripts.nap.script_lifecycle import script_reboots_on_exit
 
 # UI Constants
 MARGIN = 50
@@ -54,6 +55,7 @@ class ScriptRunnerApp:
     self._title = title
     self._script_module = script_module
     self._instructions = instructions
+    self._reboot_on_exit = script_reboots_on_exit(script_module)
 
     self._state = ScriptState.READY
     self._output_lines: list[str] = []
@@ -122,9 +124,10 @@ class ScriptRunnerApp:
     self._state = ScriptState.RUNNING
     self._output_lines = ["Starting script...", ""]
 
-    # Set NAPScriptRunning before spawn so manager stops pandad before
-    # the child process tries to open Panda USB.
-    self._params.put_bool("NAPScriptRunning", True)
+    # Hardware scripts: set NAPScriptRunning before spawn so manager
+    # stops pandad before the child opens Panda USB.
+    if self._reboot_on_exit:
+      self._params.put_bool("NAPScriptRunning", True)
 
     try:
       self._process = subprocess.Popen(
@@ -141,7 +144,8 @@ class ScriptRunnerApp:
       self._reader_thread.start()
 
     except Exception as e:
-      self._params.put_bool("NAPScriptRunning", False)
+      if self._reboot_on_exit:
+        self._params.put_bool("NAPScriptRunning", False)
       self._output_lines.append(f"Error starting script: {e}")
       self._state = ScriptState.ERROR
 
@@ -199,10 +203,11 @@ class ScriptRunnerApp:
             return
 
     # Clear NAPScriptRunning only after we've confirmed the child is gone.
-    self._params.put_bool("NAPScriptRunning", False)
+    if self._reboot_on_exit:
+      self._params.put_bool("NAPScriptRunning", False)
 
     gui_app.request_close()
-    if not PC:
+    if self._reboot_on_exit and not PC:
       HARDWARE.reboot()
 
   def _process_output_queue(self):
@@ -400,10 +405,12 @@ def main():
 
   # Kill the main openpilot UI tmux session so we can take over the screen.
   # tmux isn't installed on dev hosts (macOS), so swallow the FileNotFoundError.
-  try:
-    subprocess.run(["tmux", "kill-session", "-t", "comma"], capture_output=True)
-  except FileNotFoundError:
-    pass
+  # Map sqlite jobs leave the session up so Exit can return to Settings.
+  if script_reboots_on_exit(module):
+    try:
+      subprocess.run(["tmux", "kill-session", "-t", "comma"], capture_output=True)
+    except FileNotFoundError:
+      pass
 
   gui_app.init_window("NAP Script Runner")
 
