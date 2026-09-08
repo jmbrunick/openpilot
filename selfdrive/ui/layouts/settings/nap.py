@@ -131,7 +131,8 @@ class NAPLayout(Widget):
     self._follow_buttons = multiple_button_item(
       "Follow Distance",
       "Follow distance (1=closest, 7=farthest). A slower car ahead starts a " +
-      "gradual ease-off farther back at higher settings. Overridden by cruise stalk if present.",
+      "gradual ease-off farther back (more distance, not a harder brake). " +
+      "Overridden by cruise stalk if present.",
       buttons=["1", "2", "3", "4", "5", "6", "7"],
       button_width=80,
       selected_index=max(0, min(6, follow_dist - 1)),

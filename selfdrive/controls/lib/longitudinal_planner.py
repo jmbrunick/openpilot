@@ -268,9 +268,9 @@ class LongitudinalPlanner:
             # toward MAX; a slower lead (negative aTarget) still outranks map.
             output_a_target = a_up
 
-    # Slower radar lead: ease off at 1.0 m/s² starting at kin + Follow Distance.
-    # MPC 2.5 m/s² close-in may still brake harder. Map MAX overlay cannot
-    # cancel this (lead still wins for vehicle braking).
+    # Slower radar lead: ease off farther back at 0.80 m/s² (kin + 110 m),
+    # same idea as map drops. Overlay never harder than 0.80; MPC close-in
+    # may still brake harder. Map MAX overlay cannot cancel this.
     if self._is_preap and sm['radarState'].leadOne.status:
       lead = sm['radarState'].leadOne
       a_lead = lead_approach_decel_ms2(v_ego, lead.vLead, lead.dRel, self.t_follow)
