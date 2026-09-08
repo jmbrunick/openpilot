@@ -155,8 +155,8 @@ def test_accel_default_five_matches_prior_normal_curve():
   assert MAP_SPEED_ACCEL == list(range(1, 11))
   assert MAP_SPEED_LOOKAHEAD == [0, 1, 2, 3]
   assert abs(accel_scale_factor(5) - 1.0) < 1e-9
-  assert abs(map_comfort_a_ms2(LOOKAHEAD_NORMAL, 5) - 1.20) < 1e-9
-  assert abs(map_comfort_a_ms2(LOOKAHEAD_NORMAL, 1) - 0.54) < 1e-9
+  assert abs(map_comfort_a_ms2(LOOKAHEAD_NORMAL, 5) - 0.80) < 1e-9
+  assert abs(map_comfort_a_ms2(LOOKAHEAD_NORMAL, 1) - 0.36) < 1e-9
   assert abs(map_comfort_a_ms2(LOOKAHEAD_NORMAL, 10) - 1.60) < 1e-9
   current = 70 * CV.MPH_TO_MS
   nxt = 45 * CV.MPH_TO_MS
@@ -173,24 +173,28 @@ def test_accel_default_five_matches_prior_normal_curve():
   assert anticipatory_limit_ms(current, nxt, 300.0, current, LOOKAHEAD_NORMAL, 10) is not None
 
 
-def test_fifty_to_thirty_starts_110m_early_at_locked_1_20():
-  """Justin: 42 mph at a 50→30 sign. Start kin+110 m; lock brake 1.20 m/s² (kin ≈ 133 m)."""
+def test_fifty_to_thirty_starts_one_hundred_ten_m_before_kinematic():
+  """Justin: 50→30 still ~42 mph at the sign. Keep brake 0.80; start kin+110 m earlier."""
   v50 = 50 * CV.MPH_TO_MS
   v30 = 30 * CV.MPH_TO_MS
   assert abs(v50 - 22.352) < 0.002
   assert abs(18.776 - 42 * CV.MPH_TO_MS) < 0.002
   assert abs(v30 - 13.411) < 0.002
   a = map_brake_a_ms2(LOOKAHEAD_NORMAL)
-  assert abs(a - 1.20) < 1e-9
+  assert abs(a - 0.80) < 1e-9
   assert abs(DECREASE_START_MARGIN_M - 110.0) < 1e-9
   assert a < 1.5  # Tesla pre-AP clip
-  for _la, tun in LOOKAHEAD_TUNING.items():
-    if tun[0] > 0:
-      assert tun[0] < 1.5
+  for la, tun in LOOKAHEAD_TUNING.items():
+    if tun[0] <= 0:
+      continue
+    assert tun[0] < 1.5
+    extra = DECREASE_START_MARGIN_M + (120.0 if la == LOOKAHEAD_EARLY else 0.0)
+    assert abs(tun[1] - extra) < 1e-9
   kin_m = (v50 * v50 - v30 * v30) / (2.0 * a)
-  assert abs(kin_m - 133.0) < 1.0
+  assert abs(kin_m - 200.0) < 1.0
   leftover_m = (18.776 * 18.776 - v30 * v30) / (2.0 * 0.80)
   assert abs(leftover_m - 108.0) < 2.0
+  # Window opens at kin+110; MAX is still 50 on that edge, then falls toward 30.
   at_open = anticipatory_limit_ms(v50, v30, kin_m + DECREASE_START_MARGIN_M, v50, LOOKAHEAD_NORMAL)
   assert at_open is not None
   assert abs(at_open - v50) < 0.6
@@ -201,16 +205,24 @@ def test_fifty_to_thirty_starts_110m_early_at_locked_1_20():
   near_sign = anticipatory_limit_ms(v50, v30, 5.0, v50, LOOKAHEAD_NORMAL)
   assert near_sign is not None
   assert abs(near_sign - v30) < 1.5
+  # Same extra start margin on any decrease — not a 50→30-only window.
+  v70 = 70 * CV.MPH_TO_MS
+  v45 = 45 * CV.MPH_TO_MS
+  kin_7045 = (v70 * v70 - v45 * v45) / (2.0 * a)
+  assert anticipatory_limit_ms(v70, v45, kin_7045 + DECREASE_START_MARGIN_M, v70, LOOKAHEAD_NORMAL) is not None
+  assert anticipatory_limit_ms(v70, v45, kin_7045 + DECREASE_START_MARGIN_M + 5.0, v70, LOOKAHEAD_NORMAL) is None
+  # Higher limit ahead must not raise MAX early.
   assert anticipatory_limit_ms(v30, v50, 80.0, v30, LOOKAHEAD_EARLY) is None
+  assert anticipatory_limit_ms(v45, v70, 80.0, v45, LOOKAHEAD_EARLY) is None
 
 
 def test_map_track_decel_matches_comfort_curve_when_above_max():
   a5 = map_brake_a_ms2(LOOKAHEAD_NORMAL)
-  assert abs(a5 - 1.20) < 1e-9
+  assert abs(a5 - 0.80) < 1e-9
   assert abs(map_brake_a_ms2(LOOKAHEAD_NORMAL) - map_comfort_a_ms2(LOOKAHEAD_NORMAL, 5)) < 1e-9
   v_ego = 70 * CV.MPH_TO_MS
   v_max = 45 * CV.MPH_TO_MS
-  # Well above MAX → full comfort decel (locked Accel 5 = 1.20 m/s²).
+  # Well above MAX → full comfort decel (locked Accel 5 = 0.80 m/s²).
   assert v_ego - v_max > TRACK_TAPER_MS
   assert map_track_decel_ms2(v_ego, v_max, a5) == -a5
   # Helper still accepts other a for unit math; planner must pass a5.
@@ -225,28 +237,28 @@ def test_map_track_decel_matches_comfort_curve_when_above_max():
 
 
 def test_accel_setting_does_not_change_brake_a():
-  assert abs(map_brake_a_ms2(LOOKAHEAD_NORMAL) - 1.20) < 1e-9
+  assert abs(map_brake_a_ms2(LOOKAHEAD_NORMAL) - 0.80) < 1e-9
   v_ego = 70 * CV.MPH_TO_MS
   v_max = 45 * CV.MPH_TO_MS
   locked = map_track_decel_ms2(v_ego, v_max, map_brake_a_ms2(LOOKAHEAD_NORMAL))
-  assert locked == -1.20
+  assert locked == -0.80
   # Accel 1 vs 10 change climb a only.
-  assert abs(map_accel_a_ms2(LOOKAHEAD_NORMAL, 1) - 0.54) < 1e-9
+  assert abs(map_accel_a_ms2(LOOKAHEAD_NORMAL, 1) - 0.36) < 1e-9
   assert abs(map_accel_a_ms2(LOOKAHEAD_NORMAL, 10) - 1.60) < 1e-9
   assert map_slew_a_ms2(30.0, 20.0, LOOKAHEAD_NORMAL, 1) == map_slew_a_ms2(30.0, 20.0, LOOKAHEAD_NORMAL, 10)
-  assert abs(map_slew_a_ms2(30.0, 20.0, LOOKAHEAD_NORMAL, 10) - 1.20) < 1e-9
-  assert abs(map_slew_a_ms2(20.0, 30.0, LOOKAHEAD_NORMAL, 1) - 0.54) < 1e-9
+  assert abs(map_slew_a_ms2(30.0, 20.0, LOOKAHEAD_NORMAL, 10) - 0.80) < 1e-9
+  assert abs(map_slew_a_ms2(20.0, 30.0, LOOKAHEAD_NORMAL, 1) - 0.36) < 1e-9
   assert abs(map_slew_a_ms2(20.0, 30.0, LOOKAHEAD_NORMAL, 10) - 1.60) < 1e-9
   a1 = map_track_accel_ms2(20.0, 31.29, map_accel_a_ms2(LOOKAHEAD_NORMAL, 1))
   a10 = map_track_accel_ms2(20.0, 31.29, map_accel_a_ms2(LOOKAHEAD_NORMAL, 10))
   assert a1 is not None and a10 is not None
-  assert abs(a1 - 0.54) < 1e-9 and abs(a10 - 1.60) < 1e-9
+  assert abs(a1 - 0.36) < 1e-9 and abs(a10 - 1.60) < 1e-9
 
 
 def test_map_track_decel_loses_to_stronger_lead_brake():
   """Planner applies min(mpc, map_track). A slower lead still wins."""
-  a_map = map_track_decel_ms2(31.29, 20.12, 1.20)
-  assert a_map == -1.20
+  a_map = map_track_decel_ms2(31.29, 20.12, 0.80)
+  assert a_map == -0.80
   a_lead = -2.0
   assert min(a_lead, a_map) == a_lead
   # MPC holding ~0 (no-lead cruise obstacle not binding) → map decel wins.
@@ -561,6 +573,8 @@ def test_map_speed_submenu_wires_params():
       assert key in src
   assert "self._scroller.add_widgets" in mici
   assert "Brake to a lower MAX is locked" in tici
+  assert "0.80 m/s² at Normal" in tici
+  assert "1.20 m/s² at Normal" not in tici
   assert "acceleration only" in mici
   assert "Map Speed Limit" in nap
   assert "Radar Settings" in nap
