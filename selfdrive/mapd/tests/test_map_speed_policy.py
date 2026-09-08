@@ -491,7 +491,9 @@ def test_map_speed_submenu_wires_params():
   assert "Brake to a lower MAX is locked" in tici
   assert "acceleration only" in mici
   assert "Map Speed Limit" in nap
+  assert "Radar Settings" in nap
   assert "map speed limit" in nap_mici
+  assert "radar settings" in nap_mici
   assert "NAPMapSpeedAccel" in (root / "common/params_keys.h").read_text()
 
 

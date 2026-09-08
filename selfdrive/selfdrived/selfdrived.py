@@ -18,6 +18,7 @@ from openpilot.selfdrive.car.car_specific import CarSpecificEvents
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 from openpilot.selfdrive.selfdrived.events import Events, ET
 from openpilot.selfdrive.selfdrived.helpers import ExcessiveActuationCheck
+from openpilot.selfdrive.selfdrived.preap_regen import PreAPChimeState, RegenDemandCheck, update_preap_chimes
 from openpilot.selfdrive.selfdrived.state import StateMachine
 from openpilot.selfdrive.selfdrived.alertmanager import AlertManager, set_offroad_alert
 
@@ -38,6 +39,8 @@ LaneChangeDirection = log.LaneChangeDirection
 EventName = log.OnroadEvent.EventName
 ButtonType = car.CarState.ButtonEvent.Type
 SafetyModel = car.CarParams.SafetyModel
+AlertLevel = log.DriverMonitoringState.AlertLevel
+MonitoringPolicy = log.DriverMonitoringState.MonitoringPolicy
 
 IGNORED_SAFETY_MODES = (SafetyModel.silent, SafetyModel.noOutput)
 
@@ -74,16 +77,18 @@ class SelfdriveD:
     # TODO: de-couple selfdrived with card/conflate on carState without introducing controls mismatches
     self.car_state_sock = messaging.sub_sock('carState', timeout=20)
 
-    ignore = self.sensor_packets + self.gps_packets + ['alertDebug']
+    ignore = self.sensor_packets + self.gps_packets + ['alertDebug', 'lateralManeuverPlan']
     if SIMULATION:
       ignore += ['driverCameraState', 'managerState']
     if REPLAY:
       # no vipc in replay will make them ignored anyways
-      ignore += ['roadCameraState', 'wideRoadCameraState']
+      # sanitized fixtures omit driverCameraState/managerState; ignore them in replay
+      ignore += ['roadCameraState', 'wideRoadCameraState', 'driverCameraState', 'managerState']
     self.sm = messaging.SubMaster(['deviceState', 'pandaStates', 'peripheralState', 'modelV2', 'liveCalibration',
                                    'carOutput', 'driverMonitoringState', 'longitudinalPlan', 'livePose', 'liveDelay',
                                    'managerState', 'liveParameters', 'radarState', 'liveTorqueParameters',
-                                   'controlsState', 'carControl', 'driverAssistance', 'alertDebug', 'userBookmark', 'audioFeedback'] + \
+                                   'controlsState', 'carControl', 'driverAssistance', 'alertDebug', 'userBookmark', 'audioFeedback',
+                                   'lateralManeuverPlan'] + \
                                    self.camera_packets + self.sensor_packets + self.gps_packets,
                                   ignore_alive=ignore, ignore_avg_freq=ignore,
                                   ignore_valid=ignore, frequency=int(1/DT_CTRL))
@@ -119,9 +124,12 @@ class SelfdriveD:
     self.experimental_mode = False
     self.personality = self.params.get("LongitudinalPersonality", return_default=True)
     self.recalibrating_seen = False
+    self.dm_lockout_set = False
+    self.dm_uncertain_alerted = False
     self.state_machine = StateMachine()
     self.rk = Ratekeeper(100, print_delay_threshold=None)
-    self.prev_pedal_long_active = False
+    self.prev_preap_chimes = PreAPChimeState()
+    self.preap_regen_demand = RegenDemandCheck()
 
     # Determine startup event
     self.startup_event = EventName.startup if build_metadata.openpilot.comma_remote and build_metadata.tested_channel else EventName.startupMaster
@@ -149,7 +157,10 @@ class SelfdriveD:
       self.events.add(EventName.joystickDebug)
       self.startup_event = None
 
-    if self.sm.recv_frame['alertDebug'] > 0:
+    if self.sm.recv_frame['lateralManeuverPlan'] > 0:
+      self.events.add(EventName.lateralManeuver)
+      self.startup_event = None
+    elif self.sm.recv_frame['alertDebug'] > 0:
       self.events.add(EventName.longitudinalManeuver)
       self.startup_event = None
 
@@ -179,38 +190,69 @@ class SelfdriveD:
     if not self.CP.pcmCruise and CS.vCruise > 250 and resume_pressed:
       self.events.add(EventName.resumeBlocked)
 
+    # Handle DM
     if not self.CP.notCar:
-      self.events.add_from_msg(self.sm['driverMonitoringState'].events)
+      # Block engaging until ignition cycle after max number or time of distractions
+      if self.sm['driverMonitoringState'].lockout and not self.dm_lockout_set:
+        self.params.put_bool("DriverTooDistracted", True)
+        self.dm_lockout_set = True
+      # No entry conditions
+      if self.sm['driverMonitoringState'].lockout or self.sm['driverMonitoringState'].alwaysOnLockout:
+        self.events.add(EventName.tooDistracted)
+      # Alerts
+      vision_dm = self.sm['driverMonitoringState'].activePolicy == MonitoringPolicy.vision
+      if self.sm['driverMonitoringState'].alertLevel == AlertLevel.one:
+        self.events.add(EventName.driverDistracted1 if vision_dm else EventName.driverUnresponsive1)
+      elif self.sm['driverMonitoringState'].alertLevel == AlertLevel.two:
+        self.events.add(EventName.driverDistracted2 if vision_dm else EventName.driverUnresponsive2)
+      elif self.sm['driverMonitoringState'].alertLevel == AlertLevel.three:
+        self.events.add(EventName.driverDistracted3 if vision_dm else EventName.driverUnresponsive3)
+      # Warn consistent DM uncertainty
+      if self.sm['driverMonitoringState'].visionPolicyState.uncertainOffroadAlertPercent >= 100 and not self.dm_uncertain_alerted:
+        set_offroad_alert("Offroad_DriverMonitoringUncertain", True)
+        self.dm_uncertain_alerted = True
 
     # Add car events, ignore if CAN isn't valid
     if CS.canValid:
       car_events = self.car_events.update(CS, self.CS_prev, self.sm['carControl']).to_msg()
       self.events.add_from_msg(car_events)
 
-      # Tesla Pre-AP pedal-long status alerts (banner + engage/disengage sounds).
-      # Track pedal-long mode via the explicit pedalLongActive flag from carstate,
-      # not cruiseState.speed (which reads DI_digitalSpeed when long is off and
-      # would wrongly trigger on lateral-only engagement while driving).
+      # Tesla Pre-AP lat/long engage and disengage prompts. Long follows
+      # enableLongControl (stalk/brake intent), not interceptor handshake
+      # and not gas override. Override keeps enableLongControl true.
       if (self.CP.brand == "tesla"
           and self.CP.carFingerprint == "TESLA_MODEL_S_PREAP"
           and self.CP.openpilotLongitudinalControl
           and not self.CP.pcmCruise):
         pedal_long_active = bool(CS.cruiseState.enabled and getattr(CS, 'pedalLongActive', False))
-        if pedal_long_active and not self.prev_pedal_long_active:
+        chimes, self.prev_preap_chimes = update_preap_chimes(
+          lat_engaged=bool(CS.cruiseState.enabled),
+          long_engaged=bool(getattr(CS, 'enableLongControl', False)),
+          prev=self.prev_preap_chimes,
+        )
+        if chimes.long_engage:
           self.events.add(EventName.pedalCruiseEnabled)
-        elif self.prev_pedal_long_active and not pedal_long_active:
+        elif chimes.long_disengage:
           self.events.add(EventName.pedalCruiseDisabled)
-        self.prev_pedal_long_active = pedal_long_active
 
-        # Max regen warning: pedal is at limit, driver should use brake for more decel
-        if getattr(CS, 'pedalMaxRegen', False):
+        # Two shapes of "regen is not enough, add friction brake": the carstate
+        # flag covers weak regen under-delivering an in-envelope request; the
+        # demand check covers a planned deceleration the envelope cannot cover,
+        # which the clamped actuator request hides from the car entirely.
+        regen_demand_overflow = self.preap_regen_demand.update(
+          pedal_long_active=pedal_long_active,
+          brake_pressed=CS.brakePressed,
+          a_target=float(self.sm['longitudinalPlan'].aTarget),
+          v_ego=CS.vEgo,
+        )
+        if getattr(CS, 'pedalMaxRegen', False) or regen_demand_overflow:
           self.events.add(EventName.pedalMaxRegen)
       else:
-        self.prev_pedal_long_active = False
+        self.prev_preap_chimes = PreAPChimeState()
 
       if self.CP.notCar:
         # wait for everything to init first
-        if self.sm.frame > int(5. / DT_CTRL) and self.initialized:
+        if self.sm.frame > int(2. / DT_CTRL) and self.initialized:
           # body always wants to enable
           self.events.add(EventName.pcmEnable)
 
@@ -239,7 +281,7 @@ class SelfdriveD:
           self.events.add(EventName.pedalPressed)
 
     # Create events for temperature, disk space, and memory
-    if self.sm['deviceState'].thermalStatus >= ThermalStatus.red:
+    if self.sm['deviceState'].thermalStatus >= ThermalStatus.overheated:
       self.events.add(EventName.overheat)
     if self.sm['deviceState'].freeSpacePercent < 7 and not SIMULATION:
       self.events.add(EventName.outOfSpace)
@@ -443,7 +485,7 @@ class SelfdriveD:
     if self.CP.openpilotLongitudinalControl:
       if any(not be.pressed and be.type == ButtonType.gapAdjustCruise for be in CS.buttonEvents):
         self.personality = (self.personality - 1) % 3
-        self.params.put_nonblocking('LongitudinalPersonality', self.personality)
+        self.params.put('LongitudinalPersonality', self.personality)
         self.events.add(EventName.personalityChanged)
 
   def data_sample(self):

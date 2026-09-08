@@ -18,8 +18,8 @@ Pre-AP has two modes depending on whether a Comma Pedal is installed. Mode is se
 2. `carcontroller.py` sends `GAS_COMMAND` (0x551) based on `actuators.accel` from the long planner
 3. Zero-torque learning tracks the resting pedal position that produces zero torque at the current speed. On engage, we seed `prev_pedal_di` to this value so there is no regen spike
 4. Brake rising edge → drops `enableLongControl=False`, keeps `cruiseEnabled=True` (steering stays on, pedal drops). `enableJustCC` flips true so the carcontroller knows to spoof stock CC cancel
-5. Gas press → `OVERRIDE_LONGITUDINAL`. Pedal command passes through with `enable=0` — driver's foot controls throttle directly, NAP tracks position for smooth resume
-6. Stalk cancel (real, not spoof echo) → full disengage
+5. Gas press → `OVERRIDE_LONGITUDINAL`. Pedal command passes through with `enable=0` — driver's foot controls throttle directly, NAP tracks position for smooth resume. Long engage/disengage prompts follow `enableLongControl` (stalk/brake), not interceptor handshake and not gas override: `enableLongControl` stays true while the driver is on the pedal, so press and release are silent.
+6. Stalk cancel (real, not spoof echo) → full disengage. Lat and long prompts fire on those falling edges, including when openpilot is already going disabled.
 
 Interface flags for this mode: `openpilotLongitudinalControl=True`, `pcmCruise=False`. Long planner runs; accel goes to pedal.
 
@@ -58,9 +58,9 @@ This is a driver-training feature: prevents accidental full engage from a bump o
 
 ## Steering disengage
 
-`handle_steering_disengage()` runs on every frame. Rising edge of `steeringDisengage` (hands-on level ≥ 3 or EPAS rejecting) fully tears down FSM state: `cruiseEnabled=False`, `enableLongControl=False`, `pedal_speed_kph=0`, pull timers cleared.
+`handle_steering_disengage()` runs on every frame. Rising edge of `steeringDisengage` (hands-on level ≥ 2 or EPAS rejecting) fully tears down FSM state: `cruiseEnabled=False`, `enableLongControl=False`, `pedal_speed_kph=0`, pull timers cleared.
 
-This is the primary user override path. The panda also enforces it independently via EPAS error codes 6–9 and hands-on level ≥ 3.
+This is the primary user override path. The panda also enforces it independently via EPAS error codes 6–9 and hands-on level ≥ 2.
 
 ## Where to look
 

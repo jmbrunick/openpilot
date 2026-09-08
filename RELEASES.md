@@ -2,10 +2,17 @@ NAP map speed (2026-09-07)
 ========================
 * OSM map speed can drive HUD MAX (pedal mode). Off by default. Download US maps from Settings → NAP → Map Speed Limit (ODbL). Map speed sets the cruise ceiling; radar still follows a slower lead.
 
-Version 0.11.1 (2026-04-08)
+NAP 2026-09-02
+========================
+* Fix card crash on clean Comma install (Tesla radar DBC)
+
+Version 0.11.1 (2026-05-18)
 ========================
 * New driver monitoring model
 * Improved image processing pipeline for driver camera
+* Improved thermal policy for comma four
+* Acura MDX 2022-24 support thanks to mvl-boston!
+* Rivian R1S and R1T 2025 support thanks to lukasloetkolben!
 
 Version 0.11.0 (2026-03-17)
 ========================

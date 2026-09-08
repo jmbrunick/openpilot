@@ -189,6 +189,30 @@ class EngagementAlert(Alert):
                      audible_alert, .2),
 
 
+def _is_tesla_preap(CP: car.CarParams) -> bool:
+  return CP.brand == "tesla" and CP.carFingerprint == "TESLA_MODEL_S_PREAP"
+
+
+def pcm_enable_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
+  if _is_tesla_preap(CP):
+    return Alert(
+      "Steering Engaged",
+      "",
+      AlertStatus.normal, AlertSize.small,
+      Priority.MID, VisualAlert.none, AudibleAlert.engage, 0.8)
+  return EngagementAlert(AudibleAlert.engage)
+
+
+def pcm_disable_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
+  if _is_tesla_preap(CP):
+    return Alert(
+      "Steering Disengaged",
+      "",
+      AlertStatus.normal, AlertSize.small,
+      Priority.MID, VisualAlert.none, AudibleAlert.disengage, 0.8)
+  return EngagementAlert(AudibleAlert.disengage)
+
+
 class NormalPermanentAlert(Alert):
   def __init__(self, alert_text_1: str, alert_text_2: str = "", duration: float = 0.2, priority: Priority = Priority.LOWER, creation_delay: float = 0.):
     super().__init__(alert_text_1, alert_text_2,
@@ -409,6 +433,11 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
                                        "Ensure road ahead is clear"),
   },
 
+  EventName.lateralManeuver: {
+    ET.WARNING: longitudinal_maneuver_alert,
+    ET.PERMANENT: NormalPermanentAlert("Lateral Maneuver Mode"),
+  },
+
   EventName.selfdriveInitializing: {
     ET.NO_ENTRY: NoEntryAlert("System Initializing"),
   },
@@ -507,7 +536,7 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
       Priority.LOW, VisualAlert.steerRequired, AudibleAlert.prompt, 1.8),
   },
 
-  EventName.preDriverDistracted: {
+  EventName.driverDistracted1: {
     ET.PERMANENT: Alert(
       "Pay Attention",
       "",
@@ -515,7 +544,7 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
       Priority.LOW, VisualAlert.none, AudibleAlert.none, .1),
   },
 
-  EventName.promptDriverDistracted: {
+  EventName.driverDistracted2: {
     ET.PERMANENT: Alert(
       "Pay Attention",
       "Driver Distracted",
@@ -523,7 +552,7 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
       Priority.MID, VisualAlert.steerRequired, AudibleAlert.promptDistracted, .1),
   },
 
-  EventName.driverDistracted: {
+  EventName.driverDistracted3: {
     ET.PERMANENT: Alert(
       "DISENGAGE IMMEDIATELY",
       "Driver Distracted",
@@ -531,7 +560,7 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
       Priority.HIGH, VisualAlert.steerRequired, AudibleAlert.warningImmediate, .1),
   },
 
-  EventName.preDriverUnresponsive: {
+  EventName.driverUnresponsive1: {
     ET.PERMANENT: Alert(
       "Touch Steering Wheel: No Face Detected",
       "",
@@ -539,7 +568,7 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
       Priority.LOW, VisualAlert.steerRequired, AudibleAlert.none, .1),
   },
 
-  EventName.promptDriverUnresponsive: {
+  EventName.driverUnresponsive2: {
     ET.PERMANENT: Alert(
       "Touch Steering Wheel",
       "Driver Unresponsive",
@@ -547,7 +576,7 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
       Priority.MID, VisualAlert.steerRequired, AudibleAlert.promptDistracted, .1),
   },
 
-  EventName.driverUnresponsive: {
+  EventName.driverUnresponsive3: {
     ET.PERMANENT: Alert(
       "DISENGAGE IMMEDIATELY",
       "Driver Unresponsive",
@@ -668,7 +697,7 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
   # ********** events that affect controls state transitions **********
 
   EventName.pcmEnable: {
-    ET.ENABLE: EngagementAlert(AudibleAlert.engage),
+    ET.ENABLE: pcm_enable_alert,
   },
 
   EventName.buttonEnable: {
@@ -676,7 +705,7 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
   },
 
   EventName.pcmDisable: {
-    ET.USER_DISABLE: EngagementAlert(AudibleAlert.disengage),
+    ET.USER_DISABLE: pcm_disable_alert,
   },
 
   EventName.buttonCancel: {
@@ -1021,47 +1050,55 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
   },
 
   EventName.pedalCruiseEnabled: {
-    ET.WARNING: Alert(
+    ET.PERMANENT: Alert(
       "Pedal Cruise Engaged",
       "",
       AlertStatus.normal, AlertSize.small,
-      Priority.LOW, VisualAlert.none, AudibleAlert.engage, 0.8),
+      Priority.HIGH, VisualAlert.none, AudibleAlert.engage, 0.8),
   },
 
   EventName.pedalCruiseDisabled: {
-    ET.WARNING: Alert(
+    ET.PERMANENT: Alert(
       "Pedal Cruise Disengaged",
       "",
       AlertStatus.normal, AlertSize.small,
-      Priority.LOW, VisualAlert.none, AudibleAlert.disengage, 0.8),
+      Priority.HIGH, VisualAlert.none, AudibleAlert.disengage, 0.8),
   },
 
   EventName.pedalMaxRegen: {
     ET.WARNING: Alert(
-      "Max Regen Being Used",
-      "",
-      AlertStatus.userPrompt, AlertSize.small,
-      Priority.HIGH, VisualAlert.steerRequired, AudibleAlert.prompt, 2.),
+      "Regen Limit Reached",
+      "Press Brake to Slow Down",
+      AlertStatus.userPrompt, AlertSize.mid,
+      Priority.HIGH, VisualAlert.brakePressed, AudibleAlert.promptRepeat, .2),
   },
 
   EventName.teslaCCEngaged: {
-    ET.WARNING: Alert(
+    ET.PERMANENT: Alert(
       "Tesla Cruise Engaged",
       "",
       AlertStatus.normal, AlertSize.small,
-      Priority.LOW, VisualAlert.none, AudibleAlert.engage, 0.8),
+      Priority.HIGH, VisualAlert.none, AudibleAlert.engage, 0.8),
   },
 
   EventName.teslaCCDisengaged: {
-    ET.WARNING: Alert(
+    ET.PERMANENT: Alert(
       "Tesla Cruise Disengaged",
       "",
       AlertStatus.normal, AlertSize.small,
-      Priority.LOW, VisualAlert.none, AudibleAlert.disengage, 0.8),
+      Priority.HIGH, VisualAlert.none, AudibleAlert.disengage, 0.8),
   },
 
   EventName.teslaCCNotArmed: {
     ET.PERMANENT: NormalPermanentAlert("Arm Stock Cruise to Enable Speed Control"),
+  },
+
+  EventName.pedalUnavailable: {
+    ET.WARNING: Alert(
+      "Pedal Control Unavailable",
+      "Speed Control Disabled",
+      AlertStatus.userPrompt, AlertSize.mid,
+      Priority.HIGH, VisualAlert.none, AudibleAlert.disengage, 3.0),
   },
 
   EventName.userBookmark: {
@@ -1076,14 +1113,14 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
 
 if HARDWARE.get_device_type() == 'mici':
   EVENTS.update({
-    EventName.preDriverDistracted: {
+    EventName.driverDistracted1: {
       ET.PERMANENT: Alert(
         "Pay Attention",
         "",
         AlertStatus.normal, AlertSize.small,
         Priority.LOW, VisualAlert.none, AudibleAlert.none, 2),
     },
-    EventName.promptDriverDistracted: {
+    EventName.driverDistracted2: {
       ET.PERMANENT: Alert(
         "Pay Attention",
         "Driver Distracted",

@@ -1,11 +1,14 @@
-# Default-branch entry point for the protected nap-dev reference workflow.
+# GitHub-hosted reference publisher only. Never runs on self-hosted infrastructure.
+# generate-active builds and assembles refs on ubuntu-24.04; verify is fail-closed
+# and execution-free against the trusted active inventory at GITHUB_SHA.
+# The ci-artifacts write token is exposed only in the final push step.
 name: process replay refs
 
 on:
   workflow_dispatch:
     inputs:
       operation:
-        description: "generate active refs on protected nap-dev, or rollback to a protected tag"
+        description: "generate-active refs on protected nap-dev, or rollback to a protected tag"
         type: choice
         options:
           - generate-active
@@ -20,9 +23,24 @@ permissions:
   contents: read
   actions: write
 
+concurrency:
+  group: process-replay-refs
+  cancel-in-progress: false
+
+env:
+  SOURCE_REPO: NotAutopilot/openpilot
+  ARTIFACTS_REPO: NotAutopilot/ci-artifacts
+  ARTIFACTS_BRANCH: process-replay
+  TRUSTED_INVENTORY_PATH: .github/ci/process_replay_active_inventory.json
+  RELEASE_VALIDATOR: .github/ci/validate_process_replay_release.py
+  CANDIDATE_ARTIFACT_PREFIX: process-replay-candidate
+  EXPECTED_TASKS: "66"
+
 jobs:
-  retarget-to-nap-dev:
-    name: Retarget dispatch to nap-dev
+  # workflow_dispatch is discoverable on the default branch (nap-release).
+  # Retarget to the protected nap-dev workflow/ref before any publication work.
+  retarget-from-default:
+    name: Retarget nap-release dispatch to nap-dev
     if: github.repository == 'NotAutopilot/openpilot' && github.ref == 'refs/heads/nap-release'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -31,23 +49,844 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           OPERATION: ${{ inputs.operation }}
-          ROLLBACK_TAG: ${{ inputs.rollback_tag }}
+          IN_ROLLBACK_TAG: ${{ inputs.rollback_tag }}
         run: |
           set -euo pipefail
           case "${OPERATION}" in
-            generate-active)
-              test -z "${ROLLBACK_TAG}"
-              gh workflow run process_replay_refs.yaml --repo NotAutopilot/openpilot --ref nap-dev -f operation=generate-active
-              ;;
-            rollback)
-              if [[ ! "${ROLLBACK_TAG}" =~ ^process-replay/v1/[0-9a-f]{40}-[0-9a-f]{12}$ ]]; then
-                echo "rollback_tag must match process-replay/v1/<40-hex>-<12-hex>" >&2
-                exit 1
-              fi
-              gh workflow run process_replay_refs.yaml --repo NotAutopilot/openpilot --ref nap-dev -f operation=rollback -f "rollback_tag=${ROLLBACK_TAG}"
-              ;;
+            generate-active|rollback) ;;
             *)
-              echo "Invalid operation ${OPERATION}" >&2
+              echo "Invalid operation" >&2
               exit 1
               ;;
           esac
+          ARGS=(--ref nap-dev -f "operation=${OPERATION}")
+          if [[ -n "${IN_ROLLBACK_TAG}" ]]; then
+            [[ "${IN_ROLLBACK_TAG}" =~ ^process-replay/v1/[0-9a-f]{40}-[0-9a-f]{12}$ ]] || { echo "rollback_tag invalid" >&2; exit 1; }
+            ARGS+=(-f "rollback_tag=${IN_ROLLBACK_TAG}")
+          fi
+          gh workflow run process_replay_refs.yaml "${ARGS[@]}"
+          echo "Retargeted publication workflow to refs/heads/nap-dev"
+
+  gate-nap-dev:
+    name: Enforce protected nap-dev contract
+    if: github.repository == 'NotAutopilot/openpilot' && github.ref == 'refs/heads/nap-dev'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      operation: ${{ steps.validate.outputs.operation }}
+      source_sha: ${{ steps.validate.outputs.source_sha }}
+      rollback_tag: ${{ steps.validate.outputs.rollback_tag }}
+      candidate_artifact: ${{ steps.validate.outputs.candidate_artifact }}
+    steps:
+      - name: Validate ref, sha, workflow_ref, and inputs
+        id: validate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPERATION: ${{ inputs.operation }}
+          IN_ROLLBACK_TAG: ${{ inputs.rollback_tag }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_REF}" != "refs/heads/nap-dev" ]]; then
+            echo "Publication requires github.ref=refs/heads/nap-dev" >&2
+            exit 1
+          fi
+          if [[ ! "${GITHUB_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "github.sha must be lowercase 40-hex" >&2
+            exit 1
+          fi
+          EXPECTED_WORKFLOW_REF="${SOURCE_REPO}/.github/workflows/process_replay_refs.yaml@refs/heads/nap-dev"
+          if [[ "${GITHUB_WORKFLOW_REF}" != "${EXPECTED_WORKFLOW_REF}" ]]; then
+            echo "github.workflow_ref must be ${EXPECTED_WORKFLOW_REF}, got ${GITHUB_WORKFLOW_REF}" >&2
+            exit 1
+          fi
+
+          TIP="$(gh api "repos/${SOURCE_REPO}/git/ref/heads/nap-dev" --jq '.object.sha')"
+          if [[ "${TIP}" != "${GITHUB_SHA}" ]]; then
+            echo "Refusing: workflow SHA ${GITHUB_SHA} is not current nap-dev tip ${TIP}" >&2
+            exit 1
+          fi
+
+          case "${OPERATION}" in
+            generate-active)
+              IN_SOURCE_SHA="${TIP}"
+              ;;
+            rollback)
+              if [[ -z "${IN_ROLLBACK_TAG}" ]]; then
+                echo "rollback requires rollback_tag" >&2
+                exit 1
+              fi
+              if [[ ! "${IN_ROLLBACK_TAG}" =~ ^process-replay/v1/[0-9a-f]{40}-[0-9a-f]{12}$ ]]; then
+                echo "rollback_tag must match process-replay/v1/<40-hex>-<12-hex>" >&2
+                exit 1
+              fi
+              IN_SOURCE_SHA="$(sed -E 's|^process-replay/v1/([0-9a-f]{40})-[0-9a-f]{12}$|\1|' <<<"${IN_ROLLBACK_TAG}")"
+              ;;
+            *)
+              echo "Unknown operation ${OPERATION}" >&2
+              exit 1
+              ;;
+          esac
+
+          {
+            echo "operation=${OPERATION}"
+            echo "source_sha=${IN_SOURCE_SHA}"
+            echo "rollback_tag=${IN_ROLLBACK_TAG}"
+            echo "candidate_artifact=${CANDIDATE_ARTIFACT_PREFIX}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          } >> "${GITHUB_OUTPUT}"
+
+  generate:
+    name: Generate active refs on GitHub-hosted runner
+    needs: gate-nap-dev
+    if: needs.gate-nap-dev.result == 'success' && needs.gate-nap-dev.outputs.operation == 'generate-active'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CI: 1
+      PYTHONPATH: ${{ github.workspace }}
+      SOURCE_SHA: ${{ needs.gate-nap-dev.outputs.source_sha }}
+      CANDIDATE_ARTIFACT: ${{ needs.gate-nap-dev.outputs.candidate_artifact }}
+    outputs:
+      source_sha: ${{ steps.prove.outputs.source_sha }}
+      manifest_sha256: ${{ steps.prove.outputs.manifest_sha256 }}
+      previous_accepted_tag: ${{ steps.prove.outputs.previous_accepted_tag }}
+      candidate_artifact: ${{ needs.gate-nap-dev.outputs.candidate_artifact }}
+    steps:
+      - name: Checkout exact GITHUB_SHA
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.0
+        with:
+          ref: ${{ github.sha }}
+          submodules: true
+          persist-credentials: false
+
+      - name: Reconfirm current tip before generation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TIP="$(gh api "repos/${SOURCE_REPO}/git/ref/heads/nap-dev" --jq '.object.sha')"
+          if [[ "${TIP}" != "${GITHUB_SHA}" || "${TIP}" != "${SOURCE_SHA}" ]]; then
+            echo "Refusing stale generate: tip=${TIP} sha=${GITHUB_SHA} source=${SOURCE_SHA}" >&2
+            exit 1
+          fi
+          HEAD_SHA="$(git rev-parse HEAD)"
+          if [[ "${HEAD_SHA}" != "${SOURCE_SHA}" ]]; then
+            echo "Checkout HEAD ${HEAD_SHA} != source_sha ${SOURCE_SHA}" >&2
+            exit 1
+          fi
+
+      - name: Use fork LFS storage
+        run: git config lfs.url "https://github.com/${GITHUB_REPOSITORY}.git/info/lfs"
+
+      - name: Set up dependencies
+        uses: nick-fields/retry@7152eba30c6575329ac0576536151aca5a72780e
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          command: ./tools/op.sh setup
+
+      - name: Install video encoding deps
+        run: sudo apt-get install -y libva-dev libva-drm2 libdrm-dev
+
+      - name: Build openpilot
+        run: scons -j$(nproc)
+
+      - name: Generate, assemble, compare, and write proof
+        id: prove
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          REPLAY=selfdrive/test/process_replay/test_processes.py
+          ASSEMBLE=tools/ci/assemble_replay_release.py
+          test -x "${REPLAY}" -o -f "${REPLAY}"
+          test -f "${ASSEMBLE}"
+
+          OPENDBC_SHA="$(git rev-parse HEAD:opendbc_repo)"
+          if [[ ! "${OPENDBC_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Failed to resolve opendbc_repo gitlink" >&2
+            exit 1
+          fi
+
+          # Bind provenance to the current accepted head. A same-source rerun
+          # reuses the accepted manifest's predecessor so deterministic output
+          # remains byte-identical and publication becomes a no-op.
+          if ! gh api "repos/${ARTIFACTS_REPO}/git/ref/heads/${ARTIFACTS_BRANCH}" >/tmp/artifacts-head.json; then
+            echo "Missing ${ARTIFACTS_REPO}@${ARTIFACTS_BRANCH}; cannot resolve previous accepted identity" >&2
+            exit 1
+          fi
+          PREVIOUS_HEAD="$(jq -r '.object.sha' /tmp/artifacts-head.json)"
+          if [[ ! "${PREVIOUS_HEAD}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid process-replay head ${PREVIOUS_HEAD}" >&2
+            exit 1
+          fi
+          CURRENT_REF_COMMIT="$(gh api "repos/${ARTIFACTS_REPO}/contents/ref_commit?ref=${PREVIOUS_HEAD}" --jq '.content' | base64 -d | tr -d '\n')"
+          if [[ "${CURRENT_REF_COMMIT}" == "${SOURCE_SHA}" ]]; then
+            PREVIOUS_ACCEPTED_TAG="$(gh api "repos/${ARTIFACTS_REPO}/contents/manifest.json?ref=${PREVIOUS_HEAD}" --jq '.content' \
+              | base64 -d | jq -r '.previous_accepted_tag')"
+            if [[ -z "${PREVIOUS_ACCEPTED_TAG}" || "${PREVIOUS_ACCEPTED_TAG}" == "null" ]]; then
+              echo "Current same-source manifest has no previous accepted identity" >&2
+              exit 1
+            fi
+          else
+            PREVIOUS_ACCEPTED_TAG="process-replay/archive/${PREVIOUS_HEAD}"
+          fi
+
+          WORK="$(pwd)/.process-replay-generate"
+          export WORK OPENDBC_SHA PREVIOUS_HEAD PREVIOUS_ACCEPTED_TAG
+          rm -rf "${WORK}"
+          mkdir -p \
+            "${WORK}/generate" \
+            "${WORK}/compare" \
+            "${WORK}/release" \
+            "${WORK}/candidate/release" \
+            "${WORK}/candidate/review/generate-active/compare"
+
+          echo "Listing active cases"
+          python3 "${REPLAY}" --inventory active --list-cases > "${WORK}/cases.json"
+          python3 - <<'PY'
+          import json, os, pathlib
+          cases = json.loads(pathlib.Path(os.environ['WORK'], 'cases.json').read_text(encoding='utf-8'))
+          if not isinstance(cases, list) or len(cases) != 16:
+              raise SystemExit(f'expected 16 active cases, got {len(cases) if isinstance(cases, list) else type(cases)}')
+          print(f'listed {len(cases)} active cases')
+          PY
+
+          echo "Generating refs with --update-refs"
+          python3 "${REPLAY}" \
+            -j"$(nproc)" \
+            --inventory active \
+            --update-refs \
+            --output-dir "${WORK}/generate"
+
+          echo "Assembling release tree"
+          python3 "${ASSEMBLE}" \
+            --operation generate-active \
+            --source-sha "${SOURCE_SHA}" \
+            --fakedata-dir selfdrive/test/process_replay/fakedata \
+            --release-dir "${WORK}/release" \
+            --opendbc-sha "${OPENDBC_SHA}" \
+            --cases-json "${WORK}/cases.json" \
+            --previous-accepted-tag "${PREVIOUS_ACCEPTED_TAG}" \
+            | tee "${WORK}/assemble.log"
+          MANIFEST_SHA256="$(awk -F= '/^manifest_sha256=/{print $2; exit}' "${WORK}/assemble.log")"
+          if [[ ! "${MANIFEST_SHA256}" =~ ^[0-9a-f]{64}$ ]]; then
+            MANIFEST_SHA256="$(python3 - <<'PY'
+          import hashlib, pathlib, os
+          path = pathlib.Path(os.environ['WORK']) / 'release' / 'manifest.json'
+          print(hashlib.sha256(path.read_bytes()).hexdigest())
+          PY
+          )"
+          fi
+          if [[ ! "${MANIFEST_SHA256}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "Failed to resolve manifest_sha256" >&2
+            exit 1
+          fi
+          export MANIFEST_SHA256
+
+          echo "Comparing all active tasks against assembled release"
+          python3 "${REPLAY}" \
+            -j"$(nproc)" \
+            --inventory active \
+            --output-dir "${WORK}/compare" \
+            --reference-dir "${WORK}/release"
+
+          python3 - <<'PY'
+          import json, os, pathlib, re
+          work = pathlib.Path(os.environ['WORK'])
+          source_sha = os.environ['SOURCE_SHA']
+          manifest_sha = os.environ['MANIFEST_SHA256']
+          previous = os.environ['PREVIOUS_ACCEPTED_TAG']
+          opendbc_sha = os.environ['OPENDBC_SHA']
+          run_id = os.environ['GITHUB_RUN_ID']
+          expected_tasks = int(os.environ['EXPECTED_TASKS'])
+
+          results_path = work / 'compare' / 'results.json'
+          if not results_path.is_file() or results_path.is_symlink():
+              raise SystemExit('missing compare results.json')
+          results = json.loads(results_path.read_text(encoding='utf-8'))
+          cases = json.loads((work / 'cases.json').read_text(encoding='utf-8'))
+          expected_ids = sorted(
+              f"{case['case_id']}:{process}"
+              for case in cases
+              for process in case['processes']
+          )
+          if results.get('schema_version') != 1 or results.get('inventory') != 'active':
+              raise SystemExit('compare proof requires schema_version=1 and inventory=active')
+          if results.get('tested_commit') != source_sha or results.get('ref_commit') != source_sha:
+              raise SystemExit('compare tested_commit/ref_commit must equal source_sha')
+          if results.get('expected_task_ids') != expected_ids:
+              raise SystemExit('compare expected_task_ids mismatch active inventory')
+          if results.get('completed_task_ids') != expected_ids or results.get('incomplete_task_ids') != []:
+              raise SystemExit('compare task completion proof is not exact')
+          records = results.get('results')
+          if not isinstance(records, list) or len(records) != expected_tasks:
+              raise SystemExit('compare results must contain exactly one record per active task')
+          record_ids = [record.get('task_id') for record in records if isinstance(record, dict)]
+          if sorted(record_ids) != expected_ids or len(set(record_ids)) != expected_tasks:
+              raise SystemExit('compare result task IDs must exactly match active inventory')
+          if any(record.get('status') != 'pass' for record in records):
+              raise SystemExit('compare result records must all pass')
+          counts = results.get('status_counts') or {}
+          if int(counts.get('pass', -1)) != expected_tasks:
+              raise SystemExit(f"compare pass count must be {expected_tasks}, got {counts.get('pass')}")
+          for key in ('diff', 'error', 'incomplete'):
+              if int(counts.get(key, -1)) != 0:
+                  raise SystemExit(f'compare requires zero {key}, got {counts.get(key)}')
+
+          release = work / 'release'
+          manifest_path = release / 'manifest.json'
+          actual = __import__('hashlib').sha256(manifest_path.read_bytes()).hexdigest()
+          if actual != manifest_sha:
+              raise SystemExit('manifest_sha256 drifted before proof write')
+
+          # Reject unsafe release layout before packaging.
+          for path in sorted(release.rglob('*')):
+              rel = path.relative_to(release).as_posix()
+              if '..' in pathlib.Path(rel).parts or rel.startswith('/'):
+                  raise SystemExit(f'unsafe release path: {rel}')
+              if path.is_symlink():
+                  raise SystemExit(f'symlink forbidden in release: {rel}')
+
+          proof = {
+              'schema_version': 1,
+              'source_sha': source_sha,
+              'opendbc_sha': opendbc_sha,
+              'operation': 'generate-active',
+              'manifest_sha256': manifest_sha,
+              'accepted_head': os.environ['PREVIOUS_HEAD'],
+              'previous_accepted_tag': previous,
+              'workflow_run_id': str(run_id),
+              'expected_tasks': expected_tasks,
+              'status_counts': {
+                  'pass': expected_tasks,
+                  'diff': 0,
+                  'error': 0,
+                  'incomplete': 0,
+              },
+          }
+          if not re.fullmatch(r'[0-9a-f]{40}', source_sha):
+              raise SystemExit('invalid source_sha in proof')
+          if not re.fullmatch(r'[0-9a-f]{64}', manifest_sha):
+              raise SystemExit('invalid manifest_sha256 in proof')
+
+          candidate = work / 'candidate'
+          # Copy release tree files only (no nested dirs).
+          for entry in sorted(release.iterdir()):
+              if entry.is_symlink():
+                  raise SystemExit(f'symlink forbidden: {entry}')
+              if entry.is_dir():
+                  raise SystemExit(f'nested release directory forbidden: {entry.name}')
+              if entry.is_file():
+                  (candidate / 'release' / entry.name).write_bytes(entry.read_bytes())
+
+          (candidate / 'handoff-meta.json').write_text(
+              json.dumps(proof, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+          )
+          compare_dest = candidate / 'review' / 'generate-active' / 'compare'
+          compare_dest.mkdir(parents=True, exist_ok=True)
+          (compare_dest / 'results.json').write_bytes(results_path.read_bytes())
+          if (work / 'compare' / 'diff.txt').is_file():
+              (compare_dest / 'diff.txt').write_bytes((work / 'compare' / 'diff.txt').read_bytes())
+          (candidate / 'review' / 'generate-active' / 'cases.json').write_bytes(
+              (work / 'cases.json').read_bytes()
+          )
+
+          out = pathlib.Path(os.environ['GITHUB_OUTPUT'])
+          with out.open('a', encoding='utf-8') as handle:
+              handle.write(f'source_sha={source_sha}\n')
+              handle.write(f'manifest_sha256={manifest_sha}\n')
+              handle.write(f'previous_accepted_tag={previous}\n')
+          print(f'proof bound source_sha={source_sha} manifest_sha256={manifest_sha} previous={previous}')
+          PY
+
+      - name: Upload immutable same-run candidate artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: ${{ needs.gate-nap-dev.outputs.candidate_artifact }}
+          path: .process-replay-generate/candidate
+          if-no-files-found: error
+          overwrite: false
+          retention-days: 14
+
+  verify:
+    name: Verify candidate without execution
+    needs: [gate-nap-dev, generate]
+    if: |
+      always() &&
+      needs.gate-nap-dev.result == 'success' &&
+      (
+        needs.gate-nap-dev.outputs.operation == 'rollback' ||
+        needs.generate.result == 'success'
+      )
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # No environment: publication token must not be available here.
+    outputs:
+      release_source_sha: ${{ steps.validate.outputs.release_source_sha }}
+      release_manifest_sha256: ${{ steps.validate.outputs.release_manifest_sha256 }}
+      release_tag: ${{ steps.validate.outputs.release_tag }}
+      accepted_head: ${{ steps.proof.outputs.accepted_head }}
+      release_previous_accepted_tag: ${{ steps.validate.outputs.release_previous_accepted_tag }}
+    steps:
+      - name: Checkout trusted nap-dev inventory
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Materialize candidate tree
+        id: fetch
+        env:
+          OPERATION: ${{ needs.gate-nap-dev.outputs.operation }}
+          SOURCE_SHA: ${{ needs.gate-nap-dev.outputs.source_sha }}
+          ROLLBACK_TAG: ${{ needs.gate-nap-dev.outputs.rollback_tag }}
+          CANDIDATE_ARTIFACT: ${{ needs.gate-nap-dev.outputs.candidate_artifact }}
+          GENERATE_MANIFEST_SHA256: ${{ needs.generate.outputs.manifest_sha256 }}
+          GITHUB_READ_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p candidate
+          if [[ "${OPERATION}" == "generate-active" ]]; then
+            # Same-run artifact only; never trust foreign payloads.
+            if [[ -z "${CANDIDATE_ARTIFACT}" ]]; then
+              echo "Missing candidate artifact name" >&2
+              exit 1
+            fi
+            if [[ ! "${CANDIDATE_ARTIFACT}" =~ ^process-replay-candidate-[0-9]+-[0-9]+$ ]]; then
+              echo "Unexpected candidate artifact name ${CANDIDATE_ARTIFACT}" >&2
+              exit 1
+            fi
+          else
+            # Rollback reads an archived tag tree with the job token only.
+            export GH_TOKEN="${GITHUB_READ_TOKEN}"
+            REF_SHA="$(gh api "repos/${ARTIFACTS_REPO}/git/ref/tags/${ROLLBACK_TAG}" --jq '.object.sha')"
+            OBJ_TYPE="$(gh api "repos/${ARTIFACTS_REPO}/git/ref/tags/${ROLLBACK_TAG}" --jq '.object.type')"
+            if [[ "${OBJ_TYPE}" == "tag" ]]; then
+              REF_SHA="$(gh api "repos/${ARTIFACTS_REPO}/git/tags/${REF_SHA}" --jq '.object.sha')"
+            fi
+            mkdir -p candidate/release
+            TREE_SHA="$(gh api "repos/${ARTIFACTS_REPO}/git/commits/${REF_SHA}" --jq '.tree.sha')"
+            gh api "repos/${ARTIFACTS_REPO}/git/trees/${TREE_SHA}?recursive=1" > /tmp/tree.json
+            python3 - <<'PY'
+          import json, base64, urllib.request, os
+          from pathlib import Path
+          token = os.environ['GH_TOKEN']
+          repo = os.environ['ARTIFACTS_REPO']
+          tree = json.load(open('/tmp/tree.json'))
+          if tree.get('truncated'):
+              raise SystemExit('rollback tree truncated')
+          for entry in tree['tree']:
+              path = entry['path']
+              if path.startswith('/') or '..' in Path(path).parts:
+                  raise SystemExit(f'path traversal: {path}')
+              if entry['type'] != 'blob':
+                  continue
+              url = f'https://api.github.com/repos/{repo}/git/blobs/{entry["sha"]}'
+              req = urllib.request.Request(url, headers={
+                  'Authorization': f'Bearer {token}',
+                  'Accept': 'application/vnd.github+json',
+              })
+              with urllib.request.urlopen(req) as resp:
+                  blob = json.load(resp)
+              data = base64.b64decode(blob['content'])
+              target = Path('candidate/release') / path
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_bytes(data)
+          PY
+          fi
+
+      - name: Download same-run generate-active artifact
+        if: needs.gate-nap-dev.outputs.operation == 'generate-active'
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ${{ needs.gate-nap-dev.outputs.candidate_artifact }}
+          path: candidate
+
+      - name: Reject unsafe layouts and bind generate-active proof
+        id: proof
+        if: needs.gate-nap-dev.outputs.operation == 'generate-active'
+        env:
+          SOURCE_SHA: ${{ needs.gate-nap-dev.outputs.source_sha }}
+          MANIFEST_SHA256: ${{ needs.generate.outputs.manifest_sha256 }}
+          OPERATION: ${{ needs.gate-nap-dev.outputs.operation }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          source_sha = os.environ['SOURCE_SHA']
+          manifest_sha = os.environ['MANIFEST_SHA256']
+          operation = os.environ['OPERATION']
+          workflow_run_id = os.environ['GITHUB_RUN_ID']
+          expected_tasks = int(os.environ['EXPECTED_TASKS'])
+          sha40 = re.compile(r'^[0-9a-f]{40}$')
+          sha64 = re.compile(r'^[0-9a-f]{64}$')
+          if operation != 'generate-active':
+              raise SystemExit(f'expected generate-active, got {operation!r}')
+          if not sha40.fullmatch(source_sha) or not sha64.fullmatch(manifest_sha):
+              raise SystemExit('invalid source_sha or manifest_sha256 for proof binding')
+
+          root = Path('candidate')
+          if root.is_symlink() or not root.is_dir():
+              raise SystemExit('candidate root must be a real directory')
+
+          # Fail closed on unsafe extracted layouts (symlinks / traversal / unexpected nesting).
+          allowed_top = {'release', 'handoff-meta.json', 'review'}
+          for child in root.iterdir():
+              if child.name not in allowed_top:
+                  raise SystemExit(f'unexpected candidate top-level entry: {child.name}')
+          for path in sorted(root.rglob('*')):
+              rel = path.relative_to(root).as_posix()
+              parts = Path(rel).parts
+              if rel.startswith('/') or '..' in parts:
+                  raise SystemExit(f'path traversal in candidate: {rel}')
+              if path.is_symlink():
+                  raise SystemExit(f'symlink forbidden in candidate: {rel}')
+              if path.is_dir():
+                  continue
+              if not path.is_file():
+                  raise SystemExit(f'non-regular candidate member: {rel}')
+              if rel.startswith('release/') and '/' in rel[len('release/'):]:
+                  raise SystemExit(f'nested release path forbidden: {rel}')
+
+          handoff = root / 'handoff-meta.json'
+          if not handoff.is_file() or handoff.is_symlink():
+              raise SystemExit('missing handoff-meta.json proof in candidate artifact')
+          meta = json.loads(handoff.read_text(encoding='utf-8'))
+          if meta.get('source_sha') != source_sha:
+              raise SystemExit(f"handoff source_sha mismatch: {meta.get('source_sha')} != {source_sha}")
+          if meta.get('manifest_sha256') != manifest_sha:
+              raise SystemExit('handoff manifest_sha256 mismatch against generate output')
+          if meta.get('operation') != 'generate-active':
+              raise SystemExit(f"handoff operation must be generate-active, got {meta.get('operation')!r}")
+          if str(meta.get('workflow_run_id')) != workflow_run_id:
+              raise SystemExit('handoff workflow_run_id mismatch against current run')
+          if int(meta.get('expected_tasks', -1)) != expected_tasks:
+              raise SystemExit('handoff expected_tasks mismatch')
+          accepted_head = str(meta.get('accepted_head', ''))
+          if not sha40.fullmatch(accepted_head):
+              raise SystemExit('handoff accepted_head must be lowercase 40-hex')
+
+          release_manifest = root / 'release' / 'manifest.json'
+          if not release_manifest.is_file():
+              raise SystemExit('candidate release/manifest.json missing after download')
+          actual = hashlib.sha256(release_manifest.read_bytes()).hexdigest()
+          if actual != manifest_sha:
+              raise SystemExit('release/manifest.json hash mismatch against handoff/generate proof')
+
+          results_path = root / 'review' / 'generate-active' / 'compare' / 'results.json'
+          if not results_path.is_file() or results_path.is_symlink():
+              raise SystemExit(f'missing review proof {results_path}')
+          results = json.loads(results_path.read_text(encoding='utf-8'))
+          trusted = json.loads(Path(os.environ['TRUSTED_INVENTORY_PATH']).read_text(encoding='utf-8'))
+          trusted_ids = trusted.get('task_ids')
+          if (not isinstance(trusted_ids, list) or len(trusted_ids) != expected_tasks
+              or len(set(trusted_ids)) != expected_tasks):
+              raise SystemExit('trusted active task inventory is invalid')
+          expected_ids = sorted(trusted_ids)
+          if results.get('schema_version') != 1 or results.get('inventory') != 'active':
+              raise SystemExit('review proof requires schema_version=1 and inventory=active')
+          if results.get('tested_commit') != source_sha or results.get('ref_commit') != source_sha:
+              raise SystemExit('review proof tested_commit/ref_commit must equal source_sha')
+          if results.get('expected_task_ids') != expected_ids:
+              raise SystemExit('review expected_task_ids mismatch trusted active inventory')
+          if results.get('completed_task_ids') != expected_ids or results.get('incomplete_task_ids') != []:
+              raise SystemExit('review task completion proof is not exact')
+          records = results.get('results')
+          if not isinstance(records, list) or len(records) != expected_tasks:
+              raise SystemExit('review results must contain exactly one record per active task')
+          record_ids = [record.get('task_id') for record in records if isinstance(record, dict)]
+          if sorted(record_ids) != sorted(expected_ids) or len(set(record_ids)) != expected_tasks:
+              raise SystemExit('review result task IDs must exactly match trusted active inventory')
+          if any(record.get('status') != 'pass' for record in records):
+              raise SystemExit('review result records must all pass')
+          counts = results.get('status_counts') or {}
+          if int(counts.get('pass', -1)) != expected_tasks:
+              raise SystemExit(f"review proof pass count must be {expected_tasks}, got {counts.get('pass')}")
+          for key in ('diff', 'error', 'incomplete'):
+              if int(counts.get(key, -1)) != 0:
+                  raise SystemExit(f'review proof requires zero {key}, got {counts.get(key)}')
+          with Path(os.environ['GITHUB_OUTPUT']).open('a', encoding='utf-8') as output:
+              output.write(f'accepted_head={accepted_head}\n')
+          print(f'bound same-run generate-active proof with {expected_tasks} green compares')
+          PY
+          test -d candidate/release
+
+      - name: Fail-closed release-tree validation
+        id: validate
+        env:
+          OPERATION: ${{ needs.gate-nap-dev.outputs.operation }}
+          SOURCE_SHA: ${{ needs.gate-nap-dev.outputs.source_sha }}
+          MANIFEST_SHA256: ${{ needs.generate.outputs.manifest_sha256 }}
+          ROLLBACK_TAG: ${{ needs.gate-nap-dev.outputs.rollback_tag }}
+          GITHUB_READ_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test -f "${TRUSTED_INVENTORY_PATH}"
+          test -f "${RELEASE_VALIDATOR}"
+          test -d candidate/release
+          HEAD_SHA="$(git rev-parse HEAD)"
+          if [[ "${SOURCE_SHA}" == "${HEAD_SHA}" ]]; then
+            EXPECTED_OPENDBC_SHA="$(git rev-parse HEAD:opendbc_repo)"
+          else
+            # Rollback may target an older source tip than the publisher checkout.
+            export GH_TOKEN="${GITHUB_READ_TOKEN}"
+            EXPECTED_OPENDBC_SHA="$(gh api "repos/${SOURCE_REPO}/git/trees/${SOURCE_SHA}" \
+              --jq '.tree[] | select(.path=="opendbc_repo" and .mode=="160000") | .sha')"
+          fi
+          if [[ ! "${EXPECTED_OPENDBC_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Failed to resolve trusted opendbc_repo gitlink for ${SOURCE_SHA}" >&2
+            exit 1
+          fi
+          VALIDATOR_OPERATION="${OPERATION}"
+          if [[ "${OPERATION}" == "generate-active" ]]; then
+            # Release-tree validator uses publish|rollback; workflow op remains generate-active.
+            VALIDATOR_OPERATION="publish"
+          fi
+          python3 "${RELEASE_VALIDATOR}" \
+            --release-dir candidate/release \
+            --trusted-inventory "${TRUSTED_INVENTORY_PATH}" \
+            --source-sha "${SOURCE_SHA}" \
+            --operation "${VALIDATOR_OPERATION}" \
+            --expected-manifest-sha256 "${MANIFEST_SHA256}" \
+            --expected-opendbc-sha "${EXPECTED_OPENDBC_SHA}" \
+            --rollback-tag "${ROLLBACK_TAG}"
+
+      - name: Upload verified same-run artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: process-replay-release-verified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: candidate/release
+          if-no-files-found: error
+          overwrite: false
+          retention-days: 14
+
+  publish:
+    name: Publish to ci-artifacts
+    needs: [gate-nap-dev, verify]
+    if: needs.verify.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: process-replay-publish
+    steps:
+      - name: Checkout trusted nap-dev inventory
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download verified same-run artifact
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: process-replay-release-verified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .process-replay-publish-release
+
+      - name: Revalidate release tree before push
+        env:
+          OPERATION: ${{ needs.gate-nap-dev.outputs.operation }}
+          SOURCE_SHA: ${{ needs.verify.outputs.release_source_sha }}
+          MANIFEST_SHA256: ${{ needs.verify.outputs.release_manifest_sha256 }}
+          ROLLBACK_TAG: ${{ needs.verify.outputs.release_tag }}
+          GITHUB_READ_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test -f "${TRUSTED_INVENTORY_PATH}"
+          test -f "${RELEASE_VALIDATOR}"
+          HEAD_SHA="$(git rev-parse HEAD)"
+          if [[ "${SOURCE_SHA}" == "${HEAD_SHA}" ]]; then
+            EXPECTED_OPENDBC_SHA="$(git rev-parse HEAD:opendbc_repo)"
+          else
+            export GH_TOKEN="${GITHUB_READ_TOKEN}"
+            EXPECTED_OPENDBC_SHA="$(gh api "repos/${SOURCE_REPO}/git/trees/${SOURCE_SHA}" \
+              --jq '.tree[] | select(.path=="opendbc_repo" and .mode=="160000") | .sha')"
+          fi
+          if [[ ! "${EXPECTED_OPENDBC_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Failed to resolve trusted opendbc_repo gitlink for ${SOURCE_SHA}" >&2
+            exit 1
+          fi
+          # Same strict validator as the no-environment verifier.
+          VALIDATOR_OPERATION="${OPERATION}"
+          if [[ "${OPERATION}" == "generate-active" ]]; then
+            VALIDATOR_OPERATION="publish"
+          fi
+          python3 "${RELEASE_VALIDATOR}" \
+            --release-dir .process-replay-publish-release \
+            --trusted-inventory "${TRUSTED_INVENTORY_PATH}" \
+            --source-sha "${SOURCE_SHA}" \
+            --operation "${VALIDATOR_OPERATION}" \
+            --expected-manifest-sha256 "${MANIFEST_SHA256}" \
+            --expected-opendbc-sha "${EXPECTED_OPENDBC_SHA}" \
+            --rollback-tag "${ROLLBACK_TAG}"
+
+      - name: Capture current process-replay head
+        id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_ACCEPTED_HEAD: ${{ needs.verify.outputs.accepted_head }}
+          OPERATION: ${{ needs.gate-nap-dev.outputs.operation }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/${ARTIFACTS_REPO}/git/ref/heads/${ARTIFACTS_BRANCH}" >/tmp/head.json 2>/dev/null; then
+            CAPTURED="$(jq -r '.object.sha' /tmp/head.json)"
+            echo "branch_exists=true" >> "${GITHUB_OUTPUT}"
+          else
+            CAPTURED=""
+            echo "branch_exists=false" >> "${GITHUB_OUTPUT}"
+          fi
+          if [[ -n "${CAPTURED}" && ! "${CAPTURED}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid captured head ${CAPTURED}" >&2
+            exit 1
+          fi
+          if [[ "${OPERATION}" == "generate-active" && "${EXPECTED_ACCEPTED_HEAD}" != "${CAPTURED}" ]]; then
+            echo "process-replay moved after generation: expected=${EXPECTED_ACCEPTED_HEAD} current=${CAPTURED}" >&2
+            exit 1
+          fi
+          echo "captured_head=${CAPTURED}" >> "${GITHUB_OUTPUT}"
+          echo "Captured ${ARTIFACTS_BRANCH} head: ${CAPTURED:-<none>}"
+
+      - name: Push with force-with-lease, tag, and remote rehash
+        env:
+          # Repository-scoped write token is intentionally available only in this final push step.
+          NAP_CI_ARTIFACTS_WRITE_TOKEN: ${{ secrets.NAP_CI_ARTIFACTS_WRITE_TOKEN }}
+          JOB_TOKEN: ${{ github.token }}
+          OPERATION: ${{ needs.gate-nap-dev.outputs.operation }}
+          SOURCE_SHA: ${{ needs.verify.outputs.release_source_sha }}
+          MANIFEST_SHA256: ${{ needs.verify.outputs.release_manifest_sha256 }}
+          RELEASE_TAG: ${{ needs.verify.outputs.release_tag }}
+          CAPTURED_HEAD: ${{ steps.head.outputs.captured_head }}
+          BRANCH_EXISTS: ${{ steps.head.outputs.branch_exists }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${NAP_CI_ARTIFACTS_WRITE_TOKEN}" ]]; then
+            echo "Missing NAP_CI_ARTIFACTS_WRITE_TOKEN in process-replay-publish environment" >&2
+            exit 1
+          fi
+
+          TIP="$(GH_TOKEN="${JOB_TOKEN}" gh api "repos/${SOURCE_REPO}/git/ref/heads/nap-dev" --jq '.object.sha')"
+          if [[ "${OPERATION}" == "generate-active" && "${TIP}" != "${SOURCE_SHA}" ]]; then
+            echo "nap-dev moved to ${TIP}; refusing stale candidate" >&2
+            exit 1
+          fi
+
+          AUTH_URL="https://x-access-token:${NAP_CI_ARTIFACTS_WRITE_TOKEN}@github.com/${ARTIFACTS_REPO}.git"
+          rm -rf /tmp/ci-artifacts
+          if [[ "${BRANCH_EXISTS}" == "true" ]]; then
+            git clone --depth 1 --branch "${ARTIFACTS_BRANCH}" "${AUTH_URL}" /tmp/ci-artifacts
+          else
+            git clone --depth 1 "${AUTH_URL}" /tmp/ci-artifacts
+          fi
+
+          cd /tmp/ci-artifacts
+          git config user.name "process-replay-publisher"
+          git config user.email "process-replay-publisher@users.noreply.github.com"
+          EXTRA_REFS=()
+
+          if [[ "${BRANCH_EXISTS}" == "true" ]]; then
+            git checkout -B "${ARTIFACTS_BRANCH}" "origin/${ARTIFACTS_BRANCH}"
+            CURRENT="$(git rev-parse HEAD)"
+            if [[ "${CURRENT}" != "${CAPTURED_HEAD}" ]]; then
+              echo "Captured head drifted before push: ${CURRENT} != ${CAPTURED_HEAD}" >&2
+              exit 1
+            fi
+            ARCHIVE_TAG="process-replay/archive/${CAPTURED_HEAD}"
+            if git ls-remote --tags origin "refs/tags/${ARCHIVE_TAG}" | grep -q .; then
+              git fetch origin "refs/tags/${ARCHIVE_TAG}:refs/tags/${ARCHIVE_TAG}"
+              if [[ "$(git rev-list -n 1 "refs/tags/${ARCHIVE_TAG}")" != "${CAPTURED_HEAD}" ]]; then
+                echo "Archive tag ${ARCHIVE_TAG} does not resolve to captured head" >&2
+                exit 1
+              fi
+            else
+              git tag "${ARCHIVE_TAG}" "${CAPTURED_HEAD}"
+              EXTRA_REFS+=("refs/tags/${ARCHIVE_TAG}")
+            fi
+          else
+            git checkout --orphan "${ARTIFACTS_BRANCH}"
+            git rm -rf . >/dev/null 2>&1 || true
+          fi
+
+          find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+          cp -a "${GITHUB_WORKSPACE}/.process-replay-publish-release/." .
+
+          if [[ "${BRANCH_EXISTS}" == "true" ]] && git diff --quiet HEAD -- .; then
+            echo "Byte-identical release tree; no-op success"
+            NEW_COMMIT="${CAPTURED_HEAD}"
+          else
+            git add -A
+            git commit -m "process-replay refs for ${SOURCE_REPO}@${SOURCE_SHA}"
+            NEW_COMMIT="$(git rev-parse HEAD)"
+
+            if git ls-remote --tags origin "refs/tags/${RELEASE_TAG}" | grep -q .; then
+              git fetch origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+              TAG_COMMIT="$(git rev-list -n 1 "refs/tags/${RELEASE_TAG}")"
+              TREE_MATCH="$(git rev-parse "${TAG_COMMIT}^{tree}")"
+              NEW_TREE="$(git rev-parse "${NEW_COMMIT}^{tree}")"
+              if [[ "${TREE_MATCH}" != "${NEW_TREE}" ]]; then
+                echo "Release tag ${RELEASE_TAG} already exists with a different tree" >&2
+                exit 1
+              fi
+            else
+              git tag -a "${RELEASE_TAG}" -m "process-replay release ${SOURCE_SHA}"
+              EXTRA_REFS+=("refs/tags/${RELEASE_TAG}")
+            fi
+
+            if [[ "${BRANCH_EXISTS}" == "true" ]]; then
+              git push --atomic \
+                --force-with-lease="refs/heads/${ARTIFACTS_BRANCH}:${CAPTURED_HEAD}" \
+                origin "HEAD:refs/heads/${ARTIFACTS_BRANCH}" "${EXTRA_REFS[@]}"
+            else
+              git push --atomic origin "HEAD:refs/heads/${ARTIFACTS_BRANCH}" "${EXTRA_REFS[@]}"
+            fi
+            echo "Published ${ARTIFACTS_BRANCH} at ${NEW_COMMIT} tag ${RELEASE_TAG}"
+          fi
+
+          # ci-artifacts is public; the job token is sufficient for the remote rehash audit.
+          export GH_TOKEN="${JOB_TOKEN}"
+          export NEW_COMMIT
+          TREE="$(gh api "repos/${ARTIFACTS_REPO}/git/commits/${NEW_COMMIT}" --jq '.tree.sha')"
+          gh api "repos/${ARTIFACTS_REPO}/git/trees/${TREE}?recursive=1" > /tmp/remote-tree.json
+          python3 - <<'PY'
+          import hashlib, json, os, urllib.request, base64
+          token = os.environ['GH_TOKEN']
+          repo = os.environ['ARTIFACTS_REPO']
+          source_sha = os.environ['SOURCE_SHA']
+          expected = int(os.environ['EXPECTED_TASKS'])
+          tree = json.load(open('/tmp/remote-tree.json'))
+          if tree.get('truncated'):
+              raise SystemExit('remote tree truncated')
+          blobs = {e['path']: e for e in tree['tree'] if e['type'] == 'blob'}
+          if 'ref_commit' not in blobs or 'manifest.json' not in blobs:
+              raise SystemExit('remote tree missing metadata')
+          zsts = [p for p in blobs if p.endswith('.zst')]
+          if len(zsts) != expected:
+              raise SystemExit(f'remote zst count {len(zsts)} != {expected}')
+          extras = [p for p in blobs if p not in {'ref_commit', 'manifest.json'} and not p.endswith('.zst')]
+          if extras:
+              raise SystemExit(f'remote extras: {extras}')
+
+          def fetch(sha):
+              req = urllib.request.Request(
+                  f'https://api.github.com/repos/{repo}/git/blobs/{sha}',
+                  headers={'Authorization': f'Bearer {token}', 'Accept': 'application/vnd.github+json'},
+              )
+              with urllib.request.urlopen(req) as resp:
+                  return base64.b64decode(json.load(resp)['content'])
+
+          if fetch(blobs['ref_commit']['sha']).decode().strip() != source_sha:
+              raise SystemExit('remote ref_commit mismatch')
+          manifest_bytes = fetch(blobs['manifest.json']['sha'])
+          if hashlib.sha256(manifest_bytes).hexdigest() != os.environ['MANIFEST_SHA256']:
+              raise SystemExit('remote manifest hash mismatch')
+          manifest = json.loads(manifest_bytes)
+          for _, meta in manifest['refs'].items():
+              data = fetch(blobs[meta['filename']]['sha'])
+              if hashlib.sha256(data).hexdigest() != meta['sha256'] or len(data) != meta['size']:
+                  raise SystemExit(f'remote rehash failed for {meta["filename"]}')
+              if not meta['filename'].endswith(f'__{source_sha}.zst'):
+                  raise SystemExit('remote filename source_sha mismatch')
+          print(f'remote rehash OK for {expected} refs at {os.environ["NEW_COMMIT"]}')
+          PY

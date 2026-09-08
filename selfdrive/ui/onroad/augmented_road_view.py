@@ -1,7 +1,6 @@
-import time
 import numpy as np
 import pyray as rl
-from cereal import log, messaging
+from cereal import log
 from msgq.visionipc import VisionStreamType
 from openpilot.selfdrive.ui import UI_BORDER_SIZE
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
@@ -9,6 +8,7 @@ from openpilot.selfdrive.ui.onroad.alert_renderer import AlertRenderer
 from openpilot.selfdrive.ui.onroad.driver_state import DriverStateRenderer
 from openpilot.selfdrive.ui.onroad.hud_renderer import HudRenderer
 from openpilot.selfdrive.ui.onroad.model_renderer import ModelRenderer
+from openpilot.selfdrive.ui.radar.radar_view import RadarHudOverlay, radar_hud_rect
 from openpilot.selfdrive.ui.onroad.cameraview import CameraView
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.common.transformations.camera import DEVICE_CAMERAS, DeviceCameraConfig, view_frame_from_device_frame
@@ -46,15 +46,12 @@ class AugmentedRoadView(CameraView):
 
     self.model_renderer = ModelRenderer()
     self._hud_renderer = HudRenderer()
+    self._radar_hud = RadarHudOverlay()
     self.alert_renderer = AlertRenderer()
     self.driver_state_renderer = DriverStateRenderer()
 
-    # debug
-    self._pm = messaging.PubMaster(['uiDebug'])
-
   def _render(self, rect):
     # Only render when system is started to avoid invalid data access
-    start_draw = time.monotonic()
     if not ui_state.started:
       return
 
@@ -86,6 +83,7 @@ class AugmentedRoadView(CameraView):
     # Draw all UI overlays
     self.model_renderer.render(self._content_rect)
     self._hud_renderer.render(self._content_rect)
+    self._radar_hud.render(radar_hud_rect(self._content_rect))
     self.alert_renderer.render(self._content_rect)
     self.driver_state_renderer.render(self._content_rect)
 
@@ -97,11 +95,6 @@ class AugmentedRoadView(CameraView):
 
     # Draw colored border based on driving state
     self._draw_border(rect)
-
-    # publish uiDebug
-    msg = messaging.new_message('uiDebug')
-    msg.uiDebug.drawTimeMillis = (time.monotonic() - start_draw) * 1000
-    self._pm.send('uiDebug', msg)
 
   def _handle_mouse_press(self, _):
     if not self._hud_renderer.user_interacting() and self._click_callback is not None:
