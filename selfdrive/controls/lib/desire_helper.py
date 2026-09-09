@@ -99,7 +99,9 @@ class DesireHelper:
 
     # Physical lever: IDLE=0, LEFT=1, RIGHT=2, SNA=3. No tip/latch bit —
     # a tip is LEFT/RIGHT then IDLE within STALK_TIP_HOLD_S; held longer
-    # is a driver turn. Classification does not use speed.
+    # from idle is a driver turn. While ALC is armed/in progress, a
+    # same-direction stalk must stay on past STALK_ALC_TURN_HOLD_S (1.0s)
+    # to cancel ALC as a turn. Classification uses the stalk, not lamps.
     self._tip_turn.update(carstate.turnSignalStalkState, DT_MDL)
     left_press = self._tip_turn.left_press
     right_press = self._tip_turn.right_press
@@ -108,12 +110,15 @@ class DesireHelper:
       self._suppress_next_tip = False
 
     if self.lane_change_direction == LaneChangeDirection.left:
+      alc_stalk_dir = 1
       same_direction_tip, opposite_press = (
         tip_event and self._tip_turn.tip_direction == 1, right_press)
     elif self.lane_change_direction == LaneChangeDirection.right:
+      alc_stalk_dir = 2
       same_direction_tip, opposite_press = (
         tip_event and self._tip_turn.tip_direction == 2, left_press)
     else:
+      alc_stalk_dir = 0
       same_direction_tip, opposite_press = False, False
 
     if not lateral_active or self.lane_change_timer > LANE_CHANGE_TIME_MAX:
@@ -125,8 +130,10 @@ class DesireHelper:
           self._reset()
           just_cancelled = True
           self._suppress_next_tip = True
-        elif self._tip_turn.is_turn:
-          # Full / latched stalk is a driver turn, not ALC.
+        elif self._tip_turn.is_driver_turn(alc_latched=True,
+                                           alc_direction=alc_stalk_dir):
+          # Same-direction stalk held >1s during ALC: driver turn, not
+          # another lane change. Opposite already cancelled above.
           self._reset()
           just_cancelled = True
         elif same_direction_tip:
