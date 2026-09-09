@@ -166,7 +166,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"NAPMapSpeedDbSha256", {PERSISTENT, STRING}},
     // Pre-AP 0x45 stalk wiper/high-beam. Default 0 = today's forwarded stalk.
     // Wiper: 0=off 1=int 2=on 3=auto. Int/On hold high nibble 1. Auto holds nibble 1
-    // while the 3X ROAD camera sees a wet windshield. Beam: 0/1 leave stalk, 2=high (low nibble 4).
+    // while on, in Drive/Reverse, and the 3X ROAD camera sees rain or ice/frost.
+    // Beam: 0/1 leave stalk, 2=high (low nibble 4).
     // DAS wiper/beam fields stay 0. No auto headlights.
     {"NAPWiperSpeed", {PERSISTENT, INT, "0"}},
     {"NAPHighLowBeam", {PERSISTENT, INT, "0"}},
