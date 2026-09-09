@@ -38,13 +38,14 @@ WIPER_SPEED_DESCRIPTION = (
 HIGH_LOW_BEAM_DESCRIPTION = (
   "Pre-AP Model S only, for on-car testing. Default Off. Low is the same as "
   "Off — the stalk's rest 0x45 (00ff00) is low/cancel, so there is no extra "
-  "nibble to hold. High holds nibble 4 on the live 0x45, same counter, for "
-  "as long as High is selected, so the body keeps seeing high-beam pressed "
-  "and bus 0 IDLE cannot last-win as a cancel. Off/Low returns the real "
-  "stalk. Off/Low then High is not a one-shot tap — High means hold 4 until "
-  "you turn the setting off. The extra-forward is the same 0x45, not a "
-  "second 0x45. No spray. DAS wiper/beam fields stay 0. Car on "
-  "is enough. Do not send FLASH. No auto headlights."
+  "nibble to hold. The real stalk continuously sends 00ff04 while high "
+  "beams are held, not a one-shot press. High matches that: keep sending "
+  "00ff04 (nibble 4 held) on the live 0x45, same counter, until you turn "
+  "the setting off, so bus 0 IDLE cannot last-win as a cancel. Off/Low "
+  "returns the real stalk. Off/Low then High is not a one-shot tap. The "
+  "extra-forward is the same 0x45, not a second 0x45. No spray. DAS "
+  "wiper/beam fields stay 0. Car on is enough. Do not send FLASH. No auto "
+  "headlights."
 )
 
 # Radar lateral offset bounds (meters). Added to radar yRel in

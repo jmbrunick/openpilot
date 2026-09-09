@@ -96,21 +96,21 @@ def test_overlay_resigns_crc_only_when_changed():
   assert held[7] == (sum(held[:7]) & 0xFF)
 
 
-def test_high_holds_nibble_4_not_pulse_then_sna():
-  """High keeps HIBM_ON_PSD on the replacement. Rest/IDLE is not what goes out."""
+def test_high_keeps_sending_captured_00ff04_not_sna_or_rest():
+  """Real stalk holds 00ff04. High must keep sending that, not a one-shot press."""
   rest = _rest()
-  assert hibm_nibble(rest) == 0
-  for _ in range(20):
+  captured_high = bytes.fromhex("00ff04")
+  assert rest[:3] == bytes.fromhex("00ff00")
+  for _ in range(50):
     held = apply_stw_wiper_beam_nibbles(rest, False, True)
+    assert held[:3] == captured_high
     assert hibm_nibble(held) == STW_HIGH_BEAM
     assert hibm_nibble(held) != 0
     assert hibm_nibble(held) != STW_HIGH_BEAM_FLASH
     assert (hibm_nibble(held) & STW_HIBM_MASK) != STW_HIBM_MASK  # not SNA
-    assert held != rest
-  # Off/Low return the real stalk (rest/IDLE).
   off = apply_stw_wiper_beam_nibbles(rest, False, False)
   assert off == rest
-  assert hibm_nibble(off) == 0
+  assert off[:3] == bytes.fromhex("00ff00")
 
 
 def test_off_low_then_high_holds_4_again():
@@ -172,6 +172,7 @@ def test_settings_copy_describes_held_4_same_counter_replace():
   assert "second 0x45" in text
   assert "off/low" in text
   assert "not a one-shot tap" in text
+  assert "00ff04" in text
   assert "flash" in text
   assert "pulse" not in text
   assert "sna" not in text
@@ -346,6 +347,7 @@ def test_relayed_bus0_rest_is_replaced_with_held_4():
   rest = bytes.fromhex("00ff000000090e80")
   assert hibm_nibble(rest) == 0
   patched = replace_relayed_stw(rest, False, True, crc_fn=lambda payload: 0xAA)
+  assert patched[:3] == bytes.fromhex("00ff04")
   assert hibm_nibble(patched) == STW_HIGH_BEAM
   assert hibm_nibble(patched) != 0
   assert hibm_nibble(patched) != STW_HIGH_BEAM_FLASH
@@ -399,21 +401,21 @@ def test_replace_relayed_rest_on_packed_stw_holds_4_same_mc():
     "MC_STW_ACTN_RQ": 9,
     "CRC_STW_ACTN_RQ": 0,
     "DTR_Dist_Rq": 255,
-    "VSL_Enbl_Rq": 1,
+    "VSL_Enbl_Rq": 0,
     "HiBmLvr_Stat": 0,
   }
   _, rest, _ = tc.create_action_request(CruiseButtons.IDLE, CANBUS.party, 9, msg_stw)
-  assert hibm_nibble(rest) == 0
+  assert rest[:3] == bytes.fromhex("00ff00")
   patched = replace_relayed_stw(rest, False, True, crc_fn=tc.stw_crc)
+  assert patched[:3] == bytes.fromhex("00ff04")
   assert hibm_nibble(patched) == STW_HIGH_BEAM
   assert (patched[6] >> 4) & 0x0F == (rest[6] >> 4) & 0x0F  # MC nibble
   assert patched[7] == tc.stw_crc(patched[:7])
   assert patched[7] != rest[7]
-  assert patched[:3] != rest[:3]
 
 
-def test_high_extra_forward_uses_live_counter_held_4(monkeypatch):
-  """High extra-forward edits the live 0x45 in place; rest/IDLE is not TX'd."""
+def test_high_extra_forward_keeps_sending_00ff04(monkeypatch):
+  """High extra-forward keeps 00ff04 on the live-counter 0x45. Never SNA or rest."""
   from types import SimpleNamespace
 
   from opendbc.can import CANPacker
@@ -437,20 +439,22 @@ def test_high_extra_forward_uses_live_counter_held_4(monkeypatch):
     "MC_STW_ACTN_RQ": 9,
     "CRC_STW_ACTN_RQ": 0,
     "DTR_Dist_Rq": 255,
-    "VSL_Enbl_Rq": 1,
+    "VSL_Enbl_Rq": 0,
     "HiBmLvr_Stat": 0,
   })
-  out = body.stock_cc_update_with_overlay(fake, cs, 11, tc, CANBUS.party)
-  assert len(out) == 1
-  addr, dat, bus = out[0]
-  assert addr == STW_ACTN_RQ_ADDR
-  assert bus == CANBUS.party
-  assert (dat[6] >> 4) & 0x0F == 9
-  assert hibm_nibble(dat) == STW_HIGH_BEAM
-  assert hibm_nibble(dat) != 0
-  assert (hibm_nibble(dat) & STW_HIBM_MASK) != STW_HIBM_MASK
-  assert dat[7] == tc.stw_crc(dat[:7])
-  assert fake.sent == []  # High uses send_replaced_live_stw, not _send MC+1
+  for frame in range(20):
+    fake.sent.clear()
+    out = body.stock_cc_update_with_overlay(fake, cs, frame, tc, CANBUS.party)
+    assert len(out) == 1
+    addr, dat, bus = out[0]
+    assert addr == STW_ACTN_RQ_ADDR
+    assert bus == CANBUS.party
+    assert (dat[6] >> 4) & 0x0F == 9
+    assert dat[:3] == bytes.fromhex("00ff04")
+    assert hibm_nibble(dat) == STW_HIGH_BEAM
+    assert (hibm_nibble(dat) & STW_HIBM_MASK) != STW_HIBM_MASK
+    assert dat[7] == tc.stw_crc(dat[:7])
+    assert fake.sent == []  # High uses send_replaced_live_stw, not _send MC+1
 
 
 def test_stock_cc_off_does_not_change_forwarding(monkeypatch):

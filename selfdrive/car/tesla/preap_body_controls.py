@@ -16,13 +16,13 @@ DBC HiBmLvr_Stat is a 2-bit enum, not a latched-on state:
 There is no separate low-beam press. candump src 0 is the live stalk RX;
 src 128 is our TX echo (returned | 0x80) — not a panda 0↔2 relay. The body
 hears both on party bus 0. A pulse-then-SNA extra TX lost to repeating
-bus-0 IDLE. Justin’s read: the on-then-low / retrigger was that fight,
-not holding nibble 4 itself.
+bus-0 IDLE. The real stalk continuously sends 00ff04 (HIBM_ON_PSD) while
+high beams are held — not a one-shot press.
 
-While High is selected, keep HIBM_ON_PSD (nibble 4) on the live-counter
-in-place replacement of 0x45 so the body keeps seeing high-beam pressed
-and bus-0 IDLE cannot last-win as a cancel. Off/Low return the real
-stalk. High is a hold, not a one-shot tap.
+While High is selected, keep sending 00ff04 (nibble 4 held) on the
+live-counter in-place replacement of 0x45 so the body keeps seeing
+high-beam pressed and bus-0 IDLE cannot last-win as a cancel. Off/Low
+return the real stalk. Do not pulse 4 then drop to SNA or rest.
 
 Off leaves the driver’s real stalk nibble alone (do not force 0). Wiper
 On/Int holds high nibble 1. No rain model. No auto high-beam. Do not flash.
