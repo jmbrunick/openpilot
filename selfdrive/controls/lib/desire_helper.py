@@ -115,9 +115,12 @@ class DesireHelper:
           self.queued_changes = min(self.queued_changes + 1, MAX_QUEUED_LANE_CHANGES)
 
       # LaneChangeState.off — tap-to-ALC. Rising edge of TurnIndLvr LEFT/RIGHT
-      # arms; stalk returning to IDLE does not cancel. Below LANE_CHANGE_SPEED_MIN
-      # the blinker is a driver turn (lateral pause in controlsd). Hazards do not
-      # arm. Lamp edges without a lever tap do not arm (OP keep-alive flashes).
+      # only arms (preLaneChange). Desire stays none; the car does not leave
+      # the lane until a wheel nudge (steeringPressed + torque in that
+      # direction) enters laneChangeStarting. Stalk returning to IDLE does
+      # not cancel. Below LANE_CHANGE_SPEED_MIN the blinker is a driver turn
+      # (lateral pause in controlsd). Hazards do not arm. Lamp edges without
+      # a lever tap do not arm (OP keep-alive flashes).
       hazards = bool(carstate.leftBlinker) and bool(carstate.rightBlinker)
       if (not just_cancelled and self.lane_change_state == LaneChangeState.off and
           (left_tap or right_tap) and not below_lane_change_speed and not hazards):
@@ -127,7 +130,8 @@ class DesireHelper:
         self.arm_timer = 0.0
         self.queued_changes = 1
 
-      # LaneChangeState.preLaneChange
+      # LaneChangeState.preLaneChange — wait for a wheel nudge. Tap alone
+      # must not start the maneuver.
       elif self.lane_change_state == LaneChangeState.preLaneChange:
         torque_applied = carstate.steeringPressed and \
                          ((carstate.steeringTorque > 0 and self.lane_change_direction == LaneChangeDirection.left) or
