@@ -25,6 +25,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   RADAR_OFFSET_MAX,
   RADAR_OFFSET_MIN,
   RESTORE_EPAS_INSTRUCTIONS,
+  NAP_SPEED_SIGN_LOG,
   WIPER_SPEED_LABELS,
   WIPER_SPEED_VALUES,
 )
@@ -224,6 +225,8 @@ class NAPLayoutMici(NavScroller):
     map_speed_btn = BigButton("map speed limit", "open")
     map_speed_btn.set_click_callback(lambda: gui_app.push_widget(self._map_speed_page))
 
+    speed_sign_log = BigParamControl("speed sign logger", NAP_SPEED_SIGN_LOG)
+
     # ── Pedal hardware ───────────────────────────────
     # default_value=2 matches NAPPedalCanBus declared default in params_keys.h
     # and the runtime fallback ("any nonzero is bus 2"). If the param is set
@@ -313,6 +316,7 @@ class NAPLayoutMici(NavScroller):
       adaptive_accel,
       follow_distance,
       map_speed_btn,
+      speed_sign_log,
       pedal_can_bus,
       pedal_calib_status,
       calibrate_pedal_btn,
