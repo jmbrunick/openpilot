@@ -111,6 +111,8 @@ class Controls:
       left_blinker=CS.leftBlinker,
       right_blinker=CS.rightBlinker,
       steering_pressed=CS.steeringPressed,
+      steering_disengage=bool(getattr(CS, 'steeringDisengage', False)),
+      engaged=bool(self.sm['selfdriveState'].enabled),
       hold=self.blinker_lat_hold,
       alc_active=alc_active,
       v_ego=CS.vEgo,

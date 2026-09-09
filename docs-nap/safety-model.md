@@ -27,8 +27,8 @@ All actual safety logic remains active:
 
 - Steering angle + rate limits via `steer_angle_cmd_checks_vm()`
 - `controls_allowed` gating on every TX
-- Disengage on hands-on override (level >= 3)
-- Disengage on EPAS error codes 6–9
+- Disengage on hands-on override (level >= 2), except during a blinker-latched driver turn (one lamp or held LEFT/RIGHT, flash-latched ~1s, then hand-on until release)
+- Disengage on EPAS error codes 6–9, except during that same turn pause
 - Disengage on door open, gear out of Drive
 - Disengage on stalk cancel (with 600 ms echo filter)
 - AEB events blocked from openpilot
@@ -69,7 +69,7 @@ Panda hardcodes `brake_pressed=false`. The framework's generic brake-to-disengag
 3. On brake rising edge in pedal mode: drops `enableLongControl=False` but keeps `cruiseEnabled=True` (lateral stays active, only pedal drops)
 4. `ret.brakePressed = False` suppresses the generic openpilot brake handler from also killing lateral
 
-The driver can always override steering via hands-on level ≥ 2. The panda enforces that; it does not enforce brake-to-disengage.
+The driver can always override steering via hands-on level ≥ 2. The panda enforces that, except during a blinker-latched driver turn (lat is already released; wheel torque must not `pcm_cruise_check(false)` or selfdrived will `controlsMismatch` after 2s). It does not enforce brake-to-disengage.
 
 See `test_tesla_preap.py::test_prev_user_brake` for the panda-layer invariant test.
 

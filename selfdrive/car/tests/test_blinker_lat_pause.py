@@ -7,6 +7,8 @@ from openpilot.selfdrive.car.car_specific import CarSpecificEvents
 from openpilot.selfdrive.controls.lib.blinker_lateral_pause import (
   LAMP_OFF_DEBOUNCE_S,
   blinker_pauses_lateral,
+  blinker_turn_blocks_steering_disengage,
+  preap_blinker_pause_hides_controls_mismatch,
 )
 from openpilot.selfdrive.selfdrived.events import ET, EVENTS
 
@@ -137,3 +139,48 @@ def test_highway_stalk_tap_lamps_do_not_steer_disengage():
                        v_ego=30.0, stalk=1), _cs(), cse=cse)
   assert EventName.steerDisengage not in events.names
   assert not cse.blinker_lat_hold.turn_active
+
+
+def test_held_flashing_corner_keeps_block_and_hides_preap_mismatch():
+  cse = CarSpecificEvents(_cp())
+  dt = 0.01
+  period = 0.66
+  on_s = 0.33
+  prev = _cs()
+  for i in range(int(8.0 / dt)):
+    left = ((i * dt) % period) < on_s
+    pressed = (i % 20) < 10
+    cs = _cs(left=left, steering_disengage=pressed, steering_pressed=pressed, stalk=1)
+    events = _events(cs, prev, cse=cse)
+    prev = cs
+    assert EventName.steerDisengage not in events.names
+    assert cse.blinker_lat_hold.blocks_steer_disengage
+  assert preap_blinker_pause_hides_controls_mismatch(
+    brand="tesla", fingerprint="TESLA_MODEL_S_PREAP",
+    blocks_steer_disengage=cse.blinker_lat_hold.blocks_steer_disengage)
+
+
+def test_faster_corner_disengage_without_steering_pressed_does_not_cancel():
+  cse = CarSpecificEvents(_cp())
+  prev = _cs()
+  for _ in range(50):
+    cs = _cs(left=True, stalk=1)
+    _events(cs, prev, cse=cse)
+    prev = cs
+  assert cse.blinker_lat_hold.turn_active
+  events = _events(_cs(left=True, stalk=1, steering_disengage=True, steering_pressed=False),
+                   prev, cse=cse)
+  assert EventName.steerDisengage not in events.names
+  assert cse.blinker_lat_hold.blocks_steer_disengage
+  # Flash-gap dark frames while hands-on 2 still must not USER_DISABLE.
+  events = _events(_cs(stalk=1, steering_disengage=True, steering_pressed=False),
+                   _cs(left=True, stalk=1, steering_disengage=True), cse=cse)
+  assert EventName.steerDisengage not in events.names
+  assert cse.blinker_lat_hold.turn_active
+
+
+def test_stalk_held_without_prior_hold_does_not_steer_disengage():
+  """Hard gate: physical LEFT/RIGHT even if the flash-latch never started."""
+  events = _events(_cs(stalk=1, steering_disengage=True), _cs())
+  assert EventName.steerDisengage not in events.names
+  assert blinker_turn_blocks_steering_disengage(False, False, 1, None)

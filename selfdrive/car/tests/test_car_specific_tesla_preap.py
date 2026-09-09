@@ -18,7 +18,7 @@ from opendbc.car import CanData
 from opendbc.car.car_helpers import interfaces
 
 from openpilot.selfdrive.car.car_specific import CarSpecificEvents
-from openpilot.selfdrive.selfdrived.events import ET, EVENTS
+from openpilot.selfdrive.selfdrived.events import ET, EVENTS, pcm_disable_alert
 
 
 EventName = log.OnroadEvent.EventName
@@ -159,3 +159,50 @@ def test_pedal_acquisition_failure_keeps_lateral_and_surfaces_alert():
     assert set(event_types) == {ET.WARNING}
     assert alert.alert_text_1 == "Pedal Control Unavailable"
     assert alert.alert_text_2 == "Speed Control Disabled"
+
+
+def test_pcm_disable_hud_is_steering_disengaged_not_steer_disengage():
+  """3X bottom-bar 'Steering Disengaged' is EventName.pcmDisable."""
+  assert EVENTS[EventName.pcmDisable][ET.USER_DISABLE] is pcm_disable_alert
+  cp = _make_cp()
+  disable = pcm_disable_alert(cp, _make_cs(), None, False, 100, log.LongitudinalPersonality.standard)
+  assert disable.alert_text_1 == "Steering Disengaged"
+  steer = EVENTS[EventName.steerDisengage][ET.USER_DISABLE]
+  assert steer.alert_text_1 == ""
+
+
+def _blinker_cs(*, enabled=True, left=True, stalk=1, steering_disengage=False):
+  cs = _make_cs()
+  cs.cruiseState.enabled = enabled
+  cs.leftBlinker = left
+  cs.rightBlinker = False
+  cs.turnSignalStalkState = stalk
+  cs.steeringDisengage = steering_disengage
+  return cs
+
+
+def test_preap_blinker_held_high_torque_does_not_add_pcm_disable():
+  """Keep cruiseEnabled and the HUD stays off. Pedal and no-pedal both pcm_enable."""
+  for pcm_cruise, op_long in ((True, False), (False, True)):
+    cse = CarSpecificEvents(_make_cp(pcm_cruise=pcm_cruise, op_long=op_long))
+    prev = _blinker_cs(enabled=True, steering_disengage=False)
+    for _ in range(50):
+      cs = _blinker_cs(enabled=True, steering_disengage=False)
+      events = cse.update(cs, prev, car.CarControl.new_message())
+      assert EventName.pcmDisable not in events.names
+      prev = cs
+    events = cse.update(
+      _blinker_cs(enabled=True, steering_disengage=True), prev,
+      car.CarControl.new_message())
+    assert EventName.steerDisengage not in events.names
+    assert EventName.pcmDisable not in events.names
+
+
+def test_preap_pcm_disable_still_fires_when_cruise_already_off():
+  """Do not hide the HUD after the FSM has already dropped cruise."""
+  cse = CarSpecificEvents(_make_cp(pcm_cruise=True, op_long=False))
+  events = cse.update(
+    _blinker_cs(enabled=False, steering_disengage=True),
+    _blinker_cs(enabled=True, steering_disengage=False),
+    car.CarControl.new_message())
+  assert EventName.pcmDisable in events.names
