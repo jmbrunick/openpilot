@@ -4,6 +4,7 @@ from openpilot.selfdrive.controls.lib.blinker_lateral_pause import (
   LAMP_OFF_DEBOUNCE_S,
   blinker_pauses_lateral,
   lat_active_with_blinker_pause,
+  preap_blinker_pause_hides_controls_mismatch,
 )
 from openpilot.selfdrive.controls.lib.stalk_tip_turn import (
   STALK_ALC_TURN_HOLD_S,
@@ -346,3 +347,53 @@ def test_alc_grab_does_not_pause_lat():
   assert _lat_active(hold, left=True, pressed=True, alc_active=True)
   assert not hold.turn_active
   assert hold.blocks_steer_disengage
+
+
+def test_preap_mismatch_hidden_only_on_preap_during_pause():
+  hold = BlinkerLateralHold()
+  _hold_past_tip(hold, v_ego=10.0)
+  assert hold.blocks_steer_disengage
+  assert preap_blinker_pause_hides_controls_mismatch(
+    brand="tesla", fingerprint="TESLA_MODEL_S_PREAP",
+    blocks_steer_disengage=hold.blocks_steer_disengage)
+  assert not preap_blinker_pause_hides_controls_mismatch(
+    brand="tesla", fingerprint="TESLA_MODEL_S_PREAP",
+    blocks_steer_disengage=False)
+  assert not preap_blinker_pause_hides_controls_mismatch(
+    brand="toyota", fingerprint="TESLA_MODEL_S_PREAP",
+    blocks_steer_disengage=True)
+
+
+def test_held_flashing_corner_hides_mismatch_for_eight_seconds():
+  """Justin's long blinker-held corner: lamps flash, hands-on oscillates.
+
+  Python already keeps cruiseEnabled. The remaining full-cancel was
+  controlsMismatch after ~2s of panda !controlsAllowed. The hold must
+  stay blocking so selfdrived can hide that disagreement.
+  """
+  hold = BlinkerLateralHold()
+  _hold_past_tip(hold, v_ego=12.0, stalk=1)
+  dt = 0.01
+  period = 0.66
+  on_s = 0.33
+  for i in range(int(8.0 / dt)):
+    left = ((i * dt) % period) < on_s
+    pressed = (i % 20) < 10
+    assert not _lat_active(hold, left=left, pressed=pressed, stalk_state=1, dt=dt)
+    assert hold.blocks_steer_disengage
+    assert preap_blinker_pause_hides_controls_mismatch(
+      brand="tesla", fingerprint="TESLA_MODEL_S_PREAP",
+      blocks_steer_disengage=True)
+
+
+def test_mismatch_not_hidden_after_turn_and_hand_release():
+  hold = BlinkerLateralHold()
+  _hold_past_tip(hold, v_ego=10.0)
+  assert not _lat_active(hold, left=True, pressed=True, stalk_state=1)
+  assert not _lat_active(hold, pressed=True, dt=LAMP_OFF_DEBOUNCE_S)
+  assert hold.holding
+  assert _lat_active(hold)
+  assert not hold.blocks_steer_disengage
+  assert not preap_blinker_pause_hides_controls_mismatch(
+    brand="tesla", fingerprint="TESLA_MODEL_S_PREAP",
+    blocks_steer_disengage=hold.blocks_steer_disengage)
