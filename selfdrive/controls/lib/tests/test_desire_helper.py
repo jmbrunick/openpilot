@@ -9,7 +9,10 @@ from openpilot.selfdrive.controls.lib.desire_helper import (
   LaneChangeDirection,
   LaneChangeState,
 )
-from openpilot.selfdrive.controls.lib.stalk_tip_turn import STALK_TIP_HOLD_S
+from openpilot.selfdrive.controls.lib.stalk_tip_turn import (
+  STALK_ALC_TURN_HOLD_S,
+  STALK_TIP_HOLD_S,
+)
 
 
 class FakeCarState:
@@ -37,14 +40,14 @@ def _arm_left(dh, v_ego=30.0):
   dh.update(FakeCarState(v_ego=v_ego, left=True, lever=0), True, 0.0)
 
 
-def _hold_lever(dh, lever, v_ego=30.0, t=None):
+def _hold_lever(dh, lever, v_ego=30.0, t=None, lane_change_prob=1.0):
   if t is None:
     t = STALK_TIP_HOLD_S
   lamp_left = lever == 1
   lamp_right = lever == 2
   for _ in range(int(round(t / DT_MDL)) + 1):
     dh.update(FakeCarState(v_ego=v_ego, left=lamp_left, right=lamp_right, lever=lever),
-              True, 0.0)
+              True, lane_change_prob)
 
 
 def _lever_tap(dh, lever, lamp_left=True, hold_ticks=3):
@@ -305,13 +308,53 @@ def test_opposite_tap_does_not_rearm_new_direction():
   assert dh.lane_change_state == LaneChangeState.off
 
 
-def test_held_lever_after_arm_cancels_as_turn():
+def test_same_direction_hold_under_1s_during_pre_does_not_cancel():
   dh = DesireHelper()
   _arm_left(dh)
-  _hold_lever(dh, 1, v_ego=30.0)
+  _hold_lever(dh, 1, v_ego=30.0, t=0.90)
+
+  assert dh.lane_change_state == LaneChangeState.preLaneChange
+  assert dh.lane_change_direction == LaneChangeDirection.left
+  assert dh.queued_changes == 1
+  left, right = DesireHelper.lane_change_keep_blinker(
+    dh.lane_change_state, dh.lane_change_direction)
+  assert left and not right
+
+
+def test_same_direction_hold_1s_during_pre_cancels_as_turn():
+  dh = DesireHelper()
+  _arm_left(dh)
+  _hold_lever(dh, 1, v_ego=30.0, t=STALK_ALC_TURN_HOLD_S)
+
+  assert dh.lane_change_state == LaneChangeState.off
+  assert dh.lane_change_direction == LaneChangeDirection.none
+  assert dh.queued_changes == 0
+  left, right = DesireHelper.lane_change_keep_blinker(
+    dh.lane_change_state, dh.lane_change_direction)
+  assert not left and not right
+
+
+def test_same_direction_hold_1s_during_starting_cancels_as_turn():
+  dh = DesireHelper()
+  _arm_left(dh)
+  dh.update(_nudge_left(), True, 1.0)
+  assert dh.lane_change_state == LaneChangeState.laneChangeStarting
+  _hold_lever(dh, 1, v_ego=30.0, t=STALK_ALC_TURN_HOLD_S)
 
   assert dh.lane_change_state == LaneChangeState.off
   assert dh.queued_changes == 0
+
+
+def test_same_direction_hold_under_1s_does_not_queue():
+  """Past the tip window but under 1s is neither a queued tip nor a turn."""
+  dh = DesireHelper()
+  _arm_left(dh)
+  dh.update(_nudge_left(), True, 1.0)
+  _hold_lever(dh, 1, v_ego=30.0, t=0.90)
+  dh.update(FakeCarState(left=True, lever=0), True, 1.0)
+
+  assert dh.lane_change_state == LaneChangeState.laneChangeStarting
+  assert dh.queued_changes == 1
 
 
 def test_same_direction_tap_during_maneuver_queues_change():
