@@ -1,5 +1,6 @@
 NAP blinker (2026-09-09)
 ========================
+* During ALC (or leftover keep-alive), holding the physical stalk the same direction for more than 1.0s cancels the lane change and pauses steering as a driver turn. A shorter same-direction press does not force a turn. Tip-to-ALC from idle is still LEFT/RIGHT then IDLE within 0.40s.
 * Tip vs turn no longer depends on speed. A partial stalk push (LEFT/RIGHT then IDLE within 0.40s) is automatic lane change at any speed; a full held stalk is a driver turn and releases steering. Lane change still will not *start* below 20 mph until a wheel nudge at speed.
 
 NAP map speed (2026-09-08)

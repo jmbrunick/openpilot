@@ -98,7 +98,9 @@ class Controls:
     # Driver-turn lamps pause lat (latched through flash gaps). ALC keep-alive
     # flashes must not: gate pause while laneChangeState != off, and on a
     # stalk tip (LEFT/RIGHT then IDLE within 0.40s) so latActive stays up
-    # for DesireHelper. A held stalk past that window is a turn at any speed.
+    # for DesireHelper. A held stalk past that window is a turn at any speed
+    # when ALC is not latched. During ALC / leftover keep-alive, same-direction
+    # stalk must stay on >1.0s to steal ALC as a turn.
     alc_active = model_v2.meta.laneChangeState != LaneChangeState.off
     CC.latActive = lat_active_with_blinker_pause(
       active=self.sm['selfdriveState'].active,
