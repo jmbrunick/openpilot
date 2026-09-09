@@ -1,3 +1,4 @@
+from cereal import log
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.controls.lib.desire_helper import (
@@ -64,6 +65,34 @@ def test_tap_arms_pre_lane_change():
   assert dh.lane_change_state == LaneChangeState.preLaneChange
   assert dh.lane_change_direction == LaneChangeDirection.left
   assert dh.queued_changes == 1
+  assert dh.desire == log.Desire.none
+
+
+def test_tap_alone_does_not_leave_lane():
+  """Stock NAP: tap arms. Do not start the change until a wheel nudge."""
+  dh = DesireHelper()
+  _arm_left(dh)
+  left, right = DesireHelper.lane_change_keep_blinker(dh.lane_change_state, dh.lane_change_direction)
+  assert left and not right
+
+  _tick(dh, FakeCarState(left=True, lever=0), n=int(2.0 / DT_MDL))
+
+  assert dh.lane_change_state == LaneChangeState.preLaneChange
+  assert dh.desire == log.Desire.none
+  assert dh.desire not in (log.Desire.laneChangeLeft, log.Desire.laneChangeRight)
+  left, right = DesireHelper.lane_change_keep_blinker(dh.lane_change_state, dh.lane_change_direction)
+  assert left and not right
+
+
+def test_wrong_way_torque_does_not_start_lane_change():
+  dh = DesireHelper()
+  _arm_left(dh)
+  dh.update(FakeCarState(left=True, steering_pressed=True, steering_torque=-1.0), True, 0.0)
+  assert dh.lane_change_state == LaneChangeState.preLaneChange
+  assert dh.desire == log.Desire.none
+
+  dh.update(FakeCarState(left=True, steering_pressed=True, steering_torque=0.0), True, 0.0)
+  assert dh.lane_change_state == LaneChangeState.preLaneChange
 
 
 def test_tap_arms_without_lamp_on_yet():
@@ -156,9 +185,11 @@ def test_arming_times_out_without_nudge():
 def test_wheel_nudge_starts_lane_change():
   dh = DesireHelper()
   _arm_left(dh)
+  assert dh.desire == log.Desire.none
   dh.update(_nudge_left(), True, 0.0)
 
   assert dh.lane_change_state == LaneChangeState.laneChangeStarting
+  assert dh.desire == log.Desire.laneChangeLeft
 
 
 def test_opposite_lever_tap_cancels_while_arming():
