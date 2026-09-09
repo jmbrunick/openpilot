@@ -38,12 +38,12 @@ The US speed-limits sqlite is **not in git** (too large; ODbL still requires att
 
 | | |
 |---|---|
-| Release tag | `osm-us-speed-limits-v2` on `jmbrunick/openpilot` |
+| Release tag | `osm-us-speed-limits-v3` on `jmbrunick/openpilot` |
 | Asset | `speed_limits_us.sqlite.zst` |
 | SHA-256 | of the **zst** (`ASSET_SHA256`), verified **before** decompress. Dest sqlite is not hashed unless `SQLITE_SHA256` is set. `--sha256 ''` skips. |
 | Install path | `/data/media/0/osm/speed_limits.sqlite` |
 | Staging | `/data/media/0/osm/.download/` on the dest filesystem (not `/tmp`) |
-| Size | **~204 MiB zst → ~516 MiB sqlite**. Fetch needs **800 MiB** free on `/data`. |
+| Size | **~200 MiB zst → ~541 MiB sqlite**. Fetch needs **850 MiB** free on `/data`. |
 
 On the comma 3X: **Settings → NAP → Map Speed Limit → Download US Maps** (offroad), or `python -m scripts.nap.fetch_osm_maps`. That is the first-install of the published US pack. Frequent local updates: **Refresh maps** (or `python -m scripts.nap.refresh_osm_maps`) — live OSM within **100 miles** (~160.9 km), merged into the installed sqlite. `mapd` reloads the sqlite every ~15s onroad — no reboot.
 
@@ -62,7 +62,14 @@ Publish a new US pack from a PC (Geofabrik PBF ~11 GB):
 osmium tags-filter us-latest.osm.pbf w/highway w/maxspeed -o us-maxspeed.osm.pbf
 python scripts/nap/build_osm_speed_limits.py --pbf us-maxspeed.osm.pbf \
   --out speed_limits_us.sqlite --zst
+
+# Overlay MN statutory fills (~100 miles around Benson) onto that US pack:
+python scripts/nap/build_osm_speed_limits.py --pbf minnesota-latest.osm.pbf \
+  --fill-mn-statutory --benson --merge-into speed_limits_us.sqlite \
+  --out speed_limits_us.sqlite --zst
 ```
+
+Fills are NAP estimates (`source=MN_169.14`, Minn. Stat. 169.14). Do **not** upload guessed `maxspeed` tags to osm.org. Meta on the sqlite records tagged vs filled counts.
 
 Put the **zst** SHA-256 in `selfdrive/mapd/maps_manifest.py` **and** bump `selfdrive/mapd/maps-index.json` (see [Publishing a US pack](#publishing-a-us-pack)). For a PC-only smaller region file: `python scripts/nap/download_osm_speed_limits.py --lat … --lon … --radius-km 30`.
 
@@ -73,8 +80,8 @@ Put the **zst** SHA-256 in `selfdrive/mapd/maps_manifest.py` **and** bump `selfd
 On the 3X (offroad, Wi-Fi):
 
 1. **Location.** Wait up to **10s** for a GNSS fix (`gpsLocationExternal`, then `gpsLocation`). Refresh accepts the last received plausible lat/lon (not 0,0), including samples older than 2.5s and accuracy up to 200 m (yard/tree cover). mapd's onroad MAX match still uses 2.5s / 50 m. Otherwise last stored GPS (`LastGPSPosition` param or `/data/params/d/LastGPSPosition`). A successful fix is persisted so the next offroad tap works. If still nothing: start openpilot onroad until the GPS icon/fix is up for about a minute, then retry. Maps will **not** guess a city.
-2. **Query OSM.** Reuses Overpass / `scripts.nap.download_osm_speed_limits` / mapd builders for highway+maxspeed ways in that box. Does **not** download the full US Geofabrik PBF on the 3X.
-3. **Merge.** Copy the installed `/data/media/0/osm/speed_limits.sqlite` onto `/data` (not `/tmp`), delete/replace `way_id`s whose bbox intersects the 100-mile box, insert the Overpass ways, keep the rest of the US pack. If no sqlite is installed yet, Download US Maps runs first, then the overlay — never a 100-mile-only dest file.
+2. **Query OSM.** Reuses Overpass / `scripts.nap.download_osm_speed_limits` / mapd builders for highway ways in that box. Does **not** download the full US Geofabrik PBF on the 3X. Tagged numeric `maxspeed` is authoritative. When the box intersects Minnesota, the query includes fillable highways **without** maxspeed and applies Minn. Stat. 169.14 estimates locally (never uploaded to osm.org) so Refresh maps does not wipe unmarked pack fills.
+3. **Merge.** Copy the installed `/data/media/0/osm/speed_limits.sqlite` onto `/data` (not `/tmp`), delete/replace `way_id`s whose bbox intersects the 100-mile box, insert the Overpass ways (tagged + MN fills), keep the rest of the US pack. If no sqlite is installed yet, Download US Maps runs first, then the overlay — never a 100-mile-only dest file.
 4. **Atomic install.** `os.replace` onto dest. Overpass timeout / HTTP / merge failure prints a real error and leaves the previous good sqlite. Retry-safe. mapd reloads ~15s onroad — no reboot. Progress (querying OSM, merging, installing) shows on the existing script-runner UI.
 
 Overpass can be slow in a dense metro. Wait or retry; the old maps stay put.
@@ -87,7 +94,7 @@ Download US Maps still uses the GitHub Release + `maps-index.json`. Bump those w
 2. Attach `speed_limits_us.sqlite.zst` to a **new** GitHub Release on `jmbrunick/openpilot` (e.g. `osm-us-speed-limits-v3`). Do not replace the in-git JSON with the 204MB zst.
 3. SHA-256 the **zst** (`sha256sum speed_limits_us.sqlite.zst`).
 4. Bump `selfdrive/mapd/maps-index.json`:
-   - `revision` — integer or dotted semver, must be **greater** than the previous value (current first-install is `"2"`)
+   - `revision` — integer or dotted semver, must be **greater** than the previous value (current first-install is `"3"`)
    - `asset_url` — Release download URL for the new zst
    - `asset_name` — usually `speed_limits_us.sqlite.zst`
    - `sha256` — hex digest of the zst

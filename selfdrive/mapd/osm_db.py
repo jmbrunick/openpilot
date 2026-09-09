@@ -1,7 +1,8 @@
 """Offline OSM speed-limit SQLite (R-tree) for comma 3X.
 
 Schema is NAP-owned. Data is OpenStreetMap (ODbL). Query path is GPS → nearest
-heading-aligned way with an explicit maxspeed tag.
+heading-aligned way. Tagged OSM maxspeed is authoritative; Minnesota packs
+may include statutory estimates for unmarked highways (never uploaded to OSM).
 """
 from __future__ import annotations
 
