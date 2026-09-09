@@ -19,6 +19,7 @@ from openpilot.selfdrive.car.tesla.preap_body_controls import (
   high_beam_test_requested,
   overlay_stw_wiper_beam,
   register_nap_body_params,
+  stalk_test_active,
   wiper_test_requested,
 )
 
@@ -84,6 +85,12 @@ def test_overlay_resigns_crc_only_when_changed():
   assert _byte(out) == STW_WIPER_ON
   assert out[:7] != rest[:7]
   assert out[7] == (sum(out[:7]) & 0xFF)
+
+
+def test_stalk_test_active_is_settings_only():
+  assert not stalk_test_active(False, False)
+  assert stalk_test_active(True, False)
+  assert stalk_test_active(False, True)
 
 
 def test_extra_forward_only_when_on_and_no_existing_0x45():
@@ -183,6 +190,29 @@ def test_stock_cc_overlay_forwards_once_and_never_a_second_0x45(monkeypatch):
   out = body.stock_cc_update_with_overlay(fake, cs, 10, None, 0)
   assert out == already
   assert fake.sent == []
+
+
+def test_disengaged_idle_stalk_still_forwards_when_on(monkeypatch):
+  """Car on, NAP not engaged, no stalk pull: On/High must still forward 0x45."""
+  from types import SimpleNamespace
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  fake = _FakeSpoofer()
+  cs = SimpleNamespace(
+    cruiseEnabled=False,
+    enableLongControl=False,
+    enableJustCC=False,
+    latActive=False,
+    msg_stw_actn_req={"SpdCtrlLvr_Stat": 0},  # IDLE — no stalk pull
+  )
+  monkeypatch.setattr(body, "requested_wiper_test", lambda: True)
+  monkeypatch.setattr(body, "requested_high_beam_test", lambda: True)
+  monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: [])
+  out = body.stock_cc_update_with_overlay(fake, cs, 10, None, 0)
+  assert len(out) == 1
+  assert out[0][0] == STW_ACTN_RQ_ADDR
+  assert fake.sent[0][0] == 0  # forwarded idle lever, not a cruise press
 
 
 def test_stock_cc_off_does_not_change_forwarding(monkeypatch):
