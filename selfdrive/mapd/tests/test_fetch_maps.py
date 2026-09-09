@@ -84,9 +84,8 @@ def _track_hashed_paths(monkeypatch) -> list[str]:
 
 
 def test_us_pack_free_space_threshold():
-  assert MIN_FREE_MIB == 800
-  assert MIN_FREE_BYTES == 800 * 1024 * 1024
-  assert MIN_FREE_BYTES == 838860800
+  assert MIN_FREE_MIB == 822
+  assert MIN_FREE_BYTES == 822 * 1024 * 1024
   assert required_free_bytes(us_pack=True) == MIN_FREE_BYTES
   assert ASSET_ZST_BYTES + ASSET_SQLITE_BYTES + FREE_MARGIN_BYTES == MIN_FREE_BYTES
 

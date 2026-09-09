@@ -41,10 +41,10 @@ from openpilot.selfdrive.mapd.mn_statutory import (
   BENSON_RADIUS_MILES,
   FILL_NOTES,
   FILL_SOURCE,
-  PLACE_VALUES,
   PlaceIndex,
   benson_fill_bbox,
   in_minnesota,
+  is_urban_place_tags,
 )
 from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB
 from openpilot.selfdrive.mapd.overpass import bbox_from_center, resolve_way_speed, ways_from_overpass
@@ -100,14 +100,14 @@ def _places_from_pyosmium(pbf: str) -> PlaceIndex:
 
   class H(osmium.SimpleHandler):
     def area(self, a):
-      tags = a.tags
-      if tags.get("place") not in PLACE_VALUES:
+      tags = {k: v for k, v in a.tags}
+      if not is_urban_place_tags(tags):
         return
       rings = _area_outer_rings(a)
       if rings:
         idx.add_rings(rings, tags.get("name") or "")
 
-  print(f"Collecting place=city/town/village polygons from {pbf}…", file=sys.stderr, flush=True)
+  print(f"Collecting MN city/town urban boundary polygons from {pbf}…", file=sys.stderr, flush=True)
   H().apply_file(pbf, locations=True)
   print(f"  {len(idx)} urban place polygons", file=sys.stderr, flush=True)
   return idx

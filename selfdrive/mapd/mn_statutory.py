@@ -60,6 +60,7 @@ RURAL_OTHER = frozenset({
   "trunk", "trunk_link",
 })
 PLACE_VALUES = frozenset({"city", "town", "village"})
+CITY_BORDER_TYPES = frozenset({"city", "town", "village"})
 _SIDEWALK_URBAN = frozenset({"yes", "both", "left", "right", "separate", "shared"})
 
 
@@ -87,6 +88,28 @@ def benson_fill_bbox(radius_km: float | None = None) -> tuple[float, float, floa
     min(north, MN_NORTH),
     min(east, MN_EAST),
   )
+
+
+def is_urban_place_tags(tags: dict) -> bool:
+  """True for an OSM area that should count as an urban district.
+
+  Minnesota cities are usually boundary=administrative admin_level=8 with
+  border_type=city (often no place=* on the polygon). Townships are rural.
+  """
+  place = str(tags.get("place") or "").strip().lower()
+  if place in PLACE_VALUES:
+    return True
+  bt = str(tags.get("border_type") or "").strip().lower()
+  if bt in CITY_BORDER_TYPES:
+    return True
+  if bt == "township":
+    return False
+  name = str(tags.get("name") or "")
+  if "township" in name.lower():
+    return False
+  if str(tags.get("admin_level") or "") == "8" and str(tags.get("boundary") or "") == "administrative":
+    return bool(name.strip())
+  return False
 
 
 def _truthy_yes(tag: str | None) -> bool:
@@ -188,7 +211,7 @@ def places_from_overpass(payload: dict) -> PlaceIndex:
   idx = PlaceIndex()
   for el in payload.get("elements", []):
     tags = el.get("tags") or {}
-    if str(tags.get("place") or "").strip().lower() not in PLACE_VALUES:
+    if not is_urban_place_tags(tags):
       continue
     name = tags.get("name") or ""
     etype = el.get("type")
