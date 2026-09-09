@@ -3,8 +3,10 @@ from openpilot.selfdrive.controls.lib.blinker_lateral_pause import (
   BlinkerLateralHold,
   LAMP_OFF_DEBOUNCE_S,
   blinker_pauses_lateral,
+  blinker_turn_blocks_steering_disengage,
   lat_active_with_blinker_pause,
   preap_blinker_pause_hides_controls_mismatch,
+  stalk_is_left_or_right,
 )
 from openpilot.selfdrive.controls.lib.stalk_tip_turn import (
   STALK_ALC_TURN_HOLD_S,
@@ -43,6 +45,24 @@ def test_one_lamp_pauses_lateral():
   assert blinker_pauses_lateral(False, True)
   assert not lat_active_with_blinker_pause(**_lat_kwargs(left_blinker=True))
   assert not lat_active_with_blinker_pause(**_lat_kwargs(right_blinker=True))
+
+
+def test_blinker_turn_hard_gate_blocks_on_lamp_or_stalk_or_hold():
+  hold = BlinkerLateralHold()
+  assert stalk_is_left_or_right(1)
+  assert stalk_is_left_or_right(2)
+  assert not stalk_is_left_or_right(0)
+  assert not stalk_is_left_or_right(3)
+  assert blinker_turn_blocks_steering_disengage(True, False, 0, hold)
+  assert blinker_turn_blocks_steering_disengage(False, True, 0, hold)
+  assert blinker_turn_blocks_steering_disengage(False, False, 1, hold)
+  assert blinker_turn_blocks_steering_disengage(False, False, 2, hold)
+  assert not blinker_turn_blocks_steering_disengage(False, False, 0, hold)
+  assert not blinker_turn_blocks_steering_disengage(True, True, 0, hold)
+  _hold_past_tip(hold, v_ego=12.0)
+  assert not _lat_active(hold, left=True, stalk_state=1)
+  # Lamps dark and stalk idle: flash-latch hold still blocks.
+  assert blinker_turn_blocks_steering_disengage(False, False, 0, hold)
 
 
 def test_hazards_do_not_pause():

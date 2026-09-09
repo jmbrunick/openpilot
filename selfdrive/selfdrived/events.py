@@ -204,6 +204,10 @@ def pcm_enable_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaste
 
 
 def pcm_disable_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
+  # Pre-AP 3X bottom-bar text. EventName.steerDisengage is sound-only
+  # (empty EngagementAlert). If cruiseEnabled falls during a blinker
+  # turn, this is the HUD Justin sees — keep cruise up instead of
+  # hiding this alert after the FSM is already down.
   if _is_tesla_preap(CP):
     return Alert(
       "Steering Disengaged",
