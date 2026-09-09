@@ -25,9 +25,10 @@ high-beam pressed and bus-0 IDLE cannot last-win as a cancel. Off/Low
 return the real stalk. Do not pulse 4 then drop to SNA or rest.
 
 Off leaves the driver’s real stalk nibble alone (do not force 0). Wiper
-On/Int holds high nibble 1. Auto holds that same nibble 1 only while a
-rain/wiper-need signal is set, then releases the real stalk when dry.
-Default Off — Auto is opt-in. No spray. No auto high-beam. Do not flash.
+On/Int holds high nibble 1. Auto holds that same nibble 1 while the 3X
+road camera sees a wet windshield (unwarped ROAD Y, near-glass droplets),
+then releases the real stalk when the glass looks dry. Default Off — Auto
+is opt-in. No spray. No auto high-beam. Do not flash.
 Do not inject a second 0x45 — overlay the existing forwarded frame and
 recompute CRC the same way create_action_request already does.
 
@@ -47,7 +48,6 @@ wins when held, so Auto uses that same hold, not a pulse.
 # Params / UI. 0 is off (today's forwarded stalk). Indexes, not raw DBC.
 NAP_WIPER_SPEED = "NAPWiperSpeed"
 NAP_HIGH_LOW_BEAM = "NAPHighLowBeam"
-NAP_RAIN_NEEDED = "NAPRainNeeded"
 
 WIPER_SETTING_OFF = 0
 WIPER_SETTING_INTERMITTENT = 1
@@ -56,10 +56,6 @@ WIPER_SETTING_AUTO = 3
 BEAM_SETTING_OFF = 0
 BEAM_SETTING_LOW = 1
 BEAM_SETTING_HIGH = 2
-
-# Camera rain head (modelV2.meta.rainProb and aliases). Stay dry without it.
-RAIN_PROB_ON = 0.5
-_CAMERA_RAIN_KEYS = ("rainProb", "rainingProb", "precipProb", "wiperNeedProb")
 
 STW_ACTN_RQ_ADDR = 0x45
 STW_WIPER_BEAM_BYTE = 2
@@ -75,8 +71,6 @@ _ORIG_CREATE_ACTION_REQUEST = None
 _ORIG_STOCK_CC_UPDATE = None
 _installed = False
 _rain_needed_override = None
-_model_sm = None
-_model_sm_failed = False
 
 
 def _tesla_can():
@@ -99,7 +93,7 @@ def register_nap_body_params():
 
 
 def wiper_test_requested(setting: int, rain_needed: bool = False) -> bool:
-  """Int and On hold nibble 1. Auto holds it only while rain/wiper-need is set."""
+  """Int and On hold nibble 1. Auto holds it only while the windshield looks wet."""
   s = int(setting)
   if s in (WIPER_SETTING_INTERMITTENT, WIPER_SETTING_ON):
     return True
@@ -151,7 +145,7 @@ def extra_stw_forward_needed(can_sends, frame: int, wiper_on: bool, high_beam_on
 
   Parked / not-engaged: stock-cc only TXes 0x45 on engage/cancel. Wiper
   On/Int extra-forwards on the 10 Hz slot so nibble 1 stays held. Auto
-  uses that same 10 Hz hold while rain/wiper-need is set. High
+  uses that same 10 Hz hold while the windshield looks wet. High
   extra-forwards every 10 ms so held nibble 4 can last-win against
   repeating bus-0 IDLE.
   """
@@ -206,97 +200,21 @@ def _param_int(key: str, default: int = 0) -> int:
     return default
 
 
-def _param_bool(key: str, default: bool = False) -> bool:
-  try:
-    from openpilot.common.params import Params
-    return bool(Params().get_bool(key))
-  except Exception:
-    return default
-
-
 def set_rain_wiper_needed(needed: bool | None) -> None:
-  """Tests inject the rain/wiper-need signal. None returns to live sources."""
+  """Tests inject the rain/wiper-need signal. None returns to the camera."""
   global _rain_needed_override
   _rain_needed_override = None if needed is None else bool(needed)
 
 
-def _rain_prob_from_model(model_v2) -> float | None:
-  """Read a camera rain / wiper-need head if this fork's model publishes one."""
-  if model_v2 is None:
-    return None
-  meta = model_v2
-  if isinstance(model_v2, dict):
-    meta = model_v2.get("meta", model_v2)
-  else:
-    meta = getattr(model_v2, "meta", model_v2)
-  for name in _CAMERA_RAIN_KEYS:
-    if isinstance(meta, dict):
-      val = meta.get(name)
-    else:
-      val = getattr(meta, name, None)
-    if val is None:
-      continue
-    try:
-      return float(val)
-    except (TypeError, ValueError):
-      continue
-  return None
-
-
-def camera_rain_needed_from_model(model_v2) -> bool:
-  """True when the camera rain / wiper-need probability is at or above the on threshold."""
-  prob = _rain_prob_from_model(model_v2)
-  if prob is None:
-    return False
-  return prob >= RAIN_PROB_ON
-
-
-def _ensure_model_sm():
-  """Lazy modelV2 reader. Fail closed (dry) if messaging is unavailable."""
-  global _model_sm, _model_sm_failed
-  if _model_sm_failed:
-    return None
-  if _model_sm is None:
-    try:
-      import cereal.messaging as messaging
-      _model_sm = messaging.SubMaster(["modelV2"])
-    except Exception:
-      _model_sm_failed = True
-      return None
-  try:
-    _model_sm.update(0)
-  except Exception:
-    return None
-  return _model_sm
-
-
-def camera_rain_needed() -> bool:
-  """Live camera rain / wiper-need from modelV2. Dry if the head is absent."""
-  try:
-    sm = _ensure_model_sm()
-    if sm is None:
-      return False
-    seen = getattr(sm, "seen", None)
-    valid = getattr(sm, "valid", None)
-    if seen is not None and not seen["modelV2"]:
-      return False
-    if valid is not None and not valid["modelV2"]:
-      return False
-    return camera_rain_needed_from_model(sm["modelV2"])
-  except Exception:
-    return False
-
-
 def rain_wiper_needed() -> bool:
-  """Rain / wiper-need for Auto. Default dry so Auto does not wipe every drive.
+  """Wet-windshield latch for Auto. Default dry so Auto does not wipe every drive.
 
-  Order: test override, NAPRainNeeded param (NAP rain path), camera rain head.
+  Order: test override, then the 3X ROAD camera near-glass check.
   """
   if _rain_needed_override is not None:
     return bool(_rain_needed_override)
-  if _param_bool(NAP_RAIN_NEEDED, False):
-    return True
-  return camera_rain_needed()
+  from openpilot.selfdrive.car.tesla.preap_windshield_rain import windshield_rain_needed
+  return windshield_rain_needed()
 
 
 def requested_wiper_test() -> bool:
