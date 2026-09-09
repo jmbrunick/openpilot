@@ -43,7 +43,7 @@ The US speed-limits sqlite is **not in git** (too large; ODbL still requires att
 | SHA-256 | of the **zst** (`ASSET_SHA256`), verified **before** decompress. Dest sqlite is not hashed unless `SQLITE_SHA256` is set. `--sha256 ''` skips. |
 | Install path | `/data/media/0/osm/speed_limits.sqlite` |
 | Staging | `/data/media/0/osm/.download/` on the dest filesystem (not `/tmp`) |
-| Size | **~204 MiB zst → ~516 MiB sqlite**. Fetch needs **800 MiB** free on `/data`. |
+| Size | **~200 MiB zst → ~541 MiB sqlite**. Fetch needs **850 MiB** free on `/data`. |
 
 On the comma 3X: **Settings → NAP → Map Speed Limit → Download US Maps** (offroad), or `python -m scripts.nap.fetch_osm_maps`. That is the first-install of the published US pack. Frequent local updates: **Refresh maps** (or `python -m scripts.nap.refresh_osm_maps`) — live OSM within **100 miles** (~160.9 km), merged into the installed sqlite. `mapd` reloads the sqlite every ~15s onroad — no reboot.
 

@@ -48,6 +48,8 @@ def overpass_query(
   way["highway"~"{FILLABLE_HIGHWAY_REGEX}"]{bbox};
   way["place"~"^(city|town|village)$"]{bbox};
   rel["place"~"^(city|town|village)$"]{bbox};
+  way["boundary"="administrative"]["admin_level"="8"]{bbox};
+  rel["boundary"="administrative"]["admin_level"="8"]{bbox};
 );
 out geom;
 """.strip()

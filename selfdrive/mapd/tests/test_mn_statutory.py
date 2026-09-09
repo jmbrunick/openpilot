@@ -15,6 +15,7 @@ from openpilot.selfdrive.mapd.mn_statutory import (
   bbox_intersects_minnesota,
   benson_fill_bbox,
   in_minnesota,
+  is_urban_place_tags,
   is_urban_way,
   places_from_overpass,
   statutory_maxspeed_mph,
@@ -75,6 +76,19 @@ def test_no_fill_without_flag():
   assert ms is None and source == ""
 
 
+def test_mn_city_admin_boundary_is_urban_place():
+  assert is_urban_place_tags({
+    "name": "Benson", "boundary": "administrative", "admin_level": "8", "border_type": "city",
+  })
+  assert is_urban_place_tags({"place": "town", "name": "Kerkhoven"})
+  assert not is_urban_place_tags({
+    "name": "Benson Township", "boundary": "administrative", "admin_level": "8", "border_type": "township",
+  })
+  assert is_urban_place_tags({
+    "name": "Saint Cloud", "boundary": "administrative", "admin_level": "8",
+  })
+
+
 def test_place_polygon_marks_named_primary_urban():
   places = PlaceIndex()
   # Closed square around Benson ~0.02 deg (~2 km).
@@ -122,17 +136,34 @@ def test_places_from_overpass_relation_and_way():
       },
       {
         "type": "relation",
-        "id": 2,
-        "tags": {"place": "city", "name": "Willmar"},
+        "id": 3,
+        "tags": {"name": "Benson", "boundary": "administrative", "admin_level": "8", "border_type": "city"},
         "members": [
           {
             "type": "way",
             "role": "outer",
             "geometry": [
-              {"lat": 45.10, "lon": -95.06},
-              {"lat": 45.10, "lon": -95.02},
-              {"lat": 45.14, "lon": -95.02},
-              {"lat": 45.14, "lon": -95.06},
+              {"lat": 45.30, "lon": -95.62},
+              {"lat": 45.30, "lon": -95.58},
+              {"lat": 45.33, "lon": -95.58},
+              {"lat": 45.33, "lon": -95.62},
+            ],
+          }
+        ],
+      },
+      {
+        "type": "relation",
+        "id": 4,
+        "tags": {"name": "Benson Township", "boundary": "administrative", "admin_level": "8", "border_type": "township"},
+        "members": [
+          {
+            "type": "way",
+            "role": "outer",
+            "geometry": [
+              {"lat": 45.0, "lon": -96.0},
+              {"lat": 45.0, "lon": -95.9},
+              {"lat": 45.1, "lon": -95.9},
+              {"lat": 45.1, "lon": -96.0},
             ],
           }
         ],
@@ -142,7 +173,7 @@ def test_places_from_overpass_relation_and_way():
   idx = places_from_overpass(payload)
   assert len(idx) == 2
   assert idx.contains(45.315, -95.60)
-  assert idx.contains(45.12, -95.04)
+  assert not idx.contains(45.05, -95.95)
   assert not idx.contains(46.0, -95.6)
 
 
@@ -209,7 +240,7 @@ def test_overpass_query_unmarked_fetches_all_fillable_highways():
   unmarked = overpass_query(44.0, -96.0, 46.0, -94.0, include_unmarked=True)
   assert '["maxspeed"]' not in unmarked
   assert "motorway" in unmarked
-  assert 'place' in unmarked
+  assert "admin_level" in unmarked
   assert "out geom" in unmarked
 
 
