@@ -35,14 +35,28 @@ def _peek_blinker_lamps(can_parsers):
     return False, False
 
 
-def _peek_steering_pressed(can_parsers):
+def _peek_steering_override(can_parsers):
+  """(steering_pressed, steering_disengage) from EPAS.
+
+  A slightly faster corner hits EPAS_handsOnLevel 2 (steeringDisengage)
+  before the 5-frame steeringPressed debounce. Counting only the torque
+  threshold let a flash-gap expire the latch, then the next hands-on
+  rising edge tore down cruiseEnabled.
+  """
   try:
     from opendbc.car import Bus
     from opendbc.car.tesla.values import STEER_THRESHOLD
     epas = can_parsers[Bus.chassis].vl["EPAS_sysStatus"]
-    return abs(epas["EPAS_torsionBarTorque"]) > STEER_THRESHOLD
+    torque = abs(epas["EPAS_torsionBarTorque"]) > STEER_THRESHOLD
+    hands = int(epas.get("EPAS_handsOnLevel", 0) or 0) >= 2
+    return bool(torque), bool(hands)
   except Exception:
-    return False
+    return False, False
+
+
+def _peek_steering_pressed(can_parsers):
+  pressed, disengage = _peek_steering_override(can_parsers)
+  return pressed or disengage
 
 
 def _peek_stalk_and_speed(can_parsers):
@@ -85,6 +99,7 @@ def _handle_steering_disengage(self, steering_disengage):
   # dt=0: _update_preap already advanced the dark timer this cycle.
   hold.update(
     left, right, pressed, engaged=bool(getattr(self, "cruiseEnabled", False)),
+    steering_disengage=bool(steering_disengage),
     **_hold_kwargs(self, dt=0.0))
   if hold.blocks_steer_disengage:
     # Keep prev in sync so lamp-off / hand-release is not a rising edge.
@@ -95,17 +110,18 @@ def _handle_steering_disengage(self, steering_disengage):
 
 def _update_preap(cs, can_parsers):
   left, right = _peek_blinker_lamps(can_parsers)
-  pressed = _peek_steering_pressed(can_parsers)
+  pressed, disengage = _peek_steering_override(can_parsers)
   stalk, v_ego = _peek_stalk_and_speed(can_parsers)
   engagement = getattr(cs, "engagement", None)
   if engagement is not None:
     engagement._nap_left_blinker = left
     engagement._nap_right_blinker = right
-    engagement._nap_steering_pressed = pressed
+    engagement._nap_steering_pressed = pressed or disengage
     engagement._nap_stalk_state = stalk
     engagement._nap_v_ego = v_ego
     _hold_for(engagement).update(
       left, right, pressed, engaged=bool(getattr(engagement, "cruiseEnabled", False)),
+      steering_disengage=disengage,
       **_hold_kwargs(engagement))
   return _ORIG_UPDATE(cs, can_parsers)
 

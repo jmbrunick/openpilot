@@ -242,3 +242,23 @@ def test_tesla_fsm_highway_stalk_tap_does_not_drop_cruise():
   assert eng.cruiseEnabled
   assert eng.enableLongControl
   assert not eng._nap_lat_hold.turn_active
+
+
+def test_tesla_fsm_faster_corner_hands_on_without_torque_threshold():
+  """Hands-on 2 with torsion bar below STEER_THRESHOLD must not drop cruise."""
+  install_blinker_lat_pause()
+  eng = _engaged()
+  eng._nap_left_blinker = True
+  eng._nap_steering_pressed = False
+  eng.handle_steering_disengage(True)
+  assert eng.cruiseEnabled
+  assert eng.enableLongControl
+  assert eng._nap_lat_hold.turn_active
+
+  # Flash gap + 1s dark while still wrenching: still the same turn.
+  eng._nap_left_blinker = False
+  eng._nap_lat_hold.update(False, False, False, engaged=True,
+                           steering_disengage=True, dt=LAMP_OFF_DEBOUNCE_S)
+  eng.handle_steering_disengage(True)
+  assert eng.cruiseEnabled
+  assert eng._nap_lat_hold.turn_active
