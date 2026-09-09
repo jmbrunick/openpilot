@@ -1,6 +1,6 @@
 NAP speed-sign log (2026-09-09)
 ========================
-* Optional on-drive MUTCD speed-sign logger (default off). ROAD camera + GPS, JSONL under /data. Does not change cruise or maps.
+* Optional on-drive MUTCD speed-sign logger (default off). ROAD camera + GPS, JSONL under /data. On-road SIGN plate shows the live mph for 1.5s. Does not change cruise or maps.
 
 NAP blinker (2026-09-09)
 ========================

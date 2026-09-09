@@ -86,4 +86,4 @@ Pre-AP `TurnIndLvr_Stat` is only IDLE / LEFT / RIGHT / SNA — no tip vs latch b
 
 ## Speed sign logger (log-only)
 
-`selfdrive/speedsignd` is a separate on-road process (default **Off**, Settings → NAP → Speed Sign Logger). Stock `modelV2` has no speed-sign head, so this reads the ROAD camera + GNSS and appends JSONL under `/data/media/0/nap/speed_signs.jsonl`. It does not write the OSM sqlite, does not change `vCruise`, and does not query osm.org. Details: [speed-sign-log.md](speed-sign-log.md).
+`selfdrive/speedsignd` is a separate on-road process (default **Off**, Settings → NAP → Speed Sign Logger). Stock `modelV2` has no speed-sign head, so this reads the ROAD camera + GNSS, appends JSONL under `/data/media/0/nap/speed_signs.jsonl`, and publishes `liveSpeedSignNAP` for a display-only SIGN plate. It does not write the OSM sqlite, does not change `vCruise`, and does not query osm.org. Details: [speed-sign-log.md](speed-sign-log.md).

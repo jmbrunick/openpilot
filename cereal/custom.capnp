@@ -27,7 +27,11 @@ struct LiveMapDataNAP @0x81c2f05a394cf4af {
   matchDistance @12 :Float32;        # m, distance to matched way
 }
 
-struct CustomReserved1 @0xaedffd8f31e7b55d {
+# NAP on-drive MUTCD camera speed-sign sample. Display/log only. mph in the field name.
+struct LiveSpeedSignNAP @0xaedffd8f31e7b55d {
+  mph @0 :Int16;          # posted mph, 0 if none
+  conf @1 :Float32;
+  valid @2 :Bool;         # live detection including HUD hold
 }
 
 struct CustomReserved2 @0xf35cc4560bbf6ec2 {

@@ -37,13 +37,26 @@ One JSON object per line:
 | `mph` | MUTCD posted integer (5–85 step 5, or 100) |
 | `conf` | Detector confidence 0–1 |
 
-A row is written only with a live GNSS fix. The same mph near the last write is skipped for ~8 s / ~40 m so 4 Hz does not spam the file.
+A row is written only with a live GNSS fix. The same mph near the last write is skipped for ~8 s / ~40 m so 4 Hz does not spam the file. The on-road HUD still updates from every detection (cereal `liveSpeedSignNAP`), including without GPS.
 
 Pull the log off the device:
 
 ```bash
 scp comma@<device>:/data/media/0/nap/speed_signs.jsonl .
 ```
+
+## On-road HUD
+
+When the logger is **On**, a large opaque **SIGN** plate shows the mph the camera is reading. Display-only — it does not change MAX or cruise.
+
+| | |
+|---|---|
+| Where (3X) | Top-right, left of the experimental button (opposite MAX / OSM LIMIT) |
+| Where (comma 4) | Top-right |
+| Hold | **1.5 s** after the last detection above threshold, then it hides |
+| Source | cereal `liveSpeedSignNAP` (not the JSONL file) |
+
+White MUTCD-style plate, black digits, red border, **SIGN** label so it is not confused with HUD MAX or OSM LIMIT.
 
 ## Weights (optional)
 
@@ -79,3 +92,4 @@ Requires `onnxruntime` on the device. If the file is missing or fails to load, s
 - No cruise / `vCruise` / HUD MAX overlay
 - No osm.org / Overpass
 - No modeld / `modelV2` head
+- The SIGN plate is display-only (same process; not a second controller)
