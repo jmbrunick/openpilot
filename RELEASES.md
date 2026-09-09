@@ -1,3 +1,7 @@
+NAP blinker (2026-09-09)
+========================
+* Tip vs turn no longer depends on speed. A partial stalk push (LEFT/RIGHT then IDLE within 0.40s) is automatic lane change at any speed; a full held stalk is a driver turn and releases steering. Lane change still will not *start* below 20 mph until a wheel nudge at speed.
+
 NAP map speed (2026-09-08)
 ========================
 * Refresh maps queries live OSM within 100 miles of the car and merges into the installed US sqlite. Download US Maps remains the first-install of the published pack.

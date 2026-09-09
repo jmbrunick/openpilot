@@ -70,6 +70,15 @@ NAP tracks upstream openpilot closely. We fork `opendbc` because the pre-AP DBCs
 
 See [Tinkla](https://github.com/boggyver/openpilot/tree/tesla_unity_betaC3) and [xnor-tech/openpilot](https://github.com/xnor-tech/openpilot) for the prior art NAP builds on.
 
+## Turn stalk vs automatic lane change
+
+Pre-AP `TurnIndLvr_Stat` is only IDLE / LEFT / RIGHT / SNA — no tip vs latch bit. NAP classifies from hold time (`STALK_TIP_HOLD_S = 0.40s` in `selfdrive/controls/lib/stalk_tip_turn.py`):
+
+- **Tip:** LEFT or RIGHT then IDLE within 0.40s → arm ALC at any speed (wheel nudge still starts the change; opposite tap cancels; stalk IDLE alone does not).
+- **Held turn:** LEFT or RIGHT past 0.40s → do not arm ALC; lateral pause (flash-latch ~1s dark, then hand release resumes lat).
+
+`LANE_CHANGE_SPEED_MIN` (20 mph) still gates *starting* the lane-change maneuver after a nudge, not tip vs turn and not pause vs ALC. Hazards do neither. ALC keep-alive lamps do not pause lat.
+
 ## OSM map speed (MAX)
 
 `selfdrive/mapd` looks up OpenStreetMap `maxspeed` from an offline sqlite and publishes `liveMapDataNAP`. In pre-AP **pedal** mode, `card.py` overlays that limit onto software cruise (`CS.vCruise` / HUD **MAX**): Cap never raises, Follow tracks the sign, engage seeds to the posted limit, and a Follow stalk set (above or below) holds until the posted limit changes. HUD current speed is wheel/ESP `vEgo` (not `vEgoCluster` / MAX). When ego is above MAX the planner commands Accel-5 comfort decel (`map_track_decel`); when ego is below MAX it commands Accel 1–10 climb (`map_track_accel`). `LongitudinalMpc.update(radarState, v_cruise)` still takes `min(lead, cruise)`. No-pedal stock CC is display-only. US maps are a GitHub Release download; Refresh maps overlays live OSM within 100 miles. Details: [map-speed.md](map-speed.md).
