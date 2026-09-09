@@ -33,9 +33,10 @@ No map or OSM junction check.
 A faster / higher-torque corner sets EPAS hands-on >= 2 (steeringDisengage)
 before steeringPressed's 5-frame debounce. That torque must keep the
 lat-pause latch and must not drop cruiseEnabled. On Pre-AP that drop is
-EventName.pcmDisable — HUD "Steering Disengaged". Panda tesla_preap still
-drops controls_allowed on the same hands-on; selfdrived must not turn that
-disagreement into controlsMismatch / full cancel.
+EventName.pcmDisable — HUD "Steering Disengaged". Panda tesla_preap keeps
+controls_allowed on the same hands-on during a blinker-latched driver turn
+(flash panda after pull). Without that firmware, selfdrived fires
+controlsMismatch after the Python hold ends.
 """
 
 from openpilot.selfdrive.controls.lib.stalk_tip_turn import StalkTipTurn
