@@ -1,6 +1,6 @@
 NAP blinker (2026-09-09)
 ========================
-* Held-blinker turns no longer full-cancel mid-corner. Higher steering torque / EPAS hands-on ≥ 2 while lat is paused stays engaged (lat pause only), not controlsMismatch or steerDisengage. Stalk cancel / doors / gear still fully disengage.
+* Held-blinker turns no longer full-cancel mid-corner. Higher steering torque / EPAS hands-on ≥ 2 while lat is paused stays engaged (lat pause only). The 3X "Steering Disengaged" HUD is EventName.pcmDisable (cruiseEnabled fell) — keep cruise up on lamp or held stalk, and do not treat that torque as controlsMismatch / steerDisengage. Stalk cancel / doors / gear / permanent steer fault still fully disengage.
 
 NAP Force Offroad (2026-09-09)
 ========================

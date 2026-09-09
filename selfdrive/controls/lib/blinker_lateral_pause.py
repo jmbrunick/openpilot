@@ -32,8 +32,9 @@ No map or OSM junction check.
 
 A faster / higher-torque corner sets EPAS hands-on >= 2 (steeringDisengage)
 before steeringPressed's 5-frame debounce. That torque must keep the
-lat-pause latch and must not USER_DISABLE. Panda tesla_preap still drops
-controls_allowed on the same hands-on; selfdrived must not turn that
+lat-pause latch and must not drop cruiseEnabled. On Pre-AP that drop is
+EventName.pcmDisable — HUD "Steering Disengaged". Panda tesla_preap still
+drops controls_allowed on the same hands-on; selfdrived must not turn that
 disagreement into controlsMismatch / full cancel.
 """
 
@@ -48,6 +49,30 @@ LAMP_OFF_DEBOUNCE_S = 1.0
 
 def blinker_pauses_lateral(left_blinker, right_blinker) -> bool:
   return bool(left_blinker) != bool(right_blinker)
+
+
+def stalk_is_left_or_right(stalk_state) -> bool:
+  return int(stalk_state or 0) in (1, 2)
+
+
+def blinker_turn_blocks_steering_disengage(left_blinker, right_blinker,
+                                          stalk_state=0, hold=None) -> bool:
+  """Do not USER_DISABLE on hands-on / EPAS reject during a driver turn.
+
+  Hold state can lag a frame or expire on a Tesla lamp self-cancel while
+  the stalk is still LEFT/RIGHT. Raw one-lamp XOR and the physical stalk
+  are the hard gate; hold.blocks_steer_disengage covers flash gaps and
+  the post-turn hand-on window.
+
+  Genuine hard faults (door, gear, stalk cancel, permanent steer fault)
+  are separate events and are not suppressed here. Hazards (both lamps)
+  are not a turn.
+  """
+  if blinker_pauses_lateral(left_blinker, right_blinker):
+    return True
+  if stalk_is_left_or_right(stalk_state):
+    return True
+  return hold is not None and bool(hold.blocks_steer_disengage)
 
 
 def preap_blinker_pause_hides_controls_mismatch(*, brand, fingerprint,
