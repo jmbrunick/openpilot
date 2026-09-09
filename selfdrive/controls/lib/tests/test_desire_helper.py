@@ -69,6 +69,9 @@ def test_blinker_never_arms_alc():
   dh.update(FakeCarState(left=True, lever=1), True, 0.0)
   dh.update(FakeCarState(v_ego=30.0, left=True, lever=1), True, 0.0)
   dh.update(FakeCarState(v_ego=10.0, right=True, lever=2), True, 0.0)
+  # Flash gaps (lamp dark, stalk already centered) still must not arm ALC.
+  dh.update(FakeCarState(v_ego=30.0), True, 0.0)
+  dh.update(FakeCarState(v_ego=30.0, left=True), True, 0.0)
 
   assert dh.lane_change_state == LaneChangeState.off
   assert dh.lane_change_direction == LaneChangeDirection.none

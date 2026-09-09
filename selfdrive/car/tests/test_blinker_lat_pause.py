@@ -4,7 +4,10 @@ from cereal import car, log
 from opendbc.car.toyota.values import CAR as TOYOTA
 
 from openpilot.selfdrive.car.car_specific import CarSpecificEvents
-from openpilot.selfdrive.controls.lib.blinker_lateral_pause import blinker_pauses_lateral
+from openpilot.selfdrive.controls.lib.blinker_lateral_pause import (
+  LAMP_OFF_DEBOUNCE_S,
+  blinker_pauses_lateral,
+)
 from openpilot.selfdrive.selfdrived.events import ET, EVENTS
 
 
@@ -84,10 +87,31 @@ def test_lamp_off_hand_still_on_does_not_user_disable():
   assert EventName.steerDisengage not in events.names
 
 
+def test_flash_gap_without_hand_does_not_user_disable():
+  cse = CarSpecificEvents(_cp())
+  _events(_cs(left=True), _cs(), cse=cse)
+  # Dark between flashes, no steeringPressed, then a grab.
+  _events(_cs(), _cs(left=True), cse=cse)
+  events = _events(_cs(steering_disengage=True, steering_pressed=True), _cs(), cse=cse)
+  assert EventName.steerDisengage not in events.names
+  assert cse.blinker_lat_hold.turn_active
+
+
+def test_hand_on_after_turn_complete_does_not_user_disable():
+  cse = CarSpecificEvents(_cp())
+  _events(_cs(left=True), _cs(), cse=cse)
+  cse.blinker_lat_hold.update(False, False, True, dt=LAMP_OFF_DEBOUNCE_S)
+  events = _events(_cs(steering_disengage=True, steering_pressed=True), _cs(), cse=cse)
+  assert EventName.steerDisengage not in events.names
+  assert cse.blinker_lat_hold.holding
+  assert not cse.blinker_lat_hold.turn_active
+
+
 def test_steer_disengage_after_hand_release_still_fires():
   cse = CarSpecificEvents(_cp())
   _events(_cs(left=True, steering_disengage=True, steering_pressed=True),
           _cs(left=True), cse=cse)
-  _events(_cs(), _cs(left=True, steering_disengage=True, steering_pressed=True), cse=cse)
+  # Turn complete (~1s dark) with the wheel released, then a new grab.
+  cse.blinker_lat_hold.update(False, False, False, dt=LAMP_OFF_DEBOUNCE_S)
   events = _events(_cs(steering_disengage=True, steering_pressed=True), _cs(), cse=cse)
   assert EventName.steerDisengage in events.names

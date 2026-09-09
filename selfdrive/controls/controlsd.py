@@ -95,8 +95,9 @@ class Controls:
 
     # Check which actuators can be enabled
     standstill = abs(CS.vEgo) <= max(self.CP.minSteerSpeed, 0.3) or CS.standstill
-    # One lit blinker lamp releases lateral only. Long / cruise stay engaged.
-    # desired_curvature tracks the wheel while paused so resume is rate-limited.
+    # One lit blinker lamp releases lateral only (latched through flash gaps).
+    # Long / cruise stay engaged. desired_curvature tracks the wheel while
+    # paused so resume is rate-limited.
     CC.latActive = lat_active_with_blinker_pause(
       active=self.sm['selfdriveState'].active,
       steer_fault_temporary=CS.steerFaultTemporary,
