@@ -23,6 +23,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   RADAR_OFFSET_MAX,
   RADAR_OFFSET_MIN,
   RESTORE_EPAS_INSTRUCTIONS,
+  NAP_FORCE_OFFROAD,
 )
 from openpilot.selfdrive.ui.mici.layouts.settings.map_speed import MapSpeedLimitLayoutMici
 from openpilot.selfdrive.ui.radar.radar_view import RadarMonitorDialog
@@ -194,6 +195,10 @@ class NAPLayoutMici(NavScroller):
     # always truthy — and silently leaves destructive actions clickable
     # while onroad.
 
+    # Force Offroad must stay enabled while onroad — that is the point.
+    force_offroad = BigParamControl("force offroad", NAP_FORCE_OFFROAD)
+    force_offroad.set_value("stops OP — drive manually")
+
     # ── Longitudinal control ─────────────────────────
     pedal_enabled = BigParamControl("pedal interceptor", NAPParamKeys.PEDAL_ENABLED,
                                      toggle_callback=_reboot_on_toggle)
@@ -282,6 +287,7 @@ class NAPLayoutMici(NavScroller):
     restore_epas_btn.set_enabled(ui_state.is_offroad)
 
     self._scroller.add_widgets([
+      force_offroad,
       pedal_enabled,
       adaptive_accel,
       follow_distance,
