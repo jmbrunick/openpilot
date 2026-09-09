@@ -27,11 +27,13 @@ def _lat_kwargs(**overrides):
 
 
 def _lat_active(hold, *, left=False, right=False, pressed=False, active=True, dt=None,
-                alc_active=False, v_ego=0.0, stalk_state=0):
+                alc_active=False, v_ego=0.0, stalk_state=0, disengage=False,
+                engaged=None):
   return lat_active_with_blinker_pause(
     **_lat_kwargs(left_blinker=left, right_blinker=right, steering_pressed=pressed,
                   active=active, hold=hold, alc_active=alc_active, v_ego=v_ego,
-                  stalk_state=stalk_state),
+                  stalk_state=stalk_state, steering_disengage=disengage,
+                  engaged=engaged),
     dt=dt,
   )
 
@@ -397,3 +399,40 @@ def test_mismatch_not_hidden_after_turn_and_hand_release():
   assert not preap_blinker_pause_hides_controls_mismatch(
     brand="tesla", fingerprint="TESLA_MODEL_S_PREAP",
     blocks_steer_disengage=hold.blocks_steer_disengage)
+
+
+def test_faster_corner_hands_on_two_without_steering_pressed_stays_paused():
+  """Justin's slightly faster turn: EPAS hands-on 2, torsion bar not yet pressed."""
+  hold = BlinkerLateralHold()
+  _hold_past_tip(hold, v_ego=14.0)
+  dt = 0.01
+  period = 0.66
+  on_s = 0.33
+  for i in range(int(4.0 / dt)):
+    left = ((i * dt) % period) < on_s
+    assert not _lat_active(hold, left=left, pressed=False, disengage=True,
+                           stalk_state=1, dt=dt)
+    assert hold.turn_active
+    assert hold.blocks_steer_disengage
+
+
+def test_high_torque_does_not_expire_latch_on_one_second_dark():
+  hold = BlinkerLateralHold()
+  _hold_past_tip(hold, v_ego=14.0)
+  assert not _lat_active(hold, left=True, disengage=True, stalk_state=1)
+  # Lamps dark for a full second while still wrenching — still the same turn.
+  assert not _lat_active(hold, pressed=False, disengage=True, dt=LAMP_OFF_DEBOUNCE_S)
+  assert hold.turn_active
+  assert hold.blocks_steer_disengage
+  # Torque released, then 1s dark: turn ends and lat resumes by itself.
+  assert _lat_active(hold, pressed=False, disengage=False, dt=LAMP_OFF_DEBOUNCE_S)
+  assert not hold.turn_active
+  assert not hold.blocks_steer_disengage
+
+
+def test_hold_does_not_reset_when_active_drops_but_enabled_stays():
+  hold = BlinkerLateralHold()
+  _hold_past_tip(hold, v_ego=12.0)
+  assert not _lat_active(hold, left=True, disengage=True, active=False, engaged=True)
+  assert hold.turn_active
+  assert hold.blocks_steer_disengage

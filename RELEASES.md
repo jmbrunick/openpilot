@@ -1,6 +1,6 @@
 NAP blinker (2026-09-09)
 ========================
-* Held-blinker turns no longer full-cancel mid-corner. Hands-on while lat is paused is a turn, not controlsMismatch. Stalk cancel / doors / gear still fully disengage.
+* Held-blinker turns no longer full-cancel mid-corner. Higher steering torque / EPAS hands-on ≥ 2 while lat is paused stays engaged (lat pause only), not controlsMismatch or steerDisengage. Stalk cancel / doors / gear still fully disengage.
 
 NAP Force Offroad (2026-09-09)
 ========================
