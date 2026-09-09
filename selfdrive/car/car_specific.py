@@ -162,8 +162,9 @@ class CarSpecificEvents:
     # Wheel input during a blinker-lamp turn (including flash gaps), and
     # while the hand is still on the wheel after ~1s of dark, must not
     # USER_DISABLE cruise. ALC keep-alive flashes are not a driver turn:
-    # do not pause lat, and do not steerDisengage. A firm stalk cancel
-    # still fully disengages.
+    # do not pause lat, and do not steerDisengage. A held stalk past the
+    # 0.40s tip window is a turn at any speed. A firm stalk cancel still
+    # fully disengages.
     alc_active = bool(getattr(CC, 'leftBlinker', False) or getattr(CC, 'rightBlinker', False))
     self.blinker_lat_hold.update(
       getattr(CS, 'leftBlinker', False), getattr(CS, 'rightBlinker', False),
