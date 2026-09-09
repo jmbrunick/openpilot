@@ -1,3 +1,7 @@
+NAP blinker (2026-09-09)
+========================
+* Held-blinker turns no longer full-cancel mid-corner. Hands-on while lat is paused is a turn, not controlsMismatch. Stalk cancel / doors / gear still fully disengage.
+
 NAP Force Offroad (2026-09-09)
 ========================
 * Settings → NAP → Force Offroad / Go Offline. Temporarily drops the device into offroad (started=false) while the car is still moving so Download US Maps, Refresh maps, and software install unlock. Stops openpilot — drive manually. Default Off. Clears on toggle Off, Reset to Defaults, reboot, or the next ignition ON.

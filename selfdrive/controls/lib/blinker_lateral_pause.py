@@ -29,6 +29,10 @@ ungated until ~1s of continuous dark, unless the stalk hold takes over.
 
 Hazards (both lamps) do not pause and do not start a lane change.
 No map or OSM junction check.
+
+Panda tesla_preap still drops controls_allowed on hands-on >= 2 unless
+the matching flash-latch is in tesla_preap.h. selfdrived must not turn
+that expected disagreement into controlsMismatch / full cancel.
 """
 
 from openpilot.selfdrive.controls.lib.stalk_tip_turn import StalkTipTurn
@@ -42,6 +46,20 @@ LAMP_OFF_DEBOUNCE_S = 1.0
 
 def blinker_pauses_lateral(left_blinker, right_blinker) -> bool:
   return bool(left_blinker) != bool(right_blinker)
+
+
+def preap_blinker_pause_hides_controls_mismatch(*, brand, fingerprint,
+                                                blocks_steer_disengage) -> bool:
+  """True when panda !controlsAllowed is the expected blinker-turn override.
+
+  tesla_preap drops controls_allowed on hands-on >= 2 (and EPAS 6-9). During
+  a lat-paused driver turn that is the driver steering, not a real cancel.
+  Hiding that disagreement prevents EventName.controlsMismatch (2.0s) from
+  fully disabling while the lamps are still flashing.
+  """
+  return (brand == "tesla"
+          and fingerprint == "TESLA_MODEL_S_PREAP"
+          and bool(blocks_steer_disengage))
 
 
 def pause_gated_by_alc(*, alc_active, stalk_is_turn=False, **_unused) -> bool:
