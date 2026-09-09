@@ -58,6 +58,10 @@ def only_onroad(started: bool, params: Params, CP: car.CarParams) -> bool:
 def only_offroad(started: bool, params: Params, CP: car.CarParams) -> bool:
   return not started
 
+def speed_sign_log(started: bool, params: Params, CP: car.CarParams) -> bool:
+  # Default-off MUTCD JSONL logger. Does not start unless NAPSpeedSignLog is on.
+  return started and params.get_bool("NAPSpeedSignLog")
+
 def or_(*fns):
   return lambda *args: operator.or_(*(fn(*args) for fn in fns))
 
@@ -103,6 +107,7 @@ procs = [
   PythonProcess("pigeond", "system.ubloxd.pigeond", ublox, enabled=TICI),
   PythonProcess("plannerd", "selfdrive.controls.plannerd", not_long_maneuver),
   PythonProcess("mapd", "selfdrive.mapd.mapd", only_onroad),
+  PythonProcess("speedsignd", "selfdrive.speedsignd.speedsignd", speed_sign_log),
   PythonProcess("maneuversd", "tools.longitudinal_maneuvers.maneuversd", long_maneuver),
   PythonProcess("lateral_maneuversd", "tools.lateral_maneuvers.lateral_maneuversd", lat_maneuver),
   PythonProcess("radard", "selfdrive.controls.radard", only_onroad),

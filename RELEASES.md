@@ -1,3 +1,7 @@
+NAP speed-sign log (2026-09-09)
+========================
+* Optional on-drive MUTCD speed-sign logger (default off). ROAD camera + GPS, JSONL under /data. On-road SIGN plate shows the live mph for 1.5s. Does not change cruise or maps.
+
 NAP blinker (2026-09-09)
 ========================
 * During ALC (or leftover keep-alive), holding the physical stalk the same direction for more than 1.0s cancels the lane change and pauses steering as a driver turn. A shorter same-direction press does not force a turn. Tip-to-ALC from idle is still LEFT/RIGHT then IDLE within 0.40s.
