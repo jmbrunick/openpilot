@@ -1,12 +1,11 @@
 from openpilot.common.constants import CV
 from openpilot.selfdrive.controls.lib.blinker_lateral_pause import (
-  ALC_ARM_SPEED_MIN,
   BlinkerLateralHold,
   LAMP_OFF_DEBOUNCE_S,
   blinker_pauses_lateral,
   lat_active_with_blinker_pause,
 )
-from openpilot.selfdrive.controls.lib.desire_helper import LANE_CHANGE_SPEED_MIN
+from openpilot.selfdrive.controls.lib.stalk_tip_turn import STALK_TIP_HOLD_S
 
 
 def _lat_kwargs(**overrides):
@@ -159,8 +158,51 @@ def test_inactive_or_fault_still_blocks_lat():
   assert not lat_active_with_blinker_pause(**_lat_kwargs(standstill=True, steer_at_standstill=False))
 
 
-def test_alc_arm_speed_matches_desire_helper():
-  assert ALC_ARM_SPEED_MIN == LANE_CHANGE_SPEED_MIN
+def _tip_then_idle(hold, *, v_ego, stalk=1, left=True, dt=0.01):
+  assert _lat_active(hold, left=left, v_ego=v_ego, stalk_state=stalk, dt=dt)
+  assert _lat_active(hold, left=left, v_ego=v_ego, stalk_state=0, dt=dt)
+  assert not hold.turn_active
+
+
+def _hold_past_tip(hold, *, v_ego, stalk=1, left=True, dt=0.01):
+  n = int(round(STALK_TIP_HOLD_S / dt))
+  for _ in range(n - 1):
+    assert _lat_active(hold, left=left, v_ego=v_ego, stalk_state=stalk, dt=dt)
+  assert not _lat_active(hold, left=left, v_ego=v_ego, stalk_state=stalk, dt=dt)
+  assert hold.turn_active
+
+
+def test_tip_then_idle_does_not_pause_at_low_or_highway_speed():
+  for v in (10 * CV.MPH_TO_MS, 30.0):
+    hold = BlinkerLateralHold()
+    _tip_then_idle(hold, v_ego=v)
+    assert _lat_active(hold, left=True, v_ego=v, stalk_state=0)
+    assert not hold.turn_active
+    assert hold.blocks_steer_disengage
+
+
+def test_held_stalk_pauses_lat_at_highway_speed():
+  hold = BlinkerLateralHold()
+  _hold_past_tip(hold, v_ego=30.0)
+  assert not _lat_active(hold, left=True, v_ego=30.0, stalk_state=1)
+  assert hold.turn_active
+
+
+def test_held_stalk_pauses_lat_at_low_speed():
+  hold = BlinkerLateralHold()
+  slow = 10 * CV.MPH_TO_MS
+  _hold_past_tip(hold, v_ego=slow)
+  assert hold.turn_active
+
+
+def test_held_turn_pauses_even_if_alc_active():
+  hold = BlinkerLateralHold()
+  dt = 0.01
+  n = int(round(STALK_TIP_HOLD_S / dt))
+  for _ in range(n - 1):
+    assert _lat_active(hold, left=True, alc_active=True, v_ego=30.0, stalk_state=1, dt=dt)
+  assert not _lat_active(hold, left=True, alc_active=True, v_ego=30.0, stalk_state=1, dt=dt)
+  assert hold.turn_active
 
 
 def test_alc_active_flashing_lamps_do_not_pause_or_latch_turn():
@@ -176,7 +218,7 @@ def test_alc_active_flashing_lamps_do_not_pause_or_latch_turn():
   assert hold.blocks_steer_disengage
 
 
-def test_highway_stalk_tap_does_not_pause_before_alc_arms():
+def test_stalk_tip_does_not_pause_before_alc_arms():
   hold = BlinkerLateralHold()
   assert _lat_active(hold, left=True, v_ego=30.0, stalk_state=1)
   assert not hold.turn_active
@@ -186,7 +228,7 @@ def test_highway_stalk_tap_does_not_pause_before_alc_arms():
 def test_alc_keep_alive_after_stalk_idle_does_not_pause():
   hold = BlinkerLateralHold()
   assert _lat_active(hold, left=True, v_ego=30.0, stalk_state=1)
-  # Stalk springs back; OP keeps flashing.
+  # Tip complete: stalk springs back; OP keeps flashing.
   assert _lat_active(hold, left=True, v_ego=30.0, stalk_state=0)
   assert _lat_active(hold, v_ego=30.0, dt=0.4)
   assert _lat_active(hold, left=True, v_ego=30.0)
@@ -209,8 +251,7 @@ def test_alc_leftover_flashes_do_not_become_driver_turn():
 def test_driver_turn_without_alc_still_pauses():
   hold = BlinkerLateralHold()
   slow = 10 * CV.MPH_TO_MS
-  assert not _lat_active(hold, left=True, v_ego=slow, stalk_state=1)
-  assert hold.turn_active
+  _hold_past_tip(hold, v_ego=slow)
   assert not _lat_active(hold, v_ego=slow, dt=0.4)
   assert hold.turn_active
 
