@@ -1,7 +1,9 @@
 """Offline OSM speed-limit SQLite (R-tree) for comma 3X.
 
 Schema is NAP-owned. Data is OpenStreetMap (ODbL). Query path is GPS → nearest
-heading-aligned way with an explicit maxspeed tag.
+heading-aligned way. nextSpeedLimit follows that matched way (bearing + class),
+not a nearby off-route fill. Tagged OSM maxspeed is authoritative; Minnesota
+packs may include statutory estimates for unmarked highways (never uploaded to OSM).
 """
 from __future__ import annotations
 
@@ -19,6 +21,18 @@ from openpilot.selfdrive.mapd.constants import (
   SEARCH_PAD_DEG,
   osm_sign_lead_m,
 )
+
+# Functional class for route continuity. Residential fills next to a trunk
+# must not count as the "next limit ahead" even when a heading ray hits them.
+_HIGHWAY_RANK = {
+  "motorway": 0, "motorway_link": 0,
+  "trunk": 1, "trunk_link": 1,
+  "primary": 2, "primary_link": 2,
+  "secondary": 3, "secondary_link": 3,
+  "tertiary": 4, "tertiary_link": 4,
+  "unclassified": 5,
+  "residential": 6, "living_street": 6, "alley": 7,
+}
 
 EARTH_R = 6371000.0
 _COORDS_HDR = struct.Struct("<I")
@@ -158,6 +172,31 @@ def _point_to_polyline_m(lat: float, lon: float, coords: list[tuple[float, float
       best = dist
       best_heading = _bearing_deg(coords[i][0], coords[i][1], coords[i + 1][0], coords[i + 1][1])
   return best, best_heading
+
+
+def _continues_route(
+  bearing_deg: float | None, seg_heading: float | None,
+  from_name: str, from_highway: str, to_name: str, to_highway: str,
+) -> bool:
+  """True if a candidate is the road ahead, not an off-route cross street / fill.
+
+  Bearing must stay within HEADING_ALIGN_DEG. A named road may change class
+  (US 12 trunk → primary in town). A major way must not jump onto an unnamed
+  residential / living_street fill just because it is geometrically closer.
+  """
+  if bearing_deg is not None and seg_heading is not None:
+    if _wrap_heading_delta(bearing_deg, seg_heading) > HEADING_ALIGN_DEG:
+      return False
+  fn = (from_name or "").strip().lower()
+  tn = (to_name or "").strip().lower()
+  if fn and tn and fn == tn:
+    return True
+  fr = _HIGHWAY_RANK.get((from_highway or "").strip().lower(), 5)
+  tr = _HIGHWAY_RANK.get((to_highway or "").strip().lower(), 5)
+  # trunk/primary/secondary → residential 30 fill (v3 MN statutory).
+  if fr <= 3 and tr >= 6:
+    return False
+  return True
 
 
 def _seg_len_m(a: tuple[float, float], b: tuple[float, float]) -> float:
@@ -360,7 +399,8 @@ class OsmSpeedLimitDB:
     q = f"SELECT * FROM ways WHERE way_id IN ({','.join('?' * len(ids))})"
     return list(self._con.execute(q, ids))
 
-  def _best_match(self, lat: float, lon: float, bearing_deg: float | None) -> SpeedLimitMatch | None:
+  def _best_match(self, lat: float, lon: float, bearing_deg: float | None,
+                  along_route: SpeedLimitMatch | None = None) -> SpeedLimitMatch | None:
     best: SpeedLimitMatch | None = None
     best_score = 1e12
     for row in self._candidates(lat, lon):
@@ -368,8 +408,16 @@ class OsmSpeedLimitDB:
       dist, seg_heading = _point_to_polyline_m(lat, lon, coords)
       if dist > MAX_MATCH_DISTANCE_M:
         continue
+      name = row["name"] or ""
+      highway = row["highway"] or ""
       heading_pen = 0.0
-      if bearing_deg is not None and seg_heading is not None:
+      if along_route is not None:
+        if not _continues_route(
+          bearing_deg, seg_heading,
+          along_route.road_name, along_route.highway, name, highway,
+        ):
+          continue
+      elif bearing_deg is not None and seg_heading is not None:
         delta = _wrap_heading_delta(bearing_deg, seg_heading)
         # Opposite-direction ways: treat as a large penalty so we pick the
         # carriageway we are actually on when a dual carriageway is nearby.
@@ -383,20 +431,21 @@ class OsmSpeedLimitDB:
         best = SpeedLimitMatch(
           speed_limit_ms=float(row["maxspeed_ms"]),
           way_id=int(row["way_id"]),
-          road_name=row["name"] or "",
-          highway=row["highway"] or "",
+          road_name=name,
+          highway=highway,
           distance_m=float(dist),
           coords=tuple((float(c[0]), float(c[1])) for c in coords),
         )
     return best
 
   def _geodesic_next(self, lat: float, lon: float, bearing_deg: float,
-                     current_ms: float) -> tuple[float, float] | None:
-    """Heading-ray probes. Can skip a short way if GPS heading is off the road."""
+                     match: SpeedLimitMatch) -> tuple[float, float] | None:
+    """Heading-ray probes after the matched way ends (OSM gap). Route-bearing only."""
     prev_same_d = 0.0
+    current_ms = float(match.speed_limit_ms)
     for d in LOOKAHEAD_M:
       alat, alon = _offset_point(lat, lon, bearing_deg, d)
-      ahead = self._best_match(alat, alon, bearing_deg)
+      ahead = self._best_match(alat, alon, bearing_deg, along_route=match)
       if ahead is None:
         continue
       if abs(ahead.speed_limit_ms - current_ms) <= 0.3:
@@ -407,48 +456,62 @@ class OsmSpeedLimitDB:
     return None
 
   def _along_way_next(self, lat: float, lon: float, bearing_deg: float,
-                      match: SpeedLimitMatch) -> tuple[float, float] | None:
-    """Follow the matched way to its end, then the next way, within LOOKAHEAD_MAX_M.
+                      match: SpeedLimitMatch) -> tuple[tuple[float, float] | None, bool]:
+    """Follow the matched way to its end, then the next on-route way.
+
+    Returns (picked, resolved). resolved means the next LOOKAHEAD_MAX_M along
+    this road is known (a different limit, or the same limit continuing) — do
+    not fall back to a heading ray that can hit off-route fills.
 
     Catches a short intermediate limit (US 12 60→50 before 30) that geodesic
     40 m heading probes skip when the road curves or the 50 way is short.
     """
     if not match.coords:
-      return None
+      return None, False
     current_ms = float(match.speed_limit_ms)
     traveled = 0.0
     cur_lat, cur_lon = float(lat), float(lon)
     cur_brg = float(bearing_deg)
     cur_coords: list[tuple[float, float]] | tuple[tuple[float, float], ...] = match.coords
     seen = {int(match.way_id)}
+    plat, plon = cur_lat, cur_lon
     for _ in range(24):
       ahead_info = _remaining_ahead(cur_lat, cur_lon, cur_brg, cur_coords)
       if ahead_info is None:
-        return None
+        return None, False
       rem, end_ll, end_hdg = ahead_info
       if traveled + rem > LOOKAHEAD_MAX_M + 1.0:
-        return None
+        return None, True
       traveled += rem
       nxt = None
       # Step past the end; 12 m can still match the way we just left
       # (MAX_MATCH_DISTANCE_M=35).
       for step_m in (12.0, 25.0, 40.0):
         plat, plon = _offset_point(end_ll[0], end_ll[1], end_hdg, step_m)
-        cand = self._best_match(plat, plon, end_hdg)
+        cand = self._best_match(plat, plon, end_hdg, along_route=match)
         if cand is not None and int(cand.way_id) not in seen:
           nxt = cand
           break
       if nxt is None:
-        return None
+        return None, False
       seen.add(int(nxt.way_id))
       if abs(nxt.speed_limit_ms - current_ms) > 0.3:
-        return float(nxt.speed_limit_ms), float(traveled)
+        return (float(nxt.speed_limit_ms), float(traveled)), True
       if not nxt.coords:
-        return None
+        return None, False
       cur_coords = nxt.coords
       cur_lat, cur_lon = plat, plon
       cur_brg = end_hdg
-    return None
+    return None, True
+
+  def _next_limit(self, lat: float, lon: float, bearing_deg: float,
+                  match: SpeedLimitMatch) -> tuple[float, float] | None:
+    along, resolved = self._along_way_next(lat, lon, bearing_deg, match)
+    if along is not None:
+      return along
+    if resolved:
+      return None
+    return self._geodesic_next(lat, lon, bearing_deg, match)
 
   def lookup(self, lat: float, lon: float, bearing_deg: float | None = None,
              v_ego_ms: float = 0.0) -> SpeedLimitMatch | None:
@@ -478,21 +541,16 @@ class OsmSpeedLimitDB:
     if bearing_deg is None:
       return match
 
-    # Decrease lookahead is separate: remaining to the next lower from GPS,
-    # minus v*1.5 s so ease starts at the lag-corrected zone (not a posted cliff).
+    # Next limit follows the matched road (bearing + class/name). Do not use a
+    # heading ray that can pick a nearby residential fill as "ahead".
+    # Remaining is from GPS minus v*1.5 s so ease starts at the lag-corrected zone.
     if raised:
-      along = self._along_way_next(qlat, qlon, float(bearing_deg), match)
-      geo = self._geodesic_next(qlat, qlon, float(bearing_deg), match.speed_limit_ms)
-      picked = along if along is not None else geo
+      picked = self._next_limit(qlat, qlon, float(bearing_deg), match)
     else:
-      along = self._along_way_next(float(lat), float(lon), float(bearing_deg), match)
-      geo = self._geodesic_next(float(lat), float(lon), float(bearing_deg), match.speed_limit_ms)
-      picked = along if along is not None else geo
+      picked = self._next_limit(float(lat), float(lon), float(bearing_deg), match)
       if picked is not None:
         nxt, dist = picked
         picked = (nxt, max(0.0, float(dist) - lead_m))
-    # Prefer along-way (true road distance, does not skip short ways). If it
-    # finds nothing, geodesic may still see a nearby different-speed way.
     if picked is None:
       return match
     next_limit, next_dist = picked

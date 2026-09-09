@@ -16,6 +16,10 @@ POSTED_LIMIT_EPS_KPH = 1.0
 
 # Spatial match
 MAX_MATCH_DISTANCE_M = 35.0
+# Current-way snap uses this as a *penalty* so GPS heading noise still locks
+# the carriageway. Next-limit matching uses it as a *hard* gate: cross streets
+# and other off-route ways (Δheading larger than this) must not become
+# nextSpeedLimit — denser MN statutory fills made those geometrically close.
 HEADING_ALIGN_DEG = 55.0
 # Justin measured 1.5 s GNSS lag. Raises posted when v_ego * this along
 # heading is already in a higher zone. Decreases keep GPS posted and ease
