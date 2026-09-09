@@ -13,13 +13,18 @@ Justin’s parked capture (ignore counter/checksum):
 
 DBC HiBmLvr_Stat is a 2-bit enum, not a latched-on state:
   0 IDLE, 1 HIBM_ON_PSD (nibble 4), 2 HIBM_FLSH_ON_PSD (nibble 8), 3 SNA.
-There is no separate low-beam press. On-car: holding nibble 4 at 10 Hz
-retriggered the toggle; a nibble-4 tap then copying live IDLE (rest 00)
-turned the beams on and immediately back off. Wiper nibble 1 can stay
-held (Int works). High is a short nibble-4 pulse on the rising edge of
-the setting, then while High stays selected the repeating rest/IDLE
-nibble is blocked (SNA) so it cannot cancel the latch. Off/Low stop the
-block and return the real stalk. Off/Low then High is the next tap.
+There is no separate low-beam press. candump src 0 is the live stalk RX;
+src 128 is our TX echo (returned | 0x80) — not a panda 0↔2 relay (Pre-AP
+fwd_hook blocks all bridging). The body hears both on party bus 0. SNA
+only on the TX copy cannot win against repeating bus-0 rest/IDLE.
+
+On-car: holding nibble 4 at 10 Hz retriggered the toggle; a nibble-4 tap
+then leaving live IDLE on bus 0 turned the beams on and immediately back
+off. Wiper nibble 1 can stay held (Int works). High is a short nibble-4
+pulse, then while High stays selected the live/relayed rest frame is
+replaced in place (same counter, not a second competing 0x45) so IDLE
+cannot cancel the latch. Off/Low stop the block and return the real
+stalk. Off/Low then High is the next tap.
 
 Off leaves the driver’s real stalk nibble alone (do not force 0). Wiper
 On/Int holds high nibble 1. No rain model. No auto high-beam. Do not flash.
@@ -196,20 +201,45 @@ def stalk_test_active(wiper_on: bool | None = None, high_beam_on: bool | None = 
   return bool(wiper_on or high_beam_on)
 
 
-def extra_stw_forward_needed(can_sends, frame: int, wiper_on: bool, high_beam_on: bool) -> bool:
+def extra_stw_forward_needed(can_sends, frame: int, wiper_on: bool, high_beam_on: bool,
+                             block_rest_low: bool = False) -> bool:
   """One 0x45 per stock-cc slot when the test is on. Never a second frame.
 
   This is the parked / not-engaged path: stock-cc only TXes 0x45 on
   engage/cancel (a stalk pull). Wiper On/Int keeps forwarding so nibble 1
-  can stay held. High keeps forwarding while selected so the rest/IDLE
-  nibble can be blocked after the pulse — stopping extra-forward lets the
-  live stalk copy IDLE and turns the beams back off.
+  can stay held. After the High pulse, rest-block TXes every 10 ms so the
+  replaced live frame can last-win against repeating bus-0 IDLE.
   """
   if not stalk_test_active(wiper_on, high_beam_on):
     return False
-  if int(frame) % STW_FORWARD_SLOT != 0:
+  if not block_rest_low and int(frame) % STW_FORWARD_SLOT != 0:
     return False
   return not any(msg[0] == STW_ACTN_RQ_ADDR for msg in can_sends)
+
+
+def live_stw_counter(msg_stw) -> int:
+  """Use the live/relayed MC. +1 builds a second competing 0x45."""
+  if not msg_stw:
+    return 0
+  return int(msg_stw.get("MC_STW_ACTN_RQ", 0) or 0)
+
+
+def replace_relayed_stw(dat: bytes, wiper_on: bool, high_beam_on: bool,
+                        block_rest_low: bool = False, crc_fn=None) -> bytes:
+  """Edit the live/relayed 0x45 payload. Do not invent a second frame."""
+  return overlay_stw_wiper_beam(dat, wiper_on, high_beam_on, crc_fn=crc_fn,
+                                block_rest_low=block_rest_low)
+
+
+def send_replaced_live_stw(spoofer, CS, tesla_can, bus):
+  """TX the live stalk with HiBm patched, same MC as bus 0 RX."""
+  msg_stw = getattr(CS, "msg_stw_actn_req", None)
+  if msg_stw is None:
+    return None
+  button = int(msg_stw.get("SpdCtrlLvr_Stat", 0) or 0)
+  if tesla_can is None:
+    return spoofer._send(CS, tesla_can, bus, button)
+  return tesla_can.create_action_request(button, bus, live_stw_counter(msg_stw), msg_stw)
 
 
 def _param_int(key: str, default: int = 0) -> int:
@@ -249,8 +279,8 @@ def create_action_request_with_overlay(self, button_to_press, bus, counter, msg_
   if orig is None:
     orig = _tesla_can().create_action_request
   addr, dat, out_bus = orig(self, button_to_press, bus, counter, msg_stw)
-  dat = overlay_stw_wiper_beam(dat, requested_wiper_test(), _slot_high_overlay,
-                               crc_fn=self.stw_crc, block_rest_low=_slot_block_rest_low)
+  dat = replace_relayed_stw(dat, requested_wiper_test(), _slot_high_overlay,
+                            block_rest_low=_slot_block_rest_low, crc_fn=self.stw_crc)
   return addr, dat, out_bus
 
 
@@ -273,11 +303,16 @@ def stock_cc_update_with_overlay(self, CS, frame, tesla_can, can_bus_party):
     _slot_high_overlay = get_high_beam_oneshot().consume(high_setting)
     _slot_block_rest_low = high_beam_blocks_rest_low(high_setting, _slot_high_overlay)
   can_sends = orig(self, CS, frame, tesla_can, can_bus_party)
-  if extra_stw_forward_needed(can_sends, frame, wiper, high_setting):
+  if extra_stw_forward_needed(can_sends, frame, wiper, high_setting,
+                              block_rest_low=_slot_block_rest_low):
     msg_stw = getattr(CS, "msg_stw_actn_req", None)
     if msg_stw is not None:
-      button = int(msg_stw.get("SpdCtrlLvr_Stat", 0) or 0)
-      sent = self._send(CS, tesla_can, can_bus_party, button)
+      if _slot_high_overlay or _slot_block_rest_low:
+        # Same MC as the bus-0 RX rest — edit that frame, do not +1 a second 0x45.
+        sent = send_replaced_live_stw(self, CS, tesla_can, can_bus_party)
+      else:
+        sent = self._send(CS, tesla_can, can_bus_party,
+                          int(msg_stw.get("SpdCtrlLvr_Stat", 0) or 0))
       if sent is not None:
         can_sends.append(sent)
   return can_sends
