@@ -10,6 +10,7 @@ from openpilot.selfdrive.car.tesla.preap_body_controls import (
   STW_HIGH_BEAM,
   STW_HIGH_BEAM_FLASH,
   STW_TURN_MASK,
+  STW_TX_ECHO_BUS,
   STW_WASHER_SPRAY,
   STW_WIPER_BEAM_BYTE,
   STW_WIPER_ON,
@@ -22,6 +23,7 @@ from openpilot.selfdrive.car.tesla.preap_body_controls import (
   hibm_nibble,
   live_stw_counter,
   overlay_stw_wiper_beam,
+  panda_can_drop_live_stw,
   register_nap_body_params,
   replace_relayed_stw,
   send_replaced_live_stw,
@@ -162,20 +164,50 @@ def test_extra_forward_only_when_on_and_no_existing_0x45():
   assert extra_stw_forward_needed(existing, 11, False, True) is False
 
 
-def test_settings_copy_describes_held_4_same_counter_replace():
+def test_settings_copy_describes_held_4_and_cannot_drop_bus0_rest():
   from openpilot.selfdrive.ui.layouts.settings.nap_content import HIGH_LOW_BEAM_DESCRIPTION
   text = HIGH_LOW_BEAM_DESCRIPTION.lower()
+  assert "00ff04" in text
   assert "nibble 4" in text
-  assert "hold" in text
   assert "same counter" in text
-  assert "rest" in text or "idle" in text
+  assert "cannot drop" in text
+  assert "no harness relay" in text
+  assert "bus 0" in text
+  assert "00ff00" in text
   assert "second 0x45" in text
   assert "off/low" in text
-  assert "not a one-shot tap" in text
-  assert "00ff04" in text
   assert "flash" in text
   assert "pulse" not in text
   assert "sna" not in text
+
+
+def test_panda_cannot_drop_live_stalk_rest():
+  """candump after hold-4: bus 128 is 00ff04 (TX echo), bus 0 stays 00ff00."""
+  assert panda_can_drop_live_stw() is False
+  assert STW_TX_ECHO_BUS == 0x80
+  assert STW_ACTN_RQ_ADDR == 0x45
+  rest = _rest()
+  held = apply_stw_wiper_beam_nibbles(rest, False, True)
+  assert held[:3] == bytes.fromhex("00ff04")
+  assert rest[:3] == bytes.fromhex("00ff00")
+
+
+def test_preap_fwd_hook_already_blocks_0x45():
+  """Legal forward/relay block for 0x45 already exists and is unconditional."""
+  from pathlib import Path
+
+  import opendbc
+  src = Path(opendbc.__file__).resolve().parent / "safety/modes/tesla_preap.h"
+  text = src.read_text()
+  start = text.index("static bool tesla_preap_fwd_hook")
+  end = text.index("safety_config tesla_preap_init")
+  hook = text[start:end]
+  assert "return true;" in hook
+  assert "Block default 0↔2 forwarding" in hook or "Block default 0" in hook
+  # No High-conditional block — panda safety has no NAP setting, and a
+  # per-addr block would still not drop the live stalk on party bus 0.
+  assert "NAPHighLowBeam" not in hook
+  assert "BEAM_SETTING_HIGH" not in text
 
 
 def test_register_defaults_stay_off():
