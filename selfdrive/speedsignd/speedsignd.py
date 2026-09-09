@@ -9,13 +9,14 @@ Stock modelV2 has no speedSign head — this is a separate process, default off.
 """
 from __future__ import annotations
 
-import os
 import time
 from typing import Any
 
-from openpilot.selfdrive.speedsignd.detect import SpeedSignDetector, y_plane_from_nv12
+from openpilot.selfdrive.speedsignd.debounce import SignDebounce
+from openpilot.selfdrive.speedsignd.detect import SpeedSignDetector
 from openpilot.selfdrive.speedsignd.hud import LiveSignHold, apply_live_sign
 from openpilot.selfdrive.speedsignd.jsonl import JsonlLogger, make_record
+from openpilot.selfdrive.speedsignd.nv12 import rgb_from_nv12, y_plane_from_nv12
 from openpilot.selfdrive.speedsignd.paths import PARAM_KEY, default_log_path, default_onnx_path
 
 SPEEDSIGND_HZ = 4.0
@@ -41,9 +42,17 @@ def process_frame(
   detector: SpeedSignDetector,
   logger: JsonlLogger,
   now: float,
+  rgb=None,
+  debounce: SignDebounce | None = None,
 ) -> tuple[list, list[dict]]:
-  """Detect on every ROAD frame. JSONL only with a GNSS fix."""
-  signs = [] if y is None else detector.detect(y)
+  """Detect on every ROAD frame. JSONL only with a GNSS fix.
+
+  `debounce` is applied before HUD/JSONL so a single noisy frame does not
+  count. Tests omit it and see raw detections.
+  """
+  signs = [] if (y is None and rgb is None) else detector.detect(y, rgb=rgb)
+  if debounce is not None:
+    signs = debounce.update(signs, now)
   written: list[dict] = []
   if gps_ok:
     for sign in signs:
@@ -93,10 +102,15 @@ def main():
   detector = SpeedSignDetector(onnx_path=onnx_path)
   logger = JsonlLogger(log_path)
   hold = LiveSignHold()
-  backend = "onnx" if detector.onnx is not None else "numpy-mutcd"
+  debounce = SignDebounce()
+  backend = "yolo-onnx" if detector.onnx is not None else "numpy-mutcd"
   cloudlog.info("speedsignd starting log=%s backend=%s onnx=%s", log_path, backend, onnx_path)
-  if detector.onnx is None and not os.path.isfile(onnx_path):
-    cloudlog.info("speedsignd: no ONNX at %s — using built-in MUTCD detector (weights stay on /data)", onnx_path)
+  if detector.onnx is None:
+    cloudlog.warning(
+      "speedsignd: no ONNX at %s — numpy fallback will not see real roadside signs. "
+      "On the 3X: python -m scripts.nap.install_speed_sign_weights",
+      onnx_path,
+    )
 
   sm = messaging.SubMaster(["gpsLocationExternal", "gpsLocation"])
   pm = messaging.PubMaster([SERVICE_NAME])
@@ -120,9 +134,13 @@ def main():
     else:
       buf = client.recv(timeout_ms=VISION_TIMEOUT_MS)
       y = y_plane_from_nv12(buf) if buf is not None else None
+      rgb = rgb_from_nv12(buf) if buf is not None else None
       lat, lon, bearing, gps_ok = gps_sample_from_sm(sm, now=now_mono)
-      if y is not None:
-        signs, _written = process_frame(y, lat, lon, bearing, gps_ok, detector, logger, time.time())
+      if y is not None or rgb is not None:
+        signs, _written = process_frame(
+          y, lat, lon, bearing, gps_ok, detector, logger, time.time(),
+          rgb=rgb, debounce=debounce,
+        )
     _publish_live(pm, hold, signs, now_mono, messaging)
     rk.keep_time()
 
