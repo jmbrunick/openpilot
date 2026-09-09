@@ -1,8 +1,8 @@
-"""MUTCD R2-1 numeric speed-sign detector (road-camera Y plane).
+"""MUTCD R2-1 detector: YOLO ONNX on the ROAD camera, numpy fallback for tests.
 
-Stock modelV2 has no speedSign head, so this is a greenfield process. Default
-path is a small numpy detector (no weights in git). If a compact ONNX file is
-present under /data, that backend is used instead.
+Stock modelV2 has no speedSign head. On-device detection is a compact YOLOv8
+ONNX under /data (see weights_manifest). The numpy template matcher is only
+for unit tests / missing weights — it does not see real roadside signs.
 
 MUTCD R2-1 is a white rectangle (about 24x30 in, aspect ~0.8) with black
 legend: SPEED LIMIT over a 1–3 digit mph value.
@@ -10,44 +10,26 @@ legend: SPEED LIMIT over a 1–3 digit mph value.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
 
 import numpy as np
 
+from openpilot.selfdrive.speedsignd.detect_types import MUTCD_MPH, SpeedSign
+from openpilot.selfdrive.speedsignd.nv12 import rgb_from_y, y_plane_from_nv12
 from openpilot.selfdrive.speedsignd.paths import default_onnx_path
+from openpilot.selfdrive.speedsignd.weights_manifest import (
+  YOLO_CLASS_NAMES,
+  YOLO_IMGSZ,
+  YOLO_IOU,
+  YOLO_MAX_DET,
+  YOLO_MIN_CONF,
+)
+from openpilot.selfdrive.speedsignd.yolo import decode_yolov8, letterbox_rgb, refine_mph
 
-# US R2-1 posted speeds. School-zone 15/25 and freeway 70/75/80 included.
-MUTCD_MPH = frozenset(list(range(5, 90, 5)) + [100])
 MIN_CONF = 0.42
 MAX_DET = 3
 DIGIT_H, DIGIT_W = 24, 16
 # Downsample the ROAD frame so CC stays cheap on the 3X.
 MAX_DETECT_WIDTH = 320
-
-
-@dataclass(frozen=True)
-class SpeedSign:
-  mph: int
-  conf: float
-  bbox: tuple[int, int, int, int]  # x, y, w, h in the input frame
-
-
-def y_plane_from_nv12(buf) -> np.ndarray | None:
-  """Y plane of an NV12 VisionBuf, cropped to width x height (no padding)."""
-  try:
-    width = int(buf.width)
-    height = int(buf.height)
-    stride = int(buf.stride) if getattr(buf, "stride", 0) else width
-    if width < 2 or height < 2 or stride < width:
-      return None
-    data = buf.data
-    n = stride * height
-    if data is None or len(data) < n:
-      return None
-    y = np.frombuffer(data, dtype=np.uint8, count=n).reshape(height, stride)
-    return y[:, :width]
-  except Exception:
-    return None
 
 
 def _resize(img: np.ndarray, h: int, w: int) -> np.ndarray:
@@ -437,12 +419,16 @@ def detect_mutcd_speed_signs(y: np.ndarray, min_conf: float = MIN_CONF) -> list[
 
 
 class OnnxSpeedSignDetector:
-  """Optional compact ONNX under /data. Missing/unloadable → None.
+  """Compact ONNX under /data. Missing/unloadable → None.
 
-  Expected model:
-    input  `image`  float32 [1,1,H,W] (Y 0..1) or [1,3,H,W] (RGB 0..1)
-    output `dets`   float32 [N,6] = x, y, w, h, mph, conf  (pixels of the input)
-  A [1,2] output of (mph, conf) is also accepted as a single full-frame hit.
+  Supported models:
+    1. Ultralytics YOLOv8 detect (preferred):
+         input  float32 [1,3,H,W] RGB 0..1 (letterboxed)
+         output float32 [1,4+nc,N] or [1,N,4+nc]
+    2. Legacy custom:
+         input  `image`  float32 [1,1,H,W] (Y 0..1) or [1,3,H,W] (RGB 0..1)
+         output `dets`   float32 [N,6] = x, y, w, h, mph, conf
+         A [1,2] (mph, conf) output is also accepted.
   """
 
   def __init__(self, path: str, session=None):
@@ -459,28 +445,53 @@ class OnnxSpeedSignDetector:
       return None
     return cls(path, session)
 
-  def detect(self, y: np.ndarray, min_conf: float = MIN_CONF) -> list[SpeedSign]:
-    if self.session is None or y is None or y.ndim != 2:
+  def detect(self, y: np.ndarray, min_conf: float | None = None, rgb: np.ndarray | None = None) -> list[SpeedSign]:
+    if self.session is None:
       return []
-    arr = y.astype(np.float32) / 255.0
+    if rgb is None:
+      if y is None or y.ndim != 2:
+        return []
+      rgb = rgb_from_y(y)
+    if rgb.ndim != 3 or rgb.shape[-1] != 3:
+      return []
+    src_h, src_w = rgb.shape[:2]
     inp = _onnx_input_name(self.session)
     shape = _onnx_input_shape(self.session)
-    if shape is not None and len(shape) == 4:
-      n, c, h, w = [int(v) if v not in (None, 0, -1) else None for v in shape]
-      hh = h or 256
-      ww = w or 256
-      resized = _resize(arr, hh, ww)
-      if c == 3:
-        blob = np.stack([resized, resized, resized], axis=0)[None, ...]
-      else:
-        blob = resized[None, None, ...]
-    else:
-      blob = arr[None, None, ...]
+    yolo = _is_yolo_input(shape)
     try:
+      if yolo:
+        size = YOLO_IMGSZ
+        if shape is not None and len(shape) == 4:
+          h = int(shape[2]) if shape[2] not in (None, 0, -1) else YOLO_IMGSZ
+          w = int(shape[3]) if shape[3] not in (None, 0, -1) else YOLO_IMGSZ
+          size = h if h == w else YOLO_IMGSZ
+        boxed, scale, pad_x, pad_y = letterbox_rgb(rgb, size)
+        blob = boxed.transpose(2, 0, 1)[None, ...].astype(np.float32) / 255.0
+        raw = self.session.run(None, {inp: blob})[0]
+        thr = YOLO_MIN_CONF if min_conf is None else min_conf
+        hits = decode_yolov8(
+          raw, scale=scale, pad_x=pad_x, pad_y=pad_y, src_hw=(src_h, src_w),
+          names=YOLO_CLASS_NAMES, min_conf=thr, iou=YOLO_IOU, max_det=YOLO_MAX_DET,
+        )
+        luma = y if y is not None and getattr(y, "ndim", 0) == 2 else rgb[:, :, 1]
+        return [refine_mph(s, luma, _read_mph) for s in hits]
+      arr = (y if y is not None else rgb[:, :, 1]).astype(np.float32) / 255.0
+      if shape is not None and len(shape) == 4:
+        _n, c, h, w = [int(v) if v not in (None, 0, -1) else None for v in shape]
+        hh = h or 256
+        ww = w or 256
+        resized = _resize(arr, hh, ww)
+        if c == 3:
+          blob = np.stack([resized, resized, resized], axis=0)[None, ...]
+        else:
+          blob = resized[None, None, ...]
+      else:
+        blob = arr[None, None, ...]
       raw = self.session.run(None, {inp: blob.astype(np.float32)})[0]
     except Exception:
       return []
-    return _parse_onnx_dets(raw, y.shape, min_conf)
+    thr = MIN_CONF if min_conf is None else min_conf
+    return _parse_onnx_dets(raw, (src_h, src_w), thr)
 
 
 def _onnx_session(path: str):
@@ -490,7 +501,43 @@ def _onnx_session(path: str):
     opts.intra_op_num_threads = 1
     return ort.InferenceSession(path, opts, providers=["CPUExecutionProvider"])
   except Exception:
+    pass
+  try:
+    from tinygrad import Tensor
+    from tinygrad.nn.onnx import OnnxRunner
+    return _TinyOrtSession(OnnxRunner(path), Tensor)
+  except Exception:
     return None
+
+
+class _TinyOrtSession:
+  """onnxruntime-shaped wrapper around tinygrad OnnxRunner (3X has tinygrad)."""
+
+  def __init__(self, runner, tensor_cls):
+    self.runner = runner
+    self._tensor = tensor_cls
+    names = list(getattr(runner, "graph_inputs", {}) or {"images": None})
+    self._inputs = [type("I", (), {"name": names[0] if names else "images", "shape": [1, 3, YOLO_IMGSZ, YOLO_IMGSZ]})()]
+
+  def get_inputs(self):
+    return self._inputs
+
+  def run(self, _outs, feed: dict):
+    tensors = {k: self._tensor(v) for k, v in feed.items()}
+    out = self.runner(tensors)
+    if isinstance(out, dict):
+      val = next(iter(out.values()))
+    else:
+      val = out
+    arr = val.numpy() if hasattr(val, "numpy") else np.asarray(val)
+    return [arr]
+
+
+def _is_yolo_input(shape) -> bool:
+  if shape is None or len(shape) != 4:
+    return False
+  c = shape[1]
+  return c in (3, "3")
 
 
 def _onnx_input_name(session) -> str:
@@ -536,7 +583,7 @@ def _parse_onnx_dets(raw, frame_hw: tuple[int, int], min_conf: float) -> list[Sp
 
 
 class SpeedSignDetector:
-  """ONNX if weights exist on /data, else the built-in MUTCD numpy detector."""
+  """YOLO ONNX if weights exist on /data. Numpy matcher is tests/dev only."""
 
   def __init__(self, onnx: OnnxSpeedSignDetector | None = None, onnx_path: str | None = None):
     if onnx is not None:
@@ -544,9 +591,9 @@ class SpeedSignDetector:
     else:
       self.onnx = OnnxSpeedSignDetector.try_load(onnx_path)
 
-  def detect(self, y: np.ndarray, min_conf: float = MIN_CONF) -> list[SpeedSign]:
+  def detect(self, y: np.ndarray, min_conf: float | None = None, rgb: np.ndarray | None = None) -> list[SpeedSign]:
     if self.onnx is not None:
-      hits = self.onnx.detect(y, min_conf=min_conf)
-      if hits:
-        return hits
-    return detect_mutcd_speed_signs(y, min_conf=min_conf)
+      thr = YOLO_MIN_CONF if min_conf is None else min_conf
+      return self.onnx.detect(y, min_conf=thr, rgb=rgb)
+    thr = MIN_CONF if min_conf is None else min_conf
+    return detect_mutcd_speed_signs(y, min_conf=thr)
