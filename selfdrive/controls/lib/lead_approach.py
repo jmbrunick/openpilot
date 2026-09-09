@@ -19,8 +19,9 @@ STOP_DISTANCE = 6.0
 # Map Normal brake. Gentler than overlay 1.0 and MPC 2.5. Do not raise.
 LEAD_APPROACH_A_MS2 = 0.80
 # Seconds of current closing-speed added before the last-second 0.80 catch.
-# Keeps the open gentle (~0.2 m/s²) and the start inside typical radar.
-LEAD_APPROACH_HEADSTART_S = 8.0
+# 12 s vs 8 s: ~18 m / ~4 s earlier on a 10 mph close, lighter a at the open
+# (~0.15 vs ~0.21), same 0.80 peak near Follow Distance. Still inside radar.
+LEAD_APPROACH_HEADSTART_S = 12.0
 # Bosch-range ceiling so we do not open on a flickering 160 m track.
 LEAD_APPROACH_MAX_START_M = 140.0
 LEAD_APPROACH_DV_MS = 0.5  # ~1 mph; ignore radar jitter
