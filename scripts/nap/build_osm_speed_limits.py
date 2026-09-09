@@ -5,7 +5,7 @@ OpenStreetMap data is ODbL: © OpenStreetMap contributors.
 https://www.openstreetmap.org/copyright
 
 This is a PC tool. Do not commit the sqlite to git. Attach the zstd file to
-GitHub Release tag osm-us-speed-limits-v1 (asset speed_limits_us.sqlite.zst).
+GitHub Release tag osm-us-speed-limits-v3 (asset speed_limits_us.sqlite.zst).
 
 US tagged-maxspeed ways ~3.4M (Taginfo 2026-09). After polyline simplify,
 expect roughly 0.8–1.5 GB sqlite and 200–500 MB zstd — one US-wide asset.
@@ -16,6 +16,12 @@ Examples:
   python scripts/nap/build_osm_speed_limits.py --pbf us-ms.osm.pbf --out speed_limits_us.sqlite
   zstd -19 speed_limits_us.sqlite -o speed_limits_us.sqlite.zst
 
+  # Overlay MN statutory fills for unmarked highways in the Benson 100-mile box
+  # onto an existing US pack (does not upload guessed maxspeed to osm.org):
+  python scripts/nap/build_osm_speed_limits.py --pbf minnesota-latest.osm.pbf \\
+      --fill-mn-statutory --benson --merge-into speed_limits_us.sqlite \\
+      --out speed_limits_us.sqlite --zst
+
   python scripts/nap/build_osm_speed_limits.py --from-json overpass.json --out speed_limits.sqlite
 """
 from __future__ import annotations
@@ -23,15 +29,97 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
+import sqlite3
 import sys
 
+from openpilot.selfdrive.mapd.local_refresh import merge_ways_into_db
 from openpilot.selfdrive.mapd.maps_manifest import ATTRIBUTION, LICENSE, LICENSE_URL
+from openpilot.selfdrive.mapd.mn_statutory import (
+  BENSON_LAT,
+  BENSON_LON,
+  BENSON_RADIUS_MILES,
+  FILL_NOTES,
+  FILL_SOURCE,
+  PlaceIndex,
+  benson_fill_bbox,
+  in_minnesota,
+  is_urban_place_tags,
+)
 from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB
-from openpilot.selfdrive.mapd.overpass import ways_from_overpass
+from openpilot.selfdrive.mapd.overpass import bbox_from_center, resolve_way_speed, ways_from_overpass
 from openpilot.selfdrive.mapd.speed_limit import parse_maxspeed
 
+_FILLABLE_HINT = (
+  "motorway", "trunk", "primary", "secondary", "tertiary",
+  "unclassified", "residential", "living_street", "alley",
+)
 
-def _ways_from_pyosmium(pbf: str) -> list[dict]:
+
+def _parse_bbox(text: str) -> tuple[float, float, float, float]:
+  parts = [float(x.strip()) for x in text.split(",")]
+  if len(parts) != 4:
+    raise argparse.ArgumentTypeError("--bbox must be south,west,north,east")
+  return parts[0], parts[1], parts[2], parts[3]
+
+
+def _bbox_intersects_way(coords: list[tuple[float, float]], bbox: tuple[float, float, float, float]) -> bool:
+  south, west, north, east = bbox
+  lats = [c[0] for c in coords]
+  lons = [c[1] for c in coords]
+  return max(lats) >= south and min(lats) <= north and max(lons) >= west and min(lons) <= east
+
+
+def _area_outer_rings(a) -> list[list[tuple[float, float]]]:
+  rings: list[list[tuple[float, float]]] = []
+  try:
+    for ring in a.outer_rings():
+      coords: list[tuple[float, float]] = []
+      for n in ring:
+        loc = n.location
+        if not loc.valid():
+          coords = []
+          break
+        coords.append((float(loc.lat), float(loc.lon)))
+      if len(coords) >= 3:
+        rings.append(coords)
+  except Exception:
+    return []
+  return rings
+
+
+def _places_from_pyosmium(pbf: str) -> PlaceIndex:
+  try:
+    import osmium  # type: ignore
+  except ImportError as e:
+    raise RuntimeError(
+      "Reading .osm.pbf needs pyosmium (pip install osmium) or convert with osmium-tool first."
+    ) from e
+
+  idx = PlaceIndex()
+
+  class H(osmium.SimpleHandler):
+    def area(self, a):
+      tags = {k: v for k, v in a.tags}
+      if not is_urban_place_tags(tags):
+        return
+      rings = _area_outer_rings(a)
+      if rings:
+        idx.add_rings(rings, tags.get("name") or "")
+
+  print(f"Collecting MN city/town urban boundary polygons from {pbf}…", file=sys.stderr, flush=True)
+  H().apply_file(pbf, locations=True)
+  print(f"  {len(idx)} urban place polygons", file=sys.stderr, flush=True)
+  return idx
+
+
+def _ways_from_pyosmium(
+  pbf: str,
+  *,
+  bbox: tuple[float, float, float, float] | None = None,
+  fill_unmarked: bool = False,
+  places: PlaceIndex | None = None,
+) -> list[dict]:
   try:
     import osmium  # type: ignore
   except ImportError as e:
@@ -43,12 +131,16 @@ def _ways_from_pyosmium(pbf: str) -> list[dict]:
 
   class H(osmium.SimpleHandler):
     def way(self, w):
-      if "highway" not in w.tags:
+      tags = {k: v for k, v in w.tags}
+      highway = tags.get("highway") or ""
+      if not highway:
         return
-      ms = parse_maxspeed(w.tags.get("maxspeed"))
-      if ms is None:
-        ms = parse_maxspeed(w.tags.get("maxspeed:forward"))
-      if ms is None:
+      tagged = parse_maxspeed(tags.get("maxspeed")) or parse_maxspeed(tags.get("maxspeed:forward"))
+      if fill_unmarked:
+        hw = highway.lower()
+        if tagged is None and not any(hw == k or hw.startswith(k + "_") for k in _FILLABLE_HINT):
+          return
+      elif tagged is None:
         return
       coords = []
       try:
@@ -60,16 +152,32 @@ def _ways_from_pyosmium(pbf: str) -> list[dict]:
         return
       if len(coords) < 2:
         return
+      if bbox is not None and not _bbox_intersects_way(coords, bbox):
+        return
+      fill = fill_unmarked
+      if fill and not in_minnesota(coords[0][0], coords[0][1]) and not in_minnesota(coords[-1][0], coords[-1][1]):
+        fill = False
+      ms, source = resolve_way_speed(tags, coords, fill_unmarked=fill, places=places)
+      if ms is None:
+        return
       out.append({
         "way_id": int(w.id),
         "name": w.tags.get("name") or w.tags.get("ref") or "",
-        "highway": w.tags.get("highway") or "",
+        "highway": highway,
         "maxspeed_ms": ms,
         "coords": coords,
+        "source": source,
       })
 
+  print(f"Reading highway ways from {pbf}…", file=sys.stderr, flush=True)
   H().apply_file(pbf, locations=True)
   return out
+
+
+def _count_sources(ways: list[dict]) -> tuple[int, int]:
+  filled = sum(1 for w in ways if w.get("source") == FILL_SOURCE)
+  tagged = len(ways) - filled
+  return tagged, filled
 
 
 def write_db(path: str, ways: list[dict], extra_meta: dict | None = None) -> int:
@@ -81,11 +189,14 @@ def write_db(path: str, ways: list[dict], extra_meta: dict | None = None) -> int
     if n % 100000 == 0:
       print(f"  {n} ways…", file=sys.stderr, flush=True)
       con.commit()
+  tagged, filled = _count_sources(ways)
   meta = {
     "attribution": ATTRIBUTION,
     "license": LICENSE,
     "license_url": LICENSE_URL,
     "way_count": str(n),
+    "tagged_way_count": str(tagged),
+    "filled_way_count": str(filled),
   }
   if extra_meta:
     meta.update({str(k): str(v) for k, v in extra_meta.items()})
@@ -95,36 +206,111 @@ def write_db(path: str, ways: list[dict], extra_meta: dict | None = None) -> int
   return n
 
 
+def _write_zst(sqlite_path: str) -> str:
+  import zstandard as zstd
+  zst_path = sqlite_path + ".zst"
+  cctx = zstd.ZstdCompressor(level=19)
+  with open(sqlite_path, "rb") as inf, open(zst_path, "wb") as outf:
+    cctx.copy_stream(inf, outf)
+  return zst_path
+
+
 def main(argv: list[str] | None = None) -> int:
   p = argparse.ArgumentParser(description="Build NAP OSM speed-limit sqlite (ODbL)")
   p.add_argument("--pbf", help="OSM PBF (ideally pre-filtered to highway+maxspeed)")
   p.add_argument("--from-json", help="Overpass JSON")
   p.add_argument("--out", required=True, help="Output sqlite path")
   p.add_argument("--zst", action="store_true", help="Also write <out>.zst via Python zstandard")
+  p.add_argument("--bbox", type=_parse_bbox, default=None, help="south,west,north,east (limit PBF ways)")
+  p.add_argument("--lat", type=float, help="Center latitude (with --lon / --radius-km)")
+  p.add_argument("--lon", type=float, help="Center longitude")
+  p.add_argument("--radius-km", type=float, default=None)
+  p.add_argument("--benson", action="store_true",
+                 help="Use the ~100 mile Benson, MN bbox clipped to Minnesota")
+  p.add_argument("--fill-mn-statutory", action="store_true",
+                 help="Fill unmarked fillable highways with Minn. Stat. 169.14 estimates (NAP pack only)")
+  p.add_argument("--merge-into", help="Existing NAP sqlite to overlay the bbox into (keeps US tagged coverage)")
   args = p.parse_args(argv)
+
+  bbox = args.bbox
+  if args.benson:
+    bbox = benson_fill_bbox()
+  elif args.lat is not None and args.lon is not None:
+    radius = args.radius_km if args.radius_km is not None else BENSON_RADIUS_MILES * 1.609344
+    bbox = bbox_from_center(args.lat, args.lon, radius)
+  elif (args.lat is None) ^ (args.lon is None):
+    p.error("provide both --lat and --lon")
+
+  fill = bool(args.fill_mn_statutory)
+  places: PlaceIndex | None = None
+  if fill and args.pbf:
+    places = _places_from_pyosmium(args.pbf)
 
   if args.from_json:
     with open(args.from_json, encoding="utf-8") as f:
       payload = json.load(f)
-    ways = ways_from_overpass(payload)
+    ways = ways_from_overpass(payload, fill_unmarked=fill)
     source = os.path.basename(args.from_json)
   elif args.pbf:
-    print(f"Reading {args.pbf} (pyosmium)…", file=sys.stderr)
-    ways = _ways_from_pyosmium(args.pbf)
+    ways = _ways_from_pyosmium(args.pbf, bbox=bbox, fill_unmarked=fill, places=places)
     source = os.path.basename(args.pbf)
   else:
     p.error("provide --pbf or --from-json")
 
-  print(f"Writing {len(ways)} ways → {args.out}", file=sys.stderr)
-  n = write_db(args.out, ways, extra_meta={"source": source})
+  tagged, filled = _count_sources(ways)
+  print(f"Prepared {len(ways)} ways ({tagged} tagged OSM maxspeed, {filled} {FILL_SOURCE} fills)", file=sys.stderr)
+
+  extra_meta: dict[str, str] = {"source": source}
+  if bbox is not None:
+    extra_meta["fill_bbox"] = ",".join(f"{x:.6f}" for x in bbox)
+    extra_meta["fill_center"] = f"{BENSON_LAT},{BENSON_LON}" if args.benson else ""
+  if fill:
+    extra_meta["fill_source"] = FILL_SOURCE
+    extra_meta["fill_notes"] = FILL_NOTES
+    extra_meta["tagged_way_count"] = str(tagged)
+    extra_meta["filled_way_count"] = str(filled)
+    extra_meta["place_polygon_count"] = str(len(places) if places is not None else 0)
+
+  if args.merge_into:
+    if bbox is None:
+      p.error("--merge-into requires --bbox, --benson, or --lat/--lon")
+    src = os.path.abspath(args.merge_into)
+    dest = os.path.abspath(args.out)
+    if not os.path.isfile(src):
+      p.error(f"--merge-into file not found: {src}")
+    if src != dest:
+      os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+      print(f"Copying {src} → {dest}", file=sys.stderr)
+      shutil.copy2(src, dest)
+    print(f"Overlaying {len(ways)} ways into {dest} (delete ∩ bbox, then insert)", file=sys.stderr)
+    deleted, inserted = merge_ways_into_db(dest, ways, bbox, extra_meta)
+    # merge_ways_into_db recounts way_count; keep tagged/filled overlay counts in meta.
+    con = sqlite3.connect(dest)
+    try:
+      con.executemany(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+        [
+          ("tagged_way_count", str(tagged)),
+          ("filled_way_count", str(filled)),
+          ("overlay_deleted", str(deleted)),
+          ("overlay_inserted", str(inserted)),
+        ],
+      )
+      con.commit()
+    finally:
+      con.close()
+    n = inserted
+    print(f"Replaced {deleted} intersecting ways; inserted {inserted} ({tagged} tagged, {filled} filled)", file=sys.stderr)
+  else:
+    print(f"Writing {len(ways)} ways → {args.out}", file=sys.stderr)
+    n = write_db(args.out, ways, extra_meta=extra_meta)
+
   sz = os.path.getsize(args.out) if os.path.isfile(args.out) else 0
-  print(f"Wrote {n} ways, {sz / 1e6:.0f} MB sqlite (ODbL, {ATTRIBUTION})")
+  print(f"Wrote {n} overlay ways, {sz / 1e6:.0f} MB sqlite (ODbL, {ATTRIBUTION})")
+  if fill:
+    print(FILL_NOTES, file=sys.stderr)
   if args.zst:
-    import zstandard as zstd
-    zst_path = args.out + ".zst"
-    cctx = zstd.ZstdCompressor(level=19)
-    with open(args.out, "rb") as inf, open(zst_path, "wb") as outf:
-      cctx.copy_stream(inf, outf)
+    zst_path = _write_zst(args.out)
     zsz = os.path.getsize(zst_path)
     print(f"Wrote {zst_path} ({zsz / 1e6:.0f} MB). Attach to GitHub Release {os.path.basename(zst_path)}.")
   if n == 0:

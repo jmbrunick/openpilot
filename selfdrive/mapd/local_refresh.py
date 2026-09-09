@@ -1,9 +1,12 @@
 """Refresh installed OSM speed limits from live Overpass around the vehicle.
 
 Settings → NAP → Map Speed Limit → Refresh maps (offroad, Wi-Fi) overlays
-OpenStreetMap maxspeed ways within 100 miles (~160.9 km) of a GNSS / last-GPS
-fix onto the already-installed US sqlite. It does not download a published
-pack and never replaces the US file with only the local extract.
+OpenStreetMap highway ways within 100 miles (~160.9 km) of a GNSS / last-GPS
+fix onto the already-installed US sqlite. Tagged numeric maxspeed is
+authoritative. In Minnesota, unmarked fillable highways get Minn. Stat. 169.14
+estimates (never uploaded to OSM) so a refresh does not wipe pack fills.
+It does not download a published pack and never replaces the US file with
+only the local extract.
 
 OpenStreetMap data is ODbL: © OpenStreetMap contributors.
 https://www.openstreetmap.org/copyright
@@ -39,6 +42,7 @@ from openpilot.selfdrive.mapd.gps_fix import (
   read_live_gnss,
 )
 from openpilot.selfdrive.mapd.maps_manifest import LICENSE, LICENSE_URL
+from openpilot.selfdrive.mapd.mn_statutory import FILL_NOTES, FILL_SOURCE, bbox_intersects_minnesota
 from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB
 from openpilot.selfdrive.mapd.overpass import (
   OVERPASS_URL,
@@ -286,10 +290,13 @@ def refresh_local_maps(
     persist_last_gps_if_possible(loc.lat, loc.lon)
 
   bbox = bbox_from_center(loc.lat, loc.lon, radius_km)
+  fill_unmarked = bbox_intersects_minnesota(bbox)
   _p(
     f"Refresh radius {REFRESH_RADIUS_MILES:.0f} miles ({radius_km:.1f} km). "
     + f"Overpass bbox south,west,north,east={bbox[0]:.4f},{bbox[1]:.4f},{bbox[2]:.4f},{bbox[3]:.4f}"
   )
+  if fill_unmarked:
+    _p("Minnesota bbox: fetching all fillable highways and applying MN statutory fills for unmarked ways.")
 
   _ensure_us_base(dest)
 
@@ -299,12 +306,22 @@ def refresh_local_maps(
       bbox, url=overpass_url,
       timeout_s=OVERPASS_HTTP_TIMEOUT_S,
       query_timeout=OVERPASS_QUERY_TIMEOUT_S,
+      include_unmarked=fill_unmarked,
     )
-  ways = ways_from_overpass(payload)
-  _p(f"Received {len(ways)} maxspeed ways from OSM.")
+  ways = ways_from_overpass(payload, fill_unmarked=fill_unmarked)
+  tagged_n = sum(1 for w in ways if w.get("source") != FILL_SOURCE)
+  filled_n = len(ways) - tagged_n
+  if fill_unmarked:
+    _p(
+      f"Received {len(ways)} highway ways from OSM "
+      f"({tagged_n} tagged maxspeed, {filled_n} MN statutory fills)."
+    )
+  else:
+    _p(f"Received {len(ways)} maxspeed ways from OSM.")
   if not ways:
     raise RefreshMapsError(
-      "No maxspeed ways found in OSM for this 100-mile area. Previous maps were left unchanged."
+      "No usable highway speed limits found in OSM for this 100-mile area. "
+      "Previous maps were left unchanged."
     )
 
   extra_meta = {
@@ -314,7 +331,13 @@ def refresh_local_maps(
     "local_refresh_radius_miles": f"{REFRESH_RADIUS_MILES:.0f}",
     "local_refresh_bbox": ",".join(str(x) for x in bbox),
     "local_refresh_at": datetime.now(UTC).isoformat(),
+    "local_refresh_fill_unmarked": "1" if fill_unmarked else "0",
   }
+  if fill_unmarked:
+    extra_meta["fill_source"] = FILL_SOURCE
+    extra_meta["fill_notes"] = FILL_NOTES
+    extra_meta["local_refresh_tagged_ways"] = str(tagged_n)
+    extra_meta["local_refresh_filled_ways"] = str(filled_n)
   install_merged_overlay(dest, ways, bbox, extra_meta)
   _p(installed_db_summary(dest))
   _p("mapd reloads this file within ~15s onroad. No reboot required.")
