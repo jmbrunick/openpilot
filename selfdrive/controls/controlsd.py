@@ -12,6 +12,7 @@ from openpilot.common.swaglog import cloudlog
 from opendbc.car.car_helpers import interfaces
 from opendbc.car.vehicle_model import VehicleModel
 from openpilot.selfdrive.controls.lib.blinker_lateral_pause import BlinkerLateralHold, lat_active_with_blinker_pause
+from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
@@ -23,7 +24,6 @@ from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 
 State = log.SelfdriveState.OpenpilotState
 LaneChangeState = log.LaneChangeState
-LaneChangeDirection = log.LaneChangeDirection
 
 ACTUATOR_FIELDS = tuple(car.CarControl.Actuators.schema.fields.keys())
 
@@ -95,9 +95,10 @@ class Controls:
 
     # Check which actuators can be enabled
     standstill = abs(CS.vEgo) <= max(self.CP.minSteerSpeed, 0.3) or CS.standstill
-    # One lit blinker lamp releases lateral only (latched through flash gaps).
-    # Long / cruise stay engaged. desired_curvature tracks the wheel while
-    # paused so resume is rate-limited.
+    # Driver-turn lamps pause lat (latched through flash gaps). ALC keep-alive
+    # flashes must not: gate pause while laneChangeState != off, and on the
+    # highway stalk tap that arms ALC so latActive stays up for DesireHelper.
+    alc_active = model_v2.meta.laneChangeState != LaneChangeState.off
     CC.latActive = lat_active_with_blinker_pause(
       active=self.sm['selfdriveState'].active,
       steer_fault_temporary=CS.steerFaultTemporary,
@@ -108,16 +109,19 @@ class Controls:
       right_blinker=CS.rightBlinker,
       steering_pressed=CS.steeringPressed,
       hold=self.blinker_lat_hold,
+      alc_active=alc_active,
+      v_ego=CS.vEgo,
+      stalk_state=getattr(CS, 'turnSignalStalkState', 0),
     )
     CC.longActive = CC.enabled and not any(e.overrideLongitudinal for e in self.sm['onroadEvents']) and self.CP.openpilotLongitudinalControl
 
     actuators = CC.actuators
     actuators.longControlState = self.LoC.long_control_state
 
-    # Enable blinkers while lane changing
-    if model_v2.meta.laneChangeState != LaneChangeState.off:
-      CC.leftBlinker = model_v2.meta.laneChangeDirection == LaneChangeDirection.left
-      CC.rightBlinker = model_v2.meta.laneChangeDirection == LaneChangeDirection.right
+    # Keep the indicator flashing while ALC is armed or in progress. Pre-AP
+    # carcontroller TXes DAS_bodyControls from CC.leftBlinker / rightBlinker.
+    CC.leftBlinker, CC.rightBlinker = DesireHelper.lane_change_keep_blinker(
+      model_v2.meta.laneChangeState, model_v2.meta.laneChangeDirection)
 
     if not CC.latActive:
       self.LaC.reset()
