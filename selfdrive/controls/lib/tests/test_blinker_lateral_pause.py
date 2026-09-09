@@ -1,9 +1,12 @@
+from openpilot.common.constants import CV
 from openpilot.selfdrive.controls.lib.blinker_lateral_pause import (
+  ALC_ARM_SPEED_MIN,
   BlinkerLateralHold,
   LAMP_OFF_DEBOUNCE_S,
   blinker_pauses_lateral,
   lat_active_with_blinker_pause,
 )
+from openpilot.selfdrive.controls.lib.desire_helper import LANE_CHANGE_SPEED_MIN
 
 
 def _lat_kwargs(**overrides):
@@ -20,10 +23,12 @@ def _lat_kwargs(**overrides):
   return kwargs
 
 
-def _lat_active(hold, *, left=False, right=False, pressed=False, active=True, dt=None):
+def _lat_active(hold, *, left=False, right=False, pressed=False, active=True, dt=None,
+                alc_active=False, v_ego=0.0, stalk_state=0):
   return lat_active_with_blinker_pause(
     **_lat_kwargs(left_blinker=left, right_blinker=right, steering_pressed=pressed,
-                  active=active, hold=hold),
+                  active=active, hold=hold, alc_active=alc_active, v_ego=v_ego,
+                  stalk_state=stalk_state),
     dt=dt,
   )
 
@@ -152,3 +157,66 @@ def test_inactive_or_fault_still_blocks_lat():
   assert not lat_active_with_blinker_pause(**_lat_kwargs(steer_fault_temporary=True))
   assert not lat_active_with_blinker_pause(**_lat_kwargs(steer_fault_permanent=True))
   assert not lat_active_with_blinker_pause(**_lat_kwargs(standstill=True, steer_at_standstill=False))
+
+
+def test_alc_arm_speed_matches_desire_helper():
+  assert ALC_ARM_SPEED_MIN == LANE_CHANGE_SPEED_MIN
+
+
+def test_alc_active_flashing_lamps_do_not_pause_or_latch_turn():
+  hold = BlinkerLateralHold()
+  dt = 0.01
+  period = 0.66
+  on_s = 0.33
+  for i in range(int(3.0 / dt)):
+    left = ((i * dt) % period) < on_s
+    assert _lat_active(hold, left=left, alc_active=True, dt=dt)
+  assert not hold.turn_active
+  assert not hold.holding
+  assert hold.blocks_steer_disengage
+
+
+def test_highway_stalk_tap_does_not_pause_before_alc_arms():
+  hold = BlinkerLateralHold()
+  assert _lat_active(hold, left=True, v_ego=30.0, stalk_state=1)
+  assert not hold.turn_active
+  assert hold.blocks_steer_disengage
+
+
+def test_alc_keep_alive_after_stalk_idle_does_not_pause():
+  hold = BlinkerLateralHold()
+  assert _lat_active(hold, left=True, v_ego=30.0, stalk_state=1)
+  # Stalk springs back; OP keeps flashing.
+  assert _lat_active(hold, left=True, v_ego=30.0, stalk_state=0)
+  assert _lat_active(hold, v_ego=30.0, dt=0.4)
+  assert _lat_active(hold, left=True, v_ego=30.0)
+  assert not hold.turn_active
+  assert hold.blocks_steer_disengage
+
+
+def test_alc_leftover_flashes_do_not_become_driver_turn():
+  hold = BlinkerLateralHold()
+  assert _lat_active(hold, left=True, alc_active=True)
+  # ALC finished; lamps still finishing a flash. Must not latch a turn.
+  assert _lat_active(hold, left=True)
+  assert not hold.turn_active
+  assert _lat_active(hold, dt=0.4)
+  assert not hold.turn_active
+  assert _lat_active(hold, dt=LAMP_OFF_DEBOUNCE_S)
+  assert not hold.blocks_steer_disengage
+
+
+def test_driver_turn_without_alc_still_pauses():
+  hold = BlinkerLateralHold()
+  slow = 10 * CV.MPH_TO_MS
+  assert not _lat_active(hold, left=True, v_ego=slow, stalk_state=1)
+  assert hold.turn_active
+  assert not _lat_active(hold, v_ego=slow, dt=0.4)
+  assert hold.turn_active
+
+
+def test_alc_grab_does_not_pause_lat():
+  hold = BlinkerLateralHold()
+  assert _lat_active(hold, left=True, pressed=True, alc_active=True)
+  assert not hold.turn_active
+  assert hold.blocks_steer_disengage

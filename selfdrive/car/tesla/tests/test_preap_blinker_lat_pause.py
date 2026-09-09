@@ -218,3 +218,27 @@ def test_peek_uses_lamp_bits_not_stalk():
   assert left and right
   left, right = _peek_blinker_lamps({})
   assert not left and not right
+
+
+def test_tesla_fsm_alc_lamps_do_not_latch_turn_or_drop_cruise():
+  install_blinker_lat_pause()
+  eng = _engaged()
+  eng._nap_left_blinker = True
+  eng._nap_alc_active = True
+  eng.handle_steering_disengage(True)
+  assert eng.cruiseEnabled
+  assert eng.enableLongControl
+  assert not eng._nap_lat_hold.turn_active
+  assert eng._nap_lat_hold.blocks_steer_disengage
+
+
+def test_tesla_fsm_highway_stalk_tap_does_not_drop_cruise():
+  install_blinker_lat_pause()
+  eng = _engaged()
+  eng._nap_left_blinker = True
+  eng._nap_stalk_state = 1
+  eng._nap_v_ego = 30.0
+  eng.handle_steering_disengage(True)
+  assert eng.cruiseEnabled
+  assert eng.enableLongControl
+  assert not eng._nap_lat_hold.turn_active
