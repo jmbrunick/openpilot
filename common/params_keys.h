@@ -171,6 +171,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // DAS wiper/beam fields stay 0. No auto headlights.
     {"NAPWiperSpeed", {PERSISTENT, INT, "0"}},
     {"NAPHighLowBeam", {PERSISTENT, INT, "0"}},
+    // On-drive MUTCD speed-sign JSONL logger. Default off. Log-only: no sqlite,
+    // no vCruise / HUD MAX, no osm.org. Process: speedsignd.
+    {"NAPSpeedSignLog", {PERSISTENT, BOOL, "0"}},
     {"TermsVersion", {PERSISTENT, STRING}},
     {"TrainingVersion", {PERSISTENT, STRING}},
 };

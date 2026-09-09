@@ -23,9 +23,11 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   FLASH_EPAS_INSTRUCTIONS, PEDAL_CAN_BUS_VALUES,
   HIGH_LOW_BEAM_DESCRIPTION, HIGH_LOW_BEAM_LABELS, HIGH_LOW_BEAM_VALUES,
   MAP_SPEED_ACCEL_DEFAULT,
+  NAP_SPEED_SIGN_LOG,
   RADAR_OFFSET_MAX, RADAR_OFFSET_MIN,
   REFRESH_MAPS_INSTRUCTIONS,
   RESTORE_EPAS_INSTRUCTIONS,
+  SPEED_SIGN_LOG_DESCRIPTION,
   WIPER_SPEED_DESCRIPTION, WIPER_SPEED_LABELS, WIPER_SPEED_VALUES,
   acknowledgments_html, find_preset_index,
 )
@@ -251,6 +253,12 @@ class NAPLayout(Widget):
 
     # ── Section 6: Advanced ──
     self._main_items.append(section_header_item("Advanced"))
+
+    self._add_toggle(
+      NAP_SPEED_SIGN_LOG,
+      "Speed Sign Logger",
+      SPEED_SIGN_LOG_DESCRIPTION,
+    )
 
     # Force Pre-AP is always on for now — grayed out in the ON position
     self._params.put_bool(NAPParamKeys.FORCE_PRE_AP, True)
@@ -704,6 +712,7 @@ class NAPLayout(Widget):
     self._params.put("NAPMapSpeedLookahead", 2)
     self._params.put("NAPMapSpeedAccel", MAP_SPEED_ACCEL_DEFAULT)
     self._params.remove("NAPMapSpeedDbPath")
+    self._params.put_bool(NAP_SPEED_SIGN_LOG, False)
     self._page = "main"
     # Force Pre-AP is locked on in the panel but DEFAULTS keeps it off
     # for non-UI consumers. Re-apply the lock after the wholesale loop

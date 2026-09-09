@@ -83,3 +83,7 @@ Pre-AP `TurnIndLvr_Stat` is only IDLE / LEFT / RIGHT / SNA — no tip vs latch b
 ## OSM map speed (MAX)
 
 `selfdrive/mapd` looks up OpenStreetMap `maxspeed` from an offline sqlite and publishes `liveMapDataNAP`. In pre-AP **pedal** mode, `card.py` overlays that limit onto software cruise (`CS.vCruise` / HUD **MAX**): Cap never raises, Follow tracks the sign, engage seeds to the posted limit, and a Follow stalk set (above or below) holds until the posted limit changes. HUD current speed is wheel/ESP `vEgo` (not `vEgoCluster` / MAX). When ego is above MAX the planner commands Accel-5 comfort decel (`map_track_decel`); when ego is below MAX it commands Accel 1–10 climb (`map_track_accel`). `LongitudinalMpc.update(radarState, v_cruise)` still takes `min(lead, cruise)`. No-pedal stock CC is display-only. US maps are a GitHub Release download; Refresh maps overlays live OSM within 100 miles. Details: [map-speed.md](map-speed.md).
+
+## Speed sign logger (log-only)
+
+`selfdrive/speedsignd` is a separate on-road process (default **Off**, Settings → NAP → Speed Sign Logger). Stock `modelV2` has no speed-sign head, so this reads the ROAD camera + GNSS and appends JSONL under `/data/media/0/nap/speed_signs.jsonl`. It does not write the OSM sqlite, does not change `vCruise`, and does not query osm.org. Details: [speed-sign-log.md](speed-sign-log.md).
