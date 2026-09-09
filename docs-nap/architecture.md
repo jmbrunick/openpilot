@@ -33,7 +33,7 @@ Key rationale for each nonstandard setting is commented in the file header. In s
 - `check_relay=false` + `disable_static_blocking=true` on every TX: pre-AP has no harness relay
 - `ignore_checksum=true` + `ignore_counter=true` on RX: the pre-AP EPAS checksum algorithm is not fully verified across firmware versions; mismatched validation caused a silent 21-second steering dropout during testing
 
-All actual safety checks are active (steering angle/rate limits, hands-on disengage, EPAS error codes, door/gear, stalk echo-filtered cancel, AEB block).
+All actual safety checks are active (steering angle/rate limits, hands-on disengage except during a blinker-latched driver turn, EPAS error codes, door/gear, stalk echo-filtered cancel, AEB block). A tesla_preap.h change requires a panda flash after pull.
 
 ### Radar (optional)
 
