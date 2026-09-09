@@ -13,16 +13,24 @@ Justin’s parked capture (ignore counter/checksum):
 
 DBC HiBmLvr_Stat is a 2-bit enum, not a latched-on state:
   0 IDLE, 1 HIBM_ON_PSD (nibble 4), 2 HIBM_FLSH_ON_PSD (nibble 8), 3 SNA.
-There is no separate low-beam press. candump src 0 is the live stalk RX;
-src 128 is our TX echo (returned | 0x80) — not a panda 0↔2 relay. The body
-hears both on party bus 0. A pulse-then-SNA extra TX lost to repeating
-bus-0 IDLE. The real stalk continuously sends 00ff04 (HIBM_ON_PSD) while
-high beams are held — not a one-shot press.
+There is no separate low-beam press.
 
-While High is selected, keep sending 00ff04 (nibble 4 held) on the
-live-counter in-place replacement of 0x45 so the body keeps seeing
-high-beam pressed and bus-0 IDLE cannot last-win as a cancel. Off/Low
-return the real stalk. Do not pulse 4 then drop to SNA or rest.
+On-car after hold-4 (d40073a944): High stays on more, but the beams still
+twitch toward low. candump of 0x45 (ignore counter/checksum):
+  bus 128  00ff04....   our TX echo (returned | 0x80) — held 4 is working
+  bus 0    00ff00....   live stalk rest, interleaved with every 04
+
+Bus 128 is not a second physical bus and not a panda 0↔2 relay. Pre-AP
+has no harness relay; tesla_preap_fwd_hook already returns true for every
+address, so 0x45 is never bridged. The stalk ECU and the body share party
+bus 0. The 00ff00 on bus 0 is that ECU transmitting on the same wire the
+body already hears. Same-counter TX cannot drop another node’s frame.
+There is no legal forward/relay block left to apply: forwarding is already
+off, and the 3X cannot silence a neighbor on a shared CAN bus. Do not fake
+a second ID. Do not bypass panda safety.
+
+While High is selected, keep sending 00ff04 (nibble 4 held) on 0x45.
+Off/Low return the real stalk. Do not pulse 4 then drop to SNA or rest.
 
 Off leaves the driver’s real stalk nibble alone (do not force 0). Wiper
 On/Int holds high nibble 1. No rain model. No auto high-beam. Do not flash.
@@ -38,8 +46,8 @@ changes. Do not fake this through another ID.
 This test must work with the car on and openpilot not engaged. It is not
 gated on cruiseEnabled, latActive, or a stalk pull.
 
-Known risk: pre-AP may ignore a spoofed stalk, or checksum/relay may fault.
-This is a car test, not auto wipers or auto headlights.
+Known risk: the body still hears live stalk rest, so High may twitch toward
+low. This is a car test, not auto wipers or auto headlights.
 """
 
 # Params / UI. 0 is off (today's forwarded stalk). Indexes, not raw DBC.
@@ -62,6 +70,8 @@ STW_HIBM_MASK = 0x0C  # HiBmLvr_Stat bits 2-3 of the captured byte.
 STW_HIGH_BEAM = 0x04  # HIBM_ON_PSD — held while High is selected
 STW_HIGH_BEAM_FLASH = 0x08  # HIBM_FLSH_ON_PSD — never send
 STW_FORWARD_SLOT = 10
+# candump bus 128 = panda TX echo (returned | 0x80). Bus 0 is the live stalk.
+STW_TX_ECHO_BUS = 0x80
 
 _ORIG_CREATE_ACTION_REQUEST = None
 _ORIG_STOCK_CC_UPDATE = None
@@ -95,6 +105,17 @@ def wiper_test_requested(setting: int) -> bool:
 def high_beam_test_requested(setting: int) -> bool:
   """Only High spoofs. Low/Off leave the stalk — forcing 0 fights a held lever."""
   return int(setting) == BEAM_SETTING_HIGH
+
+
+def panda_can_drop_live_stw() -> bool:
+  """The 3X cannot drop the live stalk 0x45 on pre-AP.
+
+  tesla_preap_fwd_hook already blocks all 0↔2 forwarding. There is no harness
+  relay to sit between stalk and body. Bus 0 rest is the stalk ECU on the
+  shared party wire — not a panda-relayed copy — so a same-counter 00ff04
+  cannot silence it. Do not fake another ID. Do not bypass panda safety.
+  """
+  return False
 
 
 def hibm_nibble(dat: bytes) -> int:
@@ -135,8 +156,8 @@ def extra_stw_forward_needed(can_sends, frame: int, wiper_on: bool, high_beam_on
 
   Parked / not-engaged: stock-cc only TXes 0x45 on engage/cancel. Wiper
   On/Int extra-forwards on the 10 Hz slot so nibble 1 stays held. High
-  extra-forwards every 10 ms so held nibble 4 can last-win against
-  repeating bus-0 IDLE.
+  extra-forwards every 10 ms with held 00ff04. That TX cannot drop the
+  live stalk rest on bus 0 — the body already heard it on the shared wire.
   """
   if not stalk_test_active(wiper_on, high_beam_on):
     return False
