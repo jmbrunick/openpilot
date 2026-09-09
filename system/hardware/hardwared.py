@@ -23,6 +23,11 @@ from openpilot.system.statsd import statlog
 from openpilot.common.swaglog import cloudlog
 from openpilot.system.hardware.power_monitoring import PowerMonitoring
 from openpilot.system.hardware.fan_controller import FanController
+from openpilot.system.hardware.nap_force_offroad import (
+  PARAM as NAP_FORCE_OFFROAD_PARAM,
+  allows_onroad as nap_force_offroad_allows_onroad,
+  should_start_now,
+)
 from openpilot.system.version import terms_version, training_version
 
 ThermalStatus = log.DeviceState.ThermalStatus
@@ -158,6 +163,7 @@ def hardware_thread(end_event, hw_queue) -> None:
     "ignition": False,
     "not_onroad_cycle": True,
     "device_temp_good": True,
+    "not_force_offroad": True,
   }
   startup_conditions: dict[str, bool] = {}
   startup_conditions_prev: dict[str, bool] = {}
@@ -208,6 +214,10 @@ def hardware_thread(end_event, hw_queue) -> None:
       params.put_bool("OnroadCycleRequested", False, block=True)
       offroad_cycle_count = sm.frame
     onroad_conditions["not_onroad_cycle"] = (sm.frame - offroad_cycle_count) >= ONROAD_CYCLE_TIME * SERVICE_LIST['pandaStates'].frequency
+    # Read every loop so toggling Force Offroad trips ign_edge immediately
+    # (same pattern as OnroadCycleRequested). Do not use CLEAR_ON_OFFROAD
+    # on this param — going offroad is what the toggle does.
+    onroad_conditions["not_force_offroad"] = nap_force_offroad_allows_onroad(params.get_bool(NAP_FORCE_OFFROAD_PARAM))
 
     if sm.updated['pandaStates'] and len(pandaStates) > 0:
 
@@ -317,9 +327,7 @@ def hardware_thread(end_event, hw_queue) -> None:
     # comma's stock code enforces this here; forks are invited to differ.
 
     # Handle offroad/onroad transition
-    should_start = all(onroad_conditions.values())
-    if started_ts is None:
-      should_start = should_start and all(startup_conditions.values())
+    should_start = should_start_now(onroad_conditions, startup_conditions, started_ts is not None)
 
     if should_start != should_start_prev or (count == 0):
       params.put_bool("IsEngaged", False, block=True)
