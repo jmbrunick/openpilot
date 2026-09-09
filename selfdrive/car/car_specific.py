@@ -159,9 +159,10 @@ class CarSpecificEvents:
       events.add(EventName.accFaulted)
     if CS.steeringPressed:
       events.add(EventName.steerOverride)
-    # Wheel input during a blinker-lamp turn, and while the hand is still on
-    # the wheel after the lamp clears, must not USER_DISABLE cruise.
-    # Lateral is already released; a firm stalk cancel still fully disengages.
+    # Wheel input during a blinker-lamp turn (including flash gaps), and
+    # while the hand is still on the wheel after ~1s of dark, must not
+    # USER_DISABLE cruise. Lateral is already released; a firm stalk
+    # cancel still fully disengages.
     lat_paused = self.blinker_lat_hold.update(
       getattr(CS, 'leftBlinker', False), getattr(CS, 'rightBlinker', False),
       getattr(CS, 'steeringPressed', False),
