@@ -30,12 +30,12 @@ WIPER_SPEED_DESCRIPTION = (
   "Rewrite the wiper nibble on the forwarded stalk (0x45 STW_ACTN_RQ). "
   "Off leaves the driver's real stalk nibble alone. Int/On set the high "
   "nibble to 1 (wipers) and hold it — they do not spray. Auto holds that "
-  "same nibble 1 only while a rain/wiper-need signal is set, then releases "
-  "the real stalk when dry. Default Off — Auto is opt-in, not every drive. "
-  "DAS wiper fields stay 0 (they were ignored and caused a controls mismatch). "
-  "Car on is enough — do not engage NAP and do not pull the stalk. "
-  "Pre-AP may still see the real stalk rest on bus 0; holding nibble 1 is "
-  "what already works. No spray. No auto headlights."
+  "same nibble 1 while the 3X road camera sees a wet windshield, then "
+  "releases the real stalk when the glass looks dry. Default Off — Auto "
+  "is opt-in, not every drive. DAS wiper fields stay 0 (they were ignored "
+  "and caused a controls mismatch). Car on is enough — do not engage NAP "
+  "and do not pull the stalk. Pre-AP may still see the real stalk rest on "
+  "bus 0; holding nibble 1 is what already works. No spray. No auto headlights."
 )
 HIGH_LOW_BEAM_DESCRIPTION = (
   "Pre-AP Model S only, for on-car testing. Default Off. Low is the same as "
