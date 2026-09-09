@@ -16,8 +16,14 @@ the matching nibble. No rain model. No auto high-beam. Do not flash. Do not
 inject a second 0x45 — overlay the existing forwarded frame and recompute
 CRC the same way create_action_request already does.
 
-Panda already allows TX of 0x45 on bus 0 (stalk spoof whitelist). If that
-ever changes, do not fake this through another ID.
+Panda already allows TX of 0x45 on bus 0 (stalk spoof whitelist). The TX
+hook does not gate 0x45 on controls_allowed — stock-CC engage already
+sends this ID while disengaged. 0x3E9 DAS_bodyControls *is* gated; that
+is why this test must not use DAS. Do not bypass safety if that ever
+changes. Do not fake this through another ID.
+
+This test must work with the car on and openpilot not engaged. It is not
+gated on cruiseEnabled, latActive, or a stalk pull.
 
 Known risk: pre-AP may ignore a spoofed stalk, or checksum/relay may fault.
 This is a car test, not auto wipers or auto headlights.
@@ -90,9 +96,23 @@ def apply_stw_wiper_beam_nibbles(dat: bytes, wiper_on: bool, high_beam_on: bool)
   return bytes(out)
 
 
+def stalk_test_active(wiper_on: bool | None = None, high_beam_on: bool | None = None) -> bool:
+  """Settings only. Not gated on cruiseEnabled, latActive, or a stalk pull."""
+  if wiper_on is None:
+    wiper_on = requested_wiper_test()
+  if high_beam_on is None:
+    high_beam_on = requested_high_beam_test()
+  return bool(wiper_on or high_beam_on)
+
+
 def extra_stw_forward_needed(can_sends, frame: int, wiper_on: bool, high_beam_on: bool) -> bool:
-  """One 0x45 per stock-cc slot when the test is on. Never a second frame."""
-  if not (wiper_on or high_beam_on):
+  """One 0x45 per stock-cc slot when the test is on. Never a second frame.
+
+  This is the parked / not-engaged path: stock-cc only TXes 0x45 on
+  engage/cancel (a stalk pull). The test must still forward the live stalk
+  when On/High is selected so the nibble can be applied without engaging.
+  """
+  if not stalk_test_active(wiper_on, high_beam_on):
     return False
   if int(frame) % STW_FORWARD_SLOT != 0:
     return False
@@ -140,7 +160,11 @@ def create_action_request_with_overlay(self, button_to_press, bus, counter, msg_
 
 
 def stock_cc_update_with_overlay(self, CS, frame, tesla_can, can_bus_party):
-  """Keep the single 0x45 TX path. When the test is on, forward if idle this slot."""
+  """Keep the single 0x45 TX path. When the test is on, forward if idle this slot.
+
+  Does not read cruiseEnabled, latActive, or CC.enabled. A parked car with
+  NAP not engaged and the stalk at rest is enough.
+  """
   orig = _ORIG_STOCK_CC_UPDATE
   if orig is None:
     orig = _stock_cc().update
