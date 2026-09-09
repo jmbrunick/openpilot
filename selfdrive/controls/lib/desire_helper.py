@@ -63,6 +63,19 @@ class DesireHelper:
   def get_lane_change_direction(CS):
     return LaneChangeDirection.left if CS.leftBlinker else LaneChangeDirection.right
 
+  @staticmethod
+  def lane_change_keep_blinker(state, direction):
+    """Request the turn indicator while ALC is armed or in progress.
+
+    controlsd copies this onto CC.leftBlinker / rightBlinker so Pre-AP
+    DAS_bodyControls keeps flashing until laneChangeState returns to off.
+    Stalk returning to IDLE is not a cancel.
+    """
+    if state == LaneChangeState.off or direction == LaneChangeDirection.none:
+      return False, False
+    return (direction == LaneChangeDirection.left,
+            direction == LaneChangeDirection.right)
+
   def _reset(self):
     self.lane_change_state = LaneChangeState.off
     self.lane_change_direction = LaneChangeDirection.none
@@ -93,18 +106,33 @@ class DesireHelper:
     if not lateral_active or self.lane_change_timer > LANE_CHANGE_TIME_MAX:
       self._reset()
     else:
+      just_cancelled = False
       if self.lane_change_state != LaneChangeState.off:
         if opposite_direction_tap:
           self._reset()
+          just_cancelled = True
         elif same_direction_tap:
           self.queued_changes = min(self.queued_changes + 1, MAX_QUEUED_LANE_CHANGES)
 
-      # LaneChangeState.off: never arm ALC. A blinker lamp pauses lateral
-      # for a driver-steered turn. Hazards are not one_blinker, so they
-      # also never arm.
+      # LaneChangeState.off — tap-to-ALC. Rising edge of TurnIndLvr LEFT/RIGHT
+      # only arms (preLaneChange). Desire stays none; the car does not leave
+      # the lane until a wheel nudge (steeringPressed + torque in that
+      # direction) enters laneChangeStarting. Stalk returning to IDLE does
+      # not cancel. Below LANE_CHANGE_SPEED_MIN the blinker is a driver turn
+      # (lateral pause in controlsd). Hazards do not arm. Lamp edges without
+      # a lever tap do not arm (OP keep-alive flashes).
+      hazards = bool(carstate.leftBlinker) and bool(carstate.rightBlinker)
+      if (not just_cancelled and self.lane_change_state == LaneChangeState.off and
+          (left_tap or right_tap) and not below_lane_change_speed and not hazards):
+        self.lane_change_state = LaneChangeState.preLaneChange
+        self.lane_change_ll_prob = 1.0
+        self.lane_change_direction = LaneChangeDirection.left if left_tap else LaneChangeDirection.right
+        self.arm_timer = 0.0
+        self.queued_changes = 1
 
-      # LaneChangeState.preLaneChange
-      if self.lane_change_state == LaneChangeState.preLaneChange:
+      # LaneChangeState.preLaneChange — wait for a wheel nudge. Tap alone
+      # must not start the maneuver.
+      elif self.lane_change_state == LaneChangeState.preLaneChange:
         torque_applied = carstate.steeringPressed and \
                          ((carstate.steeringTorque > 0 and self.lane_change_direction == LaneChangeDirection.left) or
                           (carstate.steeringTorque < 0 and self.lane_change_direction == LaneChangeDirection.right))

@@ -323,6 +323,8 @@ def install_body_controls_test():
   """Wire NAP Wipers & Lights settings to the forwarded 0x45 stalk byte.
 
   Does not patch DAS_bodyControls — those wiper/beam fields stay 0.
+  DAS_turnIndicatorRequest stays on teslacan.create_body_controls_message,
+  driven by CC.leftBlinker / rightBlinker while ALC is armed or in progress.
   """
   global _installed, _ORIG_CREATE_ACTION_REQUEST, _ORIG_STOCK_CC_UPDATE
   register_nap_body_params()

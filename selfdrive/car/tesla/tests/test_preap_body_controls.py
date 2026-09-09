@@ -483,6 +483,25 @@ def test_das_body_controls_stays_zero_when_settings_on():
   assert dat[0] & 0x03 == 0         # DAS_headlightRequest
 
 
+def test_das_body_controls_still_requests_turn_indicator():
+  """ALC keep-alive uses DAS_turnIndicatorRequest. Do not zero it with wipers."""
+  from opendbc.can import CANPacker
+  from opendbc.car.tesla.preap.teslacan import TeslaCANPreAP
+  from opendbc.car.tesla.values import CANBUS
+
+  packer = CANPacker("tesla_preap")
+  tc = TeslaCANPreAP({CANBUS.party: packer, CANBUS.autopilot_party: packer})
+  _, none, _ = tc.create_body_controls_message(0, 0, CANBUS.party, 1)
+  _, left, _ = tc.create_body_controls_message(1, 0, CANBUS.party, 1)
+  _, right, _ = tc.create_body_controls_message(2, 0, CANBUS.party, 1)
+  assert left != none
+  assert right != none
+  assert left != right
+  for dat in (none, left, right):
+    assert (dat[0] >> 4) & 0x0F == 0  # DAS_wiperSpeed stays 0
+    assert (dat[1] >> 2) & 0x03 == 0  # DAS_highLowBeamDecision stays 0
+
+
 def test_create_action_request_overlay_holds_4_and_valid_crc(monkeypatch):
   from opendbc.can import CANPacker
   from opendbc.car.tesla.preap.teslacan import TeslaCANPreAP
