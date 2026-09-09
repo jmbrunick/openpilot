@@ -58,6 +58,7 @@ class UIState:
         "carControl",
         "liveParameters",
         "liveMapDataNAP",
+        "liveSpeedSignNAP",
         "testJoystick",
         "rawAudioData",
         "liveTracks",
@@ -93,6 +94,7 @@ class UIState:
     self.radar_monitor = BoschRadarMonitor()
     self.radar_status = BoschRadarStatus()
     self.radar_hud: bool = False
+    self.speed_sign_log: bool = False
 
     self._params_thread: threading.Thread | None = None
 
@@ -223,6 +225,10 @@ class UIState:
       self.radar_hud = self.params.get_bool("NAPRadarHud")
     except Exception:
       self.radar_hud = False
+    try:
+      self.speed_sign_log = self.params.get_bool("NAPSpeedSignLog")
+    except Exception:
+      self.speed_sign_log = False
 
   def _update_radar_monitor(self) -> None:
     can_messages = []

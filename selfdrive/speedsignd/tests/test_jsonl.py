@@ -148,6 +148,8 @@ def test_settings_and_docs_cover_enable_and_log_path():
   assert "NAPSpeedSignLog" in docs
   assert "speed_sign.onnx" in docs
   assert "install_speed_sign_weights" in docs
+  assert "liveSpeedSignNAP" in docs
+  assert "1.5" in docs
 
 
 def test_params_key_default_is_off():
