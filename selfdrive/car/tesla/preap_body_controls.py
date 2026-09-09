@@ -25,10 +25,12 @@ high-beam pressed and bus-0 IDLE cannot last-win as a cancel. Off/Low
 return the real stalk. Do not pulse 4 then drop to SNA or rest.
 
 Off leaves the driver’s real stalk nibble alone (do not force 0). Wiper
-On/Int holds high nibble 1. Auto holds that same nibble 1 while the 3X
-road camera sees a wet windshield (unwarped ROAD Y, near-glass droplets),
-then releases the real stalk when the glass looks dry. Default Off — Auto
-is opt-in. No spray. No auto high-beam. Do not flash.
+On/Int holds high nibble 1. Auto holds that same nibble 1 only when all
+of: setting is Auto, the vehicle is on, gear is Drive or Reverse, and
+the 3X road camera sees a rainy or icy/frosted windshield (unwarped
+ROAD Y). Park and Neutral never Auto-wipe, even with the car on. Release
+the real stalk when the glass looks clear or gear leaves Drive/Reverse.
+Default Off — Auto is opt-in. No spray. No auto high-beam. Do not flash.
 Do not inject a second 0x45 — overlay the existing forwarded frame and
 recompute CRC the same way create_action_request already does.
 
@@ -38,8 +40,8 @@ sends this ID while disengaged. 0x3E9 DAS_bodyControls *is* gated; that
 is why this must not use DAS. Do not bypass safety if that ever
 changes. Do not fake this through another ID.
 
-This must work with the car on and openpilot not engaged. It is not
-gated on cruiseEnabled, latActive, or a stalk pull.
+Auto is not gated on cruiseEnabled, latActive, or a stalk pull. Int/On
+do not use the camera or gear gate.
 
 Known risk: pre-AP may still see the real stalk rest on bus 0. Int already
 wins when held, so Auto uses that same hold, not a pulse.
@@ -71,6 +73,10 @@ _ORIG_CREATE_ACTION_REQUEST = None
 _ORIG_STOCK_CC_UPDATE = None
 _installed = False
 _rain_needed_override = None
+_live_cs = None
+_vehicle_on_override = None
+_gear_override = None
+_DRIVE_GEARS = ("drive", "reverse")
 
 
 def _tesla_can():
@@ -93,7 +99,11 @@ def register_nap_body_params():
 
 
 def wiper_test_requested(setting: int, rain_needed: bool = False) -> bool:
-  """Int and On hold nibble 1. Auto holds it only while the windshield looks wet."""
+  """Int and On hold nibble 1. Auto holds it only while the glass is not clear.
+
+  Gear / vehicle-on are applied in requested_wiper_test, not here, so packing
+  tests can still check the nibble without a CarState.
+  """
   s = int(setting)
   if s in (WIPER_SETTING_INTERMITTENT, WIPER_SETTING_ON):
     return True
@@ -145,7 +155,7 @@ def extra_stw_forward_needed(can_sends, frame: int, wiper_on: bool, high_beam_on
 
   Parked / not-engaged: stock-cc only TXes 0x45 on engage/cancel. Wiper
   On/Int extra-forwards on the 10 Hz slot so nibble 1 stays held. Auto
-  uses that same 10 Hz hold while the windshield looks wet. High
+  uses that same 10 Hz hold while the glass looks rainy or icy. High
   extra-forwards every 10 ms so held nibble 4 can last-win against
   repeating bus-0 IDLE.
   """
@@ -201,13 +211,54 @@ def _param_int(key: str, default: int = 0) -> int:
 
 
 def set_rain_wiper_needed(needed: bool | None) -> None:
-  """Tests inject the rain/wiper-need signal. None returns to the camera."""
+  """Tests inject the rain/ice/wiper-need signal. None returns to the camera."""
   global _rain_needed_override
   _rain_needed_override = None if needed is None else bool(needed)
 
 
+def update_live_car_state(cs) -> None:
+  """Stock-cc update publishes gear / vehicle-on for Auto."""
+  global _live_cs
+  _live_cs = cs
+
+
+def set_auto_gates(vehicle_on: bool | None = None, gear=None) -> None:
+  """Tests inject vehicle-on and gear. None leaves that field on live CS."""
+  global _vehicle_on_override, _gear_override
+  _vehicle_on_override = None if vehicle_on is None else bool(vehicle_on)
+  _gear_override = gear
+
+
+def reset_auto_gates() -> None:
+  global _live_cs, _vehicle_on_override, _gear_override
+  _live_cs = None
+  _vehicle_on_override = None
+  _gear_override = None
+
+
+def _gear_name(gear) -> str:
+  if gear is None:
+    return ""
+  return str(gear).rsplit(".", 1)[-1].lower()
+
+
+def vehicle_is_on() -> bool:
+  """Onroad CarState is only published while the vehicle is on."""
+  if _vehicle_on_override is not None:
+    return bool(_vehicle_on_override)
+  return _live_cs is not None
+
+
+def in_drive_gear() -> bool:
+  """Drive or Reverse. Park, Neutral, and unknown do not Auto-wipe."""
+  gear = _gear_override
+  if gear is None:
+    gear = getattr(_live_cs, "gearShifter", None) if _live_cs is not None else None
+  return _gear_name(gear) in _DRIVE_GEARS
+
+
 def rain_wiper_needed() -> bool:
-  """Wet-windshield latch for Auto. Default dry so Auto does not wipe every drive.
+  """Rainy or icy/frosted windshield latch. Default clear so Auto does not wipe every drive.
 
   Order: test override, then the 3X ROAD camera near-glass check.
   """
@@ -220,7 +271,7 @@ def rain_wiper_needed() -> bool:
 def requested_wiper_test() -> bool:
   setting = _param_int(NAP_WIPER_SPEED, WIPER_SETTING_OFF)
   if int(setting) == WIPER_SETTING_AUTO:
-    return rain_wiper_needed()
+    return vehicle_is_on() and in_drive_gear() and rain_wiper_needed()
   return wiper_test_requested(setting)
 
 
@@ -242,14 +293,15 @@ def create_action_request_with_overlay(self, button_to_press, bus, counter, msg_
 def stock_cc_update_with_overlay(self, CS, frame, tesla_can, can_bus_party):
   """Keep the single 0x45 TX path. When the test is on, forward if idle this slot.
 
-  Does not read cruiseEnabled, latActive, or CC.enabled. A parked car with
-  NAP not engaged and the stalk at rest is enough. High extra-forwards
+  Does not read cruiseEnabled, latActive, or CC.enabled. High extra-forwards
   every 10 ms with held nibble 4 on the live-counter frame; wipers keep
-  forwarding on the 10 Hz slot.
+  forwarding on the 10 Hz slot. Auto reads gear from this CS: Park/Neutral
+  release the stalk even if the glass still looks wet.
   """
   orig = _ORIG_STOCK_CC_UPDATE
   if orig is None:
     orig = _stock_cc().update
+  update_live_car_state(CS)
   wiper = requested_wiper_test()
   high_setting = requested_high_beam_test()
   can_sends = orig(self, CS, frame, tesla_can, can_bus_party)
