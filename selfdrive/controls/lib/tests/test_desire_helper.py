@@ -1,13 +1,15 @@
 from cereal import log
 from openpilot.common.constants import CV
-from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.controls.lib.desire_helper import (
   DesireHelper,
+  DT_MDL,
   LANE_CHANGE_ARM_TIME,
+  LANE_CHANGE_SPEED_MIN,
   MAX_QUEUED_LANE_CHANGES,
   LaneChangeDirection,
   LaneChangeState,
 )
+from openpilot.selfdrive.controls.lib.stalk_tip_turn import STALK_TIP_HOLD_S
 
 
 class FakeCarState:
@@ -29,10 +31,20 @@ def _tick(dh, cs, n=1, lane_change_prob=0.0):
     dh.update(cs, lateral_active=True, lane_change_prob=lane_change_prob)
 
 
-def _arm_left(dh):
-  dh.update(FakeCarState(), True, 0.0)
-  dh.update(FakeCarState(left=True, lever=1), True, 0.0)
-  dh.update(FakeCarState(left=True), True, 0.0)
+def _arm_left(dh, v_ego=30.0):
+  dh.update(FakeCarState(v_ego=v_ego), True, 0.0)
+  dh.update(FakeCarState(v_ego=v_ego, left=True, lever=1), True, 0.0)
+  dh.update(FakeCarState(v_ego=v_ego, left=True, lever=0), True, 0.0)
+
+
+def _hold_lever(dh, lever, v_ego=30.0, t=None):
+  if t is None:
+    t = STALK_TIP_HOLD_S
+  lamp_left = lever == 1
+  lamp_right = lever == 2
+  for _ in range(int(round(t / DT_MDL)) + 1):
+    dh.update(FakeCarState(v_ego=v_ego, left=lamp_left, right=lamp_right, lever=lever),
+              True, 0.0)
 
 
 def _lever_tap(dh, lever, lamp_left=True, hold_ticks=3):
@@ -99,6 +111,7 @@ def test_tap_arms_without_lamp_on_yet():
   dh = DesireHelper()
   dh.update(FakeCarState(), True, 0.0)
   dh.update(FakeCarState(lever=1), True, 0.0)
+  dh.update(FakeCarState(lever=0), True, 0.0)
 
   assert dh.lane_change_state == LaneChangeState.preLaneChange
   assert dh.lane_change_direction == LaneChangeDirection.left
@@ -163,13 +176,66 @@ def test_latch_survives_blinker_lamp_off():
   assert dh.lane_change_state == LaneChangeState.preLaneChange
 
 
-def test_below_speed_does_not_arm():
+def test_tip_then_idle_arms_at_low_speed():
+  dh = DesireHelper()
+  slow = 10 * CV.MPH_TO_MS
+  _arm_left(dh, v_ego=slow)
+
+  assert dh.lane_change_state == LaneChangeState.preLaneChange
+  assert dh.lane_change_direction == LaneChangeDirection.left
+  assert dh.desire == log.Desire.none
+
+
+def test_tip_then_idle_arms_at_highway_speed():
+  dh = DesireHelper()
+  _arm_left(dh, v_ego=30.0)
+
+  assert dh.lane_change_state == LaneChangeState.preLaneChange
+  assert dh.lane_change_direction == LaneChangeDirection.left
+
+
+def test_held_lever_does_not_arm_at_highway_speed():
+  dh = DesireHelper()
+  dh.update(FakeCarState(v_ego=30.0), True, 0.0)
+  _hold_lever(dh, 1, v_ego=30.0)
+
+  assert dh.lane_change_state == LaneChangeState.off
+  assert dh.lane_change_direction == LaneChangeDirection.none
+  assert dh._tip_turn.is_turn
+
+
+def test_held_lever_does_not_arm_at_low_speed():
   dh = DesireHelper()
   slow = 10 * CV.MPH_TO_MS
   dh.update(FakeCarState(v_ego=slow), True, 0.0)
-  dh.update(FakeCarState(v_ego=slow, left=True, lever=1), True, 0.0)
+  _hold_lever(dh, 2, v_ego=slow)
 
   assert dh.lane_change_state == LaneChangeState.off
+  assert dh._tip_turn.is_turn
+
+
+def test_nudge_below_speed_does_not_start_lane_change():
+  """20 mph still gates starting the maneuver, not tip-vs-turn."""
+  dh = DesireHelper()
+  slow = 10 * CV.MPH_TO_MS
+  _arm_left(dh, v_ego=slow)
+  dh.update(FakeCarState(v_ego=slow, left=True, steering_pressed=True, steering_torque=1.0),
+            True, 0.0)
+
+  assert dh.lane_change_state == LaneChangeState.preLaneChange
+  assert dh.desire == log.Desire.none
+  assert slow < LANE_CHANGE_SPEED_MIN
+
+
+def test_nudge_after_reaching_speed_starts():
+  dh = DesireHelper()
+  slow = 10 * CV.MPH_TO_MS
+  _arm_left(dh, v_ego=slow)
+  dh.update(FakeCarState(v_ego=30.0, left=True, steering_pressed=True, steering_torque=1.0),
+            True, 0.0)
+
+  assert dh.lane_change_state == LaneChangeState.laneChangeStarting
+  assert dh.desire == log.Desire.laneChangeLeft
 
 
 def test_arming_times_out_without_nudge():
@@ -202,6 +268,14 @@ def test_opposite_lever_tap_cancels_while_arming():
   assert dh.queued_changes == 0
 
 
+def test_opposite_lever_tap_cancels_at_low_speed():
+  dh = DesireHelper()
+  slow = 10 * CV.MPH_TO_MS
+  _arm_left(dh, v_ego=slow)
+  dh.update(FakeCarState(v_ego=slow, left=True, lever=2), True, 0.0)
+  assert dh.lane_change_state == LaneChangeState.off
+
+
 def test_opposite_lever_tap_cancels_while_starting():
   dh = DesireHelper()
   _arm_left(dh)
@@ -226,16 +300,18 @@ def test_opposite_tap_does_not_rearm_new_direction():
   dh = DesireHelper()
   _arm_left(dh)
   dh.update(FakeCarState(left=True, right=False, lever=2), True, 0.0)
+  dh.update(FakeCarState(right=True, lever=0), True, 0.0)
 
   assert dh.lane_change_state == LaneChangeState.off
 
 
-def test_held_lever_counts_once():
+def test_held_lever_after_arm_cancels_as_turn():
   dh = DesireHelper()
   _arm_left(dh)
-  _tick(dh, FakeCarState(left=True, lever=1), n=40)
+  _hold_lever(dh, 1, v_ego=30.0)
 
-  assert dh.queued_changes == 2
+  assert dh.lane_change_state == LaneChangeState.off
+  assert dh.queued_changes == 0
 
 
 def test_same_direction_tap_during_maneuver_queues_change():

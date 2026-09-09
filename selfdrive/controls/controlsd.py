@@ -96,8 +96,9 @@ class Controls:
     # Check which actuators can be enabled
     standstill = abs(CS.vEgo) <= max(self.CP.minSteerSpeed, 0.3) or CS.standstill
     # Driver-turn lamps pause lat (latched through flash gaps). ALC keep-alive
-    # flashes must not: gate pause while laneChangeState != off, and on the
-    # highway stalk tap that arms ALC so latActive stays up for DesireHelper.
+    # flashes must not: gate pause while laneChangeState != off, and on a
+    # stalk tip (LEFT/RIGHT then IDLE within 0.40s) so latActive stays up
+    # for DesireHelper. A held stalk past that window is a turn at any speed.
     alc_active = model_v2.meta.laneChangeState != LaneChangeState.off
     CC.latActive = lat_active_with_blinker_pause(
       active=self.sm['selfdriveState'].active,
