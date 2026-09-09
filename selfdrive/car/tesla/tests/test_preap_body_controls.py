@@ -3,14 +3,12 @@ from openpilot.selfdrive.car.tesla.preap_body_controls import (
   BEAM_SETTING_HIGH,
   BEAM_SETTING_LOW,
   BEAM_SETTING_OFF,
-  HIGH_BEAM_PULSE_SLOTS,
   NAP_HIGH_LOW_BEAM,
   NAP_WIPER_SPEED,
   STW_ACTN_RQ_ADDR,
   STW_HIBM_MASK,
   STW_HIGH_BEAM,
   STW_HIGH_BEAM_FLASH,
-  STW_HIGH_BEAM_SNA,
   STW_TURN_MASK,
   STW_WASHER_SPRAY,
   STW_WIPER_BEAM_BYTE,
@@ -20,15 +18,12 @@ from openpilot.selfdrive.car.tesla.preap_body_controls import (
   WIPER_SETTING_ON,
   apply_stw_wiper_beam_nibbles,
   extra_stw_forward_needed,
-  high_beam_blocks_rest_low,
-  high_beam_oneshot_step,
   high_beam_test_requested,
   hibm_nibble,
   live_stw_counter,
   overlay_stw_wiper_beam,
   register_nap_body_params,
   replace_relayed_stw,
-  reset_high_beam_oneshot,
   send_replaced_live_stw,
   stalk_test_active,
   wiper_test_requested,
@@ -96,103 +91,56 @@ def test_overlay_resigns_crc_only_when_changed():
   assert _byte(out) == STW_WIPER_ON
   assert out[:7] != rest[:7]
   assert out[7] == (sum(out[:7]) & 0xFF)
-  blocked = overlay_stw_wiper_beam(rest, False, False, crc_fn=lambda payload: sum(payload) & 0xFF,
-                                  block_rest_low=True)
-  assert hibm_nibble(blocked) == STW_HIGH_BEAM_SNA
-  assert (hibm_nibble(blocked) & STW_HIBM_MASK) == STW_HIGH_BEAM_SNA
-  assert blocked[7] == (sum(blocked[:7]) & 0xFF)
+  held = overlay_stw_wiper_beam(rest, False, True, crc_fn=lambda payload: sum(payload) & 0xFF)
+  assert hibm_nibble(held) == STW_HIGH_BEAM
+  assert held[7] == (sum(held[:7]) & 0xFF)
 
 
-def test_high_beam_is_oneshot_wiper_is_continuous():
-  overlay, prev, rem = high_beam_oneshot_step(True, False, 0)
-  assert overlay is True
-  assert high_beam_blocks_rest_low(True, overlay) is False
-  for _ in range(HIGH_BEAM_PULSE_SLOTS - 1):
-    overlay, prev, rem = high_beam_oneshot_step(True, prev, rem)
-    assert overlay is True
-    assert high_beam_blocks_rest_low(True, overlay) is False
-  overlay, prev, rem = high_beam_oneshot_step(True, prev, rem)
-  assert overlay is False
-  assert prev is True
-  assert rem == 0
-  # Holding High does not retrigger. Rest/low nibble stays blocked.
-  overlay, prev, rem = high_beam_oneshot_step(True, prev, rem)
-  assert overlay is False
-  assert high_beam_blocks_rest_low(True, overlay) is True
-  # Leave High and come back — next trigger. Off/Low stop the block.
-  overlay, prev, rem = high_beam_oneshot_step(False, prev, rem)
-  assert overlay is False
-  assert high_beam_blocks_rest_low(False, overlay) is False
-  overlay, prev, rem = high_beam_oneshot_step(True, prev, rem)
-  assert overlay is True
-  assert high_beam_blocks_rest_low(True, overlay) is False
-
-
-def test_high_pulse_then_blocked_rest_low_repeat():
-  """Nibble 4 once, then rest/IDLE must not go out while High stays selected."""
+def test_high_keeps_sending_captured_00ff04_not_sna_or_rest():
+  """Real stalk holds 00ff04. High must keep sending that, not a one-shot press."""
   rest = _rest()
-  assert hibm_nibble(rest) == 0
-  pulse, prev, rem = high_beam_oneshot_step(True, False, 0)
-  pulsed = apply_stw_wiper_beam_nibbles(rest, False, pulse,
-                                       block_rest_low=high_beam_blocks_rest_low(True, pulse))
-  assert hibm_nibble(pulsed) == STW_HIGH_BEAM
-  for _ in range(HIGH_BEAM_PULSE_SLOTS - 1):
-    pulse, prev, rem = high_beam_oneshot_step(True, prev, rem)
-    pulsed = apply_stw_wiper_beam_nibbles(rest, False, pulse,
-                                         block_rest_low=high_beam_blocks_rest_low(True, pulse))
-    assert hibm_nibble(pulsed) == STW_HIGH_BEAM
-  pulse, prev, rem = high_beam_oneshot_step(True, prev, rem)
-  blocked = apply_stw_wiper_beam_nibbles(rest, False, pulse,
-                                        block_rest_low=high_beam_blocks_rest_low(True, pulse))
-  assert pulse is False
-  assert hibm_nibble(blocked) == STW_HIGH_BEAM_SNA
-  assert hibm_nibble(blocked) != 0
-  assert hibm_nibble(blocked) != STW_HIGH_BEAM
-  assert hibm_nibble(blocked) != STW_HIGH_BEAM_FLASH
-  # Repeating rest while High stays selected stays blocked — not a second tap.
-  pulse, prev, rem = high_beam_oneshot_step(True, prev, rem)
-  again = apply_stw_wiper_beam_nibbles(rest, False, pulse,
-                                      block_rest_low=high_beam_blocks_rest_low(True, pulse))
-  assert hibm_nibble(again) == STW_HIGH_BEAM_SNA
-  # Off/Low return the real stalk (rest/IDLE).
-  pulse, prev, rem = high_beam_oneshot_step(False, prev, rem)
-  off = apply_stw_wiper_beam_nibbles(rest, False, pulse,
-                                    block_rest_low=high_beam_blocks_rest_low(False, pulse))
+  captured_high = bytes.fromhex("00ff04")
+  assert rest[:3] == bytes.fromhex("00ff00")
+  for _ in range(50):
+    held = apply_stw_wiper_beam_nibbles(rest, False, True)
+    assert held[:3] == captured_high
+    assert hibm_nibble(held) == STW_HIGH_BEAM
+    assert hibm_nibble(held) != 0
+    assert hibm_nibble(held) != STW_HIGH_BEAM_FLASH
+    assert (hibm_nibble(held) & STW_HIBM_MASK) != STW_HIBM_MASK  # not SNA
+  off = apply_stw_wiper_beam_nibbles(rest, False, False)
   assert off == rest
-  assert hibm_nibble(off) == 0
+  assert off[:3] == bytes.fromhex("00ff00")
 
 
-def test_block_rest_low_does_not_fight_held_lever_or_flash():
-  held_high = bytes.fromhex("00ff040000000000")
-  flash = bytes.fromhex("00ff080000000000")
-  assert apply_stw_wiper_beam_nibbles(held_high, False, False, block_rest_low=True) == held_high
-  assert apply_stw_wiper_beam_nibbles(flash, False, False, block_rest_low=True) == flash
-  # Pulse wins over the rest-low block.
+def test_off_low_then_high_holds_4_again():
   rest = _rest()
-  assert hibm_nibble(apply_stw_wiper_beam_nibbles(rest, False, True, block_rest_low=True)) == STW_HIGH_BEAM
+  assert apply_stw_wiper_beam_nibbles(rest, False, False) == rest
+  assert apply_stw_wiper_beam_nibbles(rest, False, high_beam_test_requested(BEAM_SETTING_LOW)) == rest
+  held = apply_stw_wiper_beam_nibbles(rest, False, high_beam_test_requested(BEAM_SETTING_HIGH))
+  assert hibm_nibble(held) == STW_HIGH_BEAM
 
 
 def test_high_overlay_preserves_turn_indicator_bits():
   blinker = bytes.fromhex("00ff010000000000")
-  pulsed = apply_stw_wiper_beam_nibbles(blinker, False, True)
-  assert _byte(pulsed) & STW_TURN_MASK == 0x01
-  assert hibm_nibble(pulsed) == STW_HIGH_BEAM
-  blocked = apply_stw_wiper_beam_nibbles(blinker, False, False, block_rest_low=True)
-  assert _byte(blocked) & STW_TURN_MASK == 0x01
-  assert hibm_nibble(blocked) == STW_HIGH_BEAM_SNA
+  held = apply_stw_wiper_beam_nibbles(blinker, False, True)
+  assert _byte(held) & STW_TURN_MASK == 0x01
+  assert hibm_nibble(held) == STW_HIGH_BEAM
+  off = apply_stw_wiper_beam_nibbles(blinker, False, False)
+  assert off == blinker
 
 
-def test_wiper_overlay_stays_continuous_while_high_is_oneshot():
+def test_wiper_overlay_stays_held_with_high_nibble_4():
   rest = _rest()
   held = apply_stw_wiper_beam_nibbles(rest, True, False)
   assert _byte(held) == STW_WIPER_ON
   assert apply_stw_wiper_beam_nibbles(rest, True, False) == held
-  pulsed = apply_stw_wiper_beam_nibbles(held, True, True)
-  assert _byte(pulsed) == (STW_WIPER_ON | STW_HIGH_BEAM)
-  after = apply_stw_wiper_beam_nibbles(held, True, False, block_rest_low=True)
-  assert _byte(after) == (STW_WIPER_ON | STW_HIGH_BEAM_SNA)
-  assert _byte(after) & 0xF0 == STW_WIPER_ON
-  assert hibm_nibble(after) != 0
+  both = apply_stw_wiper_beam_nibbles(held, True, True)
+  assert _byte(both) == (STW_WIPER_ON | STW_HIGH_BEAM)
+  assert _byte(both) & 0xF0 == STW_WIPER_ON
+  assert hibm_nibble(both) == STW_HIGH_BEAM
+  still = apply_stw_wiper_beam_nibbles(held, True, True)
+  assert still == both
 
 
 def test_stalk_test_active_is_settings_only():
@@ -208,21 +156,26 @@ def test_extra_forward_only_when_on_and_no_existing_0x45():
   assert extra_stw_forward_needed(existing, 10, True, False) is False
   assert extra_stw_forward_needed([], 10, True, False) is True
   assert extra_stw_forward_needed([], 20, False, True) is True
-  # Rest-block must TX between 10 Hz slots so bus-0 IDLE cannot sit unopposed.
-  assert extra_stw_forward_needed([], 11, False, True, block_rest_low=True) is True
-  assert extra_stw_forward_needed([], 11, False, True, block_rest_low=False) is False
+  # Held High must TX between 10 Hz slots so bus-0 IDLE cannot sit unopposed.
+  assert extra_stw_forward_needed([], 11, False, True) is True
+  assert extra_stw_forward_needed([], 11, True, False) is False
+  assert extra_stw_forward_needed(existing, 11, False, True) is False
 
 
-def test_settings_copy_describes_pulse_then_blocked_rest():
+def test_settings_copy_describes_held_4_same_counter_replace():
   from openpilot.selfdrive.ui.layouts.settings.nap_content import HIGH_LOW_BEAM_DESCRIPTION
   text = HIGH_LOW_BEAM_DESCRIPTION.lower()
   assert "nibble 4" in text
-  assert "replaced" in text
-  assert "rest/idle" in text
+  assert "hold" in text
+  assert "same counter" in text
+  assert "rest" in text or "idle" in text
   assert "second 0x45" in text
   assert "off/low" in text
-  assert "does not hold 4" in text
-  assert "does not flash" in text
+  assert "not a one-shot tap" in text
+  assert "00ff04" in text
+  assert "flash" in text
+  assert "pulse" not in text
+  assert "sna" not in text
 
 
 def test_register_defaults_stay_off():
@@ -248,7 +201,7 @@ def test_das_body_controls_stays_zero_when_settings_on():
   assert dat[0] & 0x03 == 0         # DAS_headlightRequest
 
 
-def test_create_action_request_overlay_and_valid_crc(monkeypatch):
+def test_create_action_request_overlay_holds_4_and_valid_crc(monkeypatch):
   from opendbc.can import CANPacker
   from opendbc.car.tesla.preap.teslacan import TeslaCANPreAP
   from opendbc.car.tesla.values import CANBUS, CruiseButtons
@@ -267,12 +220,9 @@ def test_create_action_request_overlay_and_valid_crc(monkeypatch):
     "HiBmLvr_Stat": 0,
   }
   stock = tc.create_action_request(CruiseButtons.IDLE, CANBUS.party, 6, msg_stw)
-  reset_high_beam_oneshot()
   monkeypatch.setattr(body, "requested_wiper_test", lambda: True)
   monkeypatch.setattr(body, "requested_high_beam_test", lambda: True)
   monkeypatch.setattr(body, "_ORIG_CREATE_ACTION_REQUEST", TeslaCANPreAP.create_action_request)
-  body._slot_high_overlay = body.get_high_beam_oneshot().consume(True)
-  body._slot_block_rest_low = body.high_beam_blocks_rest_low(True, body._slot_high_overlay)
   addr, dat, bus = body.create_action_request_with_overlay(
     tc, CruiseButtons.IDLE, CANBUS.party, 6, msg_stw)
   assert addr == STW_ACTN_RQ_ADDR == stock[0]
@@ -283,26 +233,15 @@ def test_create_action_request_overlay_and_valid_crc(monkeypatch):
   assert dat[3:7] == stock[1][3:7]
   assert dat[7] == tc.stw_crc(dat[:7])
   assert _byte(dat) != STW_WASHER_SPRAY
-  # Pulse then block rest/low: wiper stays held, high nibble is not retriggered
-  # and rest/IDLE does not go out.
-  for _ in range(HIGH_BEAM_PULSE_SLOTS - 1):
-    body._slot_high_overlay = body.get_high_beam_oneshot().consume(True)
-    body._slot_block_rest_low = body.high_beam_blocks_rest_low(True, body._slot_high_overlay)
-    _, pulsed, _ = body.create_action_request_with_overlay(
+  # Holding High keeps nibble 4. Rest/IDLE and SNA are not what goes out.
+  for _ in range(8):
+    _, held, _ = body.create_action_request_with_overlay(
       tc, CruiseButtons.IDLE, CANBUS.party, 6, msg_stw)
-    assert hibm_nibble(pulsed) == STW_HIGH_BEAM
-  body._slot_high_overlay = body.get_high_beam_oneshot().consume(True)
-  body._slot_block_rest_low = body.high_beam_blocks_rest_low(True, body._slot_high_overlay)
-  _, after, _ = body.create_action_request_with_overlay(
-    tc, CruiseButtons.IDLE, CANBUS.party, 6, msg_stw)
-  assert _byte(after) == (STW_WIPER_ON | STW_HIGH_BEAM_SNA)
-  assert hibm_nibble(after) != 0
-  body._slot_high_overlay = body.get_high_beam_oneshot().consume(True)
-  body._slot_block_rest_low = body.high_beam_blocks_rest_low(True, body._slot_high_overlay)
-  _, held, _ = body.create_action_request_with_overlay(
-    tc, CruiseButtons.IDLE, CANBUS.party, 6, msg_stw)
-  assert _byte(held) == (STW_WIPER_ON | STW_HIGH_BEAM_SNA)
-  assert held[7] == tc.stw_crc(held[:7])
+    assert _byte(held) == (STW_WIPER_ON | STW_HIGH_BEAM)
+    assert hibm_nibble(held) == STW_HIGH_BEAM
+    assert hibm_nibble(held) != 0
+    assert (hibm_nibble(held) & STW_HIBM_MASK) != STW_HIBM_MASK
+    assert held[7] == tc.stw_crc(held[:7])
 
 
 class _FakeSpoofer:
@@ -322,7 +261,6 @@ def test_stock_cc_overlay_forwards_once_and_never_a_second_0x45(monkeypatch):
 
   fake = _FakeSpoofer()
   cs = SimpleNamespace(msg_stw_actn_req={"SpdCtrlLvr_Stat": 0})
-  reset_high_beam_oneshot()
   monkeypatch.setattr(body, "requested_wiper_test", lambda: True)
   monkeypatch.setattr(body, "requested_high_beam_test", lambda: False)
   monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: [])
@@ -353,7 +291,6 @@ def test_disengaged_idle_stalk_still_forwards_when_on(monkeypatch):
     latActive=False,
     msg_stw_actn_req={"SpdCtrlLvr_Stat": 0},  # IDLE — no stalk pull
   )
-  reset_high_beam_oneshot()
   monkeypatch.setattr(body, "requested_wiper_test", lambda: True)
   monkeypatch.setattr(body, "requested_high_beam_test", lambda: True)
   monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: [])
@@ -363,73 +300,69 @@ def test_disengaged_idle_stalk_still_forwards_when_on(monkeypatch):
   assert fake.sent[0][0] == 0  # forwarded idle lever, not a cruise press
 
 
-def test_high_only_forwards_after_pulse_and_blocks_rest(monkeypatch):
-  """Holding High keeps TXing 0x45 so rest/IDLE cannot cancel the latch."""
+def test_high_holds_4_and_extra_forwards_until_off(monkeypatch):
+  """Holding High keeps TXing 0x45 with nibble 4 so rest/IDLE cannot cancel."""
   from types import SimpleNamespace
 
   from openpilot.selfdrive.car.tesla import preap_body_controls as body
 
   fake = _FakeSpoofer()
-  cs = SimpleNamespace(msg_stw_actn_req={"SpdCtrlLvr_Stat": 0})
-  reset_high_beam_oneshot()
+  cs = SimpleNamespace(msg_stw_actn_req={"SpdCtrlLvr_Stat": 0, "MC_STW_ACTN_RQ": 9})
   monkeypatch.setattr(body, "requested_wiper_test", lambda: False)
   monkeypatch.setattr(body, "requested_high_beam_test", lambda: True)
   monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: [])
 
   forwarded = 0
-  pulsed = 0
-  blocked = 0
-  for slot in range(1, 6):
+  for slot in range(1, 8):
     fake.sent.clear()
     out = body.stock_cc_update_with_overlay(fake, cs, slot * 10, None, 0)
-    if out:
-      forwarded += 1
-      assert out[0][0] == STW_ACTN_RQ_ADDR
-    if body._slot_high_overlay:
-      pulsed += 1
-      assert body._slot_block_rest_low is False
-    elif body._slot_block_rest_low:
-      blocked += 1
-  assert forwarded == 5
-  assert pulsed == HIGH_BEAM_PULSE_SLOTS
-  assert blocked == 5 - HIGH_BEAM_PULSE_SLOTS
-  assert extra_stw_forward_needed([], 60, False, True) is True
+    assert len(out) == 1
+    assert out[0][0] == STW_ACTN_RQ_ADDR
+    forwarded += 1
+  assert forwarded == 7
+  # Between 10 Hz slots too — bus-0 IDLE cannot sit unopposed.
+  fake.sent.clear()
+  out = body.stock_cc_update_with_overlay(fake, cs, 11, None, 0)
+  assert len(out) == 1
+  assert extra_stw_forward_needed([], 11, False, True) is True
 
-  # Leave High — block stops, extra-forward stops, real stalk returns.
+  # Leave High — extra-forward stops, real stalk returns.
   monkeypatch.setattr(body, "requested_high_beam_test", lambda: False)
   fake.sent.clear()
   out = body.stock_cc_update_with_overlay(fake, cs, 70, None, 0)
   assert out == []
-  assert body._slot_block_rest_low is False
   assert extra_stw_forward_needed([], 70, False, False) is False
-  # Come back — one more pulse, not a hold.
+  # Come back — hold 4 again, not a one-shot tap.
   monkeypatch.setattr(body, "requested_high_beam_test", lambda: True)
   fake.sent.clear()
   out = body.stock_cc_update_with_overlay(fake, cs, 80, None, 0)
   assert len(out) == 1
-  assert body._slot_high_overlay is True
-  assert body._slot_block_rest_low is False
+  fake.sent.clear()
+  out = body.stock_cc_update_with_overlay(fake, cs, 81, None, 0)
+  assert len(out) == 1
 
 
-def test_relayed_bus0_rest_is_replaced_not_only_tx_overlay():
+def test_relayed_bus0_rest_is_replaced_with_held_4():
   """candump bus 0 00ff00 is the live stalk. Replace that payload in place."""
-  # Justin's capture, counter in the live frame (not ignored here).
   rest = bytes.fromhex("00ff000000090e80")
   assert hibm_nibble(rest) == 0
-  patched = replace_relayed_stw(rest, False, False, block_rest_low=True,
-                                crc_fn=lambda payload: 0xAA)
-  assert hibm_nibble(patched) == STW_HIGH_BEAM_SNA
+  patched = replace_relayed_stw(rest, False, True, crc_fn=lambda payload: 0xAA)
+  assert patched[:3] == bytes.fromhex("00ff04")
+  assert hibm_nibble(patched) == STW_HIGH_BEAM
   assert hibm_nibble(patched) != 0
-  assert hibm_nibble(patched) != STW_HIGH_BEAM
   assert hibm_nibble(patched) != STW_HIGH_BEAM_FLASH
+  assert (hibm_nibble(patched) & STW_HIBM_MASK) != STW_HIBM_MASK
   # Same live frame — counter and neighboring bytes stay. Only HiBm + CRC.
   assert patched[:2] == rest[:2]
   assert patched[3:7] == rest[3:7]
   assert patched[7] == 0xAA
-  # Pulse still writes 4 on that same relayed frame.
-  pulsed = replace_relayed_stw(rest, False, True, block_rest_low=False)
-  assert hibm_nibble(pulsed) == STW_HIGH_BEAM
-  assert pulsed[3:7] == rest[3:7]
+  # Off does not rewrite rest/IDLE.
+  assert replace_relayed_stw(rest, False, False) == rest
+  # Holding High keeps replacing with 4, not rest.
+  for _ in range(8):
+    again = replace_relayed_stw(rest, False, True)
+    assert hibm_nibble(again) == STW_HIGH_BEAM
+    assert again[:3] != rest[:3]
 
 
 def test_live_stw_counter_is_not_plus_one():
@@ -456,8 +389,8 @@ def test_send_replaced_live_stw_uses_live_counter_not_plus_one():
   assert rec.counter == 9  # live MC, not 10
 
 
-def test_replace_relayed_rest_on_packed_stw_keeps_live_mc(monkeypatch):
-  """Edit the packed live 0x45 — same MC, rest/IDLE gone, CRC re-signed."""
+def test_replace_relayed_rest_on_packed_stw_holds_4_same_mc():
+  """Edit the packed live 0x45 — same MC, held 4, rest/IDLE gone, CRC re-signed."""
   from opendbc.can import CANPacker
   from opendbc.car.tesla.preap.teslacan import TeslaCANPreAP
   from opendbc.car.tesla.values import CANBUS, CruiseButtons
@@ -468,40 +401,60 @@ def test_replace_relayed_rest_on_packed_stw_keeps_live_mc(monkeypatch):
     "MC_STW_ACTN_RQ": 9,
     "CRC_STW_ACTN_RQ": 0,
     "DTR_Dist_Rq": 255,
-    "VSL_Enbl_Rq": 1,
+    "VSL_Enbl_Rq": 0,
     "HiBmLvr_Stat": 0,
   }
   _, rest, _ = tc.create_action_request(CruiseButtons.IDLE, CANBUS.party, 9, msg_stw)
-  assert hibm_nibble(rest) == 0
-  patched = replace_relayed_stw(rest, False, False, block_rest_low=True, crc_fn=tc.stw_crc)
-  assert hibm_nibble(patched) == STW_HIGH_BEAM_SNA
+  assert rest[:3] == bytes.fromhex("00ff00")
+  patched = replace_relayed_stw(rest, False, True, crc_fn=tc.stw_crc)
+  assert patched[:3] == bytes.fromhex("00ff04")
+  assert hibm_nibble(patched) == STW_HIGH_BEAM
   assert (patched[6] >> 4) & 0x0F == (rest[6] >> 4) & 0x0F  # MC nibble
   assert patched[7] == tc.stw_crc(patched[:7])
   assert patched[7] != rest[7]
 
 
-def test_block_rest_forwards_relayed_frame_between_10hz_slots(monkeypatch):
-  """After the pulse, bus-0 rest still arrives every 100 ms — TX every 10 ms."""
+def test_high_extra_forward_keeps_sending_00ff04(monkeypatch):
+  """High extra-forward keeps 00ff04 on the live-counter 0x45. Never SNA or rest."""
   from types import SimpleNamespace
+
+  from opendbc.can import CANPacker
+  from opendbc.car.tesla.preap.teslacan import TeslaCANPreAP
+  from opendbc.car.tesla.values import CANBUS
 
   from openpilot.selfdrive.car.tesla import preap_body_controls as body
 
-  fake = _FakeSpoofer()
-  cs = SimpleNamespace(msg_stw_actn_req={"SpdCtrlLvr_Stat": 0, "MC_STW_ACTN_RQ": 9})
-  reset_high_beam_oneshot()
+  packer = CANPacker("tesla_preap")
+  tc = TeslaCANPreAP({CANBUS.party: packer, CANBUS.autopilot_party: packer})
+  orig = TeslaCANPreAP.create_action_request
+  monkeypatch.setattr(TeslaCANPreAP, "create_action_request", body.create_action_request_with_overlay)
+  monkeypatch.setattr(body, "_ORIG_CREATE_ACTION_REQUEST", orig)
   monkeypatch.setattr(body, "requested_wiper_test", lambda: False)
   monkeypatch.setattr(body, "requested_high_beam_test", lambda: True)
   monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: [])
-  # Consume the nibble-4 pulse slots (two 10 Hz ticks), then the first rest-block slot.
-  body.stock_cc_update_with_overlay(fake, cs, 10, None, 0)
-  body.stock_cc_update_with_overlay(fake, cs, 20, None, 0)
-  body.stock_cc_update_with_overlay(fake, cs, 30, None, 0)
-  assert body._slot_high_overlay is False
-  assert body._slot_block_rest_low is True
-  fake.sent.clear()
-  out = body.stock_cc_update_with_overlay(fake, cs, 21, None, 0)
-  assert len(out) == 1
-  assert out[0][0] == STW_ACTN_RQ_ADDR
+
+  fake = _FakeSpoofer()
+  cs = SimpleNamespace(msg_stw_actn_req={
+    "SpdCtrlLvr_Stat": 0,
+    "MC_STW_ACTN_RQ": 9,
+    "CRC_STW_ACTN_RQ": 0,
+    "DTR_Dist_Rq": 255,
+    "VSL_Enbl_Rq": 0,
+    "HiBmLvr_Stat": 0,
+  })
+  for frame in range(20):
+    fake.sent.clear()
+    out = body.stock_cc_update_with_overlay(fake, cs, frame, tc, CANBUS.party)
+    assert len(out) == 1
+    addr, dat, bus = out[0]
+    assert addr == STW_ACTN_RQ_ADDR
+    assert bus == CANBUS.party
+    assert (dat[6] >> 4) & 0x0F == 9
+    assert dat[:3] == bytes.fromhex("00ff04")
+    assert hibm_nibble(dat) == STW_HIGH_BEAM
+    assert (hibm_nibble(dat) & STW_HIBM_MASK) != STW_HIBM_MASK
+    assert dat[7] == tc.stw_crc(dat[:7])
+    assert fake.sent == []  # High uses send_replaced_live_stw, not _send MC+1
 
 
 def test_stock_cc_off_does_not_change_forwarding(monkeypatch):
@@ -511,7 +464,6 @@ def test_stock_cc_off_does_not_change_forwarding(monkeypatch):
 
   fake = _FakeSpoofer()
   cs = SimpleNamespace(msg_stw_actn_req={"SpdCtrlLvr_Stat": 0})
-  reset_high_beam_oneshot()
   monkeypatch.setattr(body, "requested_wiper_test", lambda: False)
   monkeypatch.setattr(body, "requested_high_beam_test", lambda: False)
   monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: [])
@@ -536,7 +488,6 @@ def test_create_action_request_off_matches_stock(monkeypatch):
     "WprSw6Posn": 2,
   }
   stock = tc.create_action_request(CruiseButtons.SET_ACCEL, CANBUS.party, 6, msg_stw)
-  reset_high_beam_oneshot()
   monkeypatch.setattr(body, "requested_wiper_test", lambda: False)
   monkeypatch.setattr(body, "requested_high_beam_test", lambda: False)
   monkeypatch.setattr(body, "_ORIG_CREATE_ACTION_REQUEST", TeslaCANPreAP.create_action_request)
