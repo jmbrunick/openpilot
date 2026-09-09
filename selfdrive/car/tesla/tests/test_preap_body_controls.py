@@ -24,9 +24,12 @@ from openpilot.selfdrive.car.tesla.preap_body_controls import (
   high_beam_oneshot_step,
   high_beam_test_requested,
   hibm_nibble,
+  live_stw_counter,
   overlay_stw_wiper_beam,
   register_nap_body_params,
+  replace_relayed_stw,
   reset_high_beam_oneshot,
+  send_replaced_live_stw,
   stalk_test_active,
   wiper_test_requested,
 )
@@ -205,14 +208,18 @@ def test_extra_forward_only_when_on_and_no_existing_0x45():
   assert extra_stw_forward_needed(existing, 10, True, False) is False
   assert extra_stw_forward_needed([], 10, True, False) is True
   assert extra_stw_forward_needed([], 20, False, True) is True
+  # Rest-block must TX between 10 Hz slots so bus-0 IDLE cannot sit unopposed.
+  assert extra_stw_forward_needed([], 11, False, True, block_rest_low=True) is True
+  assert extra_stw_forward_needed([], 11, False, True, block_rest_low=False) is False
 
 
 def test_settings_copy_describes_pulse_then_blocked_rest():
   from openpilot.selfdrive.ui.layouts.settings.nap_content import HIGH_LOW_BEAM_DESCRIPTION
   text = HIGH_LOW_BEAM_DESCRIPTION.lower()
   assert "nibble 4" in text
-  assert "blocked" in text
-  assert "rest/low" in text
+  assert "replaced" in text
+  assert "rest/idle" in text
+  assert "second 0x45" in text
   assert "off/low" in text
   assert "does not hold 4" in text
   assert "does not flash" in text
@@ -402,6 +409,99 @@ def test_high_only_forwards_after_pulse_and_blocks_rest(monkeypatch):
   assert len(out) == 1
   assert body._slot_high_overlay is True
   assert body._slot_block_rest_low is False
+
+
+def test_relayed_bus0_rest_is_replaced_not_only_tx_overlay():
+  """candump bus 0 00ff00 is the live stalk. Replace that payload in place."""
+  # Justin's capture, counter in the live frame (not ignored here).
+  rest = bytes.fromhex("00ff000000090e80")
+  assert hibm_nibble(rest) == 0
+  patched = replace_relayed_stw(rest, False, False, block_rest_low=True,
+                                crc_fn=lambda payload: 0xAA)
+  assert hibm_nibble(patched) == STW_HIGH_BEAM_SNA
+  assert hibm_nibble(patched) != 0
+  assert hibm_nibble(patched) != STW_HIGH_BEAM
+  assert hibm_nibble(patched) != STW_HIGH_BEAM_FLASH
+  # Same live frame — counter and neighboring bytes stay. Only HiBm + CRC.
+  assert patched[:2] == rest[:2]
+  assert patched[3:7] == rest[3:7]
+  assert patched[7] == 0xAA
+  # Pulse still writes 4 on that same relayed frame.
+  pulsed = replace_relayed_stw(rest, False, True, block_rest_low=False)
+  assert hibm_nibble(pulsed) == STW_HIGH_BEAM
+  assert pulsed[3:7] == rest[3:7]
+
+
+def test_live_stw_counter_is_not_plus_one():
+  assert live_stw_counter({"MC_STW_ACTN_RQ": 9}) == 9
+  assert live_stw_counter({"MC_STW_ACTN_RQ": 15}) == 15
+  assert live_stw_counter({"MC_STW_ACTN_RQ": 0}) == 0
+
+
+def test_send_replaced_live_stw_uses_live_counter_not_plus_one():
+  from types import SimpleNamespace
+
+  class _Rec:
+    def __init__(self):
+      self.counter = None
+
+    def create_action_request(self, button, bus, counter, msg_stw=None):
+      self.counter = counter
+      return (STW_ACTN_RQ_ADDR, b"\x00" * 8, bus)
+
+  rec = _Rec()
+  cs = SimpleNamespace(msg_stw_actn_req={"SpdCtrlLvr_Stat": 0, "MC_STW_ACTN_RQ": 9})
+  out = send_replaced_live_stw(_FakeSpoofer(), cs, rec, 0)
+  assert out[0] == STW_ACTN_RQ_ADDR
+  assert rec.counter == 9  # live MC, not 10
+
+
+def test_replace_relayed_rest_on_packed_stw_keeps_live_mc(monkeypatch):
+  """Edit the packed live 0x45 — same MC, rest/IDLE gone, CRC re-signed."""
+  from opendbc.can import CANPacker
+  from opendbc.car.tesla.preap.teslacan import TeslaCANPreAP
+  from opendbc.car.tesla.values import CANBUS, CruiseButtons
+
+  packer = CANPacker("tesla_preap")
+  tc = TeslaCANPreAP({CANBUS.party: packer, CANBUS.autopilot_party: packer})
+  msg_stw = {
+    "MC_STW_ACTN_RQ": 9,
+    "CRC_STW_ACTN_RQ": 0,
+    "DTR_Dist_Rq": 255,
+    "VSL_Enbl_Rq": 1,
+    "HiBmLvr_Stat": 0,
+  }
+  _, rest, _ = tc.create_action_request(CruiseButtons.IDLE, CANBUS.party, 9, msg_stw)
+  assert hibm_nibble(rest) == 0
+  patched = replace_relayed_stw(rest, False, False, block_rest_low=True, crc_fn=tc.stw_crc)
+  assert hibm_nibble(patched) == STW_HIGH_BEAM_SNA
+  assert (patched[6] >> 4) & 0x0F == (rest[6] >> 4) & 0x0F  # MC nibble
+  assert patched[7] == tc.stw_crc(patched[:7])
+  assert patched[7] != rest[7]
+
+
+def test_block_rest_forwards_relayed_frame_between_10hz_slots(monkeypatch):
+  """After the pulse, bus-0 rest still arrives every 100 ms — TX every 10 ms."""
+  from types import SimpleNamespace
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  fake = _FakeSpoofer()
+  cs = SimpleNamespace(msg_stw_actn_req={"SpdCtrlLvr_Stat": 0, "MC_STW_ACTN_RQ": 9})
+  reset_high_beam_oneshot()
+  monkeypatch.setattr(body, "requested_wiper_test", lambda: False)
+  monkeypatch.setattr(body, "requested_high_beam_test", lambda: True)
+  monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: [])
+  # Consume the nibble-4 pulse slots (two 10 Hz ticks), then the first rest-block slot.
+  body.stock_cc_update_with_overlay(fake, cs, 10, None, 0)
+  body.stock_cc_update_with_overlay(fake, cs, 20, None, 0)
+  body.stock_cc_update_with_overlay(fake, cs, 30, None, 0)
+  assert body._slot_high_overlay is False
+  assert body._slot_block_rest_low is True
+  fake.sent.clear()
+  out = body.stock_cc_update_with_overlay(fake, cs, 21, None, 0)
+  assert len(out) == 1
+  assert out[0][0] == STW_ACTN_RQ_ADDR
 
 
 def test_stock_cc_off_does_not_change_forwarding(monkeypatch):
