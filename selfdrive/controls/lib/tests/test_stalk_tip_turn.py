@@ -1,4 +1,8 @@
-from openpilot.selfdrive.controls.lib.stalk_tip_turn import STALK_TIP_HOLD_S, StalkTipTurn
+from openpilot.selfdrive.controls.lib.stalk_tip_turn import (
+  STALK_ALC_TURN_HOLD_S,
+  STALK_TIP_HOLD_S,
+  StalkTipTurn,
+)
 
 DT_CTRL = 0.01
 DT_MDL = 0.05
@@ -78,3 +82,34 @@ def test_direction_change_restarts_hold():
   assert s.is_pending
   assert not s.is_turn
   assert s.held_s == DT_CTRL
+
+
+def test_alc_turn_hold_window_is_documented_1s():
+  assert STALK_ALC_TURN_HOLD_S == 1.0
+  assert STALK_ALC_TURN_HOLD_S > STALK_TIP_HOLD_S
+
+
+def test_held_past_tip_window_is_not_alc_turn_yet():
+  s = StalkTipTurn()
+  _hold(s, 1, STALK_TIP_HOLD_S, DT_CTRL)
+  assert s.is_turn
+  assert not s.is_alc_turn
+  assert not s.is_driver_turn(alc_latched=True, alc_direction=1)
+  assert s.is_driver_turn(alc_latched=False)
+
+
+def test_held_1s_is_alc_turn_same_direction():
+  s = StalkTipTurn()
+  _hold(s, 1, STALK_ALC_TURN_HOLD_S, DT_CTRL)
+  assert s.is_alc_turn
+  assert s.is_driver_turn(alc_latched=True, alc_direction=1)
+  assert s.is_driver_turn(alc_latched=True, alc_direction=0)
+
+
+def test_opposite_during_alc_uses_tip_window():
+  s = StalkTipTurn()
+  _hold(s, 2, STALK_TIP_HOLD_S, DT_CTRL)
+  assert s.is_turn
+  assert not s.is_alc_turn
+  assert s.is_driver_turn(alc_latched=True, alc_direction=1)
+  assert not s.is_driver_turn(alc_latched=True, alc_direction=2)
