@@ -29,14 +29,8 @@ def _tick(dh, cs, n=1, lane_change_prob=0.0):
 
 
 def _arm_left(dh):
-  # Blinker never arms ALC. Force the armed state so leftover state-machine
-  # tests can still run in isolation.
   dh.update(FakeCarState(), True, 0.0)
-  dh.lane_change_state = LaneChangeState.preLaneChange
-  dh.lane_change_direction = LaneChangeDirection.left
-  dh.queued_changes = 1
-  dh.lane_change_ll_prob = 1.0
-  dh.arm_timer = 0.0
+  dh.update(FakeCarState(left=True, lever=1), True, 0.0)
   dh.update(FakeCarState(left=True), True, 0.0)
 
 
@@ -63,13 +57,57 @@ def _complete_maneuver(dh, cs_after):
       break
 
 
-def test_blinker_never_arms_alc():
+def test_tap_arms_pre_lane_change():
+  dh = DesireHelper()
+  _arm_left(dh)
+
+  assert dh.lane_change_state == LaneChangeState.preLaneChange
+  assert dh.lane_change_direction == LaneChangeDirection.left
+  assert dh.queued_changes == 1
+
+
+def test_tap_arms_without_lamp_on_yet():
   dh = DesireHelper()
   dh.update(FakeCarState(), True, 0.0)
-  dh.update(FakeCarState(left=True, lever=1), True, 0.0)
-  dh.update(FakeCarState(v_ego=30.0, left=True, lever=1), True, 0.0)
-  dh.update(FakeCarState(v_ego=10.0, right=True, lever=2), True, 0.0)
-  # Flash gaps (lamp dark, stalk already centered) still must not arm ALC.
+  dh.update(FakeCarState(lever=1), True, 0.0)
+
+  assert dh.lane_change_state == LaneChangeState.preLaneChange
+  assert dh.lane_change_direction == LaneChangeDirection.left
+
+
+def test_stalk_return_to_idle_does_not_cancel():
+  dh = DesireHelper()
+  _arm_left(dh)
+  _tick(dh, FakeCarState(left=True, lever=0), n=5)
+
+  assert dh.lane_change_state == LaneChangeState.preLaneChange
+  assert dh.lane_change_direction == LaneChangeDirection.left
+
+
+def test_alc_keep_blinker_until_lane_change_finishes():
+  dh = DesireHelper()
+  _arm_left(dh)
+  left, right = DesireHelper.lane_change_keep_blinker(dh.lane_change_state, dh.lane_change_direction)
+  assert left and not right
+
+  dh.update(FakeCarState(left=True), True, 0.0)
+  left, right = DesireHelper.lane_change_keep_blinker(dh.lane_change_state, dh.lane_change_direction)
+  assert left and not right
+
+  dh.update(_nudge_left(), True, 0.0)
+  left, right = DesireHelper.lane_change_keep_blinker(dh.lane_change_state, dh.lane_change_direction)
+  assert left and not right
+
+  _complete_maneuver(dh, FakeCarState())
+  left, right = DesireHelper.lane_change_keep_blinker(dh.lane_change_state, dh.lane_change_direction)
+  assert not left and not right
+  assert dh.lane_change_state == LaneChangeState.off
+
+
+def test_lamp_edges_without_lever_do_not_arm():
+  dh = DesireHelper()
+  dh.update(FakeCarState(), True, 0.0)
+  dh.update(FakeCarState(v_ego=30.0, left=True), True, 0.0)
   dh.update(FakeCarState(v_ego=30.0), True, 0.0)
   dh.update(FakeCarState(v_ego=30.0, left=True), True, 0.0)
 
