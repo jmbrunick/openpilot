@@ -1,10 +1,11 @@
 """Keep Pre-AP cruiseEnabled while a blinker lamp pauses lateral.
 
 opendbc's handle_steering_disengage tears down the FSM on hands-on ≥ 2.
-During a lamp-on turn we have already released steering, so a wheel input
-must not drop cruiseEnabled / enableLongControl. After the lamp clears,
-keep that suppression until torque is released so a finishing hand-steer
-does not fully disengage NAP. Stalk cancel is unchanged.
+GTW lamp bits flash, so BlinkerLateralHold latches turn-active through
+those gaps. During that turn we have already released steering, so a
+wheel input must not drop cruiseEnabled / enableLongControl. After ~1s
+of continuous dark, keep that suppression until torque is released so a
+finishing hand-steer does not fully disengage NAP. Stalk cancel is unchanged.
 
 This follows the same install-from-card pattern as preap_body_controls.
 """
@@ -47,8 +48,9 @@ def _handle_steering_disengage(self, steering_disengage):
   left = getattr(self, "_nap_left_blinker", False)
   right = getattr(self, "_nap_right_blinker", False)
   pressed = bool(getattr(self, "_nap_steering_pressed", False) or steering_disengage)
+  # dt=0: _update_preap already advanced the dark timer this cycle.
   paused = _hold_for(self).update(
-    left, right, pressed, engaged=bool(getattr(self, "cruiseEnabled", False)))
+    left, right, pressed, engaged=bool(getattr(self, "cruiseEnabled", False)), dt=0.0)
   if paused:
     # Keep prev in sync so lamp-off / hand-release is not a rising edge.
     self.prev_steering_disengage = steering_disengage

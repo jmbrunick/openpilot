@@ -8,6 +8,7 @@ from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import (
   _peek_blinker_lamps,
   install_blinker_lat_pause,
 )
+from openpilot.selfdrive.controls.lib.blinker_lateral_pause import LAMP_OFF_DEBOUNCE_S
 
 
 def _engaged():
@@ -153,10 +154,52 @@ def test_tesla_fsm_holds_cruise_until_hand_release_after_lamp():
   assert eng.cruiseEnabled
   assert eng.enableLongControl
 
+  # Turn complete (~1s dark), hand still on: cruise stays. Then release.
+  eng._nap_lat_hold.update(False, False, True, engaged=True, dt=LAMP_OFF_DEBOUNCE_S)
+  assert not eng._nap_lat_hold.turn_active
+  assert eng._nap_lat_hold.holding
+
   eng._nap_steering_pressed = False
   eng.handle_steering_disengage(False)
   assert eng.cruiseEnabled
   assert eng.enableLongControl
+
+  eng.handle_steering_disengage(True)
+  assert not eng.cruiseEnabled
+  assert not eng.enableLongControl
+
+
+def test_tesla_fsm_flash_gap_without_hand_keeps_cruise():
+  install_blinker_lat_pause()
+  eng = _engaged()
+  eng._nap_left_blinker = True
+  eng.handle_steering_disengage(False)
+  assert eng.cruiseEnabled
+  assert eng.enableLongControl
+
+  # Lamp dark between flashes, light/no hands, then a grab must not tear down.
+  eng._nap_left_blinker = False
+  eng._nap_steering_pressed = False
+  eng.handle_steering_disengage(False)
+  assert eng._nap_lat_hold.turn_active
+  assert eng.cruiseEnabled
+
+  eng.handle_steering_disengage(True)
+  assert eng.cruiseEnabled
+  assert eng.enableLongControl
+
+
+def test_tesla_fsm_1s_dark_then_steer_disengages():
+  install_blinker_lat_pause()
+  eng = _engaged()
+  eng._nap_left_blinker = True
+  eng.handle_steering_disengage(False)
+  assert eng.cruiseEnabled
+
+  eng._nap_left_blinker = False
+  eng._nap_lat_hold.update(False, False, False, engaged=True, dt=LAMP_OFF_DEBOUNCE_S)
+  assert not eng._nap_lat_hold.turn_active
+  assert not eng._nap_lat_hold.holding
 
   eng.handle_steering_disengage(True)
   assert not eng.cruiseEnabled
