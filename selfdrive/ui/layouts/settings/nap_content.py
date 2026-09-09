@@ -21,19 +21,21 @@ FOLLOW_DISTANCE_VALUES = list(range(1, 8))
 FOLLOW_DISTANCE_LABELS = [str(i) for i in FOLLOW_DISTANCE_VALUES]
 FOLLOW_DISTANCE_DEFAULT = 4
 
-# Forwarded 0x45 STW_ACTN_RQ wiper / high-beam test. 0 = off (today's stalk).
-WIPER_SPEED_VALUES = [0, 1, 2]
-WIPER_SPEED_LABELS = ["Off", "Int", "On"]
+# Forwarded 0x45 STW_ACTN_RQ wiper / high-beam. 0 = off (today's stalk).
+WIPER_SPEED_VALUES = [0, 1, 2, 3]
+WIPER_SPEED_LABELS = ["Off", "Int", "On", "Auto"]
 HIGH_LOW_BEAM_VALUES = [0, 1, 2]
 HIGH_LOW_BEAM_LABELS = ["Off", "Low", "High"]
 WIPER_SPEED_DESCRIPTION = (
   "Rewrite the wiper nibble on the forwarded stalk (0x45 STW_ACTN_RQ). "
   "Off leaves the driver's real stalk nibble alone. Int/On set the high "
-  "nibble to 1 (wipers) — they do not spray. No rain sensing. DAS wiper "
-  "fields stay 0 (they were ignored and caused a controls mismatch). "
+  "nibble to 1 (wipers) and hold it — they do not spray. Auto holds that "
+  "same nibble 1 only while a rain/wiper-need signal is set, then releases "
+  "the real stalk when dry. Default Off — Auto is opt-in, not every drive. "
+  "DAS wiper fields stay 0 (they were ignored and caused a controls mismatch). "
   "Car on is enough — do not engage NAP and do not pull the stalk. "
-  "Pre-AP may still ignore a spoofed stalk — this is a car test, not auto "
-  "wipers."
+  "Pre-AP may still see the real stalk rest on bus 0; holding nibble 1 is "
+  "what already works. No spray. No auto headlights."
 )
 HIGH_LOW_BEAM_DESCRIPTION = (
   "Pre-AP Model S only, for on-car testing. Default Off. Low is the same as "

@@ -1,10 +1,14 @@
 """0x45 stalk wiper / high-beam test. Off matches today's forwarded stalk."""
+from types import SimpleNamespace
+
 from openpilot.selfdrive.car.tesla.preap_body_controls import (
   BEAM_SETTING_HIGH,
   BEAM_SETTING_LOW,
   BEAM_SETTING_OFF,
   NAP_HIGH_LOW_BEAM,
+  NAP_RAIN_NEEDED,
   NAP_WIPER_SPEED,
+  RAIN_PROB_ON,
   STW_ACTN_RQ_ADDR,
   STW_HIBM_MASK,
   STW_HIGH_BEAM,
@@ -13,18 +17,22 @@ from openpilot.selfdrive.car.tesla.preap_body_controls import (
   STW_WASHER_SPRAY,
   STW_WIPER_BEAM_BYTE,
   STW_WIPER_ON,
+  WIPER_SETTING_AUTO,
   WIPER_SETTING_INTERMITTENT,
   WIPER_SETTING_OFF,
   WIPER_SETTING_ON,
   apply_stw_wiper_beam_nibbles,
+  camera_rain_needed_from_model,
   extra_stw_forward_needed,
   high_beam_test_requested,
   hibm_nibble,
   live_stw_counter,
   overlay_stw_wiper_beam,
+  rain_wiper_needed,
   register_nap_body_params,
   replace_relayed_stw,
   send_replaced_live_stw,
+  set_rain_wiper_needed,
   stalk_test_active,
   wiper_test_requested,
 )
@@ -43,6 +51,12 @@ def test_setting_maps_to_stalk_test_flags():
   assert not wiper_test_requested(WIPER_SETTING_OFF)
   assert wiper_test_requested(WIPER_SETTING_INTERMITTENT)
   assert wiper_test_requested(WIPER_SETTING_ON)
+  assert not wiper_test_requested(WIPER_SETTING_AUTO)
+  assert not wiper_test_requested(WIPER_SETTING_AUTO, False)
+  assert wiper_test_requested(WIPER_SETTING_AUTO, True)
+  assert not wiper_test_requested(WIPER_SETTING_OFF, True)
+  assert wiper_test_requested(WIPER_SETTING_INTERMITTENT, False)
+  assert wiper_test_requested(WIPER_SETTING_ON, False)
   assert not high_beam_test_requested(BEAM_SETTING_OFF)
   assert not high_beam_test_requested(BEAM_SETTING_LOW)
   assert high_beam_test_requested(BEAM_SETTING_HIGH)
@@ -160,6 +174,13 @@ def test_extra_forward_only_when_on_and_no_existing_0x45():
   assert extra_stw_forward_needed([], 11, False, True) is True
   assert extra_stw_forward_needed([], 11, True, False) is False
   assert extra_stw_forward_needed(existing, 11, False, True) is False
+  # Auto + rain is the same 10 Hz Int hold, not the High 10 ms path.
+  auto_rain = wiper_test_requested(WIPER_SETTING_AUTO, True)
+  auto_dry = wiper_test_requested(WIPER_SETTING_AUTO, False)
+  assert extra_stw_forward_needed([], 10, auto_rain, False) is True
+  assert extra_stw_forward_needed([], 11, auto_rain, False) is False
+  assert extra_stw_forward_needed([], 10, auto_dry, False) is False
+  assert extra_stw_forward_needed(existing, 10, auto_rain, False) is False
 
 
 def test_settings_copy_describes_held_4_same_counter_replace():
@@ -176,6 +197,74 @@ def test_settings_copy_describes_held_4_same_counter_replace():
   assert "flash" in text
   assert "pulse" not in text
   assert "sna" not in text
+
+
+def test_settings_copy_describes_auto_rain_hold():
+  from openpilot.selfdrive.ui.layouts.settings.nap_content import (
+    WIPER_SPEED_DESCRIPTION, WIPER_SPEED_LABELS, WIPER_SPEED_VALUES,
+  )
+  assert WIPER_SPEED_VALUES == [0, 1, 2, 3]
+  assert WIPER_SPEED_LABELS == ["Off", "Int", "On", "Auto"]
+  text = WIPER_SPEED_DESCRIPTION.lower()
+  assert "auto" in text
+  assert "rain" in text
+  assert "nibble 1" in text
+  assert "hold" in text
+  assert "spray" in text
+  assert "das" in text
+  assert "opt-in" in text or "not every drive" in text
+  assert "int/on" in text
+  assert "headlight" in text
+  assert "pulse" not in text
+
+
+def test_auto_rain_signal_sets_and_clears_hold():
+  try:
+    set_rain_wiper_needed(False)
+    assert not rain_wiper_needed()
+    assert not wiper_test_requested(WIPER_SETTING_AUTO, rain_wiper_needed())
+    set_rain_wiper_needed(True)
+    assert rain_wiper_needed()
+    assert wiper_test_requested(WIPER_SETTING_AUTO, rain_wiper_needed())
+    rest = _rest()
+    held = apply_stw_wiper_beam_nibbles(rest, True, False)
+    assert _byte(held) == STW_WIPER_ON
+    assert _byte(held) != STW_WASHER_SPRAY
+    set_rain_wiper_needed(False)
+    assert not rain_wiper_needed()
+    released = apply_stw_wiper_beam_nibbles(rest, False, False)
+    assert released == rest
+  finally:
+    set_rain_wiper_needed(None)
+
+
+def test_camera_rain_head_on_off_without_model_stays_dry():
+  dry = SimpleNamespace(meta=SimpleNamespace(rainProb=0.0))
+  wet = SimpleNamespace(meta=SimpleNamespace(rainProb=0.9))
+  low = SimpleNamespace(meta=SimpleNamespace(rainProb=RAIN_PROB_ON - 0.01))
+  at = SimpleNamespace(meta=SimpleNamespace(rainProb=RAIN_PROB_ON))
+  assert not camera_rain_needed_from_model(None)
+  assert not camera_rain_needed_from_model(SimpleNamespace(meta=SimpleNamespace()))
+  assert not camera_rain_needed_from_model(dry)
+  assert not camera_rain_needed_from_model(low)
+  assert camera_rain_needed_from_model(at)
+  assert camera_rain_needed_from_model(wet)
+  assert camera_rain_needed_from_model({"meta": {"wiperNeedProb": 1.0}})
+  assert not camera_rain_needed_from_model({"meta": {}})
+
+
+def test_rain_defaults_dry_and_nap_param_is_live_path(monkeypatch):
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  set_rain_wiper_needed(None)
+  monkeypatch.setattr(body, "_param_bool", lambda key, default=False: False)
+  monkeypatch.setattr(body, "camera_rain_needed", lambda: False)
+  assert not rain_wiper_needed()
+  monkeypatch.setattr(body, "_param_bool", lambda key, default=False: key == NAP_RAIN_NEEDED)
+  assert rain_wiper_needed()
+  set_rain_wiper_needed(False)
+  assert not rain_wiper_needed()  # override wins over the param
+  set_rain_wiper_needed(None)
 
 
 def test_register_defaults_stay_off():
@@ -494,3 +583,134 @@ def test_create_action_request_off_matches_stock(monkeypatch):
   test = body.create_action_request_with_overlay(
     tc, CruiseButtons.SET_ACCEL, CANBUS.party, 6, msg_stw)
   assert test == stock
+
+
+def test_auto_overlay_holds_nibble_1_on_rain_and_releases_when_dry(monkeypatch):
+  from opendbc.can import CANPacker
+  from opendbc.car.tesla.preap.teslacan import TeslaCANPreAP
+  from opendbc.car.tesla.values import CANBUS, CruiseButtons
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  packer = CANPacker("tesla_preap")
+  tc = TeslaCANPreAP({CANBUS.party: packer, CANBUS.autopilot_party: packer})
+  msg_stw = {
+    "MC_STW_ACTN_RQ": 5,
+    "CRC_STW_ACTN_RQ": 0,
+    "DTR_Dist_Rq": 255,
+    "VSL_Enbl_Rq": 1,
+    "WprSw6Posn": 3,
+    "WprWashSw_Psd": 0,
+    "HiBmLvr_Stat": 0,
+  }
+  stock = tc.create_action_request(CruiseButtons.IDLE, CANBUS.party, 6, msg_stw)
+  rain = {"on": True}
+  monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
+    WIPER_SETTING_AUTO if key == NAP_WIPER_SPEED else default
+  ))
+  monkeypatch.setattr(body, "rain_wiper_needed", lambda: rain["on"])
+  monkeypatch.setattr(body, "requested_high_beam_test", lambda: False)
+  monkeypatch.setattr(body, "_ORIG_CREATE_ACTION_REQUEST", TeslaCANPreAP.create_action_request)
+
+  addr, dat, bus = body.create_action_request_with_overlay(
+    tc, CruiseButtons.IDLE, CANBUS.party, 6, msg_stw)
+  assert addr == STW_ACTN_RQ_ADDR == stock[0]
+  assert bus == stock[2]
+  assert _byte(dat) == STW_WIPER_ON
+  assert _byte(dat) != STW_WASHER_SPRAY
+  assert dat[6] & 0x07 == 3  # WprSw6Posn preserved
+  assert dat[7] == tc.stw_crc(dat[:7])
+  for _ in range(8):
+    _, held, _ = body.create_action_request_with_overlay(
+      tc, CruiseButtons.IDLE, CANBUS.party, 6, msg_stw)
+    assert _byte(held) == STW_WIPER_ON
+    assert _byte(held) != STW_WASHER_SPRAY
+
+  rain["on"] = False
+  released = body.create_action_request_with_overlay(
+    tc, CruiseButtons.IDLE, CANBUS.party, 6, msg_stw)
+  assert released == stock
+
+
+def test_auto_stock_cc_forwards_on_rain_and_stops_when_dry(monkeypatch):
+  from types import SimpleNamespace
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  fake = _FakeSpoofer()
+  cs = SimpleNamespace(
+    cruiseEnabled=False,
+    latActive=False,
+    msg_stw_actn_req={"SpdCtrlLvr_Stat": 0},
+  )
+  rain = {"on": True}
+  monkeypatch.setattr(body, "requested_wiper_test", lambda: wiper_test_requested(
+    WIPER_SETTING_AUTO, rain["on"]))
+  monkeypatch.setattr(body, "requested_high_beam_test", lambda: False)
+  monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: [])
+
+  out = body.stock_cc_update_with_overlay(fake, cs, 10, None, 0)
+  assert len(out) == 1
+  assert out[0][0] == STW_ACTN_RQ_ADDR
+  assert extra_stw_forward_needed([], 11, True, False) is False
+
+  rain["on"] = False
+  fake.sent.clear()
+  out = body.stock_cc_update_with_overlay(fake, cs, 20, None, 0)
+  assert out == []
+  assert fake.sent == []
+
+
+def test_auto_does_not_change_high_beam_hold_path(monkeypatch):
+  """Auto rain must not switch High off the live-counter 00ff04 hold."""
+  from types import SimpleNamespace
+
+  from opendbc.can import CANPacker
+  from opendbc.car.tesla.preap.teslacan import TeslaCANPreAP
+  from opendbc.car.tesla.values import CANBUS
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  packer = CANPacker("tesla_preap")
+  tc = TeslaCANPreAP({CANBUS.party: packer, CANBUS.autopilot_party: packer})
+  orig = TeslaCANPreAP.create_action_request
+  monkeypatch.setattr(TeslaCANPreAP, "create_action_request", body.create_action_request_with_overlay)
+  monkeypatch.setattr(body, "_ORIG_CREATE_ACTION_REQUEST", orig)
+  monkeypatch.setattr(body, "requested_wiper_test", lambda: wiper_test_requested(
+    WIPER_SETTING_AUTO, True))
+  monkeypatch.setattr(body, "requested_high_beam_test", lambda: True)
+  monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: [])
+
+  fake = _FakeSpoofer()
+  cs = SimpleNamespace(msg_stw_actn_req={
+    "SpdCtrlLvr_Stat": 0,
+    "MC_STW_ACTN_RQ": 9,
+    "CRC_STW_ACTN_RQ": 0,
+    "DTR_Dist_Rq": 255,
+    "VSL_Enbl_Rq": 0,
+    "HiBmLvr_Stat": 0,
+  })
+  for frame in range(5):
+    fake.sent.clear()
+    out = body.stock_cc_update_with_overlay(fake, cs, frame, tc, CANBUS.party)
+    assert len(out) == 1
+    addr, dat, bus = out[0]
+    assert addr == STW_ACTN_RQ_ADDR
+    assert dat[:3] == bytes.fromhex("00ff14")  # nibble 1 held with nibble 4
+    assert hibm_nibble(dat) == STW_HIGH_BEAM
+    assert _byte(dat) != STW_WASHER_SPRAY
+    assert (dat[6] >> 4) & 0x0F == 9
+    assert fake.sent == []  # High still uses send_replaced_live_stw, not _send MC+1
+
+
+def test_auto_does_not_touch_das_body_controls():
+  from opendbc.can import CANPacker
+  from opendbc.car.tesla.preap.teslacan import TeslaCANPreAP
+  from opendbc.car.tesla.values import CANBUS
+
+  packer = CANPacker("tesla_preap")
+  tc = TeslaCANPreAP({CANBUS.party: packer, CANBUS.autopilot_party: packer})
+  _, dat, _ = tc.create_body_controls_message(1, 0, CANBUS.party, 1)
+  assert (dat[0] >> 4) & 0x0F == 0  # DAS_wiperSpeed
+  assert (dat[1] >> 2) & 0x03 == 0  # DAS_highLowBeamDecision
+  assert dat[0] & 0x03 == 0         # DAS_headlightRequest
