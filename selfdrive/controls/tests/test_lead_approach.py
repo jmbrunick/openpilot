@@ -25,7 +25,7 @@ def test_lead_approach_keeps_map_brake_not_map_110m_margin():
   assert abs(LEAD_APPROACH_A_MS2 - 0.80) < 1e-9
   assert abs(LEAD_APPROACH_A_MS2 - map_brake_a_ms2(LOOKAHEAD_NORMAL)) < 1e-9
   assert abs(DECREASE_START_MARGIN_M - 110.0) < 1e-9
-  assert abs(LEAD_APPROACH_HEADSTART_S - 8.0) < 1e-9
+  assert abs(LEAD_APPROACH_HEADSTART_S - 12.0) < 1e-9
   assert abs(LEAD_APPROACH_MAX_START_M - 140.0) < 1e-9
   assert LEAD_APPROACH_A_MS2 < 1.0
   assert LEAD_APPROACH_A_MS2 < 2.5
@@ -56,7 +56,7 @@ def test_lead_approach_eases_before_mpc_comfort_brake_window():
   at_open = lead_approach_decel_ms2(v_ego, v_lead, d_follow + need - 1.0, t4)
   assert at_open is not None
   # Entering the window is gentler than peak 0.80; more distance, not more a.
-  assert -LEAD_APPROACH_A_MS2 < at_open < -0.10
+  assert -0.20 < at_open < -0.10
   mid = lead_approach_decel_ms2(v_ego, v_lead, d_follow + 0.45 * need, t4)
   assert mid is not None and -LEAD_APPROACH_A_MS2 <= mid < 0.0
   assert at_open > mid  # more slack → gentler a (both negative)
@@ -70,6 +70,35 @@ def test_lead_approach_eases_before_mpc_comfort_brake_window():
   assert d_open_7 > d_open_4 + 5.0
   assert lead_approach_decel_ms2(v_ego, v_lead, d_open_4 + 3.0, t7) is not None
   assert lead_approach_decel_ms2(v_ego, v_lead, d_open_4 + 3.0, t4) is None
+
+
+def test_lead_approach_starts_a_little_earlier_with_lighter_open():
+  """12 s vs 8 s head-start: earlier and lighter, still closes, not radar hang."""
+  v_ego = 60.0 * 0.44704
+  v_lead = 50.0 * 0.44704
+  v_rel = v_ego - v_lead
+  t4 = nap_t_follow(4)
+  d_follow = t4 * v_lead + STOP_DISTANCE
+  rel_need = (v_rel * v_rel) / (2.0 * LEAD_APPROACH_A_MS2)
+  need_8 = rel_need + v_rel * 8.0
+  need_12 = lead_approach_need_m(v_ego, v_lead, t_follow=t4)
+  assert abs(need_12 - (rel_need + v_rel * 12.0)) < 1e-6
+  extra_m = need_12 - need_8
+  assert 16.0 < extra_m < 20.0  # ~18 m / ~4 s of 10 mph closing
+  d_open_8 = d_follow + need_8
+  d_open_12 = d_follow + need_12
+  assert d_open_12 > d_open_8
+  assert d_open_12 < 110.0
+  assert lead_approach_decel_ms2(v_ego, v_lead, d_open_8 + 3.0, t4) is not None
+  a_old_open = -(v_rel * v_rel) / (2.0 * need_8)
+  a_new_open = lead_approach_decel_ms2(v_ego, v_lead, d_open_12 - 1.0, t4)
+  assert a_new_open is not None
+  assert a_old_open < a_new_open < 0.0  # new open is lighter (less negative)
+  assert abs(a_new_open) < 0.18
+  assert abs(a_old_open) > 0.19
+  peak = lead_approach_decel_ms2(v_ego, v_lead, d_follow + rel_need, t4)
+  assert peak is not None
+  assert abs(peak + LEAD_APPROACH_A_MS2) < 0.05
 
 
 def test_lead_approach_does_not_brake_at_radar_edge_for_moderate_delta():
