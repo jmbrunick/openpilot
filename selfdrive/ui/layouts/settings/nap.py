@@ -232,7 +232,7 @@ class NAPLayout(Widget):
       "Wiper Control",
       WIPER_SPEED_DESCRIPTION,
       buttons=WIPER_SPEED_LABELS,
-      button_width=130,
+      button_width=100,
       selected_index=max(0, min(len(WIPER_SPEED_VALUES) - 1, wiper_setting)),
       callback=self._on_wiper_speed,
     )
