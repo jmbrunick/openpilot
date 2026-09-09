@@ -318,14 +318,14 @@ def refresh_local_maps(
   if fill_unmarked:
     _p(
       f"Received {len(ways)} highway ways from OSM "
-      f"({tagged_n} tagged maxspeed, {filled_n} MN statutory fills)."
+      + f"({tagged_n} tagged maxspeed, {filled_n} MN statutory fills)."
     )
   else:
     _p(f"Received {len(ways)} maxspeed ways from OSM.")
   if not ways:
     raise RefreshMapsError(
       "No usable highway speed limits found in OSM for this 100-mile area. "
-      "Previous maps were left unchanged."
+      + "Previous maps were left unchanged."
     )
 
   extra_meta = {
