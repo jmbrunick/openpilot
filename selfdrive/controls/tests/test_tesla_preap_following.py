@@ -576,8 +576,10 @@ def test_planner_eases_for_slower_lead_before_mpc_and_lead_can_brake_harder():
   v_lead = 22.4
   t_follow = get_T_FOLLOW(nap_follow_dist=4)
   d_follow = t_follow * v_lead + STOP_DISTANCE_M
-  need = lead_approach_need_m(v_ego, v_lead)
-  d_rel = d_follow + 0.5 * need
+  need = lead_approach_need_m(v_ego, v_lead, t_follow=t_follow)
+  v_rel = v_ego - v_lead
+  rel_need = (v_rel * v_rel) / (2.0 * LEAD_APPROACH_A_MS2)
+  d_rel = d_follow + rel_need
 
   params = _MutablePlannerParams(nap_follow_dist=4)
   planner = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
@@ -593,6 +595,13 @@ def test_planner_eases_for_slower_lead_before_mpc_and_lead_can_brake_harder():
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
   planner.update(inputs)
   assert planner.output_a_target == pytest.approx(-2.0, abs=0.08)
+
+  # Farther than the relative window (radar-range hang): no extra crawl.
+  lead.dRel = 160.0
+  assert 160.0 > d_follow + need
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=0.0)
+  planner.update(inputs)
+  assert planner.output_a_target == pytest.approx(0.0, abs=0.08)
 
   # Outside the window: no extra crawl.
   lead.dRel = d_follow + need + 20.0
