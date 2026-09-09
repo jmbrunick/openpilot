@@ -1,5 +1,6 @@
 NAP blinker (2026-09-09)
 ========================
+* Panda tesla_preap now keeps controls_allowed on a driver blinker-held turn (one lamp or LEFT/RIGHT, flash-latched ~1s) so hands-on ≥ 2 does not controlsMismatch after the turn. **Flash the panda after this update** (reboot so pandad reflashes; Python-only pull is not enough). Stalk cancel / doors / gear still drop.
 * Held-blinker turns no longer full-cancel mid-corner. Higher steering torque / EPAS hands-on ≥ 2 while lat is paused stays engaged (lat pause only). The 3X "Steering Disengaged" HUD is EventName.pcmDisable (cruiseEnabled fell) — keep cruise up on lamp or held stalk, and do not treat that torque as controlsMismatch / steerDisengage. Stalk cancel / doors / gear / permanent steer fault still fully disengage.
 
 NAP Force Offroad (2026-09-09)

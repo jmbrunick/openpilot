@@ -64,6 +64,8 @@ On Pre-AP that falling `cruiseState.enabled` is `EventName.pcmDisable`. The 3X H
 
 This is the primary user override path when the driver is *not* in a blinker turn. The panda also enforces it independently via EPAS error codes 6–9 and hands-on level ≥ 2 — except during a blinker-latched driver turn, where those conditions must not drop `controls_allowed` (otherwise selfdrived fires `controlsMismatch` after 2s and fully cancels while the lamps are still flashing).
 
+Panda firmware must be flashed after this safety change. Software update / on-device `scons` rebuilds the panda image from `opendbc_repo/opendbc/safety/modes/tesla_preap.h` (latch in `tesla_preap_blinker.h`); reboot so `pandad` sees the new signature and flashes. Python `BlinkerLateralHold` alone cannot keep `controls_allowed`.
+
 ## Where to look
 
 - `opendbc_repo/opendbc/car/tesla/preap/engagement.py` — stalk FSM
