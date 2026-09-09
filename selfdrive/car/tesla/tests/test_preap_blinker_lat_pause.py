@@ -6,8 +6,10 @@ from opendbc.car.tesla.values import CruiseButtons
 
 from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import (
   _peek_blinker_lamps,
+  _update_preap,
   install_blinker_lat_pause,
 )
+from openpilot.selfdrive.car.tesla import preap_blinker_lat_pause as pause_mod
 from openpilot.selfdrive.controls.lib.blinker_lateral_pause import LAMP_OFF_DEBOUNCE_S
 
 
@@ -242,3 +244,79 @@ def test_tesla_fsm_highway_stalk_tap_does_not_drop_cruise():
   assert eng.cruiseEnabled
   assert eng.enableLongControl
   assert not eng._nap_lat_hold.turn_active
+
+
+def test_tesla_fsm_faster_corner_hands_on_without_torque_threshold():
+  """Hands-on 2 with torsion bar below STEER_THRESHOLD must not drop cruise."""
+  install_blinker_lat_pause()
+  eng = _engaged()
+  eng._nap_left_blinker = True
+  eng._nap_steering_pressed = False
+  eng.handle_steering_disengage(True)
+  assert eng.cruiseEnabled
+  assert eng.enableLongControl
+  assert eng._nap_lat_hold.turn_active
+
+  # Flash gap + 1s dark while still wrenching: still the same turn.
+  eng._nap_left_blinker = False
+  eng._nap_lat_hold.update(False, False, False, engaged=True,
+                           steering_disengage=True, dt=LAMP_OFF_DEBOUNCE_S)
+  eng.handle_steering_disengage(True)
+  assert eng.cruiseEnabled
+  assert eng._nap_lat_hold.turn_active
+
+
+def test_tesla_fsm_stalk_held_without_lamp_cache_keeps_cruise():
+  """Hard gate: physical LEFT/RIGHT even if lamps/hold never latched."""
+  install_blinker_lat_pause()
+  eng = _engaged()
+  eng._nap_stalk_state = 1
+  eng.handle_steering_disengage(True)
+  assert eng.cruiseEnabled
+  assert eng.enableLongControl
+
+
+class _FullParser:
+  def __init__(self, *, left=False, right=False, stalk=1, hands=2, torque=0.0, speed=20.0):
+    self.vl = {
+      "GTW_carState": {"BC_indicatorLStatus": int(left), "BC_indicatorRStatus": int(right)},
+      "EPAS_sysStatus": {"EPAS_torsionBarTorque": torque, "EPAS_handsOnLevel": hands},
+      "STW_ACTN_RQ": {"TurnIndLvr_Stat": stalk},
+      "ESP_B": {"ESP_vehicleSpeed": speed},
+    }
+
+
+def test_install_rewires_tesla_carstate_imported_update_preap():
+  """card.py imports tesla.carstate before install; that binding must wrap."""
+  from opendbc.car.tesla import carstate as tesla_carstate
+  from opendbc.car.tesla.preap import carstate as preap_carstate
+
+  install_blinker_lat_pause()
+  assert tesla_carstate.update_preap is _update_preap
+  assert preap_carstate.update_preap is _update_preap
+
+
+def test_update_wrapper_feeds_handle_so_high_torque_keeps_cruise():
+  """Live path: wrapper must set _nap_* before orig update calls handle."""
+  install_blinker_lat_pause()
+  eng = _engaged()
+  called = {}
+
+  def fake_orig(cs, parsers):
+    called["yes"] = True
+    cs.engagement.handle_steering_disengage(True)
+    return "ok"
+
+  real = pause_mod._ORIG_UPDATE
+  pause_mod._ORIG_UPDATE = fake_orig
+  try:
+    cs = type("CS", (), {"engagement": eng})()
+    parsers = {Bus.chassis: _FullParser(left=True, stalk=1, hands=2)}
+    assert _update_preap(cs, parsers) == "ok"
+    assert called["yes"]
+    assert eng._nap_left_blinker
+    assert eng._nap_stalk_state == 1
+    assert eng.cruiseEnabled
+    assert eng.enableLongControl
+  finally:
+    pause_mod._ORIG_UPDATE = real

@@ -29,6 +29,13 @@ ungated until ~1s of continuous dark, unless the stalk hold takes over.
 
 Hazards (both lamps) do not pause and do not start a lane change.
 No map or OSM junction check.
+
+A faster / higher-torque corner sets EPAS hands-on >= 2 (steeringDisengage)
+before steeringPressed's 5-frame debounce. That torque must keep the
+lat-pause latch and must not drop cruiseEnabled. On Pre-AP that drop is
+EventName.pcmDisable — HUD "Steering Disengaged". Panda tesla_preap still
+drops controls_allowed on the same hands-on; selfdrived must not turn that
+disagreement into controlsMismatch / full cancel.
 """
 
 from openpilot.selfdrive.controls.lib.stalk_tip_turn import StalkTipTurn
@@ -42,6 +49,44 @@ LAMP_OFF_DEBOUNCE_S = 1.0
 
 def blinker_pauses_lateral(left_blinker, right_blinker) -> bool:
   return bool(left_blinker) != bool(right_blinker)
+
+
+def stalk_is_left_or_right(stalk_state) -> bool:
+  return int(stalk_state or 0) in (1, 2)
+
+
+def blinker_turn_blocks_steering_disengage(left_blinker, right_blinker,
+                                          stalk_state=0, hold=None) -> bool:
+  """Do not USER_DISABLE on hands-on / EPAS reject during a driver turn.
+
+  Hold state can lag a frame or expire on a Tesla lamp self-cancel while
+  the stalk is still LEFT/RIGHT. Raw one-lamp XOR and the physical stalk
+  are the hard gate; hold.blocks_steer_disengage covers flash gaps and
+  the post-turn hand-on window.
+
+  Genuine hard faults (door, gear, stalk cancel, permanent steer fault)
+  are separate events and are not suppressed here. Hazards (both lamps)
+  are not a turn.
+  """
+  if blinker_pauses_lateral(left_blinker, right_blinker):
+    return True
+  if stalk_is_left_or_right(stalk_state):
+    return True
+  return hold is not None and bool(hold.blocks_steer_disengage)
+
+
+def preap_blinker_pause_hides_controls_mismatch(*, brand, fingerprint,
+                                                blocks_steer_disengage) -> bool:
+  """True when panda !controlsAllowed is the expected blinker-turn override.
+
+  tesla_preap drops controls_allowed on hands-on >= 2 (and EPAS 6-9). During
+  a lat-paused driver turn that is the driver steering, not a real cancel.
+  Hiding that disagreement prevents EventName.controlsMismatch (2.0s) from
+  fully disabling while the lamps are still flashing.
+  """
+  return (brand == "tesla"
+          and fingerprint == "TESLA_MODEL_S_PREAP"
+          and bool(blocks_steer_disengage))
 
 
 def pause_gated_by_alc(*, alc_active, stalk_is_turn=False, **_unused) -> bool:
@@ -96,13 +141,17 @@ class BlinkerLateralHold:
 
   def update(self, left_blinker, right_blinker, steering_pressed, *,
              engaged=True, dt=None, alc_active=False, v_ego=0.0,
-             stalk_state=0) -> bool:
+             stalk_state=0, steering_disengage=False) -> bool:
     if dt is None:
       dt = DT_CTRL
 
     if not engaged:
       self._reset()
       return False
+
+    # Hands-on >= 2 / EPAS reject is the faster-corner override. It can
+    # rise before the torsion-bar steeringPressed debounce (5 frames).
+    steering_pressed = bool(steering_pressed) or bool(steering_disengage)
 
     self._tip_turn.update(stalk_state, dt)
     one_lamp = blinker_pauses_lateral(left_blinker, right_blinker)
@@ -159,10 +208,16 @@ class BlinkerLateralHold:
       self._dark_s = 0.0
     elif self.turn_active:
       if both_dark:
-        self._dark_s += dt
-        if self._dark_s >= LAMP_OFF_DEBOUNCE_S:
-          self.turn_active = False
+        # High EPS torque means the driver is still in the corner.
+        # Do not treat lamp-dark (flash gap or Tesla self-cancel) as
+        # turn-complete while they are wrenching the wheel.
+        if steering_disengage:
           self._dark_s = 0.0
+        else:
+          self._dark_s += dt
+          if self._dark_s >= LAMP_OFF_DEBOUNCE_S:
+            self.turn_active = False
+            self._dark_s = 0.0
       else:
         # Hazards (both lamps) are not a turn.
         self.turn_active = False
@@ -181,13 +236,17 @@ def lat_active_with_blinker_pause(*, active, steer_fault_temporary, steer_fault_
                                   standstill, steer_at_standstill,
                                   left_blinker, right_blinker,
                                   steering_pressed=False, hold=None, dt=None,
-                                  alc_active=False, v_ego=0.0, stalk_state=0) -> bool:
+                                  alc_active=False, v_ego=0.0, stalk_state=0,
+                                  steering_disengage=False, engaged=None) -> bool:
   lat_active = bool(active) and not steer_fault_temporary and not steer_fault_permanent and \
                (not standstill or steer_at_standstill)
+  if engaged is None:
+    engaged = active
   if hold is not None:
     paused = hold.update(left_blinker, right_blinker, steering_pressed,
-                         engaged=bool(active), dt=dt, alc_active=alc_active,
-                         v_ego=v_ego, stalk_state=stalk_state)
+                         engaged=bool(engaged), dt=dt, alc_active=alc_active,
+                         v_ego=v_ego, stalk_state=stalk_state,
+                         steering_disengage=steering_disengage)
   else:
     gated = pause_gated_by_alc(alc_active=alc_active)
     paused = blinker_pauses_lateral(left_blinker, right_blinker) and not gated

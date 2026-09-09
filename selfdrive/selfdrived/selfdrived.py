@@ -15,6 +15,9 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.common.gps import get_gps_location_service
 
 from openpilot.selfdrive.car.car_specific import CarSpecificEvents
+from openpilot.selfdrive.controls.lib.blinker_lateral_pause import (
+  preap_blinker_pause_hides_controls_mismatch,
+)
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 from openpilot.selfdrive.selfdrived.events import Events, ET
 from openpilot.selfdrive.selfdrived.helpers import ExcessiveActuationCheck
@@ -359,8 +362,13 @@ class SelfdriveD:
       else:
         safety_mismatch = pandaState.safetyModel not in IGNORED_SAFETY_MODES
 
-      # safety mismatch allows some time for pandad to set the safety mode and publish it back from panda
-      if (safety_mismatch and self.sm.frame*DT_CTRL > 10.) or pandaState.safetyRxChecksInvalid or self.mismatch_counter >= 200:
+      # safety mismatch allows some time for pandad to set the safety mode and publish it back from panda.
+      # Do not turn a blinker-turn hands-on override into controlsMismatch / full cancel.
+      blinker_hides_mismatch = preap_blinker_pause_hides_controls_mismatch(
+        brand=self.CP.brand, fingerprint=self.CP.carFingerprint,
+        blocks_steer_disengage=self.car_events.blinker_lat_hold.blocks_steer_disengage)
+      if ((safety_mismatch and self.sm.frame*DT_CTRL > 10.) or pandaState.safetyRxChecksInvalid or
+          (self.mismatch_counter >= 200 and not blinker_hides_mismatch)):
         self.events.add(EventName.controlsMismatch)
 
       if log.PandaState.FaultType.relayMalfunction in pandaState.faults:
@@ -528,10 +536,17 @@ class SelfdriveD:
     if not self.enabled:
       self.mismatch_counter = 0
 
-    # All pandas not in silent mode must have controlsAllowed when openpilot is enabled
+    # All pandas not in silent mode must have controlsAllowed when openpilot is enabled.
+    # tesla_preap also drops controls_allowed on hands-on >= 2. A blinker-latched
+    # driver turn already released lat; that disagreement is not a cancel.
     if self.enabled and any(not ps.controlsAllowed for ps in self.sm['pandaStates']
            if ps.safetyModel not in IGNORED_SAFETY_MODES):
-      self.mismatch_counter += 1
+      if preap_blinker_pause_hides_controls_mismatch(
+          brand=self.CP.brand, fingerprint=self.CP.carFingerprint,
+          blocks_steer_disengage=self.car_events.blinker_lat_hold.blocks_steer_disengage):
+        self.mismatch_counter = 0
+      else:
+        self.mismatch_counter += 1
 
     return CS
 
