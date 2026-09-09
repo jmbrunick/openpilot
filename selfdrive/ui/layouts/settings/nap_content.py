@@ -239,7 +239,9 @@ Query live OSM within 100 miles and merge into the US pack
 
 Queries live OpenStreetMap speed limits within 100 miles (~160.9 km) of
 this car and merges them into the installed US maps. Ways in that radius
-are replaced; the rest of the US pack is kept.
+are replaced; the rest of the US pack is kept. Tagged OSM maxspeed wins.
+In Minnesota, unmarked roads also get statutory estimates (not uploaded
+to OSM) so Refresh maps does not wipe those pack fills.
 
 Uses a GNSS fix if one arrives (waits up to 10s), otherwise last stored GPS.
 Will not guess a city. If maps are not installed yet, downloads the US pack
