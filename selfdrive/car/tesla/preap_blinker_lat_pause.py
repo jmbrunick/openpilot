@@ -1,11 +1,16 @@
 """Keep Pre-AP cruiseEnabled while a blinker lamp pauses lateral.
 
 opendbc's handle_steering_disengage tears down the FSM on hands-on ≥ 2.
+That drop is EventName.pcmDisable — Pre-AP HUD "Steering Disengaged".
 GTW lamp bits flash, so BlinkerLateralHold latches turn-active through
 those gaps. During that turn we have already released steering, so a
 wheel input must not drop cruiseEnabled / enableLongControl. After ~1s
 of continuous dark, keep that suppression until torque is released so a
 finishing hand-steer does not fully disengage NAP. Stalk cancel is unchanged.
+
+card.py imports tesla.carstate (binding update_preap) before this install.
+Patch both the source module and that imported name, or the live path
+never sets _nap_* lamps/stalk and a faster corner still full-cancels.
 
 ALC keep-alive flashes are not a driver turn: do not latch turn-active and
 do not tear down cruise. DAS_bodyControls turn-indicator TX stays in
@@ -19,7 +24,10 @@ controlsMismatch that would otherwise full-cancel after 2s.
 """
 
 from openpilot.common.constants import CV
-from openpilot.selfdrive.controls.lib.blinker_lateral_pause import BlinkerLateralHold
+from openpilot.selfdrive.controls.lib.blinker_lateral_pause import (
+  BlinkerLateralHold,
+  blinker_turn_blocks_steering_disengage,
+)
 
 _ORIG_HANDLE = None
 _ORIG_UPDATE = None
@@ -94,6 +102,7 @@ def _hold_kwargs(engagement, dt=None):
 def _handle_steering_disengage(self, steering_disengage):
   left = getattr(self, "_nap_left_blinker", False)
   right = getattr(self, "_nap_right_blinker", False)
+  stalk = int(getattr(self, "_nap_stalk_state", 0) or 0)
   pressed = bool(getattr(self, "_nap_steering_pressed", False) or steering_disengage)
   hold = _hold_for(self)
   # dt=0: _update_preap already advanced the dark timer this cycle.
@@ -101,7 +110,10 @@ def _handle_steering_disengage(self, steering_disengage):
     left, right, pressed, engaged=bool(getattr(self, "cruiseEnabled", False)),
     steering_disengage=bool(steering_disengage),
     **_hold_kwargs(self, dt=0.0))
-  if hold.blocks_steer_disengage:
+  # Hard gate: one lamp or physical LEFT/RIGHT, not only hold state.
+  # Dropping cruiseEnabled here is EventName.pcmDisable on Pre-AP —
+  # the 3X HUD string "Steering Disengaged".
+  if blinker_turn_blocks_steering_disengage(left, right, stalk, hold):
     # Keep prev in sync so lamp-off / hand-release is not a rising edge.
     self.prev_steering_disengage = steering_disengage
     return
@@ -126,10 +138,26 @@ def _update_preap(cs, can_parsers):
   return _ORIG_UPDATE(cs, can_parsers)
 
 
+def _rewire_tesla_carstate_update():
+  """card.py builds CarInterface before install, which binds update_preap.
+
+  tesla/carstate.py does `from ...preap.carstate import update_preap` and
+  calls that local name. Patching only the source module leaves the live
+  path on the original, so _nap_* lamp/stalk never land and a faster
+  corner tears down cruiseEnabled → pcmDisable / "Steering Disengaged".
+  """
+  try:
+    from opendbc.car.tesla import carstate as tesla_carstate
+    tesla_carstate.update_preap = _update_preap
+  except Exception:
+    pass
+
+
 def install_blinker_lat_pause():
   """Patch Pre-AP engagement so a lamp-on turn does not tear down cruise."""
   global _installed, _ORIG_HANDLE, _ORIG_UPDATE
   if _installed:
+    _rewire_tesla_carstate_update()
     return
   from opendbc.car.tesla.preap import carstate as preap_carstate
   from opendbc.car.tesla.preap.engagement import PreAPEngagement
@@ -138,4 +166,5 @@ def install_blinker_lat_pause():
   _ORIG_UPDATE = preap_carstate.update_preap
   PreAPEngagement.handle_steering_disengage = _handle_steering_disengage
   preap_carstate.update_preap = _update_preap
+  _rewire_tesla_carstate_update()
   _installed = True
