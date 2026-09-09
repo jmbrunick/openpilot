@@ -7,6 +7,7 @@ from openpilot.selfdrive.car.car_specific import CarSpecificEvents
 from openpilot.selfdrive.controls.lib.blinker_lateral_pause import (
   LAMP_OFF_DEBOUNCE_S,
   blinker_pauses_lateral,
+  preap_blinker_pause_hides_controls_mismatch,
 )
 from openpilot.selfdrive.selfdrived.events import ET, EVENTS
 
@@ -137,3 +138,22 @@ def test_highway_stalk_tap_lamps_do_not_steer_disengage():
                        v_ego=30.0, stalk=1), _cs(), cse=cse)
   assert EventName.steerDisengage not in events.names
   assert not cse.blinker_lat_hold.turn_active
+
+
+def test_held_flashing_corner_keeps_block_and_hides_preap_mismatch():
+  cse = CarSpecificEvents(_cp())
+  dt = 0.01
+  period = 0.66
+  on_s = 0.33
+  prev = _cs()
+  for i in range(int(8.0 / dt)):
+    left = ((i * dt) % period) < on_s
+    pressed = (i % 20) < 10
+    cs = _cs(left=left, steering_disengage=pressed, steering_pressed=pressed, stalk=1)
+    events = _events(cs, prev, cse=cse)
+    prev = cs
+    assert EventName.steerDisengage not in events.names
+    assert cse.blinker_lat_hold.blocks_steer_disengage
+  assert preap_blinker_pause_hides_controls_mismatch(
+    brand="tesla", fingerprint="TESLA_MODEL_S_PREAP",
+    blocks_steer_disengage=cse.blinker_lat_hold.blocks_steer_disengage)
