@@ -27,7 +27,7 @@ class CarSpecificEvents:
     if self.CP.brand in ('body', 'mock'):
       return Events()
 
-    events = self.create_common_events(CS, CS_prev)
+    events = self.create_common_events(CS, CS_prev, CC)
 
     if self.CP.brand == 'chrysler':
       # Low speed steer alert hysteresis logic
@@ -113,7 +113,7 @@ class CarSpecificEvents:
 
     return events
 
-  def create_common_events(self, CS: structs.CarState, CS_prev: car.CarState):
+  def create_common_events(self, CS: structs.CarState, CS_prev: car.CarState, CC: car.CarControl):
     events = Events()
 
     CI = interfaces[self.CP.carFingerprint]
@@ -161,14 +161,19 @@ class CarSpecificEvents:
       events.add(EventName.steerOverride)
     # Wheel input during a blinker-lamp turn (including flash gaps), and
     # while the hand is still on the wheel after ~1s of dark, must not
-    # USER_DISABLE cruise. Lateral is already released; a firm stalk
-    # cancel still fully disengages.
-    lat_paused = self.blinker_lat_hold.update(
+    # USER_DISABLE cruise. ALC keep-alive flashes are not a driver turn:
+    # do not pause lat, and do not steerDisengage. A firm stalk cancel
+    # still fully disengages.
+    alc_active = bool(getattr(CC, 'leftBlinker', False) or getattr(CC, 'rightBlinker', False))
+    self.blinker_lat_hold.update(
       getattr(CS, 'leftBlinker', False), getattr(CS, 'rightBlinker', False),
       getattr(CS, 'steeringPressed', False),
-      engaged=bool(getattr(CS.cruiseState, 'enabled', False)))
+      engaged=bool(getattr(CS.cruiseState, 'enabled', False)),
+      alc_active=alc_active,
+      v_ego=float(getattr(CS, 'vEgo', 0.0) or 0.0),
+      stalk_state=int(getattr(CS, 'turnSignalStalkState', 0) or 0))
     if CS.steeringDisengage and not CS_prev.steeringDisengage:
-      if not lat_paused:
+      if not self.blinker_lat_hold.blocks_steer_disengage:
         events.add(EventName.steerDisengage)
     if CS.brakePressed and CS.standstill:
       events.add(EventName.preEnableStandstill)
