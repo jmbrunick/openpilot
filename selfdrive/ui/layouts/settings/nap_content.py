@@ -36,13 +36,14 @@ WIPER_SPEED_DESCRIPTION = (
   "wipers."
 )
 HIGH_LOW_BEAM_DESCRIPTION = (
-  "High-beam tap on the forwarded stalk (0x45). Off and Low leave the "
-  "driver's real stalk nibble alone. High sends low nibble 4 once as a "
-  "short press, then while High stays selected the repeating rest/low "
-  "nibble is blocked so the beams stay on — it does not hold 4 and does "
-  "not flash. Off/Low stop the block and return the real stalk. Select "
-  "High again after Off/Low to tap again. DAS beam fields stay 0. Car on "
-  "is enough — do not engage NAP. This is a car test, not auto headlights."
+  "High-beam tap on the live stalk (0x45). Off and Low leave the driver's "
+  "real stalk nibble alone. High sends low nibble 4 once as a short press, "
+  "then while High stays selected the repeating bus-0 rest/IDLE frame is "
+  "replaced in place (same counter — not a second 0x45) so the beams stay "
+  "on. It does not hold 4 and does not flash. Off/Low stop the block and "
+  "return the real stalk. Select High again after Off/Low to tap again. "
+  "DAS beam fields stay 0. Car on is enough — do not engage NAP. This is "
+  "a car test, not auto headlights."
 )
 
 # Radar lateral offset bounds (meters). Added to radar yRel in
