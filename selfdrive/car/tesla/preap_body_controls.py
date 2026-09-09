@@ -23,8 +23,6 @@ Known risk: pre-AP may ignore a spoofed stalk, or checksum/relay may fault.
 This is a car test, not auto wipers or auto headlights.
 """
 
-from opendbc.car.tesla.preap.nap_params import DEFAULTS, NAPParamKeys
-
 # Params / UI. 0 is off (today's forwarded stalk). Indexes, not raw DBC.
 NAP_WIPER_SPEED = "NAPWiperSpeed"
 NAP_HIGH_LOW_BEAM = "NAPHighLowBeam"
@@ -61,6 +59,7 @@ def _stock_cc():
 
 def register_nap_body_params():
   """Expose the test keys on NAPParamKeys / DEFAULTS for settings reset."""
+  from opendbc.car.tesla.preap.nap_params import DEFAULTS, NAPParamKeys
   NAPParamKeys.WIPER_SPEED = NAP_WIPER_SPEED
   NAPParamKeys.HIGH_LOW_BEAM = NAP_HIGH_LOW_BEAM
   DEFAULTS[NAP_WIPER_SPEED] = WIPER_SETTING_OFF
