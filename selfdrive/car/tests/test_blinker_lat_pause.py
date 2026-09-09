@@ -26,7 +26,7 @@ def _cp():
 
 
 def _cs(*, left=False, right=False, steering_disengage=False, steering_pressed=False,
-        cancel=False, cruise_enabled=True):
+        cancel=False, cruise_enabled=True, v_ego=0.0, stalk=0):
   cs = car.CarState.new_message()
   cs.cruiseState.available = True
   cs.cruiseState.enabled = cruise_enabled
@@ -35,6 +35,8 @@ def _cs(*, left=False, right=False, steering_disengage=False, steering_pressed=F
   cs.rightBlinker = right
   cs.steeringDisengage = steering_disengage
   cs.steeringPressed = steering_pressed
+  cs.vEgo = v_ego
+  cs.turnSignalStalkState = stalk
   if cancel:
     be = car.CarState.ButtonEvent.new_message()
     be.type = ButtonType.cancel
@@ -43,9 +45,9 @@ def _cs(*, left=False, right=False, steering_disengage=False, steering_pressed=F
   return cs
 
 
-def _events(cs, cs_prev=None, cse=None):
+def _events(cs, cs_prev=None, cse=None, cc=None):
   helper = cse or CarSpecificEvents(_cp())
-  return helper.update(cs, cs_prev or _cs(), car.CarControl.new_message())
+  return helper.update(cs, cs_prev or _cs(), cc or car.CarControl.new_message())
 
 
 def test_one_lamp_steering_does_not_user_disable():
@@ -115,3 +117,23 @@ def test_steer_disengage_after_hand_release_still_fires():
   cse.blinker_lat_hold.update(False, False, False, dt=LAMP_OFF_DEBOUNCE_S)
   events = _events(_cs(steering_disengage=True, steering_pressed=True), _cs(), cse=cse)
   assert EventName.steerDisengage in events.names
+
+
+def test_alc_keep_alive_lamps_do_not_steer_disengage():
+  cse = CarSpecificEvents(_cp())
+  cc = car.CarControl.new_message()
+  cc.leftBlinker = True
+  _events(_cs(left=True), _cs(), cse=cse, cc=cc)
+  events = _events(_cs(left=True, steering_disengage=True, steering_pressed=True),
+                   _cs(left=True), cse=cse, cc=cc)
+  assert EventName.steerDisengage not in events.names
+  assert not cse.blinker_lat_hold.turn_active
+  assert cse.blinker_lat_hold.blocks_steer_disengage
+
+
+def test_highway_stalk_tap_lamps_do_not_steer_disengage():
+  cse = CarSpecificEvents(_cp())
+  events = _events(_cs(left=True, steering_disengage=True, steering_pressed=True,
+                       v_ego=30.0, stalk=1), _cs(), cse=cse)
+  assert EventName.steerDisengage not in events.names
+  assert not cse.blinker_lat_hold.turn_active
