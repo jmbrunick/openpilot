@@ -21,24 +21,26 @@ FOLLOW_DISTANCE_VALUES = list(range(1, 8))
 FOLLOW_DISTANCE_LABELS = [str(i) for i in FOLLOW_DISTANCE_VALUES]
 FOLLOW_DISTANCE_DEFAULT = 4
 
-# DAS_bodyControls wiper / high-low beam test. 0 = off (today's TX).
+# Forwarded 0x45 STW_ACTN_RQ wiper / high-beam test. 0 = off (today's stalk).
 WIPER_SPEED_VALUES = [0, 1, 2]
 WIPER_SPEED_LABELS = ["Off", "Int", "On"]
 HIGH_LOW_BEAM_VALUES = [0, 1, 2]
 HIGH_LOW_BEAM_LABELS = ["Off", "Low", "High"]
 WIPER_SPEED_DESCRIPTION = (
-  "Request windshield wipers on DAS_bodyControls (same message as the "
-  "lane-change blinker). Off sends speed 0. Int/On send a fixed non-zero "
-  "speed so you can see if the body controller obeys. No rain sensing. "
-  "Pre-AP body controllers often ignore Autopilot wiper requests — this is "
-  "a car test, not a promise it works. Engage NAP to TX."
+  "Rewrite the wiper nibble on the forwarded stalk (0x45 STW_ACTN_RQ). "
+  "Off leaves the driver's real stalk nibble alone. Int/On set the high "
+  "nibble to 1 (wipers) — they do not spray. No rain sensing. DAS wiper "
+  "fields stay 0 (they were ignored and caused a controls mismatch). "
+  "Car on is enough — do not engage NAP and do not pull the stalk. "
+  "Pre-AP may still ignore a spoofed stalk — this is a car test, not auto "
+  "wipers."
 )
 HIGH_LOW_BEAM_DESCRIPTION = (
-  "Request high or low beams on DAS_bodyControls. Off leaves the field "
-  "undecided (0). Low/High send a steady decision so you can see if the "
-  "beams change — it does not flash and does not switch headlights on/off. "
-  "Pre-AP body controllers often ignore Autopilot beam requests — this is "
-  "a car test, not a promise it works. Engage NAP to TX."
+  "Rewrite the high-beam nibble on the forwarded stalk (0x45). Off and Low "
+  "leave the driver's real stalk nibble alone — do not force 0. High sets "
+  "the low nibble to 4. It does not flash. DAS beam fields stay 0. Car on "
+  "is enough — do not engage NAP and do not pull the stalk. Pre-AP may "
+  "still ignore a spoofed stalk — this is a car test, not auto headlights."
 )
 
 # Radar lateral offset bounds (meters). Added to radar yRel in

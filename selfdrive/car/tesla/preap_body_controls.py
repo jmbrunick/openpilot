@@ -1,45 +1,55 @@
-"""Optional Pre-AP DAS_bodyControls wiper and high/low-beam test.
+"""Default-off Pre-AP wiper / high-beam test on the forwarded stalk.
 
-NAP already sends DAS_bodyControls (0x3E9) for the lane-change blinker.
-teslacan forces DAS_wiperSpeed, DAS_headlightRequest, and
-DAS_highLowBeamDecision to 0. This module replaces that builder so a
-driver-facing NAP setting can request a wiper speed or a high/low beam
-decision. Default is off: those fields stay 0 and the frame matches
-today's blinker-only TX.
+DAS_bodyControls DAS_wiperSpeed and DAS_highLowBeamDecision were ignored by
+this pre-AP Model S and raised a controls mismatch. Those DAS fields stay 0
+(stock teslacan blinker-only TX). This test rewrites the wiper/beam byte on
+the 0x45 STW_ACTN_RQ frame NAP already forwards for stalk spoof.
 
-Known risk: pre-AP body controllers often ignore Autopilot wiper/beam
-requests. This is a car test, not a promise it works.
+Justin’s parked capture (ignore counter/checksum):
+  rest        00ff00....  byte after ff is 0x00
+  wipers on   00ff10....  high nibble of that byte is 1
+  washer      00ff20....  do not send
+  high beams  00ff04....  low nibble of that byte is 4
 
-Do not command defrost. The only defrost signal on this bus
-(MCU_frontDefrostReq_das) is the car telling the 3X that defrost was
-requested.
+Off leaves the driver’s real stalk nibble alone (do not force 0). On sets
+the matching nibble. No rain model. No auto high-beam. Do not flash. Do not
+inject a second 0x45 — overlay the existing forwarded frame and recompute
+CRC the same way create_action_request already does.
+
+Panda already allows TX of 0x45 on bus 0 (stalk spoof whitelist). The TX
+hook does not gate 0x45 on controls_allowed — stock-CC engage already
+sends this ID while disengaged. 0x3E9 DAS_bodyControls *is* gated; that
+is why this test must not use DAS. Do not bypass safety if that ever
+changes. Do not fake this through another ID.
+
+This test must work with the car on and openpilot not engaged. It is not
+gated on cruiseEnabled, latActive, or a stalk pull.
+
+Known risk: pre-AP may ignore a spoofed stalk, or checksum/relay may fault.
+This is a car test, not auto wipers or auto headlights.
 """
 
-from opendbc.car.tesla.preap.nap_params import DEFAULTS, NAPParamKeys
-
-# Params / UI. 0 is off (today's TX). Values are setting indexes, not raw DBC.
+# Params / UI. 0 is off (today's forwarded stalk). Indexes, not raw DBC.
 NAP_WIPER_SPEED = "NAPWiperSpeed"
 NAP_HIGH_LOW_BEAM = "NAPHighLowBeam"
 
-# DAS_wiperSpeed: 0 off, 1-14 speeds. No rain model — the setting is the request.
-# Intermittent = slowest non-zero (1). On = mid continuous (8), not max (14).
 WIPER_SETTING_OFF = 0
 WIPER_SETTING_INTERMITTENT = 1
 WIPER_SETTING_ON = 2
-DAS_WIPER_OFF = 0
-DAS_WIPER_INTERMITTENT = 1
-DAS_WIPER_ON = 8
-
-# DAS_highLowBeamDecision: 0 undecided, 1 off/low, 2 on/high.
-# DAS_headlightRequest is headlights on/off, not dimming — leave it 0.
 BEAM_SETTING_OFF = 0
 BEAM_SETTING_LOW = 1
 BEAM_SETTING_HIGH = 2
-DAS_HIGH_BEAM_UNDECIDED = 0
-DAS_HIGH_BEAM_OFF = 1
-DAS_HIGH_BEAM_ON = 2
 
-_ORIG_CREATE_BODY_CONTROLS = None
+STW_ACTN_RQ_ADDR = 0x45
+STW_WIPER_BEAM_BYTE = 2
+STW_WIPER_ON = 0x10
+STW_WASHER_SPRAY = 0x20
+STW_HIGH_BEAM = 0x04
+STW_HIGH_BEAM_FLASH = 0x08
+STW_FORWARD_SLOT = 10
+
+_ORIG_CREATE_ACTION_REQUEST = None
+_ORIG_STOCK_CC_UPDATE = None
 _installed = False
 
 
@@ -48,36 +58,65 @@ def _tesla_can():
   return TeslaCANPreAP
 
 
-def original_create_body_controls_message():
-  """Stock teslacan builder (blinker only, wiper/beam forced 0)."""
-  global _ORIG_CREATE_BODY_CONTROLS
-  if _ORIG_CREATE_BODY_CONTROLS is None:
-    _ORIG_CREATE_BODY_CONTROLS = _tesla_can().create_body_controls_message
-  return _ORIG_CREATE_BODY_CONTROLS
+def _stock_cc():
+  from opendbc.car.tesla.preap.stock_cc_spoofer import StockCCSpoofer
+  return StockCCSpoofer
 
 
 def register_nap_body_params():
   """Expose the test keys on NAPParamKeys / DEFAULTS for settings reset."""
+  from opendbc.car.tesla.preap.nap_params import DEFAULTS, NAPParamKeys
   NAPParamKeys.WIPER_SPEED = NAP_WIPER_SPEED
   NAPParamKeys.HIGH_LOW_BEAM = NAP_HIGH_LOW_BEAM
   DEFAULTS[NAP_WIPER_SPEED] = WIPER_SETTING_OFF
   DEFAULTS[NAP_HIGH_LOW_BEAM] = BEAM_SETTING_OFF
 
 
-def das_wiper_speed_for_setting(setting: int) -> int:
-  if setting == WIPER_SETTING_INTERMITTENT:
-    return DAS_WIPER_INTERMITTENT
-  if setting == WIPER_SETTING_ON:
-    return DAS_WIPER_ON
-  return DAS_WIPER_OFF
+def wiper_test_requested(setting: int) -> bool:
+  """Int and On share the only captured wiper encoding (high nibble 1)."""
+  return int(setting) in (WIPER_SETTING_INTERMITTENT, WIPER_SETTING_ON)
 
 
-def das_high_low_beam_for_setting(setting: int) -> int:
-  if setting == BEAM_SETTING_LOW:
-    return DAS_HIGH_BEAM_OFF
-  if setting == BEAM_SETTING_HIGH:
-    return DAS_HIGH_BEAM_ON
-  return DAS_HIGH_BEAM_UNDECIDED
+def high_beam_test_requested(setting: int) -> bool:
+  """Only High spoofs. Low/Off leave the stalk — forcing 0 fights a held lever."""
+  return int(setting) == BEAM_SETTING_HIGH
+
+
+def apply_stw_wiper_beam_nibbles(dat: bytes, wiper_on: bool, high_beam_on: bool) -> bytes:
+  """Set captured stalk nibbles. Off leaves that nibble. Never writes spray."""
+  if len(dat) <= STW_WIPER_BEAM_BYTE:
+    return bytes(dat)
+  out = bytearray(dat)
+  b = out[STW_WIPER_BEAM_BYTE]
+  if wiper_on:
+    b = (b & 0x0F) | STW_WIPER_ON
+  if high_beam_on:
+    b = (b & 0xF0) | STW_HIGH_BEAM
+  out[STW_WIPER_BEAM_BYTE] = b
+  return bytes(out)
+
+
+def stalk_test_active(wiper_on: bool | None = None, high_beam_on: bool | None = None) -> bool:
+  """Settings only. Not gated on cruiseEnabled, latActive, or a stalk pull."""
+  if wiper_on is None:
+    wiper_on = requested_wiper_test()
+  if high_beam_on is None:
+    high_beam_on = requested_high_beam_test()
+  return bool(wiper_on or high_beam_on)
+
+
+def extra_stw_forward_needed(can_sends, frame: int, wiper_on: bool, high_beam_on: bool) -> bool:
+  """One 0x45 per stock-cc slot when the test is on. Never a second frame.
+
+  This is the parked / not-engaged path: stock-cc only TXes 0x45 on
+  engage/cancel (a stalk pull). The test must still forward the live stalk
+  when On/High is selected so the nibble can be applied without engaging.
+  """
+  if not stalk_test_active(wiper_on, high_beam_on):
+    return False
+  if int(frame) % STW_FORWARD_SLOT != 0:
+    return False
+  return not any(msg[0] == STW_ACTN_RQ_ADDR for msg in can_sends)
 
 
 def _param_int(key: str, default: int = 0) -> int:
@@ -89,55 +128,70 @@ def _param_int(key: str, default: int = 0) -> int:
     return default
 
 
-def requested_das_wiper_speed() -> int:
-  return das_wiper_speed_for_setting(_param_int(NAP_WIPER_SPEED, WIPER_SETTING_OFF))
+def requested_wiper_test() -> bool:
+  return wiper_test_requested(_param_int(NAP_WIPER_SPEED, WIPER_SETTING_OFF))
 
 
-def requested_das_high_low_beam() -> int:
-  return das_high_low_beam_for_setting(_param_int(NAP_HIGH_LOW_BEAM, BEAM_SETTING_OFF))
+def requested_high_beam_test() -> bool:
+  return high_beam_test_requested(_param_int(NAP_HIGH_LOW_BEAM, BEAM_SETTING_OFF))
 
 
-def create_body_controls_message(self, turn, hazard, bus, counter,
-                                 wiper_speed=None, high_low_beam=None):
-  """Build DAS_bodyControls (0x3E9). Blinker fields stay as teslacan today.
+def overlay_stw_wiper_beam(dat: bytes, wiper_on: bool, high_beam_on: bool, crc_fn=None) -> bytes:
+  """Apply nibbles and resign CRC only when the payload changed."""
+  new_dat = apply_stw_wiper_beam_nibbles(dat, wiper_on, high_beam_on)
+  if new_dat == dat:
+    return dat
+  if crc_fn is None or len(new_dat) < 8:
+    return new_dat
+  out = bytearray(new_dat)
+  out[7] = crc_fn(bytes(out[:7]))
+  return bytes(out)
 
-  wiper_speed / high_low_beam: raw DAS values. None reads the NAP settings
-  (default 0). DAS_headlightRequest stays 0 — it is headlights on/off, not dimming.
 
-  Known risk: pre-AP body controllers often ignore Autopilot wiper/beam
-  requests. This is a car test, not a promise it works.
+def create_action_request_with_overlay(self, button_to_press, bus, counter, msg_stw=None):
+  """Forward the live stalk, then overlay the test nibbles on that same frame."""
+  orig = _ORIG_CREATE_ACTION_REQUEST
+  if orig is None:
+    orig = _tesla_can().create_action_request
+  addr, dat, out_bus = orig(self, button_to_press, bus, counter, msg_stw)
+  dat = overlay_stw_wiper_beam(dat, requested_wiper_test(), requested_high_beam_test(),
+                               crc_fn=self.stw_crc)
+  return addr, dat, out_bus
+
+
+def stock_cc_update_with_overlay(self, CS, frame, tesla_can, can_bus_party):
+  """Keep the single 0x45 TX path. When the test is on, forward if idle this slot.
+
+  Does not read cruiseEnabled, latActive, or CC.enabled. A parked car with
+  NAP not engaged and the stalk at rest is enough.
   """
-  if wiper_speed is None:
-    wiper_speed = requested_das_wiper_speed()
-  if high_low_beam is None:
-    high_low_beam = requested_das_high_low_beam()
-  wiper_speed = max(0, min(14, int(wiper_speed)))
-  high_low_beam = max(0, min(2, int(high_low_beam)))
-
-  values = {
-    "DAS_headlightRequest": 0,
-    "DAS_hazardLightRequest": hazard,
-    "DAS_wiperSpeed": wiper_speed,
-    "DAS_turnIndicatorRequest": turn,
-    "DAS_highLowBeamDecision": high_low_beam,
-    "DAS_highLowBeamOffReason": 0,
-    "DAS_turnIndicatorRequestReason": 1 if turn > 0 else 0,
-    "DAS_bodyControlsCounter": counter,
-    "DAS_bodyControlsChecksum": 0,
-  }
-  from opendbc.car.tesla.values import CANBUS
-  data = self.packers[CANBUS.party].make_can_msg("DAS_bodyControls", bus, values)[1]
-  values["DAS_bodyControlsChecksum"] = self.checksum(0x3E9, data[:7])
-  return self.packers[CANBUS.party].make_can_msg("DAS_bodyControls", bus, values)
+  orig = _ORIG_STOCK_CC_UPDATE
+  if orig is None:
+    orig = _stock_cc().update
+  can_sends = orig(self, CS, frame, tesla_can, can_bus_party)
+  if extra_stw_forward_needed(can_sends, frame, requested_wiper_test(), requested_high_beam_test()):
+    msg_stw = getattr(CS, "msg_stw_actn_req", None)
+    if msg_stw is not None:
+      button = int(msg_stw.get("SpdCtrlLvr_Stat", 0) or 0)
+      sent = self._send(CS, tesla_can, can_bus_party, button)
+      if sent is not None:
+        can_sends.append(sent)
+  return can_sends
 
 
 def install_body_controls_test():
-  """Patch teslacan so card TX honors the NAP wiper / beam settings."""
-  global _installed
+  """Wire NAP Wipers & Lights settings to the forwarded 0x45 stalk byte.
+
+  Does not patch DAS_bodyControls — those wiper/beam fields stay 0.
+  """
+  global _installed, _ORIG_CREATE_ACTION_REQUEST, _ORIG_STOCK_CC_UPDATE
   register_nap_body_params()
   if _installed:
     return
   tesla_can = _tesla_can()
-  original_create_body_controls_message()
-  tesla_can.create_body_controls_message = create_body_controls_message
+  stock_cc = _stock_cc()
+  _ORIG_CREATE_ACTION_REQUEST = tesla_can.create_action_request
+  _ORIG_STOCK_CC_UPDATE = stock_cc.update
+  tesla_can.create_action_request = create_action_request_with_overlay
+  stock_cc.update = stock_cc_update_with_overlay
   _installed = True
