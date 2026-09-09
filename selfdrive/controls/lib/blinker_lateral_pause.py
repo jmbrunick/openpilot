@@ -16,7 +16,8 @@ Hazards (both lamps) do not pause and do not start a lane change.
 No speed threshold, map, or OSM junction check.
 """
 
-from openpilot.common.realtime import DT_CTRL
+# Match controlsd / card (openpilot.common.realtime.DT_CTRL).
+DT_CTRL = 0.01
 
 # Longer than one Tesla indicator off-period (~0.3s at 90 flashes/min).
 LAMP_OFF_DEBOUNCE_S = 1.0
