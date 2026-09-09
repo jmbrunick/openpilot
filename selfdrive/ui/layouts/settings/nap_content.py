@@ -22,6 +22,14 @@ FOLLOW_DISTANCE_LABELS = [str(i) for i in FOLLOW_DISTANCE_VALUES]
 FOLLOW_DISTANCE_DEFAULT = 4
 
 NAP_SPEED_SIGN_LOG = "NAPSpeedSignLog"
+NAP_FORCE_OFFROAD = "NAPForceOffroad"
+FORCE_OFFROAD_DESCRIPTION = (
+  "WARNING: Forces the device offroad and disengages openpilot even while "
+  "moving. Drive manually — no steering or accel assist while this is on. "
+  "Unlocks Download US Maps, Refresh maps, software install, and other "
+  "offroad-only NAP actions. Default Off. Clears when you toggle Off, "
+  "Reset to Defaults, reboot, or the next time ignition turns on."
+)
 SPEED_SIGN_LOG_DESCRIPTION = (
   "Log-only MUTCD speed-sign detector on the ROAD camera + GPS. Default Off. "
   "When On, speedsignd appends JSONL under /data/media/0/nap/speed_signs.jsonl "
