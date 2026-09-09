@@ -12,6 +12,10 @@ do not tear down cruise. DAS_bodyControls turn-indicator TX stays in
 teslacan / carcontroller from CC.leftBlinker; this helper does not touch it.
 
 This follows the same install-from-card pattern as preap_body_controls.
+
+Panda tesla_preap still has its own hands-on >= 2 path. Matching flash-latch
+in tesla_preap.h keeps controls_allowed; selfdrived also hides the
+controlsMismatch that would otherwise full-cancel after 2s.
 """
 
 from openpilot.common.constants import CV
