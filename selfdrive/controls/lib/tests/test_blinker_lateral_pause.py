@@ -5,7 +5,10 @@ from openpilot.selfdrive.controls.lib.blinker_lateral_pause import (
   blinker_pauses_lateral,
   lat_active_with_blinker_pause,
 )
-from openpilot.selfdrive.controls.lib.stalk_tip_turn import STALK_TIP_HOLD_S
+from openpilot.selfdrive.controls.lib.stalk_tip_turn import (
+  STALK_ALC_TURN_HOLD_S,
+  STALK_TIP_HOLD_S,
+)
 
 
 def _lat_kwargs(**overrides):
@@ -172,6 +175,16 @@ def _hold_past_tip(hold, *, v_ego, stalk=1, left=True, dt=0.01):
   assert hold.turn_active
 
 
+def _hold_past_alc_turn(hold, *, v_ego, stalk=1, left=True, dt=0.01, alc_active=True):
+  n = int(round(STALK_ALC_TURN_HOLD_S / dt))
+  for _ in range(n - 1):
+    assert _lat_active(hold, left=left, v_ego=v_ego, stalk_state=stalk, dt=dt,
+                       alc_active=alc_active)
+  assert not _lat_active(hold, left=left, v_ego=v_ego, stalk_state=stalk, dt=dt,
+                         alc_active=alc_active)
+  assert hold.turn_active
+
+
 def test_tip_then_idle_does_not_pause_at_low_or_highway_speed():
   for v in (10 * CV.MPH_TO_MS, 30.0):
     hold = BlinkerLateralHold()
@@ -197,11 +210,83 @@ def test_held_stalk_pauses_lat_at_low_speed():
 
 def test_held_turn_pauses_even_if_alc_active():
   hold = BlinkerLateralHold()
+  _tip_then_idle(hold, v_ego=30.0)
+  _hold_past_alc_turn(hold, v_ego=30.0, alc_active=True)
+  assert not _lat_active(hold, left=True, alc_active=True, v_ego=30.0, stalk_state=1)
+  assert hold.turn_active
+  assert not hold._alc_keep
+
+
+def test_same_direction_hold_under_1s_during_alc_does_not_pause():
+  hold = BlinkerLateralHold()
+  _tip_then_idle(hold, v_ego=30.0)
+  dt = 0.01
+  n = int(round(0.90 / dt))
+  for _ in range(n):
+    assert _lat_active(hold, left=True, alc_active=True, v_ego=30.0, stalk_state=1, dt=dt)
+  assert not hold.turn_active
+  assert hold._alc_keep
+
+
+def test_leftover_keep_alive_same_stalk_held_1s_becomes_turn():
+  hold = BlinkerLateralHold()
+  _tip_then_idle(hold, v_ego=30.0)
+  assert _lat_active(hold, left=True, alc_active=True, stalk_state=0)
+  # ALC finished; leftover keep-alive still flashing.
+  assert _lat_active(hold, left=True, alc_active=False, stalk_state=0)
+  dt = 0.01
+  for _ in range(int(round(0.90 / dt))):
+    assert _lat_active(hold, left=True, alc_active=False, v_ego=30.0, stalk_state=1, dt=dt)
+  assert not hold.turn_active
+  for _ in range(int(round(0.15 / dt))):
+    _lat_active(hold, left=True, alc_active=False, v_ego=30.0, stalk_state=1, dt=dt)
+  assert not _lat_active(hold, left=True, alc_active=False, v_ego=30.0, stalk_state=1)
+  assert hold.turn_active
+  assert not hold._alc_keep
+
+
+def test_alc_turn_then_dark_then_hand_release_resumes():
+  hold = BlinkerLateralHold()
+  _tip_then_idle(hold, v_ego=30.0)
+  _hold_past_alc_turn(hold, v_ego=30.0, alc_active=True)
+  assert not _lat_active(hold, left=True, pressed=True, stalk_state=1)
+  # Stalk released; lamps still on, then 1s dark with hand on, then release.
+  assert not _lat_active(hold, left=True, pressed=True, stalk_state=0)
+  assert not _lat_active(hold, pressed=True, dt=LAMP_OFF_DEBOUNCE_S)
+  assert not hold.turn_active
+  assert hold.holding
+  assert _lat_active(hold)
+  assert not hold.holding
+
+
+def test_alc_turn_pause_survives_stale_alc_active():
+  """After a 1s ALC-to-turn, leftover alc_active must not grab the wheel again."""
+  hold = BlinkerLateralHold()
+  _tip_then_idle(hold, v_ego=30.0)
+  _hold_past_alc_turn(hold, v_ego=30.0, alc_active=True)
+  assert not _lat_active(hold, left=True, alc_active=True, stalk_state=0)
+  assert hold.turn_active
+  assert not hold._alc_keep
+
+
+def test_opposite_tap_during_alc_does_not_pause():
+  hold = BlinkerLateralHold()
+  _tip_then_idle(hold, v_ego=30.0)
+  assert _lat_active(hold, left=True, alc_active=True, stalk_state=0)
+  assert _lat_active(hold, right=True, alc_active=True, stalk_state=2, dt=0.01)
+  assert _lat_active(hold, right=True, alc_active=True, stalk_state=0, dt=0.01)
+  assert not hold.turn_active
+
+
+def test_opposite_held_during_alc_pauses_at_tip_window():
+  hold = BlinkerLateralHold()
+  _tip_then_idle(hold, v_ego=30.0)
+  assert _lat_active(hold, left=True, alc_active=True, stalk_state=0)
   dt = 0.01
   n = int(round(STALK_TIP_HOLD_S / dt))
   for _ in range(n - 1):
-    assert _lat_active(hold, left=True, alc_active=True, v_ego=30.0, stalk_state=1, dt=dt)
-  assert not _lat_active(hold, left=True, alc_active=True, v_ego=30.0, stalk_state=1, dt=dt)
+    assert _lat_active(hold, right=True, alc_active=True, v_ego=30.0, stalk_state=2, dt=dt)
+  assert not _lat_active(hold, right=True, alc_active=True, v_ego=30.0, stalk_state=2, dt=dt)
   assert hold.turn_active
 
 

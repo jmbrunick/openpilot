@@ -72,10 +72,11 @@ See [Tinkla](https://github.com/boggyver/openpilot/tree/tesla_unity_betaC3) and 
 
 ## Turn stalk vs automatic lane change
 
-Pre-AP `TurnIndLvr_Stat` is only IDLE / LEFT / RIGHT / SNA — no tip vs latch bit. NAP classifies from hold time (`STALK_TIP_HOLD_S = 0.40s` in `selfdrive/controls/lib/stalk_tip_turn.py`):
+Pre-AP `TurnIndLvr_Stat` is only IDLE / LEFT / RIGHT / SNA — no tip vs latch bit. NAP classifies from hold time (`selfdrive/controls/lib/stalk_tip_turn.py`):
 
-- **Tip:** LEFT or RIGHT then IDLE within 0.40s → arm ALC at any speed (wheel nudge still starts the change; opposite tap cancels; stalk IDLE alone does not).
-- **Held turn:** LEFT or RIGHT past 0.40s → do not arm ALC; lateral pause (flash-latch ~1s dark, then hand release resumes lat).
+- **Tip:** LEFT or RIGHT then IDLE within `STALK_TIP_HOLD_S` (0.40s) → arm ALC at any speed (wheel nudge still starts the change; opposite tap cancels; stalk IDLE alone does not).
+- **Held turn:** LEFT or RIGHT past 0.40s from idle → do not arm ALC; lateral pause (flash-latch ~1s dark, then hand release resumes lat).
+- **During ALC / leftover keep-alive:** same-direction physical stalk held past `STALK_ALC_TURN_HOLD_S` (1.0s) cancels ALC, stops OP blinker keep-alive, and pauses lat as a driver turn. A shorter same-direction hold does not force a turn. Opposite brief tap still cancels ALC without becoming a turn; opposite held uses the 0.40s window.
 
 `LANE_CHANGE_SPEED_MIN` (20 mph) still gates *starting* the lane-change maneuver after a nudge, not tip vs turn and not pause vs ALC. Hazards do neither. ALC keep-alive lamps do not pause lat.
 
