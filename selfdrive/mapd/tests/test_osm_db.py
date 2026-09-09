@@ -1,8 +1,19 @@
 from openpilot.common.constants import CV
 from openpilot.selfdrive.mapd.constants import OSM_SIGN_LEAD_S, osm_sign_lead_m
-from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB, _offset_point, _pack_coords, _unpack_coords, simplify_coords
+from openpilot.selfdrive.mapd.osm_db import (
+  OsmSpeedLimitDB, _continues_route, _offset_point, _pack_coords, _unpack_coords, simplify_coords,
+)
 from openpilot.selfdrive.mapd.overpass import ways_from_overpass
 from openpilot.selfdrive.mapd.speed_limit import parse_maxspeed
+
+
+def test_continues_route_rejects_cross_street_fills():
+  assert _continues_route(90.0, 90.0, "US 12", "trunk", "US 12", "trunk")
+  assert _continues_route(90.0, 80.0, "US 12", "trunk", "US 12", "primary")
+  assert not _continues_route(90.0, 0.0, "US 12", "trunk", "Oak", "residential")
+  assert not _continues_route(90.0, 90.0, "US 12", "trunk", "Oak", "residential")
+  # Same name may change class in town.
+  assert _continues_route(90.0, 90.0, "US 12", "trunk", "US 12", "residential")
 
 
 def test_parse_maxspeed_units():
@@ -169,6 +180,144 @@ def test_benson_us12_60_to_50_is_next_not_30(tmp_path):
   assert near50 is not None
   assert abs(near50.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3
   assert abs(near50.next_speed_limit_ms - 50 * CV.MPH_TO_MS) < 0.3
+  db.close()
+
+
+def test_next_limit_ignores_cross_street_when_highway_curves(tmp_path):
+  """Geodesic heading ray leaves a curved 60 and must not pick a 30 fill."""
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  OsmSpeedLimitDB.insert_way(
+    con, 1, "US 12", "trunk", 60 * CV.MPH_TO_MS,
+    [(37.0, -122.004), (37.0, -122.000), (37.0005, -121.996)],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 2, "Oak", "residential", 30 * CV.MPH_TO_MS,
+    [(36.999, -121.998), (37.001, -121.998)],
+  )
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  m = db.lookup(37.0, -122.002, bearing_deg=90.0)
+  assert m is not None
+  assert abs(m.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3
+  assert m.next_speed_limit_ms == 0.0
+  db.close()
+
+
+def test_next_limit_ignores_cross_streets_with_gps_heading_error(tmp_path):
+  """Long tagged 60: remaining > 600 m, so along-way used to return None and
+  geodesic picked a 30 fill as soon as GPS heading was a few degrees off."""
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  OsmSpeedLimitDB.insert_way(
+    con, 1, "US 12", "trunk", 60 * CV.MPH_TO_MS,
+    [(37.0, -122.010), (37.0, -121.990)],
+  )
+  for i, lon in enumerate((-122.005, -122.003, -122.001, -121.999)):
+    OsmSpeedLimitDB.insert_way(
+      con, 10 + i, "Cross", "residential", 30 * CV.MPH_TO_MS,
+      [(36.997, lon), (37.003, lon)],
+    )
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  for hdg in (90.0, 85.0, 70.0):
+    m = db.lookup(37.0, -122.006, bearing_deg=hdg)
+    assert m is not None, hdg
+    assert m.way_id == 1, hdg
+    assert abs(m.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3, hdg
+    assert m.next_speed_limit_ms == 0.0, (hdg, m.next_speed_limit_ms * CV.MS_TO_MPH)
+  db.close()
+
+
+def test_on_route_60_to_50_wins_over_cross_street_fill(tmp_path):
+  """US 12 60→50 at an intersection with a 30 mph residential fill."""
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  OsmSpeedLimitDB.insert_way(
+    con, 1, "US 12", "trunk", 60 * CV.MPH_TO_MS,
+    [(37.0, -122.004), (37.0, -122.000)],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 2, "US 12", "trunk", 50 * CV.MPH_TO_MS,
+    [(37.0, -122.000), (37.0, -121.996)],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 3, "Oak", "residential", 30 * CV.MPH_TO_MS,
+    [(36.998, -122.000), (37.002, -122.000)],
+  )
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  m = db.lookup(37.0, -122.002, bearing_deg=90.0)
+  assert m is not None
+  assert abs(m.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3
+  assert abs(m.next_speed_limit_ms - 50 * CV.MPH_TO_MS) < 0.3, m.next_speed_limit_ms * CV.MS_TO_MPH
+  db.close()
+
+
+def test_geodesic_gap_finds_on_route_50_not_cross_street(tmp_path):
+  """OSM gap after the 60 way: heading ray may fill in, but not a 30 cross street."""
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  OsmSpeedLimitDB.insert_way(
+    con, 1, "US 12", "trunk", 60 * CV.MPH_TO_MS,
+    [(37.0, -122.004), (37.0, -122.000)],
+  )
+  # ~80 m gap (along-way 12/25/40 m steps miss; geodesic 40 m probes hit).
+  OsmSpeedLimitDB.insert_way(
+    con, 2, "US 12", "trunk", 50 * CV.MPH_TO_MS,
+    [(37.0, -121.9991), (37.0, -121.996)],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 3, "Oak", "residential", 30 * CV.MPH_TO_MS,
+    [(36.998, -121.99955), (37.002, -121.99955)],
+  )
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  m = db.lookup(37.0, -122.002, bearing_deg=90.0)
+  assert m is not None
+  assert abs(m.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3
+  assert abs(m.next_speed_limit_ms - 50 * CV.MPH_TO_MS) < 0.3, m.next_speed_limit_ms * CV.MS_TO_MPH
+  db.close()
+
+
+def test_benson_us12_long_60_ignores_side_street_30_fill(tmp_path):
+  """Westbound US 12 60 near Benson: a statutory 30 fill beside the highway is
+  not nextSpeedLimit. MAX must not walk down toward that 30."""
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  OsmSpeedLimitDB.insert_way(
+    con, 1557241351, "US 12", "trunk", 60 * CV.MPH_TO_MS,
+    [
+      (45.3079280, -95.5767060),
+      (45.3084190, -95.5784110),
+      (45.3087680, -95.5796230),
+      (45.3088579, -95.5799336),
+      (45.3100, -95.5840),
+      (45.3120, -95.5900),
+    ],
+  )
+  # North-south residential ~200 m along heading 290 from the start.
+  OsmSpeedLimitDB.insert_way(
+    con, 200, "Minnesota Ave", "residential", 30 * CV.MPH_TO_MS,
+    [(45.3075, -95.5784110), (45.3095, -95.5784110)],
+  )
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  m = db.lookup(45.3079280, -95.5767060, bearing_deg=290.0)
+  assert m is not None
+  assert m.way_id == 1557241351
+  assert abs(m.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3
+  assert m.next_speed_limit_ms == 0.0
   db.close()
 
 
