@@ -2,6 +2,7 @@ import pyray as rl
 from dataclasses import dataclass
 from openpilot.common.constants import CV
 from openpilot.selfdrive.ui.onroad.exp_button import ExpButton
+from openpilot.selfdrive.ui.onroad.speed_sign_hud import draw_tici_speed_sign
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.multilang import tr
@@ -127,6 +128,7 @@ class HudRenderer(Widget):
       self._draw_map_speed_limit(rect)
 
     self._draw_current_speed(rect)
+    draw_tici_speed_sign(rect, self._font_bold, self._font_semi_bold)
 
     button_x = rect.x + rect.width - UI_CONFIG.border_size - UI_CONFIG.button_size
     button_y = rect.y + UI_CONFIG.border_size

@@ -21,6 +21,16 @@ FOLLOW_DISTANCE_VALUES = list(range(1, 8))
 FOLLOW_DISTANCE_LABELS = [str(i) for i in FOLLOW_DISTANCE_VALUES]
 FOLLOW_DISTANCE_DEFAULT = 4
 
+NAP_SPEED_SIGN_LOG = "NAPSpeedSignLog"
+SPEED_SIGN_LOG_DESCRIPTION = (
+  "Log-only MUTCD speed-sign detector on the ROAD camera + GPS. Default Off. "
+  "When On, speedsignd appends JSONL under /data/media/0/nap/speed_signs.jsonl "
+  "(t, lat, lon, bearing, mph, conf). Does not write sqlite, does not change "
+  "cruise / HUD MAX, and does not query osm.org. Stock modelV2 has no speedSign "
+  "head — this is a separate process. Optional small ONNX at "
+  "/data/media/0/nap/speed_sign.onnx."
+)
+
 # Forwarded 0x45 STW_ACTN_RQ wiper / high-beam. 0 = off (today's stalk).
 WIPER_SPEED_VALUES = [0, 1, 2, 3]
 WIPER_SPEED_LABELS = ["Off", "Int", "On", "Auto"]
