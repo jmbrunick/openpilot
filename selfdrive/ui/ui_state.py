@@ -158,7 +158,9 @@ class UIState:
     elif not self.sm.alive["wideRoadCameraState"] or not self.sm.valid["wideRoadCameraState"]:
       self.light_sensor = -1
 
-    # Update started state
+    # started comes from hardwared (deviceState.started). NAP Force Offroad
+    # clears that flag so manager stops the onroad stack. Do not OR a
+    # UI-only override here — buttons would unlock while OP still engages.
     self.started = self.sm["deviceState"].started and self.ignition
 
     # Update body state
