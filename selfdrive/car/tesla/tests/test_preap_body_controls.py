@@ -3,6 +3,7 @@ from openpilot.selfdrive.car.tesla.preap_body_controls import (
   BEAM_SETTING_HIGH,
   BEAM_SETTING_LOW,
   BEAM_SETTING_OFF,
+  HIGH_BEAM_PULSE_SLOTS,
   NAP_HIGH_LOW_BEAM,
   NAP_WIPER_SPEED,
   STW_ACTN_RQ_ADDR,
@@ -16,9 +17,11 @@ from openpilot.selfdrive.car.tesla.preap_body_controls import (
   WIPER_SETTING_ON,
   apply_stw_wiper_beam_nibbles,
   extra_stw_forward_needed,
+  high_beam_oneshot_step,
   high_beam_test_requested,
   overlay_stw_wiper_beam,
   register_nap_body_params,
+  reset_high_beam_oneshot,
   stalk_test_active,
   wiper_test_requested,
 )
@@ -87,6 +90,37 @@ def test_overlay_resigns_crc_only_when_changed():
   assert out[7] == (sum(out[:7]) & 0xFF)
 
 
+def test_high_beam_is_oneshot_wiper_is_continuous():
+  overlay, prev, rem = high_beam_oneshot_step(True, False, 0)
+  assert overlay is True
+  for _ in range(HIGH_BEAM_PULSE_SLOTS - 1):
+    overlay, prev, rem = high_beam_oneshot_step(True, prev, rem)
+    assert overlay is True
+  overlay, prev, rem = high_beam_oneshot_step(True, prev, rem)
+  assert overlay is False
+  assert prev is True
+  assert rem == 0
+  # Holding High does not retrigger.
+  overlay, prev, rem = high_beam_oneshot_step(True, prev, rem)
+  assert overlay is False
+  # Leave High and come back — next trigger.
+  overlay, prev, rem = high_beam_oneshot_step(False, prev, rem)
+  assert overlay is False
+  overlay, prev, rem = high_beam_oneshot_step(True, prev, rem)
+  assert overlay is True
+
+
+def test_wiper_overlay_stays_continuous_while_high_is_oneshot():
+  rest = _rest()
+  held = apply_stw_wiper_beam_nibbles(rest, True, False)
+  assert _byte(held) == STW_WIPER_ON
+  assert apply_stw_wiper_beam_nibbles(rest, True, False) == held
+  pulsed = apply_stw_wiper_beam_nibbles(held, True, True)
+  assert _byte(pulsed) == (STW_WIPER_ON | STW_HIGH_BEAM)
+  after = apply_stw_wiper_beam_nibbles(held, True, False)
+  assert after == held
+
+
 def test_stalk_test_active_is_settings_only():
   assert not stalk_test_active(False, False)
   assert stalk_test_active(True, False)
@@ -144,9 +178,11 @@ def test_create_action_request_overlay_and_valid_crc(monkeypatch):
     "HiBmLvr_Stat": 0,
   }
   stock = tc.create_action_request(CruiseButtons.IDLE, CANBUS.party, 6, msg_stw)
+  reset_high_beam_oneshot()
   monkeypatch.setattr(body, "requested_wiper_test", lambda: True)
   monkeypatch.setattr(body, "requested_high_beam_test", lambda: True)
   monkeypatch.setattr(body, "_ORIG_CREATE_ACTION_REQUEST", TeslaCANPreAP.create_action_request)
+  body._slot_high_overlay = body.get_high_beam_oneshot().consume(True)
   addr, dat, bus = body.create_action_request_with_overlay(
     tc, CruiseButtons.IDLE, CANBUS.party, 6, msg_stw)
   assert addr == STW_ACTN_RQ_ADDR == stock[0]
@@ -157,6 +193,21 @@ def test_create_action_request_overlay_and_valid_crc(monkeypatch):
   assert dat[3:7] == stock[1][3:7]
   assert dat[7] == tc.stw_crc(dat[:7])
   assert _byte(dat) != STW_WASHER_SPRAY
+  # Pulse then release: wiper stays held, high nibble is not retriggered.
+  for _ in range(HIGH_BEAM_PULSE_SLOTS - 1):
+    body._slot_high_overlay = body.get_high_beam_oneshot().consume(True)
+    _, pulsed, _ = body.create_action_request_with_overlay(
+      tc, CruiseButtons.IDLE, CANBUS.party, 6, msg_stw)
+    assert _byte(pulsed) & 0x0F == STW_HIGH_BEAM
+  body._slot_high_overlay = body.get_high_beam_oneshot().consume(True)
+  _, after, _ = body.create_action_request_with_overlay(
+    tc, CruiseButtons.IDLE, CANBUS.party, 6, msg_stw)
+  assert _byte(after) == STW_WIPER_ON
+  body._slot_high_overlay = body.get_high_beam_oneshot().consume(True)
+  _, held, _ = body.create_action_request_with_overlay(
+    tc, CruiseButtons.IDLE, CANBUS.party, 6, msg_stw)
+  assert _byte(held) == STW_WIPER_ON
+  assert held[7] == tc.stw_crc(held[:7])
 
 
 class _FakeSpoofer:
@@ -176,6 +227,7 @@ def test_stock_cc_overlay_forwards_once_and_never_a_second_0x45(monkeypatch):
 
   fake = _FakeSpoofer()
   cs = SimpleNamespace(msg_stw_actn_req={"SpdCtrlLvr_Stat": 0})
+  reset_high_beam_oneshot()
   monkeypatch.setattr(body, "requested_wiper_test", lambda: True)
   monkeypatch.setattr(body, "requested_high_beam_test", lambda: False)
   monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: [])
@@ -206,6 +258,7 @@ def test_disengaged_idle_stalk_still_forwards_when_on(monkeypatch):
     latActive=False,
     msg_stw_actn_req={"SpdCtrlLvr_Stat": 0},  # IDLE — no stalk pull
   )
+  reset_high_beam_oneshot()
   monkeypatch.setattr(body, "requested_wiper_test", lambda: True)
   monkeypatch.setattr(body, "requested_high_beam_test", lambda: True)
   monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: [])
@@ -215,6 +268,37 @@ def test_disengaged_idle_stalk_still_forwards_when_on(monkeypatch):
   assert fake.sent[0][0] == 0  # forwarded idle lever, not a cruise press
 
 
+def test_high_only_forwards_during_pulse_then_stops(monkeypatch):
+  """Holding High must not keep TXing 0x45 after the short latch pulse."""
+  from types import SimpleNamespace
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  fake = _FakeSpoofer()
+  cs = SimpleNamespace(msg_stw_actn_req={"SpdCtrlLvr_Stat": 0})
+  reset_high_beam_oneshot()
+  monkeypatch.setattr(body, "requested_wiper_test", lambda: False)
+  monkeypatch.setattr(body, "requested_high_beam_test", lambda: True)
+  monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: [])
+
+  pulsed = 0
+  for slot in range(1, 6):
+    fake.sent.clear()
+    out = body.stock_cc_update_with_overlay(fake, cs, slot * 10, None, 0)
+    if out:
+      pulsed += 1
+      assert out[0][0] == STW_ACTN_RQ_ADDR
+  assert pulsed == HIGH_BEAM_PULSE_SLOTS
+
+  # Leave High and come back — one more pulse, not a hold.
+  monkeypatch.setattr(body, "requested_high_beam_test", lambda: False)
+  body.stock_cc_update_with_overlay(fake, cs, 70, None, 0)
+  monkeypatch.setattr(body, "requested_high_beam_test", lambda: True)
+  fake.sent.clear()
+  out = body.stock_cc_update_with_overlay(fake, cs, 80, None, 0)
+  assert len(out) == 1
+
+
 def test_stock_cc_off_does_not_change_forwarding(monkeypatch):
   from types import SimpleNamespace
 
@@ -222,6 +306,7 @@ def test_stock_cc_off_does_not_change_forwarding(monkeypatch):
 
   fake = _FakeSpoofer()
   cs = SimpleNamespace(msg_stw_actn_req={"SpdCtrlLvr_Stat": 0})
+  reset_high_beam_oneshot()
   monkeypatch.setattr(body, "requested_wiper_test", lambda: False)
   monkeypatch.setattr(body, "requested_high_beam_test", lambda: False)
   monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: [])
@@ -246,6 +331,7 @@ def test_create_action_request_off_matches_stock(monkeypatch):
     "WprSw6Posn": 2,
   }
   stock = tc.create_action_request(CruiseButtons.SET_ACCEL, CANBUS.party, 6, msg_stw)
+  reset_high_beam_oneshot()
   monkeypatch.setattr(body, "requested_wiper_test", lambda: False)
   monkeypatch.setattr(body, "requested_high_beam_test", lambda: False)
   monkeypatch.setattr(body, "_ORIG_CREATE_ACTION_REQUEST", TeslaCANPreAP.create_action_request)

@@ -11,10 +11,16 @@ Justin’s parked capture (ignore counter/checksum):
   washer      00ff20....  do not send
   high beams  00ff04....  low nibble of that byte is 4
 
-Off leaves the driver’s real stalk nibble alone (do not force 0). On sets
-the matching nibble. No rain model. No auto high-beam. Do not flash. Do not
-inject a second 0x45 — overlay the existing forwarded frame and recompute
-CRC the same way create_action_request already does.
+DBC HiBmLvr_Stat=1 is HIBM_ON_PSD (pressed), not a latched-on state.
+On-car: holding nibble 4 at the 10 Hz forward slot retriggered high beams
+instead of latching. Wiper nibble 1 can stay held (Int works). High is a
+short press/release pulse on the rising edge of the setting, then the
+forwarded stalk returns to the driver’s real nibble.
+
+Off leaves the driver’s real stalk nibble alone (do not force 0). Wiper
+On/Int holds high nibble 1. No rain model. No auto high-beam. Do not flash.
+Do not inject a second 0x45 — overlay the existing forwarded frame and
+recompute CRC the same way create_action_request already does.
 
 Panda already allows TX of 0x45 on bus 0 (stalk spoof whitelist). The TX
 hook does not gate 0x45 on controls_allowed — stock-CC engage already
@@ -47,10 +53,15 @@ STW_WASHER_SPRAY = 0x20
 STW_HIGH_BEAM = 0x04
 STW_HIGH_BEAM_FLASH = 0x08
 STW_FORWARD_SLOT = 10
+# Two 10 Hz frames ≈ 200 ms: press seen, then release. Holding 4 forever
+# retriggers the body toggle. One slot can be too short to look like a pull.
+HIGH_BEAM_PULSE_SLOTS = 2
 
 _ORIG_CREATE_ACTION_REQUEST = None
 _ORIG_STOCK_CC_UPDATE = None
 _installed = False
+_high_beam_oneshot = None
+_slot_high_overlay = False
 
 
 def _tesla_can():
@@ -82,6 +93,58 @@ def high_beam_test_requested(setting: int) -> bool:
   return int(setting) == BEAM_SETTING_HIGH
 
 
+def high_beam_oneshot_step(setting_on: bool, prev_on: bool, remaining: int,
+                           pulse_slots: int = HIGH_BEAM_PULSE_SLOTS) -> tuple[bool, bool, int]:
+  """One-shot High pulse. Wipers stay held; beams must not.
+
+  Rising edge of High starts a short press. Holding High does not retrigger.
+  Off/Low then High again is the next trigger.
+  Returns (overlay_this_slot, new_prev, new_remaining).
+  """
+  setting_on = bool(setting_on)
+  if not setting_on:
+    return False, False, 0
+  if not prev_on:
+    remaining = int(pulse_slots)
+  remaining = int(remaining)
+  if remaining > 0:
+    return True, True, remaining - 1
+  return False, True, 0
+
+
+class HighBeamOneShot:
+  def __init__(self, pulse_slots: int = HIGH_BEAM_PULSE_SLOTS):
+    self.pulse_slots = pulse_slots
+    self.prev = False
+    self.remaining = 0
+
+  def reset(self):
+    self.prev = False
+    self.remaining = 0
+
+  def would_overlay(self, setting_on: bool) -> bool:
+    overlay, _, _ = high_beam_oneshot_step(setting_on, self.prev, self.remaining, self.pulse_slots)
+    return overlay
+
+  def consume(self, setting_on: bool) -> bool:
+    overlay, self.prev, self.remaining = high_beam_oneshot_step(
+      setting_on, self.prev, self.remaining, self.pulse_slots)
+    return overlay
+
+
+def get_high_beam_oneshot() -> HighBeamOneShot:
+  global _high_beam_oneshot
+  if _high_beam_oneshot is None:
+    _high_beam_oneshot = HighBeamOneShot()
+  return _high_beam_oneshot
+
+
+def reset_high_beam_oneshot():
+  get_high_beam_oneshot().reset()
+  global _slot_high_overlay
+  _slot_high_overlay = False
+
+
 def apply_stw_wiper_beam_nibbles(dat: bytes, wiper_on: bool, high_beam_on: bool) -> bytes:
   """Set captured stalk nibbles. Off leaves that nibble. Never writes spray."""
   if len(dat) <= STW_WIPER_BEAM_BYTE:
@@ -109,8 +172,9 @@ def extra_stw_forward_needed(can_sends, frame: int, wiper_on: bool, high_beam_on
   """One 0x45 per stock-cc slot when the test is on. Never a second frame.
 
   This is the parked / not-engaged path: stock-cc only TXes 0x45 on
-  engage/cancel (a stalk pull). The test must still forward the live stalk
-  when On/High is selected so the nibble can be applied without engaging.
+  engage/cancel (a stalk pull). Wiper On/Int keeps forwarding so nibble 1
+  can stay held. High only needs a forward during its short pulse — after
+  that the real stalk stays on the bus so the beams can latch.
   """
   if not stalk_test_active(wiper_on, high_beam_on):
     return False
@@ -154,7 +218,7 @@ def create_action_request_with_overlay(self, button_to_press, bus, counter, msg_
   if orig is None:
     orig = _tesla_can().create_action_request
   addr, dat, out_bus = orig(self, button_to_press, bus, counter, msg_stw)
-  dat = overlay_stw_wiper_beam(dat, requested_wiper_test(), requested_high_beam_test(),
+  dat = overlay_stw_wiper_beam(dat, requested_wiper_test(), _slot_high_overlay,
                                crc_fn=self.stw_crc)
   return addr, dat, out_bus
 
@@ -163,13 +227,20 @@ def stock_cc_update_with_overlay(self, CS, frame, tesla_can, can_bus_party):
   """Keep the single 0x45 TX path. When the test is on, forward if idle this slot.
 
   Does not read cruiseEnabled, latActive, or CC.enabled. A parked car with
-  NAP not engaged and the stalk at rest is enough.
+  NAP not engaged and the stalk at rest is enough. High only extra-forwards
+  during its one-shot pulse; wipers keep forwarding while held.
   """
+  global _slot_high_overlay
   orig = _ORIG_STOCK_CC_UPDATE
   if orig is None:
     orig = _stock_cc().update
+  wiper = requested_wiper_test()
+  high_setting = requested_high_beam_test()
+  if int(frame) % STW_FORWARD_SLOT == 0:
+    # Tick once per 10 Hz slot even if we do not TX, so Off→High retriggers.
+    _slot_high_overlay = get_high_beam_oneshot().consume(high_setting)
   can_sends = orig(self, CS, frame, tesla_can, can_bus_party)
-  if extra_stw_forward_needed(can_sends, frame, requested_wiper_test(), requested_high_beam_test()):
+  if extra_stw_forward_needed(can_sends, frame, wiper, _slot_high_overlay):
     msg_stw = getattr(CS, "msg_stw_actn_req", None)
     if msg_stw is not None:
       button = int(msg_stw.get("SpdCtrlLvr_Stat", 0) or 0)
