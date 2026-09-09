@@ -14,16 +14,18 @@ longer held (steeringPressed). Longitudinal is unchanged by this helper.
 
 Automatic lane change is the other blinker user. OP drives the lamps while
 ALC is armed or in progress, so those flashes must not pause lat or latch a
-driver turn. Gate pause off when ALC is active, and also on a highway stalk
-tap (the arming edge) so the driver's own lamps cannot kill latActive before
-DesireHelper arms. Leftover keep-alive flashes after ALC stay ungated until
-~1s of continuous dark.
+driver turn. Gate pause off when ALC is active, and on a stalk *tip*
+(LEFT/RIGHT then IDLE within STALK_TIP_HOLD_S=0.40s) so the driver's own
+lamps cannot kill latActive before DesireHelper arms. A held LEFT/RIGHT
+past that window is a driver turn at any speed: pause lat, do not treat it
+as ALC. Leftover keep-alive flashes after ALC stay ungated until ~1s of
+continuous dark.
 
 Hazards (both lamps) do not pause and do not start a lane change.
 No map or OSM junction check.
 """
 
-from openpilot.common.constants import CV
+from openpilot.selfdrive.controls.lib.stalk_tip_turn import StalkTipTurn
 
 # Match controlsd / card (openpilot.common.realtime.DT_CTRL).
 DT_CTRL = 0.01
@@ -31,23 +33,20 @@ DT_CTRL = 0.01
 # Longer than one Tesla indicator off-period (~0.3s at 90 flashes/min).
 LAMP_OFF_DEBOUNCE_S = 1.0
 
-# Same threshold as desire_helper.LANE_CHANGE_SPEED_MIN. Kept here so this
-# helper stays free of desire_helper / realtime imports.
-ALC_ARM_SPEED_MIN = 20 * CV.MPH_TO_MS
-
 
 def blinker_pauses_lateral(left_blinker, right_blinker) -> bool:
   return bool(left_blinker) != bool(right_blinker)
 
 
-def pause_gated_by_alc(*, alc_active, v_ego=0.0, stalk_state=0,
-                       left_blinker=False, right_blinker=False) -> bool:
-  """True when lamps are ALC (or the tap that will arm ALC), not a driver turn."""
-  if alc_active:
-    return True
-  if bool(left_blinker) and bool(right_blinker):
+def pause_gated_by_alc(*, alc_active, stalk_is_turn=False, **_unused) -> bool:
+  """True when lamps are ALC, not a driver turn.
+
+  A held stalk (past the tip window) is a turn even if ALC was armed:
+  do not gate pause off. Speed is not part of this decision.
+  """
+  if stalk_is_turn:
     return False
-  return float(v_ego) >= ALC_ARM_SPEED_MIN and int(stalk_state) in (1, 2)
+  return bool(alc_active)
 
 
 class BlinkerLateralHold:
@@ -60,6 +59,7 @@ class BlinkerLateralHold:
     self._dark_s = 0.0
     self._alc_keep = False
     self._alc_dark_s = 0.0
+    self._tip_turn = StalkTipTurn()
 
   def _reset(self):
     self.holding = False
@@ -67,12 +67,14 @@ class BlinkerLateralHold:
     self._dark_s = 0.0
     self._alc_keep = False
     self._alc_dark_s = 0.0
+    self._tip_turn.reset()
 
   @property
   def blocks_steer_disengage(self) -> bool:
-    # Driver-turn pause, post-turn hand-on, or ALC keep-alive (including
-    # leftover flashes) must not USER_DISABLE cruise.
-    return self.holding or self.turn_active or self._alc_keep
+    # Driver-turn pause, post-turn hand-on, ALC keep-alive (including
+    # leftover flashes), or the unclassified tip window must not
+    # USER_DISABLE cruise.
+    return self.holding or self.turn_active or self._alc_keep or self._tip_turn.is_pending
 
   def _enter_alc_keep(self):
     self.turn_active = False
@@ -91,14 +93,24 @@ class BlinkerLateralHold:
       self._reset()
       return False
 
+    self._tip_turn.update(stalk_state, dt)
     one_lamp = blinker_pauses_lateral(left_blinker, right_blinker)
     both_dark = (not left_blinker) and (not right_blinker)
-    alc = pause_gated_by_alc(alc_active=alc_active, v_ego=v_ego,
-                             stalk_state=stalk_state,
-                             left_blinker=left_blinker, right_blinker=right_blinker)
+    stalk_is_turn = self._tip_turn.is_turn
 
-    if alc:
+    # Held past the tip window: driver turn. Pause from lamps, even if
+    # DesireHelper still has ALC armed for a frame.
+    if stalk_is_turn:
+      self._alc_keep = False
+      self._alc_dark_s = 0.0
+    elif pause_gated_by_alc(alc_active=alc_active) or self._tip_turn.tip_event:
       self._enter_alc_keep()
+      return False
+    elif self._tip_turn.is_pending:
+      # Not yet tip vs turn. Do not pause and do not latch a turn from
+      # the driver's lamps — a tip will arm ALC on IDLE.
+      if self.turn_active or self.holding:
+        return True
       return False
 
     if self._alc_keep:
@@ -150,9 +162,7 @@ def lat_active_with_blinker_pause(*, active, steer_fault_temporary, steer_fault_
                          engaged=bool(active), dt=dt, alc_active=alc_active,
                          v_ego=v_ego, stalk_state=stalk_state)
   else:
-    gated = pause_gated_by_alc(alc_active=alc_active, v_ego=v_ego,
-                               stalk_state=stalk_state,
-                               left_blinker=left_blinker, right_blinker=right_blinker)
+    gated = pause_gated_by_alc(alc_active=alc_active)
     paused = blinker_pauses_lateral(left_blinker, right_blinker) and not gated
   if paused:
     return False
