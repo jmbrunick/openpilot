@@ -1,7 +1,7 @@
 """Download a prebuilt NAP OSM speed-limit sqlite from a GitHub Release.
 
 Stages on the destination filesystem (not /tmp). US pack peak is the zst plus
-the sqlite.partial before the zst is deleted: ~200 MiB + ~541 MiB.
+the sqlite.partial before the zst is deleted: ~204 MiB + ~516 MiB.
 """
 from __future__ import annotations
 
@@ -309,7 +309,7 @@ def _space_error(dest: str, free: int, need: int) -> RuntimeError:
 def required_free_bytes(zst_bytes: int | None = None, *, us_pack: bool = True) -> int:
   """Bytes that must be free on the dest filesystem before a fetch.
 
-  US pack: max(zst + sqlite + margin, MIN_FREE_BYTES) = 822 MiB.
+  US pack: max(zst + sqlite + margin, MIN_FREE_BYTES) = 800 MiB.
   Local/test installs (file://, empty sha256) only need a small headroom.
   """
   if not us_pack:
@@ -498,7 +498,7 @@ def fetch_and_install(
   os.makedirs(dest_dir, exist_ok=True)
   cleanup_incomplete(dest)
   # Default Settings path (HTTPS + ASSET_SHA256) needs the US-pack budget.
-  # file:// / empty sha256 (tests, Overpass copies) skip the 822 MiB check.
+  # file:// / empty sha256 (tests, Overpass copies) skip the 800 MiB check.
   zst_hash = _hash_requested(sha256)
   us_pack = not url.startswith("file:") and bool(zst_hash)
   assert_free_space(dest, us_pack=us_pack)
