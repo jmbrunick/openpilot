@@ -88,15 +88,13 @@ def test_4hz_would_saturate_typical_onnx_budget():
 
 def test_yield_to_modeld_sets_nice_and_drops_rt(monkeypatch):
   called: dict[str, object] = {}
-
-  def _drop():
-    called["drop"] = True
+  fake_rt = SimpleNamespace(drop_realtime=lambda: called.setdefault("drop", True))
+  monkeypatch.setitem(__import__("sys").modules, "openpilot.common.realtime", fake_rt)
 
   def _nice(n):
     called["nice"] = n
     return n
 
-  monkeypatch.setattr("openpilot.common.realtime.drop_realtime", _drop)
   monkeypatch.setattr(os, "nice", _nice)
   yield_to_modeld()
   assert called.get("drop") is True
