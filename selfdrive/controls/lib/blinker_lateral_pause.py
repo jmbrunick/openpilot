@@ -10,7 +10,9 @@ have been dark for longer than one flash (~1s). Stalk returning to center
 does not end the turn.
 
 After the turn is complete, keep lateral released until the wheel is no
-longer held (steeringPressed). Longitudinal is unchanged by this helper.
+longer held (steeringPressed). This helper only pauses lat. Pre-AP's
+engagement FSM drops longitudinal on turn_active (not ALC tip/keep-alive)
+and restores it on one stalk SET after the latch ends.
 
 Automatic lane change is the other blinker user. OP drives the lamps while
 ALC is armed or in progress, so those flashes must not pause lat or latch a
