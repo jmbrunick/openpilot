@@ -13,6 +13,13 @@ HUD_LABEL = "SIGN"
 HUD_MISSING_WEIGHTS_TEXT = "NO WT"
 
 
+def plate_digit_size(text: str, default: int) -> int:
+  """Shrink 'NO WT' so it fits the mph plate; keep 2–3 digit mph large."""
+  if len(text) > 3:
+    return max(22, int(default * 0.42))
+  return default
+
+
 def hud_should_show(enabled: bool, valid: bool, mph: int) -> bool:
   return bool(enabled) and bool(valid) and int(mph) > 0
 
