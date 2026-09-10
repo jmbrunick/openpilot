@@ -1,3 +1,7 @@
+NAP blinker (2026-09-10)
+========================
+* A held/latched driver turn blinker now drops longitudinal as well as pausing lat. After the lamps/latch end, one stalk SET restores long (lat still paused or already active). ALC tip/keep-alive does not drop long. Stalk cancel still fully disengages; brake can still drop long. No panda flash required.
+
 NAP Force Offroad (2026-09-10)
 ========================
 * Settings → NAP → Force Offroad / Go Offline. Temporarily drops the device into offroad (started=false) while the car is still moving so Download US Maps, Refresh maps, and software install unlock. Stops openpilot — drive manually. Default Off. Clears on toggle Off, Reset to Defaults, reboot, or the next ignition ON. Optional / reversible: revert this PR, or delete the Force Offroad files + `NAPForceOffroad` param + hardwared hook + NAP UI toggle.
