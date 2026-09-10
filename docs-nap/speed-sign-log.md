@@ -55,8 +55,9 @@ Source checkpoint (MIT): [cvtechniques/JC-Traffic-Sign-Detection](https://huggin
 
 After weights are installed and the logger is **On**, drive past a **clear, unobstructed MUTCD R2-1** (white SPEED LIMIT plate) in daylight — e.g. a roadside **55** or **60**.
 
-- Within about **0.5 s** (two frames at 4 Hz) a large opaque **SIGN** plate appears with that mph.
-- It holds **1.5 s** after the last confirmed detection, then hides.
+- Within about **0.5 s** (two frames at 4 Hz) a large opaque **SIGN** plate appears with that mph on the **left** (driver) side of the onroad UI.
+- **Yes** / **No** (“is this accurate?”) sit under the plate on 3X (beside it on comma 4). They are **stubs** right now — they do not change cruise, HUD MAX, or map speed. Later, Yes may confirm the marker (JSONL + optional OSM); No may discard a wrong read.
+- It holds **1.5 s** after the last confirmed detection, then hides (Yes/No hide with it).
 - A JSONL row is appended only with a live GNSS fix (same mph near the last write is skipped ~8 s / ~40 m).
 - HUD **MAX** / cruise / OSM LIMIT do not change.
 
@@ -98,15 +99,18 @@ When the logger is **On**, a large opaque **SIGN** plate shows the mph the camer
 
 | | |
 |---|---|
-| Where (3X) | Top-right, left of the experimental button (opposite MAX / OSM LIMIT) |
-| Where (comma 4) | Top-right |
+| Where (3X) | Left / driver side, below the MAX box. Large plate (200×248). |
+| Where (comma 4) | Left / driver side (top-left), same idea |
+| Yes / No | Shown only with a live mph. 3X: stacked under the plate (full-width, ~112 px tall). comma 4: beside the plate. **No-op stubs** (cloudlog debug only). |
 | Confirm | **2** detections of the same mph within **0.75 s**, conf ≥ **0.40** |
 | Hold | **1.5 s** after the last confirmed detection, then it hides |
 | Source | cereal `liveSpeedSignNAP` (not the JSONL file) |
 
 White MUTCD-style plate, black digits, red border, **SIGN** label so it is not confused with HUD MAX or OSM LIMIT.
 
-If the logger is On and ONNX failed to load, the same plate shows **NO WT** (not a mph). After weights are installed, a blank plate means no confirmed detection — that is normal.
+If the logger is On and ONNX failed to load, the same left-side plate shows **NO WT** (not a mph) — **no Yes/No**. After weights are installed, a blank plate means no confirmed detection — that is normal.
+
+Yes/No do not write params, JSONL, or sqlite in this revision. The hook is `on_confirm_accuracy(mph, yes)` — future work may JSONL-confirm a good read and optionally push the marker to OSM.
 
 ## SIGN never lights
 
@@ -147,3 +151,4 @@ Bring-your-own ONNX is still accepted if it matches the YOLO layout above or the
 - No osm.org / Overpass
 - No modeld / `modelV2` head
 - The SIGN plate is display-only (same process; not a second controller)
+- Yes/No accuracy buttons are display-only stubs (no JSONL confirm, no OSM upload)
