@@ -1,32 +1,69 @@
 """On-road camera speed-sign HUD (display-only).
 
-Large opaque MUTCD-style plate. TICI: top-right, left of the experimental
-button (opposite MAX / OSM LIMIT). Mici: top-right.
+Large opaque MUTCD-style plate on the driver / left side of the onroad UI.
+TICI: below MAX. Mici: top-left.
 
 When the logger is On and ONNX weights failed to load, the plate shows
 NO WT instead of staying blank (and never a fake mph).
+
+Yes/No ("is this accurate?") appears only with a live mph — not for NO WT.
+Those buttons are stubs: they do not change cruise, HUD MAX, or map speed.
 """
 from __future__ import annotations
 
 import pyray as rl
-from openpilot.selfdrive.speedsignd.hud import HUD_LABEL, LiveSignView, live_sign_from_event, plate_digit_size
+from openpilot.common.swaglog import cloudlog
+from openpilot.selfdrive.speedsignd.hud import (
+  HUD_CONFIRM_NO,
+  HUD_CONFIRM_PROMPT,
+  HUD_CONFIRM_YES,
+  HUD_LABEL,
+  LiveSignView,
+  MICI_CONFIRM_BTN_W,
+  MICI_CONFIRM_GAP,
+  MICI_SIGN_H,
+  MICI_SIGN_W,
+  TICI_CONFIRM_BTN_H,
+  TICI_CONFIRM_GAP,
+  TICI_CONFIRM_PROMPT_H,
+  TICI_SIGN_H,
+  TICI_SIGN_W,
+  accuracy_button_rects,
+  hit_accuracy_button,
+  hud_confirm_visible,
+  live_sign_from_event,
+  mici_sign_origin,
+  plate_digit_size,
+  tici_sign_origin,
+)
 from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.system.ui.lib.application import gui_app, FontWeight, MousePos
 from openpilot.system.ui.lib.text_measure import measure_text_cached
+from openpilot.system.ui.widgets import Widget
 
-# TICI 2160x1080 — bigger than OSM LIMIT (64pt), smaller than live speed (176pt).
-TICI_W, TICI_H = 200, 248
+# TICI digits bigger than OSM LIMIT (64pt), smaller than live speed (176pt).
+TICI_W, TICI_H = TICI_SIGN_W, TICI_SIGN_H
 TICI_DIGIT = 120
 TICI_LABEL = 36
+TICI_CONFIRM_FONT = 48
+TICI_PROMPT_FONT = 28
 # Mici 536x240 — still a solid plate, not a toast.
-MICI_W, MICI_H = 108, 128
+MICI_W, MICI_H = MICI_SIGN_W, MICI_SIGN_H
 MICI_DIGIT = 72
 MICI_LABEL = 18
+MICI_CONFIRM_FONT = 22
 
 _SIGN_BG = rl.WHITE
 _SIGN_BORDER = rl.Color(180, 40, 40, 255)
 _SIGN_INK = rl.BLACK
 _SIGN_LABEL = rl.Color(40, 40, 40, 255)
 _SIGN_MISSING_INK = rl.Color(160, 40, 40, 255)
+_YES_BG = rl.Color(36, 130, 72, 235)
+_YES_BG_PRESSED = rl.Color(48, 160, 88, 255)
+_NO_BG = rl.Color(170, 40, 40, 235)
+_NO_BG_PRESSED = rl.Color(200, 52, 52, 255)
+_BTN_INK = rl.WHITE
+_PROMPT_INK = rl.Color(230, 230, 230, 255)
 
 
 def live_sign_from_sm(sm, enabled: bool) -> LiveSignView:
@@ -49,17 +86,38 @@ def logger_enabled() -> bool:
 
 
 def tici_sign_rect(rect: rl.Rectangle) -> rl.Rectangle:
-  """Left of the experimental button, same row as MAX."""
-  button_x = rect.x + rect.width - 30 - 192
-  x = button_x - 18 - TICI_W
-  y = rect.y + 45
+  """Driver-left, below the MAX box. Same anchor for SIGN mph and NO WT."""
+  x, y = tici_sign_origin(rect.x, rect.y)
   return rl.Rectangle(x, y, TICI_W, TICI_H)
 
 
 def mici_sign_rect(rect: rl.Rectangle) -> rl.Rectangle:
-  x = rect.x + rect.width - 8 - MICI_W
-  y = rect.y + 6
+  """Left / driver side, analogous to TICI."""
+  x, y = mici_sign_origin(rect.x, rect.y)
   return rl.Rectangle(x, y, MICI_W, MICI_H)
+
+
+def tici_confirm_rects(sign: rl.Rectangle) -> tuple[tuple[float, float, float, float], tuple[float, float, float, float]]:
+  return accuracy_button_rects(
+    sign.x, sign.y, sign.width, sign.height,
+    beside=False, btn_h=TICI_CONFIRM_BTN_H, gap=TICI_CONFIRM_GAP, prompt_h=TICI_CONFIRM_PROMPT_H,
+  )
+
+
+def mici_confirm_rects(sign: rl.Rectangle) -> tuple[tuple[float, float, float, float], tuple[float, float, float, float]]:
+  return accuracy_button_rects(
+    sign.x, sign.y, sign.width, sign.height,
+    beside=True, btn_w=MICI_CONFIRM_BTN_W, gap=MICI_CONFIRM_GAP,
+  )
+
+
+def on_confirm_accuracy(mph: int, yes: bool) -> None:
+  """Stub: future work may JSONL-confirm this mph and optionally push to OSM.
+
+  Display-only for now — no params, no JSONL, no sqlite, no cruise / HUD MAX /
+  map-speed change, and no osm.org write.
+  """
+  cloudlog.debug("speed_sign_hud on_confirm_accuracy mph=%s yes=%s (stub)", int(mph), bool(yes))
 
 
 def draw_speed_sign_plate(
@@ -92,19 +150,120 @@ def draw_speed_sign_plate(
   )
 
 
-def _draw_live_sign(rect_fn, rect: rl.Rectangle, font_bold, font_label, digit_size: int, label_size: int) -> None:
+def _rect_from_tuple(r: tuple[float, float, float, float]) -> rl.Rectangle:
+  return rl.Rectangle(r[0], r[1], r[2], r[3])
+
+
+def _draw_confirm_button(r: tuple[float, float, float, float], label: str, font, font_size: int,
+                         bg, pressed: bool, pressed_bg) -> None:
+  box = _rect_from_tuple(r)
+  rl.draw_rectangle_rounded(box, 0.18, 8, pressed_bg if pressed else bg)
+  text_w = measure_text_cached(font, label, font_size).x
+  text_h = measure_text_cached(font, label, font_size).y
+  rl.draw_text_ex(
+    font, label,
+    rl.Vector2(box.x + (box.width - text_w) / 2, box.y + (box.height - text_h) / 2),
+    font_size, 0, _BTN_INK,
+  )
+
+
+def draw_accuracy_overlay(
+  sign: rl.Rectangle,
+  yes: tuple[float, float, float, float],
+  no: tuple[float, float, float, float],
+  font,
+  *,
+  tici: bool,
+  pressed_yes: bool = False,
+  pressed_no: bool = False,
+) -> None:
+  font_size = TICI_CONFIRM_FONT if tici else MICI_CONFIRM_FONT
+  if tici:
+    prompt_w = measure_text_cached(font, HUD_CONFIRM_PROMPT, TICI_PROMPT_FONT).x
+    rl.draw_text_ex(
+      font, HUD_CONFIRM_PROMPT,
+      rl.Vector2(sign.x + (sign.width - prompt_w) / 2, sign.y + sign.height + 6),
+      TICI_PROMPT_FONT, 0, _PROMPT_INK,
+    )
+  _draw_confirm_button(yes, HUD_CONFIRM_YES, font, font_size, _YES_BG, pressed_yes, _YES_BG_PRESSED)
+  _draw_confirm_button(no, HUD_CONFIRM_NO, font, font_size, _NO_BG, pressed_no, _NO_BG_PRESSED)
+
+
+def _draw_live_sign(rect_fn, rect: rl.Rectangle, font_bold, font_label, digit_size: int, label_size: int) -> LiveSignView:
   view = live_sign_from_sm(ui_state.sm, logger_enabled())
   if not view.show:
-    return
+    return view
   ink = _SIGN_MISSING_INK if view.show_missing_weights else _SIGN_INK
   draw_speed_sign_plate(
     rect_fn(rect), view.plate_text, font_bold, font_label, digit_size, label_size, ink=ink,
   )
+  return view
 
 
-def draw_tici_speed_sign(rect: rl.Rectangle, font_bold, font_label) -> None:
-  _draw_live_sign(tici_sign_rect, rect, font_bold, font_label, TICI_DIGIT, TICI_LABEL)
+def draw_tici_speed_sign(rect: rl.Rectangle, font_bold, font_label) -> LiveSignView:
+  return _draw_live_sign(tici_sign_rect, rect, font_bold, font_label, TICI_DIGIT, TICI_LABEL)
 
 
-def draw_mici_speed_sign(rect: rl.Rectangle, font_bold, font_label) -> None:
-  _draw_live_sign(mici_sign_rect, rect, font_bold, font_label, MICI_DIGIT, MICI_LABEL)
+def draw_mici_speed_sign(rect: rl.Rectangle, font_bold, font_label) -> LiveSignView:
+  return _draw_live_sign(mici_sign_rect, rect, font_bold, font_label, MICI_DIGIT, MICI_LABEL)
+
+
+class SpeedSignHud(Widget):
+  """SIGN / NO WT plate plus stub Yes/No accuracy overlay."""
+
+  def __init__(self, *, tici: bool):
+    super().__init__()
+    self._tici = tici
+    self._view = LiveSignView()
+    self._yes = (0.0, 0.0, 0.0, 0.0)
+    self._no = (0.0, 0.0, 0.0, 0.0)
+    self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
+    self._font_label: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
+
+  def _update_state(self) -> None:
+    self._view = live_sign_from_sm(ui_state.sm, logger_enabled())
+
+  def _layout(self) -> None:
+    sign = tici_sign_rect(self._rect) if self._tici else mici_sign_rect(self._rect)
+    if self._tici:
+      self._yes, self._no = tici_confirm_rects(sign)
+    else:
+      self._yes, self._no = mici_confirm_rects(sign)
+
+  @property
+  def _hit_rect(self) -> rl.Rectangle:
+    # Only Yes/No consume touches — the plate itself does not block onroad UI.
+    if not hud_confirm_visible(self._view):
+      return rl.Rectangle(0, 0, 0, 0)
+    yx, yy, yw, yh = self._yes
+    nx, ny, nw, nh = self._no
+    x = min(yx, nx)
+    y = min(yy, ny)
+    return rl.Rectangle(x, y, max(yx + yw, nx + nw) - x, max(yy + yh, ny + nh) - y)
+
+  def _handle_mouse_release(self, mouse_pos: MousePos) -> None:
+    if not hud_confirm_visible(self._view):
+      return
+    hit = hit_accuracy_button(mouse_pos.x, mouse_pos.y, self._yes, self._no)
+    if hit is None:
+      return
+    on_confirm_accuracy(self._view.mph, hit)
+
+  def _render(self, rect: rl.Rectangle) -> None:
+    if not self._view.show:
+      return
+    if self._tici:
+      sign = tici_sign_rect(rect)
+      view = draw_tici_speed_sign(rect, self._font_bold, self._font_label)
+    else:
+      sign = mici_sign_rect(rect)
+      view = draw_mici_speed_sign(rect, self._font_bold, self._font_label)
+    if not hud_confirm_visible(view):
+      return
+    mouse = rl.get_mouse_position()
+    pressed = self.is_pressed
+    draw_accuracy_overlay(
+      sign, self._yes, self._no, self._font_label, tici=self._tici,
+      pressed_yes=pressed and hit_accuracy_button(mouse.x, mouse.y, self._yes, self._no) is True,
+      pressed_no=pressed and hit_accuracy_button(mouse.x, mouse.y, self._yes, self._no) is False,
+    )

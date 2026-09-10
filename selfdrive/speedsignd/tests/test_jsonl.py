@@ -154,6 +154,10 @@ def test_settings_and_docs_cover_enable_and_log_path():
   assert "night" in docs.lower()
   assert "SHA-256" in docs or "sha256" in docs.lower()
   assert "NO WT" in docs
+  assert "Yes" in docs and "No" in docs
+  assert "on_confirm_accuracy" in docs
+  assert "left" in docs.lower()
+  assert "OSM" in docs
   assert "SIGN never lights" in docs
   assert "Install weights" in nap
 
