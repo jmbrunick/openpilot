@@ -144,13 +144,17 @@ def test_settings_and_docs_cover_enable_and_log_path():
   docs = (root / "docs-nap" / "speed-sign-log.md").read_text(encoding="utf-8")
   assert "Speed Sign Logger" in nap
   assert "NAPSpeedSignLog" in nap or "NAP_SPEED_SIGN_LOG" in nap
+  content = (root / "selfdrive" / "ui" / "layouts" / "settings" / "nap_content.py").read_text(encoding="utf-8")
+  assert "1 Hz" in content and "nice 19" in content
   assert "/data/media/0/nap/speed_signs.jsonl" in docs
   assert "NAPSpeedSignLog" in docs
   assert "speed_sign.onnx" in docs
   assert "install_speed_sign_weights" in docs
   assert "export_speed_sign_onnx" in docs
   assert "liveSpeedSignNAP" in docs
-  assert "1.5" in docs
+  assert "3.0" in docs
+  assert "1 Hz" in docs
+  assert "modeld" in docs.lower() or "driving model" in docs.lower()
   assert "night" in docs.lower()
   assert "SHA-256" in docs or "sha256" in docs.lower()
   assert "NO WT" in docs

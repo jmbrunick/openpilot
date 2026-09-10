@@ -34,11 +34,12 @@ SPEED_SIGN_LOG_DESCRIPTION = (
   "Log-only MUTCD speed-sign detector on the ROAD camera + GPS. Default Off. "
   "When On, speedsignd appends JSONL under /data/media/0/nap/speed_signs.jsonl "
   "(t, lat, lon, bearing, mph, conf) and shows a display-only SIGN plate. "
-  "Does not write sqlite, does not change cruise / HUD MAX, and does not "
-  "query osm.org. Stock modelV2 has no speedSign head. Real roadside "
-  "detection needs the compact YOLO ONNX on /data/media/0/nap/speed_sign.onnx. "
-  "If that file is missing, onroad SIGN shows NO WT — use Install weights "
-  "(Wi-Fi, offroad / Force Offroad), or: "
+  "Throttled to 1 Hz and nice 19 so it yields to the driving model; turn Off "
+  "if you see driving-model lag. Does not write sqlite, does not change "
+  "cruise / HUD MAX, and does not query osm.org. Stock modelV2 has no "
+  "speedSign head. Real roadside detection needs the compact YOLO ONNX on "
+  "/data/media/0/nap/speed_sign.onnx. If that file is missing, onroad SIGN "
+  "shows NO WT — use Install weights (Wi-Fi, offroad / Force Offroad), or: "
   "python -m scripts.nap.install_speed_sign_weights."
 )
 

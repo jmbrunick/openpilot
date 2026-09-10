@@ -6,8 +6,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# Keep the last mph on screen so 4 Hz detect does not flicker. Hide after this.
-HUD_HOLD_S = 1.5
+# Hold long enough that a skipped 1 Hz cycle does not flicker the plate.
+HUD_HOLD_S = 3.0
 HUD_LABEL = "SIGN"
 # Logger On + ONNX missing: show this instead of a blank plate or a fake mph.
 HUD_MISSING_WEIGHTS_TEXT = "NO WT"
