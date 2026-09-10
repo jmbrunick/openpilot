@@ -24,13 +24,16 @@ from openpilot.selfdrive.mapd.fetch_maps import (
   staging_dir,
 )
 from openpilot.selfdrive.mapd.maps_manifest import (
+  ASSET_NAME,
   ASSET_SHA256,
   ASSET_SQLITE_BYTES,
   ASSET_ZST_BYTES,
   FREE_MARGIN_BYTES,
+  MAPS_INDEX_REF,
   MIN_FREE_BYTES,
   MIN_FREE_MIB,
   RELEASE_REVISION,
+  RELEASE_TAG,
   SQLITE_SHA256,
   bundled_maps_index,
   load_committed_maps_index,
@@ -84,8 +87,9 @@ def _track_hashed_paths(monkeypatch) -> list[str]:
 
 
 def test_us_pack_free_space_threshold():
-  assert MIN_FREE_MIB == 822
-  assert MIN_FREE_BYTES == 822 * 1024 * 1024
+  assert MIN_FREE_MIB == 800
+  assert MIN_FREE_BYTES == 800 * 1024 * 1024
+  assert MIN_FREE_BYTES == 838860800
   assert required_free_bytes(us_pack=True) == MIN_FREE_BYTES
   assert ASSET_ZST_BYTES + ASSET_SQLITE_BYTES + FREE_MARGIN_BYTES == MIN_FREE_BYTES
 
@@ -348,11 +352,17 @@ def test_parse_maps_index_required_and_aliases():
 def test_committed_maps_index_matches_first_install_constants():
   idx = load_committed_maps_index()
   bundled = bundled_maps_index()
+  assert RELEASE_TAG == "osm-us-speed-limits-v2"
+  assert RELEASE_REVISION == "2"
+  assert ASSET_NAME == "speed_limits_us.sqlite.zst"
+  assert ASSET_SHA256 == "59085d830b5694f2c867ac11c18a0599be815ba463ff6b3104cd63eba3a5ca71"
+  # Download US Maps live index must not follow nap-dev (v3).
+  assert MAPS_INDEX_REF == "nap-release"
   assert idx.revision == RELEASE_REVISION == bundled.revision
   assert idx.sha256 == ASSET_SHA256 == bundled.sha256
-  assert idx.asset_name == bundled.asset_name
+  assert idx.asset_name == bundled.asset_name == ASSET_NAME
   assert idx.asset_url == bundled.asset_url
-  assert idx.bytes is not None and idx.bytes > 0
+  assert idx.bytes == 203717126
 
 
 def test_maps_update_decision_up_to_date_vs_newer():
