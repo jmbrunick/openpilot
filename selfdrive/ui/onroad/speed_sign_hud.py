@@ -9,7 +9,7 @@ NO WT instead of staying blank (and never a fake mph).
 from __future__ import annotations
 
 import pyray as rl
-from openpilot.selfdrive.speedsignd.hud import HUD_LABEL, LiveSignView, live_sign_from_event
+from openpilot.selfdrive.speedsignd.hud import HUD_LABEL, LiveSignView, live_sign_from_event, plate_digit_size
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 
@@ -60,13 +60,6 @@ def mici_sign_rect(rect: rl.Rectangle) -> rl.Rectangle:
   x = rect.x + rect.width - 8 - MICI_W
   y = rect.y + 6
   return rl.Rectangle(x, y, MICI_W, MICI_H)
-
-
-def plate_digit_size(text: str, default: int) -> int:
-  """Shrink 'NO WT' so it fits the mph plate; keep 2–3 digit mph large."""
-  if len(text) > 3:
-    return max(22, int(default * 0.42))
-  return default
 
 
 def draw_speed_sign_plate(

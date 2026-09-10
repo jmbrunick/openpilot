@@ -10,6 +10,7 @@ from openpilot.selfdrive.speedsignd.hud import (
   HUD_HOLD_S,
   HUD_MISSING_WEIGHTS_TEXT,
   LiveSignHold,
+  plate_digit_size,
   apply_live_sign,
   hud_should_show,
   hud_should_show_missing_weights,
@@ -62,6 +63,7 @@ def test_apply_live_sign_clears_when_invalid():
 
 def test_hud_missing_weights_plate_when_logger_on():
   assert HUD_MISSING_WEIGHTS_TEXT == "NO WT"
+  assert plate_digit_size("NO WT", 120) < plate_digit_size("55", 120)
   assert hud_should_show_missing_weights(True, True)
   assert not hud_should_show_missing_weights(False, True)
   assert not hud_should_show_missing_weights(True, False)
