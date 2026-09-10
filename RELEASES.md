@@ -1,3 +1,7 @@
+NAP blinker (2026-09-10)
+========================
+* A held/latched driver turn blinker now drops longitudinal as well as pausing lat. After the lamps/latch end, one stalk SET restores long (lat still paused or already active). ALC tip/keep-alive does not drop long. Stalk cancel still fully disengages; brake can still drop long. No panda flash required.
+
 NAP blinker (2026-09-09)
 ========================
 * Panda tesla_preap now keeps controls_allowed on a driver blinker-held turn (one lamp or LEFT/RIGHT, flash-latched ~1s) so hands-on ≥ 2 does not controlsMismatch after the turn. **Flash the panda after this update** (reboot so pandad reflashes; Python-only pull is not enough). Stalk cancel / doors / gear still drop.

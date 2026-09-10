@@ -18,8 +18,9 @@ Pre-AP has two modes depending on whether a Comma Pedal is installed. Mode is se
 2. `carcontroller.py` sends `GAS_COMMAND` (0x551) based on `actuators.accel` from the long planner
 3. Zero-torque learning tracks the resting pedal position that produces zero torque at the current speed. On engage, we seed `prev_pedal_di` to this value so there is no regen spike
 4. Brake rising edge → drops `enableLongControl=False`, keeps `cruiseEnabled=True` (steering stays on, pedal drops). `enableJustCC` flips true so the carcontroller knows to spoof stock CC cancel
-5. Gas press → `OVERRIDE_LONGITUDINAL`. Pedal command passes through with `enable=0` — driver's foot controls throttle directly, NAP tracks position for smooth resume. Long engage/disengage prompts follow `enableLongControl` (stalk/brake), not interceptor handshake and not gas override: `enableLongControl` stays true while the driver is on the pedal, so press and release are silent.
-6. Stalk cancel (real, not spoof echo) → full disengage. Lat and long prompts fire on those falling edges, including when openpilot is already going disabled.
+5. A latched **driver turn** blinker (held stalk / flash-latched lamps, not ALC tip or keep-alive) also drops `enableLongControl` the same way. Long stays off after the lamps go dark unless the driver SETs. Lateral still resumes only after hand release. One stalk SET restores long, whether lat is still paused or already active, including during the ~1s dark latch after the last flash — the default double-pull first-pull path is skipped for that resume so a second SET is not required. SET while a turn lamp or held LEFT/RIGHT is still showing does not stick.
+6. Gas press → `OVERRIDE_LONGITUDINAL`. Pedal command passes through with `enable=0` — driver's foot controls throttle directly, NAP tracks position for smooth resume. Long engage/disengage prompts follow `enableLongControl` (stalk/brake/driver-turn), not interceptor handshake and not gas override: `enableLongControl` stays true while the driver is on the pedal, so press and release are silent.
+7. Stalk cancel (real, not spoof echo) → full disengage. Lat and long prompts fire on those falling edges, including when openpilot is already going disabled.
 
 Interface flags for this mode: `openpilotLongitudinalControl=True`, `pcmCruise=False`. Long planner runs; accel goes to pedal.
 
@@ -54,7 +55,7 @@ Single stalk pull only engages lateral if `enableDoublePull` is off. In the defa
 - Second pull within `double_pull_window_ms` → full engage (pedal or stock CC depending on mode)
 - Window expires → stays lateral-only
 
-This is a driver-training feature: prevents accidental full engage from a bump of the stalk.
+This is a driver-training feature: prevents accidental full engage from a bump of the stalk. Once already engaged, a brake or driver-turn drop of long is not a new first pull: one SET restores long.
 
 ## Steering disengage
 
@@ -69,6 +70,8 @@ Panda firmware must be flashed after this safety change. Software update / on-de
 ## Where to look
 
 - `opendbc_repo/opendbc/car/tesla/preap/engagement.py` — stalk FSM
+- `selfdrive/car/tesla/preap_blinker_lat_pause.py` — blinker-turn long drop + one-SET resume (patches the FSM)
 - `opendbc_repo/opendbc/car/tesla/preap/carstate.py:120+` — button event pump + cruise state publish
 - `opendbc_repo/opendbc/car/tesla/preap/carcontroller.py:40+` — pedal TX + stalk spoof scheduling
 - `opendbc_repo/opendbc/car/tesla/preap/tests/test_preap_engagement.py` — FSM tests (brake drop, steering disengage, double-pull)
+- `selfdrive/car/tesla/tests/test_preap_blinker_lat_pause.py` — blinker lat pause, turn drops long, one SET resumes
