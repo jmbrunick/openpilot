@@ -228,7 +228,11 @@ def _resolve_live_fix(
   live_fix: object,
 ) -> tuple[float, float] | None:
   if live_fix is not _UNSET:
-    return live_fix if isinstance(live_fix, tuple) else None
+    if isinstance(live_fix, tuple) and len(live_fix) == 2:
+      lat_f, lon_f = live_fix
+      if isinstance(lat_f, (int, float)) and isinstance(lon_f, (int, float)):
+        return (float(lat_f), float(lon_f))
+    return None
   if lat is not None and lon is not None:
     return None
   _p(f"Waiting up to {REFRESH_GNSS_WAIT_S:.0f}s for a satellite fix...")

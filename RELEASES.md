@@ -1,3 +1,10 @@
+NAP blinker (2026-09-09)
+========================
+* Panda tesla_preap now keeps controls_allowed on a driver blinker-held turn (one lamp or LEFT/RIGHT, flash-latched ~1s) so hands-on ≥ 2 does not controlsMismatch after the turn. **Flash the panda after this update** (reboot so pandad reflashes; Python-only pull is not enough). Stalk cancel / doors / gear still drop.
+* Held-blinker turns no longer full-cancel mid-corner. Higher steering torque / EPAS hands-on ≥ 2 while lat is paused stays engaged (lat pause only). The 3X "Steering Disengaged" HUD is EventName.pcmDisable (cruiseEnabled fell) — keep cruise up on lamp or held stalk, and do not treat that torque as controlsMismatch / steerDisengage. Stalk cancel / doors / gear / permanent steer fault still fully disengage.
+* During ALC (or leftover keep-alive), holding the physical stalk the same direction for more than 1.0s cancels the lane change and pauses steering as a driver turn. A shorter same-direction press does not force a turn. Tip-to-ALC from idle is still LEFT/RIGHT then IDLE within 0.40s.
+* Tip vs turn no longer depends on speed. A partial stalk push (LEFT/RIGHT then IDLE within 0.40s) is automatic lane change at any speed; a full held stalk is a driver turn and releases steering. Lane change still will not *start* below 20 mph until a wheel nudge at speed.
+
 NAP map speed (2026-09-08)
 ========================
 * Refresh maps queries live OSM within 100 miles of the car and merges into the installed US sqlite. Download US Maps remains the first-install of the published pack.

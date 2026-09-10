@@ -4,6 +4,10 @@ from opendbc.car.car_helpers import interfaces
 from opendbc.car.interfaces import MAX_CTRL_SPEED
 from opendbc.car.toyota.values import ToyotaFlags
 
+from openpilot.selfdrive.controls.lib.blinker_lateral_pause import (
+  BlinkerLateralHold,
+  blinker_turn_blocks_steering_disengage,
+)
 from openpilot.selfdrive.selfdrived.events import Events
 
 ButtonType = structs.CarState.ButtonEvent.Type
@@ -20,12 +24,13 @@ class CarSpecificEvents:
     self.low_speed_alert = False
     self.no_steer_warning = False
     self.silent_steer_warning = True
+    self.blinker_lat_hold = BlinkerLateralHold()
 
   def update(self, CS: car.CarState, CS_prev: car.CarState, CC: car.CarControl):
     if self.CP.brand in ('body', 'mock'):
       return Events()
 
-    events = self.create_common_events(CS, CS_prev)
+    events = self.create_common_events(CS, CS_prev, CC)
 
     if self.CP.brand == 'chrysler':
       # Low speed steer alert hysteresis logic
@@ -111,7 +116,7 @@ class CarSpecificEvents:
 
     return events
 
-  def create_common_events(self, CS: structs.CarState, CS_prev: car.CarState):
+  def create_common_events(self, CS: structs.CarState, CS_prev: car.CarState, CC: car.CarControl):
     events = Events()
 
     CI = interfaces[self.CP.carFingerprint]
@@ -157,8 +162,33 @@ class CarSpecificEvents:
       events.add(EventName.accFaulted)
     if CS.steeringPressed:
       events.add(EventName.steerOverride)
+    # Wheel input during a blinker-lamp turn (including flash gaps), and
+    # while the hand is still on the wheel after ~1s of dark, must not
+    # USER_DISABLE cruise. steeringDisengage (hands-on >= 2 / EPAS reject)
+    # is the faster-corner signal and must count even if steeringPressed
+    # has not yet debounced. Hard-gate on one lamp or physical LEFT/RIGHT
+    # so a stale hold cannot drop cruiseEnabled — that falling edge is
+    # EventName.pcmDisable / HUD "Steering Disengaged" on Pre-AP. Do not
+    # suppress pcmDisable after cruise is already down. ALC keep-alive
+    # flashes are not a driver turn: do not pause lat, and do not
+    # steerDisengage. A held stalk past the 0.40s tip window is a turn at
+    # any speed when ALC is not latched; during ALC / keep-alive,
+    # same-direction stalk needs >1.0s. A firm stalk cancel still fully
+    # disengages.
+    alc_active = bool(getattr(CC, 'leftBlinker', False) or getattr(CC, 'rightBlinker', False))
+    self.blinker_lat_hold.update(
+      getattr(CS, 'leftBlinker', False), getattr(CS, 'rightBlinker', False),
+      getattr(CS, 'steeringPressed', False),
+      engaged=bool(getattr(CS.cruiseState, 'enabled', False)),
+      alc_active=alc_active,
+      v_ego=float(getattr(CS, 'vEgo', 0.0) or 0.0),
+      stalk_state=int(getattr(CS, 'turnSignalStalkState', 0) or 0),
+      steering_disengage=bool(getattr(CS, 'steeringDisengage', False)))
     if CS.steeringDisengage and not CS_prev.steeringDisengage:
-      events.add(EventName.steerDisengage)
+      if not blinker_turn_blocks_steering_disengage(
+          getattr(CS, 'leftBlinker', False), getattr(CS, 'rightBlinker', False),
+          getattr(CS, 'turnSignalStalkState', 0), self.blinker_lat_hold):
+        events.add(EventName.steerDisengage)
     if CS.brakePressed and CS.standstill:
       events.add(EventName.preEnableStandstill)
     if CS.gasPressed:
