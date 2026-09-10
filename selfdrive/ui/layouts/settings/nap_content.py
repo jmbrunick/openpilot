@@ -185,8 +185,8 @@ Not stored in git (too large). After flash, run this once over Wi-Fi.
 PRECONDITIONS:
   1. Device is offroad / parked
   2. Wi-Fi that can reach GitHub Releases
-  3. 850 MiB free on /data (same filesystem as /data/media/0/osm/)
-     ~200 MiB zst + ~541 MiB sqlite + 80 MiB margin. Stages in
+  3. 800 MiB free on /data (same filesystem as /data/media/0/osm/)
+     ~204 MiB zst + ~516 MiB sqlite + 80 MiB margin. Stages in
      /data/media/0/osm/.download/ — not /tmp.
 
 If a previous download died with ENOSPC / "No space left on device":

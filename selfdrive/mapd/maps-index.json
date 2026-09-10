@@ -1,8 +1,8 @@
 {
-  "revision": "3",
+  "revision": "2",
   "asset_name": "speed_limits_us.sqlite.zst",
-  "asset_url": "https://github.com/jmbrunick/openpilot/releases/download/osm-us-speed-limits-v3/speed_limits_us.sqlite.zst",
-  "sha256": "609cf55dfcee9af05673f906f33b409a38562455bb9af15a6fe23b3b521aaa9c",
-  "bytes": 209652329,
-  "notes": "US tagged maxspeed plus MN statutory fills ~100mi around Benson (Swift + Kandiyohi). Unmarked fills are NAP estimates (MN 169.14), not OSM."
+  "asset_url": "https://github.com/jmbrunick/openpilot/releases/download/osm-us-speed-limits-v2/speed_limits_us.sqlite.zst",
+  "sha256": "59085d830b5694f2c867ac11c18a0599be815ba463ff6b3104cd63eba3a5ca71",
+  "bytes": 203717126,
+  "notes": "Swift + Kandiyohi refresh; US 12 Benson is 60 then 50 then 30"
 }
