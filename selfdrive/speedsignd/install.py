@@ -16,6 +16,29 @@ from openpilot.selfdrive.speedsignd.weights_manifest import (
 )
 
 CHUNK = 256 * 1024
+# Published asset is ~43 MB. Reject empty / leftover .partial files.
+MIN_ONNX_BYTES = 1_000_000
+
+
+def weights_present(path: str | None = None) -> bool:
+  path = path or default_onnx_path()
+  try:
+    return os.path.isfile(path) and os.path.getsize(path) >= MIN_ONNX_BYTES
+  except OSError:
+    return False
+
+
+def weights_status_summary(path: str | None = None) -> str:
+  """Settings label: Installed or Missing. Callable-safe for text_item."""
+  path = path or default_onnx_path()
+  if not weights_present(path):
+    return "Missing"
+  try:
+    sz = os.path.getsize(path)
+  except OSError:
+    return "Missing"
+  mb = sz / (1024 * 1024)
+  return f"Installed ({mb:.0f} MB)"
 
 
 def sha256_file(path: str) -> str:

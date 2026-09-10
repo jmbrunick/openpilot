@@ -25,12 +25,14 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   RADAR_OFFSET_MAX,
   RADAR_OFFSET_MIN,
   RESTORE_EPAS_INSTRUCTIONS,
+  INSTALL_SPEED_SIGN_WEIGHTS_INSTRUCTIONS,
   NAP_FORCE_OFFROAD,
   NAP_SPEED_SIGN_LOG,
   WIPER_SPEED_LABELS,
   WIPER_SPEED_VALUES,
 )
 from openpilot.selfdrive.ui.mici.layouts.settings.map_speed import MapSpeedLimitLayoutMici
+from openpilot.selfdrive.speedsignd.install import weights_status_summary
 from openpilot.selfdrive.car.tesla.preap_body_controls import (
   NAP_HIGH_LOW_BEAM,
   NAP_WIPER_SPEED,
@@ -232,6 +234,14 @@ class NAPLayoutMici(NavScroller):
 
     speed_sign_log = BigParamControl("speed sign logger", NAP_SPEED_SIGN_LOG)
 
+    self._weights_status = BigButton("speed sign weights", weights_status_summary())
+    install_weights_btn = BigButton("install weights", "start")
+    install_weights_btn.set_click_callback(
+      lambda: launch_script("Install weights", INSTALL_SPEED_SIGN_WEIGHTS_INSTRUCTIONS,
+                            "scripts.nap.install_speed_sign_weights",
+                            ))
+    install_weights_btn.set_enabled(ui_state.is_offroad)
+
     # ── Pedal hardware ───────────────────────────────
     # default_value=2 matches NAPPedalCanBus declared default in params_keys.h
     # and the runtime fallback ("any nonzero is bus 2"). If the param is set
@@ -323,6 +333,8 @@ class NAPLayoutMici(NavScroller):
       follow_distance,
       map_speed_btn,
       speed_sign_log,
+      self._weights_status,
+      install_weights_btn,
       pedal_can_bus,
       pedal_calib_status,
       calibrate_pedal_btn,
@@ -335,4 +347,8 @@ class NAPLayoutMici(NavScroller):
       flash_epas_btn,
       restore_epas_btn,
     ])
+
+  def show_event(self):
+    super().show_event()
+    self._weights_status.set_value(weights_status_summary())
 

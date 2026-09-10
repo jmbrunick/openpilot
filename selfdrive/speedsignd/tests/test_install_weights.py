@@ -3,9 +3,17 @@ from pathlib import Path
 
 import pytest
 
-from openpilot.selfdrive.speedsignd.install import fetch_and_install, install_weights, sha256_file
+from openpilot.selfdrive.speedsignd.install import (
+  MIN_ONNX_BYTES,
+  fetch_and_install,
+  install_weights,
+  sha256_file,
+  weights_present,
+  weights_status_summary,
+)
 from openpilot.selfdrive.speedsignd.weights_manifest import ASSET_SHA256, release_asset_url
 from scripts.nap.install_speed_sign_weights import main
+from scripts.nap.script_lifecycle import script_reboots_on_exit
 
 
 def test_install_copies_onnx_to_dest(tmp_path):
@@ -55,3 +63,35 @@ def test_manifest_points_at_github_release():
   assert "speed-sign-onnx-v1" in url
   assert url.endswith("speed_sign.onnx")
   assert len(ASSET_SHA256) == 64
+
+
+def test_weights_status_missing_and_installed(tmp_path):
+  missing = tmp_path / "none.onnx"
+  assert not weights_present(str(missing))
+  assert weights_status_summary(str(missing)) == "Missing"
+
+  tiny = tmp_path / "tiny.onnx"
+  tiny.write_bytes(b"too-small")
+  assert not weights_present(str(tiny))
+  assert weights_status_summary(str(tiny)) == "Missing"
+
+  ok = tmp_path / "speed_sign.onnx"
+  ok.write_bytes(b"x" * MIN_ONNX_BYTES)
+  assert weights_present(str(ok))
+  assert weights_status_summary(str(ok)).startswith("Installed")
+
+
+def test_install_script_does_not_reboot_and_settings_wire_it():
+  assert not script_reboots_on_exit("scripts.nap.install_speed_sign_weights")
+  root = Path(__file__).resolve().parents[3]
+  nap = (root / "selfdrive" / "ui" / "layouts" / "settings" / "nap.py").read_text(encoding="utf-8")
+  mici = (root / "selfdrive" / "ui" / "mici" / "layouts" / "settings" / "nap.py").read_text(encoding="utf-8")
+  content = (root / "selfdrive" / "ui" / "layouts" / "settings" / "nap_content.py").read_text(encoding="utf-8")
+  assert "Install weights" in nap
+  assert "install weights" in mici
+  assert "scripts.nap.install_speed_sign_weights" in nap
+  assert "scripts.nap.install_speed_sign_weights" in mici
+  assert "INSTALL_SPEED_SIGN_WEIGHTS_INSTRUCTIONS" in content
+  assert "weights_status_summary" in nap
+  assert "weights_status_summary" in mici
+  assert "NO WT" in content
