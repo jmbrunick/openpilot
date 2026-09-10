@@ -4,9 +4,9 @@ Hardware tools spawn scripts/nap/run_script.py as a detached process. That
 runner kills the comma tmux session, takes over the display, and uses
 NAPScriptRunning so manager stops pandad for Panda USB.
 
-Map sqlite jobs (Refresh maps, Download US Maps) stay in-process: a
-full-screen script-runner widget is pushed so Settings is not drawn
-underneath. Exit pops back to Settings.
+Map sqlite jobs (Refresh maps, Download US Maps) and Install speed-sign
+weights stay in-process: a full-screen script-runner widget is pushed so
+Settings is not drawn underneath. Exit pops back to Settings.
 """
 from __future__ import annotations
 

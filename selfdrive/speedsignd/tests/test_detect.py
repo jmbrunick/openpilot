@@ -59,10 +59,33 @@ def test_detector_falls_back_without_onnx(tmp_path, monkeypatch):
   monkeypatch.setenv("NAP_SPEED_SIGN_ONNX", missing)
   det = SpeedSignDetector(onnx_path=missing)
   assert det.onnx is None
+  assert det.weights_missing()
   y = _scene()
   paint_mutcd_r2_1(y, 35, x=200, y=30, w=90, h=112)
   hits = det.detect(y)
   assert hits and hits[0].mph == 35
+
+
+def test_try_reload_picks_up_onnx_after_install(tmp_path, monkeypatch):
+  path = str(tmp_path / "later.onnx")
+  det = SpeedSignDetector(onnx_path=path)
+  assert det.weights_missing()
+  assert not det.try_reload()
+
+  class Sess:
+    def get_inputs(self):
+      return [type("I", (), {"name": "image", "shape": [1, 1, 32, 32]})()]
+
+    def run(self, _out, _feed):
+      return [np.array([[0.0, 0.0, 10.0, 10.0, 45.0, 0.9]], dtype=np.float32)]
+
+  def _fake_load(cls, p=None):
+    return OnnxSpeedSignDetector(path, Sess())
+
+  monkeypatch.setattr(OnnxSpeedSignDetector, "try_load", classmethod(_fake_load))
+  assert det.try_reload()
+  assert not det.weights_missing()
+  assert not det.try_reload()
 
 
 def test_onnx_parse_and_mutcd_filter():
