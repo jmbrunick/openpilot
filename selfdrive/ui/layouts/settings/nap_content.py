@@ -21,6 +21,15 @@ FOLLOW_DISTANCE_VALUES = list(range(1, 8))
 FOLLOW_DISTANCE_LABELS = [str(i) for i in FOLLOW_DISTANCE_VALUES]
 FOLLOW_DISTANCE_DEFAULT = 4
 
+NAP_FORCE_OFFROAD = "NAPForceOffroad"
+FORCE_OFFROAD_DESCRIPTION = (
+  "WARNING: Forces the device offroad and disengages openpilot even while "
+  "moving. Drive manually — no steering or accel assist while this is on. "
+  "Unlocks Download US Maps, Refresh maps, software install, and other "
+  "offroad-only NAP actions. Default Off. Clears when you toggle Off, "
+  "Reset to Defaults, reboot, or the next time ignition turns on."
+)
+
 # Radar lateral offset bounds (meters). Added to radar yRel in
 # radar_interface.py. Negative = shift toward left; positive = toward right.
 # ~0.27 is typical for the 3D-printed factory-location mount.
