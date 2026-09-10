@@ -31,24 +31,24 @@ from openpilot.selfdrive.speedsignd.tests.test_detect import _scene
 
 
 def test_hold_keeps_mph_then_clears():
-  h = LiveSignHold(hold_s=1.5)
+  h = LiveSignHold(hold_s=3.0)
   signs = [SpeedSign(mph=45, conf=0.8, bbox=(0, 0, 10, 10))]
   live, mph, conf = h.update(signs, 10.0)
   assert live and mph == 45 and conf == 0.8
   live, mph, _ = h.update([], 11.0)
   assert live and mph == 45
-  live, mph, _ = h.update([], 11.49)
+  live, mph, _ = h.update([], 12.99)
   assert live and mph == 45
-  live, mph, conf = h.update([], 11.51)
+  live, mph, conf = h.update([], 13.01)
   assert not live and mph == 0 and conf == 0.0
 
 
 def test_new_detection_refreshes_hold():
-  h = LiveSignHold(hold_s=1.5)
+  h = LiveSignHold(hold_s=3.0)
   h.update([SpeedSign(mph=30, conf=0.7, bbox=(0, 0, 1, 1))], 0.0)
   live, mph, _ = h.update([SpeedSign(mph=55, conf=0.9, bbox=(0, 0, 1, 1))], 1.0)
   assert live and mph == 55
-  live, mph, _ = h.update([], 2.4)
+  live, mph, _ = h.update([], 3.9)
   assert live and mph == 55
 
 
@@ -104,7 +104,7 @@ def test_hud_missing_weights_plate_when_logger_on():
 
 
 def test_publish_fields_flag_missing_weights_without_mph():
-  h = LiveSignHold(hold_s=1.5)
+  h = LiveSignHold(hold_s=3.0)
   signs = [SpeedSign(mph=45, conf=0.8, bbox=(0, 0, 10, 10))]
   msg_valid, mph, conf, missing = live_sign_publish_fields(h, signs, 10.0, True)
   assert msg_valid and missing and mph == 0 and conf == 0.0
@@ -132,7 +132,7 @@ def test_detect_without_gps_still_returns_signs(tmp_path):
 
 
 def test_hold_duration_constant():
-  assert HUD_HOLD_S == 1.5
+  assert HUD_HOLD_S == 3.0
 
 
 def test_tici_plate_sits_on_driver_left_below_max():

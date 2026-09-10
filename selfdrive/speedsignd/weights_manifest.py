@@ -64,9 +64,10 @@ YOLO_MIN_CONF = 0.40
 YOLO_IOU = 0.45
 YOLO_MAX_DET = 3
 
-# Two agreeing frames at 4 Hz (~0.25–0.5 s) before HUD / JSONL accept a mph.
+# Two agreeing frames at ~1 Hz (or after a skip-on-overrun gap) before HUD /
+# JSONL accept a mph. The old 0.75 s window cannot confirm two 1 Hz hits.
 DEBOUNCE_HITS = 2
-DEBOUNCE_WINDOW_S = 0.75
+DEBOUNCE_WINDOW_S = 4.0
 
 
 def release_asset_url(repo: str = GITHUB_REPO, tag: str = RELEASE_TAG, asset: str = ASSET_NAME) -> str:
