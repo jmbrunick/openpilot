@@ -22,6 +22,8 @@ from openpilot.selfdrive.speedsignd.paths import PARAM_KEY, default_log_path, de
 SPEEDSIGND_HZ = 4.0
 VISION_TIMEOUT_MS = 200
 SERVICE_NAME = "liveSpeedSignNAP"
+# Retry ONNX after Settings → Install weights without requiring a reboot.
+ONNX_RETRY_S = 15.0
 
 
 def should_run_speed_sign_log(started: bool, params: Any, _cp: Any = None) -> bool:
@@ -83,11 +85,31 @@ def _connect_road_camera():
   return client
 
 
-def _publish_live(pm, hold: LiveSignHold, signs, now_mono: float, messaging) -> None:
+def live_sign_publish_fields(
+  hold: LiveSignHold,
+  signs,
+  now_mono: float,
+  weights_missing: bool,
+) -> tuple[bool, int, float, bool]:
+  """msg.valid, mph, conf, weights_missing for liveSpeedSignNAP.
+
+  When ONNX is missing, keep msg.valid so the HUD can show NO WT — never a
+  numpy-fallback mph. Hold is not updated so a later reload starts clean.
+  """
+  if weights_missing:
+    return True, 0, 0.0, True
   live, mph, conf = hold.update(signs, now_mono)
+  return live, mph if live else 0, conf if live else 0.0, False
+
+
+def _publish_live(pm, hold: LiveSignHold, signs, now_mono: float, messaging, weights_missing: bool) -> None:
+  msg_valid, mph, conf, missing = live_sign_publish_fields(hold, signs, now_mono, weights_missing)
   msg = messaging.new_message(SERVICE_NAME)
-  msg.valid = live
-  apply_live_sign(getattr(msg, SERVICE_NAME), mph=mph, conf=conf, valid=live)
+  msg.valid = msg_valid
+  apply_live_sign(
+    getattr(msg, SERVICE_NAME),
+    mph=mph, conf=conf, valid=bool(mph), weights_missing=missing,
+  )
   pm.send(SERVICE_NAME, msg)
 
 
@@ -108,7 +130,8 @@ def main():
   if detector.onnx is None:
     cloudlog.warning(
       "speedsignd: no ONNX at %s — numpy fallback will not see real roadside signs. "
-      "On the 3X: python -m scripts.nap.install_speed_sign_weights",
+      "HUD will show NO WT. Settings → NAP → Install weights, or: "
+      "python -m scripts.nap.install_speed_sign_weights",
       onnx_path,
     )
 
@@ -117,10 +140,15 @@ def main():
   rk = Ratekeeper(SPEEDSIGND_HZ, print_delay_threshold=None)
   client = None
   last_connect = 0.0
+  last_onnx_try = time.monotonic()
 
   while True:
     sm.update(0)
     now_mono = time.monotonic()
+    if detector.onnx is None and now_mono - last_onnx_try >= ONNX_RETRY_S:
+      last_onnx_try = now_mono
+      if detector.try_reload():
+        cloudlog.info("speedsignd: ONNX loaded after retry backend=yolo-onnx onnx=%s", onnx_path)
     signs: list = []
     if client is None or not client.is_connected():
       if now_mono - last_connect >= 0.5:
@@ -136,12 +164,13 @@ def main():
       y = y_plane_from_nv12(buf) if buf is not None else None
       rgb = rgb_from_nv12(buf) if buf is not None else None
       lat, lon, bearing, gps_ok = gps_sample_from_sm(sm, now=now_mono)
-      if y is not None or rgb is not None:
+      # On-road: do not run numpy-mutcd when weights are missing (no fake mph / JSONL).
+      if detector.onnx is not None and (y is not None or rgb is not None):
         signs, _written = process_frame(
           y, lat, lon, bearing, gps_ok, detector, logger, time.time(),
           rgb=rgb, debounce=debounce,
         )
-    _publish_live(pm, hold, signs, now_mono, messaging)
+    _publish_live(pm, hold, signs, now_mono, messaging, detector.weights_missing())
     rk.keep_time()
 
 

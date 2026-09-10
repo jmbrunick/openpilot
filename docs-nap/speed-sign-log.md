@@ -6,7 +6,7 @@ Stock `modelV2` has no `speedSign` head. This is a separate process (`speedsignd
 
 ## Enable
 
-1. **Install weights** (once, Wi-Fi) — see below. Without `/data/media/0/nap/speed_sign.onnx` the SIGN plate will not light on real signs.
+1. **Install weights** (once, Wi-Fi) — Settings → NAP → **Install weights** (offroad / Force Offroad), or SSH below. Without `/data/media/0/nap/speed_sign.onnx` the onroad SIGN plate shows **NO WT** and will not light mph on real signs.
 2. **Settings → NAP → Speed Sign Logger** → On  
    (comma 4 / mici: **Settings → NAP → speed sign logger**)
 3. Or: `Params().put_bool("NAPSpeedSignLog", True)` / `echo -n 1 > /data/params/d/NAPSpeedSignLog`
@@ -20,7 +20,9 @@ Reset to Defaults turns the logger back off. Weights on `/data` stay.
 
 No large weights in git (~43 MB ONNX). Same idea as the OSM map pack: fetch onto `/data` with a SHA-256 check.
 
-On the 3X (SSH, Wi-Fi):
+On the 3X (parked / Force Offroad, Wi-Fi): **Settings → NAP → Install weights** → Start. Settings shows **Speed Sign Weights: Installed** or **Missing**. Progress and errors stay on that runner screen (does not block the rest of the UI, does not reboot).
+
+Or SSH:
 
 ```bash
 python -m scripts.nap.install_speed_sign_weights
@@ -58,7 +60,7 @@ After weights are installed and the logger is **On**, drive past a **clear, unob
 - A JSONL row is appended only with a live GNSS fix (same mph near the last write is skipped ~8 s / ~40 m).
 - HUD **MAX** / cruise / OSM LIMIT do not change.
 
-If the plate never appears: `ls -l /data/media/0/nap/speed_sign.onnx` (should be ~43 MB), confirm `NAPSpeedSignLog` is 1, and check `swaglog` for `speedsignd starting … backend=yolo-onnx`.
+If the plate never appears, see **SIGN never lights** below.
 
 ## Log path
 
@@ -103,6 +105,20 @@ When the logger is **On**, a large opaque **SIGN** plate shows the mph the camer
 | Source | cereal `liveSpeedSignNAP` (not the JSONL file) |
 
 White MUTCD-style plate, black digits, red border, **SIGN** label so it is not confused with HUD MAX or OSM LIMIT.
+
+If the logger is On and ONNX failed to load, the same plate shows **NO WT** (not a mph). After weights are installed, a blank plate means no confirmed detection — that is normal.
+
+## SIGN never lights
+
+Speed Sign Logger On, onroad, but SIGN stays dark or never shows mph — almost always missing weights, not a bad model.
+
+1. Look at the onroad plate: **NO WT** means `/data/media/0/nap/speed_sign.onnx` is absent or failed to load. Settings → NAP → Speed Sign Weights should say **Missing**.
+2. Park or turn on Force Offroad. Tap **Install weights** (Wi-Fi). Wait for the runner to finish — do not leave it spinning forever; an error prints on that screen. Or SSH: `python -m scripts.nap.install_speed_sign_weights`.
+3. File should be ~43 MB. `ls -l /data/media/0/nap/speed_sign.onnx`. Settings should flip to **Installed**.
+4. No full reboot required: speedsignd retries ONNX every ~15 s. `swaglog` should show `speedsignd starting … backend=yolo-onnx` or `ONNX loaded after retry backend=yolo-onnx`.
+5. Drive past a clear, unobstructed MUTCD R2-1. Confirmed mph lights SIGN. A blank plate with weights Installed means no detection yet (night, glare, tiny sign — see Accuracy limits).
+
+Do not treat a blank plate as “the detector is running.” Blank + Installed = no confirmed sign. Blank + Missing / **NO WT** = install weights.
 
 ## Accuracy limits (honest)
 
