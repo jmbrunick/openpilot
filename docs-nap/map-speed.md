@@ -45,7 +45,7 @@ The US speed-limits sqlite is **not in git** (too large; ODbL still requires att
 | Staging | `/data/media/0/osm/.download/` on the dest filesystem (not `/tmp`) |
 | Size | **~204 MiB zst → ~516 MiB sqlite**. Fetch needs **800 MiB** free on `/data`. |
 
-On the comma 3X: **Settings → NAP → Map Speed Limit → Download US Maps** (offroad), or `python -m scripts.nap.fetch_osm_maps`. That is the first-install of the published US pack. Frequent local updates: **Refresh maps** (or `python -m scripts.nap.refresh_osm_maps`) — live OSM within **100 miles** (~160.9 km), merged into the installed sqlite. `mapd` reloads the sqlite every ~15s onroad — no reboot.
+On the comma 3X: **Settings → NAP → Map Speed Limit → Download US Maps** (offroad), or `python -m scripts.nap.fetch_osm_maps`. That is the first-install of the published US pack. Frequent local updates: **Refresh maps** (or `python -m scripts.nap.refresh_osm_maps`) — live OSM within **100 miles** (~160.9 km), merged into the installed sqlite. `mapd` reloads the sqlite every ~15s onroad — no reboot. To unlock those buttons without parking, Settings → NAP → **Force Offroad** (see [force-offroad.md](force-offroad.md)).
 
 If a previous download died with ENOSPC, remove leftovers then retry:
 

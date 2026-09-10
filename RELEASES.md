@@ -1,3 +1,7 @@
+NAP Force Offroad (2026-09-10)
+========================
+* Settings → NAP → Force Offroad / Go Offline. Temporarily drops the device into offroad (started=false) while the car is still moving so Download US Maps, Refresh maps, and software install unlock. Stops openpilot — drive manually. Default Off. Clears on toggle Off, Reset to Defaults, reboot, or the next ignition ON. Optional / reversible: revert this PR, or delete the Force Offroad files + `NAPForceOffroad` param + hardwared hook + NAP UI toggle.
+
 NAP blinker (2026-09-09)
 ========================
 * Panda tesla_preap now keeps controls_allowed on a driver blinker-held turn (one lamp or LEFT/RIGHT, flash-latched ~1s) so hands-on ≥ 2 does not controlsMismatch after the turn. **Flash the panda after this update** (reboot so pandad reflashes; Python-only pull is not enough). Stalk cancel / doors / gear still drop.
