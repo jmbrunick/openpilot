@@ -1,4 +1,9 @@
-"""Pre-AP FSM: blinker-lamp pause must not tear down cruiseEnabled."""
+"""Pre-AP FSM: blinker-lamp pause must not tear down cruiseEnabled.
+
+A driver turn also drops enableLongControl. One SET after lamps/stalk go
+idle restores long (double-pull first-pull is skipped). Tip ALC does not
+drop long.
+"""
 
 from opendbc.car import Bus
 from opendbc.car.tesla.preap.engagement import PreAPEngagement
@@ -13,8 +18,8 @@ from openpilot.selfdrive.car.tesla import preap_blinker_lat_pause as pause_mod
 from openpilot.selfdrive.controls.lib.blinker_lateral_pause import LAMP_OFF_DEBOUNCE_S
 
 
-def _engaged():
-  eng = PreAPEngagement(double_pull_enabled=False, double_pull_window_ms=750)
+def _engaged(*, double_pull=False):
+  eng = PreAPEngagement(double_pull_enabled=double_pull, double_pull_window_ms=750)
   eng.cruiseEnabled = True
   eng.enableLongControl = True
   eng.enableJustCC = False
@@ -28,7 +33,7 @@ def test_tesla_fsm_keeps_cruise_on_steer_during_one_lamp():
   eng._nap_right_blinker = False
   eng.handle_steering_disengage(True)
   assert eng.cruiseEnabled
-  assert eng.enableLongControl
+  assert not eng.enableLongControl
 
 
 def test_tesla_fsm_hazards_still_tear_down():
@@ -48,17 +53,18 @@ def test_tesla_fsm_resumes_without_new_engage_after_lamp_clears():
   eng._nap_right_blinker = False
   eng.handle_steering_disengage(True)
   assert eng.cruiseEnabled
-  assert eng.enableLongControl
+  assert not eng.enableLongControl
 
   # Lamp off, hands still on this frame: must not rising-edge tear down.
+  # Long stays off until SET; cruise/lat latch is unchanged.
   eng._nap_left_blinker = False
   eng.handle_steering_disengage(True)
   assert eng.cruiseEnabled
-  assert eng.enableLongControl
+  assert not eng.enableLongControl
 
   eng.handle_steering_disengage(False)
   assert eng.cruiseEnabled
-  assert eng.enableLongControl
+  assert not eng.enableLongControl
 
 
 def test_tesla_fsm_no_lamp_still_tears_down():
@@ -148,15 +154,16 @@ def test_tesla_fsm_holds_cruise_until_hand_release_after_lamp():
   eng._nap_left_blinker = True
   eng.handle_steering_disengage(True)
   assert eng.cruiseEnabled
-  assert eng.enableLongControl
+  assert not eng.enableLongControl
 
   eng._nap_left_blinker = False
   eng._nap_steering_pressed = True
   eng.handle_steering_disengage(True)
   assert eng.cruiseEnabled
-  assert eng.enableLongControl
+  assert not eng.enableLongControl
 
-  # Turn complete (~1s dark), hand still on: cruise stays. Then release.
+  # Turn complete (~1s dark), hand still on: cruise stays. Long stays off.
+  # Lat resumes only after hand release (no SET). Then a later grab tears down.
   eng._nap_lat_hold.update(False, False, True, engaged=True, dt=LAMP_OFF_DEBOUNCE_S)
   assert not eng._nap_lat_hold.turn_active
   assert eng._nap_lat_hold.holding
@@ -164,7 +171,7 @@ def test_tesla_fsm_holds_cruise_until_hand_release_after_lamp():
   eng._nap_steering_pressed = False
   eng.handle_steering_disengage(False)
   assert eng.cruiseEnabled
-  assert eng.enableLongControl
+  assert not eng.enableLongControl
 
   eng.handle_steering_disengage(True)
   assert not eng.cruiseEnabled
@@ -177,7 +184,7 @@ def test_tesla_fsm_flash_gap_without_hand_keeps_cruise():
   eng._nap_left_blinker = True
   eng.handle_steering_disengage(False)
   assert eng.cruiseEnabled
-  assert eng.enableLongControl
+  assert not eng.enableLongControl
 
   # Lamp dark between flashes, light/no hands, then a grab must not tear down.
   eng._nap_left_blinker = False
@@ -185,10 +192,11 @@ def test_tesla_fsm_flash_gap_without_hand_keeps_cruise():
   eng.handle_steering_disengage(False)
   assert eng._nap_lat_hold.turn_active
   assert eng.cruiseEnabled
+  assert not eng.enableLongControl
 
   eng.handle_steering_disengage(True)
   assert eng.cruiseEnabled
-  assert eng.enableLongControl
+  assert not eng.enableLongControl
 
 
 def test_tesla_fsm_1s_dark_then_steer_disengages():
@@ -254,7 +262,7 @@ def test_tesla_fsm_faster_corner_hands_on_without_torque_threshold():
   eng._nap_steering_pressed = False
   eng.handle_steering_disengage(True)
   assert eng.cruiseEnabled
-  assert eng.enableLongControl
+  assert not eng.enableLongControl
   assert eng._nap_lat_hold.turn_active
 
   # Flash gap + 1s dark while still wrenching: still the same turn.
@@ -263,6 +271,7 @@ def test_tesla_fsm_faster_corner_hands_on_without_torque_threshold():
                            steering_disengage=True, dt=LAMP_OFF_DEBOUNCE_S)
   eng.handle_steering_disengage(True)
   assert eng.cruiseEnabled
+  assert not eng.enableLongControl
   assert eng._nap_lat_hold.turn_active
 
 
@@ -317,6 +326,155 @@ def test_update_wrapper_feeds_handle_so_high_torque_keeps_cruise():
     assert eng._nap_left_blinker
     assert eng._nap_stalk_state == 1
     assert eng.cruiseEnabled
+    # First frame of LEFT+lamp is still the tip window; long drops once
+    # the hold classifies a driver turn (0.40s) or lamps latch without a tip.
     assert eng.enableLongControl
   finally:
     pause_mod._ORIG_UPDATE = real
+
+
+def _end_turn_latch(eng, *, pressed=False):
+  """Advance past flash-latch (~1s dark). Lat may still be holding if pressed."""
+  eng._nap_left_blinker = False
+  eng._nap_right_blinker = False
+  eng._nap_steering_pressed = pressed
+  eng._nap_lat_hold.update(False, False, pressed, engaged=True, dt=LAMP_OFF_DEBOUNCE_S)
+  eng.handle_steering_disengage(False)
+
+
+def test_turn_blinker_drops_long_keeps_cruise():
+  """Held/latched driver turn drops long in addition to pausing lat."""
+  install_blinker_lat_pause()
+  eng = _engaged(double_pull=True)
+  eng._nap_left_blinker = True
+  eng.handle_steering_disengage(False)
+  assert eng.cruiseEnabled
+  assert not eng.enableLongControl
+  assert eng.enableJustCC
+  assert eng._nap_lat_hold.turn_active
+  assert getattr(eng, "_nap_long_resume_pending", False)
+
+
+def test_one_set_after_blinker_off_resumes_long_while_lat_paused():
+  """After blinker/latch ends, one SET restores long even if lat is still paused."""
+  install_blinker_lat_pause()
+  eng = _engaged(double_pull=True)
+  eng._nap_left_blinker = True
+  eng.handle_steering_disengage(True)
+  assert not eng.enableLongControl
+  assert eng._nap_lat_hold.turn_active
+
+  _end_turn_latch(eng, pressed=True)
+  assert not eng._nap_lat_hold.turn_active
+  assert eng._nap_lat_hold.holding
+  assert eng.cruiseEnabled
+  assert not eng.enableLongControl
+
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=5000)
+  assert eng.cruiseEnabled
+  assert eng.enableLongControl
+  assert eng._nap_lat_hold.holding
+  assert not getattr(eng, "_nap_long_resume_pending", False)
+
+
+def test_one_set_after_blinker_off_resumes_long_when_lat_already_active():
+  """After blinker/latch ends and hands are off, one SET still restores long."""
+  install_blinker_lat_pause()
+  eng = _engaged(double_pull=True)
+  eng._nap_left_blinker = True
+  eng.handle_steering_disengage(False)
+  assert not eng.enableLongControl
+
+  _end_turn_latch(eng, pressed=False)
+  assert not eng._nap_lat_hold.turn_active
+  assert not eng._nap_lat_hold.holding
+  assert eng.cruiseEnabled
+  assert not eng.enableLongControl
+
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=5000)
+  assert eng.cruiseEnabled
+  assert eng.enableLongControl
+
+
+def test_set_during_active_turn_does_not_restore_long():
+  """SET while a turn lamp is still showing must not bring long back."""
+  install_blinker_lat_pause()
+  eng = _engaged(double_pull=True)
+  eng._nap_left_blinker = True
+  eng.handle_steering_disengage(False)
+  assert not eng.enableLongControl
+  assert eng._nap_lat_hold.turn_active
+
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=2000)
+  assert eng.cruiseEnabled
+  assert not eng.enableLongControl
+  assert getattr(eng, "_nap_long_resume_pending", False)
+
+
+def test_one_set_after_lamps_dark_before_latch_expires():
+  """Blinker off is enough for one SET. Do not wait out the ~1s flash latch."""
+  install_blinker_lat_pause()
+  eng = _engaged(double_pull=True)
+  eng._nap_left_blinker = True
+  eng.handle_steering_disengage(False)
+  assert not eng.enableLongControl
+  assert eng._nap_lat_hold.turn_active
+
+  eng._nap_left_blinker = False
+  eng.handle_steering_disengage(False)
+  assert eng._nap_lat_hold.turn_active
+  assert not eng.enableLongControl
+
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=2500)
+  assert eng.cruiseEnabled
+  assert eng.enableLongControl
+
+
+def test_tip_alc_does_not_drop_long():
+  install_blinker_lat_pause()
+  eng = _engaged(double_pull=True)
+  eng._nap_left_blinker = True
+  eng._nap_alc_active = True
+  eng.handle_steering_disengage(False)
+  assert eng.cruiseEnabled
+  assert eng.enableLongControl
+  assert not eng._nap_lat_hold.turn_active
+
+
+def test_stalk_tip_pending_does_not_drop_long():
+  """LEFT/RIGHT inside the 0.40s tip window is ALC, not a turn."""
+  install_blinker_lat_pause()
+  eng = _engaged(double_pull=True)
+  eng._nap_left_blinker = True
+  eng._nap_stalk_state = 1
+  eng.handle_steering_disengage(False)
+  assert eng.cruiseEnabled
+  assert eng.enableLongControl
+  assert not eng._nap_lat_hold.turn_active
+
+
+def test_double_pull_from_disengaged_still_needs_two_sets():
+  """Resume-long one-pull must not skip initial double-pull engage."""
+  install_blinker_lat_pause()
+  eng = PreAPEngagement(double_pull_enabled=True, double_pull_window_ms=750)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=1000)
+  assert eng.cruiseEnabled
+  assert not eng.enableLongControl
+
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=1400)
+  assert eng.cruiseEnabled
+  assert eng.enableLongControl
+
+
+def test_brake_drop_one_set_resumes_long_with_double_pull():
+  """Same SET resume path after brake: one pull, not two."""
+  install_blinker_lat_pause()
+  eng = _engaged(double_pull=True)
+  _buttons(eng, brake=True, t_ms=2000)
+  assert eng.cruiseEnabled
+  assert not eng.enableLongControl
+
+  _buttons(eng, brake=False, t_ms=3000)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=4000)
+  assert eng.cruiseEnabled
+  assert eng.enableLongControl
