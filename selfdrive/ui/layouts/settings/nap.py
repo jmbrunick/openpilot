@@ -21,7 +21,8 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   CALIBRATE_PEDAL_INSTRUCTIONS,
   DOWNLOAD_US_MAPS_INSTRUCTIONS,
   FORCE_OFFROAD_DESCRIPTION,
-  FLASH_EPAS_INSTRUCTIONS, PEDAL_CAN_BUS_VALUES,
+  FLASH_EPAS_INSTRUCTIONS,
+  INSTALL_SPEED_SIGN_WEIGHTS_INSTRUCTIONS, PEDAL_CAN_BUS_VALUES,
   HIGH_LOW_BEAM_DESCRIPTION, HIGH_LOW_BEAM_LABELS, HIGH_LOW_BEAM_VALUES,
   MAP_SPEED_ACCEL_DEFAULT,
   NAP_FORCE_OFFROAD,
@@ -34,6 +35,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   acknowledgments_html, find_preset_index,
 )
 from openpilot.selfdrive.ui.layouts.settings.map_speed import MapSpeedLimitLayout
+from openpilot.selfdrive.speedsignd.install import weights_status_summary
 from openpilot.selfdrive.car.tesla.preap_body_controls import register_nap_body_params
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys, DEFAULTS
 
@@ -270,6 +272,24 @@ class NAPLayout(Widget):
       "Speed Sign Logger",
       SPEED_SIGN_LOG_DESCRIPTION,
     )
+
+    self._weights_status = text_item(
+      "Speed Sign Weights",
+      weights_status_summary,
+      description="YOLO ONNX at /data/media/0/nap/speed_sign.onnx. "
+      "Missing → onroad SIGN shows NO WT and will not read roadside signs. "
+      "Installed → blank plate until a confirmed mph.",
+    )
+    self._main_items.append(self._weights_status)
+
+    self._install_weights_btn = button_item(
+      "Install weights",
+      "Start",
+      description=INSTALL_SPEED_SIGN_WEIGHTS_INSTRUCTIONS.split("\n", 1)[0],
+      callback=self._on_install_speed_sign_weights,
+    )
+    self._install_weights_btn.action_item.set_enabled(ui_state.is_offroad)
+    self._main_items.append(self._install_weights_btn)
 
     # Force Pre-AP is always on for now — grayed out in the ON position
     self._params.put_bool(NAPParamKeys.FORCE_PRE_AP, True)
@@ -627,6 +647,13 @@ class NAPLayout(Widget):
 
   # ── Action button callbacks ──
 
+  def _on_install_speed_sign_weights(self):
+    self._show_script_runner(
+      title="Install weights",
+      instructions=INSTALL_SPEED_SIGN_WEIGHTS_INSTRUCTIONS,
+      script_module="scripts.nap.install_speed_sign_weights",
+    )
+
   def _on_download_us_maps(self):
     self._show_script_runner(
       title="Download US Maps",
@@ -778,6 +805,7 @@ class NAPLayout(Widget):
       max(0, min(len(HIGH_LOW_BEAM_VALUES) - 1, beam_setting)))
 
     self._map_speed_page.refresh()
+    self._install_weights_btn.action_item.set_enabled(ui_state.is_offroad)
     radar_position = int(self._params.get(NAPParamKeys.RADAR_POSITION, return_default=True) or 0)
     self._radar_position_buttons.action_item.set_selected_button(max(0, min(2, radar_position)))
     radar_epas = int(self._params.get(NAPParamKeys.RADAR_EPAS_TYPE, return_default=True) or 0)

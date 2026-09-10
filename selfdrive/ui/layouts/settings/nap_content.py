@@ -36,10 +36,34 @@ SPEED_SIGN_LOG_DESCRIPTION = (
   "(t, lat, lon, bearing, mph, conf) and shows a display-only SIGN plate. "
   "Does not write sqlite, does not change cruise / HUD MAX, and does not "
   "query osm.org. Stock modelV2 has no speedSign head. Real roadside "
-  "detection needs the compact YOLO ONNX: "
-  "python -m scripts.nap.install_speed_sign_weights "
-  "(writes /data/media/0/nap/speed_sign.onnx)."
+  "detection needs the compact YOLO ONNX on /data/media/0/nap/speed_sign.onnx. "
+  "If that file is missing, onroad SIGN shows NO WT — use Install weights "
+  "(Wi-Fi, offroad / Force Offroad), or: "
+  "python -m scripts.nap.install_speed_sign_weights."
 )
+
+INSTALL_SPEED_SIGN_WEIGHTS_INSTRUCTIONS = """\
+Install speed-sign ONNX weights
+
+Downloads the published YOLO ONNX (~43 MB) from GitHub Release
+speed-sign-onnx-v1 / speed_sign.onnx and writes
+/data/media/0/nap/speed_sign.onnx (SHA-256 checked).
+
+Without this file, Speed Sign Logger On still starts speedsignd, but the
+onroad SIGN plate shows NO WT and will not read real roadside signs.
+
+PRECONDITIONS:
+  1. Device is offroad / parked (Force Offroad if you are in the car)
+  2. Wi-Fi that can reach GitHub Releases
+  3. ~50 MiB free on /data
+
+Takes less than a minute. speedsignd retries the ONNX onroad without a
+reboot. Then a clear MUTCD R2-1 should light SIGN mph.
+
+Does not write sqlite, does not change cruise / HUD MAX, and does not
+query osm.org.
+
+Press START to download."""
 
 # Forwarded 0x45 STW_ACTN_RQ wiper / high-beam. 0 = off (today's stalk).
 WIPER_SPEED_VALUES = [0, 1, 2, 3]

@@ -586,10 +586,24 @@ class SpeedSignDetector:
   """YOLO ONNX if weights exist on /data. Numpy matcher is tests/dev only."""
 
   def __init__(self, onnx: OnnxSpeedSignDetector | None = None, onnx_path: str | None = None):
+    self.onnx_path = onnx_path
     if onnx is not None:
       self.onnx = onnx
     else:
       self.onnx = OnnxSpeedSignDetector.try_load(onnx_path)
+
+  def weights_missing(self) -> bool:
+    return self.onnx is None
+
+  def try_reload(self) -> bool:
+    """Load ONNX if the file appeared after Settings install. True if newly loaded."""
+    if self.onnx is not None:
+      return False
+    loaded = OnnxSpeedSignDetector.try_load(self.onnx_path)
+    if loaded is None:
+      return False
+    self.onnx = loaded
+    return True
 
   def detect(self, y: np.ndarray, min_conf: float | None = None, rgb: np.ndarray | None = None) -> list[SpeedSign]:
     if self.onnx is not None:
