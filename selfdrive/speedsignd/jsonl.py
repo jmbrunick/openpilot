@@ -9,7 +9,7 @@ from typing import Any
 
 RECORD_KEYS = ("t", "lat", "lon", "bearing", "mph", "conf")
 
-# Skip a repeat of the same mph near the last write (on-drive 4 Hz would spam).
+# Skip a repeat of the same mph near the last write (even 1 Hz would spam).
 DEDUP_COOLDOWN_S = 8.0
 DEDUP_RADIUS_M = 40.0
 
