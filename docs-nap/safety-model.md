@@ -27,8 +27,8 @@ All actual safety logic remains active:
 
 - Steering angle + rate limits via `steer_angle_cmd_checks_vm()`
 - `controls_allowed` gating on every TX
-- Disengage on hands-on override (level >= 3)
-- Disengage on EPAS error codes 6–9
+- Disengage on hands-on override (level >= 2), except during a blinker-latched driver turn (one lamp or held LEFT/RIGHT, flash-latched ~1s, then hand-on until release)
+- Disengage on EPAS error codes 6–9, except during that same turn pause
 - Disengage on door open, gear out of Drive
 - Disengage on stalk cancel (with 600 ms echo filter)
 - AEB events blocked from openpilot
@@ -69,13 +69,28 @@ Panda hardcodes `brake_pressed=false`. The framework's generic brake-to-disengag
 3. On brake rising edge in pedal mode: drops `enableLongControl=False` but keeps `cruiseEnabled=True` (lateral stays active, only pedal drops)
 4. `ret.brakePressed = False` suppresses the generic openpilot brake handler from also killing lateral
 
-The driver can always override steering via hands-on level ≥ 2. The panda enforces that; it does not enforce brake-to-disengage.
+The driver can always override steering via hands-on level ≥ 2. The panda enforces that, except during a blinker-latched driver turn (lat is already released; wheel torque must not `pcm_cruise_check(false)` or selfdrived will `controlsMismatch` after 2s). It does not enforce brake-to-disengage.
 
 See `test_tesla_preap.py::test_prev_user_brake` for the panda-layer invariant test.
 
+## Blinker-turn latch (panda flash required)
+
+`tesla_preap` keeps `controls_allowed` when a **driver turn** is active so a high-torque corner (EPAS hands-on ≥ 2 / error 6–9) does not `pcm_cruise_check(false)`. That is the same intent as Python `BlinkerLateralHold` / `blinker_turn_blocks_steering_disengage`:
+
+- one GTW lamp XOR (`BC_indicatorLStatus` / `R` == 1), or
+- physical stalk `TurnIndLvr_Stat` LEFT/RIGHT, or
+- latched through GTW lamp flash gaps (~1s continuous dark ends the turn), then hand-on until release
+
+A stalk **tip** (LEFT/RIGHT then IDLE within 0.40s) is ALC: leftover keep-alive flashes are not a turn. Same-direction stalk during that keep-alive must be held 1.0s to become a turn. Hazards (both lamps) are not a turn. Stalk cancel, door open, and gear out of Drive still drop immediately.
+
+This lives in the panda firmware, not just Python. tesla_preap skips `pcm_cruise_check(false)` and sets `steering_disengage_keep_controls` so `generic_rx_checks` does not drop on the same rising edge.
+
+After pulling this change, **flash the panda** (usual NAP/panda update path: on-device `scons` rebuilds `panda/board` from `opendbc_repo` safety, then reboot so `pandad` compares firmware signatures and flashes). A Python-only update leaves the old firmware dropping `controls_allowed` mid-turn; `controlsMismatch` then appears right after the hold ends.
+
 ## Changing safety code
 
-1. Every edit to `tesla_preap.h` needs a test in `test_tesla_preap.py`
+1. Every edit to `tesla_preap.h` / `tesla_preap_blinker.h` needs a test in `test_tesla_preap.py` or `test_tesla_preap_blinker.py`
 2. Run `scons opendbc_repo/opendbc/safety/tests/libsafety/libsafety.so` after editing
 3. Pre-push: full `pytest test_tesla_preap.py`, then CI (safety tests run on every branch push)
 4. If changing RX rate expectations, replay against a real drive log to confirm — see `scripts/nap/analyze_engagement.py` for a starter replay harness
+5. Device: rebuild panda firmware and reboot so `pandad` flashes. Confirm no "reflash panda" / signature mismatch in logs.

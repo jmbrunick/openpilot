@@ -33,7 +33,7 @@ Key rationale for each nonstandard setting is commented in the file header. In s
 - `check_relay=false` + `disable_static_blocking=true` on every TX: pre-AP has no harness relay
 - `ignore_checksum=true` + `ignore_counter=true` on RX: the pre-AP EPAS checksum algorithm is not fully verified across firmware versions; mismatched validation caused a silent 21-second steering dropout during testing
 
-All actual safety checks are active (steering angle/rate limits, hands-on disengage, EPAS error codes, door/gear, stalk echo-filtered cancel, AEB block).
+All actual safety checks are active (steering angle/rate limits, hands-on disengage except during a blinker-latched driver turn, EPAS error codes, door/gear, stalk echo-filtered cancel, AEB block). A tesla_preap.h change requires a panda flash after pull.
 
 ### Radar (optional)
 
@@ -69,6 +69,16 @@ Any divergence causes the steering angle command limiter to disagree between lay
 NAP tracks upstream openpilot closely. We fork `opendbc` because the pre-AP DBCs, car port, and safety mode all live there and are NAP-only. We track upstream `panda` directly — pre-AP safety changes go through the `opendbc_repo/opendbc/safety/` path that panda pulls in as a submodule.
 
 See [Tinkla](https://github.com/boggyver/openpilot/tree/tesla_unity_betaC3) and [xnor-tech/openpilot](https://github.com/xnor-tech/openpilot) for the prior art NAP builds on.
+
+## Turn stalk vs automatic lane change
+
+Pre-AP `TurnIndLvr_Stat` is only IDLE / LEFT / RIGHT / SNA — no tip vs latch bit. NAP classifies from hold time (`selfdrive/controls/lib/stalk_tip_turn.py`):
+
+- **Tip:** LEFT or RIGHT then IDLE within `STALK_TIP_HOLD_S` (0.40s) → arm ALC at any speed (wheel nudge still starts the change; opposite tap cancels; stalk IDLE alone does not).
+- **Held turn:** LEFT or RIGHT past 0.40s from idle → do not arm ALC; lateral pause (flash-latch ~1s dark, then hand release resumes lat).
+- **During ALC / leftover keep-alive:** same-direction physical stalk held past `STALK_ALC_TURN_HOLD_S` (1.0s) cancels ALC, stops OP blinker keep-alive, and pauses lat as a driver turn. A shorter same-direction hold does not force a turn. Opposite brief tap still cancels ALC without becoming a turn; opposite held uses the 0.40s window.
+
+`LANE_CHANGE_SPEED_MIN` (20 mph) still gates *starting* the lane-change maneuver after a nudge, not tip vs turn and not pause vs ALC. Hazards do neither. ALC keep-alive lamps do not pause lat.
 
 ## OSM map speed (MAX)
 
