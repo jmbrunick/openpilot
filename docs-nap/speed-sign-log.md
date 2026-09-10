@@ -4,6 +4,8 @@ On-drive MUTCD numeric speed-sign logger for comma 3X. **Default off.** Log-only
 
 Stock `modelV2` has no `speedSign` head. This is a separate process (`speedsignd`) that reads the ROAD camera + GNSS and runs a compact **YOLOv8 ONNX** (US traffic-sign classes, including 55/60). The old numpy template matcher is tests/dev only — it does not see real roadside signs.
 
+**Driving model first.** Logger On + ONNX weights used to run YOLOv8s at 4 Hz via tinygrad `OnnxRunner` on CPU. That saturates a 3X core (Ratekeeper catch-up never sleeps) and can show “driving model is lagging” with ~35% `modeld` frames dropped. This process now **yields hard to modeld**: default **1 Hz**, skip-on-overrun if an infer exceeds the period or a ~100 ms budget, `SCHED_OTHER` + nice 19. After this revision it should be gentle. **If lag returns, turn Speed Sign Logger Off.** Leave it On only while testing signs / HUD / JSONL. A smaller YOLO export is a follow-up if 1 Hz is still heavy.
+
 ## Enable
 
 1. **Install weights** (once, Wi-Fi) — Settings → NAP → **Install weights** (offroad / Force Offroad), or SSH below. Without `/data/media/0/nap/speed_sign.onnx` the onroad SIGN plate shows **NO WT** and will not light mph on real signs.
@@ -15,6 +17,10 @@ Stock `modelV2` has no `speedSign` head. This is a separate process (`speedsignd
 Off (default): the process does not run.
 
 Reset to Defaults turns the logger back off. Weights on `/data` stay.
+
+Optional detect rate (default 1 Hz, clamped 0.2–4): `NAP_SPEED_SIGN_HZ=0.5` in the process environment. Do not raise this on a 3X unless you have watched `modeld` frame drops.
+
+Onroad, `swaglog` prints `speedsignd timing hz=… infer_ms mean=… max=… n=… skip=…` about every 15 s. Mean/max infer well above 100 ms is expected for YOLOv8s on tinygrad CPU; `skip` should climb when an infer overruns so work does not pile up. If “driving model is lagging” comes back, turn Logger Off.
 
 ## Install weights on the 3X
 
@@ -55,9 +61,9 @@ Source checkpoint (MIT): [cvtechniques/JC-Traffic-Sign-Detection](https://huggin
 
 After weights are installed and the logger is **On**, drive past a **clear, unobstructed MUTCD R2-1** (white SPEED LIMIT plate) in daylight — e.g. a roadside **55** or **60**.
 
-- Within about **0.5 s** (two frames at 4 Hz) a large opaque **SIGN** plate appears with that mph on the **left** (driver) side of the onroad UI.
+- Within about **1–4 s** (two frames at 1 Hz, or after a skip) a large opaque **SIGN** plate appears with that mph on the **left** (driver) side of the onroad UI.
 - **Yes** / **No** (“is this accurate?”) sit under the plate on 3X (beside it on comma 4). They are **stubs** right now — they do not change cruise, HUD MAX, or map speed. Later, Yes may confirm the marker (JSONL + optional OSM); No may discard a wrong read.
-- It holds **1.5 s** after the last confirmed detection, then hides (Yes/No hide with it).
+- It holds **3.0 s** after the last confirmed detection, then hides (Yes/No hide with it).
 - A JSONL row is appended only with a live GNSS fix (same mph near the last write is skipped ~8 s / ~40 m).
 - HUD **MAX** / cruise / OSM LIMIT do not change.
 
@@ -102,8 +108,9 @@ When the logger is **On**, a large opaque **SIGN** plate shows the mph the camer
 | Where (3X) | Left / driver side, below the MAX box. Large plate (200×248). |
 | Where (comma 4) | Left / driver side (top-left), same idea |
 | Yes / No | Shown only with a live mph. 3X: stacked under the plate (full-width, ~112 px tall). comma 4: beside the plate. **No-op stubs** (cloudlog debug only). |
-| Confirm | **2** detections of the same mph within **0.75 s**, conf ≥ **0.40** |
-| Hold | **1.5 s** after the last confirmed detection, then it hides |
+| Confirm | **2** detections of the same mph within **4.0 s**, conf ≥ **0.40** |
+| Hold | **3.0 s** after the last confirmed detection, then it hides |
+| Detect rate | Default **1 Hz** (env `NAP_SPEED_SIGN_HZ`, clamped 0.2–4). Overrun → skip frames until free. |
 | Source | cereal `liveSpeedSignNAP` (not the JSONL file) |
 
 White MUTCD-style plate, black digits, red border, **SIGN** label so it is not confused with HUD MAX or OSM LIMIT.
@@ -119,14 +126,14 @@ Speed Sign Logger On, onroad, but SIGN stays dark or never shows mph — almost 
 1. Look at the onroad plate: **NO WT** means `/data/media/0/nap/speed_sign.onnx` is absent or failed to load. Settings → NAP → Speed Sign Weights should say **Missing**.
 2. Park or turn on Force Offroad. Tap **Install weights** (Wi-Fi). Wait for the runner to finish — do not leave it spinning forever; an error prints on that screen. Or SSH: `python -m scripts.nap.install_speed_sign_weights`.
 3. File should be ~43 MB. `ls -l /data/media/0/nap/speed_sign.onnx`. Settings should flip to **Installed**.
-4. No full reboot required: speedsignd retries ONNX every ~15 s. `swaglog` should show `speedsignd starting … backend=yolo-onnx` or `ONNX loaded after retry backend=yolo-onnx`.
+4. No full reboot required: speedsignd retries ONNX every ~15 s. `swaglog` should show `speedsignd starting … backend=yolo-onnx` or `ONNX loaded after retry backend=yolo-onnx` (also `hz=` / `nice=19`).
 5. Drive past a clear, unobstructed MUTCD R2-1. Confirmed mph lights SIGN. A blank plate with weights Installed means no detection yet (night, glare, tiny sign — see Accuracy limits).
 
 Do not treat a blank plate as “the detector is running.” Blank + Installed = no confirmed sign. Blank + Missing / **NO WT** = install weights.
 
 ## Accuracy limits (honest)
 
-This is a small CPU detector at 4 Hz on a 320² letterbox of the ROAD camera. It is **not** a modeld head and is **not** used for control.
+This is a small CPU detector at **1 Hz** (was 4 Hz) on a 320² letterbox of the ROAD camera. It is **not** a modeld head and is **not** used for control. It must not starve `modeld`: if an infer takes longer than the period or ~100 ms, speedsignd skips frames and sleeps instead of Ratekeeper catch-up. `swaglog` logs `speedsignd timing … infer_ms mean/max` and `skip=` about every 15 s so you can see cost on the device.
 
 **Usually works:** daylight, dry, a standard white R2-1 facing the car, large enough in the ROAD frame (near / mid roadside, not a speck on the horizon). 55 and 60 are in the trained class set.
 
