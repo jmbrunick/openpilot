@@ -1,3 +1,7 @@
+NAP speed-sign log (2026-09-11)
+========================
+* SIGN WAIT is only when openpilot is actively controlling. A 1 Hz SubMaster used to treat unknown / stale `selfdriveState` as engaged for ~10 s after cancel (`recv_frame <= 0` + 100 ms alive window). Poll at 20 Hz; gate on `active`; abandon in-flight ONNX on re-engage so the loop never blocks. If TAKE CONTROL / Communication Issue comes back, turn Logger Off.
+
 NAP speed-sign log (2026-09-10)
 ========================
 * Speed Sign Logger On no longer runs YOLO while openpilot is engaged (SIGN shows WAIT). Manual driving — moving OK — still logs signs at 1 Hz. If TAKE CONTROL comes back, turn Logger Off.
