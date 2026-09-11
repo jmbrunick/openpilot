@@ -82,7 +82,7 @@ Pre-AP `TurnIndLvr_Stat` is only IDLE / LEFT / RIGHT / SNA — no tip vs latch b
 
 ## Driver-wheel temporary lateral handoff
 
-**Default Off** (`NAPDriverLatHandoff=0`) after a gravel-road false-yield incident. Do not drive nap-dev with handoff On; use nap-release. Light torsion-bar input on Pre-AP can yield lateral without a full disengage when explicitly enabled for testing. This is not a blinker turn and does not arm ALC. See [engagement.md](engagement.md#driver-wheel-temporary-lateral-handoff).
+**Default On** (`NAPDriverLatHandoff=1`). Firm 0.85 Nm / 250 ms consecutive push yields lat; turn Off in Settings → NAP if gravel or wind false-yields. This is not a blinker turn and does not arm ALC. See [engagement.md](engagement.md#driver-wheel-temporary-lateral-handoff).
 
 ## OSM map speed (MAX)
 

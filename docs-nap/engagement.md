@@ -86,7 +86,7 @@ Panda firmware must be flashed after this safety change. Software update / on-de
 
 ## Driver-wheel temporary lateral handoff
 
-**SAFETY — DEFAULT OFF.** After #71 shipped, a gravel / low-friction road Justin has driven many times produced a ~30° steer toward a ditch until he overrode. Soft yield on rumble (false yield + authority drop / bad path) is the prime suspect. `NAPDriverLatHandoff` and `DriverLateralHandoff(enabled=False)` default **Off**. Do **not** drive nap-dev with this On until gravel / low-friction behavior is reviewed. Use **nap-release** for driving. Opt-in is Settings → NAP → Soft Lateral Handoff (testing only).
+**Default On.** Settings → NAP → Soft Lateral Handoff can be turned **Off** if gravel or crosswind still false-yields (gray HUD, OP stops fighting the path). #71 at 0.5 Nm / 80 ms tripped on rumble.
 
 Pothole / obstacle dodges without fighting NAP and without a full disengage. Software-only; panda hands-on ≥ 2 and `STEER_THRESHOLD` are unchanged.
 
@@ -95,19 +95,19 @@ Pothole / obstacle dodges without fighting NAP and without a full disengage. Sof
 | Signal | Source | Type | Role |
 |--------|--------|------|------|
 | `EPAS_torsionBarTorque` | `EPAS_sysStatus` 0x370 | continuous Nm (0.01, −20.5) | soft-yield |
-| `StW_AnglHP_Spd` | `STW_ANGLHP_STAT` 0x0E | continuous deg/s (0.5, −4096) | **not** used for quiet while yielded (caster / road rate) |
+| `StW_AnglHP_Spd` | `STW_ANGLHP_STAT` 0x0E | continuous deg/s (0.5, −4096) → `CS.steeringRateDeg` (negated) | **not** used for quiet (caster / road / SNA) |
 | `EPAS_handsOnLevel` | same EPAS msg | discrete 0/1/2/3 | **not** the soft trigger. ≥ 2 remains hard disengage |
 
 `steeringPressed` is still `|torsion| > STEER_THRESHOLD` (**1.0 Nm**) with **5-frame** debounce (~50 ms). That fires `EventName.steerOverride` (`OVERRIDE_LATERAL`, stays enabled) and is the current software override effort.
 
-Soft-yield trigger is **0.5 Nm** (50% of that software threshold) with **8-frame** debounce (~80 ms) and release hysteresis at **0.3 Nm**. `handsOnLevel >= 1` is not used: stock EPAS already takes ~0.5 Nm for 0.25 s to raise level 1 (too slow for a dodge), and level 1 is a normal hands-on posture while OP is engaged.
+Soft-yield trigger is **0.85 Nm** (85% of `STEER_THRESHOLD`, a firm push — not 0.5 Nm rumble and not a yank) with **250 ms consecutive** frames above that (gaps reset the count) and release hysteresis at **0.40 Nm**. `handsOnLevel >= 1` is not used. ≥ 2 stays the hard/safety path.
 
 ### Behavior
 
-1. OP engaged and providing lateral. Light wheel input → lateral authority goes to 0. `carControl.latActive` stays **true** (no `LaC.reset`, no snap in `apply_steer_angle_limits_vm`). Longitudinal and `cruiseEnabled` stay up. Stalk cancel / doors / hands-on ≥ 2 still hard-disengage.
-2. Stay at 0% while the driver keeps torque above 0.3 Nm (hands still on / held correction). Quiet is **torque-only** while yielded: after release, caster self-center and road motion keep measured `CS.steeringRateDeg` above the old 25 deg/s gate, so a rate AND torque quiet check never finished the 0.25 s timer on-car. Rate is also ignored during the 1 s blend because OP itself turns the wheel.
+1. OP engaged and providing lateral. Firm sustained hand push (0.85 Nm / 250 ms) → lateral authority goes to 0. `carControl.latActive` stays **true** (no `LaC.reset`, no snap in `apply_steer_angle_limits_vm`). Longitudinal and `cruiseEnabled` stay up. Stalk cancel / doors / hands-on ≥ 2 still hard-disengage.
+2. Stay at 0% only while the driver re-applies the **soft-yield trigger (≥ 0.85 Nm)**. Quiet is **not** aborted by the 0.40 Nm hysteresis band (resting hands / torsion bias / rumble) or by steering rate. Pre-AP `CS.steeringRateDeg` is `−STW_ANGLHP_STAT.StW_AnglHP_Spd` (deg/s, 0.5 LSB; SNA decodes to ~4095 deg/s). Rate is also ignored during the 1 s blend. Resistance during the blend is ≥ 0.85 Nm.
 3. After **0.25 s** of quiet, a **1.0 s** smoothstep (`t²(3−2t)`) blends authority 0 → 1. Max slope 1.5 / s.
-4. Renewed input ≥ 0.5 Nm during the blend immediately yields, resets the 0.25 s timer, and retries only after quiet.
+4. Renewed input ≥ 0.85 Nm during the blend immediately yields, resets the 0.25 s timer, and retries only after quiet.
 5. Yield smoothing: authority drops in one 10 ms cycle; the Tesla VM limiter still slews the CAN angle (`MAX_ANGLE_RATE` = 5 deg / 20 ms = 250 deg/s, plus ~3.6 m/s³ jerk). Do not jump desired angle. Hand-back is the S-curve, not a step.
 6. HUD: `controlsState.latHandoffPaused` stays set until authority ≥ **0.70**. 3X chrome uses the existing gray **override** (paused / driver-control) indication, not disengaged, and not the green lateral-engaged state. No engage/disengage sounds. Crossing 70% is latched so 69% cannot flicker green.
 
@@ -125,11 +125,11 @@ Blinker tip/hold ALC, lat pause, long drop + one SET, and panda blinker latch ar
 Do these at a quiet road / parking lot first, then a known pothole stretch. Pedal or no-pedal both OK. Do **not** expect a panda flash.
 
 1. **Engage** with a double-pull. Confirm green engaged chrome and that long/cruise is holding speed.
-2. **Light rim input** (about half of the usual “OP is fighting me” effort, well below a yank). Lateral should go slack almost immediately. Speed control must stay on. HUD should go **gray override**, not “Steering Disengaged”, and must not play the disengage chime.
+2. **Firm, gradual, sustained hand push** (~0.85 Nm for a quarter second — not a gravel twitch, not a yank). Lateral should go slack. Speed control must stay on. HUD should go **gray override**, not “Steering Disengaged”, and must not play the disengage chime. Road rumble / crosswind alone must **not** gray.
 3. **Hold** a small offset for >1 s. Authority must stay yielded (no snap back to the lane).
 4. **Release and sit quiet.** Hands clearly off on a straight / gentle road. After a beat (~0.25 s) the wheel should ease back onto the path over about **one second**, not jump — even if the rim is still self-centering from the dodge. Green engaged chrome returns only late in that blend (around 70%+), not at the first twitch. If the wheel stays slack, quiet is still failing.
 5. **Re-grab during the blend.** The return must stop immediately and yield again. Gray chrome stays. After another quiet beat, the 1 s blend retries.
-6. **Road rumble** with hands resting, no dodge. Must **not** repeatedly gray/green. If it does, the 0.5 Nm trigger is too low for that stretch — do not lower panda / `STEER_THRESHOLD`.
+6. **Road rumble / crosswind** with hands resting. Must **not** gray. If it still does, turn Soft Lateral Handoff **Off** in Settings → NAP — do not lower panda / `STEER_THRESHOLD`.
 7. **Blinker turn** (held stalk): existing lat pause, long drop, one SET resume. Soft-yield must not steal this or arm ALC from a tip.
 8. **ALC tip** (LEFT/RIGHT then IDLE within 0.40 s) still arms a lane change; wheel nudge at 1 Nm still starts it.
 9. **Hard yank / hands-on 2**, stalk cancel, door: full disengage, “Steering Disengaged”, chime. That is still the safety path.

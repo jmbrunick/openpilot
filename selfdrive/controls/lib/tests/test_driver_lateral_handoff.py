@@ -48,9 +48,9 @@ def _step(h, *, torque=0.0, rate=0.0, engaged=True, lat=True, alc=False, dt=DT):
   )
 
 
-def _yield(h, torque=0.6):
+def _yield(h, torque=1.0):
   out = None
-  for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES + 1):
+  for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES):
     out = _step(h, torque=torque)
   assert out is not None
   assert out.yielded
@@ -65,9 +65,10 @@ def _quiet(h, seconds):
 def test_thresholds_are_half_of_real_steering_pressed_not_invented():
   assert STEER_THRESHOLD == 1
   assert HANDS_ON_DISENGAGE_LEVEL == 2
-  assert SOFT_YIELD_TRIGGER_NM == 0.5 * float(STEER_THRESHOLD)
-  assert SOFT_YIELD_RELEASE_NM == 0.3 * float(STEER_THRESHOLD)
+  assert SOFT_YIELD_TRIGGER_NM == 0.85 * float(STEER_THRESHOLD)
+  assert SOFT_YIELD_RELEASE_NM == 0.40 * float(STEER_THRESHOLD)
   assert SOFT_YIELD_RELEASE_NM < SOFT_YIELD_TRIGGER_NM
+  assert SOFT_YIELD_DEBOUNCE_FRAMES == 25
   assert PREAP_FINGERPRINT == "TESLA_MODEL_S_PREAP"
   assert QUIET_WAIT_S == 0.25
   assert BLEND_TIME_S == 1.0
@@ -78,26 +79,25 @@ def test_thresholds_are_half_of_real_steering_pressed_not_invented():
   assert STEER_RATE_QUIET_DEG_S == 25.0
 
 
-def test_constructor_and_param_default_off_after_gravel_incident():
-  """Shipping default must not run handoff. Gravel rumble false-yielded."""
+def test_param_defaults_on_and_toggle_off_disables():
+  """Default On; Settings Off (param_on=False) must be identity."""
   h = DriverLateralHandoff()
-  assert not h.enabled
-  for _ in range(50):
-    out = _step(h, torque=1.5, rate=80.0)
+  assert h.enabled
+  assert handoff_enabled(fingerprint=PREAP_FINGERPRINT, param_on=True)
+  assert not handoff_enabled(fingerprint=PREAP_FINGERPRINT, param_on=False)
+  assert not handoff_enabled(fingerprint="TESLA_MODEL_3", param_on=True)
+  root = Path(__file__).resolve().parents[4]
+  keys = (root / "common/params_keys.h").read_text()
+  line = next(ln for ln in keys.splitlines() if '"NAPDriverLatHandoff"' in ln)
+  assert "BOOL" in line and '"1"' in line
+  cs = (root / "selfdrive/controls/controlsd.py").read_text()
+  assert "PARAM_DRIVER_LAT_HANDOFF" in cs
+  h_off = DriverLateralHandoff(enabled=False)
+  for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES + 5):
+    out = _step(h_off, torque=1.5, rate=80.0)
   assert out.authority == 1.0
   assert not out.yielded
   assert not out.ui_paused
-  assert not handoff_enabled(fingerprint=PREAP_FINGERPRINT, param_on=False)
-  assert not handoff_enabled(fingerprint="TESLA_MODEL_3", param_on=True)
-  assert handoff_enabled(fingerprint=PREAP_FINGERPRINT, param_on=True)
-  root = Path(__file__).resolve().parents[4]
-  keys = (root / "common/params_keys.h").read_text()
-  assert '"NAPDriverLatHandoff"' in keys
-  line = next(ln for ln in keys.splitlines() if '"NAPDriverLatHandoff"' in ln)
-  assert "BOOL" in line and '"0"' in line
-  cs = (root / "selfdrive/controls/controlsd.py").read_text()
-  assert "DriverLateralHandoff(enabled=False)" in cs
-  assert "PARAM_DRIVER_LAT_HANDOFF" in cs
 
 
 def test_light_input_yields_lateral_keeps_long_and_lat_active():
@@ -106,8 +106,8 @@ def test_light_input_yields_lateral_keeps_long_and_lat_active():
   long_override = False
   op_long = True
   lat_active = True  # blinker helper already ran; handoff does not clear this
-  for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES + 1):
-    out = _step(h, torque=0.6)
+  for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES):
+    out = _step(h, torque=1.0)
   long_active = enabled and not long_override and op_long
   assert lat_active
   assert long_active
@@ -136,10 +136,32 @@ def test_just_below_trigger_does_not_yield():
 
 def test_short_spike_is_debounced():
   h = _new()
-  for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES):  # equal, not greater
-    out = _step(h, torque=0.8)
+  for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES - 1):
+    out = _step(h, torque=1.2)
   assert not out.yielded
   out = _step(h, torque=0.0)
+  assert not out.yielded
+  assert out.authority == 1.0
+
+
+def test_gravel_spike_train_does_not_yield():
+  """Rumble: brief 1.2 Nm hits with gaps must not accumulate to a yield."""
+  h = _new()
+  out = None
+  for _ in range(40):
+    for _ in range(5):
+      out = _step(h, torque=1.2)
+    for _ in range(5):
+      out = _step(h, torque=0.15)
+  assert not out.yielded
+  assert out.authority == 1.0
+
+
+def test_old_half_nm_sustained_does_not_yield():
+  """0.5–0.7 Nm (old trigger / crosswind-ish) must not yield."""
+  h = _new()
+  for _ in range(int(1.5 / DT)):
+    out = _step(h, torque=0.7)
   assert not out.yielded
   assert out.authority == 1.0
 
@@ -148,20 +170,40 @@ def test_sustained_driver_input_keeps_authority_at_zero():
   h = _new()
   _yield(h)
   for _ in range(int(2.0 / DT)):
-    out = _step(h, torque=0.8, rate=40.0)
+    out = _step(h, torque=1.0, rate=40.0)
     assert out.authority == 0.0
     assert out.yielded
     assert not out.blending
 
 
-def test_held_torque_above_release_does_not_hand_back():
+def test_yielded_hysteresis_band_0_35nm_begins_blend():
+  """Yield, then 0.35 Nm (in the 0.3–0.5 band) at rate 0 for >0.25 s.
+
+  That band is press-latch hysteresis only. Treating it as 'still
+  holding' zeroed _quiet_s every frame and never handed back on-car.
+  """
   h = _new()
   _yield(h)
-  # Light hold in the hysteresis band must stay yielded (hands still on).
-  for _ in range(int(1.0 / DT)):
-    out = _step(h, torque=SOFT_YIELD_RELEASE_NM + 0.05, rate=80.0)
-    assert out.yielded
+  assert 0.35 < SOFT_YIELD_TRIGGER_NM
+  out = None
+  for _ in range(int(QUIET_WAIT_S / DT)):
+    out = _step(h, torque=0.35, rate=0.0)
     assert out.authority == 0.0
+  assert out is not None
+  assert out.blending
+  assert not out.yielded
+  assert out.authority == 0.0
+
+
+def test_yielded_old_half_nm_band_begins_blend():
+  """0.6 Nm is below the 0.85 trigger; must not reset quiet."""
+  h = _new()
+  _yield(h)
+  out = None
+  for _ in range(int(QUIET_WAIT_S / DT)):
+    out = _step(h, torque=0.6, rate=0.0)
+  assert out.blending
+  assert not out.yielded
 
 
 def test_yielded_rate_above_old_gate_does_not_block_resume():
@@ -243,7 +285,7 @@ def test_renewed_input_during_blend_yields_and_resets_timer():
     out = _quiet(h, DT)
   assert out.blending
   assert 0.0 < out.authority < 1.0
-  out = _step(h, torque=0.8)
+  out = _step(h, torque=1.0)
   assert out.yielded
   assert not out.blending
   assert out.authority == 0.0
@@ -273,7 +315,7 @@ def test_ui_paused_below_70_returns_at_70_without_chatter():
   assert seen_unpaused
   # Knock authority back down during the remaining blend. UI must go
   # paused immediately and stay there — no green flicker.
-  out = _step(h, torque=0.8)
+  out = _step(h, torque=1.0)
   assert out.ui_paused
   assert out.authority == 0.0
   status = hud_engaged_status(
