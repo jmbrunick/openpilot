@@ -17,7 +17,7 @@ Pre-AP has two modes depending on whether a Comma Pedal is installed. Mode is se
 1. Driver double-pulls stalk → `cruiseEnabled=True`, `enableLongControl=True`
 2. `carcontroller.py` sends `GAS_COMMAND` (0x551) based on `actuators.accel` from the long planner
 3. Zero-torque learning tracks the resting pedal position that produces zero torque at the current speed. On engage, we seed `prev_pedal_di` to this value so there is no regen spike
-4. Brake rising edge → drops `enableLongControl=False`, keeps `cruiseEnabled=True` (steering stays on, pedal drops). `enableJustCC` flips true so the carcontroller knows to spoof stock CC cancel. This is a **silent long pause**, not a full disengage: no `EventName.pedalCruiseDisabled` / no disengage chime / no HUD “Pedal Cruise Disengaged”. Held MAX (`pedal_speed_kph` / `MapCruiseHold.held_max_kph` / sticky set) is remembered. Soft-wheel handoff (#71) is a separate lat-only path and does not use this pause.
+4. Brake rising edge → drops `enableLongControl=False`, keeps `cruiseEnabled=True` (steering stays on, pedal drops). `enableJustCC` flips true so the carcontroller knows to spoof stock CC cancel. This is a **silent long pause**, not a full disengage: no `EventName.pedalCruiseDisabled` / no disengage chime / no HUD “Pedal Cruise Disengaged”. Held MAX (`pedal_speed_kph` / `MapCruiseHold.held_max_kph` / sticky set) is remembered. Soft-wheel handoff is a separate lat-only path and does not use this pause. **Exception:** an emergency/hard brake *during a soft-lat yield* (or within 2 s of yield entry) fully cancels the session — see below. Light brake alone never takes that path.
 5. A latched **driver turn** blinker (held stalk / flash-latched lamps, not ALC tip or keep-alive) also drops `enableLongControl` the same way, with the same sticky-MAX rules and the same silent pause (no pedal-cruise disengage sound). Long stays off after the lamps go dark unless the driver SETs. Lateral still resumes only after hand release. **One stalk SET** restores **longitudinal only**, MAX = held MAX (which may already have rebased if posted changed under maps). That resume is quiet — not a full-stack engage fanfare. Lat may still be paused for hand-release. The default double-pull first-pull path is skipped so a second SET is not required to get long back. SET while a turn lamp or held LEFT/RIGHT is still showing does not stick. **Double SET** (second pull inside `double_pull_window_ms`) forgets sticky and ensures lat+long on: maps on + posted known → MAX = current posted; maps off / posted unknown → MAX = current traveled speed. Tip ALC must not use this long-pause path.
 6. Gas press → `OVERRIDE_LONGITUDINAL`. Pedal command passes through with `enable=0` — driver's foot controls throttle directly, NAP tracks position for smooth resume. Long engage/disengage prompts follow `enableLongControl` for **session** edges (initial engage / full cancel), not interceptor handshake, not gas override, and not a brake/turn long pause. `enableLongControl` stays true while the driver is on the pedal, so press and release are silent.
 7. Stalk cancel (real, not spoof echo) → full disengage. `AudibleAlert.disengage` / `EventName.pedalCruiseDisabled` fire on that session teardown, including when openpilot is already going disabled. Door / gear / permanent steer fault / hands-on ≥ 2 (when not blinker-latched) are the same hard cancel: session down, held MAX forgotten, disengage prompt kept.
@@ -86,38 +86,65 @@ Panda firmware must be flashed after this safety change. Software update / on-de
 
 ## Driver-wheel temporary lateral handoff
 
-**Default On.** Settings → NAP → Soft Lateral Handoff can be turned **Off** if gravel or crosswind still false-yields (gray HUD, NAP stops fighting the wind). #71 at 0.5 Nm / 80 ms tripped on rumble; #73 at 0.85 Nm / 250 ms + 0.25 s quiet was rumble-safe but too slow/firm; #74 at 0.70 Nm / 140 ms with `QUIET_WAIT_S=0` started the 1 s blend on a mid-dodge torsion dip and pulled toward the lane / pothole. Yield stays **0.70 Nm / 140 ms** consecutive (gap reset). Hand-back waits for `EPAS_handsOnLevel == 0` for **~80 ms**, not a long torque-quiet.
+**Default On.** Settings → NAP → Soft Lateral Handoff can be turned **Off**. Yield is **driver intent to turn the wheel** (generally avoiding something), not gravel / wind / road-crown false pressure. #71–#75 tuned torsion + hands-on hold; those hold / 1 s resume rules stay. Entry is now the combined intent gate below.
 
-Pothole / obstacle dodges without fighting NAP and without a full disengage. Software-only; panda hands-on ≥ 2 and `STEER_THRESHOLD` are unchanged.
+Pothole / obstacle dodges without fighting NAP and without a full disengage — unless the driver then emergency-brakes (full cancel). Software-only; panda hands-on ≥ 2 and `STEER_THRESHOLD` are unchanged.
 
 ### Signals (Pre-AP)
 
 | Signal | Source | Type | Role |
 |--------|--------|------|------|
-| `EPAS_torsionBarTorque` | `EPAS_sysStatus` 0x370 | continuous Nm (0.01, −20.5) | soft-yield |
-| `StW_AnglHP_Spd` | `STW_ANGLHP_STAT` 0x0E | continuous deg/s (0.5, −4096) → `CS.steeringRateDeg` (negated) | **not** used for quiet (caster / road / SNA) |
-| `EPAS_handsOnLevel` | same EPAS msg | discrete 0/1/2/3 | **not** the soft trigger. ≥ 1 = still on the rim (hold yield). ≥ 2 remains hard disengage |
+| `EPAS_torsionBarTorque` / `CS.steeringTorque` | `EPAS_sysStatus` 0x370 | continuous Nm (0.01, −20.5) | sustained directional torque (not spikes) |
+| `StW_AnglHP_Spd` / `CS.steeringRateDeg` | `STW_ANGLHP_STAT` 0x0E | continuous deg/s (0.5, −4096), negated | must **agree** with torsion to enter yield |
+| `EPAS_handsOnLevel` | same EPAS msg | discrete 0/1/2/3 | required for intent (≥ 1). ≥ 1 holds yield. ≥ 2 remains hard disengage |
+| path / tracking error | `desired_curvature − measured` | 1/m | high error **without** matching torsion → disturbance, do **not** yield |
+| digital brake Applied | `DI_brakePedal` / `BrakeMessage.driverBrakeStatus` | boolean | light brake = silent long pause. Not `CS.brakePressed` (forced false) |
+| `CS.aEgo` | speed KF | m/s² | emergency decel qualifier (no analog pressure on parsed buses) |
 
 `steeringPressed` is still `|torsion| > STEER_THRESHOLD` (**1.0 Nm**) with **5-frame** debounce (~50 ms). That fires `EventName.steerOverride` (`OVERRIDE_LATERAL`, stays enabled) and is the current software override effort.
 
-Soft-yield trigger is **0.70 Nm** (70% of `STEER_THRESHOLD`, a gentle quick push — still above 0.5 Nm rumble, still below a yank / `steeringPressed` 1.0 Nm) with **140 ms consecutive** frames above that (gaps reset the count) and release hysteresis at **0.40 Nm**. Do **not** go back to raw 0.5 Nm / 80 ms without persistence. `handsOnLevel >= 1` is the **hold** while yielded (mid-dodge torsion dips must not start the blend). ≥ 2 stays the hard/safety path.
+### Intent to enter yield
 
-### Behavior
+All of the following, for **140 ms consecutive** frames (gaps reset — gravel spike trains do not accumulate):
 
-1. OP engaged and providing lateral. Gentle sustained hand push (0.70 Nm / 140 ms) → lateral authority goes to 0. `carControl.latActive` stays **true** (no `LaC.reset`, no snap in `apply_steer_angle_limits_vm`). While yielded, `desired_curvature` is **pinned to measured** (same target as stock `latActive=False`) so LaC cannot run ahead of the wheel. Longitudinal and `cruiseEnabled` stay up. Stalk cancel / doors / hands-on ≥ 2 still hard-disengage.
-2. Stay at 0% while still maneuvering: **`EPAS_handsOnLevel >= 1`** (hands on the rim) **or** a renewed **≥ 0.70 Nm** firm push. Mid-dodge torsion dips below release must **not** start the hand-back. Steering rate does not keep yield. Pre-AP `CS.steeringRateDeg` is `−STW_ANGLHP_STAT.StW_AnglHP_Spd` (deg/s, 0.5 LSB; SNA decodes to ~4095 deg/s). Rate is ignored during the 1 s blend.
-3. After hands go to **0** (truly off the rim) for **~80 ms** (`HANDS_OFF_CONFIRM_S`, a few frames — not 0.25–0.40 s of torque quiet), a **1.0 s** smoothstep (`t²(3−2t)`) blends authority 0 → 1. `QUIET_WAIT_S` stays 0. Max slope 1.5 / s. The pin lifts when blend starts: `clip_curvature` slews from the wheel onto the model/plan. `apply_lat_authority` is skipped at authority=1 so the actuator is raw LaC, not a hold at measured.
-4. Renewed **hands-on** or a firm push ≥ 0.70 Nm during the blend immediately yields. Hands off again for ~80 ms and the 1 s blend retries. Mid-band torque during return is OP/caster, not a new push.
-5. Yield smoothing: authority drops in one 10 ms cycle; the Tesla VM limiter still slews the CAN angle (`MAX_ANGLE_RATE` = 5 deg / 20 ms = 250 deg/s, plus ~3.6 m/s³ jerk). Do not jump desired angle. Hand-back is the S-curve, not a step.
-6. HUD: `controlsState.latHandoffPaused` stays set until authority ≥ **0.70**. 3X chrome uses the existing gray **override** (paused / driver-control) indication, not disengaged, and not the green lateral-engaged state. No engage/disengage sounds. Crossing 70% is latched so 69% cannot flicker green. Green + on-screen path is not enough — the wheel must unwind onto that path.
+1. `|torsion| >= 0.70 Nm` (70% of `STEER_THRESHOLD`; still above 0.5 Nm rumble, still below `steeringPressed` 1.0 Nm)
+2. `handsOnLevel >= 1` (hand on the rim)
+3. Torque and steer rate **same sign**, `|rate| >= 10 deg/s`, and `|rate| < 400 deg/s` (SNA ~4095 is rejected)
+4. Not a disturbance: `|desired − measured| curvature >= 0.0025` **without** matching sustained torsion/rate is wind / tracking fight — do not yield. A real dodge may have large error; matching torsion wins.
 
-Blinker tip/hold ALC, lat pause, long drop + one SET, and panda blinker latch are unchanged. Soft-yield is **gated off** during a blinker lat-pause (`latActive` false → handoff identity). That pause already releases lat; do not also soft-yield. When the turn ends (lamps dark + hand release), stock used to restore full `latActive` onto the model immediately — a **firm grab** if the plan is wrong (parking lot / weak lanes → grass). Resume now **pins to the wheel while lat is down** and starts the same **1 s blend** on the rising edge (no 0.25 s quiet wait). This path does not require blinkers and does not arm ALC (handoff is also gated off while `laneChangeState != off`).
+Release hysteresis stays **0.40 Nm** (press-latch only). Do **not** go back to raw 0.5 Nm / 80 ms torsion-only. ≥ 2 stays the hard/safety path.
+
+### Behavior (lat yield)
+
+1. OP engaged and providing lateral. Intent detected → lateral authority goes to 0. `carControl.latActive` stays **true** (no `LaC.reset`, no snap in `apply_steer_angle_limits_vm`). While yielded, `desired_curvature` is **pinned to measured** so LaC cannot run ahead of the wheel. Longitudinal and `cruiseEnabled` stay up. Stalk cancel / doors / hands-on ≥ 2 still hard-disengage.
+2. Stay at 0% while still maneuvering: **`EPAS_handsOnLevel >= 1`** **or** a renewed **≥ 0.70 Nm** firm push. Mid-dodge torsion dips must **not** start the hand-back. Rate is not a hold signal (caster / road after release).
+3. After hands go to **0** for **~80 ms**, a **1.0 s** smoothstep (`t²(3−2t)`) blends authority 0 → 1. `QUIET_WAIT_S` stays 0. The pin lifts when blend starts. `apply_lat_authority` is skipped at authority=1.
+4. Renewed **hands-on** or a firm push ≥ 0.70 Nm during the blend immediately yields (rate agreement is not re-required mid-maneuver). Hands off ~80 ms and the 1 s blend retries.
+5. Yield smoothing: authority drops in one 10 ms cycle; the Tesla VM limiter still slews the CAN angle. Hand-back is the S-curve, not a step.
+6. HUD: `controlsState.latHandoffPaused` stays set until authority ≥ **0.70**. Gray **override**, no sounds. Green + on-screen path is not enough — the wheel must unwind onto that path.
+
+Blinker tip/hold ALC, lat pause, long drop + one SET, and panda blinker latch are unchanged. Soft-yield is **gated off** during a blinker lat-pause. Resume still **pins to the wheel while lat is down** and starts the same **1 s blend** on the rising edge.
+
+### Emergency / hard brake → full OP disable
+
+Pre-AP has **no analog brake pressure** on the buses we parse (`test_preap_brake_signals.py`: `BrakeMessage` is a 2-bit Applied enum; no `IBST_` / iBooster travel). Light brake is that digital bit and **must** keep the existing sticky-MAX silent long pause + one SET. Do not turn every brake into a full cancel.
+
+**Emergency definition** (testable, in `driver_lateral_handoff.py`):
+
+| Check | Value | Why |
+|--------|--------|-----|
+| Digital Applied | `DI_brakePedal==1` **or** `driverBrakeStatus==APPLIED`, published on `CS.brake` (not `brakePressed`) | Driver is on the pedal. OP map-track / planner decel does not set this. |
+| Measured decel | `aEgo <= −3.5 m/s²` for **80 ms** (8 frames) | ~0.36 g. Comfort Accel-5 is **−0.80 m/s²**; pre-AP planner clip is **−1.5 m/s²**. A lone pothole spike is shorter than 80 ms. |
+| Speed | `vEgo >= 1.0 m/s` | Reject standstill KF chatter. |
+| Timing | currently yielded **or** blending **or** within **2.0 s** of yield entry | Same timeframe as the soft-lat takeover. |
+
+When that fires, card calls `hard_cancel_session()`: `cruiseEnabled=False`, long down, held MAX forgotten, `preap_cc_cancel_needed`. That is the normal hard-cancel path: `EventName.pcmDisable` / “Steering Disengaged” + disengage chime, and `pedalCruiseDisabled` if long was on (session down, not a silent pause). controlsd also sets `CC.cruiseControl.cancel`. Light brake while yielded or not **does not** set this flag.
 
 ### Where to look
 
-- `selfdrive/controls/lib/driver_lateral_handoff.py` — detector, hands-on hold, smoothstep, tunables, curvature pin
-- `selfdrive/controls/controlsd.py` — pin `desired_curvature` while yielded; blend commanded angle/torque/curvature only when authority < 1; publish `latAuthority` / `latHandoffPaused`; pass `EPAS_handsOnLevel`
-- `selfdrive/car/tesla/preap_blinker_lat_pause.py` — publish hands-on level onto CarState for controlsd
+- `selfdrive/controls/lib/driver_lateral_handoff.py` — intent detector, disturbance veto, emergency definition, hands-on hold, smoothstep, curvature pin
+- `selfdrive/controls/controlsd.py` — pin `desired_curvature` while yielded; pass torsion / rate / hands / tracking error / digital brake / aEgo; cancel on emergency
+- `selfdrive/car/tesla/preap_blinker_lat_pause.py` — publish hands-on + digital brake; card-local handoff; `hard_cancel_session`
 - `selfdrive/ui/ui_state.py` — gray override chrome while paused
 - `selfdrive/controls/lib/tests/test_driver_lateral_handoff.py`
 
@@ -126,14 +153,16 @@ Blinker tip/hold ALC, lat pause, long drop + one SET, and panda blinker latch ar
 Do these at a quiet road / parking lot first, then a known pothole stretch. Pedal or no-pedal both OK. Do **not** expect a panda flash.
 
 1. **Engage** with a double-pull. Confirm green engaged chrome and that long/cruise is holding speed.
-2. **Gentle, quick hand push** (~0.70 Nm for ~0.14 s — not a gravel twitch, not a yank). Lateral should go slack. Speed control must stay on. HUD should go **gray override**, not “Steering Disengaged”, and must not play the disengage chime. Road rumble / crosswind alone must **not** gray.
-3. **Hold** through a pothole dodge (hands still on the rim). Authority must stay yielded even if torsion dips — no pull back toward the lane / hole mid-dodge.
-4. **Release.** Hands clearly off the rim. After a short confirm (~80 ms, not a long beat) the wheel should ease back onto the path over about **one second**. Green engaged chrome returns only late in that blend (around 70%+), not at the first twitch. When green returns, the **wheel must follow the on-screen path** (unwind into the lane), not sit firm/holding at the dodge angle. Blend starting while hands are still on is the mid-dodge bug; firm hold after green is the resume-tracking bug.
-5. **Re-grab during the blend.** Hands back on or a firm push: the return must stop immediately and yield again. Gray chrome stays. Hands off ~80 ms and the 1 s blend retries.
-6. **Road rumble / crosswind** with hands resting (toggle On): must **not** gray. If it still does, turn Soft Lateral Handoff **Off**. Do not lower panda / `STEER_THRESHOLD`. Brake silent long-pause + one SET must still work.
-7. **Blinker turn** (held stalk): existing lat pause, long drop, one SET resume. Soft-yield must not steal this or arm ALC from a tip. After the turn, lat must **ease** back over ~1 s from the wheel — not grab firmly onto a grass/lot path. A weird lot with no lanes may still plan poorly; the grab itself is the resume, not a soft-yield.
-8. **ALC tip** (LEFT/RIGHT then IDLE within 0.40 s) still arms a lane change; wheel nudge at 1 Nm still starts it.
-9. **Hard yank / hands-on 2**, stalk cancel, door: full disengage, “Steering Disengaged”, chime. That is still the safety path.
+2. **Intentional dodge** (hands on, turn the wheel — sustained torsion + the wheel actually moving for ~0.14 s). Lateral should go slack. Speed control must stay on. HUD should go **gray override**, not “Steering Disengaged”, and must not play the disengage chime.
+3. **Hold** through a pothole dodge (hands still on the rim). Authority must stay yielded even if torsion dips.
+4. **Release.** Hands clearly off the rim. After ~80 ms the wheel eases back onto the path over about **one second**. When green returns, the wheel must follow the on-screen path.
+5. **Re-grab during the blend.** Hands back on or a firm push: yield again. Hands off ~80 ms and the 1 s blend retries.
+6. **Road rumble / crosswind / crown** with hands resting: must **not** gray. Wind that makes NAP fight the path (high tracking error, low torsion) must **not** yield. If it still does, turn Soft Lateral Handoff **Off**. Do not lower panda / `STEER_THRESHOLD`.
+7. **Light brake** (tap, not a panic stop) while engaged, yielded or not: silent long pause + held MAX; one SET resumes. No disengage chime. Sticky MAX (#72+#77) unchanged.
+8. **Hard brake during / just after a soft-lat dodge** (firm pedal, strong decel): full OP cancel, “Steering Disengaged”, disengage chime. Not a silent pause. One SET is a new engage, not resume-at-held-MAX.
+9. **Blinker turn** (held stalk): existing lat pause, long drop, one SET resume. Soft-yield must not steal this or arm ALC from a tip. After the turn, lat must **ease** back over ~1 s from the wheel.
+10. **ALC tip** still arms a lane change; wheel nudge at 1 Nm still starts it.
+11. **Hard yank / hands-on 2**, stalk cancel, door: full disengage, unchanged.
 
 ## Where to look
 

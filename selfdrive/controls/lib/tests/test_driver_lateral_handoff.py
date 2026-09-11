@@ -10,11 +10,17 @@ from openpilot.selfdrive.controls.lib.blinker_lateral_pause import (
 )
 from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   BLEND_TIME_S,
+  DISTURBANCE_CURVATURE_ERR,
+  EMERGENCY_DECEL_FRAMES,
+  EMERGENCY_DECEL_MPS2,
+  EMERGENCY_MIN_V_EGO,
   HANDS_OFF_CONFIRM_S,
   HANDS_ON_HOLD_LEVEL,
   PARAM_DRIVER_LAT_HANDOFF,
   PREAP_FINGERPRINT,
   QUIET_WAIT_S,
+  RATE_INTENT_MIN_DEG_S,
+  RATE_SNA_ABS_DEG_S,
   SMOOTHSTEP_MAX_SLOPE,
   SOFT_YIELD_DEBOUNCE_FRAMES,
   SOFT_YIELD_RELEASE_NM,
@@ -23,15 +29,21 @@ from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   TESLA_MAX_ANGLE_RATE_DEG_PER_20MS,
   UI_LATERAL_RETURN_AUTHORITY,
   YIELD_AUTHORITY_TIME_S,
+  YIELD_EMERGENCY_WINDOW_S,
   DriverLateralHandoff,
   apply_lat_authority,
   cs_hands_on_level,
+  cs_real_brake_pressed,
+  emergency_brake,
+  emergency_cancel_active,
   handoff_enabled,
   hands_still_on,
   handoff_new_desired_curvature,
   hud_engaged_status,
+  is_disturbance,
   pin_desired_curvature_to_measured,
   smoothstep,
+  torque_rate_aligned,
 )
 
 
@@ -44,7 +56,8 @@ def _new():
 
 
 def _step(h, *, torque=0.0, rate=0.0, engaged=True, lat=True, alc=False,
-          blinker_paused=False, hands_on=0, dt=DT):
+          blinker_paused=False, hands_on=0, tracking_error=0.0,
+          brake=False, a_ego=0.0, v_ego=15.0, dt=DT):
   return h.update(
     engaged=engaged,
     lat_would_be_active=lat,
@@ -53,17 +66,33 @@ def _step(h, *, torque=0.0, rate=0.0, engaged=True, lat=True, alc=False,
     alc_active=alc,
     blinker_paused=blinker_paused,
     hands_on_level=hands_on,
+    tracking_error=tracking_error,
+    brake_applied=brake,
+    a_ego=a_ego,
+    v_ego=v_ego,
     dt=dt,
   )
 
 
-def _yield(h, torque=1.0):
+def _yield(h, torque=0.85, rate=25.0, hands_on=1):
   out = None
   for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES):
-    out = _step(h, torque=torque)
+    out = _step(h, torque=torque, rate=rate, hands_on=hands_on)
   assert out is not None
   assert out.yielded
   assert out.authority == 0.0
+  return out
+
+
+def _hard_brake_frames(h, *, frames=EMERGENCY_DECEL_FRAMES, a_ego=None,
+                       brake=True, v_ego=15.0, torque=0.15, rate=0.0,
+                       hands_on=1):
+  if a_ego is None:
+    a_ego = EMERGENCY_DECEL_MPS2
+  out = None
+  for _ in range(frames):
+    out = _step(h, torque=torque, rate=rate, hands_on=hands_on,
+                brake=brake, a_ego=a_ego, v_ego=v_ego)
   return out
 
 
@@ -94,6 +123,23 @@ def test_thresholds_are_derived_from_real_steering_pressed():
   assert TESLA_MAX_ANGLE_RATE_DEG_PER_20MS == 5.0
   assert PARAM_DRIVER_LAT_HANDOFF == "NAPDriverLatHandoff"
   assert STEER_RATE_QUIET_DEG_S == 25.0
+  assert RATE_INTENT_MIN_DEG_S == 10.0
+  assert RATE_SNA_ABS_DEG_S == 400.0
+  assert DISTURBANCE_CURVATURE_ERR == 0.0025
+  assert EMERGENCY_DECEL_MPS2 == -3.5
+  assert EMERGENCY_DECEL_FRAMES == 8
+  assert EMERGENCY_MIN_V_EGO == 1.0
+  assert YIELD_EMERGENCY_WINDOW_S == 2.0
+  assert torque_rate_aligned(0.70, 10.0)
+  assert not torque_rate_aligned(0.70, -10.0)
+  assert not torque_rate_aligned(0.70, 4095.0)
+  assert not emergency_brake(
+    brake_applied=True, a_ego=-1.0, v_ego=15.0, decel_frames=20)
+  assert emergency_brake(
+    brake_applied=True, a_ego=-3.5, v_ego=15.0,
+    decel_frames=EMERGENCY_DECEL_FRAMES)
+  assert not emergency_cancel_active(
+    yielded=False, blending=False, yield_age_s=None, hard_brake=True)
 
 
 def test_param_defaults_on_and_toggle_off_disables():
@@ -123,8 +169,7 @@ def test_light_input_yields_lateral_keeps_long_and_lat_active():
   long_override = False
   op_long = True
   lat_active = True  # blinker helper already ran; handoff does not clear this
-  for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES):
-    out = _step(h, torque=1.0)
+  out = _yield(h)
   long_active = enabled and not long_override and op_long
   assert lat_active
   assert long_active
@@ -132,6 +177,7 @@ def test_light_input_yields_lateral_keeps_long_and_lat_active():
   assert out.yielded
   assert out.authority == 0.0
   assert out.ui_paused
+  assert not out.emergency_cancel
 
 
 def test_below_threshold_road_noise_does_not_yield():
@@ -154,7 +200,7 @@ def test_just_below_trigger_does_not_yield():
 def test_short_spike_is_debounced():
   h = _new()
   for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES - 1):
-    out = _step(h, torque=1.2)
+    out = _step(h, torque=1.2, rate=30.0, hands_on=1)
   assert not out.yielded
   out = _step(h, torque=0.0)
   assert not out.yielded
@@ -184,12 +230,13 @@ def test_old_half_nm_sustained_does_not_yield():
 
 
 def test_gentle_070_for_140ms_yields():
+  """0.70 Nm is still the torsion floor; intent also needs rate + hands."""
   h = _new()
   out = None
   for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES - 1):
-    out = _step(h, torque=0.70)
+    out = _step(h, torque=0.70, rate=12.0, hands_on=1)
     assert not out.yielded
-  out = _step(h, torque=0.70)
+  out = _step(h, torque=0.70, rate=12.0, hands_on=1)
   assert out.yielded
   assert out.authority == 0.0
 
@@ -505,10 +552,10 @@ def _clip_toward(prev, target, step=0.0002):
 
 
 def _step_actuators(h, *, torque, desired, model_curv, meas_curv, meas_angle,
-                    v_ego=20.0, hands_on=0, dt=DT):
+                    v_ego=20.0, hands_on=0, rate=0.0, dt=DT):
   """Mirror controlsd: pin while yielded; clip + optional blend otherwise."""
   _ = v_ego
-  out = _step(h, torque=torque, hands_on=hands_on, dt=dt)
+  out = _step(h, torque=torque, rate=rate, hands_on=hands_on, dt=dt)
   new_desired = handoff_new_desired_curvature(
     yielded=out.yielded, lat_active=True,
     model_curvature=model_curv, measured_curvature=meas_curv,
@@ -559,8 +606,8 @@ def test_yield_pins_planner_resume_tracks_model_not_measured():
 
   for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES):
     out, desired, angle, curv = _step_actuators(
-      h, torque=1.0, desired=desired, model_curv=model_curv,
-      meas_curv=meas_curv, meas_angle=meas_angle)
+      h, torque=1.0, rate=25.0, hands_on=1, desired=desired,
+      model_curv=model_curv, meas_curv=meas_curv, meas_angle=meas_angle)
   assert out.yielded
   assert desired == meas_curv
   assert angle == meas_angle
@@ -610,6 +657,9 @@ def test_yield_pins_planner_resume_tracks_model_not_measured():
   assert "CC.latActive" in cs
   assert "cs_hands_on_level" in cs
   assert "hands_on_level" in cs
+  assert "cs_real_brake_pressed" in cs
+  assert "tracking_error" in cs
+  assert "emergency_cancel" in cs
 
 
 def test_unyielded_lat_inactive_still_uses_measured_curvature():
@@ -713,3 +763,190 @@ def test_hysteresis_band_does_not_retrigger_from_texture_after_release():
     out = _step(h, torque=0.4)
   assert not out.yielded
   assert out.authority == 1.0
+
+
+def test_intentional_sustained_torsion_rate_hands_yields():
+  h = _new()
+  out = _yield(h, torque=0.80, rate=18.0, hands_on=1)
+  assert out.yielded
+  assert out.authority == 0.0
+  assert out.ui_paused
+  assert not out.emergency_cancel
+
+
+def test_gravel_like_spikes_do_not_yield_even_with_hands():
+  """Rumble: brief 1.2 Nm hits, even with hands + rate, must not accumulate."""
+  h = _new()
+  out = None
+  for _ in range(40):
+    for _ in range(5):
+      out = _step(h, torque=1.2, rate=40.0, hands_on=1)
+    for _ in range(5):
+      out = _step(h, torque=0.15, rate=4.0, hands_on=1)
+  assert not out.yielded
+  assert out.authority == 1.0
+
+
+def test_sustained_torsion_without_rate_does_not_yield():
+  """Crown / resting pressure: torque without a matching turn."""
+  h = _new()
+  for _ in range(int(1.0 / DT)):
+    out = _step(h, torque=0.90, rate=0.0, hands_on=1)
+  assert not out.yielded
+  assert out.authority == 1.0
+
+
+def test_sustained_torsion_without_hands_does_not_yield():
+  h = _new()
+  for _ in range(int(1.0 / DT)):
+    out = _step(h, torque=0.90, rate=20.0, hands_on=0)
+  assert not out.yielded
+  assert out.authority == 1.0
+
+
+def test_rate_opposite_torsion_does_not_yield():
+  h = _new()
+  for _ in range(int(1.0 / DT)):
+    out = _step(h, torque=0.90, rate=-20.0, hands_on=1)
+  assert not out.yielded
+  assert out.authority == 1.0
+
+
+def test_sna_rate_does_not_count_as_intent():
+  h = _new()
+  for _ in range(int(0.5 / DT)):
+    out = _step(h, torque=1.0, rate=4095.0, hands_on=1)
+  assert not out.yielded
+  assert not torque_rate_aligned(1.0, 4095.0)
+
+
+def test_wind_disturbance_high_effort_low_torsion_does_not_yield():
+  """Controller fighting wind: high tracking error, no matching torsion."""
+  h = _new()
+  assert is_disturbance(
+    torque_nm=0.2, rate_deg=4.0, tracking_error=DISTURBANCE_CURVATURE_ERR)
+  for _ in range(int(1.5 / DT)):
+    out = _step(h, torque=0.25, rate=6.0, hands_on=1,
+                tracking_error=0.01)
+  assert not out.yielded
+  assert out.authority == 1.0
+
+
+def test_matching_intent_is_not_blocked_by_tracking_error():
+  """A real dodge leaves the path — high error with matching torsion is OK."""
+  h = _new()
+  assert not is_disturbance(
+    torque_nm=0.80, rate_deg=20.0, tracking_error=0.02)
+  out = _yield(h, torque=0.80, rate=20.0, hands_on=1)
+  assert out.yielded
+  out = _step(h, torque=0.80, rate=20.0, hands_on=1, tracking_error=0.02)
+  assert out.yielded
+
+
+def test_hands_on_hold_and_hands_off_blend_still_work_after_intent_yield():
+  h = _new()
+  _yield(h)
+  for _ in range(int(0.6 / DT)):
+    out = _step(h, torque=0.10, rate=30.0, hands_on=1)
+    assert out.yielded
+    assert not out.blending
+    assert out.authority == 0.0
+  out = _hands_off(h, torque=0.10, rate=30.0)
+  assert out.blending
+  assert not out.yielded
+  for _ in range(int(BLEND_TIME_S / DT)):
+    out = _step(h, torque=0.0, rate=0.0, hands_on=0)
+  assert out.authority == 1.0
+  assert not out.blending
+  assert not out.ui_paused
+
+
+def test_emergency_hard_brake_while_yielded_sets_cancel():
+  h = _new()
+  _yield(h)
+  out = _hard_brake_frames(h)
+  assert out.yielded
+  assert out.emergency_cancel
+  pause = (Path(__file__).resolve().parents[4] /
+           "selfdrive/car/tesla/preap_blinker_lat_pause.py").read_text()
+  assert "hard_cancel_session" in pause
+  assert "update_card_lat_handoff" in pause
+  assert "_publish_real_brake" in pause
+  assert "emergency_cancel" in pause
+  src = (Path(__file__).resolve().parents[4] /
+         "selfdrive/controls/lib/driver_lateral_handoff.py").read_text()
+  assert "_drop_longitudinal_keep_lateral" not in src
+  assert "_nap_long_resume_pending" not in src
+
+
+def test_emergency_hard_brake_in_yield_window_after_blend_sets_cancel():
+  h = _new()
+  _yield(h)
+  _hands_off(h)
+  for _ in range(int(BLEND_TIME_S / DT)):
+    _quiet(h, DT)
+  # Just after resume, still inside the 2 s yield-entry window.
+  out = _hard_brake_frames(h, hands_on=0, torque=0.0)
+  assert not out.yielded
+  assert out.authority == 1.0
+  assert out.emergency_cancel
+
+
+def test_hard_brake_after_window_does_not_cancel():
+  h = _new()
+  _yield(h)
+  _hands_off(h)
+  for _ in range(int(BLEND_TIME_S / DT)):
+    _quiet(h, DT)
+  leftover = YIELD_EMERGENCY_WINDOW_S - BLEND_TIME_S - HANDS_OFF_CONFIRM_S
+  for _ in range(int((leftover + 0.15) / DT)):
+    out = _quiet(h, DT)
+  assert not out.emergency_cancel
+  out = _hard_brake_frames(h, hands_on=0, torque=0.0)
+  assert not out.emergency_cancel
+
+
+def test_light_brake_while_yielded_does_not_force_full_cancel():
+  """Digital Applied + mild aEgo is the sticky-MAX silent pause, not this."""
+  h = _new()
+  _yield(h)
+  out = None
+  for _ in range(int(0.4 / DT)):
+    out = _step(h, torque=0.15, hands_on=1, brake=True, a_ego=-1.2, v_ego=15.0)
+  assert out.yielded
+  assert not out.emergency_cancel
+
+
+def test_light_brake_when_not_yielded_does_not_cancel():
+  h = _new()
+  out = None
+  for _ in range(int(0.4 / DT)):
+    out = _step(h, torque=0.2, hands_on=1, brake=True, a_ego=-1.0, v_ego=15.0)
+  assert not out.yielded
+  assert not out.emergency_cancel
+
+
+def test_hard_decel_without_brake_does_not_cancel():
+  """Pothole / KF spike: aEgo alone is not emergency."""
+  h = _new()
+  _yield(h)
+  out = _hard_brake_frames(h, brake=False, a_ego=-6.0)
+  assert out.yielded
+  assert not out.emergency_cancel
+
+
+def test_cs_real_brake_pressed_reads_brake_stash():
+  class _CS:
+    pass
+
+  cs = _CS()
+  cs.brake = 1.0
+  cs.brakePressed = False
+  assert cs_real_brake_pressed(cs)
+  cs.brake = 0.0
+  assert not cs_real_brake_pressed(cs)
+  cs.realBrakePressed = True
+  assert cs_real_brake_pressed(cs)
+  cs = (Path(__file__).resolve().parents[4] / "selfdrive/controls/controlsd.py").read_text()
+  assert "cs_real_brake_pressed" in cs
+  assert "CC.cruiseControl.cancel" in cs

@@ -1,5 +1,9 @@
 NAP driver lat handoff (2026-09-11)
 ========================
+* Soft lateral handoff is **default On** and now yields only on **driver intent** to turn the wheel: sustained torsion (≥ 0.70 Nm / 140 ms) **and** matching steer rate **and** hands on the rim. Gravel spikes, opposite-rate pressure, and high tracking error without matching torsion (wind / crown) do not yield. Hands-on hold + 1 s hands-off blend unchanged. **Emergency / hard brake** while yielded or within 2 s of yield entry (digital Applied + `aEgo <= −3.5 m/s²` for 80 ms) fully cancels OP with the normal disengage chime — not the silent long pause. Light brake is still sticky-MAX silent pause + one SET. Settings → NAP → Soft Lateral Handoff can turn **Off**. Panda / hands-on ≥ 2 unchanged.
+
+NAP driver lat handoff (2026-09-11)
+========================
 * Soft lateral handoff is **default On**. Yield stays ~0.70 Nm held 0.14 s consecutive (gap reset; not 0.5 Nm / 80 ms rumble). Stay yielded while `EPAS_handsOnLevel >= 1` so a mid-dodge torsion dip does not start hand-back. 1 s blend starts only after hands are truly off the rim for ~80 ms. Hands back on or a firm push cancels the blend and re-yields. Planner still pins to the wheel while yielded / lat down so resume tracks the path. Blinker-turn re-entry is still the same 1 s blend from the wheel. Settings → NAP → Soft Lateral Handoff: turn **Off** if gravel or wind still gray the chrome. Brake silent long-pause + one SET is unchanged. Panda / hands-on ≥ 2 hard cancel unchanged.
 
 NAP driver lat handoff (2026-09-11)

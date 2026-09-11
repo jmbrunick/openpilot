@@ -387,3 +387,8 @@ def test_handoff_module_does_not_drop_long():
   assert "_drop_longitudinal_keep_lateral" not in src
   assert "_nap_long_resume_pending" not in src
   assert "_nap_set_resume_long" not in src
+  assert "emergency_cancel" in src
+  pause = (Path(__file__).resolve().parents[4] /
+           "selfdrive/car/tesla/preap_blinker_lat_pause.py").read_text()
+  assert "hard_cancel_session" in pause
+  assert "_drop_longitudinal_keep_lateral" in pause

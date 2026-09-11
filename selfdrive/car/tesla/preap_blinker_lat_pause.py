@@ -45,6 +45,12 @@ from openpilot.selfdrive.controls.lib.blinker_lateral_pause import (
   blinker_turn_blocks_steering_disengage,
   stalk_is_left_or_right,
 )
+from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
+  PARAM_DRIVER_LAT_HANDOFF,
+  PREAP_FINGERPRINT,
+  DriverLateralHandoff,
+  handoff_enabled,
+)
 
 _ORIG_HANDLE = None
 _ORIG_UPDATE = None
@@ -90,6 +96,102 @@ def _publish_hands_on_level(ret, hands: int) -> None:
       ret.steeringTorqueEps = float(hands)
     except Exception:
       pass
+
+
+def _publish_real_brake(ret, applied: bool) -> None:
+  """Expose digital Applied without setting brakePressed.
+
+  Pre-AP keeps brakePressed=False so generic OP brake-to-disengage never
+  fires. controlsd reads CS.brake >= 0.5 as the driver brake bit.
+  """
+  if hasattr(ret, 'brake'):
+    try:
+      ret.brake = 1.0 if applied else 0.0
+    except Exception:
+      pass
+
+
+def _handoff_for(engagement) -> DriverLateralHandoff:
+  h = getattr(engagement, "_nap_lat_handoff", None)
+  if h is None:
+    h = DriverLateralHandoff(enabled=True)
+    engagement._nap_lat_handoff = h
+  return h
+
+
+def _handoff_param_on() -> bool:
+  try:
+    from openpilot.common.params import Params
+    return bool(Params().get_bool(PARAM_DRIVER_LAT_HANDOFF))
+  except Exception:
+    return True
+
+
+def hard_cancel_session(engagement) -> None:
+  """Full OP session teardown (hard cancel), not silent long pause.
+
+  Same FSM contract as stalk cancel / hands-on >= 2: cruiseEnabled down,
+  held MAX forgotten, disengage chime via pcmDisable + long falling while
+  lat is also down. Do not call _drop_longitudinal_keep_lateral.
+  """
+  was_long = bool(getattr(engagement, "enableLongControl", False))
+  engagement.cruiseEnabled = False
+  engagement.enableLongControl = False
+  engagement.enableJustCC = False
+  engagement.pending_enable = False
+  engagement.pedal_speed_kph = 0.0
+  engagement.stalk_pull_time_ms = 0
+  engagement.prev_stalk_pull_time_ms = -1000
+  if hasattr(engagement, "pending_cancel_at_ms"):
+    engagement.pending_cancel_at_ms = 0
+  if hasattr(engagement, "_clear_pedal_unavailable"):
+    engagement._clear_pedal_unavailable()
+  _clear_session_max_flags(engagement)
+  engagement.preap_cc_cancel_needed = True
+  if was_long:
+    engagement.longCtrlEvent = "pccDisabled"
+  h = getattr(engagement, "_nap_lat_handoff", None)
+  if h is not None:
+    h.reset()
+
+
+def update_card_lat_handoff(engagement, *, engaged: bool,
+                            lat_would_be_active: bool,
+                            steering_torque: float, steering_rate_deg: float,
+                            hands_on_level: int, brake_applied: bool,
+                            a_ego: float, v_ego: float,
+                            alc_active: bool = False,
+                            blinker_paused: bool = False,
+                            dt: float | None = None,
+                            param_on: bool | None = None) -> bool:
+  """Card-local intent tracker. Emergency hard-brake → full session cancel.
+
+  Returns True when this frame tore the session down. Light brake alone
+  never returns True — engagement.process_buttons still does the silent
+  long pause.
+  """
+  h = _handoff_for(engagement)
+  if param_on is None:
+    param_on = _handoff_param_on()
+  h.enabled = handoff_enabled(
+    fingerprint=PREAP_FINGERPRINT, param_on=bool(param_on))
+  out = h.update(
+    engaged=engaged,
+    lat_would_be_active=lat_would_be_active,
+    steering_torque=steering_torque,
+    steering_rate_deg=steering_rate_deg,
+    alc_active=alc_active,
+    blinker_paused=blinker_paused,
+    hands_on_level=hands_on_level,
+    brake_applied=brake_applied,
+    a_ego=a_ego,
+    v_ego=v_ego,
+    dt=dt,
+  )
+  if out.emergency_cancel and engaged:
+    hard_cancel_session(engagement)
+    return True
+  return False
 
 
 def _peek_steering_override(can_parsers):
@@ -363,6 +465,37 @@ def _update_preap(cs, can_parsers):
   if hands <= 0:
     hands = _peek_hands_on_level(can_parsers)
   _publish_hands_on_level(ret, hands)
+  real_brake = bool(getattr(cs, 'real_brake_pressed', False))
+  _publish_real_brake(ret, real_brake)
+  engagement = getattr(cs, "engagement", None)
+  if engagement is not None:
+    hold = getattr(engagement, "_nap_lat_hold", None)
+    blinker_paused = bool(hold is not None and (hold.holding or hold.turn_active))
+    canceled = update_card_lat_handoff(
+      engagement,
+      engaged=bool(getattr(engagement, "cruiseEnabled", False)),
+      lat_would_be_active=not blinker_paused,
+      steering_torque=float(getattr(ret, "steeringTorque", 0.0) or 0.0),
+      steering_rate_deg=float(getattr(ret, "steeringRateDeg", 0.0) or 0.0),
+      hands_on_level=hands,
+      brake_applied=real_brake,
+      a_ego=float(getattr(ret, "aEgo", 0.0) or 0.0),
+      v_ego=float(getattr(ret, "vEgo", 0.0) or 0.0),
+      alc_active=bool(getattr(engagement, "_nap_alc_active", False)),
+      blinker_paused=blinker_paused,
+    )
+    if canceled:
+      if hasattr(ret, "cruiseState"):
+        try:
+          ret.cruiseState.enabled = False
+        except Exception:
+          pass
+      cs.cruiseEnabled = False
+      cs.enableLongControl = False
+      cs.enableJustCC = False
+      cs.pedal_speed_kph = 0.0
+      cs.preap_cc_cancel_needed = True
+      cs.longCtrlEvent = getattr(engagement, "longCtrlEvent", None)
   return ret
 
 

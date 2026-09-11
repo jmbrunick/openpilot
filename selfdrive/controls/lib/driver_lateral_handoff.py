@@ -1,61 +1,68 @@
 """Pre-AP driver-wheel temporary lateral handoff.
 
-Default On (NAPDriverLatHandoff=1). Settings → NAP can turn it Off if
-gravel / crosswind still false-yields (gray chrome = latHandoffPaused,
-lat authority cut).
+Default On (NAPDriverLatHandoff=1). Settings → NAP can turn it Off.
+
+Product (2026-09-11): yield lateral only on *driver intent to turn the
+wheel* (typically avoiding something). Gravel / wind / road-crown
+pressure must not gray the chrome.
+
+Intent (Pre-AP EPAS) — all required to *enter* yield:
+  EPAS_torsionBarTorque / CS.steeringTorque
+      sustained directional torque (not short spikes)
+  EPAS_handsOnLevel / hands stash
+      hands on the rim (>= 1)
+  CS.steeringRateDeg aligned with torsion
+      same sign, above a quiet floor, not SNA
+  Optional veto: high path/tracking error without matching sustained
+      torsion → disturbance, do not yield
 
 History (on-car):
   #71  0.50 Nm / 80 ms   — gravel / rumble false-yield
-  #73  0.85 Nm / 250 ms + 0.25 s quiet — rumble-safe, but a gentle
-                           dodge push felt too slow/firm (risked
-                           hands-on >= 2). 0.25 s quiet then felt
-                           late on hand-back.
-  #74  0.70 Nm / 140 ms, quiet wait 0 — quicker, lighter push; 1 s
-                           blend started on a torsion dip (pulled
-                           toward the lane / pothole mid-dodge).
-  now  0.70 Nm / 140 ms, stay yielded while EPAS_handsOnLevel >= 1;
-                           1 s blend only after hands are truly off
-                           the rim for ~80 ms.
+  #73  0.85 Nm / 250 ms + 0.25 s quiet — rumble-safe, too slow/firm
+  #74  0.70 Nm / 140 ms, quiet wait 0 — mid-dodge torsion dip blended
+  #75  stay yielded while handsOnLevel >= 1; blend after hands off
+  now  same hold / 1 s resume, but *entry* is intent (torsion+rate+hands),
+       not torsion-only. Emergency/hard brake while yielded (or shortly
+       after yield entry) fully cancels OP — not the silent long pause.
 
 Signal (Pre-AP EPAS_sysStatus 0x370, tesla_preap.dbc):
   EPAS_torsionBarTorque  — continuous, Nm, factor 0.01, offset −20.5
   EPAS_handsOnLevel      — discrete 0/1/2/3
   StW_AnglHP_Spd         — steering-angle rate, deg/s, factor 0.5
+                           CS.steeringRateDeg is negated (same as torsion)
 
 Existing software / safety (unchanged):
   steeringPressed  = |torsion| > STEER_THRESHOLD (1.0 Nm), 5-frame debounce
   steerOverride    = EventName from steeringPressed (OVERRIDE_LATERAL)
   steeringDisengage / panda PREAP_HANDS_ON_DISENGAGE_LEVEL = handsOnLevel >= 2
 
-Soft-yield is 0.70 Nm (70% of STEER_THRESHOLD) with 140 ms of *consecutive*
-frames above that. Gaps reset the count (gravel spike trains do not
-accumulate). 0.70 is well above the old 0.5 Nm rumble floor and still
-below software steeringPressed (1.0 Nm). Release hysteresis stays 0.40 Nm (press-latch only).
-handsOnLevel is not the soft *trigger*. While yielded, level >= 1
-means still on the rim — mid-dodge torsion dips must not start the
-hand-back. >= 2 stays the hard/safety path (panda unchanged).
+Soft-yield torsion floor stays 0.70 Nm with 140 ms of *consecutive*
+intent frames (gaps reset). 0.70 is above the old 0.5 Nm rumble floor
+and still below software steeringPressed (1.0 Nm). Release hysteresis
+stays 0.40 Nm (press-latch only). handsOnLevel is not the soft *trigger*
+by itself — it is required for intent and is the hold while yielded.
+>= 2 stays the hard/safety path (panda unchanged).
 
-QUIET_WAIT_S stays 0 (no 0.25–0.40 s torque-quiet patience). The 1 s
-smoothstep starts only after handsOnLevel == 0 for HANDS_OFF_CONFIRM_S
-(~80 ms). Renewed hands-on or a firm >= 0.70 Nm push cancels the blend
-and re-yields. Rate is ignored.
+QUIET_WAIT_S stays 0. The 1 s smoothstep starts only after
+handsOnLevel == 0 for HANDS_OFF_CONFIRM_S (~80 ms). Renewed hands-on
+or a firm >= 0.70 Nm push cancels the blend and re-yields.
 
-Pre-AP CS.steeringRateDeg is -STW_ANGLHP_STAT.StW_AnglHP_Spd (0x0E,
-14-bit, factor 0.5, offset −4096, deg/s; SNA → ~4095 deg/s). Caster /
-road / SNA stay above the old 25 deg/s gate.
+Emergency / hard brake (see emergency_brake() and docs-nap/engagement.md):
+  Pre-AP has no analog brake pressure on parsed buses — only digital
+  Applied (DI_brakePedal / BrakeMessage.driverBrakeStatus). Light brake
+  is that digital bit and still uses the existing sticky-MAX silent long
+  pause + one SET. Emergency is digital Applied AND measured aEgo at or
+  below EMERGENCY_DECEL_MPS2 (−3.5 m/s², ~0.36 g) for
+  EMERGENCY_DECEL_FRAMES (80 ms), at vEgo >= 1 m/s, while yielded /
+  blending / within YIELD_EMERGENCY_WINDOW_S of yield entry.
+  That cannot come from NAP long (planner comfort Accel-5 is −0.80 m/s²;
+  pre-AP clip is −1.5 m/s²). Full cancel is a flag here; card tears down
+  the session (cruiseEnabled) so pcmDisable / disengage chime fire.
+  This module does not call the silent long-pause path.
 
-While yielded, controlsd pins desired_curvature to measured (stock
-inactive target) so LaC cannot run ahead of the wheel. Blend / resume
-then clip_curvature from that pin onto the model with latActive still
-true.
-
-Blinker lat-pause is a different path: latActive is False, this module
-resets to identity (no soft-yield). After the turn, stock resume used
-to restore full latActive onto the model immediately — a firm grab
-when the plan is wrong (parking lot / no lanes → grass). We pin to
-measured while lat is down, and on blinker-pause rising edge start
-the same 1 s blend (hands still on the rim yields instead) so
-post-turn return is smooth.
+While yielded, controlsd pins desired_curvature to measured so LaC
+cannot run ahead of the wheel. Blinker lat-pause is a different path:
+latActive is False, this module resets to identity (no soft-yield).
 """
 
 from __future__ import annotations
@@ -73,28 +80,36 @@ DT_CTRL = 0.01
 State = log.SelfdriveState.OpenpilotState
 
 # --- thresholds (from real Pre-AP STEER_THRESHOLD = 1.0 Nm) ---
-# #71 0.5 Nm / 80 ms false-yielded on gravel. #73 0.85 Nm / 250 ms was
-# rumble-safe but too slow/firm for a gentle dodge (hands-on >= 2 risk).
-# 0.70 Nm / 140 ms is a quicker light push: still above rumble, still
-# below steeringPressed (1.0 Nm / 5 frames). Hard path stays
-# handsOnLevel >= 2.
+# Torsion floor is unchanged from #74/#75. Intent adds rate agreement
+# and hands-on so gravel spikes / crown pressure do not count.
 SOFT_YIELD_TRIGGER_NM = 0.70 * float(STEER_THRESHOLD)  # 0.70 Nm
 SOFT_YIELD_RELEASE_NM = 0.40 * float(STEER_THRESHOLD)  # 0.40 Nm, wider gap
 
-# Consecutive frames above trigger. Gaps reset the count (spike reject).
-SOFT_YIELD_DEBOUNCE_FRAMES = 14  # 140 ms at 100 Hz (was 25 / 250 ms)
+# Consecutive *intent* frames (torsion + hands + aligned rate). Gaps reset.
+SOFT_YIELD_DEBOUNCE_FRAMES = 14  # 140 ms at 100 Hz
 SOFT_YIELD_RELEASE_FRAMES = 8    # 80 ms below release before clearing latch
 
-# Historical rate gate (25 deg/s). Intentionally unused while yielded:
-# on-car measured rate after release is caster / road, not driver intent.
-# Kept so tests record the old number and that it must not block resume.
+# Rate agreement. Pre-AP CS.steeringRateDeg is −StW_AnglHP_Spd (deg/s).
+# SNA decodes to ~4095 deg/s and must never count as intent.
+# Historical 25 deg/s gate was a resume quiet check (unused since #75).
 STEER_RATE_QUIET_DEG_S = 25.0
+RATE_INTENT_MIN_DEG_S = 10.0
+RATE_SNA_ABS_DEG_S = 400.0
+
+# High |desired−measured| curvature without matching sustained torsion
+# is wind / tracking fight, not a driver dodge.
+DISTURBANCE_CURVATURE_ERR = 0.0025
+
+# --- emergency / hard brake (digital Applied + measured decel) ---
+# Light brake = digital Applied only → sticky-MAX silent long pause.
+# Emergency cannot use pressure (Pre-AP DBC has none on parsed buses).
+EMERGENCY_DECEL_MPS2 = -3.5
+EMERGENCY_DECEL_FRAMES = 8  # 80 ms; reject pothole aEgo spikes
+EMERGENCY_MIN_V_EGO = 1.0   # m/s; standstill KF chatter
+YIELD_EMERGENCY_WINDOW_S = 2.0
 
 # --- timing / UI ---
-# No long torque-quiet patience (that was late, then QUIET_WAIT_S=0
-# blended on a mid-dodge torsion dip). Hands-on is the hold.
 QUIET_WAIT_S = 0.0
-# Truly off the rim: a few frames of handsOnLevel==0, not 0.25 s.
 HANDS_ON_HOLD_LEVEL = 1
 HANDS_OFF_CONFIRM_S = 0.08  # 80 ms at 100 Hz
 BLEND_TIME_S = 1.0
@@ -139,7 +154,7 @@ def cs_hands_on_level(CS) -> int:
   vals: list[int] = []
   if hasattr(CS, 'handsOnLevel'):
     try:
-      vals.append(int(getattr(CS, 'handsOnLevel') or 0))
+      vals.append(int(CS.handsOnLevel or 0))
     except (TypeError, ValueError):
       pass
   try:
@@ -151,6 +166,76 @@ def cs_hands_on_level(CS) -> int:
   if getattr(CS, 'steeringDisengage', False):
     vals.append(2)
   return max(vals) if vals else 0
+
+
+def cs_real_brake_pressed(CS) -> bool:
+  """Digital driver brake without using CS.brakePressed.
+
+  Pre-AP forces brakePressed=False so generic OP brake-to-disengage never
+  fires. Card publishes the Applied flag on CS.brake (1.0 / 0.0).
+  """
+  if bool(getattr(CS, 'realBrakePressed', False)):
+    return True
+  try:
+    return float(getattr(CS, 'brake', 0.0) or 0.0) >= 0.5
+  except (TypeError, ValueError):
+    return False
+
+
+def torque_rate_aligned(torque_nm: float, rate_deg: float) -> bool:
+  """True when the driver is turning the wheel in the torsion direction."""
+  torque = float(torque_nm)
+  rate = float(rate_deg)
+  if not np.isfinite(torque) or not np.isfinite(rate):
+    return False
+  if abs(rate) >= RATE_SNA_ABS_DEG_S:
+    return False
+  if abs(rate) < RATE_INTENT_MIN_DEG_S:
+    return False
+  if abs(torque) < SOFT_YIELD_TRIGGER_NM:
+    return False
+  return (torque * rate) > 0.0
+
+
+def is_disturbance(*, torque_nm: float, rate_deg: float,
+                   tracking_error: float) -> bool:
+  """High tracking effort without matching sustained driver torsion.
+
+  Wind / crown: LaC fights the path (error high) while torsion is low or
+  not rate-aligned. A real dodge has matching sustained torsion — that
+  is not a disturbance even if error is large (driver is leaving the path).
+  """
+  if abs(float(tracking_error)) < DISTURBANCE_CURVATURE_ERR:
+    return False
+  return not torque_rate_aligned(torque_nm, rate_deg)
+
+
+def emergency_brake(*, brake_applied: bool, a_ego: float, v_ego: float,
+                    decel_frames: int) -> bool:
+  """Hard brake: digital Applied + sustained emergency-level aEgo.
+
+  Not light brake. Not OP map-track decel. Not a lone aEgo pothole spike.
+  """
+  if not brake_applied:
+    return False
+  if float(v_ego) < EMERGENCY_MIN_V_EGO:
+    return False
+  if float(a_ego) > EMERGENCY_DECEL_MPS2:
+    return False
+  return int(decel_frames) >= EMERGENCY_DECEL_FRAMES
+
+
+def emergency_cancel_active(*, yielded: bool, blending: bool,
+                            yield_age_s: float | None,
+                            hard_brake: bool) -> bool:
+  """Full OP cancel when hard-braking in the soft-yield takeover window."""
+  if not hard_brake:
+    return False
+  if yielded or blending:
+    return True
+  if yield_age_s is None:
+    return False
+  return 0.0 <= float(yield_age_s) <= YIELD_EMERGENCY_WINDOW_S
 
 
 def smoothstep(t: float) -> float:
@@ -227,10 +312,11 @@ class HandoffOutput:
   ui_paused: bool
   yielded: bool
   blending: bool
+  emergency_cancel: bool = False
 
 
 class DriverLateralHandoff:
-  """Process-local latch: light wheel input yields lat; 1 s S-curve hands it back."""
+  """Process-local latch: driver-intent yield; 1 s S-curve hands it back."""
 
   def __init__(self, enabled: bool = True):
     # Product default On. controlsd still requires Pre-AP + param
@@ -250,17 +336,28 @@ class DriverLateralHandoff:
     self._pressed = False
     self._blinker_was_paused = False
     self._hands_off_s = 0.0
+    self._decel_cnt = 0
+    self._yield_age_s: float | None = None
 
   def reset(self):
     self._reset()
 
-  def _update_soft_pressed(self, torque_nm: float) -> bool:
+  def _update_intent(self, torque_nm: float, rate_deg: float,
+                     hands_on: bool, tracking_error: float) -> bool:
+    """Sustained directional torsion + hands + rate agreement.
+
+    Gaps reset the count (gravel spike trains do not accumulate). High
+    tracking error without matching torsion is a disturbance, not intent.
+    """
     mag = abs(float(torque_nm))
-    if mag >= SOFT_YIELD_TRIGGER_NM:
+    aligned = hands_on and torque_rate_aligned(torque_nm, rate_deg)
+    if is_disturbance(torque_nm=torque_nm, rate_deg=rate_deg,
+                      tracking_error=tracking_error):
+      aligned = False
+    if mag >= SOFT_YIELD_TRIGGER_NM and aligned:
       self._press_cnt = min(self._press_cnt + 1, SOFT_YIELD_DEBOUNCE_FRAMES + 1)
       self._release_cnt = 0
     else:
-      # Any gap below trigger is a rumble impulse, not a sustained push.
       self._press_cnt = 0
       if mag <= SOFT_YIELD_RELEASE_NM:
         self._release_cnt = min(self._release_cnt + 1, SOFT_YIELD_RELEASE_FRAMES + 1)
@@ -270,6 +367,36 @@ class DriverLateralHandoff:
     if self._pressed and self._release_cnt >= SOFT_YIELD_RELEASE_FRAMES:
       self._pressed = False
     return self._pressed
+
+  def _update_emergency(self, *, brake_applied: bool, a_ego: float,
+                        v_ego: float, dt: float) -> bool:
+    hard = (
+      bool(brake_applied)
+      and float(v_ego) >= EMERGENCY_MIN_V_EGO
+      and float(a_ego) <= EMERGENCY_DECEL_MPS2
+    )
+    if hard:
+      self._decel_cnt = min(self._decel_cnt + 1, EMERGENCY_DECEL_FRAMES + 1)
+    else:
+      self._decel_cnt = 0
+
+    if self._yielded or self._blending:
+      if self._yield_age_s is None:
+        self._yield_age_s = 0.0
+      self._yield_age_s += dt
+    elif self._yield_age_s is not None:
+      self._yield_age_s += dt
+      if self._yield_age_s > YIELD_EMERGENCY_WINDOW_S:
+        self._yield_age_s = None
+
+    return emergency_cancel_active(
+      yielded=self._yielded,
+      blending=self._blending,
+      yield_age_s=self._yield_age_s,
+      hard_brake=emergency_brake(
+        brake_applied=brake_applied, a_ego=a_ego, v_ego=v_ego,
+        decel_frames=self._decel_cnt),
+    )
 
   def _set_ui_paused(self):
     # Latch at 70%: never claim lateral is back at 1–69%. Falling through
@@ -289,6 +416,8 @@ class DriverLateralHandoff:
     self._hands_off_s = 0.0
     self.authority = 0.0
     self.ui_paused = True
+    if self._yield_age_s is None:
+      self._yield_age_s = 0.0
 
   def _start_blend(self):
     self._yielded = False
@@ -299,16 +428,21 @@ class DriverLateralHandoff:
     self.authority = 0.0
     self.ui_paused = True
 
+  def _identity(self, *, emergency_cancel: bool = False) -> HandoffOutput:
+    return HandoffOutput(1.0, False, False, False, emergency_cancel)
+
   def update(self, *, engaged: bool, lat_would_be_active: bool,
              steering_torque: float, steering_rate_deg: float,
              alc_active: bool = False, blinker_paused: bool = False,
-             hands_on_level: int = 0, dt: float | None = None) -> HandoffOutput:
+             hands_on_level: int = 0, tracking_error: float = 0.0,
+             brake_applied: bool = False, a_ego: float = 0.0,
+             v_ego: float = 15.0, dt: float | None = None) -> HandoffOutput:
     if dt is None:
       dt = DT_CTRL
 
     if not self.enabled:
       self._reset()
-      return HandoffOutput(1.0, False, False, False)
+      return self._identity()
 
     # Blinker pause / standstill / faults already cleared lat_would_be_active.
     # ALC wheel-nudge uses steeringPressed at 1 Nm and must not be softened.
@@ -318,19 +452,19 @@ class DriverLateralHandoff:
     # edge can 1 s blend instead of restoring authority=1 onto the model.
     if not engaged or alc_active:
       self._reset()
-      return HandoffOutput(1.0, False, False, False)
+      return self._identity()
     if not lat_would_be_active:
       remember = self._blinker_was_paused or bool(blinker_paused)
       self._reset()
       self._blinker_was_paused = remember
-      return HandoffOutput(1.0, False, False, False)
+      return self._identity()
+
     mag = abs(float(steering_torque))
-    pressed = self._update_soft_pressed(steering_torque)
+    pressed = self._update_intent(
+      steering_torque, steering_rate_deg,
+      hands_still_on(hands_on_level), tracking_error)
     hands_on = hands_still_on(hands_on_level)
     firm_push = mag >= SOFT_YIELD_TRIGGER_NM
-    # steering_rate_deg is CS.steeringRateDeg (−StW_AnglHP_Spd, deg/s).
-    # Not a quiet/yield signal — see module docstring.
-    _ = steering_rate_deg
 
     if self._blinker_was_paused:
       self._blinker_was_paused = False
@@ -356,7 +490,8 @@ class DriverLateralHandoff:
           self._start_blend()
     elif self._blending:
       # Hands back on or a firm push cancels the return. Mid-band
-      # torque during the blend is OP/caster, not a new push.
+      # torque during the blend is OP/caster, not a new push. Re-yield
+      # does not re-require rate agreement (already in the maneuver).
       if hands_on or firm_push:
         self._enter_yield()
       else:
@@ -369,5 +504,9 @@ class DriverLateralHandoff:
           self._blend_s = 0.0
           self._quiet_s = 0.0
 
+    emergency = self._update_emergency(
+      brake_applied=brake_applied, a_ego=a_ego, v_ego=v_ego, dt=dt)
     self._set_ui_paused()
-    return HandoffOutput(self.authority, self.ui_paused, self._yielded, self._blending)
+    return HandoffOutput(
+      self.authority, self.ui_paused, self._yielded, self._blending,
+      emergency)
