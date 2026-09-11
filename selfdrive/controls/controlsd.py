@@ -14,8 +14,8 @@ from opendbc.car.vehicle_model import VehicleModel
 from openpilot.selfdrive.controls.lib.blinker_lateral_pause import BlinkerLateralHold, lat_active_with_blinker_pause
 from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   PARAM_DRIVER_LAT_HANDOFF, DriverLateralHandoff, apply_lat_authority,
-  cs_hands_on_level, handoff_enabled, handoff_new_desired_curvature,
-  pin_desired_curvature_to_measured)
+  cs_hands_on_level, cs_real_brake_pressed, handoff_enabled,
+  handoff_new_desired_curvature, pin_desired_curvature_to_measured)
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
@@ -152,6 +152,10 @@ class Controls:
       blinker_paused=bool(
         self.blinker_lat_hold.holding or self.blinker_lat_hold.turn_active),
       hands_on_level=cs_hands_on_level(CS),
+      tracking_error=float(self.desired_curvature - self.curvature),
+      brake_applied=cs_real_brake_pressed(CS),
+      a_ego=float(CS.aEgo),
+      v_ego=float(CS.vEgo),
     )
 
     actuators = CC.actuators
@@ -236,7 +240,12 @@ class Controls:
       CC.angularVelocity = self.calibrated_pose.angular_velocity.xyz.tolist()
 
     CC.cruiseControl.override = CC.enabled and not CC.longActive and self.CP.openpilotLongitudinalControl
-    CC.cruiseControl.cancel = CS.cruiseState.enabled and (not CC.enabled or not self.CP.pcmCruise)
+    # Soft-lat emergency hard-brake: request the normal cancel path (stock
+    # CC spoof / session teardown). Distinct from silent long pause.
+    emergency_cancel = bool(
+      self.lat_handoff.enabled and self._lat_handoff.emergency_cancel)
+    CC.cruiseControl.cancel = CS.cruiseState.enabled and (
+      not CC.enabled or not self.CP.pcmCruise or emergency_cancel)
     CC.cruiseControl.resume = CC.enabled and CS.cruiseState.standstill and not self.sm['longitudinalPlan'].shouldStop
 
     hudControl = CC.hudControl
