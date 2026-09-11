@@ -49,12 +49,10 @@ class Controls:
     self.curvature = 0.0
     self.desired_curvature = 0.0
     self.blinker_lat_hold = BlinkerLateralHold()
-    # Default On (NAPDriverLatHandoff=1) for Pre-AP. Re-read each cycle so
-    # Settings → NAP can turn it Off immediately if gravel/wind misbehave.
-    self.lat_handoff = DriverLateralHandoff(
-      enabled=handoff_enabled(
-        fingerprint=self.CP.carFingerprint,
-        param_on=bool(self.params.get_bool(PARAM_DRIVER_LAT_HANDOFF))))
+    # Default Off (NAPDriverLatHandoff=0). Pre-AP fingerprint must not arm
+    # this. Gray chrome on gravel/wind is false yield. Re-read each cycle
+    # so Settings Off stays Off and a test-enable can be dropped immediately.
+    self.lat_handoff = DriverLateralHandoff(enabled=False)
     self._lat_handoff = self.lat_handoff.update(
       engaged=False, lat_would_be_active=False,
       steering_torque=0.0, steering_rate_deg=0.0)

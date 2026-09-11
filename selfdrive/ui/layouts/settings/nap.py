@@ -759,7 +759,7 @@ class NAPLayout(Widget):
     self._params.put("NAPMapSpeedAccel", MAP_SPEED_ACCEL_DEFAULT)
     self._params.remove("NAPMapSpeedDbPath")
     self._params.put_bool(NAP_SPEED_SIGN_LOG, False)
-    self._params.put_bool(NAP_DRIVER_LAT_HANDOFF, True)
+    self._params.put_bool(NAP_DRIVER_LAT_HANDOFF, False)
     self._params.put_bool(NAP_FORCE_OFFROAD, False)
     self._page = "main"
     # Force Pre-AP is locked on in the panel but DEFAULTS keeps it off

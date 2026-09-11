@@ -25,13 +25,11 @@ NAP_SPEED_SIGN_LOG = "NAPSpeedSignLog"
 NAP_DRIVER_LAT_HANDOFF = "NAPDriverLatHandoff"
 NAP_FORCE_OFFROAD = "NAPForceOffroad"
 DRIVER_LAT_HANDOFF_DESCRIPTION = (
-  "Default On. A firm, gradual, sustained hand push (~0.85 Nm for "
-  "0.25 s) yields NAP lateral; long stays on. 0.5 Nm rumble / "
-  "crosswind spikes should not trip. After you let go, 0.25 s quiet "
-  "then a 1 s blend back (quiet does not reset on light residual "
-  "torque or noisy steering rate). Turn Off if gravel or wind still "
-  "gray the HUD and the car stops fighting the path — Off is stock "
-  "lat with no yield."
+  "DEFAULT OFF. Leave Off for driving. On gravel / in crosswind the "
+  "3X chrome going grayish (light-green → gray) is latHandoffPaused: "
+  "a false soft-yield that cuts lateral authority so NAP stops "
+  "fighting the wind — ditch risk. On is testing only. Off = stock "
+  "lat, no yield, no authority blend."
 )
 FORCE_OFFROAD_DESCRIPTION = (
   "WARNING: Forces the device offroad and disengages openpilot even while "

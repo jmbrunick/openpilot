@@ -1,6 +1,6 @@
-NAP driver lat handoff (2026-09-11)
+NAP driver lat handoff OFF (2026-09-11)
 ========================
-* Soft lateral handoff is **default On**. Firmer yield: ~0.85 Nm held 0.25 s (not 0.5 Nm rumble). After release, 0.25 s quiet then 1 s blend — light residual torque / noisy rate no longer block resume. Settings → NAP → Soft Lateral Handoff: turn **Off** if gravel or wind still false-yield.
+* SAFETY: Soft lateral handoff is **default Off**. Gravel/crosswind false-yield grays the 3X chrome and drops steering so NAP stops fighting the wind. Leave Off. Settings → NAP is testing only. Use nap-release for driving.
 
 NAP driver lat handoff (2026-09-11)
 ========================

@@ -79,25 +79,25 @@ def test_thresholds_are_half_of_real_steering_pressed_not_invented():
   assert STEER_RATE_QUIET_DEG_S == 25.0
 
 
-def test_param_defaults_on_and_toggle_off_disables():
-  """Default On; Settings Off (param_on=False) must be identity."""
+def test_constructor_and_param_default_off():
+  """Must not run unless explicitly enabled. Gray chrome = false yield."""
   h = DriverLateralHandoff()
-  assert h.enabled
-  assert handoff_enabled(fingerprint=PREAP_FINGERPRINT, param_on=True)
-  assert not handoff_enabled(fingerprint=PREAP_FINGERPRINT, param_on=False)
-  assert not handoff_enabled(fingerprint="TESLA_MODEL_3", param_on=True)
-  root = Path(__file__).resolve().parents[4]
-  keys = (root / "common/params_keys.h").read_text()
-  line = next(ln for ln in keys.splitlines() if '"NAPDriverLatHandoff"' in ln)
-  assert "BOOL" in line and '"1"' in line
-  cs = (root / "selfdrive/controls/controlsd.py").read_text()
-  assert "PARAM_DRIVER_LAT_HANDOFF" in cs
-  h_off = DriverLateralHandoff(enabled=False)
+  assert not h.enabled
   for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES + 5):
-    out = _step(h_off, torque=1.5, rate=80.0)
+    out = _step(h, torque=1.5, rate=80.0)
   assert out.authority == 1.0
   assert not out.yielded
   assert not out.ui_paused
+  assert not handoff_enabled(fingerprint=PREAP_FINGERPRINT, param_on=False)
+  assert not handoff_enabled(fingerprint="TESLA_MODEL_3", param_on=True)
+  assert handoff_enabled(fingerprint=PREAP_FINGERPRINT, param_on=True)
+  root = Path(__file__).resolve().parents[4]
+  keys = (root / "common/params_keys.h").read_text()
+  line = next(ln for ln in keys.splitlines() if '"NAPDriverLatHandoff"' in ln)
+  assert "BOOL" in line and '"0"' in line
+  cs = (root / "selfdrive/controls/controlsd.py").read_text()
+  assert "DriverLateralHandoff(enabled=False)" in cs
+  assert "PARAM_DRIVER_LAT_HANDOFF" in cs
 
 
 def test_light_input_yields_lateral_keeps_long_and_lat_active():
