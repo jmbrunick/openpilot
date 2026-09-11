@@ -1,3 +1,7 @@
+NAP driver lat handoff (2026-09-11)
+========================
+* Soft lateral handoff is **default On**. After a free-wheel yield, stay free while `handsOnLevel >= 1` or a renewed firm push. When hands go to **0**, require **~0.15 s** hands-off confirm (`HANDS_OFF_CONFIRM_S`) before the **1 s** smoothstep blend — shorter than the 0.25 s gap, still longer than the old 80 ms confirm. A brief hands-off or right-then-left crossover during the dodge must not snatch. Renewed hands-on or ≥ 0.55 Nm during that wait or the blend re-yields (EPS free) and resets the delay. `QUIET_WAIT_S` stays 0 (torsion-quiet used to blend on mid-dodge dips). Entry ~0.55 Nm / 90 ms + hands, blinker 1 s soft re-entry, emergency hard-brake cancel, sticky MAX / light brake, gravel spike rejection unchanged. Settings → NAP → Soft Lateral Handoff default **On**. Panda / hands-on ≥ 2 unchanged.
+
 NAP map speed (2026-09-11)
 ========================
 * Map MAX short-zone ignore raised from ~50 ft (15 m) to **~250 ft (76 m)** along heading. Cross-street / bleed flashes that lasted past 50 ft are now ignored. Real on-route drops that continue for hundreds of meters (US 12 tagged 50 ~760 m, DeGraff 30) still ease. Off-route bearing/class filter unchanged.

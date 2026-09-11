@@ -82,7 +82,7 @@ Pre-AP `TurnIndLvr_Stat` is only IDLE / LEFT / RIGHT / SNA — no tip vs latch b
 
 ## Driver-wheel temporary lateral handoff
 
-**Default On** (`NAPDriverLatHandoff=1`). Yield on **driver intent** (sustained torsion + aligned steer rate + hands on the rim), not gravel/wind/crown. Stay yielded while `EPAS_handsOnLevel >= 1`; 1 s blend starts after ~0.25 s of hands truly off. Emergency/hard brake (`aEgo <= −3.5 m/s²` for 80 ms + digital Applied) during yield / 2 s window fully cancels OP. Light brake is still the silent long pause. Blinker-turn resume uses the same pin-to-wheel + 1 s blend. Turn Off in Settings → NAP if false-yields remain. See [engagement.md](engagement.md#driver-wheel-temporary-lateral-handoff).
+**Default On** (`NAPDriverLatHandoff=1`). Yield on **driver intent** (sustained torsion + aligned steer rate + hands on the rim), not gravel/wind/crown. Stay yielded while `EPAS_handsOnLevel >= 1`; 1 s blend starts after ~0.15 s of hands truly off. Emergency/hard brake (`aEgo <= −3.5 m/s²` for 80 ms + digital Applied) during yield / 2 s window fully cancels OP. Light brake is still the silent long pause. Blinker-turn resume uses the same pin-to-wheel + 1 s blend. Turn Off in Settings → NAP if false-yields remain. See [engagement.md](engagement.md#driver-wheel-temporary-lateral-handoff).
 
 ## OSM map speed (MAX)
 
