@@ -64,15 +64,15 @@ def _quiet(h, seconds):
   return _step(h, torque=0.0, rate=0.0, dt=seconds)
 
 
-def test_thresholds_are_half_of_real_steering_pressed_not_invented():
+def test_thresholds_are_derived_from_real_steering_pressed():
   assert STEER_THRESHOLD == 1
   assert HANDS_ON_DISENGAGE_LEVEL == 2
-  assert SOFT_YIELD_TRIGGER_NM == 0.85 * float(STEER_THRESHOLD)
+  assert SOFT_YIELD_TRIGGER_NM == 0.70 * float(STEER_THRESHOLD)
   assert SOFT_YIELD_RELEASE_NM == 0.40 * float(STEER_THRESHOLD)
   assert SOFT_YIELD_RELEASE_NM < SOFT_YIELD_TRIGGER_NM
-  assert SOFT_YIELD_DEBOUNCE_FRAMES == 25
+  assert SOFT_YIELD_DEBOUNCE_FRAMES == 14
   assert PREAP_FINGERPRINT == "TESLA_MODEL_S_PREAP"
-  assert QUIET_WAIT_S == 0.25
+  assert QUIET_WAIT_S == 0.0
   assert BLEND_TIME_S == 1.0
   assert UI_LATERAL_RETURN_AUTHORITY == 0.70
   assert YIELD_AUTHORITY_TIME_S == 0.0
@@ -160,12 +160,23 @@ def test_gravel_spike_train_does_not_yield():
 
 
 def test_old_half_nm_sustained_does_not_yield():
-  """0.5–0.7 Nm (old trigger / crosswind-ish) must not yield."""
+  """0.5–0.65 Nm (old rumble / crosswind-ish) must not enter yield."""
   h = _new()
   for _ in range(int(1.5 / DT)):
-    out = _step(h, torque=0.7)
+    out = _step(h, torque=0.65)
   assert not out.yielded
   assert out.authority == 1.0
+
+
+def test_gentle_070_for_140ms_yields():
+  h = _new()
+  out = None
+  for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES - 1):
+    out = _step(h, torque=0.70)
+    assert not out.yielded
+  out = _step(h, torque=0.70)
+  assert out.yielded
+  assert out.authority == 0.0
 
 
 def test_sustained_driver_input_keeps_authority_at_zero():
@@ -178,65 +189,56 @@ def test_sustained_driver_input_keeps_authority_at_zero():
     assert not out.blending
 
 
-def test_yielded_hysteresis_band_0_35nm_begins_blend():
-  """Yield, then 0.35 Nm (in the 0.3–0.5 band) at rate 0 for >0.25 s.
+def test_yielded_below_release_blends_immediately():
+  """Yield, then 0.35 Nm (below 0.40 release): 1 s blend starts now.
 
-  That band is press-latch hysteresis only. Treating it as 'still
-  holding' zeroed _quiet_s every frame and never handed back on-car.
+  No 0.25 s quiet wait. 0.35 is residual / let-go, not a hold.
   """
   h = _new()
   _yield(h)
-  assert 0.35 < SOFT_YIELD_TRIGGER_NM
-  out = None
-  for _ in range(int(QUIET_WAIT_S / DT)):
-    out = _step(h, torque=0.35, rate=0.0)
-    assert out.authority == 0.0
-  assert out is not None
+  assert 0.35 <= SOFT_YIELD_RELEASE_NM
+  out = _step(h, torque=0.35, rate=0.0)
   assert out.blending
   assert not out.yielded
   assert out.authority == 0.0
 
 
-def test_yielded_old_half_nm_band_begins_blend():
-  """0.6 Nm is below the 0.85 trigger; must not reset quiet."""
+def test_yielded_above_release_stays_yielded():
+  """0.55 Nm is below the 0.70 trigger but above release — still on the rim."""
   h = _new()
   _yield(h)
   out = None
-  for _ in range(int(QUIET_WAIT_S / DT)):
-    out = _step(h, torque=0.6, rate=0.0)
-  assert out.blending
-  assert not out.yielded
+  for _ in range(int(1.0 / DT)):
+    out = _step(h, torque=0.55, rate=0.0)
+    assert out.yielded
+    assert not out.blending
+    assert out.authority == 0.0
+  assert out is not None
 
 
 def test_yielded_rate_above_old_gate_does_not_block_resume():
   """Caster / road rate after release must not keep the yielded latch.
 
   The old quiet gate required |rate| <= 25 deg/s AND |torque| <= 0.3 Nm.
-  On a moving car those were never both true for 0.25 s, so authority
-  never blended back. Quiet is torque-only while yielded.
+  On a moving car those were never both true, so authority never blended
+  back. Hand-back is torque-only: below release → blend this frame.
   """
   h = _new()
   _yield(h)
-  out = None
-  for _ in range(int(QUIET_WAIT_S / DT)):
-    out = _step(h, torque=0.05, rate=STEER_RATE_QUIET_DEG_S + 55.0)
-  assert out is not None
+  out = _step(h, torque=0.05, rate=STEER_RATE_QUIET_DEG_S + 55.0)
   assert not out.yielded
   assert out.blending
   assert out.authority == 0.0
 
 
-def test_yield_quiet_frames_authority_blends_to_one():
-  """Yield → 0.25 s of released-torque frames → 1 s smoothstep to 1.0."""
+def test_yield_then_release_authority_blends_to_one():
+  """Yield → first released-torque frame starts 1 s smoothstep to 1.0."""
   h = _new()
   _yield(h)
-  out = None
-  for _ in range(int(QUIET_WAIT_S / DT)):
-    out = _step(h, torque=0.0, rate=40.0)
-    assert out.authority == 0.0
-  assert out is not None
+  out = _step(h, torque=0.0, rate=40.0)
   assert out.blending
   assert not out.yielded
+  assert out.authority == 0.0
   for _ in range(int(BLEND_TIME_S / DT)):
     out = _step(h, torque=0.0, rate=40.0)
   assert out.authority == 1.0
@@ -245,14 +247,10 @@ def test_yield_quiet_frames_authority_blends_to_one():
   assert not out.ui_paused
 
 
-def test_quiet_0_249_does_not_blend_0_25_starts():
+def test_no_quiet_wait_first_release_frame_starts_blend():
   h = _new()
   _yield(h)
-  out = _quiet(h, 0.249)
-  assert out.yielded
-  assert not out.blending
-  assert out.authority == 0.0
-  out = _quiet(h, 0.001)
+  out = _quiet(h, DT)
   assert not out.yielded
   assert out.blending
   assert out.authority == 0.0
@@ -261,7 +259,7 @@ def test_quiet_0_249_does_not_blend_0_25_starts():
 def test_blend_is_smoothstep_monotonic_one_second_bounded_slope():
   h = _new()
   _yield(h)
-  _quiet(h, QUIET_WAIT_S)
+  _quiet(h, DT)  # first release frame starts blend (QUIET_WAIT_S == 0)
   prev = 0.0
   max_delta = 0.0
   authorities = []
@@ -279,10 +277,11 @@ def test_blend_is_smoothstep_monotonic_one_second_bounded_slope():
   assert max_delta <= SMOOTHSTEP_MAX_SLOPE * DT + 1e-9
 
 
-def test_renewed_input_during_blend_yields_and_resets_timer():
+def test_renewed_input_during_blend_yields_and_retries_immediately():
   h = _new()
   _yield(h)
-  _quiet(h, QUIET_WAIT_S)
+  out = _quiet(h, DT)  # no quiet wait — blend starts now
+  assert out.blending
   for _ in range(40):  # 0.4 s into the 1 s blend
     out = _quiet(h, DT)
   assert out.blending
@@ -292,18 +291,32 @@ def test_renewed_input_during_blend_yields_and_resets_timer():
   assert not out.blending
   assert out.authority == 0.0
   assert out.ui_paused
-  out = _quiet(h, 0.249)
-  assert out.yielded
-  assert out.authority == 0.0
-  out = _quiet(h, 0.001)
+  # Let go again: blend restarts this frame (no 0.25 s patience)
+  out = _quiet(h, DT)
   assert out.blending
+  assert not out.yielded
   assert out.authority == 0.0
+
+
+def test_mid_band_during_blend_does_not_reyield():
+  """0.55 Nm during the return is OP/caster, not a new firm push."""
+  h = _new()
+  _yield(h)
+  out = _quiet(h, DT)
+  assert out.blending
+  for _ in range(20):
+    out = _step(h, torque=0.55)
+    assert out.blending
+    assert not out.yielded
+  out = _step(h, torque=SOFT_YIELD_TRIGGER_NM)
+  assert out.yielded
+  assert not out.blending
 
 
 def test_ui_paused_below_70_returns_at_70_without_chatter():
   h = _new()
   _yield(h)
-  _quiet(h, QUIET_WAIT_S)
+  _quiet(h, DT)
   seen_unpaused = False
   for _ in range(int(BLEND_TIME_S / DT)):
     out = _quiet(h, DT)
@@ -335,7 +348,7 @@ def test_ui_does_not_claim_lat_back_at_69_percent():
   # 69% is still paused (latched threshold 70%)
   h = _new()
   _yield(h)
-  _quiet(h, QUIET_WAIT_S)
+  _quiet(h, DT)
   out = None
   while True:
     out = _quiet(h, DT)
@@ -483,16 +496,13 @@ def test_yield_pins_planner_resume_tracks_model_not_measured():
   assert angle == meas_angle
   assert curv == meas_curv
 
-  for _ in range(int(QUIET_WAIT_S / DT)):
-    out, desired, angle, curv = _step_actuators(
-      h, torque=0.0, desired=desired, model_curv=model_curv,
-      meas_curv=meas_curv, meas_angle=meas_angle)
-    assert out.authority == 0.0
-    if out.yielded:
-      assert desired == meas_curv
-      assert angle == meas_angle
-
+  # First released frame starts the blend (QUIET_WAIT_S == 0). Pin lifts.
+  out, desired, angle, curv = _step_actuators(
+    h, torque=0.0, desired=desired, model_curv=model_curv,
+    meas_curv=meas_curv, meas_angle=meas_angle)
+  assert out.authority == 0.0
   assert out.blending
+  assert not out.yielded
   assert not pin_desired_curvature_to_measured(out.yielded)
   assert handoff_new_desired_curvature(
     yielded=out.yielded, lat_active=True,
@@ -540,7 +550,7 @@ def test_disabled_for_non_preap_is_identity():
 def test_hysteresis_band_does_not_retrigger_from_texture_after_release():
   h = _new()
   _yield(h)
-  _quiet(h, QUIET_WAIT_S)
+  _quiet(h, DT)
   for _ in range(int(BLEND_TIME_S / DT)):
     _quiet(h, DT)
   # back at full authority; 0.4 Nm is between release and trigger
