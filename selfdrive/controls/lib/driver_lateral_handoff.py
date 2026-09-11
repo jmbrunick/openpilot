@@ -2,28 +2,40 @@
 
 Default On (NAPDriverLatHandoff=1). Settings → NAP can turn it Off.
 
-Product (2026-09-11): yield lateral only on *driver intent to turn the
-wheel* (typically avoiding something). Gravel / wind / road-crown
-pressure must not gray the chrome.
+Product (2026-09-11): yield lateral on a *sustained driver push* with
+hands on the rim (typically avoiding something). Gravel spike trains,
+wind, and road-crown pressure must not gray the chrome.
 
-Intent (Pre-AP EPAS) — all required to *enter* yield:
+On-car (nap-dev / #78): fighting OP to leave the path is often
+*isometric* — torsion is firm, steer rate stays low, tracking error
+is high. Requiring aligned rate and treating high error + low rate as
+disturbance blocked soft yield; the driver then pushed into
+handsOnLevel >= 2 / STEER_THRESHOLD hard cancel. Soft yield must win
+before that hard path.
+
+Intent (Pre-AP EPAS) — required to *enter* yield:
   EPAS_torsionBarTorque / CS.steeringTorque
       sustained directional torque (not short spikes)
   EPAS_handsOnLevel / hands stash
       hands on the rim (>= 1)
-  CS.steeringRateDeg aligned with torsion
-      same sign, above a quiet floor, not SNA
-  Optional veto: high path/tracking error without matching sustained
-      torsion → disturbance, do not yield
+  Steer rate is *not* an entry gate. A firm sustained push yields even
+      when the wheel is not moving (isometric fight). Rate is only a
+      weak wind filter at *low* torsion — it never blocks a firm push
+      and never promotes low torsion to intent.
+  Disturbance veto only while torsion is *below* the yield trigger
+      (wind / crown: high path error, low torsion). High torsion is
+      intent even if tracking error is large (driver is leaving the path).
 
 History (on-car):
   #71  0.50 Nm / 80 ms   — gravel / rumble false-yield
   #73  0.85 Nm / 250 ms + 0.25 s quiet — rumble-safe, too slow/firm
   #74  0.70 Nm / 140 ms, quiet wait 0 — mid-dodge torsion dip blended
   #75  stay yielded while handsOnLevel >= 1; blend after hands off
-  now  same hold / 1 s resume, but *entry* is intent (torsion+rate+hands),
-       not torsion-only. Emergency/hard brake while yielded (or shortly
-       after yield entry) fully cancels OP — not the silent long pause.
+  #78  entry = torsion + aligned rate + hands; disturbance vetoed
+       high error without aligned rate — blocked isometric fight
+  now  entry = sustained torsion + hands. Rate / disturbance do not
+       block a firm push. Same hold / 1 s resume. Emergency/hard brake
+       while yielded (or shortly after yield entry) fully cancels OP.
 
 Signal (Pre-AP EPAS_sysStatus 0x370, tesla_preap.dbc):
   EPAS_torsionBarTorque  — continuous, Nm, factor 0.01, offset −20.5
@@ -36,12 +48,14 @@ Existing software / safety (unchanged):
   steerOverride    = EventName from steeringPressed (OVERRIDE_LATERAL)
   steeringDisengage / panda PREAP_HANDS_ON_DISENGAGE_LEVEL = handsOnLevel >= 2
 
-Soft-yield torsion floor stays 0.70 Nm with 140 ms of *consecutive*
-intent frames (gaps reset). 0.70 is above the old 0.5 Nm rumble floor
-and still below software steeringPressed (1.0 Nm). Release hysteresis
-stays 0.40 Nm (press-latch only). handsOnLevel is not the soft *trigger*
-by itself — it is required for intent and is the hold while yielded.
->= 2 stays the hard/safety path (panda unchanged).
+Soft-yield torsion floor stays 0.70 Nm. Consecutive *push* frames
+(gaps reset): 140 ms at the 0.70 floor, fewer as torsion approaches
+STEER_THRESHOLD so the soft path beats hands-on >= 2. 0.70 is above
+the old 0.5 Nm rumble floor and still below software steeringPressed
+(1.0 Nm). Release hysteresis stays 0.40 Nm (press-latch only).
+handsOnLevel is not the soft *trigger* by itself — it is required for
+intent and is the hold while yielded. >= 2 stays the hard/safety path
+(panda unchanged).
 
 QUIET_WAIT_S stays 0. The 1 s smoothstep starts only after
 handsOnLevel == 0 for HANDS_OFF_CONFIRM_S (~80 ms). Renewed hands-on
@@ -80,24 +94,29 @@ DT_CTRL = 0.01
 State = log.SelfdriveState.OpenpilotState
 
 # --- thresholds (from real Pre-AP STEER_THRESHOLD = 1.0 Nm) ---
-# Torsion floor is unchanged from #74/#75. Intent adds rate agreement
-# and hands-on so gravel spikes / crown pressure do not count.
+# Torsion floor is unchanged from #74/#75. Hands-on is required so
+# gravel spikes / crown pressure do not count. Rate is not an entry gate.
 SOFT_YIELD_TRIGGER_NM = 0.70 * float(STEER_THRESHOLD)  # 0.70 Nm
 SOFT_YIELD_RELEASE_NM = 0.40 * float(STEER_THRESHOLD)  # 0.40 Nm, wider gap
 
-# Consecutive *intent* frames (torsion + hands + aligned rate). Gaps reset.
-SOFT_YIELD_DEBOUNCE_FRAMES = 14  # 140 ms at 100 Hz
+# Consecutive *push* frames (torsion + hands). Gaps reset.
+# 140 ms at the 0.70 floor; fewer near STEER_THRESHOLD so soft yield
+# wins before hands-on >= 2 / steeringPressed. Fast floor stays above
+# the 5-frame gravel-spike bursts used in tests (~50 ms).
+SOFT_YIELD_DEBOUNCE_FRAMES = 14  # 140 ms at 100 Hz (0.70 Nm)
+SOFT_YIELD_FAST_DEBOUNCE_FRAMES = 8  # 80 ms as |torsion| → 1.0 Nm
 SOFT_YIELD_RELEASE_FRAMES = 8    # 80 ms below release before clearing latch
 
 # Rate agreement. Pre-AP CS.steeringRateDeg is −StW_AnglHP_Spd (deg/s).
-# SNA decodes to ~4095 deg/s and must never count as intent.
+# SNA decodes to ~4095 deg/s. Kept as a *weak low-torsion* wind filter
+# only — never required to enter yield on a firm sustained push.
 # Historical 25 deg/s gate was a resume quiet check (unused since #75).
 STEER_RATE_QUIET_DEG_S = 25.0
 RATE_INTENT_MIN_DEG_S = 10.0
 RATE_SNA_ABS_DEG_S = 400.0
 
-# High |desired−measured| curvature without matching sustained torsion
-# is wind / tracking fight, not a driver dodge.
+# High |desired−measured| curvature with torsion *below* the yield
+# trigger is wind / crown, not a driver dodge. High torsion is intent.
 DISTURBANCE_CURVATURE_ERR = 0.0025
 
 # --- emergency / hard brake (digital Applied + measured decel) ---
@@ -183,7 +202,12 @@ def cs_real_brake_pressed(CS) -> bool:
 
 
 def torque_rate_aligned(torque_nm: float, rate_deg: float) -> bool:
-  """True when the driver is turning the wheel in the torsion direction."""
+  """True when the wheel is turning in the torsion direction.
+
+  Not an entry gate. Used only as a weak low-torsion wind filter —
+  aligned rate below the yield trigger never counts as intent, and a
+  firm push yields even when this is False (isometric fight / SNA).
+  """
   torque = float(torque_nm)
   rate = float(rate_deg)
   if not np.isfinite(torque) or not np.isfinite(rate):
@@ -197,17 +221,44 @@ def torque_rate_aligned(torque_nm: float, rate_deg: float) -> bool:
   return (torque * rate) > 0.0
 
 
+def required_press_frames(torque_nm: float) -> int:
+  """Consecutive push frames needed to enter yield.
+
+  140 ms at the 0.70 Nm floor. Linearly fewer toward 80 ms as |torsion|
+  approaches STEER_THRESHOLD so the soft path beats hands-on >= 2.
+  Never below SOFT_YIELD_FAST_DEBOUNCE_FRAMES (gravel 5-frame spikes).
+  """
+  mag = abs(float(torque_nm))
+  lo = SOFT_YIELD_TRIGGER_NM
+  hi = float(STEER_THRESHOLD)
+  if mag <= lo + 1e-12:
+    return SOFT_YIELD_DEBOUNCE_FRAMES
+  if mag >= hi - 1e-12:
+    return SOFT_YIELD_FAST_DEBOUNCE_FRAMES
+  t = (mag - lo) / (hi - lo)
+  frames = SOFT_YIELD_DEBOUNCE_FRAMES + t * (
+    SOFT_YIELD_FAST_DEBOUNCE_FRAMES - SOFT_YIELD_DEBOUNCE_FRAMES)
+  return int(round(frames))
+
+
 def is_disturbance(*, torque_nm: float, rate_deg: float,
                    tracking_error: float) -> bool:
-  """High tracking effort without matching sustained driver torsion.
+  """Wind / crown: high path error while torsion is below the yield trigger.
 
-  Wind / crown: LaC fights the path (error high) while torsion is low or
-  not rate-aligned. A real dodge has matching sustained torsion — that
-  is not a disturbance even if error is large (driver is leaving the path).
+  High torsion is driver intent even if tracking error is large (leaving
+  the path) and even if steer rate is low (isometric fight). Rate is a
+  weak filter only at low torsion: aligned rate below the trigger never
+  clears this and never promotes low torsion to a yield.
   """
   if abs(float(tracking_error)) < DISTURBANCE_CURVATURE_ERR:
     return False
-  return not torque_rate_aligned(torque_nm, rate_deg)
+  if abs(float(torque_nm)) >= SOFT_YIELD_TRIGGER_NM:
+    return False
+  # Low torsion + high error. Rate is unused here on purpose: aligned
+  # rate below the trigger must not clear a disturbance (#78 required
+  # alignment to *not* be a disturbance) and cannot promote this to yield.
+  _ = rate_deg
+  return True
 
 
 def emergency_brake(*, brake_applied: bool, a_ego: float, v_ego: float,
@@ -316,7 +367,7 @@ class HandoffOutput:
 
 
 class DriverLateralHandoff:
-  """Process-local latch: driver-intent yield; 1 s S-curve hands it back."""
+  """Process-local latch: firm-push yield; 1 s S-curve hands it back."""
 
   def __init__(self, enabled: bool = True):
     # Product default On. controlsd still requires Pre-AP + param
@@ -344,17 +395,21 @@ class DriverLateralHandoff:
 
   def _update_intent(self, torque_nm: float, rate_deg: float,
                      hands_on: bool, tracking_error: float) -> bool:
-    """Sustained directional torsion + hands + rate agreement.
+    """Sustained firm torsion + hands. Rate does not gate a firm push.
 
     Gaps reset the count (gravel spike trains do not accumulate). High
-    tracking error without matching torsion is a disturbance, not intent.
+    tracking error is a disturbance only while torsion is below the
+    yield trigger (wind / crown). High torsion is intent even if the
+    path error is large and steer rate is near zero (isometric fight).
+    Near STEER_THRESHOLD the consecutive-frame bar drops so soft yield
+    beats hands-on >= 2.
     """
     mag = abs(float(torque_nm))
-    aligned = hands_on and torque_rate_aligned(torque_nm, rate_deg)
+    firm = hands_on and mag >= SOFT_YIELD_TRIGGER_NM
     if is_disturbance(torque_nm=torque_nm, rate_deg=rate_deg,
                       tracking_error=tracking_error):
-      aligned = False
-    if mag >= SOFT_YIELD_TRIGGER_NM and aligned:
+      firm = False
+    if firm:
       self._press_cnt = min(self._press_cnt + 1, SOFT_YIELD_DEBOUNCE_FRAMES + 1)
       self._release_cnt = 0
     else:
@@ -362,7 +417,7 @@ class DriverLateralHandoff:
       if mag <= SOFT_YIELD_RELEASE_NM:
         self._release_cnt = min(self._release_cnt + 1, SOFT_YIELD_RELEASE_FRAMES + 1)
 
-    if self._press_cnt >= SOFT_YIELD_DEBOUNCE_FRAMES:
+    if self._press_cnt >= required_press_frames(torque_nm):
       self._pressed = True
     if self._pressed and self._release_cnt >= SOFT_YIELD_RELEASE_FRAMES:
       self._pressed = False

@@ -13,7 +13,7 @@ Pull requests welcome against `nap-dev`. For anything non-trivial, open an issue
 
 Do not push sunnypilot-specific code (MADS, `CP_SP`, etc.) to `nap-dev` or `nap-alpha`.
 
-Soft Lateral Handoff (`NAPDriverLatHandoff`) defaults **On**. Yield is driver intent (torsion + aligned rate + hands), not gravel/wind. Emergency/hard brake during yield fully cancels; light brake must keep the silent long-pause / one-SET path. Turn the toggle **Off** if false-yields remain.
+Soft Lateral Handoff (`NAPDriverLatHandoff`) defaults **On**. Yield is a sustained driver push (torsion ≥ ~0.70 Nm / ~140 ms + hands); rate is not an entry gate. Gravel spikes and low-torsion wind must not yield. Emergency/hard brake during yield fully cancels; light brake must keep the silent long-pause / one-SET path. Turn the toggle **Off** if false-yields remain.
 
 ## Submodules
 

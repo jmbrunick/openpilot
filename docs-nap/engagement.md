@@ -86,18 +86,18 @@ Panda firmware must be flashed after this safety change. Software update / on-de
 
 ## Driver-wheel temporary lateral handoff
 
-**Default On.** Settings → NAP → Soft Lateral Handoff can be turned **Off**. Yield is **driver intent to turn the wheel** (generally avoiding something), not gravel / wind / road-crown false pressure. #71–#75 tuned torsion + hands-on hold; those hold / 1 s resume rules stay. Entry is now the combined intent gate below.
+**Default On.** Settings → NAP → Soft Lateral Handoff can be turned **Off**. Yield is a **sustained driver push** with a hand on the rim (generally avoiding something), not gravel spike trains / wind / road-crown false pressure. #71–#75 tuned torsion + hands-on hold; those hold / 1 s resume rules stay. #78 also required aligned steer rate and treated high tracking error without that rate as a disturbance — that blocked the on-car *fight the wheel* dodge (isometric push, high path error, low rate) until EPAS `handsOnLevel >= 2` / `STEER_THRESHOLD` hard-cancelled. Soft yield must win **before** that hard path.
 
-Pothole / obstacle dodges without fighting NAP and without a full disengage — unless the driver then emergency-brakes (full cancel). Software-only; panda hands-on ≥ 2 and `STEER_THRESHOLD` are unchanged.
+Pothole / obstacle dodges — including fighting OP to leave the path — without a full disengage, unless the driver then emergency-brakes (full cancel). Software-only; panda hands-on ≥ 2 and `STEER_THRESHOLD` are unchanged.
 
 ### Signals (Pre-AP)
 
 | Signal | Source | Type | Role |
 |--------|--------|------|------|
 | `EPAS_torsionBarTorque` / `CS.steeringTorque` | `EPAS_sysStatus` 0x370 | continuous Nm (0.01, −20.5) | sustained directional torque (not spikes) |
-| `StW_AnglHP_Spd` / `CS.steeringRateDeg` | `STW_ANGLHP_STAT` 0x0E | continuous deg/s (0.5, −4096), negated | must **agree** with torsion to enter yield |
+| `StW_AnglHP_Spd` / `CS.steeringRateDeg` | `STW_ANGLHP_STAT` 0x0E | continuous deg/s (0.5, −4096), negated | **not** an entry gate. Weak wind filter only when torsion is below the yield trigger |
 | `EPAS_handsOnLevel` | same EPAS msg | discrete 0/1/2/3 | required for intent (≥ 1). ≥ 1 holds yield. ≥ 2 remains hard disengage |
-| path / tracking error | `desired_curvature − measured` | 1/m | high error **without** matching torsion → disturbance, do **not** yield |
+| path / tracking error | `desired_curvature − measured` | 1/m | high error **and** torsion below trigger → disturbance (wind / crown). High torsion is intent even if error is large |
 | digital brake Applied | `DI_brakePedal` / `BrakeMessage.driverBrakeStatus` | boolean | light brake = silent long pause. Not `CS.brakePressed` (forced false) |
 | `CS.aEgo` | speed KF | m/s² | emergency decel qualifier (no analog pressure on parsed buses) |
 
@@ -105,12 +105,15 @@ Pothole / obstacle dodges without fighting NAP and without a full disengage — 
 
 ### Intent to enter yield
 
-All of the following, for **140 ms consecutive** frames (gaps reset — gravel spike trains do not accumulate):
+All of the following, consecutive frames (gaps reset — gravel spike trains do not accumulate):
 
 1. `|torsion| >= 0.70 Nm` (70% of `STEER_THRESHOLD`; still above 0.5 Nm rumble, still below `steeringPressed` 1.0 Nm)
 2. `handsOnLevel >= 1` (hand on the rim)
-3. Torque and steer rate **same sign**, `|rate| >= 10 deg/s`, and `|rate| < 400 deg/s` (SNA ~4095 is rejected)
-4. Not a disturbance: `|desired − measured| curvature >= 0.0025` **without** matching sustained torsion/rate is wind / tracking fight — do not yield. A real dodge may have large error; matching torsion wins.
+3. Held for **140 ms** at the 0.70 Nm floor. Fewer frames as torsion approaches `STEER_THRESHOLD` (down to **80 ms** at 1.0 Nm) so the soft path beats hands-on ≥ 2. Never below 80 ms (5-frame gravel bursts stay rejected).
+
+Do **not** require high steer rate. An isometric fight (firm torsion, wheel barely moving, high tracking error) **must** yield. Rate may stay as a weak wind filter only when torsion is **below** 0.70 Nm — it never blocks a firm push and never promotes low torsion to intent.
+
+Disturbance veto only when torsion is **below** the yield trigger: `|desired − measured| curvature >= 0.0025` **and** `|torsion| < 0.70 Nm` is wind / crown — do not yield. High torsion is intent even if tracking error is large (driver is leaving the path).
 
 Release hysteresis stays **0.40 Nm** (press-latch only). Do **not** go back to raw 0.5 Nm / 80 ms torsion-only. ≥ 2 stays the hard/safety path.
 
@@ -142,7 +145,7 @@ When that fires, card calls `hard_cancel_session()`: `cruiseEnabled=False`, long
 
 ### Where to look
 
-- `selfdrive/controls/lib/driver_lateral_handoff.py` — intent detector, disturbance veto, emergency definition, hands-on hold, smoothstep, curvature pin
+- `selfdrive/controls/lib/driver_lateral_handoff.py` — firm-push detector (torsion + hands; rate not an entry gate), low-torsion disturbance veto, emergency definition, hands-on hold, smoothstep, curvature pin
 - `selfdrive/controls/controlsd.py` — pin `desired_curvature` while yielded; pass torsion / rate / hands / tracking error / digital brake / aEgo; cancel on emergency
 - `selfdrive/car/tesla/preap_blinker_lat_pause.py` — publish hands-on + digital brake; card-local handoff; `hard_cancel_session`
 - `selfdrive/ui/ui_state.py` — gray override chrome while paused
@@ -153,7 +156,7 @@ When that fires, card calls `hard_cancel_session()`: `cruiseEnabled=False`, long
 Do these at a quiet road / parking lot first, then a known pothole stretch. Pedal or no-pedal both OK. Do **not** expect a panda flash.
 
 1. **Engage** with a double-pull. Confirm green engaged chrome and that long/cruise is holding speed.
-2. **Intentional dodge** (hands on, turn the wheel — sustained torsion + the wheel actually moving for ~0.14 s). Lateral should go slack. Speed control must stay on. HUD should go **gray override**, not “Steering Disengaged”, and must not play the disengage chime.
+2. **Intentional dodge** (hands on, sustained torsion ≥ ~0.70 Nm for ~0.14 s — the wheel does **not** have to be moving). Includes fighting OP to leave the path (high tracking error, low rate). Lateral should go slack **before** a hard yank / hands-on ≥ 2. Speed control must stay on. HUD should go **gray override**, not “Steering Disengaged”, and must not play the disengage chime.
 3. **Hold** through a pothole dodge (hands still on the rim). Authority must stay yielded even if torsion dips.
 4. **Release.** Hands clearly off the rim. After ~80 ms the wheel eases back onto the path over about **one second**. When green returns, the wheel must follow the on-screen path.
 5. **Re-grab during the blend.** Hands back on or a firm push: yield again. Hands off ~80 ms and the 1 s blend retries.
