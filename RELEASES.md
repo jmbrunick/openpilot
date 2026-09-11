@@ -1,5 +1,9 @@
 NAP driver lat handoff (2026-09-11)
 ========================
+* Soft lateral handoff is **default On**. Quicker gentle yield: ~0.70 Nm held 0.14 s consecutive (still above 0.5 Nm rumble; still below a yank / hands-on ≥ 2). Let go → 1 s blend starts immediately (no 0.25 s quiet wait). Planner still pins to the wheel while yielded so resume tracks the path. Settings → NAP → Soft Lateral Handoff: turn **Off** if gravel or wind still gray the chrome. Brake silent long-pause + one SET is unchanged.
+
+NAP driver lat handoff (2026-09-11)
+========================
 * Soft lateral handoff is **default On**. Firmer yield: ~0.85 Nm held 0.25 s consecutive (not 0.5 Nm rumble). After a yield, planner curvature stays on the wheel so resume actually tracks the path (green HUD + on-screen path was not enough). Settings → NAP → Soft Lateral Handoff: turn **Off** if gravel or wind still gray the chrome. Brake silent long-pause + one SET is unchanged.
 
 NAP driver lat handoff (2026-09-11)
