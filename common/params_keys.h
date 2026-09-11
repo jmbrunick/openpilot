@@ -175,8 +175,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // no vCruise / HUD MAX, no osm.org. Process: speedsignd.
     {"NAPSpeedSignLog", {PERSISTENT, BOOL, "0"}},
     // Soft wheel lateral handoff. Default ON. 0.70 Nm / 140 ms
-    // consecutive push (rejects gravel spikes). Blend starts on release.
-    // Settings can turn Off.
+    // consecutive push (rejects gravel spikes). Stay yielded while
+    // handsOnLevel >= 1; blend after ~80 ms hands-off. Settings can turn Off.
     {"NAPDriverLatHandoff", {PERSISTENT, BOOL, "1"}},
     // Settings → NAP → Force Offroad. Default off. Not persistent: reboot
     // (manager start) and the next ignition ON clear it. Toggle Off and
