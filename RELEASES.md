@@ -1,3 +1,7 @@
+NAP driver lat handoff (2026-09-11)
+========================
+* Light wheel input (about half the usual override effort) now yields steering without cancelling openpilot. Speed control stays on. After 0.25 s of quiet the wheel blends back over 1 s. Gray HUD until ~70% lateral is back; no disengage chime. A hard yank / cancel still fully disengages. No panda flash.
+
 NAP speed-sign log (2026-09-11)
 ========================
 * SIGN WAIT is only when openpilot is actively controlling. A 1 Hz SubMaster used to treat unknown / stale `selfdriveState` as engaged for ~10 s after cancel (`recv_frame <= 0` + 100 ms alive window). Poll at 20 Hz; gate on `active`; abandon in-flight ONNX on re-engage so the loop never blocks. If TAKE CONTROL / Communication Issue comes back, turn Logger Off.
