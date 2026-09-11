@@ -28,7 +28,7 @@ DRIVER_LAT_HANDOFF_DESCRIPTION = (
   "Default On. A light purposeful push with a hand on the rim frees "
   + "the wheel (OP stops steering the EPS) — typically avoiding "
   + "something. Long stays on. Stays free while hands are on the rim. "
-  + "Hands off ~0.25 s, then the wheel blends back over 1 s. Gravel / "
+  + "Hands off ~0.15 s, then the wheel blends back over 1 s. Gravel / "
   + "wind / road-crown pressure should not trip. A hard brake during "
   + "that yield fully cancels openpilot (chime); a light brake is still "
   + "the silent long pause + one SET. Gray chrome means lat yielded — "
