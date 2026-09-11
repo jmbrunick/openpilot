@@ -24,7 +24,9 @@ from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   DriverLateralHandoff,
   apply_lat_authority,
   handoff_enabled,
+  handoff_new_desired_curvature,
   hud_engaged_status,
+  pin_desired_curvature_to_measured,
   smoothstep,
 )
 
@@ -408,6 +410,123 @@ def test_apply_lat_authority_follows_driver_at_zero_and_nap_at_one():
   torque, angle, curv = apply_lat_authority(0.5, 0.4, 10.0, 0.0, 0.02, 0.0)
   assert abs(torque - 0.2) < 1e-9
   assert abs(angle - 5.0) < 1e-9
+
+
+def _angle_from_curv(curv):
+  """Linear stand-in for VM.get_steer_from_curvature (sign-preserving)."""
+  return float(curv) * 800.0
+
+
+def _clip_toward(prev, target, step=0.0002):
+  """Stand-in for clip_curvature (jerk-limited slew from the pin)."""
+  if target > prev:
+    return min(prev + step, target)
+  return max(prev - step, target)
+
+
+def _step_actuators(h, *, torque, desired, model_curv, meas_curv, meas_angle, v_ego=20.0):
+  """Mirror controlsd: pin while yielded; clip + optional blend otherwise."""
+  _ = v_ego
+  out = _step(h, torque=torque)
+  new_desired = handoff_new_desired_curvature(
+    yielded=out.yielded, lat_active=True,
+    model_curvature=model_curv, measured_curvature=meas_curv,
+  )
+  if pin_desired_curvature_to_measured(out.yielded):
+    desired = meas_curv
+  else:
+    desired = _clip_toward(desired, new_desired)
+  lac_angle = _angle_from_curv(desired)
+  if out.authority < 1.0:
+    _t, angle, curv = apply_lat_authority(
+      out.authority, 0.4, lac_angle, meas_angle, desired, meas_curv)
+  else:
+    angle, curv = lac_angle, desired
+  return out, desired, angle, curv
+
+
+def test_yield_pins_planner_resume_tracks_model_not_measured():
+  """Justin: green + path-back, wheel firm/holding (not path-tracking).
+
+  latActive stays true on purpose (no VM snap). The old path still fed
+  the model into clip_curvature during yield, so desired ran to the lane
+  while apply_lat_authority(0) commanded measured. After authority→1 the
+  raw LaC angle was already at the model; VM/EPAS stayed near measured.
+
+  Pin desired to the wheel while yielded. Blend/resume clip from that pin.
+  At authority=1 the command equals LaC(desired), which has been slewing
+  from measured toward the model — not stuck at yield-time measured.
+  """
+  h = _new()
+  model_curv = 0.012
+  meas_curv = 0.0
+  meas_angle = _angle_from_curv(meas_curv)
+  desired = model_curv  # was tracking the path before the push
+
+  assert handoff_new_desired_curvature(
+    yielded=False, lat_active=True,
+    model_curvature=model_curv, measured_curvature=meas_curv,
+  ) == model_curv
+  assert handoff_new_desired_curvature(
+    yielded=True, lat_active=True,
+    model_curvature=model_curv, measured_curvature=meas_curv,
+  ) == meas_curv
+  assert pin_desired_curvature_to_measured(True)
+  assert not pin_desired_curvature_to_measured(False)
+
+  for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES):
+    out, desired, angle, curv = _step_actuators(
+      h, torque=1.0, desired=desired, model_curv=model_curv,
+      meas_curv=meas_curv, meas_angle=meas_angle)
+  assert out.yielded
+  assert desired == meas_curv
+  assert angle == meas_angle
+  assert curv == meas_curv
+
+  for _ in range(int(QUIET_WAIT_S / DT)):
+    out, desired, angle, curv = _step_actuators(
+      h, torque=0.0, desired=desired, model_curv=model_curv,
+      meas_curv=meas_curv, meas_angle=meas_angle)
+    assert out.authority == 0.0
+    if out.yielded:
+      assert desired == meas_curv
+      assert angle == meas_angle
+
+  assert out.blending
+  assert not pin_desired_curvature_to_measured(out.yielded)
+  assert handoff_new_desired_curvature(
+    yielded=out.yielded, lat_active=True,
+    model_curvature=model_curv, measured_curvature=meas_curv,
+  ) == model_curv
+
+  for _ in range(int(BLEND_TIME_S / DT)):
+    out, desired, angle, curv = _step_actuators(
+      h, torque=0.0, desired=desired, model_curv=model_curv,
+      meas_curv=meas_curv, meas_angle=meas_angle)
+
+  assert out.authority == 1.0
+  assert not out.blending
+  assert not out.yielded
+  assert not out.ui_paused
+  # identity on the planner/LaC target — not the yield-time measured hold
+  assert abs(curv - desired) < 1e-12
+  assert abs(angle - _angle_from_curv(desired)) < 1e-12
+  assert abs(desired - meas_curv) > 1e-4
+  assert abs(desired - model_curv) < abs(meas_curv - model_curv)
+  assert abs(angle - meas_angle) > 1e-3
+  # controlsd must pin + skip blend at 100%
+  cs = (Path(__file__).resolve().parents[4] / "selfdrive/controls/controlsd.py").read_text()
+  assert "pin_desired_curvature_to_measured" in cs
+  assert "handoff_new_desired_curvature" in cs
+  assert "authority < 1.0" in cs
+
+
+def test_unyielded_lat_inactive_still_uses_measured_curvature():
+  """Blinker / standstill path: latActive false → measured, unchanged."""
+  assert handoff_new_desired_curvature(
+    yielded=False, lat_active=False,
+    model_curvature=0.02, measured_curvature=0.001,
+  ) == 0.001
 
 
 def test_disabled_for_non_preap_is_identity():
