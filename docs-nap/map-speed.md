@@ -122,6 +122,8 @@ All map-speed controls live in this submenu (main NAP stays uncluttered). TICI a
 
 `mapd` probes 40–600 m along GPS heading **and** walks the matched OSM way to its end (then the next way) so a short intermediate maxspeed is published as `nextSpeedLimit`. Policy uses **decreases only**.
 
+**Minimum zone length:** a lower limit (current match or `nextSpeedLimit`) that is gone within **`MIN_ZONE_LENGTH_M` (15 m / ~50 ft)** along the travel heading is ignored. OSM/GPS at a crossroads can briefly snap onto a side street or a tiny fill stub and look like a short speed zone on the highway. Real posted drops that continue past that threshold still apply (US 12 Benson 60→50 is ~760 m of tagged 50; DeGraff 30 is hundreds of meters). This is a general matcher rule, not a Benson/DeGraff hardcode. Bearing / class route continuity from the off-route filter still applies. Lookahead Off still disables anticipatory easing.
+
 | Lookahead | Comfort decel | Extra margin | Start no farther than |
 |---|---|---|---|
 | Off | — | — | change only after GPS is on the slower way |
@@ -129,7 +131,7 @@ All map-speed controls live in this submenu (main NAP stays uncluttered). TICI a
 | Normal (default) | 0.80 m/s² | 110 m | 600 m |
 | Early | 0.55 m/s² | 230 m | 600 m |
 
-When the upcoming drop is inside that window, MAX interpolates from the current limit at `d = kinematic + margin` to the new limit at the sign. Brake stays Accel-5 **0.80 m/s²** at Normal (not raised). The +110 m is the measured 50→30 shortfall (42 mph at the sign vs 30); every decrease starts at `kin + 110 m`, not a 50→30-only window. A 10 mph drop (60→50) is not filtered. `mapd` walks the matched OSM way to its end (then the next way) so a short intermediate limit is not skipped by 40 m heading probes.
+When the upcoming drop is inside that window, MAX interpolates from the current limit at `d = kinematic + margin` to the new limit at the sign. Brake stays Accel-5 **0.80 m/s²** at Normal (not raised). The +110 m is the measured 50→30 shortfall (42 mph at the sign vs 30); every decrease starts at `kin + 110 m`, not a 50→30-only window. A 10 mph drop (60→50) is not filtered. `mapd` walks the matched OSM way to its end (then the next way) so a short intermediate limit is not skipped by 40 m heading probes. A stub shorter than 15 m along heading is not a posted drop.
 
 **HUD current speed** (top-middle on the 3X) is wheel/ESP `vEgo` only. `vEgoCluster` is Tesla `DI_digitalSpeed`, which pre-AP also uses as `cruiseState.speed`. Map-speed writes MAX into `vCruise` / `pedal_speed` / `cruiseState.speed` (90 kph = **56 mph**). LIMIT/MAX may show the map limit; the live number must not.
 
@@ -175,7 +177,7 @@ Policy tests include lead precedence, fetch of a tiny sqlite over HTTP, and Refr
 
 1. Cap, **no lead**: set MAX above the posted limit; the car must decelerate toward that MAX (Accel 5 ≈ 0.80 m/s²). Raising the stalk cannot exceed the cap.
 2. Cap/Follow, **slower lead**: the car still slows for radar `leadOne`.
-3. Follow, Lookahead Normal, **no lead**. On a known drop (50→30), Accel **1 and 10 must feel the same brake**, and ego should be near 30 at the sign (not still ~42). On a known rise (35→45, after GPS is on the faster way), Accel 1 climbs lazily and Accel 10 quicker — the pedal target and the car must actually speed up. Lookahead = Off: MAX and decel start only after GPS matches the slower way.
+3. Follow, Lookahead Normal, **no lead**. On a known drop (50→30), Accel **1 and 10 must feel the same brake**, and ego should be near 30 at the sign (not still ~42). On a known rise (35→45, after GPS is on the faster way), Accel 1 climbs lazily and Accel 10 quicker — the pedal target and the car must actually speed up. Lookahead = Off: MAX and decel start only after GPS matches the slower way. On a continuous highway through a grid of cross streets (US 12 SE Benson→DeGraff is the example, not a special case), MAX must **not** ease for a side street or a ~50 ft stub; it may ease for a real on-route 60→50→30 that lasts longer than 15 m.
 4. Drive toward a **higher** limit: MAX must **not** rise until you are on the faster segment.
 5. Follow: set 55 in a 65 — MAX stays 55 until the posted limit changes; set 45 in a 65 — same. Posted 65→45 (or 65→70), driving or long-paused, rebases MAX to the new posted. Brake pause then one SET resumes the held MAX (55 in a 65, or the rebased posted). Double SET with maps on takes current posted; maps off / unknown posted takes current traveled speed. GPS glitch must not wipe sticky or invent a posted. Double-pull engage with a valid limit: MAX **and** the car start at the posted limit immediately.
 6. Top-middle live speed must match wheel/ESP (about 45 if that is actual), not MAX (56) and not LIMIT.
