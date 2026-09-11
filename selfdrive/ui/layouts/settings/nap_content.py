@@ -22,7 +22,15 @@ FOLLOW_DISTANCE_LABELS = [str(i) for i in FOLLOW_DISTANCE_VALUES]
 FOLLOW_DISTANCE_DEFAULT = 4
 
 NAP_SPEED_SIGN_LOG = "NAPSpeedSignLog"
+NAP_DRIVER_LAT_HANDOFF = "NAPDriverLatHandoff"
 NAP_FORCE_OFFROAD = "NAPForceOffroad"
+DRIVER_LAT_HANDOFF_DESCRIPTION = (
+  "Default On. A firm, gradual, sustained hand push (~0.85 Nm for "
+  "0.25 s) yields NAP lateral; long stays on. Short gravel / "
+  "crosswind spikes should not trip. Gray chrome means lat yielded "
+  "and NAP stops fighting the wind — turn Off if that happens on "
+  "rumble. Off = stock lat, no yield."
+)
 FORCE_OFFROAD_DESCRIPTION = (
   "WARNING: Forces the device offroad and disengages openpilot even while "
   "moving. Drive manually — no steering or accel assist while this is on. "

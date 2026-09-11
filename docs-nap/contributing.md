@@ -13,6 +13,8 @@ Pull requests welcome against `nap-dev`. For anything non-trivial, open an issue
 
 Do not push sunnypilot-specific code (MADS, `CP_SP`, etc.) to `nap-dev` or `nap-alpha`.
 
+Soft Lateral Handoff (`NAPDriverLatHandoff`) defaults **On**. Turn it **Off** in Settings → NAP if gravel or crosswind still false-yields. Do not change the brake silent long-pause / one-SET path when touching this.
+
 ## Submodules
 
 `panda` and `opendbc_repo` use NotAutopilot forks. After checkout:
