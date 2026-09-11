@@ -86,7 +86,9 @@ Panda firmware must be flashed after this safety change. Software update / on-de
 
 ## Driver-wheel temporary lateral handoff
 
-**Default On.** Settings → NAP → Soft Lateral Handoff can be turned **Off**. Yield is a **sustained driver push** with a hand on the rim (generally avoiding something), not gravel spike trains / wind / road-crown false pressure. #71–#75 tuned torsion + hands-on hold; those hold / 1 s resume rules stay. #78 also required aligned steer rate and treated high tracking error without that rate as a disturbance — that blocked the on-car *fight the wheel* dodge (isometric push, high path error, low rate) until EPAS `handsOnLevel >= 2` / `STEER_THRESHOLD` hard-cancelled. Soft yield must win **before** that hard path.
+**Default On.** Settings → NAP → Soft Lateral Handoff can be turned **Off**. Yield is a **light purposeful push** with a hand on the rim that **frees the EPS** (generally avoiding something), not gravel spike trains / wind / road-crown false pressure.
+
+#79 still felt like wrestling for two reasons: (1) OP kept **full lateral authority until the 0.70 Nm / 140 ms debounce completed**, and (2) after “yield” it kept `latActive=True` and commanded **measured angle** (`apply_lat_authority(0)` / `DAS_steeringControlType=1`). That is closed-loop follow-the-rim — the driver could nudge off-path but OP was still holding/steering. Yield now reuses the **blinker lat-pause EPS release** (`latActive` false → `DAS_steeringControlType=0`). Hands stay detected via `EPAS_handsOnLevel`. Resume is still pin-to-wheel + **1 s blend**; hands still on stay yielded (do not blend onto the model). Parking-lot blinker soft re-entry is unchanged.
 
 Pothole / obstacle dodges — including fighting OP to leave the path — without a full disengage, unless the driver then emergency-brakes (full cancel). Software-only; panda hands-on ≥ 2 and `STEER_THRESHOLD` are unchanged.
 
@@ -107,26 +109,28 @@ Pothole / obstacle dodges — including fighting OP to leave the path — withou
 
 All of the following, consecutive frames (gaps reset — gravel spike trains do not accumulate):
 
-1. `|torsion| >= 0.70 Nm` (70% of `STEER_THRESHOLD`; still above 0.5 Nm rumble, still below `steeringPressed` 1.0 Nm)
-2. `handsOnLevel >= 1` (hand on the rim)
-3. Held for **140 ms** at the 0.70 Nm floor. Fewer frames as torsion approaches `STEER_THRESHOLD` (down to **80 ms** at 1.0 Nm) so the soft path beats hands-on ≥ 2. Never below 80 ms (5-frame gravel bursts stay rejected).
+1. `|torsion| >= 0.55 Nm` (55% of `STEER_THRESHOLD`; a light purposeful push, still below `steeringPressed` 1.0 Nm)
+2. `handsOnLevel >= 1` (hand on the rim) — required so rumble / wind with hands off or resting does not free-yield
+3. Held for **90 ms** at the 0.55 Nm floor. Fewer frames as torsion approaches `STEER_THRESHOLD` (down to **60 ms** at 1.0 Nm) so the soft path beats hands-on ≥ 2. Never below 60 ms (5-frame gravel bursts stay rejected).
 
-Do **not** require high steer rate. An isometric fight (firm torsion, wheel barely moving, high tracking error) **must** yield. Rate may stay as a weak wind filter only when torsion is **below** 0.70 Nm — it never blocks a firm push and never promotes low torsion to intent.
+Do **not** require high steer rate. An isometric fight (firm torsion, wheel barely moving, high tracking error) **must** yield. Rate may stay as a weak wind filter only when torsion is **below** 0.55 Nm — it never blocks a firm push and never promotes low torsion to intent.
 
-Disturbance veto only when torsion is **below** the yield trigger: `|desired − measured| curvature >= 0.0025` **and** `|torsion| < 0.70 Nm` is wind / crown — do not yield. High torsion is intent even if tracking error is large (driver is leaving the path).
+Disturbance veto only when torsion is **below** the yield trigger: `|desired − measured| curvature >= 0.0025` **and** `|torsion| < 0.55 Nm` is wind / crown — do not yield. High torsion is intent even if tracking error is large (driver is leaving the path).
 
-Release hysteresis stays **0.40 Nm** (press-latch only). Do **not** go back to raw 0.5 Nm / 80 ms torsion-only. ≥ 2 stays the hard/safety path.
+Release hysteresis stays **0.40 Nm** (press-latch only). Do **not** go back to raw 0.5 Nm / 80 ms *torsion-only* (no hands gate) — that was #71 rumble. ≥ 2 stays the hard/safety path.
 
 ### Behavior (lat yield)
 
-1. OP engaged and providing lateral. Intent detected → lateral authority goes to 0. `carControl.latActive` stays **true** (no `LaC.reset`, no snap in `apply_steer_angle_limits_vm`). While yielded, `desired_curvature` is **pinned to measured** so LaC cannot run ahead of the wheel. Longitudinal and `cruiseEnabled` stay up. Stalk cancel / doors / hands-on ≥ 2 still hard-disengage.
-2. Stay at 0% while still maneuvering: **`EPAS_handsOnLevel >= 1`** **or** a renewed **≥ 0.70 Nm** firm push. Mid-dodge torsion dips must **not** start the hand-back. Rate is not a hold signal (caster / road after release).
-3. After hands go to **0** for **~80 ms**, a **1.0 s** smoothstep (`t²(3−2t)`) blends authority 0 → 1. `QUIET_WAIT_S` stays 0. The pin lifts when blend starts. `apply_lat_authority` is skipped at authority=1.
-4. Renewed **hands-on** or a firm push ≥ 0.70 Nm during the blend immediately yields (rate agreement is not re-required mid-maneuver). Hands off ~80 ms and the 1 s blend retries.
-5. Yield smoothing: authority drops in one 10 ms cycle; the Tesla VM limiter still slews the CAN angle. Hand-back is the S-curve, not a step.
+**Yield = free wheel, not follow-angle.** Same EPS release as blinker lat-pause.
+
+1. OP engaged and providing lateral. Intent detected → `carControl.latActive` goes **false**. Pre-AP carcontroller sends `DAS_steeringControlType=0` and `apply_steer_angle_limits_vm` snaps `apply_angle` to measured (stock inactive). The driver steers the car; OP is not angle-controlling to the rim. `desired_curvature` is **pinned to measured** so resume starts from the wheel. Longitudinal and `cruiseEnabled` stay up. Stalk cancel / doors / hands-on ≥ 2 still hard-disengage. An occasional light torsion probe is OK to confirm he is still there — hold is `EPAS_handsOnLevel`, not continuous angle-hold.
+2. Stay yielded (EPS free) while still maneuvering: **`EPAS_handsOnLevel >= 1`** **or** a renewed **≥ 0.55 Nm** push. Mid-dodge torsion dips must **not** start the hand-back. Rate is not a hold signal (caster / road after release).
+3. After hands go to **0** for **~80 ms**, lat comes back and a **1.0 s** smoothstep (`t²(3−2t)`) blends authority 0 → 1. `QUIET_WAIT_S` stays 0. The pin lifts when blend starts. `apply_lat_authority` is skipped at authority=1 and while lat is down.
+4. Renewed **hands-on** or a firm push ≥ 0.55 Nm during the blend immediately re-yields (EPS free again). Hands off ~80 ms and the 1 s blend retries.
+5. Hand-back is the S-curve from the wheel, not a grab onto the model. Blinker rising-edge uses the same 1 s blend.
 6. HUD: `controlsState.latHandoffPaused` stays set until authority ≥ **0.70**. Gray **override**, no sounds. Green + on-screen path is not enough — the wheel must unwind onto that path.
 
-Blinker tip/hold ALC, lat pause, long drop + one SET, and panda blinker latch are unchanged. Soft-yield is **gated off** during a blinker lat-pause. Resume still **pins to the wheel while lat is down** and starts the same **1 s blend** on the rising edge.
+Blinker tip/hold ALC, lat pause, long drop + one SET, and panda blinker latch are unchanged. Soft-yield is **gated off** during a blinker lat-pause. Resume still **pins to the wheel while lat is down** and starts the same **1 s blend** on the rising edge. If a hand is still on the rim at that rising edge, stay yielded (free wheel) instead of blending toward the model.
 
 ### Emergency / hard brake → full OP disable
 
@@ -145,8 +149,9 @@ When that fires, card calls `hard_cancel_session()`: `cruiseEnabled=False`, long
 
 ### Where to look
 
-- `selfdrive/controls/lib/driver_lateral_handoff.py` — firm-push detector (torsion + hands; rate not an entry gate), low-torsion disturbance veto, emergency definition, hands-on hold, smoothstep, curvature pin
-- `selfdrive/controls/controlsd.py` — pin `desired_curvature` while yielded; pass torsion / rate / hands / tracking error / digital brake / aEgo; cancel on emergency
+- `selfdrive/controls/lib/driver_lateral_handoff.py` — firm-push detector (torsion + hands; rate not an entry gate), `lat_active_after_handoff` (yield = free EPS), low-torsion disturbance veto, emergency definition, hands-on hold, smoothstep, curvature pin
+- `selfdrive/controls/controlsd.py` — drop `CC.latActive` while yielded; pin `desired_curvature` while lat down; pass torsion / rate / hands / tracking error / digital brake / aEgo; cancel on emergency
+- `opendbc_repo/opendbc/car/tesla/carcontroller.py` — `DAS_steeringControlType` from `CC.latActive` (0 = EPS free, same as blinker pause)
 - `selfdrive/car/tesla/preap_blinker_lat_pause.py` — publish hands-on + digital brake; card-local handoff; `hard_cancel_session`
 - `selfdrive/ui/ui_state.py` — gray override chrome while paused
 - `selfdrive/controls/lib/tests/test_driver_lateral_handoff.py`
@@ -156,7 +161,7 @@ When that fires, card calls `hard_cancel_session()`: `cruiseEnabled=False`, long
 Do these at a quiet road / parking lot first, then a known pothole stretch. Pedal or no-pedal both OK. Do **not** expect a panda flash.
 
 1. **Engage** with a double-pull. Confirm green engaged chrome and that long/cruise is holding speed.
-2. **Intentional dodge** (hands on, sustained torsion ≥ ~0.70 Nm for ~0.14 s — the wheel does **not** have to be moving). Includes fighting OP to leave the path (high tracking error, low rate). Lateral should go slack **before** a hard yank / hands-on ≥ 2. Speed control must stay on. HUD should go **gray override**, not “Steering Disengaged”, and must not play the disengage chime.
+2. **Intentional dodge** (hands on, light purposeful push ≥ ~0.55 Nm for ~90 ms — the wheel does **not** have to be moving). Includes fighting OP to leave the path (high tracking error, low rate). The wheel should **just let go** (EPS free, not still holding/steering to the rim) **before** a hard yank / hands-on ≥ 2. Speed control must stay on. HUD should go **gray override**, not “Steering Disengaged”, and must not play the disengage chime.
 3. **Hold** through a pothole dodge (hands still on the rim). Authority must stay yielded even if torsion dips.
 4. **Release.** Hands clearly off the rim. After ~80 ms the wheel eases back onto the path over about **one second**. When green returns, the wheel must follow the on-screen path.
 5. **Re-grab during the blend.** Hands back on or a firm push: yield again. Hands off ~80 ms and the 1 s blend retries.
