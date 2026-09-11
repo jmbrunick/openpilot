@@ -154,6 +154,7 @@ pytest selfdrive/mapd/tests/test_map_speed_policy.py \
   selfdrive/mapd/tests/test_local_refresh.py \
   selfdrive/car/tesla/tests/test_preap_sticky_max.py \
   selfdrive/car/tesla/tests/test_preap_blinker_lat_pause.py \
+  selfdrive/selfdrived/tests/test_preap_regen.py \
   selfdrive/controls/lib/tests/test_driver_lateral_handoff.py -q
 ```
 

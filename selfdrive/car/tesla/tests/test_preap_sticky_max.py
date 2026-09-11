@@ -11,6 +11,7 @@ from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import install_blinke
 from openpilot.selfdrive.controls.lib.blinker_lateral_pause import LAMP_OFF_DEBOUNCE_S
 from openpilot.selfdrive.mapd.constants import MODE_FOLLOW, MODE_OFF
 from openpilot.selfdrive.mapd.map_speed_policy import MapCruiseHold, decide_map_cruise
+from openpilot.selfdrive.selfdrived.preap_regen import PreAPChimeState, update_preap_chimes
 
 
 def _engaged(*, double_pull=True, pedal_kph=55.0 * CV.MPH_TO_KPH):
@@ -236,6 +237,61 @@ def test_fsm_plus_policy_maps_double_set_uses_posted():
   dec = _overlay(hold, eng, posted=posted, traveled_kph=40 * CV.MPH_TO_KPH)
   assert not dec.sticky
   assert abs(dec.seed_kph - posted) < 1e-6
+
+
+def _chime_for(eng, prev):
+  return update_preap_chimes(
+    lat_engaged=bool(eng.cruiseEnabled),
+    long_engaged=bool(eng.enableLongControl),
+    prev=prev,
+  )
+
+
+def test_brake_pause_does_not_chime_disengage_or_resume_fanfare():
+  install_blinker_lat_pause()
+  eng = _engaged()
+  prev = PreAPChimeState(lat_engaged=True, long_engaged=True)
+  _buttons(eng, brake=True, t_ms=2000)
+  chimes, prev = _chime_for(eng, prev)
+  assert eng.cruiseEnabled
+  assert not eng.enableLongControl
+  assert not chimes.long_disengage
+  assert not chimes.long_engage
+  assert prev.long_paused
+
+  _buttons(eng, brake=False, t_ms=3000)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=4000)
+  chimes, prev = _chime_for(eng, prev)
+  assert eng.enableLongControl
+  assert getattr(eng, "_nap_set_resume_long", False)
+  assert not chimes.long_engage
+  assert not chimes.long_disengage
+  assert not prev.long_paused
+
+
+def test_blinker_turn_pause_does_not_chime_disengage():
+  install_blinker_lat_pause()
+  eng = _engaged()
+  prev = PreAPChimeState(lat_engaged=True, long_engaged=True)
+  eng._nap_left_blinker = True
+  eng.handle_steering_disengage(False)
+  chimes, prev = _chime_for(eng, prev)
+  assert eng.cruiseEnabled
+  assert not eng.enableLongControl
+  assert not chimes.long_disengage
+  assert prev.long_paused
+
+
+def test_cancel_after_engaged_still_chimes_long_disengage():
+  install_blinker_lat_pause()
+  eng = _engaged()
+  prev = PreAPChimeState(lat_engaged=True, long_engaged=True)
+  _buttons(eng, cruise_buttons=CruiseButtons.CANCEL, t_ms=2000)
+  chimes, _ = _chime_for(eng, prev)
+  assert not eng.cruiseEnabled
+  assert not eng.enableLongControl
+  assert chimes.long_disengage
+  assert chimes.lat_disengage
 
 
 def test_handoff_module_does_not_drop_long():

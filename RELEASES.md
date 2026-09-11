@@ -4,7 +4,7 @@ NAP driver lat handoff (2026-09-11)
 
 NAP sticky MAX (2026-09-11)
 ========================
-* Pedal mode: brake or a held/latched driver-turn blinker pauses longitudinal only. Held MAX is remembered. One SET resumes long at that MAX (already rebased if posted changed). Double SET forgets sticky: maps on + posted known → current posted; maps off / unknown → current traveled speed. Same double SET is initial engage. Maps never overwrite sticky every frame; GPS drop does not invent or wipe posted. Tip ALC does not use this pause. Hard cancel (stalk / door / gear / steer fault / hands-on ≥ 2) still fully disengages. No-pedal stock CC is unchanged. Soft lat handoff unchanged.
+* Pedal mode: brake or a held/latched driver-turn blinker pauses longitudinal only. Held MAX is remembered. That pause is **silent** — no “Pedal Cruise Disengaged” / disengage chime. One SET resumes long at that MAX (already rebased if posted changed) without a full-stack engage fanfare. Double SET forgets sticky: maps on + posted known → current posted; maps off / unknown → current traveled speed. Same double SET is initial engage. Maps never overwrite sticky every frame; GPS drop does not invent or wipe posted. Tip ALC does not use this pause. Hard cancel (stalk / door / gear / steer fault / hands-on ≥ 2) still fully disengages and still plays the disengage prompt. No-pedal stock CC is unchanged. Soft lat handoff unchanged.
 
 NAP speed-sign log (2026-09-11)
 ========================
