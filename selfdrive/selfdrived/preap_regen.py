@@ -10,12 +10,19 @@ follows FSM intent (enableLongControl), not interceptor handshake, so a
 stalk engage chimes immediately. Gas override is not an engagement edge:
 enableLongControl stays true while the driver is on the pedal, so press
 and release are silent.
+
+A brake or driver-turn long drop that keeps cruiseEnabled is a silent
+pause: do not fire pedalCruiseDisabled / AudibleAlert.disengage. One SET
+that only restores long from that pause is also quiet. Full cancel
+(session down) still chimes disengage.
 """
 import math
 from typing import NamedTuple
 
-from openpilot.common.realtime import DT_CTRL
 from opendbc.car.tesla.preap.interface import get_preap_accel_limits
+
+# Match openpilot.common.realtime.DT_CTRL without importing hardware.
+DT_CTRL = 0.01
 
 # Evidence accumulates in a saturating up/down counter so a single MPC sample
 # cannot flash a driver prompt, while brief dropouts do not restart the clock.
@@ -29,6 +36,7 @@ REGEN_DEMAND_CLEAR_SPEED = 1.0  # m/s
 class PreAPChimeState(NamedTuple):
   lat_engaged: bool = False
   long_engaged: bool = False
+  long_paused: bool = False
 
 
 class PreAPChimes(NamedTuple):
@@ -40,14 +48,34 @@ class PreAPChimes(NamedTuple):
 
 def update_preap_chimes(*, lat_engaged: bool, long_engaged: bool,
                         prev: PreAPChimeState) -> tuple[PreAPChimes, PreAPChimeState]:
-  """Rising/falling edges for Pre-AP lat and long driver prompts."""
+  """Rising/falling edges for Pre-AP lat and long driver prompts.
+
+  Long-only drop while the session stays up (brake / driver-turn pause)
+  is silent. Long-only resume from that pause is silent. Initial second
+  pull and full re-engage still chime long-engage. Session-down long drop
+  still chimes long-disengage (pedalCruiseDisabled).
+  """
+  silent_pause = (
+    prev.lat_engaged and lat_engaged
+    and prev.long_engaged and not long_engaged
+  )
+  long_rising = long_engaged and not prev.long_engaged
+  quiet_resume = long_rising and prev.long_paused and lat_engaged
   chimes = PreAPChimes(
     lat_engage=lat_engaged and not prev.lat_engaged,
     lat_disengage=(not lat_engaged) and prev.lat_engaged,
-    long_engage=long_engaged and not prev.long_engaged,
-    long_disengage=(not long_engaged) and prev.long_engaged,
+    long_engage=long_rising and not quiet_resume,
+    long_disengage=(not long_engaged) and prev.long_engaged and not silent_pause,
   )
-  return chimes, PreAPChimeState(lat_engaged, long_engaged)
+  if not lat_engaged:
+    long_paused = False
+  elif silent_pause:
+    long_paused = True
+  elif long_engaged:
+    long_paused = False
+  else:
+    long_paused = prev.long_paused
+  return chimes, PreAPChimeState(lat_engaged, long_engaged, long_paused)
 
 
 class RegenDemandCheck:

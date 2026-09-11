@@ -224,12 +224,23 @@ class Car:
           self.v_cruise_helper.initialize_v_cruise(self.CS_prev, self.experimental_mode)
       else:
         # Pre-AP pedal mode owns set-speed via pedal_speed_kph. Overlay OSM
-        # onto vCruise/MAX only while pedalLongActive (second pull). The first
+        # onto vCruise/MAX for the OP session (cruiseEnabled), including a
+        # brake / driver-turn long pause so sticky MAX can rebase. The first
         # pull is lateral-only and must not seed or arm a sticky hold.
         raw_kph = float(CS.cruiseState.speed * CV.MS_TO_KPH)
         long_active = bool(getattr(CS, 'pedalLongActive', False))
         long_active_prev = bool(getattr(self.CS_prev, 'pedalLongActive', False))
         engage_rising = long_active and not long_active_prev
+        session_enabled = bool(getattr(CS.cruiseState, 'enabled', False))
+        resume_held, take_speed_now = self._preap_set_events()
+        # Pause publishes cruiseState.speed as ego. Keep the held MAX instead.
+        if not long_active and self._map_hold.held_max_kph is not None:
+          raw_kph = float(self._map_hold.held_max_kph)
+        traveled_kph = float(CS.vEgo) * CV.MS_TO_KPH
+        has_held = self._map_hold.held_max_kph is not None
+        session_engaged = bool(session_enabled) and (
+          long_active or has_held or resume_held or take_speed_now
+        )
         stalk_pressed = self._preap_stalk_set_pressed(CS)
         posted_kph = None
         map_kph = None
@@ -239,13 +250,17 @@ class Car:
           posted_kph = float(md.speedLimit) * CV.MS_TO_KPH + self._map_speed_offset_kph
         dec = decide_map_cruise(
           self._map_hold,
-          engaged=long_active,
+          engaged=session_engaged,
           mode=self._map_speed_mode,
           raw_kph=raw_kph,
           posted_kph=posted_kph,
           engage_rising=engage_rising,
           now=time.monotonic(),
           stalk_pressed=stalk_pressed,
+          take_speed_now=take_speed_now,
+          resume_held=resume_held,
+          traveled_kph=traveled_kph,
+          long_active=long_active,
         )
         if map_valid and md is not None and not dec.sticky:
           # Any posted decrease: kin+110 m ease, never assign the new limit in one shot.
@@ -287,16 +302,20 @@ class Car:
             map_kph,
             mode=self._map_speed_mode,
             offset_kph=self._map_speed_offset_kph,
-            engaged=long_active,
+            engaged=session_engaged,
             op_long_software_cruise=True,
             driver_override=dec.follow_override,
           )
         # Write engage/posted/stalk seed, or when HUD MAX rose. Never write
-        # the same sticky MAX every frame.
-        if long_active and should_write_preap_pedal(dec.seed_kph, preap_v_cruise_kph, self._last_pedal_kph):
+        # the same sticky MAX every frame. Pause still writes a rebase /
+        # resume seed onto pedal_speed so one SET keeps the held MAX.
+        write_max = long_active or resume_held or take_speed_now or (
+          session_engaged and dec.seed_kph is not None
+        )
+        if write_max and should_write_preap_pedal(dec.seed_kph, preap_v_cruise_kph, self._last_pedal_kph):
           self._write_preap_pedal_speed(CS, preap_v_cruise_kph)
           self._last_pedal_kph = float(preap_v_cruise_kph)
-        elif not long_active:
+        elif not session_enabled:
           self._last_pedal_kph = None
         self.v_cruise_helper.v_cruise_kph_last = self.v_cruise_helper.v_cruise_kph
         self.v_cruise_helper.v_cruise_kph = preap_v_cruise_kph
@@ -313,6 +332,21 @@ class Car:
     CS.vCruiseCluster = float(self.v_cruise_helper.v_cruise_cluster_kph)
 
     return CS, RD
+
+  def _preap_set_events(self) -> tuple[bool, bool]:
+    """Consume one-shot SET flags from the Pre-AP engagement patch.
+
+    resume_held: one SET after brake / driver-turn long pause.
+    take_speed_now: double SET / initial engage (forget sticky).
+    """
+    inner = getattr(self.CI, 'CS', None)
+    eng = getattr(inner, 'engagement', None) if inner is not None else None
+    resume = bool(getattr(eng, '_nap_set_resume_long', False))
+    take = bool(getattr(eng, '_nap_set_take_speed_now', False))
+    if eng is not None:
+      eng._nap_set_resume_long = False
+      eng._nap_set_take_speed_now = False
+    return resume, take
 
   @staticmethod
   def _preap_stalk_set_pressed(CS) -> bool:
@@ -342,6 +376,7 @@ class Car:
     eng = getattr(inner, 'engagement', None)
     if eng is not None and hasattr(eng, 'pedal_speed_kph'):
       eng.pedal_speed_kph = kph
+      eng._nap_held_max_kph = kph
 
   def state_publish(self, CS: car.CarState, RD: structs.RadarDataT | None):
     """carState and carParams publish loop"""
