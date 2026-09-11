@@ -23,6 +23,7 @@ from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   RATE_SNA_ABS_DEG_S,
   SMOOTHSTEP_MAX_SLOPE,
   SOFT_YIELD_DEBOUNCE_FRAMES,
+  SOFT_YIELD_FAST_DEBOUNCE_FRAMES,
   SOFT_YIELD_RELEASE_NM,
   SOFT_YIELD_TRIGGER_NM,
   STEER_RATE_QUIET_DEG_S,
@@ -42,6 +43,7 @@ from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   hud_engaged_status,
   is_disturbance,
   pin_desired_curvature_to_measured,
+  required_press_frames,
   smoothstep,
   torque_rate_aligned,
 )
@@ -76,7 +78,7 @@ def _step(h, *, torque=0.0, rate=0.0, engaged=True, lat=True, alc=False,
 
 def _yield(h, torque=0.85, rate=25.0, hands_on=1):
   out = None
-  for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES):
+  for _ in range(max(SOFT_YIELD_DEBOUNCE_FRAMES, required_press_frames(torque))):
     out = _step(h, torque=torque, rate=rate, hands_on=hands_on)
   assert out is not None
   assert out.yielded
@@ -112,6 +114,13 @@ def test_thresholds_are_derived_from_real_steering_pressed():
   assert SOFT_YIELD_RELEASE_NM == 0.40 * float(STEER_THRESHOLD)
   assert SOFT_YIELD_RELEASE_NM < SOFT_YIELD_TRIGGER_NM
   assert SOFT_YIELD_DEBOUNCE_FRAMES == 14
+  assert SOFT_YIELD_FAST_DEBOUNCE_FRAMES == 8
+  assert SOFT_YIELD_FAST_DEBOUNCE_FRAMES < SOFT_YIELD_DEBOUNCE_FRAMES
+  assert SOFT_YIELD_FAST_DEBOUNCE_FRAMES > 5  # gravel spike bursts
+  assert required_press_frames(SOFT_YIELD_TRIGGER_NM) == SOFT_YIELD_DEBOUNCE_FRAMES
+  assert required_press_frames(float(STEER_THRESHOLD)) == SOFT_YIELD_FAST_DEBOUNCE_FRAMES
+  assert required_press_frames(0.85) < SOFT_YIELD_DEBOUNCE_FRAMES
+  assert required_press_frames(0.85) > SOFT_YIELD_FAST_DEBOUNCE_FRAMES
   assert PREAP_FINGERPRINT == "TESLA_MODEL_S_PREAP"
   assert QUIET_WAIT_S == 0.0
   assert HANDS_ON_HOLD_LEVEL == 1
@@ -192,14 +201,15 @@ def test_below_threshold_road_noise_does_not_yield():
 def test_just_below_trigger_does_not_yield():
   h = _new()
   for _ in range(100):
-    out = _step(h, torque=SOFT_YIELD_TRIGGER_NM - 0.01)
+    out = _step(h, torque=SOFT_YIELD_TRIGGER_NM - 0.01, rate=40.0, hands_on=1)
   assert not out.yielded
   assert out.authority == 1.0
 
 
 def test_short_spike_is_debounced():
   h = _new()
-  for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES - 1):
+  needed = required_press_frames(1.2)
+  for _ in range(needed - 1):
     out = _step(h, torque=1.2, rate=30.0, hands_on=1)
   assert not out.yielded
   out = _step(h, torque=0.0)
@@ -230,13 +240,13 @@ def test_old_half_nm_sustained_does_not_yield():
 
 
 def test_gentle_070_for_140ms_yields():
-  """0.70 Nm is still the torsion floor; intent also needs rate + hands."""
+  """0.70 Nm + hands for 140 ms yields; rate is not required."""
   h = _new()
   out = None
   for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES - 1):
-    out = _step(h, torque=0.70, rate=12.0, hands_on=1)
+    out = _step(h, torque=0.70, rate=0.0, hands_on=1)
     assert not out.yielded
-  out = _step(h, torque=0.70, rate=12.0, hands_on=1)
+  out = _step(h, torque=0.70, rate=0.0, hands_on=1)
   assert out.yielded
   assert out.authority == 0.0
 
@@ -787,13 +797,29 @@ def test_gravel_like_spikes_do_not_yield_even_with_hands():
   assert out.authority == 1.0
 
 
-def test_sustained_torsion_without_rate_does_not_yield():
-  """Crown / resting pressure: torque without a matching turn."""
+def test_fight_the_wheel_low_rate_high_error_yields():
+  """#78 regression: isometric fight must soft-yield, not hard-cancel.
+
+  Sustained torsion + hands, low steer rate, high tracking error.
+  On-car gravel dodge: OP holds the path (error high) while the driver
+  pushes without the wheel moving much. Rate-gate + disturbance veto
+  used to block yield until hands-on >= 2 / STEER_THRESHOLD.
+  """
   h = _new()
-  for _ in range(int(1.0 / DT)):
-    out = _step(h, torque=0.90, rate=0.0, hands_on=1)
-  assert not out.yielded
-  assert out.authority == 1.0
+  torque = 0.80
+  needed = required_press_frames(torque)
+  out = None
+  for i in range(needed):
+    out = _step(h, torque=torque, rate=2.0, hands_on=1, tracking_error=0.02)
+    if i < needed - 1:
+      assert not out.yielded
+  assert out.yielded
+  assert out.authority == 0.0
+  assert out.ui_paused
+  assert not out.emergency_cancel
+  assert hands_still_on(1)
+  assert 1 < HANDS_ON_DISENGAGE_LEVEL
+  assert torque < float(STEER_THRESHOLD)
 
 
 def test_sustained_torsion_without_hands_does_not_yield():
@@ -804,27 +830,44 @@ def test_sustained_torsion_without_hands_does_not_yield():
   assert out.authority == 1.0
 
 
-def test_rate_opposite_torsion_does_not_yield():
+def test_rate_does_not_block_firm_push():
+  """Opposite / SNA / zero rate must not veto a firm sustained push."""
+  h = _new()
+  out = _yield(h, torque=0.90, rate=-20.0, hands_on=1)
+  assert out.yielded
+  assert out.authority == 0.0
+
+  h = _new()
+  out = _yield(h, torque=0.90, rate=0.0, hands_on=1)
+  assert out.yielded
+
+  h = _new()
+  needed = required_press_frames(1.0)
+  out = None
+  for _ in range(needed):
+    out = _step(h, torque=1.0, rate=4095.0, hands_on=1)
+  assert out.yielded
+  assert not torque_rate_aligned(1.0, 4095.0)
+
+
+def test_low_torsion_aligned_rate_does_not_yield():
+  """Rate is a weak wind filter only — it must not promote low torsion."""
   h = _new()
   for _ in range(int(1.0 / DT)):
-    out = _step(h, torque=0.90, rate=-20.0, hands_on=1)
+    out = _step(h, torque=0.45, rate=30.0, hands_on=1, tracking_error=0.0)
   assert not out.yielded
   assert out.authority == 1.0
 
 
-def test_sna_rate_does_not_count_as_intent():
-  h = _new()
-  for _ in range(int(0.5 / DT)):
-    out = _step(h, torque=1.0, rate=4095.0, hands_on=1)
-  assert not out.yielded
-  assert not torque_rate_aligned(1.0, 4095.0)
-
-
 def test_wind_disturbance_high_effort_low_torsion_does_not_yield():
-  """Controller fighting wind: high tracking error, no matching torsion."""
+  """Controller fighting wind: high tracking error, torsion below trigger."""
   h = _new()
   assert is_disturbance(
     torque_nm=0.2, rate_deg=4.0, tracking_error=DISTURBANCE_CURVATURE_ERR)
+  assert is_disturbance(
+    torque_nm=0.45, rate_deg=30.0, tracking_error=0.01)
+  assert not is_disturbance(
+    torque_nm=0.80, rate_deg=2.0, tracking_error=0.02)
   for _ in range(int(1.5 / DT)):
     out = _step(h, torque=0.25, rate=6.0, hands_on=1,
                 tracking_error=0.01)
@@ -833,7 +876,7 @@ def test_wind_disturbance_high_effort_low_torsion_does_not_yield():
 
 
 def test_matching_intent_is_not_blocked_by_tracking_error():
-  """A real dodge leaves the path — high error with matching torsion is OK."""
+  """A real dodge leaves the path — high error with firm torsion is OK."""
   h = _new()
   assert not is_disturbance(
     torque_nm=0.80, rate_deg=20.0, tracking_error=0.02)
@@ -841,6 +884,33 @@ def test_matching_intent_is_not_blocked_by_tracking_error():
   assert out.yielded
   out = _step(h, torque=0.80, rate=20.0, hands_on=1, tracking_error=0.02)
   assert out.yielded
+
+
+def test_soft_yield_below_hands_on_2_hard_cancel():
+  """Soft path must win at hands=1 and torsion below STEER_THRESHOLD."""
+  h = _new()
+  out = _yield(h, torque=0.85, rate=0.0, hands_on=1)
+  assert out.yielded
+  assert out.authority == 0.0
+  assert 0.85 < float(STEER_THRESHOLD)
+  assert HANDS_ON_HOLD_LEVEL == 1
+  assert HANDS_ON_DISENGAGE_LEVEL == 2
+
+
+def test_near_steer_threshold_yields_before_full_140ms():
+  """As torsion approaches 1.0 Nm, require fewer than 140 ms."""
+  h = _new()
+  torque = 0.98
+  needed = required_press_frames(torque)
+  assert needed < SOFT_YIELD_DEBOUNCE_FRAMES
+  assert needed >= SOFT_YIELD_FAST_DEBOUNCE_FRAMES
+  out = None
+  for _ in range(needed - 1):
+    out = _step(h, torque=torque, rate=0.0, hands_on=1)
+    assert not out.yielded
+  out = _step(h, torque=torque, rate=0.0, hands_on=1)
+  assert out.yielded
+  assert out.authority == 0.0
 
 
 def test_hands_on_hold_and_hands_off_blend_still_work_after_intent_yield():

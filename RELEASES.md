@@ -1,5 +1,9 @@
 NAP driver lat handoff (2026-09-11)
 ========================
+* Soft lateral handoff is **default On**. Yield on a **sustained driver push + hands** (`|torsion| >= 0.70 Nm` for ~140 ms consecutive, `handsOnLevel >= 1`). Steer rate is **not** required — an isometric fight (low rate, high tracking error) soft-yields instead of holding until hands-on ≥ 2 / `STEER_THRESHOLD` hard cancel. Near 1.0 Nm the consecutive bar drops toward 80 ms so the soft path wins first. Disturbance veto only when torsion is **below** 0.70 Nm (wind / crown). Gravel spike trains still gap-reset. Hands-on hold + 1 s hands-off blend + curvature pin unchanged. **Emergency / hard brake** while yielded or within 2 s of yield entry (digital Applied + `aEgo <= −3.5 m/s²` for 80 ms) fully cancels OP. Light brake is still sticky-MAX silent pause + one SET. Settings → NAP → Soft Lateral Handoff can turn **Off**. Panda / hands-on ≥ 2 unchanged.
+
+NAP driver lat handoff (2026-09-11)
+========================
 * Soft lateral handoff is **default On** and now yields only on **driver intent** to turn the wheel: sustained torsion (≥ 0.70 Nm / 140 ms) **and** matching steer rate **and** hands on the rim. Gravel spikes, opposite-rate pressure, and high tracking error without matching torsion (wind / crown) do not yield. Hands-on hold + 1 s hands-off blend unchanged. **Emergency / hard brake** while yielded or within 2 s of yield entry (digital Applied + `aEgo <= −3.5 m/s²` for 80 ms) fully cancels OP with the normal disengage chime — not the silent long pause. Light brake is still sticky-MAX silent pause + one SET. Settings → NAP → Soft Lateral Handoff can turn **Off**. Panda / hands-on ≥ 2 unchanged.
 
 NAP driver lat handoff (2026-09-11)
