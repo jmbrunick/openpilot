@@ -7,10 +7,12 @@ vCruise / HUD MAX, and does not talk to osm.org.
 
 Stock modelV2 has no speedSign head — this is a separate process, default off.
 
-Safety: Logger On starts the process + HUD only. Heavy YOLO never runs while
-openpilot or cruise is engaged (or engagement is unknown). Disengaged / parked
-testing still uses 1 Hz, skip-on-overrun, SCHED_OTHER + nice 19. 4 Hz YOLO
-on a 3X starved modeld (~35% drops) and can TAKE CONTROL / process-timeout.
+Safety: Logger On starts the process + HUD. Heavy YOLO never runs while
+openpilot is engaged (selfdriveState.enabled, or unknown cereal). Manual
+driving — including moving, stock CC, no assist — still runs 1 Hz detect
+(skip-on-overrun, nice 19) so signs can be logged on the road. Not gated
+on park / Force Offroad. 4 Hz YOLO on a 3X starved modeld and can TAKE
+CONTROL / process-timeout.
 """
 from __future__ import annotations
 
@@ -52,23 +54,20 @@ def should_run_speed_sign_log(started: bool, params: Any, _cp: Any = None) -> bo
   return bool(started) and bool(enabled)
 
 
-def driving_controls_engaged(
-  *,
-  selfdrive_enabled: bool | None,
-  cruise_enabled: bool | None,
-) -> bool:
-  """True when OP/cruise is controlling, or we cannot tell (fail-safe).
+def op_engaged(selfdrive_enabled: bool | None) -> bool:
+  """True when openpilot is controlling, or we cannot tell (fail-safe).
 
-  None = no live sample. Unknown is treated as engaged so YOLO cannot start
-  until cereal says the stack is idle.
+  None = no live selfdriveState. Unknown is treated as engaged so YOLO
+  cannot start until cereal says OP is idle. Stock cruise / moving /
+  parked are not this gate — only selfdriveState.enabled.
   """
-  if selfdrive_enabled is None and cruise_enabled is None:
+  if selfdrive_enabled is None:
     return True
-  return bool(selfdrive_enabled) or bool(cruise_enabled)
+  return bool(selfdrive_enabled)
 
 
 def should_run_onnx_detect(engaged: bool) -> bool:
-  """Heavy ONNX only when the driving stack is not controlling the car."""
+  """Heavy ONNX when OP is not controlling (manual driving, moving OK)."""
   return not bool(engaged)
 
 
@@ -96,9 +95,8 @@ def _optional_sm_bool(sm: Any, service: str, *attrs: str) -> bool | None:
 
 
 def engaged_from_sm(sm: Any) -> bool:
-  """selfdriveState.enabled or carState.cruiseState.enabled; unknown → engaged."""
+  """selfdriveState.enabled only. Unknown / dead / invalid → engaged."""
   ss = _optional_sm_bool(sm, "selfdriveState", "enabled")
-  cs = _optional_sm_bool(sm, "carState", "cruiseState", "enabled")
   try:
     seen_ss = int(sm.recv_frame.get("selfdriveState", -1)) > 0
   except Exception:
@@ -106,7 +104,7 @@ def engaged_from_sm(sm: Any) -> bool:
   # A previously live selfdriveState that is now dead/invalid is not "idle".
   if seen_ss and ss is None:
     return True
-  return driving_controls_engaged(selfdrive_enabled=ss, cruise_enabled=cs)
+  return op_engaged(ss)
 
 
 def parse_detect_hz(raw: str | None, default: float = SPEEDSIGND_HZ) -> float:
@@ -215,7 +213,7 @@ def detect_if_allowed(
   rgb=None,
   debounce: SignDebounce | None = None,
 ) -> tuple[list, list[dict]]:
-  """ONNX/JSONL only when not engaged. HUD keep-alive is the caller's job."""
+  """ONNX/JSONL only when OP is not engaged. HUD keep-alive is the caller's job."""
   if not should_run_onnx_detect(engaged):
     return [], []
   return process_frame(
@@ -307,7 +305,7 @@ def main():
       onnx_path,
     )
 
-  sm = messaging.SubMaster(["gpsLocationExternal", "gpsLocation", "selfdriveState", "carState"])
+  sm = messaging.SubMaster(["gpsLocationExternal", "gpsLocation", "selfdriveState"])
   pm = messaging.PubMaster([SERVICE_NAME])
   rk = Ratekeeper(hz, print_delay_threshold=None)
   client = None
@@ -333,7 +331,7 @@ def main():
       infer_ms = []
       skip_count = 0
       last_timing_log = now_mono
-    # Do not load 43 MB ONNX while engaged — wait until the stack is idle.
+    # Do not load 43 MB ONNX while OP is engaged.
     if allow_detect and detector.onnx is None and now_mono - last_onnx_try >= ONNX_RETRY_S:
       last_onnx_try = now_mono
       if detector.try_reload():

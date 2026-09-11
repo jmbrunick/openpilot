@@ -4,8 +4,9 @@ Large opaque MUTCD-style plate on the driver / left side of the onroad UI.
 TICI: below MAX. Mici: top-left.
 
 When the logger is On and ONNX weights failed to load, the plate shows
-NO WT instead of staying blank (and never a fake mph). When NAP / cruise
-is engaged, YOLO is skipped and the plate shows WAIT.
+NO WT instead of staying blank (and never a fake mph). When openpilot is
+engaged, YOLO is skipped and the plate shows WAIT. Manual driving (moving
+OK) still runs detect.
 
 Yes/No ("is this accurate?") appears only with a live mph — not for NO WT.
 Those buttons are stubs: they do not change cruise, HUD MAX, or map speed.

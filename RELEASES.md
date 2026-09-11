@@ -1,6 +1,6 @@
 NAP speed-sign log (2026-09-10)
 ========================
-* Speed Sign Logger On no longer runs YOLO while NAP or cruise is engaged (SIGN shows WAIT). Collect signs parked or disengaged. If TAKE CONTROL comes back, turn Logger Off.
+* Speed Sign Logger On no longer runs YOLO while openpilot is engaged (SIGN shows WAIT). Manual driving — moving OK — still logs signs at 1 Hz. If TAKE CONTROL comes back, turn Logger Off.
 
 NAP blinker (2026-09-10)
 ========================

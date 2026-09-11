@@ -11,7 +11,7 @@ HUD_HOLD_S = 3.0
 HUD_LABEL = "SIGN"
 # Logger On + ONNX missing: show this instead of a blank plate or a fake mph.
 HUD_MISSING_WEIGHTS_TEXT = "NO WT"
-# Logger On + engaged: YOLO is skipped so the driving stack stays healthy.
+# Logger On + OP engaged: YOLO is skipped so modeld is not starved.
 HUD_DETECT_PAUSED_TEXT = "WAIT"
 HUD_CONFIRM_PROMPT = "accurate?"
 HUD_CONFIRM_YES = "Yes"

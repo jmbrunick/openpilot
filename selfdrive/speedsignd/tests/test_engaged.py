@@ -1,4 +1,4 @@
-"""Logger On must not run YOLO while the driving stack is engaged."""
+"""Skip ONNX while OP is engaged; allow it while driving manually (moving OK)."""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -7,8 +7,8 @@ from openpilot.selfdrive.speedsignd.detect import SpeedSign
 from openpilot.selfdrive.speedsignd.jsonl import JsonlLogger
 from openpilot.selfdrive.speedsignd.speedsignd import (
   detect_if_allowed,
-  driving_controls_engaged,
   engaged_from_sm,
+  op_engaged,
   should_run_onnx_detect,
   should_run_speed_sign_log,
 )
@@ -16,7 +16,7 @@ from openpilot.selfdrive.speedsignd.speedsignd import (
 
 class _RaiseIfDetect:
   def detect(self, y, min_conf=None, rgb=None):
-    raise AssertionError("ONNX detect must not run while engaged")
+    raise AssertionError("ONNX detect must not run while OP is engaged")
 
 
 class _HitDetect:
@@ -41,23 +41,19 @@ def test_logger_on_still_starts_process_when_onroad():
   assert not should_run_speed_sign_log(True, _FakeParams(False))
 
 
-def test_no_onnx_while_engaged():
+def test_no_onnx_while_op_engaged():
   assert not should_run_onnx_detect(True)
   assert should_run_onnx_detect(False)
 
 
 def test_unknown_engagement_is_fail_safe_engaged():
-  assert driving_controls_engaged(selfdrive_enabled=None, cruise_enabled=None) is True
-  assert not should_run_onnx_detect(driving_controls_engaged(selfdrive_enabled=None, cruise_enabled=None))
+  assert op_engaged(None) is True
+  assert not should_run_onnx_detect(op_engaged(None))
 
 
-def test_selfdrive_or_cruise_counts_as_engaged():
-  assert driving_controls_engaged(selfdrive_enabled=True, cruise_enabled=False) is True
-  assert driving_controls_engaged(selfdrive_enabled=False, cruise_enabled=True) is True
-  assert driving_controls_engaged(selfdrive_enabled=True, cruise_enabled=True) is True
-  assert driving_controls_engaged(selfdrive_enabled=False, cruise_enabled=False) is False
-  assert driving_controls_engaged(selfdrive_enabled=False, cruise_enabled=None) is False
-  assert driving_controls_engaged(selfdrive_enabled=None, cruise_enabled=False) is False
+def test_only_selfdrive_enabled_is_the_gate():
+  assert op_engaged(True) is True
+  assert op_engaged(False) is False
 
 
 def test_detect_if_allowed_skips_onnx_and_jsonl_when_engaged(tmp_path):
@@ -70,7 +66,8 @@ def test_detect_if_allowed_skips_onnx_and_jsonl_when_engaged(tmp_path):
   assert not (tmp_path / "out.jsonl").exists()
 
 
-def test_detect_if_allowed_runs_when_disengaged(tmp_path):
+def test_detect_if_allowed_runs_when_disengaged_moving(tmp_path):
+  """Product: log signs while driving manually. Moving / not parked is OK."""
   det = _HitDetect()
   log = JsonlLogger(str(tmp_path / "out.jsonl"))
   y = __import__("numpy").zeros((32, 32), __import__("numpy").uint8)
@@ -111,21 +108,28 @@ def test_engaged_from_sm_selfdrive_enabled():
   assert engaged_from_sm(sm) is True
   sm = _Sm({"selfdriveState": 3}, {"selfdriveState": SimpleNamespace(enabled=False)})
   assert engaged_from_sm(sm) is False
+  assert should_run_onnx_detect(engaged_from_sm(sm))
 
 
-def test_engaged_from_sm_cruise_enabled():
-  cruise_on = SimpleNamespace(cruiseState=SimpleNamespace(enabled=True))
-  cruise_off = SimpleNamespace(cruiseState=SimpleNamespace(enabled=False))
-  sm = _Sm({"carState": 2}, {"carState": cruise_on})
-  assert engaged_from_sm(sm) is True
+def test_stock_cruise_or_moving_does_not_block_detect():
+  """Manual driving (stock CC on, moving) still runs YOLO when OP is off."""
+  cruise_on = SimpleNamespace(cruiseState=SimpleNamespace(enabled=True), vEgo=22.0)
   sm = _Sm(
     {"selfdriveState": 4, "carState": 2},
     {"selfdriveState": SimpleNamespace(enabled=False), "carState": cruise_on},
   )
-  assert engaged_from_sm(sm) is True
-  sm = _Sm(
-    {"selfdriveState": 4, "carState": 2},
-    {"selfdriveState": SimpleNamespace(enabled=False), "carState": cruise_off},
-  )
   assert engaged_from_sm(sm) is False
   assert should_run_onnx_detect(engaged_from_sm(sm))
+  # carState-only (no selfdriveState yet) stays fail-safe skipped.
+  sm = _Sm({"carState": 2}, {"carState": cruise_on})
+  assert engaged_from_sm(sm) is True
+
+
+def test_detect_gate_is_not_parked_or_force_offroad():
+  from pathlib import Path
+  src = Path(__file__).resolve().parents[1] / "speedsignd.py"
+  text = src.read_text(encoding="utf-8")
+  assert "NAPForceOffroad" not in text
+  assert "standstill" not in text
+  assert "carState" not in text
+  assert "selfdriveState" in text
