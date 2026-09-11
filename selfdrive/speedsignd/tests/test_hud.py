@@ -137,6 +137,10 @@ def test_hud_wait_plate_when_detect_paused():
   ev = live_sign_from_event(True, SimpleNamespace(mph=0, valid=False, weightsMissing=False, detectPaused=True), True)
   assert ev.show_detect_paused and ev.plate_text == "WAIT"
 
+  # Unknown / not-paused must not show WAIT — mph can still appear later.
+  unknown = live_sign_view(enabled=True, msg_valid=False, mph=0, valid=False, detect_paused=False)
+  assert not unknown.show_detect_paused and unknown.plate_text == ""
+
 
 def test_publish_fields_flag_missing_weights_without_mph():
   h = LiveSignHold(hold_s=3.0)
@@ -259,6 +263,7 @@ def test_ui_and_cereal_wire_live_sign():
   onroad = (root / "selfdrive" / "ui" / "onroad" / "speed_sign_hud.py").read_text(encoding="utf-8")
   assert "NO WT" in onroad
   assert "WAIT" in onroad
+  assert "bug" in onroad.lower() or "swaglog" in onroad.lower()
   assert "live_sign_from_event" in onroad
   assert "on_confirm_accuracy" in onroad
   assert "draw_tici_speed_sign" in onroad

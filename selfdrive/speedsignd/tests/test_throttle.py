@@ -9,6 +9,7 @@ from openpilot.selfdrive.speedsignd.speedsignd import (
   HZ_MAX,
   HZ_MIN,
   INFER_BUDGET_MS,
+  SM_HZ,
   SPEEDSIGND_HZ,
   SPEEDSIGND_NICE,
   infer_overran,
@@ -21,6 +22,8 @@ from openpilot.selfdrive.speedsignd.speedsignd import (
 
 def test_default_detect_hz_is_1():
   assert SPEEDSIGND_HZ == 1.0
+  assert 10.0 <= SM_HZ <= 20.0
+  assert SM_HZ > SPEEDSIGND_HZ
   assert INFER_BUDGET_MS == 100.0
   assert SPEEDSIGND_NICE == 19
   assert parse_detect_hz(None) == 1.0
