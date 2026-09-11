@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import math
 import os
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -337,6 +338,78 @@ def process_observations(
   return written
 
 
+@dataclass
+class InferOutcome:
+  signs: list
+  written: list[dict]
+  infer_s: float
+
+
+class InferSlot:
+  """At most one ONNX infer. The 20 Hz loop never joins on engage.
+
+  Re-engage used to block speedsignd for 300–1500 ms on an in-flight YOLO
+  (and leave a core hot) → Communication Issue Between Processes. pause()
+  drops the result immediately and refuses new work. The leftover infer may
+  still finish at nice 19; we do not start another and we do not wait.
+  """
+
+  def __init__(self):
+    self._lock = threading.Lock()
+    self._cancel = threading.Event()
+    self._busy = False
+    self._outcome: InferOutcome | None = None
+
+  @property
+  def busy(self) -> bool:
+    with self._lock:
+      return self._busy
+
+  def pause(self) -> bool:
+    """Cancel in-flight work and drop results. True if an infer was busy."""
+    self._cancel.set()
+    with self._lock:
+      was_busy = self._busy
+      self._outcome = None
+      return was_busy
+
+  def resume(self) -> None:
+    self._cancel.clear()
+
+  def take(self) -> InferOutcome | None:
+    with self._lock:
+      out = self._outcome
+      self._outcome = None
+      return out
+
+  def start(self, fn) -> bool:
+    """Run fn() in a daemon thread. fn returns (signs, written)."""
+    with self._lock:
+      if self._busy or self._cancel.is_set():
+        return False
+      self._busy = True
+      self._outcome = None
+
+    def run():
+      t0 = time.monotonic()
+      try:
+        if self._cancel.is_set():
+          return
+        signs, written = fn()
+        infer_s = time.monotonic() - t0
+        with self._lock:
+          if not self._cancel.is_set():
+            self._outcome = InferOutcome(list(signs), list(written), infer_s)
+      except Exception:
+        pass
+      finally:
+        with self._lock:
+          self._busy = False
+
+    threading.Thread(target=run, name="speedsignd-onnx", daemon=True).start()
+    return True
+
+
 def detect_if_allowed(
   y,
   lat: float,
@@ -462,11 +535,18 @@ def main():
   last_paused: bool | None = None
   last_unknown_warn = 0.0
   in_holdoff = False
+  slot = InferSlot()
 
   while True:
     sm.update(0)
     now_mono = time.monotonic()
     sample = engagement_from_sm(sm, now=now_mono, started_at=started_at)
+    if not sample.allow_detect:
+      abandoned = slot.pause()
+      if abandoned:
+        cloudlog.info("speedsignd abandon in-flight ONNX (%s)", engagement_log_fields(sample))
+    else:
+      slot.resume()
     if last_allow != sample.allow_detect or last_paused != sample.detect_paused:
       cloudlog.info(
         "speedsignd detect %s (%s)",
@@ -492,6 +572,15 @@ def main():
       if detector.try_reload():
         cloudlog.info("speedsignd: ONNX loaded after retry backend=yolo-onnx onnx=%s", onnx_path)
     signs: list = []
+    if sample.allow_detect:
+      outcome = slot.take()
+      if outcome is not None:
+        signs = outcome.signs
+        infer_ms.append(outcome.infer_s * 1000.0)
+        next_detect = max(
+          next_detect,
+          next_detect_mono(now_mono, outcome.infer_s, period_s, budget_s),
+        )
     if client is None or not client.is_connected():
       if now_mono - last_connect >= 0.5:
         last_connect = now_mono
@@ -501,24 +590,29 @@ def main():
           client.connect(False)
         except Exception:
           client = None
-    elif sample.allow_detect and now_mono >= next_detect:
+    elif sample.allow_detect and now_mono >= next_detect and not slot.busy:
       in_holdoff = False
       buf = client.recv(timeout_ms=VISION_TIMEOUT_MS)
-      y = y_plane_from_nv12(buf) if buf is not None else None
-      rgb = rgb_from_nv12(buf) if buf is not None else None
-      lat, lon, bearing, gps_ok = gps_sample_from_sm(sm, now=now_mono)
-      # On-road: do not run numpy-mutcd when weights are missing (no fake mph / JSONL).
-      have_frame = detector.onnx is not None and (y is not None or rgb is not None)
-      if have_frame:
-        t0 = time.monotonic()
-        signs, _written = detect_if_allowed(
-          y, lat, lon, bearing, gps_ok, detector, logger, time.time(),
-          controlling=sample.controlling, rgb=rgb, debounce=debounce,
-        )
-        infer_s = time.monotonic() - t0
-        infer_ms.append(infer_s * 1000.0)
-        next_detect = next_detect_mono(t0 + infer_s, infer_s, period_s, budget_s)
-    elif sample.allow_detect and next_detect > 0 and now_mono < next_detect:
+      # Engage can happen during the vision wait — re-read before ONNX.
+      sm.update(0)
+      sample = engagement_from_sm(sm, now=time.monotonic(), started_at=started_at)
+      if not sample.allow_detect:
+        slot.pause()
+      else:
+        y = y_plane_from_nv12(buf) if buf is not None else None
+        rgb = rgb_from_nv12(buf) if buf is not None else None
+        lat, lon, bearing, gps_ok = gps_sample_from_sm(sm, now=time.monotonic())
+        # On-road: do not run numpy-mutcd when weights are missing (no fake mph / JSONL).
+        have_frame = detector.onnx is not None and (y is not None or rgb is not None)
+        if have_frame:
+          def _run(y=y, rgb=rgb, lat=lat, lon=lon, bearing=bearing, gps_ok=gps_ok):
+            return detect_if_allowed(
+              y, lat, lon, bearing, gps_ok, detector, logger, time.time(),
+              controlling=False, rgb=rgb, debounce=debounce,
+            )
+          if slot.start(_run):
+            next_detect = time.monotonic() + period_s
+    elif sample.allow_detect and (slot.busy or (next_detect > 0 and now_mono < next_detect)):
       if not in_holdoff:
         skip_count += 1
         in_holdoff = True

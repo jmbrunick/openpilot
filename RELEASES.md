@@ -1,6 +1,6 @@
 NAP speed-sign log (2026-09-11)
 ========================
-* SIGN WAIT is only when openpilot is actively controlling. A 1 Hz SubMaster used to treat unknown / stale `selfdriveState` as engaged forever (alive timeout 100 ms on a 100 Hz service) so ONNX never ran while driving manually. Poll at 20 Hz; gate on `active`; unknown cereal after startup allows throttled detect (not WAIT). If TAKE CONTROL comes back, turn Logger Off.
+* SIGN WAIT is only when openpilot is actively controlling. A 1 Hz SubMaster used to treat unknown / stale `selfdriveState` as engaged for ~10 s after cancel (`recv_frame <= 0` + 100 ms alive window). Poll at 20 Hz; gate on `active`; abandon in-flight ONNX on re-engage so the loop never blocks. If TAKE CONTROL / Communication Issue comes back, turn Logger Off.
 
 NAP speed-sign log (2026-09-10)
 ========================

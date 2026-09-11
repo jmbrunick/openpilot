@@ -12,7 +12,9 @@ Stock `modelV2` has no `speedSign` head. This is a separate process (`speedsignd
 
 **Manual driving is the collection path** — including moving, no assist. This is **not** gated on park or Force Offroad. Drive yourself, Logger On, and log speed-limit signs + GNSS to JSONL. OSM upload is future work.
 
-Unknown cereal is **not** forever-WAIT. After a ~2 s startup, unread `selfdriveState` allows the same 1 Hz throttled detect and logs a warning. SubMaster polls at **20 Hz** so 100 Hz `selfdriveState` alive/valid cannot false-trigger WAIT; YOLO stays ≤ **1 Hz**.
+Unknown cereal is **not** forever-WAIT. After a ~2 s startup, unread `selfdriveState` allows the same 1 Hz throttled detect and logs a warning. SubMaster polls at **20 Hz** so 100 Hz `selfdriveState` alive/valid cannot false-trigger WAIT; YOLO stays ≤ **1 Hz**. After you cancel, WAIT should hide within a fraction of a second — a ~10 s hang was the old 1 Hz + `recv_frame <= 0` bug.
+
+On re-engage, speedsignd **abandons** an in-flight ONNX (does not block the 20 Hz loop for 300–1500 ms) and will not start another infer. One leftover nice-19 infer may finish in the background; its result is dropped.
 
 Disengaged detect is **1 Hz**, skip-on-overrun, `SCHED_OTHER` + nice 19. **If TAKE CONTROL or lag comes back, turn Speed Sign Logger Off and use nap-release.** Do not raise `modeld` priority.
 
@@ -23,7 +25,7 @@ Disengaged detect is **1 Hz**, skip-on-overrun, `SCHED_OTHER` + nice 19. **If TA
    (comma 4 / mici: **Settings → NAP → speed sign logger**)
 3. Or: `Params().put_bool("NAPSpeedSignLog", True)` / `echo -n 1 > /data/params/d/NAPSpeedSignLog`
 4. Go onroad. Manager starts `speedsignd` only when the param is true **and** the car is onroad.
-5. **Drive manually** (moving is OK). SIGN shows **WAIT** only while openpilot is **actively controlling**. That is YOLO skipped on purpose. If WAIT stays up while the UI looks disengaged, it is a bug — grab swaglog. Do not SET if you want detections.
+5. **Drive manually** (moving is OK). SIGN shows **WAIT** only while openpilot is **actively controlling**. That is YOLO skipped on purpose. After you cancel, WAIT should drop immediately (not ~10 s later). If WAIT stays up while the UI looks disengaged, it is a bug — grab swaglog. Do not SET if you want detections.
 
 Off (default): the process does not run. Logger On never changes that default.
 
@@ -31,7 +33,7 @@ Reset to Defaults turns the logger back off. Weights on `/data` stay.
 
 Optional detect rate when **not controlling** (default 1 Hz, clamped 0.2–4): `NAP_SPEED_SIGN_HZ=0.5` in the process environment. Do not raise this on a 3X. While OP is controlling, detect is always 0 Hz, regardless of this env.
 
-Onroad, `swaglog` prints `speedsignd detect paused (controlling=True enabled=… active=… state=… alive=… valid=…)` when you SET, and `speedsignd timing hz=… infer_ms mean=… max=… n=… skip=…` about every 15 s while disengaged. Mean/max infer well above 100 ms is expected for YOLOv8s on tinygrad CPU; `skip` should climb when an infer overruns. If TAKE CONTROL / “driving model is lagging” comes back, Logger Off + nap-release. If WAIT is stuck while you are driving manually, those same `speedsignd detect` lines explain why.
+Onroad, `swaglog` prints `speedsignd detect paused (controlling=True enabled=… active=… state=… alive=… valid=…)` when you SET, `speedsignd abandon in-flight ONNX` if a YOLO was still running, and `speedsignd timing hz=… infer_ms mean=… max=… n=… skip=…` about every 15 s while disengaged. Mean/max infer well above 100 ms is expected for YOLOv8s on tinygrad CPU; `skip` should climb when an infer overruns. If TAKE CONTROL / “driving model is lagging” / Communication Issue comes back, Logger Off + nap-release. If WAIT is stuck while you are driving manually, those same `speedsignd detect` lines explain why.
 
 ## Install weights on the 3X
 

@@ -10,6 +10,7 @@ from openpilot.selfdrive.speedsignd.speedsignd import (
   SM_HZ,
   SPEEDSIGND_HZ,
   UNKNOWN_GRACE_S,
+  InferSlot,
   detect_if_allowed,
   engaged_from_sm,
   engagement_from_sm,
@@ -300,6 +301,51 @@ def test_sm_polls_faster_than_detect():
   assert 1.0 / SM_HZ < alive_s
 
 
+def test_infer_slot_abandons_in_flight_on_pause():
+  """Engage must not join a 300–1500 ms YOLO; drop the result and keep the loop moving."""
+  import time
+  slot = InferSlot()
+  started = __import__("threading").Event()
+  release = __import__("threading").Event()
+
+  def slow():
+    started.set()
+    release.wait(2.0)
+    return [SpeedSign(mph=55, conf=0.9, bbox=(0, 0, 1, 1))], [{"mph": 55}]
+
+  t0 = time.monotonic()
+  assert slot.start(slow)
+  assert started.wait(1.0)
+  assert slot.busy is True
+  assert slot.start(slow) is False  # one at a time
+  abandoned = slot.pause()
+  assert abandoned is True
+  assert time.monotonic() - t0 < 0.25  # did not wait for the infer
+  release.set()
+  time.sleep(0.05)
+  assert slot.take() is None
+  assert slot.busy is False
+  # Still paused: refuse new work until resume.
+  assert slot.start(slow) is False
+  slot.resume()
+  assert slot.start(lambda: ([], [])) is True
+  time.sleep(0.05)
+  out = slot.take()
+  assert out is not None and out.signs == []
+
+
+def test_infer_slot_keeps_result_when_not_paused():
+  slot = InferSlot()
+  assert slot.start(lambda: ([SpeedSign(mph=60, conf=0.8, bbox=(0, 0, 1, 1))], []))
+  for _ in range(50):
+    out = slot.take()
+    if out is not None:
+      assert out.signs[0].mph == 60
+      return
+    __import__("time").sleep(0.01)
+  raise AssertionError("infer result never arrived")
+
+
 def test_detect_gate_is_not_parked_or_force_offroad():
   from pathlib import Path
   src = Path(__file__).resolve().parents[1] / "speedsignd.py"
@@ -312,3 +358,5 @@ def test_detect_gate_is_not_parked_or_force_offroad():
   assert "SM_HZ" in text
   assert "UNKNOWN_GRACE_S" in text
   assert "engagement_log_fields" in text
+  assert "InferSlot" in text
+  assert "abandon" in text
