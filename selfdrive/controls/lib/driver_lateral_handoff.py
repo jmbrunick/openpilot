@@ -2,8 +2,16 @@
 
 Default On (NAPDriverLatHandoff=1). Settings → NAP can turn it Off if
 gravel / crosswind still false-yields (gray chrome = latHandoffPaused,
-lat authority cut). #71 at 0.5 Nm / 80 ms tripped on rumble; this
-detector needs a firm, gradual, sustained hand push.
+lat authority cut).
+
+History (on-car):
+  #71  0.50 Nm / 80 ms   — gravel / rumble false-yield
+  #73  0.85 Nm / 250 ms + 0.25 s quiet — rumble-safe, but a gentle
+                           dodge push felt too slow/firm (risked
+                           hands-on >= 2). 0.25 s quiet then felt
+                           late on hand-back.
+  now  0.70 Nm / 140 ms, quiet wait 0 — quicker, lighter push; 1 s
+                           blend starts as soon as input is gone.
 
 Signal (Pre-AP EPAS_sysStatus 0x370, tesla_preap.dbc):
   EPAS_torsionBarTorque  — continuous, Nm, factor 0.01, offset −20.5
@@ -15,24 +23,34 @@ Existing software / safety (unchanged):
   steerOverride    = EventName from steeringPressed (OVERRIDE_LATERAL)
   steeringDisengage / panda PREAP_HANDS_ON_DISENGAGE_LEVEL = handsOnLevel >= 2
 
-Soft-yield is 0.85 Nm (85% of STEER_THRESHOLD) with 250 ms of *consecutive*
-frames above that — not 0.5 Nm / 80 ms. Gravel spikes and short rumble
-do not accumulate. Steady crosswind torsion is typically well below
-0.85 Nm; a constant 0.85+ for 250 ms is treated as a hand push.
-Release hysteresis is 0.40 Nm (wider gap). handsOnLevel is not the
-soft trigger. >= 2 stays the hard/safety path.
+Soft-yield is 0.70 Nm (70% of STEER_THRESHOLD) with 140 ms of *consecutive*
+frames above that. Gaps reset the count (gravel spike trains do not
+accumulate). 0.70 is well above the old 0.5 Nm rumble floor and still
+below software steeringPressed (1.0 Nm). Release hysteresis stays
+0.40 Nm (press-latch + "input still present" while yielded).
+handsOnLevel is not the soft trigger. >= 2 stays the hard/safety path.
 
-Quiet while yielded aborts only on a renewed >= 0.85 Nm trigger. The
-0.40 Nm band and CS.steeringRateDeg must not zero _quiet_s.
+QUIET_WAIT_S is 0. As soon as soft-yield input is gone (below release /
+not pressed) the 1 s smoothstep starts — no 0.25 s patience. While
+yielded, torque above release is still on the rim (finish the dodge);
+that is not a timer. Rate is ignored. During the blend only a renewed
+>= 0.70 Nm firm push re-yields.
+
 Pre-AP CS.steeringRateDeg is -STW_ANGLHP_STAT.StW_AnglHP_Spd (0x0E,
 14-bit, factor 0.5, offset −4096, deg/s; SNA → ~4095 deg/s). Caster /
-road / SNA stay above the old 25 deg/s gate. Rate is ignored while
-yielded and during the 1 s blend.
+road / SNA stay above the old 25 deg/s gate.
 
 While yielded, controlsd pins desired_curvature to measured (stock
 inactive target) so LaC cannot run ahead of the wheel. Blend / resume
-then clip_curvature from that pin onto the model — same as a blinker
-pause re-engage — with latActive still true.
+then clip_curvature from that pin onto the model with latActive still
+true.
+
+Blinker lat-pause is a different path: latActive is False, this module
+resets to identity (no soft-yield). After the turn, stock resume used
+to restore full latActive onto the model immediately — a firm grab
+when the plan is wrong (parking lot / no lanes → grass). We pin to
+measured while lat is down, and on blinker-pause rising edge start
+the same 1 s blend (no quiet wait) so post-turn return is smooth.
 """
 
 from __future__ import annotations
@@ -50,15 +68,16 @@ DT_CTRL = 0.01
 State = log.SelfdriveState.OpenpilotState
 
 # --- thresholds (from real Pre-AP STEER_THRESHOLD = 1.0 Nm) ---
-# 0.5 Nm / 80 ms false-yielded on gravel rumble + crosswind. 0.85 Nm is a
-# firm hand push: above rumble/wind, at or just below steeringPressed
-# (1.0 Nm / 5 frames) so we do not require a yank. Hard path stays
+# #71 0.5 Nm / 80 ms false-yielded on gravel. #73 0.85 Nm / 250 ms was
+# rumble-safe but too slow/firm for a gentle dodge (hands-on >= 2 risk).
+# 0.70 Nm / 140 ms is a quicker light push: still above rumble, still
+# below steeringPressed (1.0 Nm / 5 frames). Hard path stays
 # handsOnLevel >= 2.
-SOFT_YIELD_TRIGGER_NM = 0.85 * float(STEER_THRESHOLD)  # 0.85 Nm
+SOFT_YIELD_TRIGGER_NM = 0.70 * float(STEER_THRESHOLD)  # 0.70 Nm
 SOFT_YIELD_RELEASE_NM = 0.40 * float(STEER_THRESHOLD)  # 0.40 Nm, wider gap
 
 # Consecutive frames above trigger. Gaps reset the count (spike reject).
-SOFT_YIELD_DEBOUNCE_FRAMES = 25  # 250 ms at 100 Hz
+SOFT_YIELD_DEBOUNCE_FRAMES = 14  # 140 ms at 100 Hz (was 25 / 250 ms)
 SOFT_YIELD_RELEASE_FRAMES = 8    # 80 ms below release before clearing latch
 
 # Historical rate gate (25 deg/s). Intentionally unused while yielded:
@@ -67,7 +86,9 @@ SOFT_YIELD_RELEASE_FRAMES = 8    # 80 ms below release before clearing latch
 STEER_RATE_QUIET_DEG_S = 25.0
 
 # --- timing / UI ---
-QUIET_WAIT_S = 0.25
+# Justin: hand-back earlier. No quiet delay — 1 s blend starts the first
+# frame input is gone (below release). Do not add patience.
+QUIET_WAIT_S = 0.0
 BLEND_TIME_S = 1.0
 UI_LATERAL_RETURN_AUTHORITY = 0.70  # do not show lat-engaged below this
 
@@ -134,9 +155,15 @@ def handoff_new_desired_curvature(*, yielded: bool, lat_active: bool,
   return float(model_curvature)
 
 
-def pin_desired_curvature_to_measured(yielded: bool) -> bool:
-  """True: assign desired_curvature = measured, skip clip_curvature."""
-  return bool(yielded)
+def pin_desired_curvature_to_measured(yielded: bool, lat_active: bool = True) -> bool:
+  """True: assign desired_curvature = measured, skip clip_curvature.
+
+  Pin while soft-yielded *and* while latActive is false (blinker pause /
+  standstill / fault). Blinker pause used to only clip toward measured,
+  so a fast lot turn left desired lagged; resume then slewed from that
+  lag onto a bad model path (grass). Snap-pin matches stock inactive.
+  """
+  return bool(yielded) or not bool(lat_active)
 
 
 def hud_engaged_status(*, enabled: bool, op_state, lat_active: bool,
@@ -165,7 +192,7 @@ class HandoffOutput:
 
 
 class DriverLateralHandoff:
-  """Process-local latch: light wheel input yields lat; quiet + 1 s S-curve hands it back."""
+  """Process-local latch: light wheel input yields lat; 1 s S-curve hands it back."""
 
   def __init__(self, enabled: bool = True):
     # Product default On. controlsd still requires Pre-AP + param
@@ -183,6 +210,7 @@ class DriverLateralHandoff:
     self._press_cnt = 0
     self._release_cnt = 0
     self._pressed = False
+    self._blinker_was_paused = False
 
   def reset(self):
     self._reset()
@@ -222,9 +250,18 @@ class DriverLateralHandoff:
     self.authority = 0.0
     self.ui_paused = True
 
+  def _start_blend(self):
+    self._yielded = False
+    self._blending = True
+    self._blend_s = 0.0
+    self._quiet_s = 0.0
+    self.authority = 0.0
+    self.ui_paused = True
+
   def update(self, *, engaged: bool, lat_would_be_active: bool,
              steering_torque: float, steering_rate_deg: float,
-             alc_active: bool = False, dt: float | None = None) -> HandoffOutput:
+             alc_active: bool = False, blinker_paused: bool = False,
+             dt: float | None = None) -> HandoffOutput:
     if dt is None:
       dt = DT_CTRL
 
@@ -235,35 +272,45 @@ class DriverLateralHandoff:
     # Blinker pause / standstill / faults already cleared lat_would_be_active.
     # ALC wheel-nudge uses steeringPressed at 1 Nm and must not be softened.
     # Full disengage (cancel / door / hands-on >= 2) clears engaged.
-    if not engaged or not lat_would_be_active or alc_active:
+    # Soft-yield stays gated (identity) while lat is down — do not steal
+    # the blinker-turn path. Remember a driver-turn pause so the rising
+    # edge can 1 s blend instead of restoring authority=1 onto the model.
+    if not engaged or alc_active:
       self._reset()
       return HandoffOutput(1.0, False, False, False)
-
+    if not lat_would_be_active:
+      remember = self._blinker_was_paused or bool(blinker_paused)
+      self._reset()
+      self._blinker_was_paused = remember
+      return HandoffOutput(1.0, False, False, False)
     mag = abs(float(steering_torque))
     pressed = self._update_soft_pressed(steering_torque)
     # steering_rate_deg is CS.steeringRateDeg (−StW_AnglHP_Spd, deg/s).
     # Not a quiet/yield signal — see module docstring.
     _ = steering_rate_deg
 
-    if not self._yielded and not self._blending:
+    if self._blinker_was_paused:
+      self._blinker_was_paused = False
+      self._start_blend()
+    elif not self._yielded and not self._blending:
       if pressed:
         self._enter_yield()
     elif self._yielded:
-      # Only a renewed ≥ trigger (0.85 Nm) aborts quiet. The 0.40 Nm
-      # hysteresis band and rate must not call _enter_yield().
+      # Stay yielded while a firm push is back, or while torque is still
+      # above release (rim still loaded — finish the dodge). That is not
+      # a quiet timer. Input gone (below release / not pressed) → 1 s
+      # blend this frame. QUIET_WAIT_S is 0; do not add patience.
       if mag >= SOFT_YIELD_TRIGGER_NM:
         self._enter_yield()
+      elif mag > SOFT_YIELD_RELEASE_NM:
+        pass
       else:
-        self._quiet_s += dt
-        if self._quiet_s + 1e-12 >= QUIET_WAIT_S:
-          self._yielded = False
-          self._blending = True
-          self._blend_s = 0.0
-          self.authority = 0.0
-          self.ui_paused = True
+        # QUIET_WAIT_S is 0: blend this frame (no patience).
+        self._start_blend()
     elif self._blending:
       # Immediate on renewed ≥ trigger. Rate is ignored: the blend turns
-      # the wheel. Use live torque, not the press latch.
+      # the wheel. Use live torque, not the press latch. Mid-band torque
+      # during return is OP/caster, not a new push.
       if mag >= SOFT_YIELD_TRIGGER_NM:
         self._enter_yield()
       else:
