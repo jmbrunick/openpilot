@@ -10,8 +10,12 @@ History (on-car):
                            dodge push felt too slow/firm (risked
                            hands-on >= 2). 0.25 s quiet then felt
                            late on hand-back.
-  now  0.70 Nm / 140 ms, quiet wait 0 — quicker, lighter push; 1 s
-                           blend starts as soon as input is gone.
+  #74  0.70 Nm / 140 ms, quiet wait 0 — quicker, lighter push; 1 s
+                           blend started on a torsion dip (pulled
+                           toward the lane / pothole mid-dodge).
+  now  0.70 Nm / 140 ms, stay yielded while EPAS_handsOnLevel >= 1;
+                           1 s blend only after hands are truly off
+                           the rim for ~80 ms.
 
 Signal (Pre-AP EPAS_sysStatus 0x370, tesla_preap.dbc):
   EPAS_torsionBarTorque  — continuous, Nm, factor 0.01, offset −20.5
@@ -26,15 +30,15 @@ Existing software / safety (unchanged):
 Soft-yield is 0.70 Nm (70% of STEER_THRESHOLD) with 140 ms of *consecutive*
 frames above that. Gaps reset the count (gravel spike trains do not
 accumulate). 0.70 is well above the old 0.5 Nm rumble floor and still
-below software steeringPressed (1.0 Nm). Release hysteresis stays
-0.40 Nm (press-latch + "input still present" while yielded).
-handsOnLevel is not the soft trigger. >= 2 stays the hard/safety path.
+below software steeringPressed (1.0 Nm). Release hysteresis stays 0.40 Nm (press-latch only).
+handsOnLevel is not the soft *trigger*. While yielded, level >= 1
+means still on the rim — mid-dodge torsion dips must not start the
+hand-back. >= 2 stays the hard/safety path (panda unchanged).
 
-QUIET_WAIT_S is 0. As soon as soft-yield input is gone (below release /
-not pressed) the 1 s smoothstep starts — no 0.25 s patience. While
-yielded, torque above release is still on the rim (finish the dodge);
-that is not a timer. Rate is ignored. During the blend only a renewed
->= 0.70 Nm firm push re-yields.
+QUIET_WAIT_S stays 0 (no 0.25–0.40 s torque-quiet patience). The 1 s
+smoothstep starts only after handsOnLevel == 0 for HANDS_OFF_CONFIRM_S
+(~80 ms). Renewed hands-on or a firm >= 0.70 Nm push cancels the blend
+and re-yields. Rate is ignored.
 
 Pre-AP CS.steeringRateDeg is -STW_ANGLHP_STAT.StW_AnglHP_Spd (0x0E,
 14-bit, factor 0.5, offset −4096, deg/s; SNA → ~4095 deg/s). Caster /
@@ -50,7 +54,8 @@ resets to identity (no soft-yield). After the turn, stock resume used
 to restore full latActive onto the model immediately — a firm grab
 when the plan is wrong (parking lot / no lanes → grass). We pin to
 measured while lat is down, and on blinker-pause rising edge start
-the same 1 s blend (no quiet wait) so post-turn return is smooth.
+the same 1 s blend (hands still on the rim yields instead) so
+post-turn return is smooth.
 """
 
 from __future__ import annotations
@@ -86,9 +91,12 @@ SOFT_YIELD_RELEASE_FRAMES = 8    # 80 ms below release before clearing latch
 STEER_RATE_QUIET_DEG_S = 25.0
 
 # --- timing / UI ---
-# Justin: hand-back earlier. No quiet delay — 1 s blend starts the first
-# frame input is gone (below release). Do not add patience.
+# No long torque-quiet patience (that was late, then QUIET_WAIT_S=0
+# blended on a mid-dodge torsion dip). Hands-on is the hold.
 QUIET_WAIT_S = 0.0
+# Truly off the rim: a few frames of handsOnLevel==0, not 0.25 s.
+HANDS_ON_HOLD_LEVEL = 1
+HANDS_OFF_CONFIRM_S = 0.08  # 80 ms at 100 Hz
 BLEND_TIME_S = 1.0
 UI_LATERAL_RETURN_AUTHORITY = 0.70  # do not show lat-engaged below this
 
@@ -113,6 +121,36 @@ PARAM_DRIVER_LAT_HANDOFF = "NAPDriverLatHandoff"
 def handoff_enabled(*, fingerprint: str, param_on: bool) -> bool:
   """Pre-AP and Settings toggle (param defaults On)."""
   return bool(param_on) and fingerprint == PREAP_FINGERPRINT
+
+
+def hands_still_on(hands_on_level: int) -> bool:
+  """True while EPAS still sees a hand on the rim (level 1+)."""
+  return int(hands_on_level or 0) >= HANDS_ON_HOLD_LEVEL
+
+
+def cs_hands_on_level(CS) -> int:
+  """EPAS_handsOnLevel 0/1/2/3 from cereal CarState.
+
+  Prefer CS.handsOnLevel when the schema has it. Pre-AP card also stashes
+  the discrete level on steeringTorqueEps (unused on this angle car) so
+  controlsd works without an opendbc cereal bump. steeringDisengage is
+  hands >= 2.
+  """
+  vals: list[int] = []
+  if hasattr(CS, 'handsOnLevel'):
+    try:
+      vals.append(int(getattr(CS, 'handsOnLevel') or 0))
+    except (TypeError, ValueError):
+      pass
+  try:
+    ev = int(round(float(getattr(CS, 'steeringTorqueEps', 0.0) or 0.0)))
+    if 0 <= ev <= 3:
+      vals.append(ev)
+  except (TypeError, ValueError):
+    pass
+  if getattr(CS, 'steeringDisengage', False):
+    vals.append(2)
+  return max(vals) if vals else 0
 
 
 def smoothstep(t: float) -> float:
@@ -211,6 +249,7 @@ class DriverLateralHandoff:
     self._release_cnt = 0
     self._pressed = False
     self._blinker_was_paused = False
+    self._hands_off_s = 0.0
 
   def reset(self):
     self._reset()
@@ -247,6 +286,7 @@ class DriverLateralHandoff:
     self._blending = False
     self._quiet_s = 0.0
     self._blend_s = 0.0
+    self._hands_off_s = 0.0
     self.authority = 0.0
     self.ui_paused = True
 
@@ -255,13 +295,14 @@ class DriverLateralHandoff:
     self._blending = True
     self._blend_s = 0.0
     self._quiet_s = 0.0
+    self._hands_off_s = 0.0
     self.authority = 0.0
     self.ui_paused = True
 
   def update(self, *, engaged: bool, lat_would_be_active: bool,
              steering_torque: float, steering_rate_deg: float,
              alc_active: bool = False, blinker_paused: bool = False,
-             dt: float | None = None) -> HandoffOutput:
+             hands_on_level: int = 0, dt: float | None = None) -> HandoffOutput:
     if dt is None:
       dt = DT_CTRL
 
@@ -285,33 +326,38 @@ class DriverLateralHandoff:
       return HandoffOutput(1.0, False, False, False)
     mag = abs(float(steering_torque))
     pressed = self._update_soft_pressed(steering_torque)
+    hands_on = hands_still_on(hands_on_level)
+    firm_push = mag >= SOFT_YIELD_TRIGGER_NM
     # steering_rate_deg is CS.steeringRateDeg (−StW_AnglHP_Spd, deg/s).
     # Not a quiet/yield signal — see module docstring.
     _ = steering_rate_deg
 
     if self._blinker_was_paused:
       self._blinker_was_paused = False
-      self._start_blend()
+      # Blinker pause already waited for steeringPressed release. Keep
+      # the #74 1 s re-entry. If a hand is still on the rim, yield
+      # instead of blending toward the model.
+      if hands_on or firm_push:
+        self._enter_yield()
+      else:
+        self._start_blend()
     elif not self._yielded and not self._blending:
       if pressed:
         self._enter_yield()
     elif self._yielded:
-      # Stay yielded while a firm push is back, or while torque is still
-      # above release (rim still loaded — finish the dodge). That is not
-      # a quiet timer. Input gone (below release / not pressed) → 1 s
-      # blend this frame. QUIET_WAIT_S is 0; do not add patience.
-      if mag >= SOFT_YIELD_TRIGGER_NM:
+      # Stay yielded while still maneuvering: hands on the rim OR a
+      # renewed firm push. Mid-dodge torsion dips (below release) must
+      # not start the blend. Hands 0 for ~80 ms → 1 s smoothstep.
+      if hands_on or firm_push:
         self._enter_yield()
-      elif mag > SOFT_YIELD_RELEASE_NM:
-        pass
       else:
-        # QUIET_WAIT_S is 0: blend this frame (no patience).
-        self._start_blend()
+        self._hands_off_s += dt
+        if self._hands_off_s + 1e-12 >= HANDS_OFF_CONFIRM_S:
+          self._start_blend()
     elif self._blending:
-      # Immediate on renewed ≥ trigger. Rate is ignored: the blend turns
-      # the wheel. Use live torque, not the press latch. Mid-band torque
-      # during return is OP/caster, not a new push.
-      if mag >= SOFT_YIELD_TRIGGER_NM:
+      # Hands back on or a firm push cancels the return. Mid-band
+      # torque during the blend is OP/caster, not a new push.
+      if hands_on or firm_push:
         self._enter_yield()
       else:
         self._blend_s += dt
