@@ -13,7 +13,8 @@ from opendbc.car.car_helpers import interfaces
 from opendbc.car.vehicle_model import VehicleModel
 from openpilot.selfdrive.controls.lib.blinker_lateral_pause import BlinkerLateralHold, lat_active_with_blinker_pause
 from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
-  PREAP_FINGERPRINT, DriverLateralHandoff, apply_lat_authority)
+  PARAM_DRIVER_LAT_HANDOFF, DriverLateralHandoff, apply_lat_authority,
+  handoff_enabled)
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
@@ -48,8 +49,10 @@ class Controls:
     self.curvature = 0.0
     self.desired_curvature = 0.0
     self.blinker_lat_hold = BlinkerLateralHold()
-    self.lat_handoff = DriverLateralHandoff(
-      enabled=self.CP.carFingerprint == PREAP_FINGERPRINT)
+    # Default Off (NAPDriverLatHandoff=0). Pre-AP alone must not arm this
+    # after the gravel-road false-yield incident. Re-read each cycle so
+    # Settings can turn it off immediately.
+    self.lat_handoff = DriverLateralHandoff(enabled=False)
     self._lat_handoff = self.lat_handoff.update(
       engaged=False, lat_would_be_active=False,
       steering_torque=0.0, steering_rate_deg=0.0)
@@ -129,6 +132,9 @@ class Controls:
     # Soft wheel yield scales actuator authority only. latActive stays true so
     # LaC is not reset and apply_steer_angle_limits_vm does not snap angle.
     # Longitudinal / enabled are untouched. ALC and blinker pause are not this path.
+    self.lat_handoff.enabled = handoff_enabled(
+      fingerprint=self.CP.carFingerprint,
+      param_on=bool(self.params.get_bool(PARAM_DRIVER_LAT_HANDOFF)))
     self._lat_handoff = self.lat_handoff.update(
       engaged=bool(CC.enabled),
       lat_would_be_active=bool(CC.latActive),

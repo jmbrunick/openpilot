@@ -1,5 +1,10 @@
 """Pre-AP driver-wheel temporary lateral handoff.
 
+DEFAULT OFF. Do not enable for normal driving. After #71, gravel / low
+friction false-yielded and the car steered off-path toward a ditch.
+`DriverLateralHandoff()` and `NAPDriverLatHandoff` default Off. Use
+nap-release for driving until low-friction behavior is reviewed.
+
 Light torsion-bar input yields NAP lateral without tearing down the OP
 session or longitudinal. Blinker-turn pause / ALC / panda hands-on >= 2
 are separate paths and are not reused as the trigger.
@@ -25,9 +30,14 @@ handsOnLevel >= 1 is NOT the soft-yield trigger: stock EPAS already uses
 level 1 is a normal hands-on-the-wheel posture while OP is engaged.
 handsOnLevel >= 2 stays the hard/safety path.
 
-Quiet (start the 0.25 s hand-back timer) uses low torsion AND low
-steering-angle rate. Rate is ignored during the 1 s blend because OP's
-own return-to-lane moves the wheel.
+Quiet (start the 0.25 s hand-back timer) is torque / hands only:
+|EPAS_torsionBarTorque| at or below the 0.3 Nm release hysteresis.
+Steering-angle rate is not part of quiet while yielded. After the
+driver lets go, caster self-center and road motion keep measured
+CS.steeringRateDeg / StW_AnglHP_Spd above 25 deg/s on a moving car,
+so a rate AND torque gate never completed the 0.25 s timer on-car.
+Rate is also ignored during the 1 s blend because OP's own
+return-to-lane moves the wheel.
 """
 
 from __future__ import annotations
@@ -54,7 +64,9 @@ SOFT_YIELD_RELEASE_NM = 0.3 * float(STEER_THRESHOLD)  # 0.3 Nm release hysteresi
 SOFT_YIELD_DEBOUNCE_FRAMES = 8  # 80 ms at 100 Hz
 SOFT_YIELD_RELEASE_FRAMES = 5   # 50 ms below release before clearing latch
 
-# Held-correction / still-turning while yielded. DBC resolution is 0.5 deg/s.
+# Historical rate gate (25 deg/s). Intentionally unused while yielded:
+# on-car measured rate after release is caster / road, not driver intent.
+# Kept so tests record the old number and that it must not block resume.
 STEER_RATE_QUIET_DEG_S = 25.0
 
 # --- timing / UI ---
@@ -76,6 +88,15 @@ TESLA_MAX_ANGLE_RATE_DEG_PER_20MS = 5.0
 SMOOTHSTEP_MAX_SLOPE = 1.5
 
 PREAP_FINGERPRINT = "TESLA_MODEL_S_PREAP"
+# Settings → NAP. Default Off after a gravel-road false-yield incident
+# (car steered off-path). Do not enable for normal driving until
+# low-friction behavior is reviewed. Use nap-release for driving.
+PARAM_DRIVER_LAT_HANDOFF = "NAPDriverLatHandoff"
+
+
+def handoff_enabled(*, fingerprint: str, param_on: bool) -> bool:
+  """Opt-in only. Pre-AP fingerprint is not enough."""
+  return bool(param_on) and fingerprint == PREAP_FINGERPRINT
 
 
 def smoothstep(t: float) -> float:
@@ -123,7 +144,9 @@ class HandoffOutput:
 class DriverLateralHandoff:
   """Process-local latch: light wheel input yields lat; quiet + 1 s S-curve hands it back."""
 
-  def __init__(self, enabled: bool = True):
+  def __init__(self, enabled: bool = False):
+    # Default Off: rumble / low-friction can false-yield and drop lat
+    # authority. Must be explicitly enabled (NAPDriverLatHandoff).
     self.enabled = bool(enabled)
     self._reset()
 
@@ -183,6 +206,7 @@ class DriverLateralHandoff:
       dt = DT_CTRL
 
     if not self.enabled:
+      self._reset()
       return HandoffOutput(1.0, False, False, False)
 
     # Blinker pause / standstill / faults already cleared lat_would_be_active.
@@ -194,16 +218,18 @@ class DriverLateralHandoff:
 
     mag = abs(float(steering_torque))
     pressed = self._update_soft_pressed(steering_torque)
-    turning = abs(float(steering_rate_deg)) > STEER_RATE_QUIET_DEG_S
+    # steering_rate_deg is accepted for the controlsd call site but is
+    # not a quiet/yield signal (see module docstring).
+    _ = steering_rate_deg
     holding_torque = mag > SOFT_YIELD_RELEASE_NM
 
     if not self._yielded and not self._blending:
       if pressed:
         self._enter_yield()
     elif self._yielded:
-      # Quiet is the live signal, not the trigger latch, so the 0.25 s
-      # timer starts as soon as torsion and rate are low.
-      if mag >= SOFT_YIELD_TRIGGER_NM or turning or holding_torque:
+      # Quiet is live torsion, not the press latch and not rate. The
+      # 0.25 s timer starts as soon as |torque| is at or below release.
+      if holding_torque:
         self._enter_yield()
       else:
         self._quiet_s += dt
