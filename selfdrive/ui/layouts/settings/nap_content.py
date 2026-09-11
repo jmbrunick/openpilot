@@ -26,11 +26,12 @@ NAP_DRIVER_LAT_HANDOFF = "NAPDriverLatHandoff"
 NAP_FORCE_OFFROAD = "NAPForceOffroad"
 DRIVER_LAT_HANDOFF_DESCRIPTION = (
   "Default On. A gentle, quick hand push (~0.70 Nm for 0.14 s) "
-  "yields NAP lateral; long stays on. Let go and the wheel blends "
-  "back over 1 s immediately. Short gravel / crosswind spikes "
-  "should not trip. Gray chrome means lat yielded and NAP stops "
-  "fighting the wind — turn Off if that happens on rumble. Off = "
-  "stock lat, no yield."
+  "yields NAP lateral; long stays on. Stays yielded while hands "
+  "are on the rim. Hands off ~80 ms, then the wheel blends back "
+  "over 1 s. Short gravel / crosswind spikes should not trip. "
+  "Gray chrome means lat yielded and NAP stops fighting the "
+  "wind — turn Off if that happens on rumble. Off = stock lat, "
+  "no yield."
 )
 FORCE_OFFROAD_DESCRIPTION = (
   "WARNING: Forces the device offroad and disengages openpilot even while "

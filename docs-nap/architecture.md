@@ -82,7 +82,7 @@ Pre-AP `TurnIndLvr_Stat` is only IDLE / LEFT / RIGHT / SNA — no tip vs latch b
 
 ## Driver-wheel temporary lateral handoff
 
-**Default On** (`NAPDriverLatHandoff=1`). Gentle 0.70 Nm / 140 ms consecutive push yields lat; 1 s blend starts on release (no quiet wait). Blinker-turn resume uses the same pin-to-wheel + 1 s blend so a lot path does not yank. Turn Off in Settings → NAP if gravel or wind false-yields. `latActive` stays true on soft-yield (no VM snap); `desired_curvature` pins to measured while yielded or while lat is paused. See [engagement.md](engagement.md#driver-wheel-temporary-lateral-handoff).
+**Default On** (`NAPDriverLatHandoff=1`). Gentle 0.70 Nm / 140 ms consecutive push yields lat; stay yielded while `EPAS_handsOnLevel >= 1`; 1 s blend starts after ~80 ms of hands truly off. Blinker-turn resume uses the same pin-to-wheel + 1 s blend so a lot path does not yank. Turn Off in Settings → NAP if gravel or wind false-yields. `latActive` stays true on soft-yield (no VM snap); `desired_curvature` pins to measured while yielded or while lat is paused. See [engagement.md](engagement.md#driver-wheel-temporary-lateral-handoff).
 
 ## OSM map speed (MAX)
 

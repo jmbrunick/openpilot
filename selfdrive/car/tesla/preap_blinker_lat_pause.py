@@ -62,6 +62,36 @@ def _peek_blinker_lamps(can_parsers):
     return False, False
 
 
+def _peek_hands_on_level(can_parsers) -> int:
+  """Raw EPAS_handsOnLevel 0/1/2/3. 1 = still on the rim (soft-yield hold)."""
+  try:
+    from opendbc.car import Bus
+    epas = can_parsers[Bus.chassis].vl["EPAS_sysStatus"]
+    return int(epas.get("EPAS_handsOnLevel", 0) or 0)
+  except Exception:
+    return 0
+
+
+def _publish_hands_on_level(ret, hands: int) -> None:
+  """Expose EPAS hands-on to controlsd for soft lat hold.
+
+  Prefer cereal handsOnLevel when the schema has it. Also stash the
+  discrete 0/1/2/3 on steeringTorqueEps (unused on Pre-AP angle control)
+  so a nap-dev-only PR works without an opendbc cereal bump.
+  """
+  hands = int(max(0, min(3, hands)))
+  if hasattr(ret, 'handsOnLevel'):
+    try:
+      ret.handsOnLevel = hands
+    except Exception:
+      pass
+  if hasattr(ret, 'steeringTorqueEps'):
+    try:
+      ret.steeringTorqueEps = float(hands)
+    except Exception:
+      pass
+
+
 def _peek_steering_override(can_parsers):
   """(steering_pressed, steering_disengage) from EPAS.
 
@@ -328,7 +358,12 @@ def _update_preap(cs, can_parsers):
       steering_disengage=disengage,
       **_hold_kwargs(engagement))
     _drop_long_if_driver_turn(engagement)
-  return _ORIG_UPDATE(cs, can_parsers)
+  ret = _ORIG_UPDATE(cs, can_parsers)
+  hands = int(getattr(cs, 'hands_on_level', 0) or 0)
+  if hands <= 0:
+    hands = _peek_hands_on_level(can_parsers)
+  _publish_hands_on_level(ret, hands)
+  return ret
 
 
 def _rewire_tesla_carstate_update():

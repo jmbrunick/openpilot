@@ -14,7 +14,7 @@ from opendbc.car.vehicle_model import VehicleModel
 from openpilot.selfdrive.controls.lib.blinker_lateral_pause import BlinkerLateralHold, lat_active_with_blinker_pause
 from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   PARAM_DRIVER_LAT_HANDOFF, DriverLateralHandoff, apply_lat_authority,
-  handoff_enabled, handoff_new_desired_curvature,
+  cs_hands_on_level, handoff_enabled, handoff_new_desired_curvature,
   pin_desired_curvature_to_measured)
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature
@@ -151,6 +151,7 @@ class Controls:
       alc_active=alc_active,
       blinker_paused=bool(
         self.blinker_lat_hold.holding or self.blinker_lat_hold.turn_active),
+      hands_on_level=cs_hands_on_level(CS),
     )
 
     actuators = CC.actuators
