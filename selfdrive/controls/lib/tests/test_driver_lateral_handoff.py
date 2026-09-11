@@ -42,6 +42,7 @@ from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   handoff_new_desired_curvature,
   hud_engaged_status,
   is_disturbance,
+  lat_active_after_handoff,
   pin_desired_curvature_to_measured,
   required_press_frames,
   smoothstep,
@@ -110,17 +111,19 @@ def _hands_off(h, *, torque=0.0, rate=0.0):
 def test_thresholds_are_derived_from_real_steering_pressed():
   assert STEER_THRESHOLD == 1
   assert HANDS_ON_DISENGAGE_LEVEL == 2
-  assert SOFT_YIELD_TRIGGER_NM == 0.70 * float(STEER_THRESHOLD)
+  assert SOFT_YIELD_TRIGGER_NM == 0.55 * float(STEER_THRESHOLD)
   assert SOFT_YIELD_RELEASE_NM == 0.40 * float(STEER_THRESHOLD)
   assert SOFT_YIELD_RELEASE_NM < SOFT_YIELD_TRIGGER_NM
-  assert SOFT_YIELD_DEBOUNCE_FRAMES == 14
-  assert SOFT_YIELD_FAST_DEBOUNCE_FRAMES == 8
+  assert SOFT_YIELD_DEBOUNCE_FRAMES == 9
+  assert SOFT_YIELD_FAST_DEBOUNCE_FRAMES == 6
   assert SOFT_YIELD_FAST_DEBOUNCE_FRAMES < SOFT_YIELD_DEBOUNCE_FRAMES
   assert SOFT_YIELD_FAST_DEBOUNCE_FRAMES > 5  # gravel spike bursts
   assert required_press_frames(SOFT_YIELD_TRIGGER_NM) == SOFT_YIELD_DEBOUNCE_FRAMES
   assert required_press_frames(float(STEER_THRESHOLD)) == SOFT_YIELD_FAST_DEBOUNCE_FRAMES
   assert required_press_frames(0.85) < SOFT_YIELD_DEBOUNCE_FRAMES
   assert required_press_frames(0.85) > SOFT_YIELD_FAST_DEBOUNCE_FRAMES
+  assert 0.50 < SOFT_YIELD_TRIGGER_NM <= 0.55
+  assert 8 <= SOFT_YIELD_DEBOUNCE_FRAMES <= 10
   assert PREAP_FINGERPRINT == "TESLA_MODEL_S_PREAP"
   assert QUIET_WAIT_S == 0.0
   assert HANDS_ON_HOLD_LEVEL == 1
@@ -139,9 +142,13 @@ def test_thresholds_are_derived_from_real_steering_pressed():
   assert EMERGENCY_DECEL_FRAMES == 8
   assert EMERGENCY_MIN_V_EGO == 1.0
   assert YIELD_EMERGENCY_WINDOW_S == 2.0
-  assert torque_rate_aligned(0.70, 10.0)
-  assert not torque_rate_aligned(0.70, -10.0)
-  assert not torque_rate_aligned(0.70, 4095.0)
+  assert torque_rate_aligned(SOFT_YIELD_TRIGGER_NM, 10.0)
+  assert not torque_rate_aligned(SOFT_YIELD_TRIGGER_NM, -10.0)
+  assert not torque_rate_aligned(SOFT_YIELD_TRIGGER_NM, 4095.0)
+  assert not lat_active_after_handoff(True, True)
+  assert lat_active_after_handoff(True, False)
+  assert not lat_active_after_handoff(False, True)
+  assert not lat_active_after_handoff(False, False)
   assert not emergency_brake(
     brake_applied=True, a_ego=-1.0, v_ego=15.0, decel_frames=20)
   assert emergency_brake(
@@ -172,21 +179,21 @@ def test_param_defaults_on_and_toggle_off_disables():
   assert not out.ui_paused
 
 
-def test_light_input_yields_lateral_keeps_long_and_lat_active():
+def test_light_input_yields_lateral_keeps_long_session():
+  """Yield frees the EPS; long / session stay up (not a hard cancel)."""
   h = _new()
   enabled = True
   long_override = False
   op_long = True
-  lat_active = True  # blinker helper already ran; handoff does not clear this
   out = _yield(h)
   long_active = enabled and not long_override and op_long
-  assert lat_active
   assert long_active
   assert enabled
   assert out.yielded
   assert out.authority == 0.0
   assert out.ui_paused
   assert not out.emergency_cancel
+  assert not lat_active_after_handoff(True, out.yielded)
 
 
 def test_below_threshold_road_noise_does_not_yield():
@@ -230,25 +237,31 @@ def test_gravel_spike_train_does_not_yield():
   assert out.authority == 1.0
 
 
-def test_old_half_nm_sustained_does_not_yield():
-  """0.5–0.65 Nm (old rumble / crosswind-ish) must not enter yield."""
+def test_rumble_at_half_nm_with_hands_resting_does_not_yield():
+  """#71 0.50 / 80 ms rumble: hands off, or ~0.50 Nm with hands, no yield."""
   h = _new()
   for _ in range(int(1.5 / DT)):
-    out = _step(h, torque=0.65)
+    out = _step(h, torque=0.50, rate=20.0, hands_on=0)
+  assert not out.yielded
+  assert out.authority == 1.0
+  h = _new()
+  for _ in range(int(1.5 / DT)):
+    out = _step(h, torque=0.50, rate=20.0, hands_on=1)
   assert not out.yielded
   assert out.authority == 1.0
 
 
-def test_gentle_070_for_140ms_yields():
-  """0.70 Nm + hands for 140 ms yields; rate is not required."""
+def test_gentle_055_for_90ms_yields():
+  """0.55 Nm + hands for 90 ms yields; rate is not required."""
   h = _new()
   out = None
   for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES - 1):
-    out = _step(h, torque=0.70, rate=0.0, hands_on=1)
+    out = _step(h, torque=0.55, rate=0.0, hands_on=1)
     assert not out.yielded
-  out = _step(h, torque=0.70, rate=0.0, hands_on=1)
+  out = _step(h, torque=0.55, rate=0.0, hands_on=1)
   assert out.yielded
   assert out.authority == 0.0
+  assert not lat_active_after_handoff(True, out.yielded)
 
 
 def test_sustained_driver_input_keeps_authority_at_zero():
@@ -382,13 +395,14 @@ def test_renewed_input_during_blend_yields_and_retries_after_hands_off():
 
 
 def test_mid_band_during_blend_does_not_reyield():
-  """0.55 Nm during the return is OP/caster, not a new firm push."""
+  """Torque between release and trigger during the return is OP/caster."""
   h = _new()
   _yield(h)
   out = _hands_off(h)
   assert out.blending
+  mid = 0.5 * (SOFT_YIELD_RELEASE_NM + SOFT_YIELD_TRIGGER_NM)
   for _ in range(20):
-    out = _step(h, torque=0.55)
+    out = _step(h, torque=mid)
     assert out.blending
     assert not out.yielded
   out = _step(h, torque=SOFT_YIELD_TRIGGER_NM)
@@ -563,37 +577,36 @@ def _clip_toward(prev, target, step=0.0002):
 
 def _step_actuators(h, *, torque, desired, model_curv, meas_curv, meas_angle,
                     v_ego=20.0, hands_on=0, rate=0.0, dt=DT):
-  """Mirror controlsd: pin while yielded; clip + optional blend otherwise."""
+  """Mirror controlsd: free EPS while yielded; clip + blend on resume."""
   _ = v_ego
   out = _step(h, torque=torque, rate=rate, hands_on=hands_on, dt=dt)
+  lat_active = lat_active_after_handoff(True, out.yielded)
   new_desired = handoff_new_desired_curvature(
-    yielded=out.yielded, lat_active=True,
+    yielded=out.yielded, lat_active=lat_active,
     model_curvature=model_curv, measured_curvature=meas_curv,
   )
-  if pin_desired_curvature_to_measured(out.yielded, lat_active=True):
+  if pin_desired_curvature_to_measured(out.yielded, lat_active=lat_active):
     desired = meas_curv
   else:
     desired = _clip_toward(desired, new_desired)
   lac_angle = _angle_from_curv(desired)
-  if out.authority < 1.0:
+  if lat_active and out.authority < 1.0:
     _t, angle, curv = apply_lat_authority(
       out.authority, 0.4, lac_angle, meas_angle, desired, meas_curv)
+  elif not lat_active:
+    # EPS released: command unused; VM snaps to measured (blinker path).
+    angle, curv = meas_angle, meas_curv
   else:
     angle, curv = lac_angle, desired
   return out, desired, angle, curv
 
 
 def test_yield_pins_planner_resume_tracks_model_not_measured():
-  """Justin: green + path-back, wheel firm/holding (not path-tracking).
+  """Resume must clip from the wheel, not a model that ran ahead.
 
-  latActive stays true on purpose (no VM snap). The old path still fed
-  the model into clip_curvature during yield, so desired ran to the lane
-  while apply_lat_authority(0) commanded measured. After authority→1 the
-  raw LaC angle was already at the model; VM/EPAS stayed near measured.
-
-  Pin desired to the wheel while yielded. Blend/resume clip from that pin.
-  At authority=1 the command equals LaC(desired), which has been slewing
-  from measured toward the model — not stuck at yield-time measured.
+  Yield now clears latActive (EPS free). Pin desired to measured while
+  lat is down. Blend/resume clip from that pin. At authority=1 the
+  command equals LaC(desired), slewing from measured toward the model.
   """
   h = _new()
   model_curv = 0.012
@@ -663,6 +676,7 @@ def test_yield_pins_planner_resume_tracks_model_not_measured():
   cs = (Path(__file__).resolve().parents[4] / "selfdrive/controls/controlsd.py").read_text()
   assert "pin_desired_curvature_to_measured" in cs
   assert "handoff_new_desired_curvature" in cs
+  assert "lat_active_after_handoff" in cs
   assert "authority < 1.0" in cs
   assert "CC.latActive" in cs
   assert "cs_hands_on_level" in cs
@@ -733,9 +747,40 @@ def test_blinker_resume_with_hands_on_yields_instead_of_blend():
   assert out.yielded
   assert not out.blending
   assert out.authority == 0.0
+  assert not lat_active_after_handoff(True, out.yielded)
   out = _hands_off(h, torque=0.2)
   assert out.blending
   assert not out.yielded
+  assert lat_active_after_handoff(True, out.yielded)
+
+
+def test_yield_frees_eps_like_blinker_pause():
+  """Yield must drop latActive — not follow-measured with lat still on.
+
+  Pre-AP carcontroller sends DAS_steeringControlType=0 when latActive
+  is false (same as blinker pause). Follow-measured with latActive true
+  is closed-loop hold — the wrestling Justin felt after #79 "yielded."
+  """
+  h = _new()
+  out = _yield(h, torque=0.60, rate=0.0, hands_on=1)
+  assert out.yielded
+  assert not lat_active_after_handoff(True, out.yielded)
+  # Blinker pause is a separate lat-down path; do not steal it.
+  h = _new()
+  out = _step(h, torque=0.8, lat=False, blinker_paused=True)
+  assert out.authority == 1.0
+  assert not out.yielded
+  assert not lat_active_after_handoff(False, out.yielded)
+  cs = (Path(__file__).resolve().parents[4] / "selfdrive/controls/controlsd.py").read_text()
+  assert "lat_active_after_handoff" in cs
+  tesla_cc = (Path(__file__).resolve().parents[4] /
+              "opendbc_repo/opendbc/car/tesla/carcontroller.py").read_text()
+  assert "lat_active = CC.latActive" in tesla_cc
+  assert "create_steering_control" in tesla_cc
+  tesla_can = (Path(__file__).resolve().parents[4] /
+               "opendbc_repo/opendbc/car/tesla/teslacan_legacy.py").read_text()
+  assert "DAS_steeringControlType" in tesla_can
+  assert "1 if enabled else 0" in tesla_can
 
 
 def test_cs_hands_on_level_reads_cereal_and_eps_stash():
@@ -897,8 +942,8 @@ def test_soft_yield_below_hands_on_2_hard_cancel():
   assert HANDS_ON_DISENGAGE_LEVEL == 2
 
 
-def test_near_steer_threshold_yields_before_full_140ms():
-  """As torsion approaches 1.0 Nm, require fewer than 140 ms."""
+def test_near_steer_threshold_yields_before_full_floor_debounce():
+  """As torsion approaches 1.0 Nm, require fewer frames than the floor."""
   h = _new()
   torque = 0.98
   needed = required_press_frames(torque)
