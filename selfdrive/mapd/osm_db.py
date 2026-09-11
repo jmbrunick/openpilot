@@ -483,6 +483,12 @@ class OsmSpeedLimitDB:
       return match
     if ahead.speed_limit_ms + 0.3 < match.speed_limit_ms:
       return match
+    # Same named road changing speed is a real zone end, not cross-street
+    # bleed. Do not raise posted early; the 1.5 s GNSS offset does that.
+    match_name = (match.road_name or "").strip().lower()
+    ahead_name = (ahead.road_name or "").strip().lower()
+    if match_name and match_name == ahead_name and ahead.speed_limit_ms > match.speed_limit_ms + 0.3:
+      return match
     if not self._limit_persists_min_zone(plat, plon, bearing_deg, ahead):
       return match
     stable = self._best_match(lat, lon, bearing_deg, along_route=ahead)
