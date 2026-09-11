@@ -3,7 +3,7 @@
 Schema is NAP-owned. Data is OpenStreetMap (ODbL). Query path is GPS → nearest
 heading-aligned way. nextSpeedLimit follows that matched way (bearing + class),
 not a nearby off-route fill. A lower limit that only lasts MIN_ZONE_LENGTH_M
-(~50 ft) along heading is ignored (cross-street bleed / intersection stub).
+(~250 ft) along heading is ignored (cross-street bleed / intersection stub).
 Tagged OSM maxspeed is authoritative; Minnesota packs may include statutory
 estimates for unmarked highways (never uploaded to OSM).
 """
@@ -482,6 +482,12 @@ class OsmSpeedLimitDB:
     if ahead is None or int(ahead.way_id) == int(match.way_id):
       return match
     if ahead.speed_limit_ms + 0.3 < match.speed_limit_ms:
+      return match
+    # Same named road changing speed is a real zone end, not cross-street
+    # bleed. Do not raise posted early; the 1.5 s GNSS offset does that.
+    match_name = (match.road_name or "").strip().lower()
+    ahead_name = (ahead.road_name or "").strip().lower()
+    if match_name and match_name == ahead_name and ahead.speed_limit_ms > match.speed_limit_ms + 0.3:
       return match
     if not self._limit_persists_min_zone(plat, plon, bearing_deg, ahead):
       return match
