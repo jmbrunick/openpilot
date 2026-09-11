@@ -21,13 +21,24 @@ FOLLOW_DISTANCE_VALUES = list(range(1, 8))
 FOLLOW_DISTANCE_LABELS = [str(i) for i in FOLLOW_DISTANCE_VALUES]
 FOLLOW_DISTANCE_DEFAULT = 4
 
+NAP_DRIVER_LAT_HANDOFF = "NAPDriverLatHandoff"
 NAP_FORCE_OFFROAD = "NAPForceOffroad"
+DRIVER_LAT_HANDOFF_DESCRIPTION = (
+  "Default On. A light purposeful push with a hand on the rim frees "
+  + "the wheel (OP stops steering the EPS) — typically avoiding "
+  + "something. Long stays on. Stays free while hands are on the rim. "
+  + "Hands off ~80 ms, then the wheel blends back over 1 s. Gravel / "
+  + "wind / road-crown pressure should not trip. A hard brake during "
+  + "that yield fully cancels openpilot (chime); a light brake is still "
+  + "the silent long pause + one SET. Gray chrome means lat yielded — "
+  + "turn Off if rumble still false-yields. Off = stock lat, no yield."
+)
 FORCE_OFFROAD_DESCRIPTION = (
   "WARNING: Forces the device offroad and disengages openpilot even while "
-  "moving. Drive manually — no steering or accel assist while this is on. "
-  "Unlocks Download US Maps, Refresh maps, software install, and other "
-  "offroad-only NAP actions. Default Off. Clears when you toggle Off, "
-  "Reset to Defaults, reboot, or the next time ignition turns on."
+  + "moving. Drive manually — no steering or accel assist while this is on. "
+  + "Unlocks Download US Maps, Refresh maps, software install, and other "
+  + "offroad-only NAP actions. Default Off. Clears when you toggle Off, "
+  + "Reset to Defaults, reboot, or the next time ignition turns on."
 )
 
 # Radar lateral offset bounds (meters). Added to radar yRel in

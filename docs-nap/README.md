@@ -9,7 +9,7 @@ Documentation for contributors working on NotAutopilot. These are NAP-specific �
 - **[safety-model.md](safety-model.md)** — panda safety invariants for the Pre-AP target
 - **[map-speed.md](map-speed.md)** — OSM map speed → HUD MAX / cruise set speed (comma 3X)
 - **[force-offroad.md](force-offroad.md)** — Settings → NAP Force Offroad / Go Offline (started=false while moving)
-- **[engagement.md](engagement.md)** — stalk FSM, pedal-vs-no-pedal engagement paths, brake behavior
+- **[engagement.md](engagement.md)** — stalk FSM, pedal-vs-no-pedal engagement paths, brake behavior, driver-wheel lateral handoff (default On; free-wheel yield; emergency hard-brake full cancel; Settings can disable)
 
 ## Layout
 
