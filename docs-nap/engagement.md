@@ -125,8 +125,8 @@ Release hysteresis stays **0.40 Nm** (press-latch only). Do **not** go back to r
 
 1. OP engaged and providing lateral. Intent detected → `carControl.latActive` goes **false**. Pre-AP carcontroller sends `DAS_steeringControlType=0` and `apply_steer_angle_limits_vm` snaps `apply_angle` to measured (stock inactive). The driver steers the car; OP is not angle-controlling to the rim. `desired_curvature` is **pinned to measured** so resume starts from the wheel. Longitudinal and `cruiseEnabled` stay up. Stalk cancel / doors / hands-on ≥ 2 still hard-disengage. An occasional light torsion probe is OK to confirm he is still there — hold is `EPAS_handsOnLevel`, not continuous angle-hold.
 2. Stay yielded (EPS free) while still maneuvering: **`EPAS_handsOnLevel >= 1`** **or** a renewed **≥ 0.55 Nm** push. Mid-dodge torsion dips must **not** start the hand-back. Rate is not a hold signal (caster / road after release).
-3. After hands go to **0** for **~80 ms**, lat comes back and a **1.0 s** smoothstep (`t²(3−2t)`) blends authority 0 → 1. `QUIET_WAIT_S` stays 0. The pin lifts when blend starts. `apply_lat_authority` is skipped at authority=1 and while lat is down.
-4. Renewed **hands-on** or a firm push ≥ 0.55 Nm during the blend immediately re-yields (EPS free again). Hands off ~80 ms and the 1 s blend retries.
+3. After hands go to **0** for **~0.25 s**, lat comes back and a **1.0 s** smoothstep (`t²(3−2t)`) blends authority 0 → 1. `QUIET_WAIT_S` stays 0 (no torsion-quiet — that blended on mid-dodge dips). The pin lifts when blend starts. `apply_lat_authority` is skipped at authority=1 and while lat is down.
+4. Renewed **hands-on** or a firm push ≥ 0.55 Nm during that wait or the blend immediately re-yields (EPS free again) and resets the delay. Hands off ~0.25 s and the 1 s blend retries.
 5. Hand-back is the S-curve from the wheel, not a grab onto the model. Blinker rising-edge uses the same 1 s blend.
 6. HUD: `controlsState.latHandoffPaused` stays set until authority ≥ **0.70**. Gray **override**, no sounds. Green + on-screen path is not enough — the wheel must unwind onto that path.
 
@@ -163,8 +163,8 @@ Do these at a quiet road / parking lot first, then a known pothole stretch. Peda
 1. **Engage** with a double-pull. Confirm green engaged chrome and that long/cruise is holding speed.
 2. **Intentional dodge** (hands on, light purposeful push ≥ ~0.55 Nm for ~90 ms — the wheel does **not** have to be moving). Includes fighting OP to leave the path (high tracking error, low rate). The wheel should **just let go** (EPS free, not still holding/steering to the rim) **before** a hard yank / hands-on ≥ 2. Speed control must stay on. HUD should go **gray override**, not “Steering Disengaged”, and must not play the disengage chime.
 3. **Hold** through a pothole dodge (hands still on the rim). Authority must stay yielded even if torsion dips.
-4. **Release.** Hands clearly off the rim. After ~80 ms the wheel eases back onto the path over about **one second**. When green returns, the wheel must follow the on-screen path.
-5. **Re-grab during the blend.** Hands back on or a firm push: yield again. Hands off ~80 ms and the 1 s blend retries.
+4. **Release.** Hands clearly off the rim. After ~0.25 s the wheel eases back onto the path over about **one second**. A brief hands-off or right-then-left crossover during the dodge must **not** snatch. When green returns, the wheel must follow the on-screen path.
+5. **Re-grab during the wait or blend.** Hands back on or a firm push: yield again (delay resets). Hands off ~0.25 s and the 1 s blend retries.
 6. **Road rumble / crosswind / crown** with hands resting: must **not** gray. Wind that makes NAP fight the path (high tracking error, low torsion) must **not** yield. If it still does, turn Soft Lateral Handoff **Off**. Do not lower panda / `STEER_THRESHOLD`.
 7. **Light brake** (tap, not a panic stop) while engaged, yielded or not: silent long pause + held MAX; one SET resumes. No disengage chime. Sticky MAX (#72+#77) unchanged.
 8. **Hard brake during / just after a soft-lat dodge** (firm pedal, strong decel): full OP cancel, “Steering Disengaged”, disengage chime. Not a silent pause. One SET is a new engage, not resume-at-held-MAX.
