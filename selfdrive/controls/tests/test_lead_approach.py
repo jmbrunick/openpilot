@@ -1,11 +1,12 @@
 from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_APPROACH_A_MS2,
+  LEAD_APPROACH_FAST_FACTOR,
   LEAD_APPROACH_HEADSTART_S,
-  LEAD_APPROACH_MAX_START_M,
   NAP_T_FOLLOW,
   STOP_DISTANCE,
   lead_approach_decel_ms2,
   lead_approach_need_m,
+  lead_approach_rel_need_m,
   nap_t_follow,
 )
 from openpilot.selfdrive.mapd.constants import DECREASE_START_MARGIN_M, LOOKAHEAD_NORMAL, map_brake_a_ms2
@@ -26,11 +27,12 @@ def test_lead_approach_keeps_map_brake_not_map_110m_margin():
   assert abs(LEAD_APPROACH_A_MS2 - map_brake_a_ms2(LOOKAHEAD_NORMAL)) < 1e-9
   assert abs(DECREASE_START_MARGIN_M - 110.0) < 1e-9
   assert abs(LEAD_APPROACH_HEADSTART_S - 12.0) < 1e-9
-  assert abs(LEAD_APPROACH_MAX_START_M - 140.0) < 1e-9
+  assert abs(LEAD_APPROACH_FAST_FACTOR - 2.5) < 1e-9
   assert LEAD_APPROACH_A_MS2 < 1.0
   assert LEAD_APPROACH_A_MS2 < 2.5
   import openpilot.selfdrive.controls.lib.lead_approach as lead_approach
   assert not hasattr(lead_approach, "LEAD_APPROACH_MARGIN_M")
+  assert not hasattr(lead_approach, "LEAD_APPROACH_MAX_START_M")
 
 
 def test_lead_approach_eases_before_mpc_comfort_brake_window():
@@ -42,20 +44,22 @@ def test_lead_approach_eases_before_mpc_comfort_brake_window():
   t7 = nap_t_follow(7)
   d_follow = t4 * v_lead + STOP_DISTANCE
   need = lead_approach_need_m(v_ego, v_lead, t_follow=t4)
-  rel_need = (v_rel * v_rel) / (2.0 * LEAD_APPROACH_A_MS2)
+  rel_need = lead_approach_rel_need_m(v_ego, v_lead)
   mpc_need = (v_rel * v_rel) / (2.0 * 2.5)
   map_road_need = (v_ego * v_ego - v_lead * v_lead) / (2.0 * LEAD_APPROACH_A_MS2) + 110.0
-  assert abs(need - (rel_need + v_rel * LEAD_APPROACH_HEADSTART_S)) < 1e-6
+  light = rel_need + v_rel * LEAD_APPROACH_HEADSTART_S
+  fast = LEAD_APPROACH_FAST_FACTOR * rel_need
+  assert abs(need - max(light, fast)) < 1e-6
   assert need > mpc_need
   # Map's road-distance +110 m is much farther (radar-edge hang). Do not use it.
   assert need < map_road_need - 50.0
-  assert d_follow + need <= LEAD_APPROACH_MAX_START_M + 1e-6
+  # 10 mph is a small/medium close: still inside radar, not a 160 m hang.
   assert d_follow + need < 150.0
   far = d_follow + need + 15.0
   assert lead_approach_decel_ms2(v_ego, v_lead, far, t4) is None
   at_open = lead_approach_decel_ms2(v_ego, v_lead, d_follow + need - 1.0, t4)
   assert at_open is not None
-  # Entering the window is gentler than peak 0.80; more distance, not more a.
+  # Small/medium delta: light open, not a 0.80 slam.
   assert -0.20 < at_open < -0.10
   mid = lead_approach_decel_ms2(v_ego, v_lead, d_follow + 0.45 * need, t4)
   assert mid is not None and -LEAD_APPROACH_A_MS2 <= mid < 0.0
@@ -72,33 +76,72 @@ def test_lead_approach_eases_before_mpc_comfort_brake_window():
   assert lead_approach_decel_ms2(v_ego, v_lead, d_open_4 + 3.0, t4) is None
 
 
-def test_lead_approach_starts_a_little_earlier_with_lighter_open():
-  """12 s vs 8 s head-start: earlier and lighter, still closes, not radar hang."""
-  v_ego = 60.0 * 0.44704
+def test_small_delta_starts_lighter_than_fast_close():
+  """A few mph: light open, later than a 20 mph close, still reaches Follow Distance."""
+  t4 = nap_t_follow(4)
+  v_slow_ego, v_slow_lead = 55.0 * 0.44704, 50.0 * 0.44704
+  v_fast_ego, v_fast_lead = 70.0 * 0.44704, 50.0 * 0.44704
+  d_follow_slow = t4 * v_slow_lead + STOP_DISTANCE
+  d_follow_fast = t4 * v_fast_lead + STOP_DISTANCE
+  need_slow = lead_approach_need_m(v_slow_ego, v_slow_lead, t_follow=t4)
+  need_fast = lead_approach_need_m(v_fast_ego, v_fast_lead, t_follow=t4)
+  assert d_follow_slow + need_slow < d_follow_fast + need_fast
+  a_slow = lead_approach_decel_ms2(v_slow_ego, v_slow_lead, d_follow_slow + need_slow - 1.0, t4)
+  a_fast = lead_approach_decel_ms2(v_fast_ego, v_fast_lead, d_follow_fast + need_fast - 1.0, t4)
+  assert a_slow is not None and a_fast is not None
+  assert abs(a_slow) < abs(a_fast)
+  assert abs(a_slow) < 0.12
+  assert abs(a_fast) < LEAD_APPROACH_A_MS2 + 1e-9
+
+
+def test_rapid_close_starts_early_enough_for_comfort_brake():
+  """20 mph close: start by ~155 m with a real ease, not a 140 m token wait."""
+  v_ego = 70.0 * 0.44704
   v_lead = 50.0 * 0.44704
-  v_rel = v_ego - v_lead
   t4 = nap_t_follow(4)
   d_follow = t4 * v_lead + STOP_DISTANCE
-  rel_need = (v_rel * v_rel) / (2.0 * LEAD_APPROACH_A_MS2)
-  need_8 = rel_need + v_rel * 8.0
-  need_12 = lead_approach_need_m(v_ego, v_lead, t_follow=t4)
-  assert abs(need_12 - (rel_need + v_rel * 12.0)) < 1e-6
-  extra_m = need_12 - need_8
-  assert 16.0 < extra_m < 20.0  # ~18 m / ~4 s of 10 mph closing
-  d_open_8 = d_follow + need_8
-  d_open_12 = d_follow + need_12
-  assert d_open_12 > d_open_8
-  assert d_open_12 < 110.0
-  assert lead_approach_decel_ms2(v_ego, v_lead, d_open_8 + 3.0, t4) is not None
-  a_old_open = -(v_rel * v_rel) / (2.0 * need_8)
-  a_new_open = lead_approach_decel_ms2(v_ego, v_lead, d_open_12 - 1.0, t4)
-  assert a_new_open is not None
-  assert a_old_open < a_new_open < 0.0  # new open is lighter (less negative)
-  assert abs(a_new_open) < 0.18
-  assert abs(a_old_open) > 0.19
+  rel_need = lead_approach_rel_need_m(v_ego, v_lead)
+  need = lead_approach_need_m(v_ego, v_lead, t_follow=t4)
+  assert need >= LEAD_APPROACH_FAST_FACTOR * rel_need - 1e-6
+  # Enough slack that 0.80 can finish; do not cap behind 140 m.
+  assert d_follow + need > 140.0
+  a_155 = lead_approach_decel_ms2(v_ego, v_lead, 155.0, t4)
+  assert a_155 is not None
+  assert -LEAD_APPROACH_A_MS2 <= a_155 < -0.20
+  # Remaining slack at 155 m still above the 0.80 catch, so we do not arrive hot.
+  assert 155.0 - d_follow > rel_need
   peak = lead_approach_decel_ms2(v_ego, v_lead, d_follow + rel_need, t4)
   assert peak is not None
   assert abs(peak + LEAD_APPROACH_A_MS2) < 0.05
+
+
+def test_rapid_close_still_settles_on_follow_distance():
+  """20 mph from 160 m: ease early, keep closing, do not match at radar range."""
+  v_ego = 70.0 * 0.44704
+  v_lead = 50.0 * 0.44704
+  t4 = nap_t_follow(4)
+  d_follow = t4 * v_lead + STOP_DISTANCE
+  d_rel = 160.0
+  dt = 0.05
+  min_d_rel = d_rel
+  saw_overlay = False
+  for _ in range(int(80.0 / dt)):
+    a = lead_approach_decel_ms2(v_ego, v_lead, d_rel, t4)
+    if a is not None:
+      saw_overlay = True
+      assert a >= -LEAD_APPROACH_A_MS2 - 1e-9
+    else:
+      a = 0.0
+    v_ego = max(0.0, v_ego + a * dt)
+    d_rel -= (v_ego - v_lead) * dt
+    min_d_rel = min(min_d_rel, d_rel)
+    if d_rel <= d_follow + 2.0:
+      break
+  assert saw_overlay
+  assert min_d_rel <= d_follow + 8.0
+  assert d_rel <= d_follow + 8.0
+  assert v_ego <= v_lead + 1.5
+  assert d_rel < 80.0
 
 
 def test_lead_approach_does_not_brake_at_radar_edge_for_moderate_delta():
@@ -147,9 +190,11 @@ def test_t_follow_table_stays_in_sync_with_mpc():
 def test_stopped_lead_still_plans_a_comfortable_stop_gap():
   v_ego = 20.0
   t4 = nap_t_follow(4)
-  need = lead_approach_need_m(v_ego, 0.0, t_follow=t4)
+  rel_need = lead_approach_rel_need_m(v_ego, 0.0)
   d_follow = STOP_DISTANCE
-  a = lead_approach_decel_ms2(v_ego, 0.0, d_follow + 0.5 * need, t4)
+  a = lead_approach_decel_ms2(v_ego, 0.0, d_follow + rel_need + 20.0, t4)
   assert a is not None and a < 0.0
   assert abs(a) <= LEAD_APPROACH_A_MS2 + 1e-9
+  # Farther than even the fast-close window: no crawl.
+  need = lead_approach_need_m(v_ego, 0.0, t_follow=t4)
   assert lead_approach_decel_ms2(v_ego, 0.0, d_follow + need + 20.0, t4) is None

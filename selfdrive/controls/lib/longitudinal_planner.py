@@ -268,9 +268,9 @@ class LongitudinalPlanner:
             # toward MAX; a slower lead (negative aTarget) still outranks map.
             output_a_target = a_up
 
-    # Slower radar lead: relative 0.80 ease, 12 s closing-speed head-start
-    # (light earlier open, not a harder peak). Map's +110 m is road distance
-    # to a sign and must not be used here (it matches speed at radar range).
+    # Slower radar lead: relative 0.80 ease. Fast closes start early enough
+    # for 0.80 to finish; small deltas start lighter. Always close onto
+    # Follow Distance — map's +110 m is a sign and must not be used here.
     # Overlay never harder than 0.80; MPC close-in may still brake harder.
     # Map MAX overlay cannot cancel this.
     if self._is_preap and sm['radarState'].leadOne.status:

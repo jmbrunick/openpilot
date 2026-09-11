@@ -1,16 +1,16 @@
-"""Earlier, gentler catch-up to a slower radar lead.
+"""Catch a slower radar lead onto the selected Follow Distance.
 
 Overlay peak is 0.80 m/s² (map Normal brake), never harder. MPC 2.5 m/s²
 still owns close-in / stopping if needed.
 
-Map drops use road-distance kinematics plus 110 m because the sign does not
-move. A radar lead does: (v_lead² - v_ego²) / (2 * slack) matches speed after
-ego travels `slack` meters of road, while the lead moves almost as far, so the
-gap barely closes. That hang sits at radar range and pulses as the track
-comes and goes.
+Keep closing until Follow Distance. Do not match speed far back (map-style
+road kinematics plus 110 m did that: the lead moves, the gap barely closes,
+and the car hangs at Bosch range).
 
-This uses relative kinematics so extra speed is bled while closing onto the
-selected Follow Distance (t_follow), not while holding outside radar.
+A fast close starts early enough that the remaining slack still fits 0.80 —
+not a token tap that arrives hot. A small speed difference starts lighter.
+Either way a = -v_rel² / (2 * slack) so extra speed is bled while the gap
+shrinks onto t_follow, not while holding outside it.
 """
 from __future__ import annotations
 
@@ -18,12 +18,11 @@ from __future__ import annotations
 STOP_DISTANCE = 6.0
 # Map Normal brake. Gentler than overlay 1.0 and MPC 2.5. Do not raise.
 LEAD_APPROACH_A_MS2 = 0.80
-# Seconds of current closing-speed added before the last-second 0.80 catch.
-# 12 s vs 8 s: ~18 m / ~4 s earlier on a 10 mph close, lighter a at the open
-# (~0.15 vs ~0.21), same 0.80 peak near Follow Distance. Still inside radar.
+# Small-delta light open: seconds of closing-speed on top of the 0.80 catch.
 LEAD_APPROACH_HEADSTART_S = 12.0
-# Bosch-range ceiling so we do not open on a flickering 160 m track.
-LEAD_APPROACH_MAX_START_M = 140.0
+# Fast-close floor: open at this multiple of the 0.80 catch distance so a
+# rapid close is a real ease (a_open ≈ 0.32), not a last-second 0.80 slam.
+LEAD_APPROACH_FAST_FACTOR = 2.5
 LEAD_APPROACH_DV_MS = 0.5  # ~1 mph; ignore radar jitter
 NAP_T_FOLLOW = (0.7, 0.9, 1.1, 1.3, 1.5, 1.7, 1.9)
 
@@ -34,27 +33,40 @@ def nap_t_follow(nap_follow_dist: int | None) -> float | None:
   return None
 
 
-def lead_approach_need_m(v_ego, v_lead, a_comfort=LEAD_APPROACH_A_MS2, t_follow=None) -> float:
-  """Meters of slack (gap above Follow Distance) at which the ease starts."""
+def lead_approach_rel_need_m(v_ego, v_lead, a_comfort=LEAD_APPROACH_A_MS2) -> float:
+  """Slack (m) needed to match speed at 0.80 without arriving hot."""
   v_rel = float(v_ego) - max(0.0, float(v_lead))
-  vt = max(0.0, float(v_lead))
   if v_rel <= 0.0 or a_comfort <= 0:
     return 0.0
-  # Relative 0.80 catch, plus head-start so we begin gently — not map's +110 m.
-  need = (v_rel * v_rel) / (2.0 * float(a_comfort)) + v_rel * LEAD_APPROACH_HEADSTART_S
-  if t_follow is not None and float(t_follow) > 0:
-    d_follow = float(t_follow) * vt + STOP_DISTANCE
-    need = min(need, max(0.0, LEAD_APPROACH_MAX_START_M - d_follow))
-  return need
+  return (v_rel * v_rel) / (2.0 * float(a_comfort))
+
+
+def lead_approach_need_m(v_ego, v_lead, a_comfort=LEAD_APPROACH_A_MS2, t_follow=None) -> float:
+  """Meters of slack (gap above Follow Distance) at which the ease starts.
+
+  max(fast-close floor, light small-delta head-start). t_follow is accepted
+  for callers; start distance is not capped at 140 m — that delay made a
+  rapid close wait and arrive hot.
+  """
+  v_rel = float(v_ego) - max(0.0, float(v_lead))
+  if v_rel <= 0.0 or a_comfort <= 0:
+    return 0.0
+  rel_need = lead_approach_rel_need_m(v_ego, v_lead, a_comfort)
+  light_m = rel_need + v_rel * LEAD_APPROACH_HEADSTART_S
+  fast_m = LEAD_APPROACH_FAST_FACTOR * rel_need
+  # t_follow is part of the public signature (planner / tests). Start distance
+  # is not capped by Follow Distance or 140 m — that delay arrived hot.
+  _ = t_follow
+  return max(light_m, fast_m)
 
 
 def lead_approach_decel_ms2(v_ego, v_lead, d_rel, t_follow, a_comfort=LEAD_APPROACH_A_MS2):
   """Comfort decel to close onto the Follow Distance gap, or None.
 
   a = -v_rel² / (2 * slack) so we arrive at the selected gap with matching
-  speed. |a| at the open is below 0.80 and only reaches 0.80 near that gap.
-  None when speeds match, the lead is faster, or the lead is still outside
-  the window (no crawl / no radar-edge hang).
+  speed. Fast closes open early enough for 0.80 to finish; small deltas open
+  lighter. None when speeds match, the lead is faster, or the lead is still
+  outside the window (no crawl / no hang at radar range).
   """
   if t_follow is None or float(t_follow) <= 0 or a_comfort <= 0:
     return None
