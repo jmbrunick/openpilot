@@ -222,11 +222,18 @@ class MapCruiseHold:
 
   Follow holds the stalk set (above or below `a`) until posted leaves `a`.
   Cap still never exceeds the posted sign. No 10s raise-above timer.
+
+  `held_max_kph` is the HUD MAX to resume after a long pause (brake / driver
+  turn). It survives `enableLongControl` dropping; only a full disengage
+  (cruiseEnabled down) or a double SET (take-speed-now) forgets it.
+  `last_posted_kph` is the last *known* OSM posted (+ offset). GPS / match
+  drop must not clear it or invent a replacement.
   """
   last_posted_kph: float | None = None
   last_raw_kph: float = V_CRUISE_UNSET
   policy_kph: float | None = None
   sticky_set_kph: float | None = None
+  held_max_kph: float | None = None
   follow_override_until: float = 0.0
 
   def reset(self) -> None:
@@ -234,6 +241,7 @@ class MapCruiseHold:
     self.last_raw_kph = V_CRUISE_UNSET
     self.policy_kph = None
     self.sticky_set_kph = None
+    self.held_max_kph = None
     self.follow_override_until = 0.0
 
 
@@ -257,9 +265,17 @@ def _sticky_decision(hold: MapCruiseHold, mode: int, posted_kph: float | None,
   if mode == MODE_CAP and posted_kph is not None and posted_kph > 0:
     held = min(held, float(posted_kph))
   hold.policy_kph = held
+  hold.held_max_kph = held
   # follow_override True so apply_map_speed cannot Follow-raise if a caller
   # ignores `sticky` and only passes the override flag.
   return MapCruiseDecision(held, True, held if write_pedal else None, True)
+
+
+def _traveled_kph(traveled_kph: float | None, raw_kph: float) -> float:
+  """Current traveled speed. Never invent a posted value."""
+  if traveled_kph is not None and 0.0 < float(traveled_kph) < V_CRUISE_UNSET:
+    return float(traveled_kph)
+  return float(raw_kph)
 
 
 def decide_map_cruise(
@@ -272,63 +288,153 @@ def decide_map_cruise(
   engage_rising: bool,
   now: float,
   stalk_pressed: bool | None = None,
+  take_speed_now: bool = False,
+  resume_held: bool = False,
+  traveled_kph: float | None = None,
+  long_active: bool = True,
 ) -> MapCruiseDecision:
   """Engage seed + sticky hold. posted_kph is OSM current maxspeed + offset.
 
-  `engaged` must be pedal-long active (not lateral-only). `stalk_pressed`
-  is extra (button edge). A 1/5 mph pedal_speed step always counts as a
-  stalk; an ego jump does not. Do not treat `stalk_pressed=False` as
-  "ignore pedal_speed" — pre-AP button events are not reliable.
+  `engaged` is the OP session (`cruiseEnabled`), not just pedal-long. A brake
+  or driver-turn long pause must keep sticky / held MAX. Full disengage
+  (cancel / door / gear / steer fault) resets.
 
-  Follow: a manual set while posted is `a` holds that absolute MAX until
-  posted changes to `b`, then Cap/Follow resume at `b`. Cap never exceeds
-  the posted sign. `now` is unused (no 10s timer); kept for call sites.
+  Double SET / initial engage is `take_speed_now` (or `engage_rising` when
+  not `resume_held` and no held MAX yet): forget sticky; MAX = current
+  posted if maps+posted known, else current traveled speed. Never invent
+  a posted value.
 
-  Pedal write (`seed_kph`) only on engage seed, a real 1/5 mph stalk step,
-  or posted-limit change. A continuing sticky hold must not write — that
-  overwrites CI.update's stalk step on the same frame. `stalk_pressed` is
-  extra; never treat False as "ignore pedal_speed".
+  One SET after a long pause is `resume_held`: restore held MAX, which may
+  already have rebased if posted changed under maps. `resume_held` is a
+  one-shot; `engage_rising` can arrive a frame later (`pedalLongActive`
+  lags `enableLongControl`). That delayed rising edge must not take-now
+  and overwrite a held MAX with current traveled speed.
+
+  Maps on: MAX rebases only when the posted *value* itself changes (known
+  a → known b), including while long-paused. GPS / match drop → posted
+  unknown: keep held MAX, do not wipe sticky, do not treat unknown as a
+  new posted.
+
+  Maps off / display: never auto-rebase.
+
+  `stalk_pressed` is extra (button edge). A 1/5 mph pedal_speed step always
+  counts as a stalk while long is active; an ego jump does not. Do not treat
+  `stalk_pressed=False` as "ignore pedal_speed" — pre-AP button events are
+  not reliable. Pause frames must not arm sticky from cruiseState.speed
+  falling back to ego.
+
+  Pedal write (`seed_kph`) only on take-speed-now, resume-held, a real 1/5
+  mph stalk step, or a posted-limit *raise*. A continuing sticky hold must
+  not write — that overwrites CI.update's stalk step on the same frame.
   """
   _ = now
-  if (not engaged) or mode not in (MODE_CAP, MODE_FOLLOW):
+  # engage_rising without a held MAX is initial engage (take current).
+  # A held MAX means this session already has a MAX — one SET after a
+  # pause must resume it even if resume_held was consumed last frame.
+  take_now = bool(take_speed_now) or (
+    bool(engage_rising) and not bool(resume_held) and hold.held_max_kph is None
+  )
+  maps_control = mode in (MODE_CAP, MODE_FOLLOW)
+
+  if not engaged:
     hold.reset()
     return MapCruiseDecision(raw_kph, False, None, False)
 
+  if not maps_control:
+    # Maps off / display / unknown posted: never invent, never auto-rebase.
+    if take_now:
+      hold.sticky_set_kph = None
+      seed = _traveled_kph(traveled_kph, raw_kph)
+      hold.held_max_kph = seed
+      hold.last_raw_kph = seed
+      hold.policy_kph = seed
+      return MapCruiseDecision(seed, False, seed, False)
+    if long_active:
+      # Pedal/HUD MAX is the source of truth while long is active. Stalk
+      # +/- must update the MAX one SET will resume. Pause publishes
+      # cruiseState.speed as ego — never latch that into held.
+      stalk_step = is_cruise_stalk_step(hold.last_raw_kph, raw_kph)
+      if 0.0 < raw_kph < V_CRUISE_UNSET and (
+        hold.held_max_kph is None or stalk_step or bool(stalk_pressed)
+      ):
+        hold.held_max_kph = float(raw_kph)
+      hold.last_raw_kph = raw_kph
+    if hold.held_max_kph is not None:
+      held = float(hold.held_max_kph)
+      hold.policy_kph = held
+    else:
+      # Paused with no latch: report raw for this frame only. Do not store
+      # it — pause raw is ego.
+      held = float(raw_kph)
+    seed = float(held) if resume_held and hold.held_max_kph is not None else None
+    return MapCruiseDecision(float(held), False, seed, False)
+
   posted_ok = posted_kph is not None and posted_kph > 0
-  # Button OR a real stalk-sized pedal step. Never OR-in an ego jump.
-  stalk_step = is_cruise_stalk_step(hold.last_raw_kph, raw_kph)
-  manual = stalk_step or bool(stalk_pressed)
-  hold.last_raw_kph = raw_kph
+  # Pause: cruiseState.speed is ego, not MAX. Do not treat that as a stalk.
+  stalk_step = bool(long_active) and is_cruise_stalk_step(hold.last_raw_kph, raw_kph)
+  manual = bool(long_active) and (stalk_step or bool(stalk_pressed))
+  if long_active:
+    hold.last_raw_kph = raw_kph
 
-  if engage_rising and posted_ok:
-    hold.sticky_set_kph = None
-    hold.follow_override_until = 0.0
-    hold.last_posted_kph = posted_kph
-    hold.last_raw_kph = float(posted_kph)
-    hold.policy_kph = float(posted_kph)
-    return MapCruiseDecision(float(posted_kph), False, float(posted_kph), False)
-
-  if posted_ok and hold.last_posted_kph is not None and not posted_limits_same(hold.last_posted_kph, posted_kph):
-    # New posted limit b: drop the set made under a. A raise seeds MAX to b
-    # (1.5 s GNSS lag). Any decrease (10/15/20 mph, short zones) must not
-    # seed — that snapped MAX when GPS or the offset crossed the boundary.
-    # Cap/Follow ease via map_kph (kin+110 m, brake 0.80) instead.
+  posted_changed = (
+    posted_ok
+    and hold.last_posted_kph is not None
+    and not posted_limits_same(hold.last_posted_kph, posted_kph)
+  )
+  if posted_changed:
+    # Posted value itself changed (known a → known b), including while
+    # long-paused. Forget sticky and rebase MAX to the new posted. A raise
+    # seeds immediately. A decrease does not cliff-seed — Cap/Follow ease
+    # via map_kph (kin+110 m) — unless this frame is one SET resume, which
+    # must write the already-rebased held MAX onto pedal.
     prev = float(hold.last_posted_kph)
     hold.sticky_set_kph = None
     hold.follow_override_until = 0.0
     hold.last_posted_kph = posted_kph
+    hold.held_max_kph = float(posted_kph)
     hold.last_raw_kph = float(posted_kph)
     hold.policy_kph = float(posted_kph)
     raised = float(posted_kph) > prev + POSTED_LIMIT_EPS_KPH
-    return MapCruiseDecision(
-      float(posted_kph) if raised else prev,
-      False,
-      float(posted_kph) if raised else None,
-      False,
-    )
+    if not take_now and not resume_held:
+      return MapCruiseDecision(
+        float(posted_kph) if raised else prev,
+        False,
+        float(posted_kph) if raised else None,
+        False,
+      )
+
+  if take_now:
+    hold.sticky_set_kph = None
+    hold.follow_override_until = 0.0
+    if posted_ok:
+      seed = float(posted_kph)
+      hold.last_posted_kph = posted_kph
+    else:
+      # Unknown posted: never invent. Take current traveled speed and hold
+      # it so a later GPS lock cannot Follow-overwrite (unknown → known is
+      # not a posted-value change).
+      seed = _traveled_kph(traveled_kph, raw_kph)
+      hold.sticky_set_kph = seed
+    hold.held_max_kph = seed
+    hold.last_raw_kph = seed
+    hold.policy_kph = seed
+    return MapCruiseDecision(seed, hold.sticky_set_kph is not None, seed,
+                             hold.sticky_set_kph is not None)
 
   if posted_ok:
+    # GPS return: record posted without rebasing (not a value change).
     hold.last_posted_kph = posted_kph
+
+  if resume_held:
+    held = hold.sticky_set_kph if hold.sticky_set_kph is not None else hold.held_max_kph
+    if held is None:
+      held = float(raw_kph)
+    if mode == MODE_CAP and posted_ok:
+      held = min(float(held), float(posted_kph))
+    hold.held_max_kph = float(held)
+    hold.policy_kph = float(held)
+    sticky = hold.sticky_set_kph is not None
+    return MapCruiseDecision(float(held), sticky, float(held), sticky)
 
   ref_posted = _ref_posted_kph(hold, posted_kph)
 
@@ -342,6 +448,7 @@ def decide_map_cruise(
     else:
       # Cap: stalk at or above posted is not sticky; apply_map_speed caps.
       hold.sticky_set_kph = None
+    hold.held_max_kph = float(raw_kph) if hold.sticky_set_kph is not None else hold.held_max_kph
 
   if hold.policy_kph is None:
     hold.policy_kph = float(raw_kph)
@@ -350,6 +457,11 @@ def decide_map_cruise(
     # Write once when pedal_speed actually stepped. stalk_pressed with
     # unchanged raw must not write the old hold over CI's in-flight step.
     return _sticky_decision(hold, mode, posted_kph, write_pedal=stalk_step)
+
+  if posted_ok and mode == MODE_FOLLOW:
+    hold.held_max_kph = float(posted_kph)
+  elif hold.held_max_kph is None:
+    hold.held_max_kph = float(hold.policy_kph)
 
   return MapCruiseDecision(float(hold.policy_kph), False, None, False)
 
