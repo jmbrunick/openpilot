@@ -221,8 +221,10 @@ class SelfdriveD:
       self.events.add_from_msg(car_events)
 
       # Tesla Pre-AP lat/long engage and disengage prompts. Long follows
-      # enableLongControl (stalk/brake intent), not interceptor handshake
-      # and not gas override. Override keeps enableLongControl true.
+      # enableLongControl (stalk intent), not interceptor handshake and
+      # not gas override. Brake / driver-turn long pause is silent; full
+      # cancel still chimes pedalCruiseDisabled. Override keeps
+      # enableLongControl true.
       if (self.CP.brand == "tesla"
           and self.CP.carFingerprint == "TESLA_MODEL_S_PREAP"
           and self.CP.openpilotLongitudinalControl
