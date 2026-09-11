@@ -11,10 +11,12 @@ Safety: Logger On starts the process + HUD. Heavy YOLO never runs while
 openpilot is actively controlling actuators (selfdriveState.active, or
 state in enabled / softDisabling / overriding). Manual driving — including
 moving, stock CC, no assist — still runs 1 Hz detect (skip-on-overrun,
-nice 19). SubMaster is polled at 20 Hz so 100 Hz selfdriveState alive/valid
-does not false-trigger WAIT. Unknown cereal after a short startup allows
-throttled detect (not WAIT). Not gated on park / Force Offroad. 4 Hz YOLO
-on a 3X starved modeld and can TAKE CONTROL / process-timeout.
+nice 19). HUD lights on the first in-threshold YOLO hit; JSONL still needs
+two agreeing frames. SubMaster is polled at 20 Hz so 100 Hz selfdriveState
+alive/valid does not false-trigger WAIT. Unknown cereal after a short
+startup allows throttled detect (not WAIT). Not gated on park / Force
+Offroad. 4 Hz YOLO on a 3X starved modeld and can TAKE CONTROL /
+process-timeout.
 """
 from __future__ import annotations
 
@@ -294,6 +296,21 @@ def yield_to_modeld() -> None:
     pass
 
 
+def should_reset_detect_after_wait(last_allow: bool | None, allow_detect: bool) -> bool:
+  """First manual tick after WAIT: do not sit out a leftover next_detect."""
+  return bool(allow_detect) and last_allow is False
+
+
+def drain_vision_latest(client) -> None:
+  """Non-blocking ROAD recv so WAIT idle does not wedge the VisionIPC socket."""
+  if client is None:
+    return
+  try:
+    client.recv(timeout_ms=0)
+  except Exception:
+    pass
+
+
 def process_frame(
   y,
   lat: float,
@@ -308,19 +325,23 @@ def process_frame(
 ) -> tuple[list, list[dict]]:
   """Detect on every ROAD frame. JSONL only with a GNSS fix.
 
-  `debounce` is applied before HUD/JSONL so a single noisy frame does not
-  count. Tests omit it and see raw detections.
+  With `debounce`: HUD uses the first in-threshold hit; JSONL still needs
+  two agreeing frames. Tests omit debounce and see raw detections.
   """
   signs = [] if (y is None and rgb is None) else detector.detect(y, rgb=rgb)
+  hud_signs = signs
+  jsonl_signs = signs
   if debounce is not None:
-    signs = debounce.update(signs, now)
+    split = debounce.update_split(signs, now)
+    hud_signs = split.hud
+    jsonl_signs = split.confirmed
   written: list[dict] = []
   if gps_ok:
-    for sign in signs:
+    for sign in jsonl_signs:
       rec = make_record(now, lat, lon, bearing, sign.mph, sign.conf)
       if logger.write(rec):
         written.append(rec)
-  return signs, written
+  return hud_signs, written
 
 
 def process_observations(
@@ -352,6 +373,10 @@ class InferSlot:
   (and leave a core hot) → Communication Issue Between Processes. pause()
   drops the result immediately and refuses new work. The leftover infer may
   still finish at nice 19; we do not start another and we do not wait.
+
+  resume() only clears the start-gate. A generation counter keeps the
+  abandoned infer from publishing after WAIT clears (that used to apply
+  skip-on-overrun to a stale leftover and delay the first real manual detect).
   """
 
   def __init__(self):
@@ -359,6 +384,7 @@ class InferSlot:
     self._cancel = threading.Event()
     self._busy = False
     self._outcome: InferOutcome | None = None
+    self._gen = 0
 
   @property
   def busy(self) -> bool:
@@ -371,6 +397,7 @@ class InferSlot:
     with self._lock:
       was_busy = self._busy
       self._outcome = None
+      self._gen += 1
       return was_busy
 
   def resume(self) -> None:
@@ -389,6 +416,7 @@ class InferSlot:
         return False
       self._busy = True
       self._outcome = None
+      gen = self._gen
 
     def run():
       t0 = time.monotonic()
@@ -398,7 +426,7 @@ class InferSlot:
         signs, written = fn()
         infer_s = time.monotonic() - t0
         with self._lock:
-          if not self._cancel.is_set():
+          if not self._cancel.is_set() and gen == self._gen:
             self._outcome = InferOutcome(list(signs), list(written), infer_s)
       except Exception:
         pass
@@ -534,6 +562,7 @@ def main():
   last_allow: bool | None = None
   last_paused: bool | None = None
   last_unknown_warn = 0.0
+  last_empty_frame_log = 0.0
   in_holdoff = False
   slot = InferSlot()
 
@@ -546,6 +575,9 @@ def main():
       if abandoned:
         cloudlog.info("speedsignd abandon in-flight ONNX (%s)", engagement_log_fields(sample))
     else:
+      if should_reset_detect_after_wait(last_allow, sample.allow_detect):
+        next_detect = 0.0
+        in_holdoff = False
       slot.resume()
     if last_allow != sample.allow_detect or last_paused != sample.detect_paused:
       cloudlog.info(
@@ -581,6 +613,14 @@ def main():
           next_detect,
           next_detect_mono(now_mono, outcome.infer_s, period_s, budget_s),
         )
+        raw = list(getattr(debounce, "last_raw", []))
+        cloudlog.info(
+          "speedsignd infer %.0fms raw=%s hud=%s jsonl=%s",
+          outcome.infer_s * 1000.0,
+          [(int(s.mph), round(float(s.conf), 2)) for s in raw],
+          [(int(s.mph), round(float(s.conf), 2)) for s in signs],
+          [w.get("mph") for w in outcome.written],
+        )
     if client is None or not client.is_connected():
       if now_mono - last_connect >= 0.5:
         last_connect = now_mono
@@ -590,6 +630,10 @@ def main():
           client.connect(False)
         except Exception:
           client = None
+    elif not sample.allow_detect:
+      # Do not idle the ROAD client for the whole engage — first manual recv
+      # after WAIT used to timeout / return nothing while modeld stayed healthy.
+      drain_vision_latest(client)
     elif sample.allow_detect and now_mono >= next_detect and not slot.busy:
       in_holdoff = False
       buf = client.recv(timeout_ms=VISION_TIMEOUT_MS)
@@ -599,8 +643,13 @@ def main():
       if not sample.allow_detect:
         slot.pause()
       else:
-        y = y_plane_from_nv12(buf) if buf is not None else None
+        y = y_plane_from_nv12(buf, copy=True) if buf is not None else None
         rgb = rgb_from_nv12(buf) if buf is not None else None
+        if buf is None:
+          now_empty = time.monotonic()
+          if now_empty - last_empty_frame_log >= INFER_LOG_PERIOD_S:
+            cloudlog.info("speedsignd ROAD recv empty (timeout_ms=%d)", VISION_TIMEOUT_MS)
+            last_empty_frame_log = now_empty
         lat, lon, bearing, gps_ok = gps_sample_from_sm(sm, now=time.monotonic())
         # On-road: do not run numpy-mutcd when weights are missing (no fake mph / JSONL).
         have_frame = detector.onnx is not None and (y is not None or rgb is not None)

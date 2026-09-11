@@ -12,10 +12,12 @@ from openpilot.selfdrive.speedsignd.speedsignd import (
   UNKNOWN_GRACE_S,
   InferSlot,
   detect_if_allowed,
+  drain_vision_latest,
   engaged_from_sm,
   engagement_from_sm,
   engagement_log_fields,
   op_controlling,
+  should_reset_detect_after_wait,
   should_run_onnx_detect,
   should_run_speed_sign_log,
 )
@@ -334,6 +336,59 @@ def test_infer_slot_abandons_in_flight_on_pause():
   assert out is not None and out.signs == []
 
 
+def test_infer_slot_leftover_after_resume_is_still_abandoned():
+  """WAIT→manual must not adopt the abandoned infer (that applied overrun skip)."""
+  import time
+  slot = InferSlot()
+  started = __import__("threading").Event()
+  release = __import__("threading").Event()
+
+  def slow():
+    started.set()
+    release.wait(2.0)
+    return [SpeedSign(mph=55, conf=0.9, bbox=(0, 0, 1, 1))], [{"mph": 55}]
+
+  assert slot.start(slow)
+  assert started.wait(1.0)
+  assert slot.pause() is True
+  slot.resume()
+  release.set()
+  time.sleep(0.08)
+  assert slot.take() is None
+  assert slot.busy is False
+  assert slot.start(lambda: ([SpeedSign(mph=60, conf=0.8, bbox=(0, 0, 1, 1))], [])) is True
+  for _ in range(50):
+    out = slot.take()
+    if out is not None:
+      assert out.signs[0].mph == 60
+      return
+    time.sleep(0.01)
+  raise AssertionError("post-WAIT infer never arrived")
+
+
+def test_post_wait_manual_detect_resets_next_detect():
+  """Coverage gap after #70: WAIT cleared but leftover next_detect starved YOLO."""
+  assert should_reset_detect_after_wait(False, True) is True
+  assert should_reset_detect_after_wait(True, True) is False
+  assert should_reset_detect_after_wait(None, True) is False
+  assert should_reset_detect_after_wait(False, False) is False
+
+
+def test_drain_vision_latest_is_nonblocking():
+  class _Client:
+    def __init__(self):
+      self.calls = []
+
+    def recv(self, timeout_ms=0):
+      self.calls.append(timeout_ms)
+      return None
+
+  client = _Client()
+  drain_vision_latest(client)
+  assert client.calls == [0]
+  drain_vision_latest(None)
+
+
 def test_infer_slot_keeps_result_when_not_paused():
   slot = InferSlot()
   assert slot.start(lambda: ([SpeedSign(mph=60, conf=0.8, bbox=(0, 0, 1, 1))], []))
@@ -360,3 +415,6 @@ def test_detect_gate_is_not_parked_or_force_offroad():
   assert "engagement_log_fields" in text
   assert "InferSlot" in text
   assert "abandon" in text
+  assert "should_reset_detect_after_wait" in text
+  assert "drain_vision_latest" in text
+  assert "_gen" in text
