@@ -1,6 +1,6 @@
 """Pre-AP sticky MAX: brake / turn long pause, one SET vs double SET.
 
-Pedal mode. Lateral (blinker/ALC) and speedsignd are not this path.
+Pedal mode. Soft lateral handoff is not this path.
 """
 
 from openpilot.common.constants import CV
@@ -378,3 +378,17 @@ def test_cancel_after_engaged_still_chimes_long_disengage():
   assert not eng.enableLongControl
   assert chimes.long_disengage
   assert chimes.lat_disengage
+
+
+def test_handoff_module_does_not_drop_long():
+  """#71 soft lat handoff must not share the brake/turn long-pause path."""
+  from pathlib import Path
+  src = (Path(__file__).resolve().parents[4] / "selfdrive/controls/lib/driver_lateral_handoff.py").read_text()
+  assert "_drop_longitudinal_keep_lateral" not in src
+  assert "_nap_long_resume_pending" not in src
+  assert "_nap_set_resume_long" not in src
+  assert "emergency_cancel" in src
+  pause = (Path(__file__).resolve().parents[4] /
+           "selfdrive/car/tesla/preap_blinker_lat_pause.py").read_text()
+  assert "hard_cancel_session" in pause
+  assert "_drop_longitudinal_keep_lateral" in pause
