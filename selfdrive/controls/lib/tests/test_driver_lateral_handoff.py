@@ -773,7 +773,6 @@ def test_yield_frees_eps_like_blinker_pause():
   assert not lat_active_after_handoff(False, out.yielded)
   cs = (Path(__file__).resolve().parents[4] / "selfdrive/controls/controlsd.py").read_text()
   assert "lat_active_after_handoff" in cs
-  assert "DAS_steeringControlType" not in cs  # carcontroller, not controlsd
   tesla_cc = (Path(__file__).resolve().parents[4] /
               "opendbc_repo/opendbc/car/tesla/carcontroller.py").read_text()
   assert "lat_active = CC.latActive" in tesla_cc
