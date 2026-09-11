@@ -12,7 +12,14 @@ from opendbc.car.tesla.values import CruiseButtons
 from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import (
   _peek_blinker_lamps,
   _update_preap,
+  hard_cancel_session,
   install_blinker_lat_pause,
+  update_card_lat_handoff,
+)
+from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
+  EMERGENCY_DECEL_FRAMES,
+  EMERGENCY_DECEL_MPS2,
+  SOFT_YIELD_DEBOUNCE_FRAMES,
 )
 from openpilot.selfdrive.car.tesla import preap_blinker_lat_pause as pause_mod
 from openpilot.selfdrive.controls.lib.blinker_lateral_pause import LAMP_OFF_DEBOUNCE_S
@@ -478,3 +485,57 @@ def test_brake_drop_one_set_resumes_long_with_double_pull():
   _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=4000)
   assert eng.cruiseEnabled
   assert eng.enableLongControl
+
+
+def _intent_then_brake(eng, *, a_ego, brake, frames=None, hands=1):
+  if frames is None:
+    frames = EMERGENCY_DECEL_FRAMES
+  for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES):
+    update_card_lat_handoff(
+      eng, engaged=True, lat_would_be_active=True,
+      steering_torque=0.85, steering_rate_deg=20.0, hands_on_level=hands,
+      brake_applied=False, a_ego=0.0, v_ego=15.0, param_on=True)
+  cancelled = False
+  for _ in range(frames):
+    cancelled = update_card_lat_handoff(
+      eng, engaged=bool(eng.cruiseEnabled), lat_would_be_active=True,
+      steering_torque=0.2, steering_rate_deg=8.0, hands_on_level=hands,
+      brake_applied=brake, a_ego=a_ego, v_ego=15.0, param_on=True)
+  return cancelled
+
+
+def test_emergency_hard_brake_while_yielded_full_cancels_session():
+  install_blinker_lat_pause()
+  eng = _engaged(double_pull=True)
+  cancelled = _intent_then_brake(eng, a_ego=EMERGENCY_DECEL_MPS2, brake=True)
+  assert cancelled
+  assert not eng.cruiseEnabled
+  assert not eng.enableLongControl
+  assert eng.preap_cc_cancel_needed
+  assert getattr(eng, "_nap_long_resume_pending", False) is False
+  assert getattr(eng, "_nap_held_max_kph", None) is None
+
+
+def test_light_brake_while_yielded_does_not_full_cancel():
+  """Sticky-MAX silent pause stays the light-brake path."""
+  install_blinker_lat_pause()
+  eng = _engaged(double_pull=True)
+  cancelled = _intent_then_brake(eng, a_ego=-1.1, brake=True, frames=40)
+  assert not cancelled
+  assert eng.cruiseEnabled
+  _buttons(eng, brake=True, t_ms=2000)
+  assert eng.cruiseEnabled
+  assert not eng.enableLongControl
+  assert getattr(eng, "_nap_long_resume_pending", False)
+
+
+def test_hard_cancel_session_is_not_silent_long_pause():
+  install_blinker_lat_pause()
+  eng = _engaged(double_pull=True)
+  eng._nap_long_resume_pending = True
+  eng._nap_held_max_kph = 88.5
+  hard_cancel_session(eng)
+  assert not eng.cruiseEnabled
+  assert not eng.enableLongControl
+  assert not getattr(eng, "_nap_long_resume_pending", False)
+  assert getattr(eng, "_nap_held_max_kph", None) is None
