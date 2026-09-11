@@ -13,6 +13,8 @@ Pull requests welcome against `nap-dev`. For anything non-trivial, open an issue
 
 Do not push sunnypilot-specific code (MADS, `CP_SP`, etc.) to `nap-dev` or `nap-alpha`.
 
+Soft Lateral Handoff (`NAPDriverLatHandoff`) defaults **On**. Yield is a light purposeful push (torsion ≥ ~0.55 Nm / ~90 ms + hands) that **frees the EPS** (`latActive` false), not follow-measured angle hold. Rate is not an entry gate. Gravel spikes and low-torsion wind must not yield. Parking-lot blinker 1 s re-entry stays. Emergency/hard brake during yield fully cancels; light brake must keep the silent long-pause / one-SET path. Turn the toggle **Off** if false-yields remain.
+
 ## Submodules
 
 `panda` and `opendbc_repo` use NotAutopilot forks. After checkout:

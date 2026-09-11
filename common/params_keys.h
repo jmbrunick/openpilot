@@ -164,6 +164,11 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"NAPMapSpeedDbPath", {PERSISTENT, STRING}},
     {"NAPMapSpeedDbRevision", {PERSISTENT, STRING}},
     {"NAPMapSpeedDbSha256", {PERSISTENT, STRING}},
+    // Soft wheel lateral handoff. Default ON. Light purposeful push +
+    // hands frees the EPS (latActive false). Stay yielded while
+    // handsOnLevel >= 1; blend after ~80 ms hands-off. Hard brake
+    // during yield fully cancels. Settings can turn Off.
+    {"NAPDriverLatHandoff", {PERSISTENT, BOOL, "1"}},
     // Settings → NAP → Force Offroad. Default off. Not persistent: reboot
     // (manager start) and the next ignition ON clear it. Toggle Off and
     // Reset to Defaults also clear. When on, hardwared keeps started=false.
