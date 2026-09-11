@@ -13,7 +13,7 @@ Pull requests welcome against `nap-dev`. For anything non-trivial, open an issue
 
 Do not push sunnypilot-specific code (MADS, `CP_SP`, etc.) to `nap-dev` or `nap-alpha`.
 
-**Do not drive nap-dev with Soft Lateral Handoff On** (`NAPDriverLatHandoff`) until gravel / low-friction behavior is reviewed. That path defaulted On in #71 and false-yielded on rumble. Use **nap-release** for driving.
+Soft Lateral Handoff (`NAPDriverLatHandoff`) defaults **On**. Turn it **Off** in Settings → NAP if gravel or crosswind still false-yields.
 
 ## Submodules
 

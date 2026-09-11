@@ -10,7 +10,7 @@ Documentation for contributors working on NotAutopilot. These are NAP-specific �
 - **[map-speed.md](map-speed.md)** — OSM map speed → HUD MAX / cruise set speed (comma 3X)
 - **[force-offroad.md](force-offroad.md)** — Settings → NAP Force Offroad / Go Offline (started=false while moving)
 - **[speed-sign-log.md](speed-sign-log.md)** — on-drive MUTCD speed-sign JSONL logger (log-only, default off)
-- **[engagement.md](engagement.md)** — stalk FSM, pedal-vs-no-pedal engagement paths, brake behavior, driver-wheel lateral handoff (**default Off** after gravel incident; use nap-release for driving)
+- **[engagement.md](engagement.md)** — stalk FSM, pedal-vs-no-pedal engagement paths, brake behavior, driver-wheel lateral handoff (default On; Settings can disable)
 
 ## Layout
 

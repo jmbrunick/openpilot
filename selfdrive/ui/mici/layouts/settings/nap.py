@@ -234,7 +234,7 @@ class NAPLayoutMici(NavScroller):
     map_speed_btn.set_click_callback(lambda: gui_app.push_widget(self._map_speed_page))
 
     lat_handoff = BigParamControl("soft lateral handoff", NAP_DRIVER_LAT_HANDOFF)
-    lat_handoff.set_value("OFF — gravel false-yield; testing only")
+    lat_handoff.set_value("On — turn off if gravel/wind false-yield")
 
     speed_sign_log = BigParamControl("speed sign logger", NAP_SPEED_SIGN_LOG)
 
