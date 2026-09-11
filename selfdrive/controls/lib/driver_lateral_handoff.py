@@ -2,23 +2,30 @@
 
 Default On (NAPDriverLatHandoff=1). Settings → NAP can turn it Off.
 
-Product (2026-09-11): yield lateral on a *sustained driver push* with
-hands on the rim (typically avoiding something). Gravel spike trains,
-wind, and road-crown pressure must not gray the chrome.
+Product: yield = *free the EPS*, not follow-the-rim angle control.
+A light purposeful push with a hand on the rim should let the wheel
+go. Gravel spike trains / wind / road-crown must not free-yield.
 
-On-car (nap-dev / #78): fighting OP to leave the path is often
-*isometric* — torsion is firm, steer rate stays low, tracking error
-is high. Requiring aligned rate and treating high error + low rate as
-disturbance blocked soft yield; the driver then pushed into
-handsOnLevel >= 2 / STEER_THRESHOLD hard cancel. Soft yield must win
-before that hard path.
+On-car (#79): entry still required a 0.70 Nm / 140 ms fight, *and*
+after yield OP kept latActive=True with apply_lat_authority(0)
+commanding measured angle (DAS_steeringControlType still 1). That is
+closed-loop follow-the-rim — Justin could nudge off-path but the car
+kept holding/steering. Wrestling was full authority until the debounce
+finished, then more holding after "yield."
+
+Yield now reuses the blinker lat-pause EPS release: latActive false →
+carcontroller sends DAS_steeringControlType=0. Hands stay detected
+via EPAS_handsOnLevel (and a light probe). Resume is still pin-to-
+wheel while lat is down + the same 1 s blend; hands still on the rim
+stay yielded (do not blend onto the model). Blinker rising-edge
+re-entry is unchanged.
 
 Intent (Pre-AP EPAS) — required to *enter* yield:
   EPAS_torsionBarTorque / CS.steeringTorque
       sustained directional torque (not short spikes)
   EPAS_handsOnLevel / hands stash
       hands on the rim (>= 1)
-  Steer rate is *not* an entry gate. A firm sustained push yields even
+  Steer rate is *not* an entry gate. A sustained push yields even
       when the wheel is not moving (isometric fight). Rate is only a
       weak wind filter at *low* torsion — it never blocks a firm push
       and never promotes low torsion to intent.
@@ -27,15 +34,13 @@ Intent (Pre-AP EPAS) — required to *enter* yield:
       intent even if tracking error is large (driver is leaving the path).
 
 History (on-car):
-  #71  0.50 Nm / 80 ms   — gravel / rumble false-yield
+  #71  0.50 Nm / 80 ms   — gravel / rumble false-yield (no hands gate)
   #73  0.85 Nm / 250 ms + 0.25 s quiet — rumble-safe, too slow/firm
   #74  0.70 Nm / 140 ms, quiet wait 0 — mid-dodge torsion dip blended
   #75  stay yielded while handsOnLevel >= 1; blend after hands off
-  #78  entry = torsion + aligned rate + hands; disturbance vetoed
-       high error without aligned rate — blocked isometric fight
-  now  entry = sustained torsion + hands. Rate / disturbance do not
-       block a firm push. Same hold / 1 s resume. Emergency/hard brake
-       while yielded (or shortly after yield entry) fully cancels OP.
+  #78  entry = torsion + aligned rate + hands; blocked isometric fight
+  #79  entry = 0.70 Nm / 140 ms + hands; still follow-measured hold
+  now  entry = ~0.55 Nm / 90 ms + hands; yield frees the EPS.
 
 Signal (Pre-AP EPAS_sysStatus 0x370, tesla_preap.dbc):
   EPAS_torsionBarTorque  — continuous, Nm, factor 0.01, offset −20.5
@@ -48,18 +53,19 @@ Existing software / safety (unchanged):
   steerOverride    = EventName from steeringPressed (OVERRIDE_LATERAL)
   steeringDisengage / panda PREAP_HANDS_ON_DISENGAGE_LEVEL = handsOnLevel >= 2
 
-Soft-yield torsion floor stays 0.70 Nm. Consecutive *push* frames
-(gaps reset): 140 ms at the 0.70 floor, fewer as torsion approaches
-STEER_THRESHOLD so the soft path beats hands-on >= 2. 0.70 is above
-the old 0.5 Nm rumble floor and still below software steeringPressed
-(1.0 Nm). Release hysteresis stays 0.40 Nm (press-latch only).
-handsOnLevel is not the soft *trigger* by itself — it is required for
-intent and is the hold while yielded. >= 2 stays the hard/safety path
-(panda unchanged).
+Soft-yield torsion floor is 0.55 Nm (closer to #71 gentleness, with
+the hands gate #71 lacked). Consecutive *push* frames (gaps reset):
+90 ms at the 0.55 floor, fewer as torsion approaches STEER_THRESHOLD
+so the soft path beats hands-on >= 2. Never so soft that rumble with
+hands resting (level 0, or ~0.50 Nm with level 1) free-yields.
+Release hysteresis stays 0.40 Nm (press-latch only). handsOnLevel is
+not the soft *trigger* by itself — it is required for intent and is
+the hold while yielded. >= 2 stays the hard/safety path (panda
+unchanged).
 
 QUIET_WAIT_S stays 0. The 1 s smoothstep starts only after
 handsOnLevel == 0 for HANDS_OFF_CONFIRM_S (~80 ms). Renewed hands-on
-or a firm >= 0.70 Nm push cancels the blend and re-yields.
+or a firm >= 0.55 Nm push cancels the blend and re-yields.
 
 Emergency / hard brake (see emergency_brake() and docs-nap/engagement.md):
   Pre-AP has no analog brake pressure on parsed buses — only digital
@@ -74,9 +80,11 @@ Emergency / hard brake (see emergency_brake() and docs-nap/engagement.md):
   the session (cruiseEnabled) so pcmDisable / disengage chime fire.
   This module does not call the silent long-pause path.
 
-While yielded, controlsd pins desired_curvature to measured so LaC
-cannot run ahead of the wheel. Blinker lat-pause is a different path:
-latActive is False, this module resets to identity (no soft-yield).
+While yielded, latActive is false (EPS released) and controlsd pins
+desired_curvature to measured so resume clips from the wheel. Blinker
+lat-pause is a different path: this module resets to identity and
+remembers the pause so the rising edge can 1 s blend (or stay yielded
+if hands are still on).
 """
 
 from __future__ import annotations
@@ -94,17 +102,18 @@ DT_CTRL = 0.01
 State = log.SelfdriveState.OpenpilotState
 
 # --- thresholds (from real Pre-AP STEER_THRESHOLD = 1.0 Nm) ---
-# Torsion floor is unchanged from #74/#75. Hands-on is required so
-# gravel spikes / crown pressure do not count. Rate is not an entry gate.
-SOFT_YIELD_TRIGGER_NM = 0.70 * float(STEER_THRESHOLD)  # 0.70 Nm
+# Gentler than #79's 0.70 / 140 ms so a light purposeful push yields
+# before the driver wrestles. Hands-on is required so gravel / crown
+# with hands off or resting do not count. Rate is not an entry gate.
+SOFT_YIELD_TRIGGER_NM = 0.55 * float(STEER_THRESHOLD)  # 0.55 Nm
 SOFT_YIELD_RELEASE_NM = 0.40 * float(STEER_THRESHOLD)  # 0.40 Nm, wider gap
 
 # Consecutive *push* frames (torsion + hands). Gaps reset.
-# 140 ms at the 0.70 floor; fewer near STEER_THRESHOLD so soft yield
+# 90 ms at the 0.55 floor; fewer near STEER_THRESHOLD so soft yield
 # wins before hands-on >= 2 / steeringPressed. Fast floor stays above
 # the 5-frame gravel-spike bursts used in tests (~50 ms).
-SOFT_YIELD_DEBOUNCE_FRAMES = 14  # 140 ms at 100 Hz (0.70 Nm)
-SOFT_YIELD_FAST_DEBOUNCE_FRAMES = 8  # 80 ms as |torsion| → 1.0 Nm
+SOFT_YIELD_DEBOUNCE_FRAMES = 9   # 90 ms at 100 Hz (0.55 Nm)
+SOFT_YIELD_FAST_DEBOUNCE_FRAMES = 6  # 60 ms as |torsion| → 1.0 Nm
 SOFT_YIELD_RELEASE_FRAMES = 8    # 80 ms below release before clearing latch
 
 # Rate agreement. Pre-AP CS.steeringRateDeg is −StW_AnglHP_Spd (deg/s).
@@ -134,12 +143,10 @@ HANDS_OFF_CONFIRM_S = 0.08  # 80 ms at 100 Hz
 BLEND_TIME_S = 1.0
 UI_LATERAL_RETURN_AUTHORITY = 0.70  # do not show lat-engaged below this
 
-# Authority is dropped in one control cycle. The physical yield is the
-# existing Tesla VM angle limiter (CarControllerParams.ANGLE_LIMITS):
-# MAX_ANGLE_RATE = 5 deg / 20 ms (50 Hz STEER_STEP) = 250 deg/s, plus the
-# ~3.6 m/s^3 lateral-jerk cap. We do not set latActive=False (that snaps
-# apply_angle to measured in apply_steer_angle_limits_vm) and we do not
-# bypass those slew limits. 0.08 s is ~20 deg at that rate — typical dodge.
+# Yield drops latActive so the EPS is free (DAS_steeringControlType=0).
+# apply_steer_angle_limits_vm then snaps apply_angle to measured — that
+# is the stock inactive path, same as blinker pause. Resume slews from
+# that pin via the 1 s blend + Tesla VM limiter.
 YIELD_AUTHORITY_TIME_S = 0.0
 # CarControllerParams.ANGLE_LIMITS.MAX_ANGLE_RATE (tesla/values.py)
 TESLA_MAX_ANGLE_RATE_DEG_PER_20MS = 5.0
@@ -224,7 +231,7 @@ def torque_rate_aligned(torque_nm: float, rate_deg: float) -> bool:
 def required_press_frames(torque_nm: float) -> int:
   """Consecutive push frames needed to enter yield.
 
-  140 ms at the 0.70 Nm floor. Linearly fewer toward 80 ms as |torsion|
+  90 ms at the 0.55 Nm floor. Linearly fewer toward 60 ms as |torsion|
   approaches STEER_THRESHOLD so the soft path beats hands-on >= 2.
   Never below SOFT_YIELD_FAST_DEBOUNCE_FRAMES (gravel 5-frame spikes).
   """
@@ -294,14 +301,26 @@ def smoothstep(t: float) -> float:
   return t * t * (3.0 - 2.0 * t)
 
 
+def lat_active_after_handoff(lat_would_be_active: bool, yielded: bool) -> bool:
+  """EPS request bit after blinker / standstill / soft-yield.
+
+  Blinker pause and standstill already cleared lat_would_be_active.
+  Soft yield does the same: latActive false so Pre-AP carcontroller
+  sends DAS_steeringControlType=0 and apply_steer_angle_limits_vm
+  tracks the wheel without commanding it. That is free-wheel, not
+  follow-measured angle control with latActive still true.
+  """
+  return bool(lat_would_be_active) and not bool(yielded)
+
+
 def apply_lat_authority(authority: float, torque: float, desired_angle: float,
                         measured_angle: float, desired_curvature: float,
                         measured_curvature: float) -> tuple[float, float, float]:
-  """Scale lateral actuator authority. 0 follows the driver; 1 is full NAP.
+  """Scale lateral actuator authority. Resume blend only; not the yield.
 
-  Identity at authority=1 (same as skipping the call). Do not write the
-  blended curvature back into the planner state — that would hold LaC
-  near measured after resume. controlsd skips this when authority is 1.
+  Yield frees the EPS (latActive false). This blend runs when lat is
+  back and authority < 1. Identity at authority=1 (same as skipping).
+  Do not write blended curvature back into the planner state.
   """
   a = float(np.clip(authority, 0.0, 1.0))
   return (
@@ -314,15 +333,11 @@ def apply_lat_authority(authority: float, torque: float, desired_angle: float,
 def handoff_new_desired_curvature(*, yielded: bool, lat_active: bool,
                                   model_curvature: float,
                                   measured_curvature: float) -> float:
-  """clip_curvature target. Pin to the wheel while yielded.
+  """clip_curvature target. Pin to the wheel while lat is down.
 
-  latActive stays true through yield so apply_steer_angle_limits_vm does
-  not snap. If we still fed the model/plan as new_desired, desired_curvature
-  would run to the lane while apply_lat_authority(0) commanded measured.
-  After authority→1, LaC then jumped to that diverged angle and the Tesla
-  VM / EPAS path felt firm-holding (green HUD, on-screen path back, wheel
-  not tracking). Same target as stock latActive=False; snap the pin in
-  controlsd (do not slew toward measured via clip_curvature).
+  Yield and blinker pause both clear latActive (EPS released). Pin so
+  resume clips from the wheel, not a model path that ran ahead. Same
+  target as stock latActive=False; snap the pin in controlsd.
   """
   if yielded or not lat_active:
     return float(measured_curvature)
@@ -367,7 +382,7 @@ class HandoffOutput:
 
 
 class DriverLateralHandoff:
-  """Process-local latch: firm-push yield; 1 s S-curve hands it back."""
+  """Process-local latch: free-wheel yield; 1 s S-curve hands it back."""
 
   def __init__(self, enabled: bool = True):
     # Product default On. controlsd still requires Pre-AP + param
@@ -499,12 +514,15 @@ class DriverLateralHandoff:
       self._reset()
       return self._identity()
 
-    # Blinker pause / standstill / faults already cleared lat_would_be_active.
+    # lat_would_be_active is the *pre-yield* request (blinker / standstill
+    # / faults). Caller drops CC.latActive after this update when yielded
+    # so the EPS is free — do not feed that dropped bit back in or we
+    # reset to identity and forget we yielded.
     # ALC wheel-nudge uses steeringPressed at 1 Nm and must not be softened.
     # Full disengage (cancel / door / hands-on >= 2) clears engaged.
-    # Soft-yield stays gated (identity) while lat is down — do not steal
-    # the blinker-turn path. Remember a driver-turn pause so the rising
-    # edge can 1 s blend instead of restoring authority=1 onto the model.
+    # Soft-yield stays gated (identity) while blinker already paused lat.
+    # Remember a driver-turn pause so the rising edge can 1 s blend
+    # instead of restoring authority=1 onto the model.
     if not engaged or alc_active:
       self._reset()
       return self._identity()
