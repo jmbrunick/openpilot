@@ -1,5 +1,9 @@
 NAP driver lat handoff (2026-09-11)
 ========================
+* Soft lateral handoff is **default On**. Firmer yield: ~0.85 Nm held 0.25 s consecutive (not 0.5 Nm rumble). After a yield, planner curvature stays on the wheel so resume actually tracks the path (green HUD + on-screen path was not enough). Settings → NAP → Soft Lateral Handoff: turn **Off** if gravel or wind still gray the chrome. Brake silent long-pause + one SET is unchanged.
+
+NAP driver lat handoff (2026-09-11)
+========================
 * Light wheel input (about half the usual override effort) now yields steering without cancelling openpilot. Speed control stays on. After 0.25 s of quiet the wheel blends back over 1 s. Gray HUD until ~70% lateral is back; no disengage chime. A hard yank / cancel still fully disengages. No panda flash.
 
 NAP sticky MAX (2026-09-11)
