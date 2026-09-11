@@ -1,3 +1,7 @@
+NAP driver lat handoff (2026-09-11)
+========================
+* Soft-lat hands-off confirm before take-back shortened from **0.25 s → 0.15 s** (`HANDS_OFF_CONFIRM_S`). Free-wheel yield, 1 s blend, blinker re-entry, and emergency cancel unchanged. Renewed hands-on or a firm push during the 0.15 s wait still re-yields and resets. Port of the nap-dev 0.15 s confirm.
+
 NAP map speed (2026-09-11)
 ========================
 * Map MAX short-zone ignore raised from ~50 ft (15 m) to **~250 ft (76 m)** along heading. Cross-street / bleed flashes that lasted past 50 ft are now ignored. Real on-route drops that continue for hundreds of meters (US 12 tagged 50 ~760 m, DeGraff 30) still ease. Off-route bearing/class filter unchanged. Port of the nap-dev 250 ft min-zone raise.
