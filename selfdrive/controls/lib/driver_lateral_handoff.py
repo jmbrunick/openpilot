@@ -40,7 +40,8 @@ History (on-car):
   #75  stay yielded while handsOnLevel >= 1; blend after hands off
   #78  entry = torsion + aligned rate + hands; blocked isometric fight
   #79  entry = 0.70 Nm / 140 ms + hands; still follow-measured hold
-  now  entry = ~0.55 Nm / 90 ms + hands; yield frees the EPS.
+  #80  entry = ~0.55 Nm / 90 ms + hands; yield frees the EPS
+  now  hands-off confirm 0.25 s before the 1 s blend (crossover gap)
 
 Signal (Pre-AP EPAS_sysStatus 0x370, tesla_preap.dbc):
   EPAS_torsionBarTorque  — continuous, Nm, factor 0.01, offset −20.5
@@ -63,9 +64,12 @@ not the soft *trigger* by itself — it is required for intent and is
 the hold while yielded. >= 2 stays the hard/safety path (panda
 unchanged).
 
-QUIET_WAIT_S stays 0. The 1 s smoothstep starts only after
-handsOnLevel == 0 for HANDS_OFF_CONFIRM_S (~80 ms). Renewed hands-on
-or a firm >= 0.55 Nm push cancels the blend and re-yields.
+QUIET_WAIT_S stays 0 (no torsion-quiet patience — that blended on
+mid-dodge dips before #75). The 1 s smoothstep starts only after
+handsOnLevel == 0 for HANDS_OFF_CONFIRM_S (~0.25 s). A brief
+hands-off or direction-change during the dodge must not start
+take-back. Renewed hands-on or a firm >= 0.55 Nm push during that
+wait or the blend cancels and re-yields (delay resets).
 
 Emergency / hard brake (see emergency_brake() and docs-nap/engagement.md):
   Pre-AP has no analog brake pressure on parsed buses — only digital
@@ -139,7 +143,9 @@ YIELD_EMERGENCY_WINDOW_S = 2.0
 # --- timing / UI ---
 QUIET_WAIT_S = 0.0
 HANDS_ON_HOLD_LEVEL = 1
-HANDS_OFF_CONFIRM_S = 0.08  # 80 ms at 100 Hz
+# After hands are fully off: ~quarter second before the 1 s blend.
+# Not the old 0.08 s confirm (crossover snatch) and not torsion-quiet.
+HANDS_OFF_CONFIRM_S = 0.25
 BLEND_TIME_S = 1.0
 UI_LATERAL_RETURN_AUTHORITY = 0.70  # do not show lat-engaged below this
 
@@ -554,7 +560,7 @@ class DriverLateralHandoff:
     elif self._yielded:
       # Stay yielded while still maneuvering: hands on the rim OR a
       # renewed firm push. Mid-dodge torsion dips (below release) must
-      # not start the blend. Hands 0 for ~80 ms → 1 s smoothstep.
+      # not start the blend. Hands 0 for ~0.25 s → 1 s smoothstep.
       if hands_on or firm_push:
         self._enter_yield()
       else:
