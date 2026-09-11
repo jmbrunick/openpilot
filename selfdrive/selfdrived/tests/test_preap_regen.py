@@ -107,7 +107,7 @@ CHIME_EDGES = [
   (False, True,  False, True,  False, False, False, False, "hold long-only"),
   (False, True,  True,  True,  True,  False, False, False, "add lat to long"),
   (True,  True,  False, False, False, True,  False, True,  "stalk cancel both"),
-  (True,  True,  True,  False, False, False, False, True,  "brake drops long"),
+  (True,  True,  True,  False, False, False, False, False, "brake/turn long pause"),
   (True,  True,  False, True,  False, True,  False, False, "lat cancel keeps long"),
   (True,  True,  True,  True,  False, False, False, False, "hold both / gas override"),
 ]
@@ -126,7 +126,8 @@ def test_chime_edge_table(prev_lat, prev_long, lat, long_on,
   assert chimes.lat_disengage is lat_dis, note
   assert chimes.long_engage is long_eng, note
   assert chimes.long_disengage is long_dis, note
-  assert state == PreAPChimeState(lat_engaged=lat, long_engaged=long_on)
+  paused = prev_lat and lat and prev_long and not long_on
+  assert state == PreAPChimeState(lat_engaged=lat, long_engaged=long_on, long_paused=paused)
 
 
 def test_lat_engage_and_disengage_chime_on_cruise_edges():
@@ -170,17 +171,55 @@ def test_gas_override_does_not_chime():
   assert not chimes.long_disengage
 
 
-def test_brake_or_cancel_long_chimes_disengage():
+def test_brake_or_turn_long_pause_is_silent():
+  """Brake / driver-turn drop of long while session stays up: no chime."""
   chimes, state = _chime(PreAPChimeState(), lat=True, long_on=True)
   assert chimes.long_engage
 
   chimes, state = _chime(state, lat=True, long_on=False)
-  assert chimes.long_disengage
+  assert not chimes.long_disengage
+  assert not chimes.long_engage
   assert not chimes.lat_disengage
+  assert state.long_paused
 
   chimes, _ = _chime(state, lat=False, long_on=False)
   assert chimes.lat_disengage
   assert not chimes.long_disengage
+
+
+def test_one_set_resume_from_long_pause_is_quiet():
+  """One SET restores long only — not a full-stack engage fanfare."""
+  chimes, state = _chime(PreAPChimeState(), lat=True, long_on=True)
+  assert chimes.long_engage
+  chimes, state = _chime(state, lat=True, long_on=False)
+  assert state.long_paused
+  assert not chimes.long_disengage
+
+  chimes, state = _chime(state, lat=True, long_on=True)
+  assert not chimes.long_engage
+  assert not chimes.long_disengage
+  assert not chimes.lat_engage
+  assert not state.long_paused
+
+
+def test_second_pull_initial_engage_still_chimes_long():
+  """Lat-only first pull then second pull is engage, not a pause-resume."""
+  chimes, state = _chime(PreAPChimeState(), lat=True, long_on=False)
+  assert chimes.lat_engage
+  assert not state.long_paused
+
+  chimes, _ = _chime(state, lat=True, long_on=True)
+  assert chimes.long_engage
+  assert not chimes.lat_engage
+
+
+def test_full_cancel_still_chimes_long_disengage():
+  chimes, state = _chime(PreAPChimeState(), lat=True, long_on=True)
+  assert chimes.long_engage
+
+  chimes, state = _chime(state, lat=False, long_on=False)
+  assert chimes.long_disengage
+  assert chimes.lat_disengage
 
 
 def test_reengage_after_disengage_chimes_again():
