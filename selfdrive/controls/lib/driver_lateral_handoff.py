@@ -1,10 +1,9 @@
 """Pre-AP driver-wheel temporary lateral handoff.
 
-DEFAULT OFF. On-car gravel / crosswind produced gray 3X chrome
-(latHandoffPaused) and OP stopped fighting the wind — false soft-yield
-cutting lat authority. NAPDriverLatHandoff and this constructor default
-Off. Do not enable for driving. Settings → NAP is opt-in for testing
-only. Resume-fix / firmer detector must not ship enabled.
+Default On (NAPDriverLatHandoff=1). Settings → NAP can turn it Off if
+gravel / crosswind still false-yields (gray chrome = latHandoffPaused,
+lat authority cut). #71 at 0.5 Nm / 80 ms tripped on rumble; this
+detector needs a firm, gradual, sustained hand push.
 
 Signal (Pre-AP EPAS_sysStatus 0x370, tesla_preap.dbc):
   EPAS_torsionBarTorque  — continuous, Nm, factor 0.01, offset −20.5
@@ -81,12 +80,12 @@ TESLA_MAX_ANGLE_RATE_DEG_PER_20MS = 5.0
 SMOOTHSTEP_MAX_SLOPE = 1.5
 
 PREAP_FINGERPRINT = "TESLA_MODEL_S_PREAP"
-# Settings → NAP. Default Off. Gray chrome on gravel/wind = false yield.
+# Settings → NAP. Default On. Turn Off if gravel / wind still false-yields.
 PARAM_DRIVER_LAT_HANDOFF = "NAPDriverLatHandoff"
 
 
 def handoff_enabled(*, fingerprint: str, param_on: bool) -> bool:
-  """Opt-in only. Param defaults Off; Pre-AP alone must not arm this."""
+  """Pre-AP and Settings toggle (param defaults On)."""
   return bool(param_on) and fingerprint == PREAP_FINGERPRINT
 
 
@@ -135,9 +134,9 @@ class HandoffOutput:
 class DriverLateralHandoff:
   """Process-local latch: light wheel input yields lat; quiet + 1 s S-curve hands it back."""
 
-  def __init__(self, enabled: bool = False):
-    # Default Off: vibration / aero load on the torsion bar can
-    # false-yield. Enable only via NAPDriverLatHandoff for testing.
+  def __init__(self, enabled: bool = True):
+    # Product default On. controlsd still requires Pre-AP + param
+    # (NAPDriverLatHandoff defaults true). Toggle Off to disable.
     self.enabled = bool(enabled)
     self._reset()
 

@@ -1,6 +1,6 @@
-NAP driver lat handoff OFF (2026-09-11)
+NAP driver lat handoff (2026-09-11)
 ========================
-* SAFETY: Soft lateral handoff is **default Off**. Gravel/crosswind false-yield grays the 3X chrome and drops steering so NAP stops fighting the wind. Leave Off. Settings → NAP is testing only. Use nap-release for driving.
+* Soft lateral handoff is **default On**. Firmer yield: ~0.85 Nm held 0.25 s consecutive (not 0.5 Nm rumble). Settings → NAP → Soft Lateral Handoff: turn **Off** if gravel or wind still gray the chrome. Brake silent long-pause + one SET is unchanged.
 
 NAP driver lat handoff (2026-09-11)
 ========================

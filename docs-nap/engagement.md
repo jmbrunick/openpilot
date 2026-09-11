@@ -86,7 +86,7 @@ Panda firmware must be flashed after this safety change. Software update / on-de
 
 ## Driver-wheel temporary lateral handoff
 
-**SAFETY — DEFAULT OFF.** On-car gravel / crosswind: 3X chrome goes grayish (light-green → gray) and NAP “loses the battle” with the wind. That is `latHandoffPaused` / false soft-yield cutting lat authority. `NAPDriverLatHandoff` and `DriverLateralHandoff()` default **Off**. Do **not** enable for driving. Settings → NAP is opt-in testing only. Use nap-release for normal driving.
+**Default On.** Settings → NAP → Soft Lateral Handoff can be turned **Off** if gravel or crosswind still false-yields (gray HUD, NAP stops fighting the wind). #71 at 0.5 Nm / 80 ms tripped on rumble; this detector is a firm 0.85 Nm / 250 ms consecutive push.
 
 Pothole / obstacle dodges without fighting NAP and without a full disengage. Software-only; panda hands-on ≥ 2 and `STEER_THRESHOLD` are unchanged.
 
@@ -129,7 +129,7 @@ Do these at a quiet road / parking lot first, then a known pothole stretch. Peda
 3. **Hold** a small offset for >1 s. Authority must stay yielded (no snap back to the lane).
 4. **Release and sit quiet.** Hands clearly off on a straight / gentle road. After a beat (~0.25 s) the wheel should ease back onto the path over about **one second**, not jump — even if the rim is still self-centering from the dodge. Green engaged chrome returns only late in that blend (around 70%+), not at the first twitch. If the wheel stays slack, quiet is still failing.
 5. **Re-grab during the blend.** The return must stop immediately and yield again. Gray chrome stays. After another quiet beat, the 1 s blend retries.
-6. **Road rumble / crosswind** with hands resting and the toggle **Off**: chrome must stay green (stock lat). If you test with the toggle On and it grays, turn it back **Off** immediately. Do not lower panda / `STEER_THRESHOLD`.
+6. **Road rumble / crosswind** with hands resting (toggle On): must **not** gray. If it still does, turn Soft Lateral Handoff **Off**. Do not lower panda / `STEER_THRESHOLD`. Brake silent long-pause + one SET must still work.
 7. **Blinker turn** (held stalk): existing lat pause, long drop, one SET resume. Soft-yield must not steal this or arm ALC from a tip.
 8. **ALC tip** (LEFT/RIGHT then IDLE within 0.40 s) still arms a lane change; wheel nudge at 1 Nm still starts it.
 9. **Hard yank / hands-on 2**, stalk cancel, door: full disengage, “Steering Disengaged”, chime. That is still the safety path.
