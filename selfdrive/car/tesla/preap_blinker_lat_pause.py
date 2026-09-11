@@ -471,7 +471,7 @@ def _update_preap(cs, can_parsers):
   if engagement is not None:
     hold = getattr(engagement, "_nap_lat_hold", None)
     blinker_paused = bool(hold is not None and (hold.holding or hold.turn_active))
-    cancelled = update_card_lat_handoff(
+    canceled = update_card_lat_handoff(
       engagement,
       engaged=bool(getattr(engagement, "cruiseEnabled", False)),
       lat_would_be_active=not blinker_paused,
@@ -484,7 +484,7 @@ def _update_preap(cs, can_parsers):
       alc_active=bool(getattr(engagement, "_nap_alc_active", False)),
       blinker_paused=blinker_paused,
     )
-    if cancelled:
+    if canceled:
       if hasattr(ret, "cruiseState"):
         try:
           ret.cruiseState.enabled = False
