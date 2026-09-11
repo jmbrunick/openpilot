@@ -495,20 +495,20 @@ def _intent_then_brake(eng, *, a_ego, brake, frames=None, hands=1):
       eng, engaged=True, lat_would_be_active=True,
       steering_torque=0.85, steering_rate_deg=20.0, hands_on_level=hands,
       brake_applied=False, a_ego=0.0, v_ego=15.0, param_on=True)
-  cancelled = False
+  canceled = False
   for _ in range(frames):
-    cancelled = update_card_lat_handoff(
+    canceled = update_card_lat_handoff(
       eng, engaged=bool(eng.cruiseEnabled), lat_would_be_active=True,
       steering_torque=0.2, steering_rate_deg=8.0, hands_on_level=hands,
       brake_applied=brake, a_ego=a_ego, v_ego=15.0, param_on=True)
-  return cancelled
+  return canceled
 
 
 def test_emergency_hard_brake_while_yielded_full_cancels_session():
   install_blinker_lat_pause()
   eng = _engaged(double_pull=True)
-  cancelled = _intent_then_brake(eng, a_ego=EMERGENCY_DECEL_MPS2, brake=True)
-  assert cancelled
+  canceled = _intent_then_brake(eng, a_ego=EMERGENCY_DECEL_MPS2, brake=True)
+  assert canceled
   assert not eng.cruiseEnabled
   assert not eng.enableLongControl
   assert eng.preap_cc_cancel_needed
@@ -520,8 +520,8 @@ def test_light_brake_while_yielded_does_not_full_cancel():
   """Sticky-MAX silent pause stays the light-brake path."""
   install_blinker_lat_pause()
   eng = _engaged(double_pull=True)
-  cancelled = _intent_then_brake(eng, a_ego=-1.1, brake=True, frames=40)
-  assert not cancelled
+  canceled = _intent_then_brake(eng, a_ego=-1.1, brake=True, frames=40)
+  assert not canceled
   assert eng.cruiseEnabled
   _buttons(eng, brake=True, t_ms=2000)
   assert eng.cruiseEnabled

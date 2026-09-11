@@ -154,7 +154,7 @@ def cs_hands_on_level(CS) -> int:
   vals: list[int] = []
   if hasattr(CS, 'handsOnLevel'):
     try:
-      vals.append(int(getattr(CS, 'handsOnLevel') or 0))
+      vals.append(int(CS.handsOnLevel or 0))
     except (TypeError, ValueError):
       pass
   try:
