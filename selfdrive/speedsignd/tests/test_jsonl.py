@@ -160,6 +160,9 @@ def test_settings_and_docs_cover_enable_and_log_path():
   assert "1 Hz" in docs
   assert "WAIT" in docs
   assert "engaged" in docs.lower()
+  assert "controlling" in docs.lower()
+  assert "swaglog" in docs.lower()
+  assert "20 Hz" in docs
   assert "manual" in docs.lower()
   assert "moving" in docs.lower()
   assert "TAKE CONTROL" in docs

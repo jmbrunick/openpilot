@@ -11,7 +11,8 @@ HUD_HOLD_S = 3.0
 HUD_LABEL = "SIGN"
 # Logger On + ONNX missing: show this instead of a blank plate or a fake mph.
 HUD_MISSING_WEIGHTS_TEXT = "NO WT"
-# Logger On + OP engaged: YOLO is skipped so modeld is not starved.
+# Logger On + OP commanding actuators: YOLO is skipped so modeld is not starved.
+# WAIT is only this case — not cereal-unknown / alive flaps (those are a bug).
 HUD_DETECT_PAUSED_TEXT = "WAIT"
 HUD_CONFIRM_PROMPT = "accurate?"
 HUD_CONFIRM_YES = "Yes"
@@ -53,6 +54,7 @@ def hud_should_show_missing_weights(enabled: bool, weights_missing: bool) -> boo
 
 
 def hud_should_show_detect_paused(enabled: bool, detect_paused: bool, weights_missing: bool = False) -> bool:
+  """WAIT only when detect is paused because OP is controlling — never for unknown cereal."""
   return bool(enabled) and bool(detect_paused) and not bool(weights_missing)
 
 
