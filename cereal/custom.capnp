@@ -33,6 +33,7 @@ struct LiveSpeedSignNAP @0xaedffd8f31e7b55d {
   conf @1 :Float32;
   valid @2 :Bool;         # live detection including HUD hold
   weightsMissing @3 :Bool; # ONNX failed to load; HUD shows NO WT, never a fake mph
+  detectPaused @4 :Bool;   # engaged / unknown — YOLO skipped; HUD shows WAIT
 }
 
 struct CustomReserved2 @0xf35cc4560bbf6ec2 {

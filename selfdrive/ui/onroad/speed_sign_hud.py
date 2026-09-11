@@ -4,7 +4,8 @@ Large opaque MUTCD-style plate on the driver / left side of the onroad UI.
 TICI: below MAX. Mici: top-left.
 
 When the logger is On and ONNX weights failed to load, the plate shows
-NO WT instead of staying blank (and never a fake mph).
+NO WT instead of staying blank (and never a fake mph). When NAP / cruise
+is engaged, YOLO is skipped and the plate shows WAIT.
 
 Yes/No ("is this accurate?") appears only with a live mph — not for NO WT.
 Those buttons are stubs: they do not change cruise, HUD MAX, or map speed.
@@ -58,6 +59,7 @@ _SIGN_BORDER = rl.Color(180, 40, 40, 255)
 _SIGN_INK = rl.BLACK
 _SIGN_LABEL = rl.Color(40, 40, 40, 255)
 _SIGN_MISSING_INK = rl.Color(160, 40, 40, 255)
+_SIGN_PAUSED_INK = rl.Color(90, 90, 90, 255)
 _YES_BG = rl.Color(36, 130, 72, 235)
 _YES_BG_PRESSED = rl.Color(48, 160, 88, 255)
 _NO_BG = rl.Color(170, 40, 40, 235)
@@ -193,7 +195,12 @@ def _draw_live_sign(rect_fn, rect: rl.Rectangle, font_bold, font_label, digit_si
   view = live_sign_from_sm(ui_state.sm, logger_enabled())
   if not view.show:
     return view
-  ink = _SIGN_MISSING_INK if view.show_missing_weights else _SIGN_INK
+  if view.show_missing_weights:
+    ink = _SIGN_MISSING_INK
+  elif view.show_detect_paused:
+    ink = _SIGN_PAUSED_INK
+  else:
+    ink = _SIGN_INK
   draw_speed_sign_plate(
     rect_fn(rect), view.plate_text, font_bold, font_label, digit_size, label_size, ink=ink,
   )

@@ -7,6 +7,7 @@ import pytest
 
 from openpilot.selfdrive.speedsignd.detect import SpeedSign, SpeedSignDetector, paint_mutcd_r2_1
 from openpilot.selfdrive.speedsignd.hud import (
+  HUD_DETECT_PAUSED_TEXT,
   HUD_HOLD_S,
   HUD_MISSING_WEIGHTS_TEXT,
   LiveSignHold,
@@ -19,6 +20,7 @@ from openpilot.selfdrive.speedsignd.hud import (
   plate_digit_size,
   apply_live_sign,
   hud_should_show,
+  hud_should_show_detect_paused,
   hud_should_show_missing_weights,
   live_sign_from_event,
   live_sign_view,
@@ -62,11 +64,13 @@ def test_hud_hidden_unless_enabled_and_valid():
 def test_apply_live_sign_clears_when_invalid():
   d = SimpleNamespace()
   apply_live_sign(d, mph=45, conf=0.8, valid=True)
-  assert d.mph == 45 and d.valid and not d.weightsMissing
+  assert d.mph == 45 and d.valid and not d.weightsMissing and not d.detectPaused
   apply_live_sign(d, mph=45, conf=0.8, valid=False)
-  assert d.mph == 0 and d.conf == 0.0 and not d.valid and not d.weightsMissing
+  assert d.mph == 0 and d.conf == 0.0 and not d.valid and not d.weightsMissing and not d.detectPaused
   apply_live_sign(d, mph=45, conf=0.8, valid=False, weights_missing=True)
-  assert d.mph == 0 and not d.valid and d.weightsMissing
+  assert d.mph == 0 and not d.valid and d.weightsMissing and not d.detectPaused
+  apply_live_sign(d, mph=45, conf=0.8, valid=False, detect_paused=True)
+  assert d.mph == 0 and not d.valid and d.detectPaused and not d.weightsMissing
 
 
 def test_hud_missing_weights_plate_when_logger_on():
@@ -103,18 +107,55 @@ def test_hud_missing_weights_plate_when_logger_on():
   assert ev_mph.show_mph and ev_mph.plate_text == "60"
 
 
+def test_hud_wait_plate_when_detect_paused():
+  assert HUD_DETECT_PAUSED_TEXT == "WAIT"
+  assert plate_digit_size("WAIT", 120) < plate_digit_size("55", 120)
+  assert hud_should_show_detect_paused(True, True)
+  assert not hud_should_show_detect_paused(False, True)
+  assert not hud_should_show_detect_paused(True, False)
+  assert not hud_should_show_detect_paused(True, True, weights_missing=True)
+
+  paused = live_sign_view(enabled=True, msg_valid=True, mph=0, valid=False, detect_paused=True)
+  assert paused.show and paused.show_detect_paused
+  assert paused.plate_text == "WAIT"
+  assert not paused.show_mph
+  assert not hud_confirm_visible(paused)
+
+  # Never a leftover mph while YOLO is paused.
+  leftover = live_sign_view(enabled=True, msg_valid=True, mph=55, valid=True, detect_paused=True)
+  assert leftover.show_detect_paused and leftover.plate_text == "WAIT"
+  assert not leftover.show_mph
+
+  # Missing weights wins over WAIT so install-weights stays obvious.
+  nowt = live_sign_view(
+    enabled=True, msg_valid=True, mph=0, valid=False,
+    weights_missing=True, detect_paused=True,
+  )
+  assert nowt.show_missing_weights and nowt.plate_text == "NO WT"
+  assert not nowt.show_detect_paused
+
+  ev = live_sign_from_event(True, SimpleNamespace(mph=0, valid=False, weightsMissing=False, detectPaused=True), True)
+  assert ev.show_detect_paused and ev.plate_text == "WAIT"
+
+
 def test_publish_fields_flag_missing_weights_without_mph():
   h = LiveSignHold(hold_s=3.0)
   signs = [SpeedSign(mph=45, conf=0.8, bbox=(0, 0, 10, 10))]
-  msg_valid, mph, conf, missing = live_sign_publish_fields(h, signs, 10.0, True)
-  assert msg_valid and missing and mph == 0 and conf == 0.0
+  msg_valid, mph, conf, missing, paused = live_sign_publish_fields(h, signs, 10.0, True)
+  assert msg_valid and missing and mph == 0 and conf == 0.0 and not paused
   # Hold was not primed by the numpy hit.
   live, held, _ = h.update([], 10.1)
   assert not live and held == 0
 
-  msg_valid, mph, conf, missing = live_sign_publish_fields(h, signs, 11.0, False)
-  assert msg_valid and not missing and mph == 45
+  msg_valid, mph, conf, missing, paused = live_sign_publish_fields(h, signs, 11.0, False)
+  assert msg_valid and not missing and mph == 45 and not paused
   live, held, _ = h.update([], 11.5)
+  assert live and held == 45
+
+  msg_valid, mph, conf, missing, paused = live_sign_publish_fields(h, signs, 12.0, False, True)
+  assert msg_valid and paused and not missing and mph == 0 and conf == 0.0
+  # Paused publish does not refresh hold from a leftover sign list.
+  live, held, _ = h.update([], 12.1)
   assert live and held == 45
 
 
@@ -191,8 +232,11 @@ def test_cereal_live_sign_has_weights_missing_field():
   msg = custom.LiveSpeedSignNAP.new_message()
   assert msg.mph == 0
   assert not msg.weightsMissing
+  assert not msg.detectPaused
   apply_live_sign(msg, mph=0, conf=0.0, valid=False, weights_missing=True)
-  assert msg.weightsMissing and msg.mph == 0 and not msg.valid
+  assert msg.weightsMissing and msg.mph == 0 and not msg.valid and not msg.detectPaused
+  apply_live_sign(msg, mph=0, conf=0.0, valid=False, detect_paused=True)
+  assert msg.detectPaused and not msg.weightsMissing and msg.mph == 0
 
 
 def test_ui_and_cereal_wire_live_sign():
@@ -206,6 +250,7 @@ def test_ui_and_cereal_wire_live_sign():
   mici = (root / "selfdrive" / "ui" / "mici" / "onroad" / "hud_renderer.py").read_text(encoding="utf-8")
   assert "struct LiveSpeedSignNAP" in custom
   assert "weightsMissing @3" in custom
+  assert "detectPaused @4" in custom
   assert "liveSpeedSignNAP @108" in log
   assert '"liveSpeedSignNAP"' in services
   assert "liveSpeedSignNAP" in ui
@@ -213,6 +258,7 @@ def test_ui_and_cereal_wire_live_sign():
   assert "SpeedSignHud" in mici
   onroad = (root / "selfdrive" / "ui" / "onroad" / "speed_sign_hud.py").read_text(encoding="utf-8")
   assert "NO WT" in onroad
+  assert "WAIT" in onroad
   assert "live_sign_from_event" in onroad
   assert "on_confirm_accuracy" in onroad
   assert "draw_tici_speed_sign" in onroad
