@@ -35,10 +35,10 @@ DRIVER_LAT_HANDOFF_DESCRIPTION = (
 )
 FORCE_OFFROAD_DESCRIPTION = (
   "WARNING: Forces the device offroad and disengages openpilot even while "
-  "moving. Drive manually — no steering or accel assist while this is on. "
-  "Unlocks Download US Maps, Refresh maps, software install, and other "
-  "offroad-only NAP actions. Default Off. Clears when you toggle Off, "
-  "Reset to Defaults, reboot, or the next time ignition turns on."
+  + "moving. Drive manually — no steering or accel assist while this is on. "
+  + "Unlocks Download US Maps, Refresh maps, software install, and other "
+  + "offroad-only NAP actions. Default Off. Clears when you toggle Off, "
+  + "Reset to Defaults, reboot, or the next time ignition turns on."
 )
 
 # Radar lateral offset bounds (meters). Added to radar yRel in
