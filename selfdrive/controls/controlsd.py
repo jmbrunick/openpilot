@@ -12,6 +12,8 @@ from openpilot.common.swaglog import cloudlog
 from opendbc.car.car_helpers import interfaces
 from opendbc.car.vehicle_model import VehicleModel
 from openpilot.selfdrive.controls.lib.blinker_lateral_pause import BlinkerLateralHold, lat_active_with_blinker_pause
+from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
+  PREAP_FINGERPRINT, DriverLateralHandoff, apply_lat_authority)
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
@@ -46,6 +48,11 @@ class Controls:
     self.curvature = 0.0
     self.desired_curvature = 0.0
     self.blinker_lat_hold = BlinkerLateralHold()
+    self.lat_handoff = DriverLateralHandoff(
+      enabled=self.CP.carFingerprint == PREAP_FINGERPRINT)
+    self._lat_handoff = self.lat_handoff.update(
+      engaged=False, lat_would_be_active=False,
+      steering_torque=0.0, steering_rate_deg=0.0)
 
     self.pose_calibrator = PoseCalibrator()
     self.calibrated_pose: Pose | None = None
@@ -119,6 +126,16 @@ class Controls:
       stalk_state=getattr(CS, 'turnSignalStalkState', 0),
     )
     CC.longActive = CC.enabled and not any(e.overrideLongitudinal for e in self.sm['onroadEvents']) and self.CP.openpilotLongitudinalControl
+    # Soft wheel yield scales actuator authority only. latActive stays true so
+    # LaC is not reset and apply_steer_angle_limits_vm does not snap angle.
+    # Longitudinal / enabled are untouched. ALC and blinker pause are not this path.
+    self._lat_handoff = self.lat_handoff.update(
+      engaged=bool(CC.enabled),
+      lat_would_be_active=bool(CC.latActive),
+      steering_torque=float(CS.steeringTorque),
+      steering_rate_deg=float(CS.steeringRateDeg),
+      alc_active=alc_active,
+    )
 
     actuators = CC.actuators
     actuators.longControlState = self.LoC.long_control_state
@@ -150,8 +167,12 @@ class Controls:
     steer, steeringAngleDeg, lac_log = self.LaC.update(CC.latActive, CS, self.VM, lp,
                                                        self.steer_limited_by_safety, self.desired_curvature,
                                                        curvature_limited, lat_delay)
+    steer, steeringAngleDeg, blended_curvature = apply_lat_authority(
+      self._lat_handoff.authority, steer, steeringAngleDeg, CS.steeringAngleDeg,
+      self.desired_curvature, self.curvature)
     actuators.torque = float(steer)
     actuators.steeringAngleDeg = float(steeringAngleDeg)
+    actuators.curvature = float(blended_curvature)
     # Ensure no NaNs/Infs
     for p in ACTUATOR_FIELDS:
       attr = getattr(actuators, p)
@@ -212,6 +233,8 @@ class Controls:
     cs.longitudinalPlanMonoTime = self.sm.logMonoTime['longitudinalPlan']
     cs.lateralPlanMonoTime = self.sm.logMonoTime['modelV2']
     cs.desiredCurvature = self.desired_curvature
+    cs.latAuthority = float(self._lat_handoff.authority)
+    cs.latHandoffPaused = bool(self._lat_handoff.ui_paused)
     cs.longControlState = self.LoC.long_control_state
     cs.upAccelCmd = float(self.LoC.pid.p)
     cs.uiAccelCmd = float(self.LoC.pid.i)
