@@ -1,3 +1,7 @@
+NAP driver lat handoff OFF (2026-09-11)
+========================
+* SAFETY: Soft lateral handoff is **default Off** after a gravel-road incident (car steered toward a ditch). Do not enable for driving; use nap-release. Settings → NAP → Soft Lateral Handoff is testing-only.
+
 NAP driver lat handoff (2026-09-11)
 ========================
 * Light wheel input (about half the usual override effort) now yields steering without cancelling openpilot. Speed control stays on. After 0.25 s of quiet the wheel blends back over 1 s. Gray HUD until ~70% lateral is back; no disengage chime. A hard yank / cancel still fully disengages. No panda flash.

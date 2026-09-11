@@ -174,6 +174,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // On-drive MUTCD speed-sign JSONL logger. Default off. Log-only: no sqlite,
     // no vCruise / HUD MAX, no osm.org. Process: speedsignd.
     {"NAPSpeedSignLog", {PERSISTENT, BOOL, "0"}},
+    // Soft wheel lateral handoff (#71). Default OFF after a gravel-road
+    // false-yield incident (car steered off-path). Opt-in for testing only.
+    // Do not drive nap-dev with this on; use nap-release for driving.
+    {"NAPDriverLatHandoff", {PERSISTENT, BOOL, "0"}},
     // Settings → NAP → Force Offroad. Default off. Not persistent: reboot
     // (manager start) and the next ignition ON clear it. Toggle Off and
     // Reset to Defaults also clear. When on, hardwared keeps started=false.

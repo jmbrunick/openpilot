@@ -26,6 +26,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   RADAR_OFFSET_MIN,
   RESTORE_EPAS_INSTRUCTIONS,
   INSTALL_SPEED_SIGN_WEIGHTS_INSTRUCTIONS,
+  NAP_DRIVER_LAT_HANDOFF,
   NAP_FORCE_OFFROAD,
   NAP_SPEED_SIGN_LOG,
   WIPER_SPEED_LABELS,
@@ -232,6 +233,9 @@ class NAPLayoutMici(NavScroller):
     map_speed_btn = BigButton("map speed limit", "open")
     map_speed_btn.set_click_callback(lambda: gui_app.push_widget(self._map_speed_page))
 
+    lat_handoff = BigParamControl("soft lateral handoff", NAP_DRIVER_LAT_HANDOFF)
+    lat_handoff.set_value("OFF — gravel false-yield; testing only")
+
     speed_sign_log = BigParamControl("speed sign logger", NAP_SPEED_SIGN_LOG)
 
     self._weights_status = BigButton("speed sign weights", weights_status_summary())
@@ -332,6 +336,7 @@ class NAPLayoutMici(NavScroller):
       adaptive_accel,
       follow_distance,
       map_speed_btn,
+      lat_handoff,
       speed_sign_log,
       self._weights_status,
       install_weights_btn,

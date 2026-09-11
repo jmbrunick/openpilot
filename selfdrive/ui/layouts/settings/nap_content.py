@@ -22,7 +22,17 @@ FOLLOW_DISTANCE_LABELS = [str(i) for i in FOLLOW_DISTANCE_VALUES]
 FOLLOW_DISTANCE_DEFAULT = 4
 
 NAP_SPEED_SIGN_LOG = "NAPSpeedSignLog"
+NAP_DRIVER_LAT_HANDOFF = "NAPDriverLatHandoff"
 NAP_FORCE_OFFROAD = "NAPForceOffroad"
+DRIVER_LAT_HANDOFF_DESCRIPTION = (
+  "WARNING: Experimental. Default Off. Soft wheel yield of NAP lateral "
+  "(~0.5 Nm torsion, long stays on). Do NOT enable for normal driving. "
+  "On a gravel / low-friction road this path false-yielded and the car "
+  "steered ~30° toward a ditch until the driver overrode. Leave Off and "
+  "use nap-release for driving until gravel behavior is reviewed. "
+  "On = testing only on a known quiet paved road. Off = stock lat "
+  "(no yield / no authority blend)."
+)
 FORCE_OFFROAD_DESCRIPTION = (
   "WARNING: Forces the device offroad and disengages openpilot even while "
   "moving. Drive manually — no steering or accel assist while this is on. "
