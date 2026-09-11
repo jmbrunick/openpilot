@@ -26,6 +26,11 @@ HEADING_ALIGN_DEG = 55.0
 # with kin+110 m (lead subtracts from next_distance). Meters scale with
 # speed (50 mph → ~33.5 m, 60 mph → ~40 m); not a fixed offset.
 OSM_SIGN_LEAD_S = 1.5
+# Ignore a lower OSM limit that only lasts ~50 ft along the travel heading.
+# Cross-street bleed and intersection stubs look like a short zone on the
+# main road; real posted drops (US 12 60→50 is hundreds of meters) are longer.
+# Additive to bearing / class route continuity — not a corridor hardcode.
+MIN_ZONE_LENGTH_M = 15.0
 # Heading-aligned probes for nextSpeedLimit (any change). Policy uses decreases only.
 # Geodesic 40 m steps can skip a short intermediate limit (US 12 60→50 before 30);
 # lookup also walks the matched way to its end, then the next way.
