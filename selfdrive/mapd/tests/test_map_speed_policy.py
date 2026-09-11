@@ -664,6 +664,149 @@ def test_no_map_double_set_uses_current_speed():
   assert hold.last_posted_kph is None
 
 
+def test_mode_off_one_set_after_pause_keeps_held_not_ego():
+  """Gravel repro: maps off, MAX 19, brake (ego lower), one SET restores 19.
+
+  On the car, resume_held is consumed on the SET frame while pedalLongActive
+  is still False. The next frame's engage_rising must not take traveled.
+  """
+  hold = MapCruiseHold()
+  held = 19 * CV.MPH_TO_KPH
+  ego = 12 * CV.MPH_TO_KPH
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_OFF, raw_kph=held, posted_kph=None,
+    engage_rising=True, now=0.0, take_speed_now=True, traveled_kph=held,
+  )
+  assert abs(hold.held_max_kph - held) < 1e-6
+  # Pause publishes cruiseState.speed as ego. Must not latch it.
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_OFF, raw_kph=ego, posted_kph=None,
+    engage_rising=False, now=1.0, long_active=False, traveled_kph=ego,
+  )
+  assert abs(dec.driver_kph - held) < 1e-6
+  assert abs(hold.held_max_kph - held) < 1e-6
+  # SET frame: resume_held, long still paused (authority not up yet).
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_OFF, raw_kph=ego, posted_kph=None,
+    engage_rising=False, now=2.0, resume_held=True, long_active=False,
+    traveled_kph=ego,
+  )
+  assert dec.seed_kph is not None
+  assert abs(dec.seed_kph - held) < 1e-6
+  # Next frame: pedalLongActive rising, resume_held already consumed.
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_OFF, raw_kph=held, posted_kph=None,
+    engage_rising=True, now=3.0, resume_held=False, long_active=True,
+    traveled_kph=ego,
+  )
+  assert abs(hold.held_max_kph - held) < 1e-6
+  assert abs(dec.driver_kph - held) < 1e-6
+  if dec.seed_kph is not None:
+    assert abs(dec.seed_kph - held) < 1e-6
+  assert abs(dec.driver_kph - ego) > 1.0
+
+
+def test_mode_off_pause_does_not_latch_ego_when_held_missing():
+  hold = MapCruiseHold()
+  ego = 12 * CV.MPH_TO_KPH
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_OFF, raw_kph=ego, posted_kph=None,
+    engage_rising=False, now=1.0, long_active=False, traveled_kph=ego,
+  )
+  assert hold.held_max_kph is None
+  assert abs(dec.driver_kph - ego) < 1e-6
+  assert dec.seed_kph is None
+
+
+def test_mode_off_stalk_updates_held_then_one_set_resumes_it():
+  hold = MapCruiseHold()
+  start = 24 * CV.MPH_TO_KPH
+  adjusted = 19 * CV.MPH_TO_KPH
+  ego = 12 * CV.MPH_TO_KPH
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_OFF, raw_kph=start, posted_kph=None,
+    engage_rising=True, now=0.0, take_speed_now=True, traveled_kph=start,
+  )
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_OFF, raw_kph=start, posted_kph=None,
+    engage_rising=False, now=1.0, long_active=True,
+  )
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_OFF, raw_kph=adjusted, posted_kph=None,
+    engage_rising=False, now=2.0, long_active=True,
+  )
+  assert abs(hold.held_max_kph - adjusted) < 1e-6
+  assert dec.seed_kph is None
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_OFF, raw_kph=ego, posted_kph=None,
+    engage_rising=False, now=3.0, long_active=False, traveled_kph=ego,
+  )
+  assert abs(hold.held_max_kph - adjusted) < 1e-6
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_OFF, raw_kph=ego, posted_kph=None,
+    engage_rising=True, now=4.0, resume_held=True, long_active=True,
+    traveled_kph=ego,
+  )
+  assert dec.seed_kph is not None
+  assert abs(dec.seed_kph - adjusted) < 1e-6
+
+
+def test_mode_off_double_set_after_pause_takes_traveled():
+  hold = MapCruiseHold()
+  held = 19 * CV.MPH_TO_KPH
+  ego = 12 * CV.MPH_TO_KPH
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_OFF, raw_kph=held, posted_kph=None,
+    engage_rising=True, now=0.0, take_speed_now=True, traveled_kph=held,
+  )
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_OFF, raw_kph=ego, posted_kph=None,
+    engage_rising=False, now=1.0, long_active=False, traveled_kph=ego,
+  )
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_OFF, raw_kph=ego, posted_kph=None,
+    engage_rising=False, now=2.0, take_speed_now=True, traveled_kph=ego,
+  )
+  assert dec.seed_kph is not None
+  assert abs(dec.seed_kph - ego) < 1e-6
+  assert abs(hold.held_max_kph - ego) < 1e-6
+
+
+def test_follow_delayed_engage_rising_keeps_sticky():
+  """pedalLongActive rising after resume_held must not forget 55-in-65."""
+  hold = MapCruiseHold()
+  posted = 65 * CV.MPH_TO_KPH
+  sticky = 55 * CV.MPH_TO_KPH
+  ego = 30 * CV.MPH_TO_KPH
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=posted, posted_kph=posted,
+    engage_rising=True, now=0.0,
+  )
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=sticky, posted_kph=posted,
+    engage_rising=False, now=1.0, stalk_pressed=True,
+  )
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=sticky, posted_kph=posted,
+    engage_rising=False, now=2.0, long_active=False, traveled_kph=ego,
+  )
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=sticky, posted_kph=posted,
+    engage_rising=False, now=3.0, resume_held=True, long_active=False,
+    traveled_kph=ego,
+  )
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=sticky, posted_kph=posted,
+    engage_rising=True, now=4.0, resume_held=False, long_active=True,
+    traveled_kph=ego,
+  )
+  assert dec.sticky
+  assert abs(dec.driver_kph - sticky) < 1e-6
+  assert abs(hold.held_max_kph - sticky) < 1e-6
+  if dec.seed_kph is not None:
+    assert abs(dec.seed_kph - sticky) < 1e-6
+
+
 def test_maps_double_set_uses_posted():
   hold = MapCruiseHold()
   posted = 65 * CV.MPH_TO_KPH
@@ -1135,6 +1278,8 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   assert "resume_held=resume_held" in card
   assert "_write_preap_pedal_speed" in card
   assert "should_write_preap_pedal" in card
+  assert "_adopt_preap_fsm_held_max" in card
+  assert "long_active=soft_long" in card
   # Must not seed/overlay on lateral-only first pull (CC.enabled).
   assert "engage_rising = long_active and not long_active_prev" in card
   # Must not clobber stalk by writing Follow HUD onto pedal every frame.
@@ -1157,5 +1302,7 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   assert "Do not snap posted down" in osm
   policy = (root / "selfdrive/mapd/map_speed_policy.py").read_text()
   assert "float(posted_kph) if raised else None" in policy
+  # Delayed pedalLongActive rising after one SET must not take traveled.
+  assert "not bool(resume_held) and hold.held_max_kph is None" in policy
   # Sticky / stalk path unchanged.
   assert "should_write_preap_pedal(dec.seed_kph, preap_v_cruise_kph, self._last_pedal_kph)" in card

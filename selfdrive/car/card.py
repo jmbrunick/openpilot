@@ -233,13 +233,21 @@ class Car:
         engage_rising = long_active and not long_active_prev
         session_enabled = bool(getattr(CS.cruiseState, 'enabled', False))
         resume_held, take_speed_now = self._preap_set_events()
+        # Overlay held can be None (maps off never stalk-latched). The FSM
+        # still has the brake/turn MAX — adopt it before pause substitution
+        # so we never treat ego as held, and so session_engaged stays up.
+        self._adopt_preap_fsm_held_max()
+        # Software long (enableLongControl), not pedal authority. Pause and
+        # the authority-acquisition gap both have pedalLongActive False;
+        # only a true long pause publishes cruiseState.speed as ego.
+        soft_long = bool(getattr(CS, 'enableLongControl', False))
         # Pause publishes cruiseState.speed as ego. Keep the held MAX instead.
-        if not long_active and self._map_hold.held_max_kph is not None:
+        if not soft_long and self._map_hold.held_max_kph is not None:
           raw_kph = float(self._map_hold.held_max_kph)
         traveled_kph = float(CS.vEgo) * CV.MS_TO_KPH
         has_held = self._map_hold.held_max_kph is not None
         session_engaged = bool(session_enabled) and (
-          long_active or has_held or resume_held or take_speed_now
+          soft_long or has_held or resume_held or take_speed_now
         )
         stalk_pressed = self._preap_stalk_set_pressed(CS)
         posted_kph = None
@@ -260,8 +268,11 @@ class Car:
           take_speed_now=take_speed_now,
           resume_held=resume_held,
           traveled_kph=traveled_kph,
-          long_active=long_active,
+          long_active=soft_long,
         )
+        # Stalk +/- while maps off updates overlay held; keep the FSM latch
+        # aligned so the next brake pause resumes that MAX.
+        self._publish_preap_held_max(long_active=soft_long)
         if map_valid and md is not None and not dec.sticky:
           # Any posted decrease: kin+110 m ease, never assign the new limit in one shot.
           lim = effective_map_limit_ms(
@@ -309,7 +320,7 @@ class Car:
         # Write engage/posted/stalk seed, or when HUD MAX rose. Never write
         # the same sticky MAX every frame. Pause still writes a rebase /
         # resume seed onto pedal_speed so one SET keeps the held MAX.
-        write_max = long_active or resume_held or take_speed_now or (
+        write_max = long_active or soft_long or resume_held or take_speed_now or (
           session_engaged and dec.seed_kph is not None
         )
         if write_max and should_write_preap_pedal(dec.seed_kph, preap_v_cruise_kph, self._last_pedal_kph):
@@ -333,20 +344,45 @@ class Car:
 
     return CS, RD
 
+  def _preap_engagement(self):
+    inner = getattr(self.CI, 'CS', None)
+    return getattr(inner, 'engagement', None) if inner is not None else None
+
   def _preap_set_events(self) -> tuple[bool, bool]:
     """Consume one-shot SET flags from the Pre-AP engagement patch.
 
     resume_held: one SET after brake / driver-turn long pause.
     take_speed_now: double SET / initial engage (forget sticky).
     """
-    inner = getattr(self.CI, 'CS', None)
-    eng = getattr(inner, 'engagement', None) if inner is not None else None
+    eng = self._preap_engagement()
     resume = bool(getattr(eng, '_nap_set_resume_long', False))
     take = bool(getattr(eng, '_nap_set_take_speed_now', False))
     if eng is not None:
       eng._nap_set_resume_long = False
       eng._nap_set_take_speed_now = False
     return resume, take
+
+  def _adopt_preap_fsm_held_max(self) -> None:
+    """If overlay never latched MAX, take the brake/turn FSM hold.
+
+    Maps off does not invent posted. A stalk-set pedal MAX can exist on
+    the FSM latch while MapCruiseHold.held_max_kph is still None. Adopting
+    it before pause substitution prevents writing ego into held.
+    """
+    if self._map_hold.held_max_kph is not None:
+      return
+    eng = self._preap_engagement()
+    held = getattr(eng, '_nap_held_max_kph', None) if eng is not None else None
+    if held is not None and 0.0 < float(held) < V_CRUISE_UNSET:
+      self._map_hold.held_max_kph = float(held)
+
+  def _publish_preap_held_max(self, *, long_active: bool) -> None:
+    """Keep the FSM latch in sync with overlay held while software long is on."""
+    if not long_active or self._map_hold.held_max_kph is None:
+      return
+    eng = self._preap_engagement()
+    if eng is not None:
+      eng._nap_held_max_kph = float(self._map_hold.held_max_kph)
 
   @staticmethod
   def _preap_stalk_set_pressed(CS) -> bool:
