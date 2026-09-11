@@ -167,12 +167,16 @@ class Controls:
     steer, steeringAngleDeg, lac_log = self.LaC.update(CC.latActive, CS, self.VM, lp,
                                                        self.steer_limited_by_safety, self.desired_curvature,
                                                        curvature_limited, lat_delay)
-    steer, steeringAngleDeg, blended_curvature = apply_lat_authority(
-      self._lat_handoff.authority, steer, steeringAngleDeg, CS.steeringAngleDeg,
-      self.desired_curvature, self.curvature)
-    actuators.torque = float(steer)
-    actuators.steeringAngleDeg = float(steeringAngleDeg)
-    actuators.curvature = float(blended_curvature)
+    if self._lat_handoff.authority < 1.0:
+      steer, steeringAngleDeg, blended_curvature = apply_lat_authority(
+        self._lat_handoff.authority, steer, steeringAngleDeg, CS.steeringAngleDeg,
+        self.desired_curvature, self.curvature)
+      actuators.torque = float(steer)
+      actuators.steeringAngleDeg = float(steeringAngleDeg)
+      actuators.curvature = float(blended_curvature)
+    else:
+      actuators.torque = float(steer)
+      actuators.steeringAngleDeg = float(steeringAngleDeg)
     # Ensure no NaNs/Infs
     for p in ACTUATOR_FIELDS:
       attr = getattr(actuators, p)
@@ -233,8 +237,9 @@ class Controls:
     cs.longitudinalPlanMonoTime = self.sm.logMonoTime['longitudinalPlan']
     cs.lateralPlanMonoTime = self.sm.logMonoTime['modelV2']
     cs.desiredCurvature = self.desired_curvature
-    cs.latAuthority = float(self._lat_handoff.authority)
-    cs.latHandoffPaused = bool(self._lat_handoff.ui_paused)
+    if self.lat_handoff.enabled:
+      cs.latAuthority = float(self._lat_handoff.authority)
+      cs.latHandoffPaused = bool(self._lat_handoff.ui_paused)
     cs.longControlState = self.LoC.long_control_state
     cs.upAccelCmd = float(self.LoC.pid.p)
     cs.uiAccelCmd = float(self.LoC.pid.i)
