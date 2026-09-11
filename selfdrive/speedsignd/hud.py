@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 # Hold long enough that a skipped 1 Hz cycle does not flicker the plate.
+# HUD mph comes from the first in-threshold YOLO hit (JSONL is still 2-hit).
 HUD_HOLD_S = 3.0
 HUD_LABEL = "SIGN"
 # Logger On + ONNX missing: show this instead of a blank plate or a fake mph.

@@ -1,10 +1,10 @@
-"""Two-frame debounce before HUD / JSONL accept a mph."""
+"""Two-frame debounce before JSONL; HUD lights on the first in-threshold hit."""
 from __future__ import annotations
 
 from openpilot.selfdrive.speedsignd.debounce import SignDebounce
 from openpilot.selfdrive.speedsignd.detect import SpeedSign
 from openpilot.selfdrive.speedsignd.jsonl import JsonlLogger
-from openpilot.selfdrive.speedsignd.speedsignd import SPEEDSIGND_HZ, process_frame
+from openpilot.selfdrive.speedsignd.speedsignd import SPEEDSIGND_HZ, next_detect_mono, process_frame
 from openpilot.selfdrive.speedsignd.weights_manifest import DEBOUNCE_HITS, DEBOUNCE_WINDOW_S
 
 
@@ -62,15 +62,48 @@ def test_process_frame_debounce_blocks_jsonl(tmp_path):
   debounce = SignDebounce()
   y = __import__("numpy").zeros((32, 32), __import__("numpy").uint8)
   signs, written = process_frame(y, 45.0, -95.0, 0.0, True, _Det(), log, now=1.0, debounce=debounce)
-  assert signs == [] and written == []
+  # First in-threshold hit lights HUD; JSONL still waits for the second frame.
+  assert signs and signs[0].mph == 55
+  assert written == []
   signs, written = process_frame(y, 45.0, -95.0, 0.0, True, _Det(), log, now=2.0, debounce=debounce)
   assert signs and signs[0].mph == 55
   assert written and written[0]["mph"] == 55
+
+
+def test_update_split_hud_on_first_hit():
+  d = SignDebounce()
+  s = SpeedSign(mph=55, conf=0.72, bbox=(0, 0, 8, 8))
+  split = d.update_split([s], 0.0)
+  assert split.hud and split.hud[0].mph == 55
+  assert split.confirmed == []
+  split = d.update_split([s], 1.0)
+  assert split.hud and split.confirmed
+  assert split.confirmed[0].mph == 55
+
+
+def test_overrun_two_hit_window_can_miss_jsonl():
+  """1.5 s tinygrad infer + payback spaces JSONL hits by 3 s (inside 4 s).
+
+  A 2.1 s infer spaces them by 4.2 s — JSONL never confirms. HUD must still
+  light on the first hit so a highway R2-1 is not blank after WAIT.
+  """
+  period, budget = 1.0 / SPEEDSIGND_HZ, 0.100
+  infer_s = 2.1
+  gap = next_detect_mono(infer_s, infer_s, period, budget)
+  assert gap > DEBOUNCE_WINDOW_S
+  d = SignDebounce()
+  s = SpeedSign(mph=60, conf=0.8, bbox=(0, 0, 8, 8))
+  first = d.update_split([s], 0.0)
+  assert first.hud and first.hud[0].mph == 60
+  assert first.confirmed == []
+  second = d.update_split([s], gap)
+  assert second.hud and second.hud[0].mph == 60
+  assert second.confirmed == []
 
 
 def test_debounce_constants_match_1hz():
   assert SPEEDSIGND_HZ == 1.0
   assert DEBOUNCE_HITS == 2
   assert DEBOUNCE_WINDOW_S == 4.0
-  # Two 1 Hz hits (or 1 Hz + one skip) must fit in the window.
+  # Two 1 Hz hits (or 1 Hz + one skip) must fit in the JSONL window.
   assert DEBOUNCE_WINDOW_S >= 2.0 / SPEEDSIGND_HZ

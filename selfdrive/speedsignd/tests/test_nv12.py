@@ -17,6 +17,10 @@ def test_y_plane_from_nv12():
   assert y is not None
   assert y.shape == (2, 4)
   assert int(y[0, 0]) == 1
+  copied = y_plane_from_nv12(Buf(), copy=True)
+  assert copied is not None and copied.shape == (2, 4)
+  copied[0, 0] = 99
+  assert int(y_plane_from_nv12(Buf())[0, 0]) == 1
 
 
 def test_rgb_from_y_replicates_luma():

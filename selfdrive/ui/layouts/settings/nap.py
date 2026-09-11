@@ -285,8 +285,8 @@ class NAPLayout(Widget):
       "Speed Sign Weights",
       weights_status_summary,
       description="YOLO ONNX at /data/media/0/nap/speed_sign.onnx. "
-      "Missing → onroad SIGN shows NO WT and will not read roadside signs. "
-      "Installed → blank plate until a confirmed mph.",
+      + "Missing → onroad SIGN shows NO WT and will not read roadside signs. "
+      + "Installed → blank plate until a confirmed mph.",
     )
     self._main_items.append(self._weights_status)
 
