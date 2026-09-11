@@ -1,5 +1,5 @@
 from openpilot.common.constants import CV
-from openpilot.selfdrive.mapd.constants import OSM_SIGN_LEAD_S, osm_sign_lead_m
+from openpilot.selfdrive.mapd.constants import MIN_ZONE_LENGTH_M, OSM_SIGN_LEAD_S, osm_sign_lead_m
 from openpilot.selfdrive.mapd.osm_db import (
   OsmSpeedLimitDB, _continues_route, _offset_point, _pack_coords, _unpack_coords, simplify_coords,
 )
@@ -106,25 +106,32 @@ def test_lookahead_reports_upcoming_higher_but_does_not_hide_current(tmp_path):
   db.close()
 
 
-def test_lookahead_does_not_skip_short_intermediate_limit(tmp_path):
-  """Geodesic 40 m probes skip a ~15 m 50 between 60 and 30; along-way must not.
+def test_min_zone_length_is_about_50_feet():
+  assert abs(MIN_ZONE_LENGTH_M - 15.0) < 1e-9
+  assert 14.0 <= MIN_ZONE_LENGTH_M <= 16.0
 
-  US 12 near Benson: 60→50 (short)→30. Justin saw no 60→50 anticipatory; 50→30 worked.
+
+def test_lookahead_does_not_skip_short_intermediate_limit(tmp_path):
+  """Along-way still publishes a real short-but-legal 60→50.
+
+  The 50 must last longer than MIN_ZONE_LENGTH_M (~50 ft). US 12 east of
+  Benson is ~760 m of tagged 50 — this fixture is a compact ~80 m 50.
+  A ~15 m 50 is a stub and is ignored (see test_next_limit_ignores_stub_zone).
   """
   path = str(tmp_path / "speed_limits.sqlite")
   con = OsmSpeedLimitDB.create(path)
-  # ~178 m of 60, ~15 m of 50, then 30. Probes at 160 m (60) and 200 m (30).
+  # ~178 m of 60, ~80 m of 50, then 30.
   OsmSpeedLimitDB.insert_way(
     con, 1, "US 12", "trunk", 60 * CV.MPH_TO_MS,
     [(37.0, -122.004), (37.0, -122.000)],
   )
   OsmSpeedLimitDB.insert_way(
     con, 2, "US 12", "trunk", 50 * CV.MPH_TO_MS,
-    [(37.0, -122.000), (37.0, -121.99983)],
+    [(37.0, -122.000), (37.0, -121.99910)],
   )
   OsmSpeedLimitDB.insert_way(
     con, 3, "US 12", "trunk", 30 * CV.MPH_TO_MS,
-    [(37.0, -121.99983), (37.0, -121.996)],
+    [(37.0, -121.99910), (37.0, -121.996)],
   )
   con.commit()
   con.close()
@@ -318,6 +325,122 @@ def test_benson_us12_long_60_ignores_side_street_30_fill(tmp_path):
   assert m.way_id == 1557241351
   assert abs(m.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3
   assert m.next_speed_limit_ms == 0.0
+  db.close()
+
+
+def test_next_limit_ignores_stub_zone_shorter_than_min_length(tmp_path):
+  """~10 m of 30 between two 60s is bleed, not a posted drop.
+
+  Same name/class so #53 route continuity would accept it; min-zone must reject.
+  """
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  OsmSpeedLimitDB.insert_way(
+    con, 1, "US 12", "trunk", 60 * CV.MPH_TO_MS,
+    [(37.0, -122.004), (37.0, -122.000)],
+  )
+  # ~10 m stub (under MIN_ZONE_LENGTH_M).
+  OsmSpeedLimitDB.insert_way(
+    con, 2, "US 12", "trunk", 30 * CV.MPH_TO_MS,
+    [(37.0, -122.000), (37.0, -121.99989)],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 3, "US 12", "trunk", 60 * CV.MPH_TO_MS,
+    [(37.0, -121.99989), (37.0, -121.996)],
+  )
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  m = db.lookup(37.0, -122.002, bearing_deg=90.0)
+  assert m is not None
+  assert abs(m.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3
+  assert m.next_speed_limit_ms == 0.0, m.next_speed_limit_ms * CV.MS_TO_MPH
+  db.close()
+
+
+def test_next_limit_keeps_real_drop_longer_than_min_length(tmp_path):
+  """A 30 that continues ~200 m after a 60 is a real on-route drop."""
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  OsmSpeedLimitDB.insert_way(
+    con, 1, "US 12", "trunk", 60 * CV.MPH_TO_MS,
+    [(37.0, -122.004), (37.0, -122.000)],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 2, "US 12", "trunk", 30 * CV.MPH_TO_MS,
+    [(37.0, -122.000), (37.0, -121.997)],
+  )
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  m = db.lookup(37.0, -122.002, bearing_deg=90.0)
+  assert m is not None
+  assert abs(m.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3
+  assert abs(m.next_speed_limit_ms - 30 * CV.MPH_TO_MS) < 0.3, m.next_speed_limit_ms * CV.MS_TO_MPH
+  db.close()
+
+
+def test_current_match_ignores_cross_street_bleed(tmp_path):
+  """GPS on a side street at the intersection must not snap posted to 30."""
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  OsmSpeedLimitDB.insert_way(
+    con, 1, "Main", "primary", 60 * CV.MPH_TO_MS,
+    [(37.0, -122.004), (37.0, -121.996)],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 2, "Oak", "residential", 30 * CV.MPH_TO_MS,
+    [(36.997, -122.000), (37.003, -122.000)],
+  )
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  # ~5 m north of the highway, on Oak, heading east along Main.
+  qlat, qlon = _offset_point(37.0, -122.000, 0.0, 5.0)
+  m = db.lookup(qlat, qlon, bearing_deg=90.0)
+  assert m is not None
+  assert m.way_id == 1
+  assert abs(m.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3
+  assert m.next_speed_limit_ms == 0.0
+  db.close()
+
+
+def test_se_heading_ew_fill_does_not_drop_posted_or_next(tmp_path):
+  """SE highway vs E-W grid: Δheading ~30° is inside HEADING_ALIGN_DEG.
+
+  #53's bearing gate still lets that fill score as a current/next candidate.
+  The min-zone gate must keep posted on the highway (US 12 SE Benson→DeGraff
+  pattern; geometry is generic, not a corridor hardcode).
+  """
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  start = (37.0, -122.004)
+  mid = _offset_point(start[0], start[1], 120.0, 400.0)
+  end = _offset_point(start[0], start[1], 120.0, 800.0)
+  OsmSpeedLimitDB.insert_way(
+    con, 1, "US 12", "trunk", 60 * CV.MPH_TO_MS,
+    [start, mid, end],
+  )
+  cross_w = _offset_point(mid[0], mid[1], 270.0, 200.0)
+  cross_e = _offset_point(mid[0], mid[1], 90.0, 200.0)
+  OsmSpeedLimitDB.insert_way(
+    con, 2, "Township", "unclassified", 30 * CV.MPH_TO_MS,
+    [cross_w, mid, cross_e],
+  )
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  # On the fill, a few meters west of the crossing, still heading SE on US 12.
+  qlat, qlon = _offset_point(mid[0], mid[1], 270.0, 6.0)
+  m = db.lookup(qlat, qlon, bearing_deg=120.0)
+  assert m is not None
+  assert m.way_id == 1, (m.way_id, m.road_name, m.speed_limit_ms * CV.MS_TO_MPH)
+  assert abs(m.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3
+  assert m.next_speed_limit_ms == 0.0, m.next_speed_limit_ms * CV.MS_TO_MPH
   db.close()
 
 
