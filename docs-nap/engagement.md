@@ -111,7 +111,7 @@ Soft-yield trigger is **0.70 Nm** (70% of `STEER_THRESHOLD`, a gentle quick push
 5. Yield smoothing: authority drops in one 10 ms cycle; the Tesla VM limiter still slews the CAN angle (`MAX_ANGLE_RATE` = 5 deg / 20 ms = 250 deg/s, plus ~3.6 m/s³ jerk). Do not jump desired angle. Hand-back is the S-curve, not a step.
 6. HUD: `controlsState.latHandoffPaused` stays set until authority ≥ **0.70**. 3X chrome uses the existing gray **override** (paused / driver-control) indication, not disengaged, and not the green lateral-engaged state. No engage/disengage sounds. Crossing 70% is latched so 69% cannot flicker green. Green + on-screen path is not enough — the wheel must unwind onto that path.
 
-Blinker tip/hold ALC, lat pause, long drop + one SET, and panda blinker latch are unchanged. This path does not require blinkers and does not arm ALC (handoff is gated off while `laneChangeState != off`).
+Blinker tip/hold ALC, lat pause, long drop + one SET, and panda blinker latch are unchanged. Soft-yield is **gated off** during a blinker lat-pause (`latActive` false → handoff identity). That pause already releases lat; do not also soft-yield. When the turn ends (lamps dark + hand release), stock used to restore full `latActive` onto the model immediately — a **firm grab** if the plan is wrong (parking lot / weak lanes → grass). Resume now **pins to the wheel while lat is down** and starts the same **1 s blend** on the rising edge (no 0.25 s quiet wait). This path does not require blinkers and does not arm ALC (handoff is also gated off while `laneChangeState != off`).
 
 ### Where to look
 
@@ -130,7 +130,7 @@ Do these at a quiet road / parking lot first, then a known pothole stretch. Peda
 4. **Release.** Hands clearly off. The wheel should ease back onto the path over about **one second immediately** — no extra beat before the blend — even if the rim is still self-centering from the dodge. Green engaged chrome returns only late in that blend (around 70%+), not at the first twitch. When green returns, the **wheel must follow the on-screen path** (unwind into the lane), not sit firm/holding at the dodge angle. Late/slack after release is a quiet-wait bug; firm hold after green is the resume-tracking bug.
 5. **Re-grab during the blend.** The return must stop immediately and yield again. Gray chrome stays. Let go and the 1 s blend retries immediately.
 6. **Road rumble / crosswind** with hands resting (toggle On): must **not** gray. If it still does, turn Soft Lateral Handoff **Off**. Do not lower panda / `STEER_THRESHOLD`. Brake silent long-pause + one SET must still work.
-7. **Blinker turn** (held stalk): existing lat pause, long drop, one SET resume. Soft-yield must not steal this or arm ALC from a tip.
+7. **Blinker turn** (held stalk): existing lat pause, long drop, one SET resume. Soft-yield must not steal this or arm ALC from a tip. After the turn, lat must **ease** back over ~1 s from the wheel — not grab firmly onto a grass/lot path. A weird lot with no lanes may still plan poorly; the grab itself is the resume, not a soft-yield.
 8. **ALC tip** (LEFT/RIGHT then IDLE within 0.40 s) still arms a lane change; wheel nudge at 1 Nm still starts it.
 9. **Hard yank / hands-on 2**, stalk cancel, door: full disengage, “Steering Disengaged”, chime. That is still the safety path.
 
