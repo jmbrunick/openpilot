@@ -2,6 +2,10 @@ NAP driver lat handoff (2026-09-11)
 ========================
 * Light wheel input (about half the usual override effort) now yields steering without cancelling openpilot. Speed control stays on. After 0.25 s of quiet the wheel blends back over 1 s. Gray HUD until ~70% lateral is back; no disengage chime. A hard yank / cancel still fully disengages. No panda flash.
 
+NAP sticky MAX (2026-09-11)
+========================
+* Pedal mode: brake or a held/latched driver-turn blinker pauses longitudinal only. Held MAX is remembered. That pause is **silent** — no “Pedal Cruise Disengaged” / disengage chime. One SET resumes long at that MAX (already rebased if posted changed) without a full-stack engage fanfare. Double SET forgets sticky: maps on + posted known → current posted; maps off / unknown → current traveled speed. Same double SET is initial engage. Maps never overwrite sticky every frame; GPS drop does not invent or wipe posted. Tip ALC does not use this pause. Hard cancel (stalk / door / gear / steer fault / hands-on ≥ 2) still fully disengages and still plays the disengage prompt. No-pedal stock CC is unchanged. Soft lat handoff unchanged.
+
 NAP speed-sign log (2026-09-11)
 ========================
 * SIGN WAIT is only when openpilot is actively controlling. A 1 Hz SubMaster used to treat unknown / stale `selfdriveState` as engaged for ~10 s after cancel (`recv_frame <= 0` + 100 ms alive window). Poll at 20 Hz; gate on `active`; abandon in-flight ONNX on re-engage so the loop never blocks. If TAKE CONTROL / Communication Issue comes back, turn Logger Off.
