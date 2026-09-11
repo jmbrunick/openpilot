@@ -7,9 +7,12 @@ vCruise / HUD MAX, and does not talk to osm.org.
 
 Stock modelV2 has no speedSign head — this is a separate process, default off.
 
-Yields hard to modeld: default 1 Hz detect, skip-on-overrun (no Ratekeeper
-backlog), SCHED_OTHER + nice 19. YOLOv8s tinygrad OnnxRunner on CPU at 4 Hz
-starves modeld (~35% frames dropped on 3X).
+Safety: Logger On starts the process + HUD. Heavy YOLO never runs while
+openpilot is engaged (selfdriveState.enabled, or unknown cereal). Manual
+driving — including moving, stock CC, no assist — still runs 1 Hz detect
+(skip-on-overrun, nice 19) so signs can be logged on the road. Not gated
+on park / Force Offroad. 4 Hz YOLO on a 3X starved modeld and can TAKE
+CONTROL / process-timeout.
 """
 from __future__ import annotations
 
@@ -49,6 +52,59 @@ def should_run_speed_sign_log(started: bool, params: Any, _cp: Any = None) -> bo
   except Exception:
     enabled = False
   return bool(started) and bool(enabled)
+
+
+def op_engaged(selfdrive_enabled: bool | None) -> bool:
+  """True when openpilot is controlling, or we cannot tell (fail-safe).
+
+  None = no live selfdriveState. Unknown is treated as engaged so YOLO
+  cannot start until cereal says OP is idle. Stock cruise / moving /
+  parked are not this gate — only selfdriveState.enabled.
+  """
+  if selfdrive_enabled is None:
+    return True
+  return bool(selfdrive_enabled)
+
+
+def should_run_onnx_detect(engaged: bool) -> bool:
+  """Heavy ONNX when OP is not controlling (manual driving, moving OK)."""
+  return not bool(engaged)
+
+
+def _optional_sm_bool(sm: Any, service: str, *attrs: str) -> bool | None:
+  """None when this service has never arrived, is dead/invalid, or unreadable."""
+  try:
+    if int(sm.recv_frame.get(service, -1)) <= 0:
+      return None
+  except Exception:
+    return None
+  for flag_name in ("alive", "valid"):
+    try:
+      flags = getattr(sm, flag_name, None)
+      if flags is not None and service in flags and not flags[service]:
+        return None
+    except Exception:
+      return None
+  try:
+    obj: Any = sm[service]
+    for name in attrs:
+      obj = getattr(obj, name)
+    return bool(obj)
+  except Exception:
+    return None
+
+
+def engaged_from_sm(sm: Any) -> bool:
+  """selfdriveState.enabled only. Unknown / dead / invalid → engaged."""
+  ss = _optional_sm_bool(sm, "selfdriveState", "enabled")
+  try:
+    seen_ss = int(sm.recv_frame.get("selfdriveState", -1)) > 0
+  except Exception:
+    seen_ss = False
+  # A previously live selfdriveState that is now dead/invalid is not "idle".
+  if seen_ss and ss is None:
+    return True
+  return op_engaged(ss)
 
 
 def parse_detect_hz(raw: str | None, default: float = SPEEDSIGND_HZ) -> float:
@@ -143,6 +199,29 @@ def process_observations(
   return written
 
 
+def detect_if_allowed(
+  y,
+  lat: float,
+  lon: float,
+  bearing: float | None,
+  gps_ok: bool,
+  detector: SpeedSignDetector,
+  logger: JsonlLogger,
+  now: float,
+  *,
+  engaged: bool,
+  rgb=None,
+  debounce: SignDebounce | None = None,
+) -> tuple[list, list[dict]]:
+  """ONNX/JSONL only when OP is not engaged. HUD keep-alive is the caller's job."""
+  if not should_run_onnx_detect(engaged):
+    return [], []
+  return process_frame(
+    y, lat, lon, bearing, gps_ok, detector, logger, now,
+    rgb=rgb, debounce=debounce,
+  )
+
+
 def _connect_road_camera():
   from msgq.visionipc import VisionIpcClient, VisionStreamType
   client = VisionIpcClient("camerad", VisionStreamType.VISION_STREAM_ROAD, True)
@@ -154,25 +233,33 @@ def live_sign_publish_fields(
   signs,
   now_mono: float,
   weights_missing: bool,
-) -> tuple[bool, int, float, bool]:
-  """msg.valid, mph, conf, weights_missing for liveSpeedSignNAP.
+  detect_paused: bool = False,
+) -> tuple[bool, int, float, bool, bool]:
+  """msg.valid, mph, conf, weights_missing, detect_paused for liveSpeedSignNAP.
 
   When ONNX is missing, keep msg.valid so the HUD can show NO WT — never a
-  numpy-fallback mph. Hold is not updated so a later reload starts clean.
+  numpy-fallback mph. When engaged, show WAIT and do not update hold.
   """
   if weights_missing:
-    return True, 0, 0.0, True
+    return True, 0, 0.0, True, False
+  if detect_paused:
+    return True, 0, 0.0, False, True
   live, mph, conf = hold.update(signs, now_mono)
-  return live, mph if live else 0, conf if live else 0.0, False
+  return live, mph if live else 0, conf if live else 0.0, False, False
 
 
-def _publish_live(pm, hold: LiveSignHold, signs, now_mono: float, messaging, weights_missing: bool) -> None:
-  msg_valid, mph, conf, missing = live_sign_publish_fields(hold, signs, now_mono, weights_missing)
+def _publish_live(
+  pm, hold: LiveSignHold, signs, now_mono: float, messaging,
+  weights_missing: bool, detect_paused: bool = False,
+) -> None:
+  msg_valid, mph, conf, missing, paused = live_sign_publish_fields(
+    hold, signs, now_mono, weights_missing, detect_paused,
+  )
   msg = messaging.new_message(SERVICE_NAME)
   msg.valid = msg_valid
   apply_live_sign(
     getattr(msg, SERVICE_NAME),
-    mph=mph, conf=conf, valid=bool(mph), weights_missing=missing,
+    mph=mph, conf=conf, valid=bool(mph), weights_missing=missing, detect_paused=paused,
   )
   pm.send(SERVICE_NAME, msg)
 
@@ -207,7 +294,7 @@ def main():
   debounce = SignDebounce()
   backend = "yolo-onnx" if detector.onnx is not None else "numpy-mutcd"
   cloudlog.info(
-    "speedsignd starting log=%s backend=%s onnx=%s hz=%.2f budget_ms=%.0f nice=%d",
+    "speedsignd starting log=%s backend=%s onnx=%s hz=%.2f budget_ms=%.0f nice=%d no_onnx_while_engaged=1",
     log_path, backend, onnx_path, hz, INFER_BUDGET_MS, SPEEDSIGND_NICE,
   )
   if detector.onnx is None:
@@ -218,7 +305,7 @@ def main():
       onnx_path,
     )
 
-  sm = messaging.SubMaster(["gpsLocationExternal", "gpsLocation"])
+  sm = messaging.SubMaster(["gpsLocationExternal", "gpsLocation", "selfdriveState"])
   pm = messaging.PubMaster([SERVICE_NAME])
   rk = Ratekeeper(hz, print_delay_threshold=None)
   client = None
@@ -228,16 +315,24 @@ def main():
   infer_ms: list[float] = []
   skip_count = 0
   last_timing_log = time.monotonic()
+  last_paused: bool | None = None
 
   while True:
     sm.update(0)
     now_mono = time.monotonic()
+    engaged = engaged_from_sm(sm)
+    allow_detect = should_run_onnx_detect(engaged)
+    paused = not allow_detect
+    if last_paused != paused:
+      cloudlog.info("speedsignd detect %s (engaged=%s)", "paused" if paused else "running", engaged)
+      last_paused = paused
     if now_mono - last_timing_log >= INFER_LOG_PERIOD_S:
       _log_infer_timing(cloudlog, infer_ms, skip_count, hz)
       infer_ms = []
       skip_count = 0
       last_timing_log = now_mono
-    if detector.onnx is None and now_mono - last_onnx_try >= ONNX_RETRY_S:
+    # Do not load 43 MB ONNX while OP is engaged.
+    if allow_detect and detector.onnx is None and now_mono - last_onnx_try >= ONNX_RETRY_S:
       last_onnx_try = now_mono
       if detector.try_reload():
         cloudlog.info("speedsignd: ONNX loaded after retry backend=yolo-onnx onnx=%s", onnx_path)
@@ -258,18 +353,21 @@ def main():
       lat, lon, bearing, gps_ok = gps_sample_from_sm(sm, now=now_mono)
       # On-road: do not run numpy-mutcd when weights are missing (no fake mph / JSONL).
       have_frame = detector.onnx is not None and (y is not None or rgb is not None)
-      if have_frame and now_mono >= next_detect:
+      if have_frame and allow_detect and now_mono >= next_detect:
         t0 = time.monotonic()
-        signs, _written = process_frame(
+        signs, _written = detect_if_allowed(
           y, lat, lon, bearing, gps_ok, detector, logger, time.time(),
-          rgb=rgb, debounce=debounce,
+          engaged=engaged, rgb=rgb, debounce=debounce,
         )
         infer_s = time.monotonic() - t0
         infer_ms.append(infer_s * 1000.0)
         next_detect = next_detect_mono(t0 + infer_s, infer_s, period_s, budget_s)
-      elif have_frame:
+      elif have_frame and allow_detect:
         skip_count += 1
-    _publish_live(pm, hold, signs, now_mono, messaging, detector.weights_missing())
+    _publish_live(
+      pm, hold, signs, now_mono, messaging,
+      detector.weights_missing(), detect_paused=not allow_detect,
+    )
     rk.keep_time()
     reset_ratekeeper_if_behind(rk, time.monotonic())
 
