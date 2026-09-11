@@ -39,13 +39,15 @@ def _new():
   return DriverLateralHandoff(enabled=True)
 
 
-def _step(h, *, torque=0.0, rate=0.0, engaged=True, lat=True, alc=False, dt=DT):
+def _step(h, *, torque=0.0, rate=0.0, engaged=True, lat=True, alc=False,
+          blinker_paused=False, dt=DT):
   return h.update(
     engaged=engaged,
     lat_would_be_active=lat,
     steering_torque=torque,
     steering_rate_deg=rate,
     alc_active=alc,
+    blinker_paused=blinker_paused,
     dt=dt,
   )
 
@@ -387,14 +389,55 @@ def test_blinker_and_alc_paths_unchanged_and_do_not_arm_from_handoff():
   )
   assert not lat
   h = _new()
-  out = _step(h, torque=0.8, lat=False)
+  out = _step(h, torque=0.8, lat=False, blinker_paused=True)
   assert out.authority == 1.0
   assert not out.yielded
+  assert not out.blending
 
   h = _new()
   for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES + 1):
     out = _step(h, torque=0.8, alc=True)
   assert not out.yielded
+  assert out.authority == 1.0
+
+
+def test_blinker_pause_gates_handoff_resume_blends_immediately():
+  """Post-turn grab: blinker resume used to restore authority=1 onto model.
+
+  Soft-yield stays gated during the pause. Rising edge starts the 1 s
+  blend this frame (QUIET_WAIT_S == 0) — no yank, no extra quiet delay.
+  Standstill-style lat-down without blinker_paused does not blend.
+  """
+  h = _new()
+  for _ in range(int(1.5 / DT)):
+    out = _step(h, torque=0.2, lat=False, blinker_paused=True)
+    assert out.authority == 1.0
+    assert not out.yielded
+    assert not out.blending
+  out = _step(h, torque=0.2, lat=True, blinker_paused=False)
+  assert out.blending
+  assert not out.yielded
+  assert out.authority == 0.0
+  assert out.ui_paused
+  for _ in range(int(BLEND_TIME_S / DT)):
+    out = _step(h, torque=0.0)
+  assert out.authority == 1.0
+  assert not out.blending
+  assert not out.ui_paused
+
+  h = _new()
+  for _ in range(20):
+    _step(h, torque=0.0, lat=False, blinker_paused=False)
+  out = _step(h, torque=0.0, lat=True)
+  assert not out.blending
+  assert out.authority == 1.0
+
+
+def test_engage_from_disabled_does_not_start_blinker_reentry_blend():
+  h = _new()
+  _step(h, engaged=False, lat=False)
+  out = _step(h, engaged=True, lat=True)
+  assert not out.blending
   assert out.authority == 1.0
 
 
@@ -445,7 +488,7 @@ def _step_actuators(h, *, torque, desired, model_curv, meas_curv, meas_angle, v_
     yielded=out.yielded, lat_active=True,
     model_curvature=model_curv, measured_curvature=meas_curv,
   )
-  if pin_desired_curvature_to_measured(out.yielded):
+  if pin_desired_curvature_to_measured(out.yielded, lat_active=True):
     desired = meas_curv
   else:
     desired = _clip_toward(desired, new_desired)
@@ -486,6 +529,8 @@ def test_yield_pins_planner_resume_tracks_model_not_measured():
   ) == meas_curv
   assert pin_desired_curvature_to_measured(True)
   assert not pin_desired_curvature_to_measured(False)
+  assert pin_desired_curvature_to_measured(False, lat_active=False)
+  assert not pin_desired_curvature_to_measured(False, lat_active=True)
 
   for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES):
     out, desired, angle, curv = _step_actuators(
@@ -529,14 +574,51 @@ def test_yield_pins_planner_resume_tracks_model_not_measured():
   assert "pin_desired_curvature_to_measured" in cs
   assert "handoff_new_desired_curvature" in cs
   assert "authority < 1.0" in cs
+  assert "CC.latActive" in cs
 
 
 def test_unyielded_lat_inactive_still_uses_measured_curvature():
-  """Blinker / standstill path: latActive false → measured, unchanged."""
+  """Blinker / standstill path: latActive false → measured, snap-pin."""
   assert handoff_new_desired_curvature(
     yielded=False, lat_active=False,
     model_curvature=0.02, measured_curvature=0.001,
   ) == 0.001
+  assert pin_desired_curvature_to_measured(False, lat_active=False)
+
+
+def test_blinker_resume_pins_then_blends_from_wheel_not_model():
+  """Lot turn: model points at grass; resume must not command that instantly."""
+  h = _new()
+  model_curv = 0.02  # "into the grass"
+  meas_curv = 0.001
+  meas_angle = _angle_from_curv(meas_curv)
+  desired = 0.015  # lagged planner from the turn
+
+  for _ in range(10):
+    out = _step(h, torque=0.2, lat=False, blinker_paused=True)
+    assert not out.yielded
+    assert pin_desired_curvature_to_measured(out.yielded, lat_active=False)
+    desired = meas_curv  # controlsd snap-pin while lat down
+
+  out = _step(h, torque=0.0, lat=True, blinker_paused=False)
+  assert out.blending
+  assert out.authority == 0.0
+  assert not pin_desired_curvature_to_measured(out.yielded, lat_active=True)
+  new_desired = handoff_new_desired_curvature(
+    yielded=out.yielded, lat_active=True,
+    model_curvature=model_curv, measured_curvature=meas_curv,
+  )
+  assert new_desired == model_curv
+  desired = _clip_toward(desired, new_desired)
+  _t, angle, curv = apply_lat_authority(
+    out.authority, 0.4, _angle_from_curv(desired), meas_angle, desired, meas_curv)
+  # authority 0: command the wheel, not the grass-pointing model
+  assert angle == meas_angle
+  assert curv == meas_curv
+  assert abs(desired - meas_curv) < abs(model_curv - meas_curv)
+  cs = (Path(__file__).resolve().parents[4] / "selfdrive/controls/controlsd.py").read_text()
+  assert "blinker_paused" in cs
+  assert "blinker_lat_hold.holding" in cs
 
 
 def test_disabled_for_non_preap_is_identity():

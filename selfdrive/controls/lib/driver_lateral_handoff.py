@@ -42,8 +42,15 @@ road / SNA stay above the old 25 deg/s gate.
 
 While yielded, controlsd pins desired_curvature to measured (stock
 inactive target) so LaC cannot run ahead of the wheel. Blend / resume
-then clip_curvature from that pin onto the model — same as a blinker
-pause re-engage — with latActive still true.
+then clip_curvature from that pin onto the model with latActive still
+true.
+
+Blinker lat-pause is a different path: latActive is False, this module
+resets to identity (no soft-yield). After the turn, stock resume used
+to restore full latActive onto the model immediately — a firm grab
+when the plan is wrong (parking lot / no lanes → grass). We pin to
+measured while lat is down, and on blinker-pause rising edge start
+the same 1 s blend (no quiet wait) so post-turn return is smooth.
 """
 
 from __future__ import annotations
@@ -148,9 +155,15 @@ def handoff_new_desired_curvature(*, yielded: bool, lat_active: bool,
   return float(model_curvature)
 
 
-def pin_desired_curvature_to_measured(yielded: bool) -> bool:
-  """True: assign desired_curvature = measured, skip clip_curvature."""
-  return bool(yielded)
+def pin_desired_curvature_to_measured(yielded: bool, lat_active: bool = True) -> bool:
+  """True: assign desired_curvature = measured, skip clip_curvature.
+
+  Pin while soft-yielded *and* while latActive is false (blinker pause /
+  standstill / fault). Blinker pause used to only clip toward measured,
+  so a fast lot turn left desired lagged; resume then slewed from that
+  lag onto a bad model path (grass). Snap-pin matches stock inactive.
+  """
+  return bool(yielded) or not bool(lat_active)
 
 
 def hud_engaged_status(*, enabled: bool, op_state, lat_active: bool,
@@ -197,6 +210,7 @@ class DriverLateralHandoff:
     self._press_cnt = 0
     self._release_cnt = 0
     self._pressed = False
+    self._blinker_was_paused = False
 
   def reset(self):
     self._reset()
@@ -246,7 +260,8 @@ class DriverLateralHandoff:
 
   def update(self, *, engaged: bool, lat_would_be_active: bool,
              steering_torque: float, steering_rate_deg: float,
-             alc_active: bool = False, dt: float | None = None) -> HandoffOutput:
+             alc_active: bool = False, blinker_paused: bool = False,
+             dt: float | None = None) -> HandoffOutput:
     if dt is None:
       dt = DT_CTRL
 
@@ -257,17 +272,27 @@ class DriverLateralHandoff:
     # Blinker pause / standstill / faults already cleared lat_would_be_active.
     # ALC wheel-nudge uses steeringPressed at 1 Nm and must not be softened.
     # Full disengage (cancel / door / hands-on >= 2) clears engaged.
-    if not engaged or not lat_would_be_active or alc_active:
+    # Soft-yield stays gated (identity) while lat is down — do not steal
+    # the blinker-turn path. Remember a driver-turn pause so the rising
+    # edge can 1 s blend instead of restoring authority=1 onto the model.
+    if not engaged or alc_active:
       self._reset()
       return HandoffOutput(1.0, False, False, False)
-
+    if not lat_would_be_active:
+      remember = self._blinker_was_paused or bool(blinker_paused)
+      self._reset()
+      self._blinker_was_paused = remember
+      return HandoffOutput(1.0, False, False, False)
     mag = abs(float(steering_torque))
     pressed = self._update_soft_pressed(steering_torque)
     # steering_rate_deg is CS.steeringRateDeg (−StW_AnglHP_Spd, deg/s).
     # Not a quiet/yield signal — see module docstring.
     _ = steering_rate_deg
 
-    if not self._yielded and not self._blending:
+    if self._blinker_was_paused:
+      self._blinker_was_paused = False
+      self._start_blend()
+    elif not self._yielded and not self._blending:
       if pressed:
         self._enter_yield()
     elif self._yielded:

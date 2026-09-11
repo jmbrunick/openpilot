@@ -140,12 +140,17 @@ class Controls:
     self.lat_handoff.enabled = handoff_enabled(
       fingerprint=self.CP.carFingerprint,
       param_on=bool(self.params.get_bool(PARAM_DRIVER_LAT_HANDOFF)))
+    # hold.holding / turn_active are set during the blinker-turn pause.
+    # On the resume frame they are already clear; handoff latches the flag
+    # from earlier paused frames.
     self._lat_handoff = self.lat_handoff.update(
       engaged=bool(CC.enabled),
       lat_would_be_active=bool(CC.latActive),
       steering_torque=float(CS.steeringTorque),
       steering_rate_deg=float(CS.steeringRateDeg),
       alc_active=alc_active,
+      blinker_paused=bool(
+        self.blinker_lat_hold.holding or self.blinker_lat_hold.turn_active),
     )
 
     actuators = CC.actuators
@@ -169,7 +174,9 @@ class Controls:
     # Reset desired curvature to current to avoid violating the limits on engage.
     # Soft yield keeps latActive true (no VM snap) but must not let the
     # planner run to the model while we command measured. Pin to the wheel
-    # while yielded; blend/resume clip from that pin like a blinker re-engage.
+    # while yielded *or* latActive is false (blinker pause). Blend/resume
+    # clip from that pin — blinker rising edge also starts the 1 s blend
+    # so a lot turn does not yank onto a grass-pointing model path.
     if self.sm.valid['lateralManeuverPlan']:
       model_or_plan_curvature = self.sm['lateralManeuverPlan'].desiredCurvature
     else:
@@ -180,7 +187,8 @@ class Controls:
       model_curvature=model_or_plan_curvature,
       measured_curvature=self.curvature,
     )
-    if pin_desired_curvature_to_measured(self._lat_handoff.yielded):
+    if pin_desired_curvature_to_measured(
+        self._lat_handoff.yielded, bool(CC.latActive)):
       self.desired_curvature = self.curvature
       curvature_limited = False
     else:
