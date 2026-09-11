@@ -1,5 +1,21 @@
 NAP driver lat handoff (2026-09-11)
 ========================
+* Soft-lat hands-off confirm before take-back shortened from **0.25 s → 0.15 s** (`HANDS_OFF_CONFIRM_S`). Free-wheel yield, 1 s blend, blinker re-entry, and emergency cancel unchanged. Renewed hands-on or a firm push during the 0.15 s wait still re-yields and resets.
+
+NAP map speed (2026-09-11)
+========================
+* Map MAX short-zone ignore raised from ~50 ft (15 m) to **~250 ft (76 m)** along heading. Cross-street / bleed flashes that lasted past 50 ft are now ignored. Real on-route drops that continue for hundreds of meters (US 12 tagged 50 ~760 m, DeGraff 30) still ease. Off-route bearing/class filter unchanged.
+
+NAP driver lat handoff (2026-09-11)
+========================
+* Soft lateral handoff is **default On**. After a free-wheel yield, stay free while `handsOnLevel >= 1` or a renewed firm push. When hands go to **0**, require **~0.25 s** hands-off confirm (`HANDS_OFF_CONFIRM_S`) before the **1 s** smoothstep blend — not the old 80 ms confirm. A brief hands-off or right-then-left crossover during the dodge must not snatch. Renewed hands-on or ≥ 0.55 Nm during that wait or the blend re-yields (EPS free) and resets the delay. `QUIET_WAIT_S` stays 0 (torsion-quiet used to blend on mid-dodge dips). Entry ~0.55 Nm / 90 ms + hands, blinker 1 s soft re-entry, emergency hard-brake cancel, sticky MAX / light brake, gravel spike rejection unchanged. Settings → NAP → Soft Lateral Handoff default **On**. Panda / hands-on ≥ 2 unchanged.
+
+NAP map speed (2026-09-11)
+========================
+* Map MAX ignores a lower OSM limit that only lasts ~50 ft (15 m) along heading — cross-street bleed / intersection stubs. Real on-route drops that continue past that still ease. Off-route bearing/class filter unchanged.
+
+NAP driver lat handoff (2026-09-11)
+========================
 * Soft lateral handoff is **default On**. **Yield = free the EPS**, not follow-measured angle control. A light purposeful push + hands (`|torsion| >= 0.55 Nm` for ~90 ms consecutive, `handsOnLevel >= 1`) drops `latActive` so Pre-AP sends `DAS_steeringControlType=0` — same release as blinker lat-pause. #79 still wrestled because OP kept full authority until the 0.70 Nm / 140 ms debounce finished, then kept `latActive` and commanded measured angle (closed-loop hold). Near 1.0 Nm the consecutive bar drops toward 60 ms so the soft path still beats hands-on ≥ 2. Hands-on hold + pin-to-wheel + **1 s blend** on return unchanged (parking-lot blinker soft re-entry kept: pin while lat down; 1 s blend on blinker rising edge; yield / stay free if hands still on). Gravel spike trains still gap-reset; rumble at ~0.50 Nm or hands-off must not free-yield. **Emergency / hard brake** while yielded or within 2 s of yield entry (digital Applied + `aEgo <= −3.5 m/s²` for 80 ms) fully cancels OP. Light brake is still sticky-MAX silent pause + one SET. Settings → NAP → Soft Lateral Handoff can turn **Off**. Panda / hands-on ≥ 2 unchanged.
 
 NAP driver lat handoff (2026-09-11)

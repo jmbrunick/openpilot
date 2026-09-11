@@ -2,8 +2,10 @@
 
 Schema is NAP-owned. Data is OpenStreetMap (ODbL). Query path is GPS → nearest
 heading-aligned way. nextSpeedLimit follows that matched way (bearing + class),
-not a nearby off-route fill. Tagged OSM maxspeed is authoritative; Minnesota
-packs may include statutory estimates for unmarked highways (never uploaded to OSM).
+not a nearby off-route fill. A lower limit that only lasts MIN_ZONE_LENGTH_M
+(~250 ft) along heading is ignored (cross-street bleed / intersection stub).
+Tagged OSM maxspeed is authoritative; Minnesota packs may include statutory
+estimates for unmarked highways (never uploaded to OSM).
 """
 from __future__ import annotations
 
@@ -18,6 +20,7 @@ from openpilot.selfdrive.mapd.constants import (
   LOOKAHEAD_M,
   LOOKAHEAD_MAX_M,
   MAX_MATCH_DISTANCE_M,
+  MIN_ZONE_LENGTH_M,
   SEARCH_PAD_DEG,
   osm_sign_lead_m,
 )
@@ -438,6 +441,61 @@ class OsmSpeedLimitDB:
         )
     return best
 
+  def _limit_persists_min_zone(
+    self, lat: float, lon: float, bearing_deg: float, match: SpeedLimitMatch,
+    along_route: SpeedLimitMatch | None = None,
+  ) -> bool:
+    """True if this limit is still present MIN_ZONE_LENGTH_M along heading.
+
+    Cross-street bleed matches a long side road at the intersection, but
+    MIN_ZONE_LENGTH_M along the highway heading is already back on the
+    main road. A tiny stub way fails the same way. Remaining-along-way
+    alone is not enough: a long N-S fill has lots of remaining.
+    """
+    plat, plon = _offset_point(lat, lon, bearing_deg, MIN_ZONE_LENGTH_M)
+    ahead = self._best_match(plat, plon, bearing_deg, along_route=along_route)
+    if ahead is not None:
+      return abs(ahead.speed_limit_ms - match.speed_limit_ms) <= 0.3
+    rem = _remaining_ahead(lat, lon, bearing_deg, match.coords or ())
+    if rem is None or rem[0] < MIN_ZONE_LENGTH_M:
+      return False
+    _dist, seg_hdg = _point_to_polyline_m(lat, lon, list(match.coords or ()))
+    if seg_hdg is None:
+      return False
+    return _wrap_heading_delta(bearing_deg, seg_hdg) <= HEADING_ALIGN_DEG
+
+  def _stabilize_match(
+    self, lat: float, lon: float, bearing_deg: float | None, match: SpeedLimitMatch | None,
+  ) -> SpeedLimitMatch | None:
+    """Drop a matched lower limit that only lasts a stub along heading.
+
+    OSM/GPS at a crossroads can snap onto a side street for ~a car length.
+    Prefer the road that is still there MIN_ZONE_LENGTH_M ahead. Never snap
+    posted down to a lower ahead zone — that decrease eases via next.
+    """
+    if match is None or bearing_deg is None:
+      return match
+    if self._limit_persists_min_zone(lat, lon, bearing_deg, match):
+      return match
+    plat, plon = _offset_point(lat, lon, bearing_deg, MIN_ZONE_LENGTH_M)
+    ahead = self._best_match(plat, plon, bearing_deg)
+    if ahead is None or int(ahead.way_id) == int(match.way_id):
+      return match
+    if ahead.speed_limit_ms + 0.3 < match.speed_limit_ms:
+      return match
+    # Same named road changing speed is a real zone end, not cross-street
+    # bleed. Do not raise posted early; the 1.5 s GNSS offset does that.
+    match_name = (match.road_name or "").strip().lower()
+    ahead_name = (ahead.road_name or "").strip().lower()
+    if match_name and match_name == ahead_name and ahead.speed_limit_ms > match.speed_limit_ms + 0.3:
+      return match
+    if not self._limit_persists_min_zone(plat, plon, bearing_deg, ahead):
+      return match
+    stable = self._best_match(lat, lon, bearing_deg, along_route=ahead)
+    if stable is not None and abs(stable.speed_limit_ms - ahead.speed_limit_ms) <= 0.3:
+      return stable
+    return ahead
+
   def _geodesic_next(self, lat: float, lon: float, bearing_deg: float,
                      match: SpeedLimitMatch) -> tuple[float, float] | None:
     """Heading-ray probes after the matched way ends (OSM gap). Route-bearing only."""
@@ -450,6 +508,8 @@ class OsmSpeedLimitDB:
         continue
       if abs(ahead.speed_limit_ms - current_ms) <= 0.3:
         prev_same_d = d
+        continue
+      if not self._limit_persists_min_zone(alat, alon, bearing_deg, ahead, along_route=match):
         continue
       next_dist = 0.5 * (prev_same_d + d) if prev_same_d > 0 else d
       return float(ahead.speed_limit_ms), float(next_dist)
@@ -482,7 +542,6 @@ class OsmSpeedLimitDB:
       rem, end_ll, end_hdg = ahead_info
       if traveled + rem > LOOKAHEAD_MAX_M + 1.0:
         return None, True
-      traveled += rem
       nxt = None
       # Step past the end; 12 m can still match the way we just left
       # (MAX_MATCH_DISTANCE_M=35).
@@ -496,7 +555,13 @@ class OsmSpeedLimitDB:
         return None, False
       seen.add(int(nxt.way_id))
       if abs(nxt.speed_limit_ms - current_ms) > 0.3:
-        return (float(nxt.speed_limit_ms), float(traveled)), True
+        if self._limit_persists_min_zone(plat, plon, end_hdg, nxt, along_route=match):
+          traveled += rem
+          return (float(nxt.speed_limit_ms), float(traveled)), True
+        # Stub / cross-street bleed: do not walk down that way. Stay on the
+        # previous geometry; `seen` prevents re-picking the stub.
+        continue
+      traveled += rem
       if not nxt.coords:
         return None, False
       cur_coords = nxt.coords
@@ -517,13 +582,19 @@ class OsmSpeedLimitDB:
              v_ego_ms: float = 0.0) -> SpeedLimitMatch | None:
     if self._con is None:
       return None
-    gps_match = self._best_match(float(lat), float(lon), bearing_deg)
+    gps_match = self._stabilize_match(
+      float(lat), float(lon), bearing_deg,
+      self._best_match(float(lat), float(lon), bearing_deg),
+    )
     qlat, qlon = float(lat), float(lon)
     lead_m = osm_sign_lead_m(v_ego_ms)
     lead_match = gps_match
     if lead_m > 0.0 and bearing_deg is not None:
       qlat, qlon = _offset_point(qlat, qlon, float(bearing_deg), lead_m)
-      lead_match = self._best_match(qlat, qlon, bearing_deg)
+      lead_match = self._stabilize_match(
+        qlat, qlon, bearing_deg,
+        self._best_match(qlat, qlon, bearing_deg),
+      )
 
     # GNSS lag: raise posted when the 1.5 s point is already in a higher zone.
     # Do not snap posted down — any decrease (10/15/20 mph, short zones) must
