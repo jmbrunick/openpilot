@@ -11,6 +11,7 @@ from openpilot.common.realtime import drop_realtime
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.ui.lib.prime_state import PrimeState
 from openpilot.selfdrive.ui.radar.bosch_status import BoschRadarMonitor, BoschRadarStatus
+from openpilot.selfdrive.controls.lib.driver_lateral_handoff import hud_engaged_status
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.hardware import HARDWARE, PC
 
@@ -174,19 +175,22 @@ class UIState:
     self._update_radar_monitor()
 
   def _update_status(self) -> None:
-    if self.started and self.sm.updated["selfdriveState"]:
+    if self.started and (self.sm.updated["selfdriveState"] or self.sm.updated["controlsState"]):
       ss = self.sm["selfdriveState"]
-      state = ss.state
+      lat_active = False
+      if self.sm.updated.get("carControl") or self.sm.recv_frame.get("carControl", 0) > 0:
+        lat_active = bool(self.sm["carControl"].latActive)
+      lat_handoff_paused = False
+      if self.sm.recv_frame.get("controlsState", 0) > 0:
+        lat_handoff_paused = bool(self.sm["controlsState"].latHandoffPaused)
 
-      if state in (log.SelfdriveState.OpenpilotState.preEnabled, log.SelfdriveState.OpenpilotState.overriding):
-        # Show green during gas override if lateral (steering) is still active
-        lat_active = self.sm["carControl"].latActive if self.sm.updated.get("carControl") or self.sm.recv_frame.get("carControl", 0) > 0 else False
-        if state == log.SelfdriveState.OpenpilotState.overriding and lat_active:
-          self.status = UIStatus.ENGAGED
-        else:
-          self.status = UIStatus.OVERRIDE
-      else:
-        self.status = UIStatus.ENGAGED if ss.enabled else UIStatus.DISENGAGED
+      status_name = hud_engaged_status(
+        enabled=bool(ss.enabled),
+        op_state=ss.state,
+        lat_active=lat_active,
+        lat_handoff_paused=lat_handoff_paused,
+      )
+      self.status = UIStatus(status_name)
 
     # Check for engagement state changes
     if self.engaged != self._engaged_prev:
