@@ -13,7 +13,7 @@ Pull requests welcome against `nap-dev`. For anything non-trivial, open an issue
 
 Do not push sunnypilot-specific code (MADS, `CP_SP`, etc.) to `nap-dev` or `nap-alpha`.
 
-Soft Lateral Handoff (`NAPDriverLatHandoff`) defaults **On**. Turn it **Off** in Settings → NAP if gravel or crosswind still false-yields. Do not change the brake silent long-pause / one-SET path when touching this.
+Soft Lateral Handoff (`NAPDriverLatHandoff`) defaults **On**. Yield is driver intent (torsion + aligned rate + hands), not gravel/wind. Emergency/hard brake during yield fully cancels; light brake must keep the silent long-pause / one-SET path. Turn the toggle **Off** if false-yields remain.
 
 ## Submodules
 
