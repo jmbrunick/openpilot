@@ -106,32 +106,35 @@ def test_lookahead_reports_upcoming_higher_but_does_not_hide_current(tmp_path):
   db.close()
 
 
-def test_min_zone_length_is_about_50_feet():
-  assert abs(MIN_ZONE_LENGTH_M - 15.0) < 1e-9
-  assert 14.0 <= MIN_ZONE_LENGTH_M <= 16.0
+def test_min_zone_length_is_about_250_feet():
+  assert abs(MIN_ZONE_LENGTH_M - 76.0) < 1e-9
+  assert 75.0 <= MIN_ZONE_LENGTH_M <= 77.0
 
 
 def test_lookahead_does_not_skip_short_intermediate_limit(tmp_path):
   """Along-way still publishes a real short-but-legal 60→50.
 
-  The 50 must last longer than MIN_ZONE_LENGTH_M (~50 ft). US 12 east of
-  Benson is ~760 m of tagged 50 — this fixture is a compact ~80 m 50.
-  A ~15 m 50 is a stub and is ignored (see test_next_limit_ignores_stub_zone).
+  The 50 must last longer than MIN_ZONE_LENGTH_M (~250 ft). US 12 east of
+  Benson is ~760 m of tagged 50 — this fixture is a compact ~200 m 50.
+  A stub under ~250 ft is ignored (see test_next_limit_ignores_stub_zone).
   """
   path = str(tmp_path / "speed_limits.sqlite")
   con = OsmSpeedLimitDB.create(path)
-  # ~178 m of 60, ~80 m of 50, then 30.
+  # ~178 m of 60, ~200 m of 50, then 30.
+  start50 = (37.0, -122.000)
+  end50 = _offset_point(start50[0], start50[1], 90.0, 200.0)
+  end30 = _offset_point(end50[0], end50[1], 90.0, 250.0)
   OsmSpeedLimitDB.insert_way(
     con, 1, "US 12", "trunk", 60 * CV.MPH_TO_MS,
-    [(37.0, -122.004), (37.0, -122.000)],
+    [(37.0, -122.004), start50],
   )
   OsmSpeedLimitDB.insert_way(
     con, 2, "US 12", "trunk", 50 * CV.MPH_TO_MS,
-    [(37.0, -122.000), (37.0, -121.99910)],
+    [start50, end50],
   )
   OsmSpeedLimitDB.insert_way(
     con, 3, "US 12", "trunk", 30 * CV.MPH_TO_MS,
-    [(37.0, -121.99910), (37.0, -121.996)],
+    [end50, end30],
   )
   con.commit()
   con.close()
@@ -339,7 +342,7 @@ def test_next_limit_ignores_stub_zone_shorter_than_min_length(tmp_path):
     con, 1, "US 12", "trunk", 60 * CV.MPH_TO_MS,
     [(37.0, -122.004), (37.0, -122.000)],
   )
-  # ~10 m stub (under MIN_ZONE_LENGTH_M).
+  # ~10 m stub (well under MIN_ZONE_LENGTH_M / ~250 ft).
   OsmSpeedLimitDB.insert_way(
     con, 2, "US 12", "trunk", 30 * CV.MPH_TO_MS,
     [(37.0, -122.000), (37.0, -121.99989)],
@@ -347,6 +350,40 @@ def test_next_limit_ignores_stub_zone_shorter_than_min_length(tmp_path):
   OsmSpeedLimitDB.insert_way(
     con, 3, "US 12", "trunk", 60 * CV.MPH_TO_MS,
     [(37.0, -121.99989), (37.0, -121.996)],
+  )
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  m = db.lookup(37.0, -122.002, bearing_deg=90.0)
+  assert m is not None
+  assert abs(m.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3
+  assert m.next_speed_limit_ms == 0.0, m.next_speed_limit_ms * CV.MS_TO_MPH
+  db.close()
+
+
+def test_next_limit_ignores_stub_under_250_ft(tmp_path):
+  """~60 m of 30 (~197 ft) is still under MIN_ZONE_LENGTH_M (~250 ft).
+
+  #82/#83's 15 m / ~50 ft gate still flashed these. Same name/class so
+  #53 would accept it; the raised min-zone must reject.
+  """
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  start30 = (37.0, -122.000)
+  end30 = _offset_point(start30[0], start30[1], 90.0, 60.0)
+  end60 = _offset_point(end30[0], end30[1], 90.0, 250.0)
+  OsmSpeedLimitDB.insert_way(
+    con, 1, "US 12", "trunk", 60 * CV.MPH_TO_MS,
+    [(37.0, -122.004), start30],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 2, "US 12", "trunk", 30 * CV.MPH_TO_MS,
+    [start30, end30],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 3, "US 12", "trunk", 60 * CV.MPH_TO_MS,
+    [end30, end60],
   )
   con.commit()
   con.close()

@@ -3,7 +3,7 @@
 Schema is NAP-owned. Data is OpenStreetMap (ODbL). Query path is GPS → nearest
 heading-aligned way. nextSpeedLimit follows that matched way (bearing + class),
 not a nearby off-route fill. A lower limit that only lasts MIN_ZONE_LENGTH_M
-(~50 ft) along heading is ignored (cross-street bleed / intersection stub).
+(~250 ft) along heading is ignored (cross-street bleed / intersection stub).
 Tagged OSM maxspeed is authoritative; Minnesota packs may include statutory
 estimates for unmarked highways (never uploaded to OSM).
 """
