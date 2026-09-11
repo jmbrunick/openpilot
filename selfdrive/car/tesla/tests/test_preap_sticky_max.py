@@ -217,6 +217,92 @@ def test_fsm_plus_policy_no_map_double_set_uses_current_speed():
   assert abs(dec.seed_kph - now_speed) < 1e-6
 
 
+def test_fsm_plus_policy_mode_off_gravel_one_set_keeps_19():
+  """Maps off, held 19, brake (ego 12), one SET then delayed engage_rising."""
+  install_blinker_lat_pause()
+  held = 19 * CV.MPH_TO_KPH
+  ego = 12 * CV.MPH_TO_KPH
+  hold = MapCruiseHold()
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_OFF, raw_kph=held, posted_kph=None,
+    engage_rising=True, now=0.0, take_speed_now=True, traveled_kph=held,
+  )
+  eng = _engaged(pedal_kph=held)
+  _buttons(eng, brake=True, t_ms=2000, v_ego=ego * CV.KPH_TO_MS)
+  dec = _overlay(hold, eng, posted=None, mode=MODE_OFF, traveled_kph=ego)
+  assert abs(dec.driver_kph - held) < 1e-6
+  assert abs(hold.held_max_kph - held) < 1e-6
+  _buttons(eng, brake=False, t_ms=3000, v_ego=ego * CV.KPH_TO_MS)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=4000, v_ego=ego * CV.KPH_TO_MS)
+  assert getattr(eng, "_nap_set_resume_long", False)
+  assert not getattr(eng, "_nap_set_take_speed_now", False)
+  assert abs(eng.pedal_speed_kph - held) < 1e-6
+  # SET frame: resume_held, pedalLongActive not up yet (engage_rising False).
+  dec = _overlay(hold, eng, posted=None, mode=MODE_OFF, traveled_kph=ego)
+  assert dec.seed_kph is not None
+  assert abs(dec.seed_kph - held) < 1e-6
+  # Next card cycle: resume flag consumed, pedal authority rising.
+  eng._nap_set_resume_long = False
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_OFF, raw_kph=held, posted_kph=None,
+    engage_rising=True, now=5.0, resume_held=False, long_active=True,
+    traveled_kph=ego,
+  )
+  assert abs(hold.held_max_kph - held) < 1e-6
+  assert abs(dec.driver_kph - held) < 1e-6
+  if dec.seed_kph is not None:
+    assert abs(dec.seed_kph - held) < 1e-6
+
+
+def test_fsm_plus_policy_mode_off_stalk_then_resume_adjusted():
+  install_blinker_lat_pause()
+  start = 24 * CV.MPH_TO_KPH
+  adjusted = 19 * CV.MPH_TO_KPH
+  ego = 12 * CV.MPH_TO_KPH
+  hold = MapCruiseHold()
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_OFF, raw_kph=start, posted_kph=None,
+    engage_rising=True, now=0.0, take_speed_now=True, traveled_kph=start,
+  )
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_OFF, raw_kph=start, posted_kph=None,
+    engage_rising=False, now=1.0, long_active=True,
+  )
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_OFF, raw_kph=adjusted, posted_kph=None,
+    engage_rising=False, now=2.0, long_active=True,
+  )
+  assert abs(hold.held_max_kph - adjusted) < 1e-6
+  eng = _engaged(pedal_kph=adjusted)
+  _buttons(eng, brake=True, t_ms=2000, v_ego=ego * CV.KPH_TO_MS)
+  _buttons(eng, brake=False, t_ms=3000, v_ego=ego * CV.KPH_TO_MS)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=4000, v_ego=ego * CV.KPH_TO_MS)
+  dec = _overlay(hold, eng, posted=None, mode=MODE_OFF, traveled_kph=ego)
+  assert dec.seed_kph is not None
+  assert abs(dec.seed_kph - adjusted) < 1e-6
+
+
+def test_fsm_plus_policy_mode_off_double_set_after_pause_takes_traveled():
+  install_blinker_lat_pause()
+  held = 19 * CV.MPH_TO_KPH
+  ego = 12 * CV.MPH_TO_KPH
+  hold = MapCruiseHold()
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_OFF, raw_kph=held, posted_kph=None,
+    engage_rising=True, now=0.0, take_speed_now=True, traveled_kph=held,
+  )
+  eng = _engaged(pedal_kph=held)
+  _buttons(eng, brake=True, t_ms=2000, v_ego=ego * CV.KPH_TO_MS)
+  _buttons(eng, brake=False, t_ms=3000, v_ego=ego * CV.KPH_TO_MS)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=4000, v_ego=ego * CV.KPH_TO_MS)
+  _buttons(eng, t_ms=4050, v_ego=ego * CV.KPH_TO_MS)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=4300, v_ego=ego * CV.KPH_TO_MS)
+  dec = _overlay(hold, eng, posted=None, mode=MODE_OFF, traveled_kph=ego)
+  assert getattr(eng, "_nap_set_take_speed_now", False)
+  assert dec.seed_kph is not None
+  assert abs(dec.seed_kph - ego) < 1e-6
+
+
 def test_fsm_plus_policy_maps_double_set_uses_posted():
   install_blinker_lat_pause()
   posted = 65 * CV.MPH_TO_KPH
