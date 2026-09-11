@@ -1,3 +1,7 @@
+NAP speed-sign log (2026-09-10)
+========================
+* Speed Sign Logger On no longer runs YOLO while openpilot is engaged (SIGN shows WAIT). Manual driving — moving OK — still logs signs at 1 Hz. If TAKE CONTROL comes back, turn Logger Off.
+
 NAP blinker (2026-09-10)
 ========================
 * A held/latched driver turn blinker now drops longitudinal as well as pausing lat. After the lamps/latch end, one stalk SET restores long (lat still paused or already active). ALC tip/keep-alive does not drop long. Stalk cancel still fully disengages; brake can still drop long. No panda flash required.

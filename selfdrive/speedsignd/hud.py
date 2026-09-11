@@ -11,6 +11,8 @@ HUD_HOLD_S = 3.0
 HUD_LABEL = "SIGN"
 # Logger On + ONNX missing: show this instead of a blank plate or a fake mph.
 HUD_MISSING_WEIGHTS_TEXT = "NO WT"
+# Logger On + OP engaged: YOLO is skipped so modeld is not starved.
+HUD_DETECT_PAUSED_TEXT = "WAIT"
 HUD_CONFIRM_PROMPT = "accurate?"
 HUD_CONFIRM_YES = "Yes"
 HUD_CONFIRM_NO = "No"
@@ -50,14 +52,22 @@ def hud_should_show_missing_weights(enabled: bool, weights_missing: bool) -> boo
   return bool(enabled) and bool(weights_missing)
 
 
+def hud_should_show_detect_paused(enabled: bool, detect_paused: bool, weights_missing: bool = False) -> bool:
+  return bool(enabled) and bool(detect_paused) and not bool(weights_missing)
+
+
 def hud_confirm_visible(view: LiveSignView | None = None, *, show_mph: bool = False, mph: int = 0,
-                        show_missing_weights: bool = False) -> bool:
-  """Yes/No accuracy overlay: only when a real mph is on the plate, never for NO WT."""
+                        show_missing_weights: bool = False, show_detect_paused: bool = False) -> bool:
+  """Yes/No accuracy overlay: only when a real mph is on the plate, never for NO WT / WAIT."""
   if view is not None:
     show_mph = view.show_mph
     mph = view.mph
     show_missing_weights = view.show_missing_weights
-  return bool(show_mph) and int(mph) > 0 and not bool(show_missing_weights)
+    show_detect_paused = view.show_detect_paused
+  return (
+    bool(show_mph) and int(mph) > 0
+    and not bool(show_missing_weights) and not bool(show_detect_paused)
+  )
 
 
 def tici_sign_origin(rect_x: float = 0.0, rect_y: float = 0.0) -> tuple[float, float]:
@@ -118,15 +128,18 @@ class LiveSignView:
   show_mph: bool = False
   mph: int = 0
   show_missing_weights: bool = False
+  show_detect_paused: bool = False
 
   @property
   def show(self) -> bool:
-    return self.show_mph or self.show_missing_weights
+    return self.show_mph or self.show_missing_weights or self.show_detect_paused
 
   @property
   def plate_text(self) -> str:
     if self.show_missing_weights:
       return HUD_MISSING_WEIGHTS_TEXT
+    if self.show_detect_paused:
+      return HUD_DETECT_PAUSED_TEXT
     if self.show_mph:
       return str(int(self.mph))
     return ""
@@ -139,12 +152,14 @@ class LiveSignView:
 def live_sign_from_event(enabled: bool, d, msg_valid: bool) -> LiveSignView:
   """Parse a liveSpeedSignNAP-like object for the on-road plate."""
   weights_missing = bool(getattr(d, "weightsMissing", False))
+  detect_paused = bool(getattr(d, "detectPaused", False))
   return live_sign_view(
     enabled=bool(enabled),
-    msg_valid=bool(msg_valid) or weights_missing,
+    msg_valid=bool(msg_valid) or weights_missing or detect_paused,
     mph=int(getattr(d, "mph", 0) or 0),
     valid=bool(getattr(d, "valid", False)),
     weights_missing=weights_missing,
+    detect_paused=detect_paused,
   )
 
 
@@ -155,12 +170,15 @@ def live_sign_view(
   mph: int,
   valid: bool,
   weights_missing: bool = False,
+  detect_paused: bool = False,
 ) -> LiveSignView:
   """What the on-road SIGN plate should show. No false mph when weights are missing."""
   if not enabled:
     return LiveSignView()
   if hud_should_show_missing_weights(True, weights_missing):
     return LiveSignView(show_missing_weights=True)
+  if hud_should_show_detect_paused(True, detect_paused, weights_missing):
+    return LiveSignView(show_detect_paused=True)
   if not msg_valid:
     return LiveSignView()
   if hud_should_show(True, valid, mph):
@@ -168,11 +186,15 @@ def live_sign_view(
   return LiveSignView()
 
 
-def apply_live_sign(dst, *, mph: int, conf: float, valid: bool, weights_missing: bool = False) -> None:
+def apply_live_sign(
+  dst, *, mph: int, conf: float, valid: bool,
+  weights_missing: bool = False, detect_paused: bool = False,
+) -> None:
   dst.mph = int(mph) if valid else 0
   dst.conf = float(conf) if valid else 0.0
   dst.valid = bool(valid)
   dst.weightsMissing = bool(weights_missing)
+  dst.detectPaused = bool(detect_paused)
 
 
 @dataclass

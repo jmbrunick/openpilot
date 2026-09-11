@@ -4,7 +4,13 @@ On-drive MUTCD numeric speed-sign logger for comma 3X. **Default off.** Log-only
 
 Stock `modelV2` has no `speedSign` head. This is a separate process (`speedsignd`) that reads the ROAD camera + GNSS and runs a compact **YOLOv8 ONNX** (US traffic-sign classes, including 55/60). The old numpy template matcher is tests/dev only — it does not see real roadside signs.
 
-**Driving model first.** Logger On + ONNX weights used to run YOLOv8s at 4 Hz via tinygrad `OnnxRunner` on CPU. That saturates a 3X core (Ratekeeper catch-up never sleeps) and can show “driving model is lagging” with ~35% `modeld` frames dropped. This process now **yields hard to modeld**: default **1 Hz**, skip-on-overrun if an infer exceeds the period or a ~100 ms budget, `SCHED_OTHER` + nice 19. After this revision it should be gentle. **If lag returns, turn Speed Sign Logger Off.** Leave it On only while testing signs / HUD / JSONL. A smaller YOLO export is a follow-up if 1 Hz is still heavy.
+**Driving model first.** Logger On + ONNX weights used to run YOLOv8s at 4 Hz via tinygrad `OnnxRunner` on CPU. That saturates a 3X core and can show “driving model is lagging”, ~35% `modeld` frame drops, **TAKE CONTROL IMMEDIATELY**, or “Communication Issue Between Processes.”
+
+**Logger On does not run YOLO while openpilot is engaged.** The process and SIGN / NO WT HUD still start. Heavy ONNX is gated on `selfdriveState.enabled` only (unknown / dead cereal → fail-safe skip). Engaged plate shows **WAIT**.
+
+**Manual driving is the collection path** — including moving, no assist. This is **not** gated on park or Force Offroad. Drive yourself, Logger On, and log speed-limit signs + GNSS to JSONL. OSM upload is future work.
+
+Disengaged detect is **1 Hz**, skip-on-overrun, `SCHED_OTHER` + nice 19. **If TAKE CONTROL or lag comes back, turn Speed Sign Logger Off and use nap-release.** Do not raise `modeld` priority.
 
 ## Enable
 
@@ -13,14 +19,15 @@ Stock `modelV2` has no `speedSign` head. This is a separate process (`speedsignd
    (comma 4 / mici: **Settings → NAP → speed sign logger**)
 3. Or: `Params().put_bool("NAPSpeedSignLog", True)` / `echo -n 1 > /data/params/d/NAPSpeedSignLog`
 4. Go onroad. Manager starts `speedsignd` only when the param is true **and** the car is onroad.
+5. **Drive manually** (moving is OK). SIGN shows **WAIT** only while openpilot is engaged — that is YOLO skipped on purpose, not a broken detector. Do not SET if you want detections.
 
-Off (default): the process does not run.
+Off (default): the process does not run. Logger On never changes that default.
 
 Reset to Defaults turns the logger back off. Weights on `/data` stay.
 
-Optional detect rate (default 1 Hz, clamped 0.2–4): `NAP_SPEED_SIGN_HZ=0.5` in the process environment. Do not raise this on a 3X unless you have watched `modeld` frame drops.
+Optional detect rate when **disengaged** (default 1 Hz, clamped 0.2–4): `NAP_SPEED_SIGN_HZ=0.5` in the process environment. Do not raise this on a 3X. Engaged is always 0 Hz detect, regardless of this env.
 
-Onroad, `swaglog` prints `speedsignd timing hz=… infer_ms mean=… max=… n=… skip=…` about every 15 s. Mean/max infer well above 100 ms is expected for YOLOv8s on tinygrad CPU; `skip` should climb when an infer overruns so work does not pile up. If “driving model is lagging” comes back, turn Logger Off.
+Onroad, `swaglog` prints `speedsignd detect paused (engaged=True)` when you SET, and `speedsignd timing hz=… infer_ms mean=… max=… n=… skip=…` about every 15 s while disengaged. Mean/max infer well above 100 ms is expected for YOLOv8s on tinygrad CPU; `skip` should climb when an infer overruns. If TAKE CONTROL / “driving model is lagging” comes back, Logger Off + nap-release.
 
 ## Install weights on the 3X
 
@@ -59,9 +66,10 @@ Source checkpoint (MIT): [cvtechniques/JC-Traffic-Sign-Detection](https://huggin
 
 ## What Justin should see
 
-After weights are installed and the logger is **On**, drive past a **clear, unobstructed MUTCD R2-1** (white SPEED LIMIT plate) in daylight — e.g. a roadside **55** or **60**.
+After weights are installed and the logger is **On**, **drive manually** (do not engage openpilot). Pass a **clear, unobstructed MUTCD R2-1** (white SPEED LIMIT plate) in daylight — e.g. a roadside **55** or **60**. Moving is the intended path. Parked / Force Offroad is not required to detect.
 
-- Within about **1–4 s** (two frames at 1 Hz, or after a skip) a large opaque **SIGN** plate appears with that mph on the **left** (driver) side of the onroad UI.
+- SIGN shows **WAIT** while OP is engaged — YOLO is off so `modeld` is not starved. Cancel / stay manual and WAIT hides.
+- Within about **1–4 s** of a disengaged look (two frames at 1 Hz, or after a skip) a large opaque **SIGN** plate appears with that mph on the **left** (driver) side of the onroad UI.
 - **Yes** / **No** (“is this accurate?”) sit under the plate on 3X (beside it on comma 4). They are **stubs** right now — they do not change cruise, HUD MAX, or map speed. Later, Yes may confirm the marker (JSONL + optional OSM); No may discard a wrong read.
 - It holds **3.0 s** after the last confirmed detection, then hides (Yes/No hide with it).
 - A JSONL row is appended only with a live GNSS fix (same mph near the last write is skipped ~8 s / ~40 m).
@@ -110,12 +118,13 @@ When the logger is **On**, a large opaque **SIGN** plate shows the mph the camer
 | Yes / No | Shown only with a live mph. 3X: stacked under the plate (full-width, ~112 px tall). comma 4: beside the plate. **No-op stubs** (cloudlog debug only). |
 | Confirm | **2** detections of the same mph within **4.0 s**, conf ≥ **0.40** |
 | Hold | **3.0 s** after the last confirmed detection, then it hides |
-| Detect rate | Default **1 Hz** (env `NAP_SPEED_SIGN_HZ`, clamped 0.2–4). Overrun → skip frames until free. |
+| Detect rate | **0 Hz while OP is engaged** (or `selfdriveState` unknown). Manual / disengaged default **1 Hz** (env `NAP_SPEED_SIGN_HZ`, clamped 0.2–4), including while moving. Overrun → skip frames until free. |
+| Engaged plate | **WAIT** (quiet). No Yes/No. YOLO does not run. |
 | Source | cereal `liveSpeedSignNAP` (not the JSONL file) |
 
 White MUTCD-style plate, black digits, red border, **SIGN** label so it is not confused with HUD MAX or OSM LIMIT.
 
-If the logger is On and ONNX failed to load, the same left-side plate shows **NO WT** (not a mph) — **no Yes/No**. After weights are installed, a blank plate means no confirmed detection — that is normal.
+If the logger is On and ONNX failed to load, the same left-side plate shows **NO WT** (not a mph) — **no Yes/No**. If the logger is On and openpilot is engaged, the plate shows **WAIT** — detect is paused so the driving model is not starved; cancel / drive manually to collect. After weights are installed and OP is not engaged, a blank plate means no confirmed detection — that is normal.
 
 Yes/No do not write params, JSONL, or sqlite in this revision. The hook is `on_confirm_accuracy(mph, yes)` — future work may JSONL-confirm a good read and optionally push the marker to OSM.
 
@@ -127,13 +136,15 @@ Speed Sign Logger On, onroad, but SIGN stays dark or never shows mph — almost 
 2. Park or turn on Force Offroad. Tap **Install weights** (Wi-Fi). Wait for the runner to finish — do not leave it spinning forever; an error prints on that screen. Or SSH: `python -m scripts.nap.install_speed_sign_weights`.
 3. File should be ~43 MB. `ls -l /data/media/0/nap/speed_sign.onnx`. Settings should flip to **Installed**.
 4. No full reboot required: speedsignd retries ONNX every ~15 s. `swaglog` should show `speedsignd starting … backend=yolo-onnx` or `ONNX loaded after retry backend=yolo-onnx` (also `hz=` / `nice=19`).
-5. Drive past a clear, unobstructed MUTCD R2-1. Confirmed mph lights SIGN. A blank plate with weights Installed means no detection yet (night, glare, tiny sign — see Accuracy limits).
+5. **Stay manual** (do not engage OP). WAIT means detect is paused because openpilot is controlling. Then pass a clear, unobstructed MUTCD R2-1. Confirmed mph lights SIGN. A blank plate with weights Installed and OP not engaged means no detection yet (night, glare, tiny sign — see Accuracy limits).
 
-Do not treat a blank plate as “the detector is running.” Blank + Installed = no confirmed sign. Blank + Missing / **NO WT** = install weights.
+Do not treat a blank plate as “the detector is running.” Blank + Installed + manual = no confirmed sign. **WAIT** = OP engaged, YOLO off. Blank + Missing / **NO WT** = install weights.
+
+If you see **TAKE CONTROL IMMEDIATELY** or “Communication Issue Between Processes,” turn **Speed Sign Logger Off** and use **nap-release**.
 
 ## Accuracy limits (honest)
 
-This is a small CPU detector at **1 Hz** (was 4 Hz) on a 320² letterbox of the ROAD camera. It is **not** a modeld head and is **not** used for control. It must not starve `modeld`: if an infer takes longer than the period or ~100 ms, speedsignd skips frames and sleeps instead of Ratekeeper catch-up. `swaglog` logs `speedsignd timing … infer_ms mean/max` and `skip=` about every 15 s so you can see cost on the device.
+This is a small CPU detector at **1 Hz when disengaged** (was 4 Hz always) on a 320² letterbox of the ROAD camera. It is **not** a modeld head and is **not** used for control. It must not starve `modeld`: **no ONNX while engaged**; if a disengaged infer takes longer than the period or ~100 ms, speedsignd skips frames and sleeps instead of Ratekeeper catch-up. `swaglog` logs `speedsignd detect paused/running` on engage edges and `speedsignd timing … infer_ms mean/max` / `skip=` about every 15 s so you can see cost on the device.
 
 **Usually works:** daylight, dry, a standard white R2-1 facing the car, large enough in the ROAD frame (near / mid roadside, not a speck on the horizon). 55 and 60 are in the trained class set.
 
