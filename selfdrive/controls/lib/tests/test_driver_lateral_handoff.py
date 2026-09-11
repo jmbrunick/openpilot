@@ -127,8 +127,8 @@ def test_thresholds_are_derived_from_real_steering_pressed():
   assert PREAP_FINGERPRINT == "TESLA_MODEL_S_PREAP"
   assert QUIET_WAIT_S == 0.0
   assert HANDS_ON_HOLD_LEVEL == 1
-  assert HANDS_OFF_CONFIRM_S == 0.25
-  assert HANDS_OFF_CONFIRM_S > 0.08
+  assert HANDS_OFF_CONFIRM_S == 0.15
+  assert 0.08 < HANDS_OFF_CONFIRM_S < 0.25
   assert BLEND_TIME_S == 1.0
   assert UI_LATERAL_RETURN_AUTHORITY == 0.70
   assert YIELD_AUTHORITY_TIME_S == 0.0
@@ -293,8 +293,8 @@ def test_yielded_hands_on_stays_yielded_through_torsion_dip():
   assert not hands_still_on(0)
 
 
-def test_hands_off_confirm_starts_blend_after_quarter_second():
-  """Hands 0 for ~0.25 s starts the blend — not the old 80 ms, not torsion-quiet."""
+def test_hands_off_confirm_starts_blend_after_confirm_delay():
+  """Hands 0 for ~0.15 s starts the blend — not the old 80 ms, not torsion-quiet."""
   h = _new()
   _yield(h)
   # Old 80 ms confirm must not start take-back (crossover snatch).
@@ -311,33 +311,33 @@ def test_hands_off_confirm_starts_blend_after_quarter_second():
 
 
 def test_hands_back_on_during_confirm_resets_delay():
-  """Renewed hands-on or firm push during the 0.25 s wait re-yields and resets."""
+  """Renewed hands-on or firm push during the 0.15 s wait re-yields and resets."""
   h = _new()
   _yield(h)
-  out = _step(h, torque=0.20, hands_on=0, dt=0.15)
+  out = _step(h, torque=0.20, hands_on=0, dt=0.10)
   assert out.yielded
   assert not out.blending
   out = _step(h, torque=0.20, hands_on=1)
   assert out.yielded
   assert not out.blending
   assert out.authority == 0.0
-  # Delay reset: another 0.15 s hands-off is not enough.
-  out = _step(h, torque=0.20, hands_on=0, dt=0.15)
+  # Delay reset: another 0.10 s hands-off is not enough.
+  out = _step(h, torque=0.20, hands_on=0, dt=0.10)
   assert out.yielded
   assert not out.blending
-  out = _step(h, torque=0.20, hands_on=0, dt=HANDS_OFF_CONFIRM_S - 0.15)
+  out = _step(h, torque=0.20, hands_on=0, dt=HANDS_OFF_CONFIRM_S - 0.10)
   assert out.blending
   assert not out.yielded
 
   h = _new()
   _yield(h)
-  out = _step(h, torque=0.20, hands_on=0, dt=0.15)
+  out = _step(h, torque=0.20, hands_on=0, dt=0.10)
   assert out.yielded
   out = _step(h, torque=SOFT_YIELD_TRIGGER_NM, hands_on=0)
   assert out.yielded
   assert not out.blending
   assert out.authority == 0.0
-  out = _step(h, torque=0.20, hands_on=0, dt=0.15)
+  out = _step(h, torque=0.20, hands_on=0, dt=0.10)
   assert out.yielded
   assert not out.blending
 
@@ -373,7 +373,7 @@ def test_yielded_rate_above_old_gate_does_not_block_resume():
 
 
 def test_yield_then_hands_off_authority_blends_to_one():
-  """Yield → hands off ~0.25 s → 1 s smoothstep to 1.0."""
+  """Yield → hands off ~0.15 s → 1 s smoothstep to 1.0."""
   h = _new()
   _yield(h)
   out = _hands_off(h, rate=40.0)
@@ -423,7 +423,7 @@ def test_renewed_input_during_blend_yields_and_retries_after_hands_off():
   assert not out.blending
   assert out.authority == 0.0
   assert out.ui_paused
-  # Hands off again: blend after the 0.25 s confirm
+  # Hands off again: blend after the 0.15 s confirm
   out = _hands_off(h)
   assert out.blending
   assert not out.yielded
@@ -680,7 +680,7 @@ def test_yield_pins_planner_resume_tracks_model_not_measured():
   assert desired == meas_curv
   assert angle == meas_angle
 
-  # Hands off for the 0.25 s confirm: blend starts, pin lifts.
+  # Hands off for the 0.15 s confirm: blend starts, pin lifts.
   out, desired, angle, curv = _step_actuators(
     h, torque=0.0, desired=desired, model_curv=model_curv,
     meas_curv=meas_curv, meas_angle=meas_angle, dt=HANDS_OFF_CONFIRM_S)
