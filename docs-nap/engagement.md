@@ -68,8 +68,8 @@ HUD MAX is `CS.vCruise` / `pedal_speed_kph`. Policy lives in `MapCruiseHold` (`s
 | `last_posted_kph` | Last *known* OSM posted (+ offset). GPS/match drop does not clear it or invent a posted. |
 
 - **Maps on / posted known:** MAX rebases **only** when the posted value itself changes (e.g. 65→45 or 65→70), including while long-paused. Driver can hold 55 in a 65. Do not overwrite sticky toward posted every frame.
-- **Maps off / posted unknown:** MAX never auto-rebases. Never invent a posted value. GPS glitch → keep held MAX.
-- **One SET** (session already up, typical after long pause): resume long only; write `held_max_kph` (already rebased if posted changed).
+- **Maps off / posted unknown:** MAX never auto-rebases. Never invent a posted value. GPS glitch → keep held MAX. Do not latch pause ego (`cruiseState.speed`) into held. Stalk +/- while long is active updates the MAX one SET will resume.
+- **One SET** (session already up, typical after long pause): resume long only; write `held_max_kph` (already rebased if posted changed). `resume_held` is a one-shot; `engage_rising` can arrive a frame later (`pedalLongActive` lags `enableLongControl`). That delayed rising edge must not take-now and overwrite a held MAX with current traveled speed.
 - **Double SET:** forget sticky; maps+posted known → write current posted; else write current traveled speed. Same gesture from fully disengaged is initial engage.
 
 No-pedal / stock CC does not own software MAX. Brake does not pause NAP long (stock CC handles brake). Double-pull still engages lat; set speed stays with Tesla CC.
