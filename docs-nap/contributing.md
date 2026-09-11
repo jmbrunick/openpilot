@@ -13,7 +13,7 @@ Pull requests welcome against `nap-dev`. For anything non-trivial, open an issue
 
 Do not push sunnypilot-specific code (MADS, `CP_SP`, etc.) to `nap-dev` or `nap-alpha`.
 
-Soft Lateral Handoff (`NAPDriverLatHandoff`) defaults **On**. Turn it **Off** in Settings → NAP if gravel or crosswind still false-yields.
+Soft Lateral Handoff (`NAPDriverLatHandoff`) defaults **Off**. Do not enable for driving — gravel/crosswind false-yield grays chrome and cuts lat. Use nap-release.
 
 ## Submodules
 
