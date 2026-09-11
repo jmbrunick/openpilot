@@ -201,8 +201,8 @@ def engagement_from_sm(
   if seen:
     try:
       obj: Any = sm[service]
-      active = bool(getattr(obj, "active"))
-      enabled = bool(getattr(obj, "enabled"))
+      active = bool(obj.active)
+      enabled = bool(obj.enabled)
       state = selfdrive_state_name(getattr(obj, "state", None))
       known = True
     except Exception:
@@ -238,8 +238,8 @@ def engagement_from_sm(
 def engagement_log_fields(sample: EngagementSample) -> str:
   return (
     f"controlling={sample.controlling} enabled={sample.enabled} "
-    f"active={sample.active} state={sample.state} "
-    f"alive={sample.alive} valid={sample.valid} known={sample.known}"
+    + f"active={sample.active} state={sample.state} "
+    + f"alive={sample.alive} valid={sample.valid} known={sample.known}"
   )
 
 
@@ -540,8 +540,8 @@ def main():
   if detector.onnx is None:
     cloudlog.warning(
       "speedsignd: no ONNX at %s — numpy fallback will not see real roadside signs. "
-      "HUD will show NO WT. Settings → NAP → Install weights, or: "
-      "python -m scripts.nap.install_speed_sign_weights",
+      + "HUD will show NO WT. Settings → NAP → Install weights, or: "
+      + "python -m scripts.nap.install_speed_sign_weights",
       onnx_path,
     )
 
@@ -656,7 +656,7 @@ def main():
         if have_frame:
           def _run(y=y, rgb=rgb, lat=lat, lon=lon, bearing=bearing, gps_ok=gps_ok):
             return detect_if_allowed(
-              y, lat, lon, bearing, gps_ok, detector, logger, time.time(),
+              y, lat, lon, bearing, gps_ok, detector, logger, time.monotonic(),
               controlling=False, rgb=rgb, debounce=debounce,
             )
           if slot.start(_run):
