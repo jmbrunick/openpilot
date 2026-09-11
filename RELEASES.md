@@ -1,6 +1,6 @@
 NAP driver lat handoff (2026-09-11)
 ========================
-* Soft lateral handoff is **default On**. Quicker gentle yield: ~0.70 Nm held 0.14 s consecutive (still above 0.5 Nm rumble; still below a yank / hands-on ≥ 2). Let go → 1 s blend starts immediately (no 0.25 s quiet wait). Planner still pins to the wheel while yielded so resume tracks the path. After a blinker turn, lat also blends back over 1 s from the wheel (does not yank onto a bad lot path). Settings → NAP → Soft Lateral Handoff: turn **Off** if gravel or wind still gray the chrome. Brake silent long-pause + one SET is unchanged.
+* Soft lateral handoff is **default On**. Yield stays ~0.70 Nm held 0.14 s consecutive (gap reset; not 0.5 Nm / 80 ms rumble). Stay yielded while `EPAS_handsOnLevel >= 1` so a mid-dodge torsion dip does not start hand-back. 1 s blend starts only after hands are truly off the rim for ~80 ms. Hands back on or a firm push cancels the blend and re-yields. Planner still pins to the wheel while yielded / lat down so resume tracks the path. Blinker-turn re-entry is still the same 1 s blend from the wheel. Settings → NAP → Soft Lateral Handoff: turn **Off** if gravel or wind still gray the chrome. Brake silent long-pause + one SET is unchanged. Panda / hands-on ≥ 2 hard cancel unchanged.
 
 NAP driver lat handoff (2026-09-11)
 ========================
