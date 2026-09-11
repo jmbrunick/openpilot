@@ -25,11 +25,11 @@ NAP_SPEED_SIGN_LOG = "NAPSpeedSignLog"
 NAP_DRIVER_LAT_HANDOFF = "NAPDriverLatHandoff"
 NAP_FORCE_OFFROAD = "NAPForceOffroad"
 DRIVER_LAT_HANDOFF_DESCRIPTION = (
-  "DEFAULT OFF. Leave Off for driving. On gravel / in crosswind the "
-  "3X chrome going grayish (light-green → gray) is latHandoffPaused: "
-  "a false soft-yield that cuts lateral authority so NAP stops "
-  "fighting the wind — ditch risk. On is testing only. Off = stock "
-  "lat, no yield, no authority blend."
+  "Default On. A firm, gradual, sustained hand push (~0.85 Nm for "
+  "0.25 s) yields NAP lateral; long stays on. Short gravel / "
+  "crosswind spikes should not trip. Gray chrome means lat yielded "
+  "and NAP stops fighting the wind — turn Off if that happens on "
+  "rumble. Off = stock lat, no yield."
 )
 FORCE_OFFROAD_DESCRIPTION = (
   "WARNING: Forces the device offroad and disengages openpilot even while "

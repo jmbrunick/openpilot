@@ -82,7 +82,7 @@ Pre-AP `TurnIndLvr_Stat` is only IDLE / LEFT / RIGHT / SNA — no tip vs latch b
 
 ## Driver-wheel temporary lateral handoff
 
-**Default Off** (`NAPDriverLatHandoff=0`). Gravel/crosswind false-yield grays 3X chrome and drops lat authority. Do not enable for driving. See [engagement.md](engagement.md#driver-wheel-temporary-lateral-handoff).
+**Default On** (`NAPDriverLatHandoff=1`). Firm 0.85 Nm / 250 ms consecutive push yields lat; turn Off in Settings → NAP if gravel or wind false-yields. See [engagement.md](engagement.md#driver-wheel-temporary-lateral-handoff).
 
 ## OSM map speed (MAX)
 
