@@ -300,11 +300,15 @@ def decide_map_cruise(
   (cancel / door / gear / steer fault) resets.
 
   Double SET / initial engage is `take_speed_now` (or `engage_rising` when
-  not `resume_held`): forget sticky; MAX = current posted if maps+posted
-  known, else current traveled speed. Never invent a posted value.
+  not `resume_held` and no held MAX yet): forget sticky; MAX = current
+  posted if maps+posted known, else current traveled speed. Never invent
+  a posted value.
 
   One SET after a long pause is `resume_held`: restore held MAX, which may
-  already have rebased if posted changed under maps.
+  already have rebased if posted changed under maps. `resume_held` is a
+  one-shot; `engage_rising` can arrive a frame later (`pedalLongActive`
+  lags `enableLongControl`). That delayed rising edge must not take-now
+  and overwrite a held MAX with current traveled speed.
 
   Maps on: MAX rebases only when the posted *value* itself changes (known
   a → known b), including while long-paused. GPS / match drop → posted
@@ -324,7 +328,12 @@ def decide_map_cruise(
   not write — that overwrites CI.update's stalk step on the same frame.
   """
   _ = now
-  take_now = bool(take_speed_now) or (bool(engage_rising) and not bool(resume_held))
+  # engage_rising without a held MAX is initial engage (take current).
+  # A held MAX means this session already has a MAX — one SET after a
+  # pause must resume it even if resume_held was consumed last frame.
+  take_now = bool(take_speed_now) or (
+    bool(engage_rising) and not bool(resume_held) and hold.held_max_kph is None
+  )
   maps_control = mode in (MODE_CAP, MODE_FOLLOW)
 
   if not engaged:
@@ -340,13 +349,24 @@ def decide_map_cruise(
       hold.last_raw_kph = seed
       hold.policy_kph = seed
       return MapCruiseDecision(seed, False, seed, False)
-    if hold.held_max_kph is None and 0.0 < raw_kph < V_CRUISE_UNSET:
-      hold.held_max_kph = float(raw_kph)
-    held = hold.held_max_kph if hold.held_max_kph is not None else float(raw_kph)
-    hold.policy_kph = held
     if long_active:
+      # Pedal/HUD MAX is the source of truth while long is active. Stalk
+      # +/- must update the MAX one SET will resume. Pause publishes
+      # cruiseState.speed as ego — never latch that into held.
+      stalk_step = is_cruise_stalk_step(hold.last_raw_kph, raw_kph)
+      if 0.0 < raw_kph < V_CRUISE_UNSET and (
+        hold.held_max_kph is None or stalk_step or bool(stalk_pressed)
+      ):
+        hold.held_max_kph = float(raw_kph)
       hold.last_raw_kph = raw_kph
-    seed = float(held) if resume_held else None
+    if hold.held_max_kph is not None:
+      held = float(hold.held_max_kph)
+      hold.policy_kph = held
+    else:
+      # Paused with no latch: report raw for this frame only. Do not store
+      # it — pause raw is ego.
+      held = float(raw_kph)
+    seed = float(held) if resume_held and hold.held_max_kph is not None else None
     return MapCruiseDecision(float(held), False, seed, False)
 
   posted_ok = posted_kph is not None and posted_kph > 0
