@@ -28,6 +28,11 @@ Pre-AP CS.steeringRateDeg is -STW_ANGLHP_STAT.StW_AnglHP_Spd (0x0E,
 14-bit, factor 0.5, offset −4096, deg/s; SNA → ~4095 deg/s). Caster /
 road / SNA stay above the old 25 deg/s gate. Rate is ignored while
 yielded and during the 1 s blend.
+
+While yielded, controlsd pins desired_curvature to measured (stock
+inactive target) so LaC cannot run ahead of the wheel. Blend / resume
+then clip_curvature from that pin onto the model — same as a blinker
+pause re-engage — with latActive still true.
 """
 
 from __future__ import annotations
@@ -97,13 +102,41 @@ def smoothstep(t: float) -> float:
 def apply_lat_authority(authority: float, torque: float, desired_angle: float,
                         measured_angle: float, desired_curvature: float,
                         measured_curvature: float) -> tuple[float, float, float]:
-  """Scale lateral actuator authority. 0 follows the driver; 1 is full NAP."""
+  """Scale lateral actuator authority. 0 follows the driver; 1 is full NAP.
+
+  Identity at authority=1 (same as skipping the call). Do not write the
+  blended curvature back into the planner state — that would hold LaC
+  near measured after resume. controlsd skips this when authority is 1.
+  """
   a = float(np.clip(authority, 0.0, 1.0))
   return (
     float(torque) * a,
     a * float(desired_angle) + (1.0 - a) * float(measured_angle),
     a * float(desired_curvature) + (1.0 - a) * float(measured_curvature),
   )
+
+
+def handoff_new_desired_curvature(*, yielded: bool, lat_active: bool,
+                                  model_curvature: float,
+                                  measured_curvature: float) -> float:
+  """clip_curvature target. Pin to the wheel while yielded.
+
+  latActive stays true through yield so apply_steer_angle_limits_vm does
+  not snap. If we still fed the model/plan as new_desired, desired_curvature
+  would run to the lane while apply_lat_authority(0) commanded measured.
+  After authority→1, LaC then jumped to that diverged angle and the Tesla
+  VM / EPAS path felt firm-holding (green HUD, on-screen path back, wheel
+  not tracking). Same target as stock latActive=False; snap the pin in
+  controlsd (do not slew toward measured via clip_curvature).
+  """
+  if yielded or not lat_active:
+    return float(measured_curvature)
+  return float(model_curvature)
+
+
+def pin_desired_curvature_to_measured(yielded: bool) -> bool:
+  """True: assign desired_curvature = measured, skip clip_curvature."""
+  return bool(yielded)
 
 
 def hud_engaged_status(*, enabled: bool, op_state, lat_active: bool,

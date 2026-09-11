@@ -14,7 +14,8 @@ from opendbc.car.vehicle_model import VehicleModel
 from openpilot.selfdrive.controls.lib.blinker_lateral_pause import BlinkerLateralHold, lat_active_with_blinker_pause
 from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   PARAM_DRIVER_LAT_HANDOFF, DriverLateralHandoff, apply_lat_authority,
-  handoff_enabled)
+  handoff_enabled, handoff_new_desired_curvature,
+  pin_desired_curvature_to_measured)
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
@@ -133,6 +134,8 @@ class Controls:
     CC.longActive = CC.enabled and not any(e.overrideLongitudinal for e in self.sm['onroadEvents']) and self.CP.openpilotLongitudinalControl
     # Soft wheel yield scales actuator authority only. latActive stays true so
     # LaC is not reset and apply_steer_angle_limits_vm does not snap angle.
+    # desired_curvature is pinned to the wheel while yielded (below) so LaC
+    # does not run to the model and then hold after authority returns.
     # Longitudinal / enabled are untouched. ALC and blinker pause are not this path.
     self.lat_handoff.enabled = handoff_enabled(
       fingerprint=self.CP.carFingerprint,
@@ -163,18 +166,34 @@ class Controls:
     actuators.accel = float(self.LoC.update(CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop, pid_accel_limits))
 
     # Steering PID loop and lateral MPC
-    # Reset desired curvature to current to avoid violating the limits on engage
+    # Reset desired curvature to current to avoid violating the limits on engage.
+    # Soft yield keeps latActive true (no VM snap) but must not let the
+    # planner run to the model while we command measured. Pin to the wheel
+    # while yielded; blend/resume clip from that pin like a blinker re-engage.
     if self.sm.valid['lateralManeuverPlan']:
-      new_desired_curvature = self.sm['lateralManeuverPlan'].desiredCurvature if CC.latActive else self.curvature
+      model_or_plan_curvature = self.sm['lateralManeuverPlan'].desiredCurvature
     else:
-      new_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
-    self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
+      model_or_plan_curvature = model_v2.action.desiredCurvature
+    new_desired_curvature = handoff_new_desired_curvature(
+      yielded=bool(self._lat_handoff.yielded),
+      lat_active=bool(CC.latActive),
+      model_curvature=model_or_plan_curvature,
+      measured_curvature=self.curvature,
+    )
+    if pin_desired_curvature_to_measured(self._lat_handoff.yielded):
+      self.desired_curvature = self.curvature
+      curvature_limited = False
+    else:
+      self.desired_curvature, curvature_limited = clip_curvature(
+        CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
     lat_delay = self.sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
 
     actuators.curvature = self.desired_curvature
     steer, steeringAngleDeg, lac_log = self.LaC.update(CC.latActive, CS, self.VM, lp,
                                                        self.steer_limited_by_safety, self.desired_curvature,
                                                        curvature_limited, lat_delay)
+    # Blend outputs only while authority < 1. Do not write blended values
+    # back into desired_curvature — after resume LaC must track the plan.
     if self._lat_handoff.authority < 1.0:
       steer, steeringAngleDeg, blended_curvature = apply_lat_authority(
         self._lat_handoff.authority, steer, steeringAngleDeg, CS.steeringAngleDeg,
