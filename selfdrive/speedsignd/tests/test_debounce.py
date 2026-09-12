@@ -107,3 +107,28 @@ def test_debounce_constants_match_1hz():
   assert DEBOUNCE_WINDOW_S == 4.0
   # Two 1 Hz hits (or 1 Hz + one skip) must fit in the JSONL window.
   assert DEBOUNCE_WINDOW_S >= 2.0 / SPEEDSIGND_HZ
+
+
+def test_update_split_drops_unrefined_65():
+  d = SignDebounce()
+  bad = SpeedSign(
+    mph=65, conf=0.73, bbox=(0, 0, 8, 8),
+    class_mph=65, class_conf=0.73, refine_mph=None,
+  )
+  split = d.update_split([bad], 0.0)
+  assert split.hud == []
+  assert split.confirmed == []
+  assert d.last_raw and d.last_raw[0].mph == 65
+
+
+def test_update_split_hud_refined_50_from_class_65():
+  d = SignDebounce()
+  s = SpeedSign(
+    mph=50, conf=0.71, bbox=(0, 0, 8, 8),
+    class_mph=65, class_conf=0.82, refine_mph=50, refine_conf=0.71,
+  )
+  split = d.update_split([s], 0.0)
+  assert split.hud and split.hud[0].mph == 50
+  assert split.confirmed == []
+  assert split.hud[0].refine_mph == 50
+  assert split.hud[0].class_mph == 65

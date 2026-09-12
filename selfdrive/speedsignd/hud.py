@@ -4,11 +4,18 @@ Display-only. Does not write sqlite or change cruise.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
-# Hold long enough that a skipped 1 Hz cycle does not flicker the plate.
-# HUD mph comes from the first in-threshold YOLO hit (JSONL is still 2-hit).
-HUD_HOLD_S = 3.0
+from openpilot.selfdrive.speedsignd.detect_types import MUTCD_MPH, SpeedSign
+
+# Hold a recent *accepted* mph across 1 Hz skip-on-overrun. A 3–4 s tinygrad
+# infer plus cap payback blanks the next ~8–9 s; 10 s keeps SIGN lit until
+# the next infer (or a better / conflicting refine). Never invents an mph.
+HUD_HOLD_S = 10.0
+# YOLO speedLimit65/70 is often a confident miss on a close 50 (Justin:
+# top=65:0.73, cls=50:0.00). Do not light those mph unless crop refine
+# returned that value (or another MUTCD mph to override).
+HUD_REFINE_REQUIRED_MPH = frozenset({65, 70})
 HUD_LABEL = "SIGN"
 # Logger On + ONNX missing: show this instead of a blank plate or a fake mph.
 HUD_MISSING_WEIGHTS_TEXT = "NO WT"
@@ -200,6 +207,44 @@ def apply_live_sign(
   dst.detectPaused = bool(detect_paused)
 
 
+def _class_mph(sign: SpeedSign) -> int:
+  class_mph = getattr(sign, "class_mph", None)
+  if class_mph is not None:
+    return int(class_mph)
+  return int(sign.mph)
+
+
+def accepted_hud_sign(sign: SpeedSign | None) -> SpeedSign | None:
+  """HUD-safe sign, or None (blank / hold last-good). Does not invent mph.
+
+  Refine win: use refine_mph (already the usual override). Refine miss on a
+  65/70 class (or posted 65/70): drop — YOLO 65 is Justin's parked-50 miss.
+  Other MUTCD classes may light from YOLO alone.
+  """
+  if sign is None:
+    return None
+  try:
+    posted = int(sign.mph)
+  except (TypeError, ValueError):
+    return None
+  if posted <= 0:
+    return None
+  refine = getattr(sign, "refine_mph", None)
+  if refine is not None:
+    try:
+      refine_i = int(refine)
+    except (TypeError, ValueError):
+      refine_i = None
+    if refine_i is not None and refine_i in MUTCD_MPH:
+      if refine_i != posted:
+        conf = float(getattr(sign, "refine_conf", 0.0) or sign.conf)
+        return replace(sign, mph=refine_i, conf=conf)
+      return sign
+  if posted in HUD_REFINE_REQUIRED_MPH or _class_mph(sign) in HUD_REFINE_REQUIRED_MPH:
+    return None
+  return sign
+
+
 @dataclass
 class LiveSignHold:
   hold_s: float = HUD_HOLD_S
@@ -208,8 +253,13 @@ class LiveSignHold:
   until: float = 0.0
 
   def update(self, signs, now: float) -> tuple[bool, int, float]:
-    if signs:
-      best = max(signs, key=lambda s: s.conf)
+    accepted: list[SpeedSign] = []
+    for s in signs or []:
+      a = accepted_hud_sign(s)
+      if a is not None:
+        accepted.append(a)
+    if accepted:
+      best = max(accepted, key=lambda s: s.conf)
       self.mph = int(best.mph)
       self.conf = float(best.conf)
       self.until = now + self.hold_s

@@ -12,13 +12,13 @@ openpilot is actively controlling actuators (selfdriveState.active, or
 state in enabled / softDisabling / overriding). Manual driving — including
 moving, stock CC, no assist — still runs 1 Hz detect (skip-on-overrun,
 nice 19, little cores 0-3, 1 ONNX thread). HUD lights on the first
-in-threshold YOLO hit; JSONL still needs two agreeing frames. SubMaster
-is polled at 20 Hz so 100 Hz selfdriveState alive/valid does not
-false-trigger WAIT. Unknown cereal after a short startup allows throttled
-detect (not WAIT). Not gated on park / Force Offroad. Detect copies a
-ROAD crop and letterboxes after downsample — never a full-frame RGB
-convert. 4 Hz YOLO on a 3X starved modeld and can TAKE CONTROL /
-process-timeout.
+accepted in-threshold hit (65/70 need crop refine) and holds last-good
+across skips; JSONL still needs two agreeing frames. SubMaster is polled
+at 20 Hz so 100 Hz selfdriveState alive/valid does not false-trigger WAIT.
+Unknown cereal after a short startup allows throttled detect (not WAIT).
+Not gated on park / Force Offroad. Detect copies a ROAD crop and
+letterboxes after downsample — never a full-frame RGB convert. 4 Hz YOLO
+on a 3X starved modeld and can TAKE CONTROL / process-timeout.
 """
 from __future__ import annotations
 
