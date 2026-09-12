@@ -1,3 +1,7 @@
+NAP lead follow (2026-09-12)
+========================
+* Pre-AP: closing on / coming up behind a radar lead no longer uses the cruise **1.6–0.6 m/s²** punch (Adaptive Accel used the full profile on a large gap; map Accel 1–10 only gated MAX-rise climb). Catch-up **+a** is now `lead_close_accel_ms2`: **0.20** at Accel 1, **0.30** at 5, **0.50** at 10, inside ~140 m. Still closes onto the selected Follow Distance. MPC danger / hard brake, Hypermile, sticky MAX, soft-lat, and DM unchanged. Settings → NAP → Map Speed Limit → Acceleration.
+
 NAP Hypermile (2026-09-12)
 ========================
 * Settings → NAP → Driving Mannerisms → **Hypermile** (default Off, nap-dev only). Comfort-biased efficiency: On snaps Adaptive Accel + Cap/Follow / −5 mph / **Early** lookahead / **Accel 1** lazy climb (early light ease, not max regen bite), then restores those knobs when Off. Soft-lat / DM / blinker unchanged. Below ~50 mph follow sits far back (stock 7 / 1.9 s); above 50 mph uses a stalk 1–5 draft band (1=closest safe 0.9 s, 5=1.7 s). With a lead, stalk up=closer and down=farther (MAX unchanged). No lead: stalk still adjusts MAX. HUD shows **Hypermile: Follow N** when the level changes. Opt-in **Step Down Speed** (default Off, inert unless Hypermile is On): Cap/Follow targets **15 mph under posted** (75→60, 55→40; no stack with eco −5). Follow stalk SET can still hold above the step-down until posted changes. Not a nap-release change.

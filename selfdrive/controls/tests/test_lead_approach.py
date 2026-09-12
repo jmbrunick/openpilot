@@ -2,12 +2,18 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_APPROACH_A_MS2,
   LEAD_APPROACH_HEADSTART_S,
   LEAD_APPROACH_MAX_START_M,
+  LEAD_CLOSE_A_BASE_MS2,
+  LEAD_CLOSE_A_MAX_MS2,
+  LEAD_CLOSE_A_MIN_MS2,
   NAP_T_FOLLOW,
   STOP_DISTANCE,
   lead_approach_decel_ms2,
   lead_approach_need_m,
+  lead_close_accel_ms2,
+  lead_close_should_cap,
   nap_t_follow,
 )
+from openpilot.selfdrive.controls.lib.longitudinal_planner import get_max_accel
 from openpilot.selfdrive.mapd.constants import DECREASE_START_MARGIN_M, LOOKAHEAD_NORMAL, map_brake_a_ms2
 
 
@@ -153,3 +159,51 @@ def test_stopped_lead_still_plans_a_comfortable_stop_gap():
   assert a is not None and a < 0.0
   assert abs(a) <= LEAD_APPROACH_A_MS2 + 1e-9
   assert lead_approach_decel_ms2(v_ego, 0.0, d_follow + need + 20.0, t4) is None
+
+
+def test_lead_close_accel_is_well_below_cruise_and_scales_with_accel():
+  """Accel 1–10 gates catch-up +a. Min Accel is a nudge, not cruise 1.6–0.6."""
+  a1 = lead_close_accel_ms2(1)
+  a5 = lead_close_accel_ms2(5)
+  a10 = lead_close_accel_ms2(10)
+  assert abs(a1 - LEAD_CLOSE_A_MIN_MS2) < 1e-9
+  assert abs(a5 - LEAD_CLOSE_A_BASE_MS2) < 1e-9
+  assert abs(a10 - LEAD_CLOSE_A_MAX_MS2) < 1e-9
+  assert a1 < a5 < a10
+  assert a1 < 0.25
+  assert a10 <= 0.50
+  # City / highway cruise clip is the old large-gap punch.
+  assert a1 < get_max_accel(11.0) / 3.0
+  assert a1 < get_max_accel(25.0) / 2.0
+  assert a5 < LEAD_APPROACH_A_MS2
+  assert lead_close_should_cap(80.0)
+  assert lead_close_should_cap(LEAD_APPROACH_MAX_START_M)
+  assert not lead_close_should_cap(160.0)
+  assert not lead_close_should_cap(0.0)
+  assert not lead_close_should_cap(None)
+
+
+def test_lead_close_accel_still_closes_onto_follow_distance():
+  """Capped +a still closes a large same-speed gap; no far-back hang."""
+  v_ego = 22.0
+  v_lead = 22.0
+  t4 = nap_t_follow(4)
+  d_follow = t4 * v_lead + STOP_DISTANCE
+  d_rel = d_follow + 40.0
+  a_cap = lead_close_accel_ms2(1)
+  dt = 0.05
+  min_d_rel = d_rel
+  for _ in range(int(80.0 / dt)):
+    a = a_cap
+    decel = lead_approach_decel_ms2(v_ego, v_lead, d_rel, t4)
+    if decel is not None:
+      a = min(a, decel)
+    v_ego = max(0.0, v_ego + a * dt)
+    d_rel -= (v_ego - v_lead) * dt
+    min_d_rel = min(min_d_rel, d_rel)
+    if d_rel <= d_follow + 2.0:
+      break
+  assert a_cap == LEAD_CLOSE_A_MIN_MS2
+  assert min_d_rel <= d_follow + 8.0
+  assert d_rel <= d_follow + 8.0
+  assert d_rel < d_follow + 20.0

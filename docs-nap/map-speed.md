@@ -112,7 +112,7 @@ All map-speed controls live in this submenu (main NAP stays uncluttered). TICI a
 - **Map Speed (MAX)** (`NAPMapSpeedMode`): Off / Display / Cap / Follow
 - **Map Speed Offset** (`NAPMapSpeedOffsetMph`): -5 / 0 / +5 mph
 - **Lookahead** (`NAPMapSpeedLookahead`): Off / Late / Normal (default) / Early
-- **Acceleration** (`NAPMapSpeedAccel`): 1–10, Follow climb only (default 5). Brake to a lower MAX is locked at 5.
+- **Acceleration** (`NAPMapSpeedAccel`): 1–10, Follow climb **and** lead-close +a (default 5). Brake to a lower MAX is locked at 5.
 - **Map revision**: published US pack revision after Download US Maps (Refresh maps does not bump this)
 - **Refresh maps**: live OSM within 100 miles, merged into the installed US sqlite (listed above Download)
 - **Download US Maps**: first install of the current published pack
@@ -135,15 +135,15 @@ When the upcoming drop is inside that window, MAX interpolates from the current 
 
 **HUD current speed** (top-middle on the 3X) is wheel/ESP `vEgo` only. `vEgoCluster` is Tesla `DI_digitalSpeed`, which pre-AP also uses as `cruiseState.speed`. Map-speed writes MAX into `vCruise` / `pedal_speed` / `cruiseState.speed` (90 kph = **56 mph**). LIMIT/MAX may show the map limit; the live number must not.
 
-**Acceleration** scales **Follow climb only**. Brake uses Accel 5 (`map_brake_a_ms2` / `map_track_decel`).
+**Acceleration** scales **Follow climb** (MAX rising, no overriding lead) **and** the lead-close +a cap when coming up behind a radar lead. Brake uses Accel 5 (`map_brake_a_ms2` / `map_track_decel`). Adaptive Accel no longer uses the full cruise profile to punch a large follow gap.
 
-| Accel | Factor | `a` at Lookahead=Normal | Used for |
-|---|---|---|---|
-| 1 | 0.45 | **0.36 m/s²** | climb only (gentlest) |
-| **5** | 1.00 | **0.80 m/s²** | climb *and* all map braking |
-| 10 | 2.00 | **1.60 m/s²** | climb only (quickest, clamped) |
+| Accel | Factor | MAX climb `a` (Normal) | Lead-close +a | Used for |
+|---|---|---|---|---|
+| 1 | 0.45 | **0.36 m/s²** | **0.20 m/s²** | climb + catch-up (gentlest) |
+| **5** | 1.00 | **0.80 m/s²** | **0.30 m/s²** | climb, catch-up, *and* all map braking |
+| 10 | 2.00 | **1.60 m/s²** | **0.50 m/s²** | climb (quickest, clamped); catch-up still capped |
 
-`a = clamp(0.30, 1.60, a_lookahead × factor)`. Changing Accel 1 vs 10 must not change brake feel. A higher limit ahead may still be published as `nextSpeedLimit`; Cap/Follow ignore it until `speedLimit` itself is the higher value.
+MAX-rise `a = clamp(0.30, 1.60, a_lookahead × factor)`. Lead-close `a = clamp(0.20, 0.50, 0.30 × factor)` inside 140 m. Changing Accel 1 vs 10 must not change brake feel or MPC danger. A higher limit ahead may still be published as `nextSpeedLimit`; Cap/Follow ignore it until `speedLimit` itself is the higher value.
 
 ## How to test
 

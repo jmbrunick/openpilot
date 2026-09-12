@@ -16,7 +16,11 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_stopped_equivalence_factor,
   get_T_FOLLOW,
 )
-from openpilot.selfdrive.controls.lib.lead_approach import lead_approach_decel_ms2
+from openpilot.selfdrive.controls.lib.lead_approach import (
+  lead_approach_decel_ms2,
+  lead_close_accel_ms2,
+  lead_close_should_cap,
+)
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
@@ -221,6 +225,13 @@ class LongitudinalPlanner:
         if cap_strength > 0:
           blended = accel_clip[1] * (1.0 - cap_strength) + follow_limit * cap_strength
           accel_clip[1] = min(accel_clip[1], blended)
+
+    # Coming up behind a radar lead: cap +a (Accel 1–10 close curve).
+    # Adaptive Accel used full cruise when the gap was large — that punch.
+    # Map Accel 1–10 only gated MAX-rise. Does not change MPC danger / −a.
+    if self._is_preap and sm['radarState'].leadOne.status:
+      if lead_close_should_cap(sm['radarState'].leadOne.dRel):
+        accel_clip[1] = min(accel_clip[1], lead_close_accel_ms2(self._map_speed_accel))
 
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
