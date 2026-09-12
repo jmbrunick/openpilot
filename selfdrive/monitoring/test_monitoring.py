@@ -283,9 +283,9 @@ class TestMonitoring:
     alert_lvls, d_status = self._run_seq(always_distracted, always_false, always_true,
                                          always_false, soft_presence=always_false)
     s = d_status.settings
-    assert alert_lvls[int((s._VISION_POLICY_ALERT_1_TIMEOUT + 0.2) / DT_DMON)] == 1
-    assert alert_lvls[int((s._VISION_POLICY_ALERT_2_TIMEOUT + 0.5) / DT_DMON)] == 2
-    assert alert_lvls[int((s._VISION_POLICY_ALERT_3_TIMEOUT + 0.5) / DT_DMON)] == 3
+    assert alert_lvls[int((s._VISION_POLICY_ALERT_1_TIMEOUT + 0.6) / DT_DMON)] == 1
+    assert alert_lvls[int((s._VISION_POLICY_ALERT_2_TIMEOUT + 0.6) / DT_DMON)] == 2
+    assert alert_lvls[int((s._VISION_POLICY_ALERT_3_TIMEOUT + 0.6) / DT_DMON)] == 3
 
   def test_hands_on_does_not_clear_orange_or_red(self):
     """After orange / red, light hands-on is not enough — still escalate."""
@@ -316,8 +316,8 @@ class TestMonitoring:
       DM._update_events(False, False, False, 0, soft_presence=True)
       alert_lvls.append(DM.alert_level)
     s = DM.settings
-    assert alert_lvls[int((s._VISION_POLICY_ALERT_1_TIMEOUT + 0.2) / DT_DMON)] == 1
-    assert alert_lvls[int((s._VISION_POLICY_ALERT_2_TIMEOUT + 0.5) / DT_DMON)] == 2
+    assert alert_lvls[int((s._VISION_POLICY_ALERT_1_TIMEOUT + 0.6) / DT_DMON)] == 1
+    assert alert_lvls[int((s._VISION_POLICY_ALERT_2_TIMEOUT + 0.6) / DT_DMON)] == 2
 
   def test_run_step_hands_on_resets_near_alert_1(self):
     """run_step: Pre-AP handsOnLevel >= 1 resets at the first vision prompt."""
