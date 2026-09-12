@@ -30,7 +30,7 @@ class DrivingMannerismsLayoutMici(NavScroller):
     lat_handoff.set_value("On — free-wheel yield; Off if false-yield")
 
     dm_sim_looking = BigParamControl("simulate look-at-road", NAP_DM_SIMULATE_LOOKING)
-    dm_sim_looking.set_value("On — hold glance after 1 s, then random 2–3 s")
+    dm_sim_looking.set_value("On — hold glance at random in 1–3 s of drain")
 
     self._scroller.add_widgets([
       adaptive_accel,

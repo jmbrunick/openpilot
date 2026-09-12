@@ -177,7 +177,7 @@ Do these at a quiet road / parking lot first, then a known pothole stretch. Peda
 
 Stock DM stays on while engaged. Vision timeouts stay **3 / 5 / 11 s** (`DRIVER_MONITOR_SETTINGS` in `selfdrive/monitoring/policy.py`). The #103 hands-on-only first-band reset did not stop look-at-road nagging: light rim contact is not what `dmonitoringd` treats as looking, orange/red still fired, and `maybe_distracted` (no face / uncertain) kept draining.
 
-`NAPDmSimulateLooking` (default On, Settings → NAP → Driving Mannerisms) does **not** mute banners. After awareness has started counting down and has gone **past ~1 s**, it injects a simulated glance on the **stock vision looking-path** — `face_detected` and `pose.low_std` and `driver_distraction_filter.x < 0.37` — the same predicates that clear the green prompt when he actually looks. That looking state is **held** (minimum 0.5 s, until awareness is 1.0) so stock gradual recovery can finish — not a one-frame pulse and not `driver_interacting` full reset. The delay to the next hold is drawn uniformly in **2–3 s** and redrawn after each hold (not a fixed metronome).
+`NAPDmSimulateLooking` (default On, Settings → NAP → Driving Mannerisms) does **not** mute banners. After awareness has started counting down and has gone **past 1.0 s**, it fires at a **random time in the next 2.0 s** — fire time is uniform in **(1.0 s, 3.0 s]** of that countdown — and injects a simulated glance on the **stock vision looking-path** — `face_detected` and `pose.low_std` and `driver_distraction_filter.x < 0.37` — the same predicates that clear the green prompt when he actually looks. That looking state is **held** (minimum 0.5 s, until awareness is 1.0) so stock gradual recovery can finish — not a one-frame pulse and not `driver_interacting` full reset. After a successful full reset a new countdown can start and the same rule applies again.
 
 Always-on DM when not engaged does **not** simulate. Toggle **Off** = stock DM with no pulses. Hands-on ≥ 2 / steer disengage, door, reverse, and stalk cancel are unchanged.
 
@@ -191,4 +191,4 @@ Always-on DM when not engaged does **not** simulate. Toggle **Off** = stock DM w
 - `selfdrive/car/tesla/tests/test_preap_blinker_lat_pause.py` — blinker lat pause, turn drops long, one SET resumes
 - `selfdrive/car/tesla/tests/test_preap_sticky_max.py` — sticky MAX across brake/turn pause, one vs double SET, cancel
 - `selfdrive/monitoring/policy.py` — simulate looking (`NAPDmSimulateLooking`) on the stock vision looking-path
-- `selfdrive/monitoring/test_monitoring.py` — hold until awareness 1.0 via looking-path math; 2–3 s cadence after ~1 s countdown; Off is stock
+- `selfdrive/monitoring/test_monitoring.py` — hold until awareness 1.0 via looking-path math; fire in (1.0 s, 3.0 s] of countdown; Off is stock

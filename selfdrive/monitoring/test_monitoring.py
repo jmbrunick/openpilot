@@ -4,7 +4,7 @@ from cereal import log
 from openpilot.common.realtime import DT_DMON
 from openpilot.selfdrive.monitoring.policy import (
   DriverMonitoring, DRIVER_MONITOR_SETTINGS, PARAM_DM_SIMULATE_LOOKING,
-  LOOK_SIM_COUNTDOWN_MIN_S, LOOK_SIM_INTERVAL_MIN_S, LOOK_SIM_INTERVAL_MAX_S,
+  LOOK_SIM_COUNTDOWN_MIN_S, LOOK_SIM_RANDOM_WINDOW_S, LOOK_SIM_FIRE_MAX_S,
   LOOK_SIM_HOLD_MIN_S, LOOK_SIM_HOLD_MAX_S,
   VISION_LOOKING_FILTER_X, VISION_RECOVERY_FACTOR_MAX, VISION_RECOVERY_FACTOR_MIN,
   vision_looking_path, looking_recovery_time_s,
@@ -258,8 +258,8 @@ class TestMonitoring:
     assert s._VISION_POLICY_ALERT_3_TIMEOUT == 11.
     assert PARAM_DM_SIMULATE_LOOKING == "NAPDmSimulateLooking"
     assert LOOK_SIM_COUNTDOWN_MIN_S == 1.0
-    assert LOOK_SIM_INTERVAL_MIN_S == 2.0
-    assert LOOK_SIM_INTERVAL_MAX_S == 3.0
+    assert LOOK_SIM_RANDOM_WINDOW_S == 2.0
+    assert LOOK_SIM_FIRE_MAX_S == 3.0
     assert LOOK_SIM_HOLD_MIN_S == 0.5
     assert LOOK_SIM_HOLD_MAX_S == 12.0
     assert VISION_LOOKING_FILTER_X == 0.37
@@ -297,7 +297,7 @@ class TestMonitoring:
     """Hold is many frames on the looking-path; awareness climbs to 1.0, not one tick."""
     DM = DriverMonitoring()
     DM.nap_dm_simulate_looking = True
-    DM._look_sim_interval_s = 2.0
+    DM._look_sim_fire_s = 2.0
     hold_frames = 0
     start_a = None
     first_hold_a = None
@@ -323,11 +323,11 @@ class TestMonitoring:
     assert hold_frames * DT_DMON + DT_DMON >= max(LOOK_SIM_HOLD_MIN_S, predicted) - 2 * DT_DMON
     assert DM.alert_level == 0
 
-  def test_simulate_looking_waits_1s_then_holds_in_2_to_3s(self):
-    """No hold in the first 1 s of countdown; hold start tracks the 2–3 s draw."""
+  def test_simulate_looking_fires_in_1_to_3s_window(self):
+    """No hold until drain is past 1.0 s; fire time is uniform in (1.0 s, 3.0 s]."""
     DM = DriverMonitoring()
     DM.nap_dm_simulate_looking = True
-    DM._look_sim_interval_s = 0.4  # would fire early without the 1 s gate
+    DM._look_sim_fire_s = 0.4  # would fire early without the 1 s gate
     drain_start = None
     hold_start = None
     for i in range(int(6.0 / DT_DMON)):
@@ -340,16 +340,17 @@ class TestMonitoring:
         hold_start = i * DT_DMON
         break
     assert drain_start is not None and hold_start is not None
-    assert (hold_start - drain_start) >= LOOK_SIM_COUNTDOWN_MIN_S - 1e-6
+    assert (hold_start - drain_start) > LOOK_SIM_COUNTDOWN_MIN_S - 1e-6
+    assert (hold_start - drain_start) <= LOOK_SIM_FIRE_MAX_S + 0.15
 
     elapsed = []
-    for seed in range(12):
+    for seed in range(16):
       DM = DriverMonitoring()
       DM.nap_dm_simulate_looking = True
       DM._rng.seed(seed)
       DM._redraw_look_sim_interval()
-      interval = DM._look_sim_interval_s
-      assert LOOK_SIM_INTERVAL_MIN_S <= interval <= LOOK_SIM_INTERVAL_MAX_S
+      fire_s = DM._look_sim_fire_s
+      assert LOOK_SIM_COUNTDOWN_MIN_S < fire_s <= LOOK_SIM_FIRE_MAX_S
       drain_start = None
       hold_start = None
       for i in range(int(8.0 / DT_DMON)):
@@ -363,23 +364,27 @@ class TestMonitoring:
           break
       assert drain_start is not None and hold_start is not None
       dt = hold_start - drain_start
-      assert abs(dt - interval) < 0.15
+      assert abs(dt - fire_s) < 0.15
+      assert LOOK_SIM_COUNTDOWN_MIN_S < dt <= LOOK_SIM_FIRE_MAX_S + 0.15
       elapsed.append(dt)
-    assert all(LOOK_SIM_INTERVAL_MIN_S - 0.15 <= t <= LOOK_SIM_INTERVAL_MAX_S + 0.15 for t in elapsed)
-    assert max(elapsed) - min(elapsed) > 0.3
+    assert max(elapsed) - min(elapsed) > 0.5
+    assert min(elapsed) > LOOK_SIM_COUNTDOWN_MIN_S - 1e-6
+    assert max(elapsed) <= LOOK_SIM_FIRE_MAX_S + 0.15
 
-  def test_simulate_looking_interval_redraws_not_metronome(self):
+  def test_simulate_looking_fire_time_redraws_in_window(self):
     DM = DriverMonitoring()
     DM.nap_dm_simulate_looking = True
     DM._rng.seed(11)
     seen = []
     for _ in range(40):
       DM._redraw_look_sim_interval()
-      t = DM._look_sim_interval_s
-      assert LOOK_SIM_INTERVAL_MIN_S <= t <= LOOK_SIM_INTERVAL_MAX_S
+      t = DM._look_sim_fire_s
+      assert LOOK_SIM_COUNTDOWN_MIN_S < t <= LOOK_SIM_FIRE_MAX_S
       seen.append(round(t, 4))
     assert len(set(seen)) >= 8
     assert not all(abs(x - seen[0]) < 1e-6 for x in seen)
+    assert any(x <= LOOK_SIM_COUNTDOWN_MIN_S + 0.5 for x in seen)
+    assert any(x >= LOOK_SIM_FIRE_MAX_S - 0.5 for x in seen)
 
   def test_simulate_looking_engaged_never_reaches_orange(self):
     """Periodic looking-path resets keep awareness above orange."""
@@ -406,7 +411,7 @@ class TestMonitoring:
       DM._update_events(False, True, False, 0)
     assert DM.alert_level == 2
     DM.nap_dm_simulate_looking = True
-    DM._look_sim_interval_s = 2.0
+    DM._look_sim_fire_s = 2.0
     DM._look_sim_countdown_s = 0.0
     cleared = False
     for _ in range(int(12.0 / DT_DMON)):

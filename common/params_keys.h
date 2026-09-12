@@ -180,8 +180,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // yield fully cancels. Settings can turn Off.
     {"NAPDriverLatHandoff", {PERSISTENT, BOOL, "1"}},
     // Pre-AP DM: while engaged, simulate looking on the stock vision
-    // attentive path after ~1 s of countdown, then every random 2–3 s.
-    // Awareness resets as a real glance would. Toggle Off = stock DM.
+    // attentive path. After drain past 1.0 s, fire at random in the
+    // next 2.0 s (fire in (1.0, 3.0] of that countdown). Hold until
+    // awareness recovers. Toggle Off = stock DM.
     // Settings → NAP → Driving Mannerisms. Default On. nap-dev only.
     {"NAPDmSimulateLooking", {PERSISTENT, BOOL, "1"}},
     // Settings → NAP → Force Offroad. Default off. Not persistent: reboot

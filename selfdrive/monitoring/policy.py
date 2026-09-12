@@ -29,15 +29,15 @@ def to_percent(v):
 
 # NAP experiment (nap-dev only): simulate looking at the road so stock
 # awareness recovers on the same vision path as a real glance.
-# After the timer has drained past ~1 s, hold looking for long enough
-# that gradual recovery returns awareness to 1.0 (not a one-frame
-# pulse). Next hold starts on a random 2–3 s interval (redraw after
-# each hold). Toggle Off = stock DM. Default On.
+# After drain starts: wait past 1.0 s, then fire at a random time in
+# the next 2.0 s — fire time uniform in (1.0 s, 3.0 s]. Hold looking
+# until gradual recovery returns awareness to 1.0. After a full reset
+# the same rule applies to the next countdown. Toggle Off = stock DM.
 # Hands-on ≥ 2 / stalk / door / reverse hard cancels are unchanged.
 PARAM_DM_SIMULATE_LOOKING = "NAPDmSimulateLooking"
 LOOK_SIM_COUNTDOWN_MIN_S = 1.0
-LOOK_SIM_INTERVAL_MIN_S = 2.0
-LOOK_SIM_INTERVAL_MAX_S = 3.0
+LOOK_SIM_RANDOM_WINDOW_S = 2.0
+LOOK_SIM_FIRE_MAX_S = LOOK_SIM_COUNTDOWN_MIN_S + LOOK_SIM_RANDOM_WINDOW_S  # 3.0
 # Always hold at least this long so recovery is not a single tick.
 LOOK_SIM_HOLD_MIN_S = 0.5
 # Covers wheeltouch recovery from empty awareness (~11 s) plus margin.
@@ -222,9 +222,10 @@ class DriverMonitoring:
     self._set_policy(MonitoringPolicy.vision)
 
   def _redraw_look_sim_interval(self):
-    """New 2–3 s delay to the next hold. Unpredictable across cycles."""
-    self._look_sim_interval_s = float(self._rng.uniform(
-      LOOK_SIM_INTERVAL_MIN_S, LOOK_SIM_INTERVAL_MAX_S))
+    """Fire time in (1.0 s, 3.0 s] after drain start: 1 s + uniform (0, 2 s]."""
+    # random() is [0, 1); (1-u)*window is (0, 2].
+    delay = (1.0 - self._rng.random()) * LOOK_SIM_RANDOM_WINDOW_S
+    self._look_sim_fire_s = LOOK_SIM_COUNTDOWN_MIN_S + delay
 
   def _apply_simulated_looking(self):
     """Force the same predicates a real glance uses on the vision path."""
@@ -272,8 +273,9 @@ class DriverMonitoring:
     else:
       self._look_sim_countdown_s = 0.0
       return
-    if (self._look_sim_countdown_s >= LOOK_SIM_COUNTDOWN_MIN_S and
-        self._look_sim_countdown_s + 1e-9 >= self._look_sim_interval_s):
+    # Past 1.0 s of drain, then the drawn time in (1.0, 3.0].
+    if (self._look_sim_countdown_s > LOOK_SIM_COUNTDOWN_MIN_S and
+        self._look_sim_countdown_s + 1e-9 >= self._look_sim_fire_s):
       self._look_sim_holding = True
       self._look_sim_hold_s = DT_DMON
       self._look_sim_hold_start_awareness = self.awareness
