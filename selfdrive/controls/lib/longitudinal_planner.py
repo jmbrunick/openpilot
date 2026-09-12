@@ -78,7 +78,11 @@ def get_coast_accel(pitch):
 def limit_accel_in_turns(v_ego, angle_steers, a_target, CP):
   """
   This function returns a limited long acceleration allowed, depending on the existing lateral acceleration
-  this should avoid accelerating when losing the target in turns
+  this should avoid accelerating when losing the target in turns.
+
+  Pre-AP HUD MAX snapshot/restore through a bend lives in card.py
+  (CurveMaxHold). This clip is temporary +a only — it must not rebase
+  vCruise / sticky MAX.
   """
   # FIXME: This function to calculate lateral accel is incorrect and should use the VehicleModel
   # The lookup table for turns should also be updated if we do this

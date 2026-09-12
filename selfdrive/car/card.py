@@ -24,6 +24,7 @@ from openpilot.selfdrive.mapd.map_speed_policy import (
   MapCruiseHold, apply_map_speed_kph, decide_map_cruise, effective_map_limit_ms,
   map_slew_a_ms2, read_map_speed_params, should_write_preap_pedal, slew_map_speed_ms,
 )
+from openpilot.selfdrive.controls.lib.curve_max_hold import CurveMaxHold
 from openpilot.selfdrive.controls.lib.hypermile import (
   button_event_closer, detect_hypermile_stalk, map_target_offset_kph,
   persist_follow_level, read_hypermile_params, read_hypermile_step_down,
@@ -159,6 +160,7 @@ class Car:
 
     self.v_cruise_helper = VCruiseHelper(self.CP)
     self._map_hold = MapCruiseHold()
+    self._curve_max = CurveMaxHold()
     self._map_slew_ms: float | None = None
     self._last_pedal_kph: float | None = None
     self._hypermile_stalk_mono: float = 0.0
@@ -262,12 +264,27 @@ class Car:
         md = self.sm['liveMapDataNAP'] if map_valid else None
         if md is not None and md.speedLimit > 0:
           posted_kph = float(md.speedLimit) * CV.MS_TO_KPH + self._map_speed_offset_kph
+        # Snapshot pre-curve MAX before decide so OSM flicker cannot wipe sticky.
+        last_hud_kph = float(self.v_cruise_helper.v_cruise_kph)
+        steer_deg = float(getattr(CS, 'steeringAngleDeg', 0.0) or 0.0)
+        policy_posted_kph, _ = self._curve_max.begin_cycle(
+          self._map_hold,
+          last_hud_kph=last_hud_kph,
+          posted_kph=posted_kph,
+          v_ego_ms=float(CS.vEgo),
+          angle_steers_deg=steer_deg,
+          steer_ratio=float(getattr(self.CP, 'steerRatio', 0.0) or 0.0),
+          wheelbase=float(getattr(self.CP, 'wheelbase', 0.0) or 0.0),
+          engaged=session_engaged,
+          take_speed_now=take_speed_now,
+          dt=DT_CTRL,
+        )
         dec = decide_map_cruise(
           self._map_hold,
           engaged=session_engaged,
           mode=self._map_speed_mode,
           raw_kph=raw_kph,
-          posted_kph=posted_kph,
+          posted_kph=policy_posted_kph,
           engage_rising=engage_rising,
           now=time.monotonic(),
           stalk_pressed=stalk_pressed,
@@ -323,13 +340,34 @@ class Car:
             op_long_software_cruise=True,
             driver_override=dec.follow_override,
           )
+        # Temporary curve cap may lower HUD MAX. Restore seed puts pre-curve
+        # MAX back after the bend. Do not let that cap rebase sticky / held.
+        curve_out = self._curve_max.finish(
+          hud_kph=preap_v_cruise_kph,
+          hold=self._map_hold,
+          posted_kph=posted_kph,
+          v_ego_ms=float(CS.vEgo),
+          angle_steers_deg=steer_deg,
+          steer_ratio=float(getattr(self.CP, 'steerRatio', 0.0) or 0.0),
+          wheelbase=float(getattr(self.CP, 'wheelbase', 0.0) or 0.0),
+          engaged=session_engaged,
+          stalk_pressed=stalk_pressed,
+          take_speed_now=take_speed_now,
+          dt=DT_CTRL,
+        )
+        preap_v_cruise_kph = float(curve_out.hud_kph)
+        restore_seed_kph = curve_out.restore_seed_kph
+        seed_kph = dec.seed_kph if restore_seed_kph is None else float(restore_seed_kph)
+        if restore_seed_kph is not None:
+          self._map_slew_ms = float(restore_seed_kph) * CV.KPH_TO_MS
         # Write engage/posted/stalk seed, or when HUD MAX rose. Never write
         # the same sticky MAX every frame. Pause still writes a rebase /
         # resume seed onto pedal_speed so one SET keeps the held MAX.
+        # Curve restore is a one-shot seed so MAX returns to the pre-bend set.
         write_max = long_active or soft_long or resume_held or take_speed_now or (
-          session_engaged and dec.seed_kph is not None
+          session_engaged and seed_kph is not None
         )
-        if write_max and should_write_preap_pedal(dec.seed_kph, preap_v_cruise_kph, self._last_pedal_kph):
+        if write_max and should_write_preap_pedal(seed_kph, preap_v_cruise_kph, self._last_pedal_kph):
           self._write_preap_pedal_speed(CS, preap_v_cruise_kph)
           self._last_pedal_kph = float(preap_v_cruise_kph)
         elif not session_enabled:
