@@ -4,6 +4,23 @@ from __future__ import annotations
 import numpy as np
 
 
+def nv12_uv_offset(buf, stride: int, height: int) -> int:
+  """UV plane start. 3X Venus NV12 is page-aligned; not always stride*height.
+
+  camerad sets VisionBuf.uv_offset = stride * ALIGN(height, 32). Using
+  stride*visible_height reads the Y pad as chroma and color-shifts RGB
+  (white R2-1 → green/yellow) so YOLO never fires.
+  """
+  raw = getattr(buf, "uv_offset", None)
+  try:
+    off = int(raw) if raw is not None else 0
+  except (TypeError, ValueError):
+    off = 0
+  if off > 0:
+    return off
+  return int(stride) * int(height)
+
+
 def y_plane_from_nv12(buf, copy: bool = False) -> np.ndarray | None:
   """Y plane of an NV12 VisionBuf, cropped to width x height (no padding).
 
@@ -36,7 +53,7 @@ def rgb_from_nv12(buf) -> np.ndarray | None:
     height, width = y.shape
     stride = int(buf.stride) if getattr(buf, "stride", 0) else width
     data = buf.data
-    uv_off = stride * height
+    uv_off = nv12_uv_offset(buf, stride, height)
     uv_rows = height // 2
     need = uv_off + stride * uv_rows
     if data is None or len(data) < need:

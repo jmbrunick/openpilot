@@ -364,6 +364,58 @@ class InferOutcome:
   signs: list
   written: list[dict]
   infer_s: float
+  error: str | None = None
+  diag: dict | None = None
+
+
+def format_infer_diag(diag: dict | None, *, allow_detect: bool) -> str:
+  """One-line on-car fields: backend, frame, letterbox, crop, sha, peak."""
+  d = diag or {}
+  crop = d.get("crop") or (0, 0, 0, 0)
+  if isinstance(crop, (list, tuple)) and len(crop) == 4:
+    crop_s = f"{int(crop[0])},{int(crop[1])} {int(crop[2])}x{int(crop[3])}"
+  else:
+    crop_s = str(crop)
+  out = d.get("out_shape", ())
+  if isinstance(out, (list, tuple)):
+    out_s = "x".join(str(int(v)) for v in out) if out else "-"
+  else:
+    out_s = str(out)
+  return (
+    f"backend={d.get('backend', '?')} "
+    + f"frame={int(d.get('frame_w', 0) or 0)}x{int(d.get('frame_h', 0) or 0)} "
+    + f"letterbox={int(d.get('letterbox', 0) or 0)} crop={crop_s} "
+    + f"onnx={d.get('weights_path', '')} sha={d.get('weights_sha', '')} "
+    + f"allow={int(bool(allow_detect))} out={out_s} "
+    + f"peak={float(d.get('peak_conf', 0.0) or 0.0):.2f}/{d.get('peak_name', '')} "
+    + f"n_over={int(d.get('n_over', 0) or 0)} "
+    + f"luma={float(d.get('luma_mean', 0.0) or 0.0):.0f}/{float(d.get('luma_std', 0.0) or 0.0):.0f}"
+  )
+
+
+def detect_skip_reason(
+  *,
+  connected: bool,
+  onnx: bool,
+  busy: bool,
+  holdoff: bool,
+  buf_empty: bool | None = None,
+  parse_fail: bool = False,
+) -> str:
+  """Why YOLO did not start. Distinguishes infer-never-ran from raw=[]."""
+  if not connected:
+    return "vision-disconnected"
+  if not onnx:
+    return "no-onnx"
+  if parse_fail:
+    return "nv12-parse"
+  if buf_empty:
+    return "road-recv-empty"
+  if busy:
+    return "infer-busy"
+  if holdoff:
+    return "holdoff"
+  return "ok"
 
 
 class InferSlot:
@@ -410,7 +462,7 @@ class InferSlot:
       return out
 
   def start(self, fn) -> bool:
-    """Run fn() in a daemon thread. fn returns (signs, written)."""
+    """Run fn() in a daemon thread. fn returns (signs, written) or + diag."""
     with self._lock:
       if self._busy or self._cancel.is_set():
         return False
@@ -420,18 +472,28 @@ class InferSlot:
 
     def run():
       t0 = time.monotonic()
+      signs: list = []
+      written: list[dict] = []
+      diag = None
+      error = None
       try:
         if self._cancel.is_set():
           return
-        signs, written = fn()
+        result = fn()
+        if isinstance(result, tuple) and len(result) >= 3:
+          signs, written, diag = result[0], result[1], result[2]
+        else:
+          signs, written = result
+      except Exception as e:
+        error = f"{type(e).__name__}: {e}"
+        signs, written = [], []
+      finally:
         infer_s = time.monotonic() - t0
         with self._lock:
           if not self._cancel.is_set() and gen == self._gen:
-            self._outcome = InferOutcome(list(signs), list(written), infer_s)
-      except Exception:
-        pass
-      finally:
-        with self._lock:
+            self._outcome = InferOutcome(
+              list(signs), list(written), infer_s, error=error, diag=diag,
+            )
           self._busy = False
 
     threading.Thread(target=run, name="speedsignd-onnx", daemon=True).start()
@@ -532,10 +594,11 @@ def main():
   logger = JsonlLogger(log_path)
   hold = LiveSignHold()
   debounce = SignDebounce()
-  backend = "yolo-onnx" if detector.onnx is not None else "numpy-mutcd"
+  backend = detector.backend_name()
+  weights_sha = detector.weights_sha_short()
   cloudlog.info(
-    "speedsignd starting log=%s backend=%s onnx=%s sm_hz=%.1f detect_hz=%.2f budget_ms=%.0f nice=%d no_onnx_while_controlling=1",
-    log_path, backend, onnx_path, SM_HZ, hz, INFER_BUDGET_MS, SPEEDSIGND_NICE,
+    "speedsignd starting log=%s backend=%s onnx=%s sha=%s sm_hz=%.1f detect_hz=%.2f budget_ms=%.0f nice=%d no_onnx_while_controlling=1",
+    log_path, backend, onnx_path, weights_sha, SM_HZ, hz, INFER_BUDGET_MS, SPEEDSIGND_NICE,
   )
   if detector.onnx is None:
     cloudlog.warning(
@@ -563,6 +626,10 @@ def main():
   last_paused: bool | None = None
   last_unknown_warn = 0.0
   last_empty_frame_log = 0.0
+  last_empty_raw_log = 0.0
+  last_infer_done = 0.0
+  last_gate_log = 0.0
+  last_skip_reason = "init"
   in_holdoff = False
   slot = InferSlot()
 
@@ -602,7 +669,10 @@ def main():
     if sample.allow_detect and detector.onnx is None and now_mono - last_onnx_try >= ONNX_RETRY_S:
       last_onnx_try = now_mono
       if detector.try_reload():
-        cloudlog.info("speedsignd: ONNX loaded after retry backend=yolo-onnx onnx=%s", onnx_path)
+        cloudlog.info(
+          "speedsignd: ONNX loaded after retry backend=%s onnx=%s sha=%s",
+          detector.backend_name(), onnx_path, detector.weights_sha_short(),
+        )
     signs: list = []
     if sample.allow_detect:
       outcome = slot.take()
@@ -614,14 +684,40 @@ def main():
           next_detect_mono(now_mono, outcome.infer_s, period_s, budget_s),
         )
         raw = list(getattr(debounce, "last_raw", []))
+        diag = outcome.diag if outcome.diag is not None else detector.diag_dict()
+        err = f" err={outcome.error}" if outcome.error else ""
+        if outcome.error and not diag.get("error"):
+          diag = dict(diag)
+          diag["error"] = outcome.error
         cloudlog.info(
-          "speedsignd infer %.0fms raw=%s hud=%s jsonl=%s",
+          "speedsignd infer %.0fms %s raw=%s hud=%s jsonl=%s%s",
           outcome.infer_s * 1000.0,
+          format_infer_diag(diag, allow_detect=sample.allow_detect),
           [(int(s.mph), round(float(s.conf), 2)) for s in raw],
           [(int(s.mph), round(float(s.conf), 2)) for s in signs],
           [w.get("mph") for w in outcome.written],
+          err,
         )
+        last_infer_done = now_mono
+        last_skip_reason = "ok"
+        if not raw and now_mono - last_empty_raw_log >= INFER_LOG_PERIOD_S:
+          cloudlog.info(
+            "speedsignd empty-raw %s",
+            format_infer_diag(diag, allow_detect=sample.allow_detect),
+          )
+          last_empty_raw_log = now_mono
+    if sample.allow_detect and now_mono - last_gate_log >= INFER_LOG_PERIOD_S:
+      if last_infer_done == 0.0 or now_mono - last_infer_done >= INFER_LOG_PERIOD_S:
+        connected = client is not None and bool(getattr(client, "is_connected", lambda: False)())
+        cloudlog.info(
+          "speedsignd waiting-infer reason=%s connected=%s busy=%s holdoff=%s onnx=%s allow=1",
+          last_skip_reason, connected, slot.busy, in_holdoff, detector.onnx is not None,
+        )
+      last_gate_log = now_mono
     if client is None or not client.is_connected():
+      last_skip_reason = detect_skip_reason(
+        connected=False, onnx=detector.onnx is not None, busy=slot.busy, holdoff=in_holdoff,
+      )
       if now_mono - last_connect >= 0.5:
         last_connect = now_mono
         try:
@@ -646,22 +742,53 @@ def main():
         y = y_plane_from_nv12(buf, copy=True) if buf is not None else None
         rgb = rgb_from_nv12(buf) if buf is not None else None
         if buf is None:
+          last_skip_reason = detect_skip_reason(
+            connected=True, onnx=detector.onnx is not None, busy=False, holdoff=False,
+            buf_empty=True,
+          )
           now_empty = time.monotonic()
           if now_empty - last_empty_frame_log >= INFER_LOG_PERIOD_S:
             cloudlog.info("speedsignd ROAD recv empty (timeout_ms=%d)", VISION_TIMEOUT_MS)
+            last_empty_frame_log = now_empty
+        elif y is None and rgb is None:
+          last_skip_reason = detect_skip_reason(
+            connected=True, onnx=detector.onnx is not None, busy=False, holdoff=False,
+            parse_fail=True,
+          )
+          now_empty = time.monotonic()
+          if now_empty - last_empty_frame_log >= INFER_LOG_PERIOD_S:
+            stride = getattr(buf, "stride", 0)
+            uv_off = getattr(buf, "uv_offset", 0)
+            cloudlog.info(
+              "speedsignd NV12 parse failed w=%s h=%s stride=%s uv_offset=%s",
+              getattr(buf, "width", None), getattr(buf, "height", None), stride, uv_off,
+            )
             last_empty_frame_log = now_empty
         lat, lon, bearing, gps_ok = gps_sample_from_sm(sm, now=time.monotonic())
         # On-road: do not run numpy-mutcd when weights are missing (no fake mph / JSONL).
         have_frame = detector.onnx is not None and (y is not None or rgb is not None)
         if have_frame:
           def _run(y=y, rgb=rgb, lat=lat, lon=lon, bearing=bearing, gps_ok=gps_ok):
-            return detect_if_allowed(
+            signs_w = detect_if_allowed(
               y, lat, lon, bearing, gps_ok, detector, logger, time.monotonic(),
               controlling=False, rgb=rgb, debounce=debounce,
             )
+            return signs_w[0], signs_w[1], detector.diag_dict()
           if slot.start(_run):
             next_detect = time.monotonic() + period_s
+            last_skip_reason = "ok"
+          else:
+            last_skip_reason = detect_skip_reason(
+              connected=True, onnx=True, busy=True, holdoff=False,
+            )
+        elif detector.onnx is None:
+          last_skip_reason = detect_skip_reason(
+            connected=True, onnx=False, busy=slot.busy, holdoff=False,
+          )
     elif sample.allow_detect and (slot.busy or (next_detect > 0 and now_mono < next_detect)):
+      last_skip_reason = detect_skip_reason(
+        connected=True, onnx=detector.onnx is not None, busy=slot.busy, holdoff=True,
+      )
       if not in_holdoff:
         skip_count += 1
         in_holdoff = True

@@ -3,7 +3,12 @@ from __future__ import annotations
 
 import numpy as np
 
-from openpilot.selfdrive.speedsignd.nv12 import rgb_from_nv12, rgb_from_y, y_plane_from_nv12
+from openpilot.selfdrive.speedsignd.nv12 import (
+  nv12_uv_offset,
+  rgb_from_nv12,
+  rgb_from_y,
+  y_plane_from_nv12,
+)
 
 
 def test_y_plane_from_nv12():
@@ -45,3 +50,37 @@ def test_rgb_from_nv12_gray_uv():
   assert rgb is not None
   assert rgb.shape == (2, 2, 3)
   assert 120 <= int(rgb[0, 0, 0]) <= 136
+
+
+def test_nv12_uv_offset_prefers_buf_field():
+  class Buf:
+    uv_offset = 2048 * 1216
+
+  assert nv12_uv_offset(Buf(), stride=2048, height=1208) == 2048 * 1216
+  assert nv12_uv_offset(type("B", (), {})(), stride=2048, height=1208) == 2048 * 1208
+
+
+def test_rgb_from_nv12_uses_uv_offset_not_visible_height():
+  """3X Venus pad: UV starts after ALIGN(height,32) rows, not height.
+
+  Zeros in the Y pad must not be read as U=V=0 (that turns gray into green).
+  """
+  width, height, stride = 4, 2, 4
+  y = bytes([128] * (stride * height))
+  pad = bytes([0] * 8)
+  uv = bytes([128, 128, 128, 128])
+
+  class Buf:
+    pass
+
+  Buf.width = width
+  Buf.height = height
+  Buf.stride = stride
+  Buf.uv_offset = stride * height + len(pad)
+  Buf.data = y + pad + uv
+
+  rgb = rgb_from_nv12(Buf())
+  assert rgb is not None
+  assert 120 <= int(rgb[0, 0, 0]) <= 136
+  assert 120 <= int(rgb[0, 0, 1]) <= 136
+  assert 120 <= int(rgb[0, 0, 2]) <= 136

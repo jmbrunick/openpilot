@@ -50,12 +50,54 @@ def letterbox_rgb(rgb: np.ndarray, size: int = YOLO_IMGSZ) -> tuple[np.ndarray, 
   return canvas, scale, left, top
 
 
+def road_detect_crop(rgb: np.ndarray) -> tuple[np.ndarray, tuple[int, int, int, int]]:
+  """Right-biased square of the short side. Keeps optical center + right shoulder.
+
+  A 1928×1208 ROAD frame letterboxed to 320 is scale 0.166 — a clear 24×30 in
+  R2-1 at ~60 ft is ~15 px, below YOLOv8s-320. Short-side square is 0.265.
+  US MUTCD plates live on the right; the left third is oncoming / unused.
+  """
+  if rgb.ndim != 3 or rgb.shape[2] != 3:
+    raise ValueError("road_detect_crop expects HxWx3")
+  h, w = rgb.shape[:2]
+  side = min(h, w)
+  x = max(0, w - side)
+  y = max(0, (h - side) // 2)
+  return rgb[y:y + side, x:x + side], (x, y, side, side)
+
+
 def _resize_rgb(img: np.ndarray, h: int, w: int) -> np.ndarray:
+  """Bilinear resize. Nearest index-sampling destroyed distant R2-1s at 6×."""
   if img.shape[0] == h and img.shape[1] == w:
     return img
-  ys = np.linspace(0, img.shape[0] - 1, h).astype(np.int32)
-  xs = np.linspace(0, img.shape[1] - 1, w).astype(np.int32)
-  return img[ys][:, xs]
+  try:
+    import cv2
+    return cv2.resize(img, (w, h), interpolation=cv2.INTER_LINEAR)
+  except Exception:
+    return _resize_rgb_bilinear(img, h, w)
+
+
+def _resize_rgb_bilinear(img: np.ndarray, h: int, w: int) -> np.ndarray:
+  src_h, src_w = img.shape[:2]
+  if src_h < 1 or src_w < 1:
+    return np.zeros((h, w, img.shape[2]), dtype=img.dtype)
+  ys = (np.arange(h, dtype=np.float32) + 0.5) * (src_h / float(h)) - 0.5
+  xs = (np.arange(w, dtype=np.float32) + 0.5) * (src_w / float(w)) - 0.5
+  ys = np.clip(ys, 0.0, src_h - 1.0)
+  xs = np.clip(xs, 0.0, src_w - 1.0)
+  y0 = np.floor(ys).astype(np.int32)
+  x0 = np.floor(xs).astype(np.int32)
+  y1 = np.minimum(y0 + 1, src_h - 1)
+  x1 = np.minimum(x0 + 1, src_w - 1)
+  wy = (ys - y0).astype(np.float32)[:, None, None]
+  wx = (xs - x0).astype(np.float32)[None, :, None]
+  img_f = img.astype(np.float32)
+  i00 = img_f[y0][:, x0]
+  i01 = img_f[y0][:, x1]
+  i10 = img_f[y1][:, x0]
+  i11 = img_f[y1][:, x1]
+  out = (i00 * (1.0 - wx) + i01 * wx) * (1.0 - wy) + (i10 * (1.0 - wx) + i11 * wx) * wy
+  return np.clip(np.rint(out), 0, 255).astype(np.uint8)
 
 
 def nms_xyxy(boxes: np.ndarray, scores: np.ndarray, iou_thr: float = YOLO_IOU, max_det: int = YOLO_MAX_DET) -> list[int]:
@@ -83,9 +125,9 @@ def nms_xyxy(boxes: np.ndarray, scores: np.ndarray, iou_thr: float = YOLO_IOU, m
 
 
 def _as_cn(raw: np.ndarray) -> np.ndarray:
-  """Normalize YOLO output to [4+nc, N]."""
-  arr = np.asarray(raw, dtype=np.float32)
-  if arr.ndim == 3:
+  """Normalize YOLO output to [4+nc, N]. Squeeze tinygrad singleton dims."""
+  arr = np.squeeze(np.asarray(raw, dtype=np.float32))
+  if arr.ndim == 3 and arr.shape[0] == 1:
     arr = arr[0]
   if arr.ndim != 2:
     return np.zeros((0, 0), np.float32)
@@ -100,6 +142,28 @@ def _as_cn(raw: np.ndarray) -> np.ndarray:
   if arr.shape[1] >= 6:
     return arr.T
   return arr
+
+
+def yolo_peak(raw, names: tuple[str, ...] = YOLO_CLASS_NAMES) -> tuple[tuple, float, str, int]:
+  """Pre-threshold peak: out_shape, max_conf, top class name, n_over min_conf."""
+  arr = np.asarray(raw)
+  shape = tuple(int(v) for v in arr.shape)
+  pred = _as_cn(raw)
+  if pred.size == 0 or pred.shape[0] < 5:
+    return shape, 0.0, "", 0
+  scores = pred[4:]
+  if scores.size == 0:
+    return shape, 0.0, "", 0
+  conf = scores.max(axis=0) if scores.ndim == 2 else scores.reshape(-1)
+  cls = scores.argmax(axis=0) if scores.ndim == 2 else np.zeros(conf.shape, np.int32)
+  if conf.size == 0:
+    return shape, 0.0, "", 0
+  i = int(conf.argmax())
+  max_conf = float(conf[i])
+  top = int(cls[i]) if cls.size else 0
+  name = names[top] if 0 <= top < len(names) else str(top)
+  n_over = int(np.sum(conf >= YOLO_MIN_CONF))
+  return shape, max_conf, name, n_over
 
 
 def decode_yolov8(

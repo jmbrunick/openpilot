@@ -28,7 +28,9 @@ ASSET_BYTES = 44651386
 
 USER_AGENT = "NotAutopilot-speedsignd/1.0 (https://github.com/jmbrunick/openpilot)"
 
-# Ultralytics YOLOv8 export at imgsz=320.
+# Ultralytics YOLOv8 export at imgsz=320. The JC checkpoint was trained at 640;
+# we do not raise on-device imgsz (CPU). road_detect_crop + bilinear letterbox
+# recover scale vs the old nearest-neighbor full-frame 1928→320 path.
 YOLO_IMGSZ = 320
 YOLO_INPUT_NAME = "images"
 YOLO_OUTPUT_LAYOUT = (1, 25, 2100)  # 4 + 21 classes, 2100 anchors
