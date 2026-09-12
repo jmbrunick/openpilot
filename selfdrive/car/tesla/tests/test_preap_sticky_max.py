@@ -51,6 +51,100 @@ def test_brake_pause_keeps_held_max_and_session():
   assert abs(eng._nap_held_max_kph - held) < 1e-6
 
 
+def test_one_set_at_standstill_does_not_take_long():
+  """Stop + SET alone must not creep. Held MAX stays for a later gas touch."""
+  install_blinker_lat_pause()
+  held = 55 * CV.MPH_TO_KPH
+  eng = _engaged(pedal_kph=held)
+  _buttons(eng, brake=True, t_ms=2000, v_ego=0.0)
+  _buttons(eng, brake=False, t_ms=3000, v_ego=0.0)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=4000, v_ego=0.0)
+  assert eng.cruiseEnabled
+  assert not eng.enableLongControl
+  assert getattr(eng, "_nap_long_resume_pending", False)
+  assert getattr(eng, "_nap_resume_wait_gas", False)
+  assert not getattr(eng, "_nap_set_resume_long", False)
+  assert abs(eng.pedal_speed_kph - held) < 1e-6
+  assert abs(eng._nap_held_max_kph - held) < 1e-6
+
+
+def test_one_set_at_standstill_then_gas_resumes_held_max():
+  install_blinker_lat_pause()
+  held = 55 * CV.MPH_TO_KPH
+  eng = _engaged(pedal_kph=held)
+  _buttons(eng, brake=True, t_ms=2000, v_ego=0.0)
+  _buttons(eng, brake=False, t_ms=3000, v_ego=0.0)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=4000, v_ego=0.0)
+  assert not eng.enableLongControl
+  eng._nap_gas_pressed = True
+  _buttons(eng, t_ms=4100, v_ego=0.0)
+  assert eng.cruiseEnabled
+  assert eng.enableLongControl
+  assert getattr(eng, "_nap_set_resume_long", False)
+  assert not getattr(eng, "_nap_resume_wait_gas", False)
+  assert abs(eng.pedal_speed_kph - held) < 1e-6
+  assert abs(eng._nap_held_max_kph - held) < 1e-6
+
+
+def test_one_set_while_rolling_resumes_without_gas():
+  install_blinker_lat_pause()
+  held = 55 * CV.MPH_TO_KPH
+  eng = _engaged(pedal_kph=held)
+  _buttons(eng, brake=True, t_ms=2000, v_ego=8.0)
+  _buttons(eng, brake=False, t_ms=3000, v_ego=8.0)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=4000, v_ego=8.0)
+  assert eng.enableLongControl
+  assert getattr(eng, "_nap_set_resume_long", False)
+  assert not getattr(eng, "_nap_resume_wait_gas", False)
+  assert abs(eng.pedal_speed_kph - held) < 1e-6
+
+
+def test_standstill_set_with_gas_already_down_resumes():
+  """SET and throttle on the same frame may take long."""
+  install_blinker_lat_pause()
+  held = 55 * CV.MPH_TO_KPH
+  eng = _engaged(pedal_kph=held)
+  _buttons(eng, brake=True, t_ms=2000, v_ego=0.0)
+  _buttons(eng, brake=False, t_ms=3000, v_ego=0.0)
+  eng._nap_gas_pressed = True
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=4000, v_ego=0.0)
+  assert eng.enableLongControl
+  assert getattr(eng, "_nap_set_resume_long", False)
+  assert abs(eng.pedal_speed_kph - held) < 1e-6
+
+
+def test_double_set_at_standstill_still_takes_speed_now():
+  """Second SET in the window at a stop is still forget-sticky / take now."""
+  install_blinker_lat_pause()
+  held = 55 * CV.MPH_TO_KPH
+  eng = _engaged(pedal_kph=held)
+  _buttons(eng, brake=True, t_ms=2000, v_ego=0.0)
+  _buttons(eng, brake=False, t_ms=3000, v_ego=0.0)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=4000, v_ego=0.0)
+  assert getattr(eng, "_nap_resume_wait_gas", False)
+  assert not eng.enableLongControl
+  _buttons(eng, t_ms=4050, v_ego=0.0)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=4300, v_ego=0.0)
+  assert eng.cruiseEnabled
+  assert eng.enableLongControl
+  assert getattr(eng, "_nap_set_take_speed_now", False)
+  assert not getattr(eng, "_nap_resume_wait_gas", False)
+  assert getattr(eng, "_nap_held_max_kph", None) is None
+
+
+def test_hard_cancel_clears_standstill_resume_wait():
+  from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import hard_cancel_session
+  install_blinker_lat_pause()
+  eng = _engaged()
+  _buttons(eng, brake=True, t_ms=2000, v_ego=0.0)
+  _buttons(eng, brake=False, t_ms=3000, v_ego=0.0)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=4000, v_ego=0.0)
+  assert getattr(eng, "_nap_resume_wait_gas", False)
+  hard_cancel_session(eng)
+  assert not getattr(eng, "_nap_resume_wait_gas", False)
+  assert getattr(eng, "_nap_held_max_kph", None) is None
+
+
 def test_one_set_after_brake_resumes_long_keeps_held_max():
   install_blinker_lat_pause()
   held = 55 * CV.MPH_TO_KPH
@@ -392,3 +486,5 @@ def test_handoff_module_does_not_drop_long():
            "selfdrive/car/tesla/preap_blinker_lat_pause.py").read_text()
   assert "hard_cancel_session" in pause
   assert "_drop_longitudinal_keep_lateral" in pause
+  assert "RESUME_STANDSTILL_V_EGO" in pause
+  assert "_nap_resume_wait_gas" in pause
