@@ -13,7 +13,6 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   lead_close_should_cap,
   nap_t_follow,
 )
-from openpilot.selfdrive.controls.lib.longitudinal_planner import get_max_accel
 from openpilot.selfdrive.mapd.constants import DECREASE_START_MARGIN_M, LOOKAHEAD_NORMAL, map_brake_a_ms2
 
 
@@ -172,9 +171,9 @@ def test_lead_close_accel_is_well_below_cruise_and_scales_with_accel():
   assert a1 < a5 < a10
   assert a1 < 0.25
   assert a10 <= 0.50
-  # City / highway cruise clip is the old large-gap punch.
-  assert a1 < get_max_accel(11.0) / 3.0
-  assert a1 < get_max_accel(25.0) / 2.0
+  # City / highway cruise clip is the old large-gap punch (1.2 at 10 m/s, 0.8 at 25).
+  assert a1 < 1.2 / 3.0
+  assert a1 < 0.8 / 2.0
   assert a5 < LEAD_APPROACH_A_MS2
   assert lead_close_should_cap(80.0)
   assert lead_close_should_cap(LEAD_APPROACH_MAX_START_M)
