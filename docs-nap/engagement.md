@@ -86,7 +86,7 @@ Panda firmware must be flashed after this safety change. Software update / on-de
 
 ## Driver-wheel temporary lateral handoff
 
-**Default On.** Settings → NAP → Soft Lateral Handoff can be turned **Off**. Yield is a **light purposeful push** with a hand on the rim that **frees the EPS** (generally avoiding something), not gravel spike trains / wind / road-crown false pressure.
+**Default On.** Settings → NAP → Driving Mannerisms → Soft Lateral Handoff can be turned **Off**. Yield is a **light purposeful push** with a hand on the rim that **frees the EPS** (generally avoiding something), not gravel spike trains / wind / road-crown false pressure.
 
 #79 still felt like wrestling for two reasons: (1) OP kept **full lateral authority until the 0.70 Nm / 140 ms debounce completed**, and (2) after “yield” it kept `latActive=True` and commanded **measured angle** (`apply_lat_authority(0)` / `DAS_steeringControlType=1`). That is closed-loop follow-the-rim — the driver could nudge off-path but OP was still holding/steering. Yield now reuses the **blinker lat-pause EPS release** (`latActive` false → `DAS_steeringControlType=0`). Hands stay detected via `EPAS_handsOnLevel`. Resume is still pin-to-wheel + **1 s blend**; hands still on stay yielded (do not blend onto the model). A driver-turn blinker does **not** itself free the EPS when Soft Lateral Handoff is On.
 
