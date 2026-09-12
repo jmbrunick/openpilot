@@ -88,12 +88,14 @@ def _run_bend(curve: CurveMaxHold, hold: MapCruiseHold, *, last_hud, posted_now,
 
 
 def test_justin_hypermile_curve_restores_60_not_eco_55():
-  """Hypermile On, Step Down Off: posted 60 → eco 55. Sticky/display MAX 60.
+  """Sticky/display MAX 60 must survive a bend even if posted looks lower.
 
   Through a sharp curve OSM may flicker (or HUD is temporarily capped). After
-  exit MAX must be 60, not the eco target the flicker rebase would invent.
+  exit MAX must be 60, not a lower posted/eco target the flicker rebase
+  would invent. (Live Hypermile eco is posted-scaled; 55 here is a lower
+  posted stand-in, not a claim that posted 60 still snaps −5.)
   """
-  posted_eco = _kph(55)  # posted 60 + Hypermile −5
+  posted_eco = _kph(55)  # lower posted / eco-like target vs sticky 60
   sticky_60 = _kph(60)
   hold = MapCruiseHold()
   _follow_seed(hold, posted_eco, sticky_60)
