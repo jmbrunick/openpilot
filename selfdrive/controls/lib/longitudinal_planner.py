@@ -29,6 +29,9 @@ from openpilot.selfdrive.mapd.map_speed_policy import (
   cap_planner_v_cruise_ms, map_in_track_deadband, map_track_accel_ms2, map_track_decel_ms2,
   read_map_speed_params,
 )
+from openpilot.selfdrive.controls.lib.hill_climb import (
+  apply_hill_climb, read_hypermile_hill_climb,
+)
 from openpilot.selfdrive.controls.lib.hypermile import (
   effective_nap_follow_dist, read_hypermile_params,
 )
@@ -107,6 +110,8 @@ class LongitudinalPlanner:
     self.nap_follow_dist = self._params.get("NAPFollowDistance", return_default=True) if self._is_preap else None
     self.nap_adaptive_accel = self._params.get_bool("NAPAdaptiveAccel") if self._is_preap else False
     self._hypermile_on, self._hypermile_level = read_hypermile_params(self._params) if self._is_preap else (False, 3)
+    self._hypermile_hill_climb = read_hypermile_hill_climb(self._params) if self._is_preap else False
+    self._hill_pitch = 0.0
     self._map_speed_mode, self._map_speed_offset_kph, self._map_speed_lookahead, self._map_speed_accel = (
       read_map_speed_params(self._params) if self._is_preap else (0, 0.0, 0, 5)
     )
@@ -151,6 +156,7 @@ class LongitudinalPlanner:
     if self._is_preap:
       # Stalk 1–5 must land on the next plan; do not wait for the 20-frame poll.
       self._hypermile_on, self._hypermile_level = read_hypermile_params(self._params)
+      self._hypermile_hill_climb = read_hypermile_hill_climb(self._params)
       if self._frame % 20 == 0:
         self.nap_follow_dist = self._params.get("NAPFollowDistance", return_default=True)
         self.nap_adaptive_accel = self._params.get_bool("NAPAdaptiveAccel")
@@ -274,10 +280,27 @@ class LongitudinalPlanner:
     # Climb at Accel 1–10 until the deadband, then hold so we do not surge
     # past MAX and map_track_decel below it. Brake is locked Accel 5.
     # Lead (negative aTarget) still wins.
+    # Hypermile Hill Climb (IMU pitch only — no maps-elevation lookahead)
+    # then raises +a on a real uphill under MAX, or eases on crest/downhill.
+    # It never writes vCruise / MAX.
+    if len(sm['carControl'].orientationNED) == 3:
+      hill_pitch = float(sm['carControl'].orientationNED[1])
+    else:
+      hill_pitch = 0.0
     if self._is_preap and self._map_speed_mode in (MODE_CAP, MODE_FOLLOW):
       if map_in_track_deadband(v_ego, v_hud_ms):
         if float(output_a_target) >= 0.0:
           output_a_target = 0.0
+        output_a_target = apply_hill_climb(
+          pitch_rad=hill_pitch,
+          prev_pitch_rad=self._hill_pitch,
+          v_ego_ms=v_ego,
+          v_cruise_ms=v_hud_ms,
+          a_cmd=float(output_a_target),
+          in_deadband=True,
+          hypermile_on=self._hypermile_on,
+          hill_climb_on=self._hypermile_hill_climb,
+        )
       else:
         a_brake = map_track_decel_ms2(
           v_ego, v_hud_ms, map_brake_a_ms2(self._map_speed_lookahead),
@@ -292,6 +315,17 @@ class LongitudinalPlanner:
             # min() alone never created climb (MPC holds ~0). Command Accel 1–10
             # toward MAX; a slower lead (negative aTarget) still outranks map.
             output_a_target = a_up
+        output_a_target = apply_hill_climb(
+          pitch_rad=hill_pitch,
+          prev_pitch_rad=self._hill_pitch,
+          v_ego_ms=v_ego,
+          v_cruise_ms=v_hud_ms,
+          a_cmd=float(output_a_target),
+          in_deadband=False,
+          hypermile_on=self._hypermile_on,
+          hill_climb_on=self._hypermile_hill_climb,
+        )
+    self._hill_pitch = hill_pitch
 
     # Slower radar lead: relative 0.80 ease, 12 s closing-speed head-start
     # (light earlier open, not a harder peak). Map's +110 m is road distance

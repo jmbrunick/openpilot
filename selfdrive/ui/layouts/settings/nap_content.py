@@ -26,6 +26,7 @@ HYPERMILE_FOLLOW_DEFAULT = 3
 NAP_HYPERMILE = "NAPHypermile"
 NAP_HYPERMILE_FOLLOW_LEVEL = "NAPHypermileFollowLevel"
 NAP_HYPERMILE_STEP_DOWN = "NAPHypermileStepDown"
+NAP_HYPERMILE_HILL_CLIMB = "NAPHypermileHillClimb"
 HYPERMILE_DESCRIPTION = (
   "Default Off. Comfort-biased efficiency — early light ease, not max "
   + "regen bite. On snaps Adaptive Accel, Cap/Follow, Early "
@@ -56,6 +57,13 @@ HYPERMILE_STEP_DOWN_DESCRIPTION = (
   + "value changes. Cap cannot exceed the stepped target. One-SET "
   + "resumes held MAX. Double SET takes the current map target "
   + "(stepped if On)."
+)
+HYPERMILE_HILL_CLIMB_DESCRIPTION = (
+  "Default On. Only while Hypermile is On. Uses IMU pitch (not a map "
+  + "elevation lookahead). Uphill: add grade to Accel 1 so the car does "
+  + "not sag under HUD MAX. Crest / downhill: early light regen, not a "
+  + "hard bite. Never raises MAX. Lead / MPC brake still wins. Off: "
+  + "stock Hypermile Accel 1 / map-track on flat and hills."
 )
 
 NAP_SPEED_SIGN_LOG = "NAPSpeedSignLog"
