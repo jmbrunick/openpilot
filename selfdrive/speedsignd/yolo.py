@@ -22,29 +22,21 @@ from openpilot.selfdrive.speedsignd.weights_manifest import (
   YOLO_MIN_CONF,
 )
 
-# Crop reader must beat this to override *any* YOLO class (clear digits).
-CROP_OVERRIDE_CONF = 0.55
-# On-car ROAD frames systematically swap 50↔65 (and junk 65/70 heads).
-# Digit OCR already requires min digit NCC ≥ 0.25; prefer refine on these
-# pairs well below 0.55 so a parked close 50 does not stick as 65.
-CONFUSION_OVERRIDE_CONF = 0.28
-CLASS_MARGIN = 0.12
-CONFUSION_PAIRS = frozenset({
-  frozenset({50, 65}),
-  frozenset({50, 70}),
-  frozenset({60, 65}),
-  frozenset({65, 70}),
-  frozenset({55, 65}),
-  frozenset({45, 65}),
-})
+# Justin parked close 50: top=speedLimit65:0.73–0.76, raw=[(65,0.73)],
+# cls=30:0.00,50:0.00,60:0.00 — the 50 head is at zero, not a close race.
+# Class-margin cannot fix a confidently wrong YOLO head. Prefer any crop
+# digit read that returns a different MUTCD mph at this floor.
+# _read_mph already requires min digit NCC ≥ 0.25.
+REFINE_OVERRIDE_CONF = 0.28
+CROP_OVERRIDE_CONF = REFINE_OVERRIDE_CONF  # old name; was 0.55 and hid 50s
 
 _SPEED_RE = re.compile(r"^speedLimit(\d+)$")
 
 # Below this, a class name is argmax-of-noise (Justin's 0.00/speedLimit65 with
 # no 65 on the route). Do not treat it as a mph read.
 PEAK_NAME_MIN = 0.05
-# Justin's posted limits tonight. Always log these heads — not the noise argmax.
-POSTED_LOG_MPH = (30, 50, 60)
+# Posted 30/50/60 plus the confident-wrong 65 head on a close 50.
+POSTED_LOG_MPH = (30, 50, 60, 65)
 
 
 def class_to_mph(name: str) -> int | None:
@@ -337,27 +329,21 @@ def decode_yolov8(
   return found
 
 
-def prefer_refine(sign: SpeedSign, mph: int, conf: float) -> bool:
-  """When crop digits disagree with the YOLO class, keep the class only if
-  the read is weak *and* this is not the 50↔65 / junk-65 family."""
-  if conf >= CROP_OVERRIDE_CONF:
-    return True
-  class_mph = sign.class_mph if sign.class_mph is not None else sign.mph
-  pair = frozenset({int(class_mph), int(mph)})
-  if pair in CONFUSION_PAIRS and conf >= CONFUSION_OVERRIDE_CONF:
-    return True
-  margin = float(sign.conf) - float(sign.alt_conf)
-  if sign.alt_mph == int(mph) and margin < CLASS_MARGIN and conf >= CONFUSION_OVERRIDE_CONF:
-    return True
-  return False
+def prefer_refine(_sign: SpeedSign, mph: int, conf: float) -> bool:
+  """Prefer crop digits over YOLO class when the read is a confident MUTCD mph.
+
+  Justin's parked 50 is class 65 @ 0.73 with cls=50:0.00. Do not require a
+  runner-up margin — the 50 head is not in the race.
+  """
+  return mph in MUTCD_MPH and conf >= REFINE_OVERRIDE_CONF
 
 
 def refine_mph(sign: SpeedSign, y: np.ndarray | None, read_mph) -> SpeedSign:
   """Digit read on every in-threshold speedLimit* crop. Does not invent a hit.
 
-  YOLO on-car ROAD frames confuse 50 with 65 most of the time. If the crop
-  reads a valid MUTCD mph, prefer that over the class for 50↔65 (and the
-  junk 65/70 heads). Logs keep both class_mph and refine_mph.
+  If the crop returns a different MUTCD mph with confidence, that is the HUD
+  value — even when the class head is a confident 65 and 50 is at 0.00.
+  Logs keep both class_mph and refine_mph.
   """
   if y is None or y.ndim != 2:
     return sign

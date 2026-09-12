@@ -9,11 +9,9 @@ from openpilot.selfdrive.speedsignd.tests.test_detect import _scene
 from openpilot.selfdrive.speedsignd.weights_manifest import YOLO_CLASS_NAMES, YOLO_IMGSZ, YOLO_MIN_CONF
 from openpilot.selfdrive.speedsignd.nv12 import Nv12DetectCrop
 from openpilot.selfdrive.speedsignd.yolo import (
-  CLASS_MARGIN,
-  CONFUSION_OVERRIDE_CONF,
-  CROP_OVERRIDE_CONF,
   PEAK_NAME_MIN,
   POSTED_LOG_MPH,
+  REFINE_OVERRIDE_CONF,
   _resize_rgb,
   class_to_mph,
   decode_yolov8,
@@ -53,13 +51,15 @@ def test_yolo_class_list_covers_highway_speeds():
   assert sl[0] == 4 and YOLO_CLASS_NAMES[4] == "speedLimit15"
   assert sl[-1] == 18 and YOLO_CLASS_NAMES[18] == "speedLimit85"
   assert 19 not in sl and 20 not in sl
-  # speed_sign.onnx metadata names — Justin's posted 60/50/30, not 65.
+  # speed_sign.onnx metadata names — Justin's posted 60/50/30; 65 is the
+  # confident-wrong head on a close 50 (cls=50:0.00, 65:0.73).
   assert YOLO_CLASS_NAMES[7] == "speedLimit30"
   assert YOLO_CLASS_NAMES[11] == "speedLimit50"
   assert YOLO_CLASS_NAMES[13] == "speedLimit60"
   assert YOLO_CLASS_NAMES[14] == "speedLimit65"
-  assert POSTED_LOG_MPH == (30, 50, 60)
+  assert POSTED_LOG_MPH == (30, 50, 60, 65)
   assert PEAK_NAME_MIN == 0.05
+  assert REFINE_OVERRIDE_CONF == 0.28
 
 
 def test_letterbox_keeps_aspect_and_pads():
@@ -129,6 +129,7 @@ def test_yolo_peak_splits_stop_from_speed_limit_and_logs_top3():
   assert dict(peak.posted)[30] == pytest.approx(0.0, abs=1e-5)
   assert dict(peak.posted)[50] == pytest.approx(0.0, abs=1e-5)
   assert dict(peak.posted)[60] == pytest.approx(0.0, abs=1e-5)
+  assert dict(peak.posted)[65] == pytest.approx(0.0, abs=1e-5)
 
 
 def test_yolo_peak_blank_name_on_argmax_noise():
@@ -146,7 +147,8 @@ def test_yolo_peak_blank_name_on_argmax_noise():
   assert peak.top3 == ()
   assert dict(peak.posted) == {30: pytest.approx(0.001, abs=1e-5),
                                50: pytest.approx(0.002, abs=1e-5),
-                               60: pytest.approx(0.003, abs=1e-5)}
+                               60: pytest.approx(0.003, abs=1e-5),
+                               65: pytest.approx(0.004, abs=1e-5)}
 
 
 def test_nms_keeps_highest_score():
@@ -314,62 +316,71 @@ def test_refine_overrides_wrong_yolo_class_on_clear_crop():
 
 
 def test_refine_prefers_50_when_class_says_65():
-  """Parked close R2-1 50: YOLO class is 65 ~85% of the time; crop digits are 50."""
+  """Parked close R2-1 50: YOLO class is 65; crop digits are 50."""
   from openpilot.selfdrive.speedsignd.detect import _read_mph
   y = _scene(seed=50)
   paint_mutcd_r2_1(y, 50, x=200, y=30, w=90, h=112)
   wrong = SpeedSign(
-    mph=65, conf=0.81, bbox=(200, 30, 90, 112),
-    class_mph=65, class_conf=0.81, alt_mph=50, alt_conf=0.69,
+    mph=65, conf=0.74, bbox=(200, 30, 90, 112),
+    class_mph=65, class_conf=0.74, alt_mph=None, alt_conf=0.0,
   )
   out = refine_mph(wrong, y, _read_mph)
   assert out.mph == 50
   assert out.class_mph == 65
   assert out.refine_mph == 50
-  assert out.refine_conf >= CONFUSION_OVERRIDE_CONF
+  assert out.refine_conf >= REFINE_OVERRIDE_CONF
 
 
-def test_refine_overrides_65_below_old_crop_threshold():
-  """A 50 read at 0.40 used to lose to class 65 (CROP_OVERRIDE_CONF=0.55)."""
-  wrong = SpeedSign(mph=65, conf=0.78, bbox=(10, 10, 40, 50), class_mph=65, class_conf=0.78)
+def test_refine_overrides_confident_65_when_class_50_is_zero():
+  """Justin's parked close 50: top=65:0.73, cls=50:0.00 — not a close race."""
+  wrong = SpeedSign(
+    mph=65, conf=0.73, bbox=(10, 10, 40, 50),
+    class_mph=65, class_conf=0.73, alt_mph=70, alt_conf=0.11,
+  )
   out = refine_mph(wrong, np.zeros((80, 80), np.uint8), lambda _c: (50, 0.40))
   assert out.mph == 50
+  assert out.class_mph == 65
   assert out.refine_mph == 50
-  assert 0.40 < CROP_OVERRIDE_CONF
   assert prefer_refine(wrong, 50, 0.40)
 
 
-def test_refine_does_not_flip_unrelated_class_on_weak_read():
-  """35 vs 55 is not the 50↔65 family — keep class unless crop is clear."""
+def test_refine_keeps_class_when_crop_read_is_none():
+  wrong = SpeedSign(mph=65, conf=0.73, bbox=(10, 10, 40, 50), class_mph=65, class_conf=0.73)
+  out = refine_mph(wrong, np.zeros((80, 80), np.uint8), lambda _c: (None, 0.0))
+  assert out.mph == 65
+  assert out.refine_mph is None
+
+
+def test_refine_prefers_any_confident_disagreement():
+  """Not only 50↔65 — any confident crop mph overrides the class."""
   sign = SpeedSign(mph=35, conf=0.70, bbox=(10, 10, 40, 50), class_mph=35, class_conf=0.70)
   out = refine_mph(sign, np.zeros((80, 80), np.uint8), lambda _c: (55, 0.40))
-  assert out.mph == 35
+  assert out.mph == 55
   assert out.refine_mph == 55
 
 
-def test_decode_records_50_runner_up_under_65():
+def test_decode_65_with_50_head_at_zero():
+  """On-car shape: speedLimit65 0.74, speedLimit50 ~0. No class-margin rescue."""
   raw = np.zeros((1, 25, 4), np.float32)
   raw[0, :4, 0] = [160, 120, 80, 100]
-  raw[0, 4 + 14, 0] = 0.72  # speedLimit65
-  raw[0, 4 + 11, 0] = 0.64  # speedLimit50
+  raw[0, 4 + 14, 0] = 0.74  # speedLimit65
+  raw[0, 4 + 11, 0] = 0.004  # speedLimit50 — Justin cls=50:0.00
   hits = decode_yolov8(raw, scale=1.0, pad_x=0, pad_y=0, src_hw=(320, 320), min_conf=0.4)
   assert len(hits) == 1
   assert hits[0].mph == 65
   assert hits[0].class_mph == 65
-  assert hits[0].alt_mph == 50
-  assert hits[0].alt_conf == pytest.approx(0.64, abs=1e-5)
-  assert (hits[0].conf - hits[0].alt_conf) < CLASS_MARGIN * 2
+  assert hits[0].alt_mph != 50 or hits[0].alt_conf < 0.05
 
 
 def test_onnx_detect_overrides_65_class_on_painted_50():
-  """Close-range HUD path: in-threshold 65 class + clear 50 crop → HUD 50."""
+  """Close-range HUD path: confident 65 class, 50 head ~0, clear 50 crop → HUD 50."""
   class Sess65(_YoloSess):
     def run(self, _out, _feed):
       raw = np.zeros((1, 25, 4), np.float32)
       raw[0, :4, 0] = [245, 86, 90, 112]
-      raw[0, 4 + 14, 0] = 0.88  # speedLimit65
-      raw[0, 4 + 11, 0] = 0.71  # speedLimit50
-      raw[0, 4 + 15, 0] = 0.44  # speedLimit70 junk head
+      raw[0, 4 + 14, 0] = 0.74  # speedLimit65 — Justin 0.73–0.76
+      raw[0, 4 + 11, 0] = 0.004  # speedLimit50 at zero
+      raw[0, 4 + 15, 0] = 0.11  # speedLimit70 junk
       return [raw]
 
   y = _scene(h=320, w=320)

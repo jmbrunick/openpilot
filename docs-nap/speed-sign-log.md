@@ -49,7 +49,7 @@ Onroad, `swaglog` prints `speedsignd detect paused (controlling=True enabled=…
 speedsignd infer 420ms backend=tinygrad frame=1928x1208 letterbox=320 crop=720,0 1208x1208 … peak=0.72/speedLimit65 n_over=1 sl_peak=0.72/speedLimit65 … refine=50:0.71(class=65) luma=90/35 chroma=1 prep=18 sess=400 raw=[(50, 0.71)] hud=[(50, 0.71)] jsonl=[]
 ```
 
-`refine=` is the crop digit read vs the YOLO class. A parked close **SPEED LIMIT 50** often peaks `speedLimit65`; HUD should still be **50** when `refine=50:…(class=65)`. Empty `refine=` means no in-threshold hit (digit OCR never ran).
+`refine=` is the crop digit read vs the YOLO class. A parked close **SPEED LIMIT 50** often peaks `speedLimit65:0.73` with `cls=50:0.00` (not a close race). HUD should still be **50** when `refine=50:…(class=65)`. Empty `refine=` means no in-threshold hit (digit OCR never ran). `refine=-(65)` means the crop read failed and the plate may still show 65.
 
 `speedsignd timing hz=… infer_ms mean=… max=… n=… skip=…` about every 15 s while disengaged. `skip` should climb when an infer overruns. If TAKE CONTROL / “driving model is lagging” / Communication Issue comes back, Logger Off + nap-release. If WAIT is stuck while you are driving manually, those same `speedsignd detect` lines explain why.
 
