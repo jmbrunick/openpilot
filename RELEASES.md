@@ -1,3 +1,12 @@
+NAP Pre-AP reverse / gear / standstill SET (2026-09-12)
+========================
+* Reverse (and any gear out of Drive / door) is a **full hard cancel**: session down, sticky MAX forgotten, soft-lat reset, CANCEL spoof so panda can re-arm `controls_allowed`. After Drive returns, a normal double SET engages without Controls Mismatch or a prior disable dance. Soft-lat Off blinker pause and sticky-MAX brake/turn pause unchanged. Port of the nap-dev reverse teardown.
+* One SET after a silent long pause **at a stop** does not take long / creep from 0. SET still keeps held MAX (“I want resume”); a light throttle touch then resumes at that MAX. Rolling one-SET resume and double SET / forget-sticky unchanged.
+
+NAP driver lat handoff (2026-09-12)
+========================
+* Soft-lat **On**: a driver-turn blinker no longer strips lateral. Lamp latch does not clear `latActive` / force EPS free — keep control if we still have it. Soft-lat may still yield if the driver pushes. While the driver-turn blinker is latched, do not re-enable (stay yielded / do not finish a take-back blend). After it clears, resume goes through soft yield + the normal **0.15 s** hands-off confirm + **1 s** blend — no dedicated blinker rising-edge blend. Soft-lat **Off** keeps today’s blinker lat-pause so a held turn still frees the wheel. ALC tip/keep-alive, long sticky-MAX turn pause, yield thresholds, emergency hard-brake cancel, and hazards unchanged. Port of nap-dev #94.
+
 NAP settings (2026-09-12)
 ========================
 * Settings → NAP: Adaptive Accel Limits, Follow Distance, and Soft Lateral Handoff move into **Driving Mannerisms**. Same params and behavior. Back returns to NAP (not the side Settings list). Map Speed Limit, Radar, pedal, and EPAS stay on the main NAP list. Port of the nap-dev Driving Mannerisms submenu.
