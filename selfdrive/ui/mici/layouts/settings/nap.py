@@ -16,9 +16,6 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   BACKUP_EPAS_INSTRUCTIONS,
   CALIBRATE_PEDAL_INSTRUCTIONS,
   FLASH_EPAS_INSTRUCTIONS,
-  FOLLOW_DISTANCE_DEFAULT,
-  FOLLOW_DISTANCE_LABELS,
-  FOLLOW_DISTANCE_VALUES,
   HIGH_LOW_BEAM_LABELS,
   HIGH_LOW_BEAM_VALUES,
   PEDAL_CAN_BUS_VALUES,
@@ -26,12 +23,12 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   RADAR_OFFSET_MIN,
   RESTORE_EPAS_INSTRUCTIONS,
   INSTALL_SPEED_SIGN_WEIGHTS_INSTRUCTIONS,
-  NAP_DRIVER_LAT_HANDOFF,
   NAP_FORCE_OFFROAD,
   NAP_SPEED_SIGN_LOG,
   WIPER_SPEED_LABELS,
   WIPER_SPEED_VALUES,
 )
+from openpilot.selfdrive.ui.mici.layouts.settings.driving_mannerisms import DrivingMannerismsLayoutMici
 from openpilot.selfdrive.ui.mici.layouts.settings.map_speed import MapSpeedLimitLayoutMici
 from openpilot.selfdrive.speedsignd.install import weights_status_summary
 from openpilot.selfdrive.car.tesla.preap_body_controls import (
@@ -219,22 +216,13 @@ class NAPLayoutMici(NavScroller):
                                      toggle_callback=_reboot_on_toggle)
     pedal_enabled.set_enabled(ui_state.is_offroad)
 
-    adaptive_accel = BigParamControl("adaptive accel limits", NAPParamKeys.ADAPTIVE_ACCEL)
-
-    follow_distance = BigMultiValueParamToggle(
-      "follow distance",
-      NAPParamKeys.FOLLOW_DISTANCE,
-      values=FOLLOW_DISTANCE_VALUES,
-      labels=FOLLOW_DISTANCE_LABELS,
-      default_value=FOLLOW_DISTANCE_DEFAULT,
-    )
+    self._driving_mannerisms_page = DrivingMannerismsLayoutMici()
+    driving_mannerisms_btn = BigButton("driving mannerisms", "open")
+    driving_mannerisms_btn.set_click_callback(lambda: gui_app.push_widget(self._driving_mannerisms_page))
 
     self._map_speed_page = MapSpeedLimitLayoutMici()
     map_speed_btn = BigButton("map speed limit", "open")
     map_speed_btn.set_click_callback(lambda: gui_app.push_widget(self._map_speed_page))
-
-    lat_handoff = BigParamControl("soft lateral handoff", NAP_DRIVER_LAT_HANDOFF)
-    lat_handoff.set_value("On — free-wheel yield; Off if false-yield")
 
     speed_sign_log = BigParamControl("speed sign logger", NAP_SPEED_SIGN_LOG)
 
@@ -333,10 +321,8 @@ class NAPLayoutMici(NavScroller):
     self._scroller.add_widgets([
       force_offroad,
       pedal_enabled,
-      adaptive_accel,
-      follow_distance,
+      driving_mannerisms_btn,
       map_speed_btn,
-      lat_handoff,
       speed_sign_log,
       self._weights_status,
       install_weights_btn,

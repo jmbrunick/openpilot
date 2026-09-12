@@ -25,7 +25,6 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   INSTALL_SPEED_SIGN_WEIGHTS_INSTRUCTIONS, PEDAL_CAN_BUS_VALUES,
   HIGH_LOW_BEAM_DESCRIPTION, HIGH_LOW_BEAM_LABELS, HIGH_LOW_BEAM_VALUES,
   MAP_SPEED_ACCEL_DEFAULT,
-  DRIVER_LAT_HANDOFF_DESCRIPTION,
   NAP_DRIVER_LAT_HANDOFF,
   NAP_FORCE_OFFROAD,
   NAP_SPEED_SIGN_LOG,
@@ -36,6 +35,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   WIPER_SPEED_DESCRIPTION, WIPER_SPEED_LABELS, WIPER_SPEED_VALUES,
   acknowledgments_html, find_preset_index,
 )
+from openpilot.selfdrive.ui.layouts.settings.driving_mannerisms import DrivingMannerismsLayout
 from openpilot.selfdrive.ui.layouts.settings.map_speed import MapSpeedLimitLayout
 from openpilot.selfdrive.speedsignd.install import weights_status_summary
 from openpilot.selfdrive.car.tesla.preap_body_controls import register_nap_body_params
@@ -143,24 +143,16 @@ class NAPLayout(Widget):
       needs_reboot=True,
     )
 
-    self._add_toggle(
-      NAPParamKeys.ADAPTIVE_ACCEL,
-      "Adaptive Accel Limits",
-      "Reduces acceleration authority when close to a lead car to prevent overshoot. Full accel on open road or when closing a large gap.",
+    self._driving_mannerisms_page = DrivingMannerismsLayout(
+      on_back=self._close_driving_mannerisms,
     )
-
-    follow_dist = self._params.get(NAPParamKeys.FOLLOW_DISTANCE, return_default=True)
-    self._follow_buttons = multiple_button_item(
-      "Follow Distance",
-      "Follow distance (1=closest, 7=farthest). A slower car ahead starts a " +
-      "gradual ease-off farther back (more distance, not a harder brake). " +
-      "Overridden by cruise stalk if present.",
-      buttons=["1", "2", "3", "4", "5", "6", "7"],
-      button_width=80,
-      selected_index=max(0, min(6, follow_dist - 1)),
-      callback=self._on_follow_distance,
+    self._driving_mannerisms_btn = button_item(
+      "Driving Mannerisms",
+      "Open",
+      description="Adaptive accel limits, follow distance, and soft lateral handoff.",
+      callback=self._open_driving_mannerisms,
     )
-    self._main_items.append(self._follow_buttons)
+    self._main_items.append(self._driving_mannerisms_btn)
 
     self._map_speed_page = MapSpeedLimitLayout(
       on_back=self._close_map_speed,
@@ -268,12 +260,6 @@ class NAPLayout(Widget):
 
     # ── Section 6: Advanced ──
     self._main_items.append(section_header_item("Advanced"))
-
-    self._add_toggle(
-      NAP_DRIVER_LAT_HANDOFF,
-      "Soft Lateral Handoff",
-      DRIVER_LAT_HANDOFF_DESCRIPTION,
-    )
 
     self._add_toggle(
       NAP_SPEED_SIGN_LOG,
@@ -481,8 +467,12 @@ class NAPLayout(Widget):
 
   # ── Multiple-button callbacks ──
 
-  def _on_follow_distance(self, index: int):
-    self._params.put(NAPParamKeys.FOLLOW_DISTANCE, index + 1)
+  def _open_driving_mannerisms(self):
+    self._page = "driving_mannerisms"
+    self._driving_mannerisms_page.show_event()
+
+  def _close_driving_mannerisms(self):
+    self._page = "main"
 
   def _open_map_speed(self):
     self._page = "map_speed"
@@ -772,6 +762,8 @@ class NAPLayout(Widget):
   def _render(self, rect):
     if self._page == "map_speed":
       self._map_speed_page.render(rect)
+    elif self._page == "driving_mannerisms":
+      self._driving_mannerisms_page.render(rect)
     elif self._page == "radar":
       self._radar_back_btn.set_position(rect.x, rect.y + 10)
       self._radar_back_btn.render()
@@ -794,10 +786,6 @@ class NAPLayout(Widget):
       item.action_item.set_state(self._params.get_bool(key))
 
     # Refresh multiple-button selections
-    follow_dist = self._params.get(NAPParamKeys.FOLLOW_DISTANCE, return_default=True)
-    self._follow_buttons.action_item.set_selected_button(
-      max(0, min(6, follow_dist - 1)))
-
     pedal_bus = self._params.get(NAPParamKeys.PEDAL_CAN_BUS, return_default=True)
     self._pedal_bus_buttons.action_item.set_selected_button(
       0 if pedal_bus == 0 else 1)
@@ -813,6 +801,7 @@ class NAPLayout(Widget):
     self._beam_buttons.action_item.set_selected_button(
       max(0, min(len(HIGH_LOW_BEAM_VALUES) - 1, beam_setting)))
 
+    self._driving_mannerisms_page.refresh()
     self._map_speed_page.refresh()
     self._install_weights_btn.action_item.set_enabled(ui_state.is_offroad)
     radar_position = int(self._params.get(NAPParamKeys.RADAR_POSITION, return_default=True) or 0)
