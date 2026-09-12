@@ -450,9 +450,14 @@ def test_format_infer_diag_has_on_car_fields():
       "weights_path": "/data/media/0/nap/speed_sign.onnx",
       "weights_sha": "6ed5f87f3ad2",
       "out_shape": (1, 25, 2100),
-      "peak_conf": 0.12,
+      "peak_conf": 0.91,
       "peak_name": "stop",
-      "n_over": 0,
+      "n_over": 10,
+      "sl_peak_conf": 0.12,
+      "sl_peak_name": "speedLimit55",
+      "n_over_sl": 0,
+      "top3": (("stop", 0.91), ("yield", 0.22), ("speedLimit55", 0.12)),
+      "posted": ((30, 0.01), (50, 0.02), (60, 0.03)),
       "luma_mean": 88.0,
       "luma_std": 22.0,
       "chroma": 1,
@@ -466,12 +471,68 @@ def test_format_infer_diag_has_on_car_fields():
   assert "letterbox=320" in text
   assert "sha=6ed5f87f3ad2" in text
   assert "allow=1" in text
-  assert "peak=0.12/stop" in text
+  assert "peak=0.91/stop" in text
+  assert "n_over=10" in text
+  assert "sl_peak=0.12/speedLimit55" in text
+  assert "n_over_sl=0" in text
+  assert "top=stop:0.91,yield:0.22,speedLimit55:0.12" in text
+  assert "cls=30:0.01,50:0.02,60:0.03" in text
   assert "out=1x25x2100" in text
   assert "luma=88/22" in text
   assert "chroma=1" in text
   assert "prep=12" in text
   assert "sess=420" in text
+
+
+def test_format_infer_diag_always_shows_sl_peak_even_when_n_over_zero():
+  text = format_infer_diag(
+    {
+      "backend": "tinygrad",
+      "peak_conf": 0.12,
+      "peak_name": "speedLimit35",
+      "n_over": 0,
+      "sl_peak_conf": 0.12,
+      "sl_peak_name": "speedLimit35",
+      "n_over_sl": 0,
+      "top3": (("speedLimit35", 0.12), ("speedLimit30", 0.08), ("stop", 0.03)),
+      "posted": ((30, 0.08), (50, 0.04), (60, 0.02)),
+    },
+    allow_detect=True,
+  )
+  assert "peak=0.12/speedLimit35" in text
+  assert "sl_peak=0.12/speedLimit35" in text
+  assert "n_over=0" in text
+  assert "top=speedLimit35:0.12,speedLimit30:0.08,stop:0.03" in text
+  assert "cls=30:0.08,50:0.04,60:0.02" in text
+
+
+def test_format_infer_diag_noise_peak_has_blank_class():
+  """Do not print peak=0.00/speedLimit65 — that is not a 65 read."""
+  text = format_infer_diag(
+    {
+      "backend": "tinygrad",
+      "peak_conf": 0.00,
+      "peak_name": "",
+      "n_over": 0,
+      "sl_peak_conf": 0.00,
+      "sl_peak_name": "",
+      "n_over_sl": 0,
+      "top3": (),
+      "posted": ((30, 0.00), (50, 0.00), (60, 0.00)),
+    },
+    allow_detect=True,
+  )
+  assert "peak=0.00/" in text
+  assert "speedLimit65" not in text
+  assert "cls=30:0.00,50:0.00,60:0.00" in text
+
+
+def test_format_infer_diag_missing_sl_fields_stays_parseable():
+  text = format_infer_diag({"backend": "tinygrad", "peak_conf": 0.05, "peak_name": "stop"}, allow_detect=True)
+  assert "peak=0.05/stop" in text
+  assert "sl_peak=0.00/" in text
+  assert "n_over_sl=0" in text
+  assert "top=" not in text
 
 
 def test_detect_skip_reason_names_infer_never_ran():

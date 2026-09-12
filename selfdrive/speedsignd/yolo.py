@@ -7,6 +7,7 @@ Expects an Ultralytics detect export:
 from __future__ import annotations
 
 import re
+from typing import NamedTuple
 
 import numpy as np
 
@@ -26,6 +27,12 @@ from openpilot.selfdrive.speedsignd.weights_manifest import (
 
 _SPEED_RE = re.compile(r"^speedLimit(\d+)$")
 
+# Below this, a class name is argmax-of-noise (Justin's 0.00/speedLimit65 with
+# no 65 on the route). Do not treat it as a mph read.
+PEAK_NAME_MIN = 0.05
+# Justin's posted limits tonight. Always log these heads — not the noise argmax.
+POSTED_LOG_MPH = (30, 50, 60)
+
 
 def class_to_mph(name: str) -> int | None:
   m = _SPEED_RE.match(str(name))
@@ -33,6 +40,24 @@ def class_to_mph(name: str) -> int | None:
     return None
   value = int(m.group(1))
   return value if value in MUTCD_MPH else None
+
+
+def speed_limit_class_indices(names: tuple[str, ...] = YOLO_CLASS_NAMES) -> tuple[int, ...]:
+  """JC checkpoint indices whose names are MUTCD speedLimitNN (4–18)."""
+  return tuple(i for i, n in enumerate(names) if class_to_mph(n) is not None)
+
+
+class YoloPeak(NamedTuple):
+  """Pre-threshold snapshot: global peak, speedLimit* peak, top-3, posted heads."""
+  shape: tuple
+  conf: float
+  name: str
+  n_over: int
+  sl_conf: float = 0.0
+  sl_name: str = ""
+  n_over_sl: int = 0
+  top3: tuple[tuple[str, float], ...] = ()
+  posted: tuple[tuple[int, float], ...] = ()
 
 
 def letterbox_rgb(rgb: np.ndarray, size: int = YOLO_IMGSZ) -> tuple[np.ndarray, float, int, int]:
@@ -57,6 +82,9 @@ def road_detect_crop_rect(h: int, w: int) -> tuple[int, int, int, int]:
   A 1928×1208 ROAD frame letterboxed to 320 is scale 0.166 — a clear 24×30 in
   R2-1 at ~60 ft is ~15 px, below YOLOv8s-320. Short-side square is 0.265.
   US MUTCD plates live on the right; the left third is oncoming / unused.
+  Tighter 800/640 crops were measured on official R2-1 plates: ~15 px still
+  peaks at 0.06–0.17 (under 0.40). Do not shrink the crop — it clips center
+  and does not lift Justin's 60/50/30 near-zero.
   """
   return detect_crop_rect(h, w)
 
@@ -148,26 +176,62 @@ def _as_cn(raw: np.ndarray) -> np.ndarray:
   return arr
 
 
-def yolo_peak(raw, names: tuple[str, ...] = YOLO_CLASS_NAMES) -> tuple[tuple, float, str, int]:
-  """Pre-threshold peak: out_shape, max_conf, top class name, n_over min_conf."""
+def yolo_peak(raw, names: tuple[str, ...] = YOLO_CLASS_NAMES) -> YoloPeak:
+  """Pre-threshold peak: global top class, speedLimit* peak, top-3 class peaks."""
   arr = np.asarray(raw)
   shape = tuple(int(v) for v in arr.shape)
   pred = _as_cn(raw)
+  empty = YoloPeak(shape, 0.0, "", 0)
   if pred.size == 0 or pred.shape[0] < 5:
-    return shape, 0.0, "", 0
+    return empty
   scores = pred[4:]
   if scores.size == 0:
-    return shape, 0.0, "", 0
-  conf = scores.max(axis=0) if scores.ndim == 2 else scores.reshape(-1)
-  cls = scores.argmax(axis=0) if scores.ndim == 2 else np.zeros(conf.shape, np.int32)
+    return empty
+  if scores.ndim != 2:
+    scores = scores.reshape(-1, 1)
+  conf = scores.max(axis=0)
+  cls = scores.argmax(axis=0)
   if conf.size == 0:
-    return shape, 0.0, "", 0
+    return empty
   i = int(conf.argmax())
   max_conf = float(conf[i])
   top = int(cls[i]) if cls.size else 0
   name = names[top] if 0 <= top < len(names) else str(top)
+  if max_conf < PEAK_NAME_MIN:
+    name = ""
   n_over = int(np.sum(conf >= YOLO_MIN_CONF))
-  return shape, max_conf, name, n_over
+
+  sl_conf, sl_name, n_over_sl = 0.0, "", 0
+  sl_idx = [k for k in speed_limit_class_indices(names) if k < scores.shape[0]]
+  if sl_idx:
+    sl = scores[np.array(sl_idx, dtype=np.int32)]
+    sl_per_anchor = sl.max(axis=0)
+    j = int(sl_per_anchor.argmax())
+    sl_conf = float(sl_per_anchor[j])
+    sl_local = int(sl[:, j].argmax())
+    sl_top = sl_idx[sl_local]
+    sl_name = names[sl_top] if 0 <= sl_top < len(names) else str(sl_top)
+    if sl_conf < PEAK_NAME_MIN:
+      sl_name = ""
+    n_over_sl = int(np.sum(sl_per_anchor >= YOLO_MIN_CONF))
+
+  class_peak = scores.max(axis=1)
+  order = class_peak.argsort()[::-1]
+  top3 = tuple(
+    (names[int(k)] if 0 <= int(k) < len(names) else str(int(k)), float(class_peak[k]))
+    for k in order
+    if float(class_peak[k]) >= PEAK_NAME_MIN
+  )[:3]
+  posted: list[tuple[int, float]] = []
+  for mph in POSTED_LOG_MPH:
+    label = f"speedLimit{mph}"
+    try:
+      idx = names.index(label)
+    except ValueError:
+      posted.append((mph, 0.0))
+      continue
+    posted.append((mph, float(class_peak[idx]) if idx < class_peak.shape[0] else 0.0))
+  return YoloPeak(shape, max_conf, name, n_over, sl_conf, sl_name, n_over_sl, top3, tuple(posted))
 
 
 def decode_yolov8(
@@ -189,8 +253,17 @@ def decode_yolov8(
   scores = pred[4:].T
   if scores.size == 0:
     return []
-  cls = scores.argmax(axis=1)
-  conf = scores.max(axis=1)
+  # HUD only keeps speedLimit*. Argmax over stop/yield would drop an R2-1 that
+  # shares an anchor with a stronger stop (Justin's n_over=10 stop frames).
+  sl_idx = [k for k in speed_limit_class_indices(names) if k < scores.shape[1]]
+  if sl_idx:
+    sl = scores[:, np.array(sl_idx, dtype=np.int32)]
+    local = sl.argmax(axis=1)
+    conf = sl.max(axis=1)
+    cls = np.array(sl_idx, dtype=np.int32)[local]
+  else:
+    cls = scores.argmax(axis=1)
+    conf = scores.max(axis=1)
   mask = conf >= min_conf
   if not np.any(mask):
     return []

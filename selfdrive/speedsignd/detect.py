@@ -506,6 +506,11 @@ class OnnxSpeedSignDetector:
       "peak_conf": 0.0,
       "peak_name": "",
       "n_over": 0,
+      "sl_peak_conf": 0.0,
+      "sl_peak_name": "",
+      "n_over_sl": 0,
+      "top3": (),
+      "posted": (),
       "error": "",
       "luma_mean": 0.0,
       "luma_std": 0.0,
@@ -605,11 +610,16 @@ class OnnxSpeedSignDetector:
         t_sess = time.monotonic()
         raw = self.session.run(None, {inp: blob})[0]
         diag["sess_ms"] = (time.monotonic() - t_sess) * 1000.0
-        out_shape, peak_conf, peak_name, n_over = yolo_peak(raw)
-        diag["out_shape"] = out_shape
-        diag["peak_conf"] = peak_conf
-        diag["peak_name"] = peak_name
-        diag["n_over"] = n_over
+        peak = yolo_peak(raw)
+        diag["out_shape"] = peak.shape
+        diag["peak_conf"] = peak.conf
+        diag["peak_name"] = peak.name
+        diag["n_over"] = peak.n_over
+        diag["sl_peak_conf"] = peak.sl_conf
+        diag["sl_peak_name"] = peak.sl_name
+        diag["n_over_sl"] = peak.n_over_sl
+        diag["top3"] = peak.top3
+        diag["posted"] = peak.posted
         thr = YOLO_MIN_CONF if min_conf is None else min_conf
         hits = decode_yolov8(
           raw, scale=scale, pad_x=pad_x, pad_y=pad_y, src_hw=(crop_h, crop_w),
@@ -809,6 +819,11 @@ class SpeedSignDetector:
       "peak_conf": 0.0,
       "peak_name": "",
       "n_over": 0,
+      "sl_peak_conf": 0.0,
+      "sl_peak_name": "",
+      "n_over_sl": 0,
+      "top3": (),
+      "posted": (),
       "error": "",
       "luma_mean": 0.0,
       "luma_std": 0.0,

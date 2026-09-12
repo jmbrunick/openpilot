@@ -35,7 +35,11 @@ YOLO_IMGSZ = 320
 YOLO_INPUT_NAME = "images"
 YOLO_OUTPUT_LAYOUT = (1, 25, 2100)  # 4 + 21 classes, 2100 anchors
 
-# Class order from the JC YOLOv8 checkpoint (`model.names`).
+# Class order from speed_sign.onnx metadata `names` (same as JC best.pt).
+# 0 doNotEnter … 7 speedLimit30 … 11 speedLimit50 … 13 speedLimit60 …
+# 19 stop 20 yield. Isolated MUTCD SVG 30/50/60 at 320 peak ~0.93 on the
+# matching class — not an off-by-one. stop has ~18× the samples of
+# speedLimit55; the head was trained at imgsz=640.
 YOLO_CLASS_NAMES: tuple[str, ...] = (
   "doNotEnter",
   "noLeftTurn",
@@ -60,8 +64,8 @@ YOLO_CLASS_NAMES: tuple[str, ...] = (
   "yield",
 )
 
-# Tuned so empty road stays quiet (model max conf ~0 on asphalt/sky) while a
-# clear roadside R2-1 still lights the HUD after debounce.
+# Empty-road max is ~0. Do not lower: on-car clear R2-1s peak at 0.00–0.12, so a
+# HUD floor of 0.10 would false-trigger and 0.25 still would not fire. Model limit.
 YOLO_MIN_CONF = 0.40
 YOLO_IOU = 0.45
 YOLO_MAX_DET = 3
