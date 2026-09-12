@@ -262,8 +262,16 @@ class Car:
         map_kph = None
         map_valid = bool(self.sm.valid.get('liveMapDataNAP', False) and self.sm['liveMapDataNAP'].speedLimitValid)
         md = self.sm['liveMapDataNAP'] if map_valid else None
+        raw_posted_kph = None
         if md is not None and md.speedLimit > 0:
-          posted_kph = float(md.speedLimit) * CV.MS_TO_KPH + self._map_speed_offset_kph
+          raw_posted_kph = float(md.speedLimit) * CV.MS_TO_KPH
+        # Offset from raw OSM posted (mph). Hypermile eco / Step Down apply
+        # only with a known map posted — never invent a drop when maps are
+        # off, unmatched, or speedLimit unknown (same as sticky MAX).
+        maps_posted = raw_posted_kph is not None
+        map_offset_kph = self._live_map_offset_kph(raw_posted_kph, maps_posted=maps_posted)
+        if raw_posted_kph is not None:
+          posted_kph = raw_posted_kph + map_offset_kph
         # Snapshot pre-curve MAX before decide so OSM flicker cannot wipe sticky.
         last_hud_kph = float(self.v_cruise_helper.v_cruise_kph)
         steer_deg = float(getattr(CS, 'steeringAngleDeg', 0.0) or 0.0)
@@ -335,7 +343,7 @@ class Car:
             dec.driver_kph,
             map_kph,
             mode=self._map_speed_mode,
-            offset_kph=self._map_speed_offset_kph,
+            offset_kph=map_offset_kph,
             engaged=session_engaged,
             op_long_software_cruise=True,
             driver_override=dec.follow_override,
@@ -585,13 +593,22 @@ class Car:
     mode, offset, lookahead, accel = read_map_speed_params(self.params)
     hm_on, _level = read_hypermile_params(self.params)
     self._map_speed_mode = mode
-    self._map_speed_offset_kph = map_target_offset_kph(
-      offset,
-      hypermile_on=hm_on,
-      step_down_on=read_hypermile_step_down(self.params),
-    )
+    # User / settings offset only. Hypermile eco is computed live from posted.
+    self._map_speed_user_offset_kph = offset
+    self._map_hypermile_on = hm_on
+    self._map_step_down_on = read_hypermile_step_down(self.params)
     self._map_speed_lookahead = lookahead
     self._map_speed_accel = accel
+
+  def _live_map_offset_kph(self, raw_posted_kph: float | None,
+                           maps_posted: bool | None = None) -> float:
+    return map_target_offset_kph(
+      self._map_speed_user_offset_kph,
+      hypermile_on=self._map_hypermile_on,
+      step_down_on=self._map_step_down_on,
+      posted_kph=raw_posted_kph,
+      maps_posted=maps_posted,
+    )
 
   def params_thread(self, evt):
     while not evt.is_set():

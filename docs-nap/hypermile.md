@@ -16,13 +16,23 @@ Turning **On** remembers the current values, then snaps:
 |------|-----------|
 | Adaptive Accel Limits | On (softer peak accel when close to a lead) |
 | Map Speed mode | Follow (3), or keep Cap if already Cap. Off/Display → Follow |
-| Map Speed Offset | −5 mph |
+| Map Speed Offset | **not snapped**. Live eco offset is posted-scaled from the OSM limit (see below). Off restores the user's saved slider. |
 | Lookahead | **Early** (3) — starts farther out at 0.55 m/s². Always snapped (Late/Normal/Off become Early). Late is 1.20 m/s² and is *not* kept. |
 | Acceleration (map climb + lead-close) | **1** — laziest Follow climb and lead-close +a (0.20 m/s² catch-up) |
 
 Turning **Off** restores that snapshot. Soft Lateral Handoff, Simulate Look-at-Road, blinker / sticky MAX / one-SET / standstill gas-gate / reverse hard-cancel, and the stock 1–7 Follow Distance param are **not** changed. The stalk / 50 mph follow design is separate and unchanged by this eco bias.
 
-**Curves:** eco −5 is the steady Cap/Follow target (posted 60 → 55). If MAX was 60 before a sharp bend (sticky hold or that displayed set), curve slowing may move HUD MAX through the corner, then **restore 60** — not leave eco 55. The bend must not permanently rebase sticky / map target. See [map-speed.md](map-speed.md#safety-invariants).
+**Posted-scaled eco offset** (Hypermile On, Step Down Off), from the raw posted/OSM limit in mph — not a forever `NAPMapSpeedOffsetMph = −5`:
+
+| Posted | Eco offset | MAX target |
+|--------|------------|------------|
+| &lt; 50 mph (town 30) | **0** | 30 stays 30 |
+| 50 mph | **0** (scale starts) | 50 |
+| 50–80 mph | linear 0 → −8 | 65 → 61 |
+| 80 mph | **−8** | 72 |
+| &gt; 80 mph | **−8** (cap) | 90 → 82 |
+
+**Curves:** eco is the live posted-scaled Cap/Follow target. If MAX was 60 before a sharp bend (sticky hold or that displayed set), curve slowing may move HUD MAX through the corner, then **restore 60** — not leave the eco target. The bend must not permanently rebase sticky / map target. See [map-speed.md](map-speed.md#safety-invariants).
 
 Params: `NAPHypermile` (bool, default 0), `NAPHypermileSaved` (JSON snapshot).
 
@@ -32,21 +42,23 @@ Second toggle under Hypermile: **Step Down Speed** (`NAPHypermileStepDown`, defa
 
 | Hypermile | Step Down | Map MAX target |
 |-----------|-----------|----------------|
-| On | Off | Posted + eco/user offset (today: −5 mph → 75 holds ~70) |
-| On | On | **15 mph under raw posted** (75→60, 55→40). Replaces eco −5 — does not stack to 20 under |
+| On | Off | Posted + posted-scaled eco (30 stays 30; 80→72; 90→82) |
+| On | On | Same 50→80 scale, **−15 at 80** (30 stays 30; 75→62.5; 80→65; 90→75). Replaces eco — does not stack |
 | Off | On or Off | Step-down ignored. Normal posted / held MAX |
 
-Hard cap: never more than 15 mph under posted, never above posted. Legal: step-down only lowers.
+Same breakpoints as eco: **0** at/under 50, linear to the 80 value, cap above 80. Hard cap: never more than 15 mph under posted, never above posted. Legal: step-down only lowers. No flat −15 on town limits.
+
+**Maps-only:** eco and Step Down apply only when maps are present and that road has a known OSM/posted `speedLimit`. Maps off, no match, or posted unknown → **offset 0** — do not invent a drop. Same spirit as sticky MAX (no invented posted without maps). Town 30 with maps stays 30.
 
 This is an offset on the **posted/map target** Cap/Follow already use (`posted_kph` / `apply_map_speed_kph` offset). Sticky / one-SET / rebase are not rewritten.
 
 **What wins**
 
-- **Follow + stalk SET:** driver can hold above the step-down (up to posted). Sticky until the posted *value* changes, then MAX rebases to the new posted−15.
-- **Cap:** cannot exceed the stepped posted (75 posted + step-down → cap 60).
+- **Follow + stalk SET:** driver can hold above the step-down (up to posted). Sticky until the posted *value* changes, then MAX rebases to the new scaled step-down target.
+- **Cap:** cannot exceed the stepped posted (80 posted + step-down → cap 65).
 - **One-SET** after a long pause: resume held MAX (already rebased if posted or step-down changed).
 - **Double SET:** take the current map target (stepped if On).
-- Toggling Step Down On/Off mid-drive changes the posted target (70↔60 on a 75), which Follow treats as a posted change and rebases.
+- Toggling Step Down On/Off mid-drive changes the posted target (scaled eco ↔ scaled step-down), which Follow treats as a posted change and rebases.
 
 ## B — Speed-split follow + stalk 1–5
 
@@ -92,8 +104,8 @@ When the 1–5 level changes onroad, selfdrived fires `EventName.hypermileFollow
 
 ## Tests
 
-`selfdrive/controls/tests/test_hypermile.py` — On snaps + Off restore; ≤50 far gap; >50 stalk level; stalk up/down 1–5; safe floor; settings/docs wiring.
+`selfdrive/controls/tests/test_hypermile.py` — On snaps + Off restore (offset param not written −5); posted-scaled eco (30 stays 30; 80→72) and Step Down (30 stays 30; 75→62.5; 80→65); maps-only (no invent without posted); ≤50 far gap; >50 stalk level; stalk up/down 1–5; safe floor; settings/docs wiring.
 
-`selfdrive/controls/lib/tests/test_curve_max_hold.py` — curve snapshot/restore (sticky 60 survives a bend; eco 55 does not replace it).
+`selfdrive/controls/lib/tests/test_curve_max_hold.py` — curve snapshot/restore (sticky 60 survives a bend; a lower posted/eco target does not replace it).
 
 Existing `test_following_distance` / Pre-AP following tests stay on the stock 1–7 path while Hypermile is Off (default).
