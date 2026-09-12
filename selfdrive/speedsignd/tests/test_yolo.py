@@ -9,6 +9,9 @@ from openpilot.selfdrive.speedsignd.tests.test_detect import _scene
 from openpilot.selfdrive.speedsignd.weights_manifest import YOLO_CLASS_NAMES, YOLO_IMGSZ, YOLO_MIN_CONF
 from openpilot.selfdrive.speedsignd.nv12 import Nv12DetectCrop
 from openpilot.selfdrive.speedsignd.yolo import (
+  CLASS_MARGIN,
+  CONFUSION_OVERRIDE_CONF,
+  CROP_OVERRIDE_CONF,
   PEAK_NAME_MIN,
   POSTED_LOG_MPH,
   _resize_rgb,
@@ -16,6 +19,7 @@ from openpilot.selfdrive.speedsignd.yolo import (
   decode_yolov8,
   letterbox_rgb,
   nms_xyxy,
+  prefer_refine,
   refine_mph,
   road_detect_crop,
   road_detect_crop_rect,
@@ -307,6 +311,79 @@ def test_refine_overrides_wrong_yolo_class_on_clear_crop():
   wrong = SpeedSign(mph=65, conf=0.57, bbox=(200, 30, 90, 112))
   out = refine_mph(wrong, y, _read_mph)
   assert out.mph == 55
+
+
+def test_refine_prefers_50_when_class_says_65():
+  """Parked close R2-1 50: YOLO class is 65 ~85% of the time; crop digits are 50."""
+  from openpilot.selfdrive.speedsignd.detect import _read_mph
+  y = _scene(seed=50)
+  paint_mutcd_r2_1(y, 50, x=200, y=30, w=90, h=112)
+  wrong = SpeedSign(
+    mph=65, conf=0.81, bbox=(200, 30, 90, 112),
+    class_mph=65, class_conf=0.81, alt_mph=50, alt_conf=0.69,
+  )
+  out = refine_mph(wrong, y, _read_mph)
+  assert out.mph == 50
+  assert out.class_mph == 65
+  assert out.refine_mph == 50
+  assert out.refine_conf >= CONFUSION_OVERRIDE_CONF
+
+
+def test_refine_overrides_65_below_old_crop_threshold():
+  """A 50 read at 0.40 used to lose to class 65 (CROP_OVERRIDE_CONF=0.55)."""
+  wrong = SpeedSign(mph=65, conf=0.78, bbox=(10, 10, 40, 50), class_mph=65, class_conf=0.78)
+  out = refine_mph(wrong, np.zeros((80, 80), np.uint8), lambda _c: (50, 0.40))
+  assert out.mph == 50
+  assert out.refine_mph == 50
+  assert 0.40 < CROP_OVERRIDE_CONF
+  assert prefer_refine(wrong, 50, 0.40)
+
+
+def test_refine_does_not_flip_unrelated_class_on_weak_read():
+  """35 vs 55 is not the 50↔65 family — keep class unless crop is clear."""
+  sign = SpeedSign(mph=35, conf=0.70, bbox=(10, 10, 40, 50), class_mph=35, class_conf=0.70)
+  out = refine_mph(sign, np.zeros((80, 80), np.uint8), lambda _c: (55, 0.40))
+  assert out.mph == 35
+  assert out.refine_mph == 55
+
+
+def test_decode_records_50_runner_up_under_65():
+  raw = np.zeros((1, 25, 4), np.float32)
+  raw[0, :4, 0] = [160, 120, 80, 100]
+  raw[0, 4 + 14, 0] = 0.72  # speedLimit65
+  raw[0, 4 + 11, 0] = 0.64  # speedLimit50
+  hits = decode_yolov8(raw, scale=1.0, pad_x=0, pad_y=0, src_hw=(320, 320), min_conf=0.4)
+  assert len(hits) == 1
+  assert hits[0].mph == 65
+  assert hits[0].class_mph == 65
+  assert hits[0].alt_mph == 50
+  assert hits[0].alt_conf == pytest.approx(0.64, abs=1e-5)
+  assert (hits[0].conf - hits[0].alt_conf) < CLASS_MARGIN * 2
+
+
+def test_onnx_detect_overrides_65_class_on_painted_50():
+  """Close-range HUD path: in-threshold 65 class + clear 50 crop → HUD 50."""
+  class Sess65(_YoloSess):
+    def run(self, _out, _feed):
+      raw = np.zeros((1, 25, 4), np.float32)
+      raw[0, :4, 0] = [245, 86, 90, 112]
+      raw[0, 4 + 14, 0] = 0.88  # speedLimit65
+      raw[0, 4 + 11, 0] = 0.71  # speedLimit50
+      raw[0, 4 + 15, 0] = 0.44  # speedLimit70 junk head
+      return [raw]
+
+  y = _scene(h=320, w=320)
+  paint_mutcd_r2_1(y, 50, x=200, y=30, w=90, h=112)
+  det = OnnxSpeedSignDetector("/tmp/fake.onnx", Sess65(), backend="tinygrad")
+  hits = det.detect(y, min_conf=0.4)
+  assert hits and hits[0].mph == 50
+  assert hits[0].class_mph == 65
+  assert hits[0].refine_mph == 50
+  d = det.diag_dict()
+  assert d["refine"]
+  class_mph, hud_mph, ref_mph, ref_conf = d["refine"][0]
+  assert class_mph == 65 and hud_mph == 50 and ref_mph == 50
+  assert ref_conf > 0.0
 
 
 def test_yolo_min_conf_constant():

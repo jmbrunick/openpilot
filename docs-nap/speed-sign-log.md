@@ -46,8 +46,10 @@ YOLOv8s-320 on tinygrad CPU is ~8.7 GFLOP plus Python `OnnxRunner` overhead. Jus
 Onroad, `swaglog` prints `speedsignd detect paused (controlling=True enabled=… active=… state=… alive=… valid=…)` when you SET, `speedsignd abandon in-flight ONNX` if a YOLO was still running, and every infer:
 
 ```
-speedsignd infer 420ms backend=tinygrad frame=1928x1208 letterbox=320 crop=720,0 1208x1208 … peak=0.12/stop n_over=0 luma=90/35 chroma=1 prep=18 sess=400 raw=[] hud=[] jsonl=[]
+speedsignd infer 420ms backend=tinygrad frame=1928x1208 letterbox=320 crop=720,0 1208x1208 … peak=0.72/speedLimit65 n_over=1 sl_peak=0.72/speedLimit65 … refine=50:0.71(class=65) luma=90/35 chroma=1 prep=18 sess=400 raw=[(50, 0.71)] hud=[(50, 0.71)] jsonl=[]
 ```
+
+`refine=` is the crop digit read vs the YOLO class. A parked close **SPEED LIMIT 50** often peaks `speedLimit65`; HUD should still be **50** when `refine=50:…(class=65)`. Empty `refine=` means no in-threshold hit (digit OCR never ran).
 
 `speedsignd timing hz=… infer_ms mean=… max=… n=… skip=…` about every 15 s while disengaged. `skip` should climb when an infer overruns. If TAKE CONTROL / “driving model is lagging” / Communication Issue comes back, Logger Off + nap-release. If WAIT is stuck while you are driving manually, those same `speedsignd detect` lines explain why.
 
@@ -166,7 +168,7 @@ If you see **TAKE CONTROL IMMEDIATELY** or “Communication Issue Between Proces
 
 ## Accuracy limits (honest)
 
-This is a small CPU detector at **1 Hz when not controlling** (was 4 Hz always) on a 320² letterbox of the **right-biased ROAD crop**. It is **not** a modeld head and is **not** used for control. It must not starve `modeld`: **no ONNX while OP is controlling**; little cores + 1 thread + skip-on-overrun + infer-cap extra skip. `swaglog` logs `speedsignd detect paused/running` with `enabled` / `active` / `state` / alive / valid on those edges and every infer `backend=` `peak=` `luma=` `chroma=` `prep=` `sess=` `raw=` plus `speedsignd timing … infer_ms mean/max` / `skip=` about every 15 s so you can see cost on the device.
+This is a small CPU detector at **1 Hz when not controlling** (was 4 Hz always) on a 320² letterbox of the **right-biased ROAD crop**. It is **not** a modeld head and is **not** used for control. It must not starve `modeld`: **no ONNX while OP is controlling**; little cores + 1 thread + skip-on-overrun + infer-cap extra skip. `swaglog` logs `speedsignd detect paused/running` with `enabled` / `active` / `state` / alive / valid on those edges and every infer `backend=` `peak=` `refine=` `luma=` `chroma=` `prep=` `sess=` `raw=` plus `speedsignd timing … infer_ms mean/max` / `skip=` about every 15 s so you can see cost on the device. On-car ROAD frames often class a clear **50** as **65**; crop digit OCR (`refine=`) overrides that pair for the HUD.
 
 **Usually works:** daylight, dry, a standard white R2-1 facing the car, large enough in the ROAD frame (near / mid roadside, not a speck on the horizon). 55 and 60 are in the trained class set.
 

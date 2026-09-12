@@ -7,16 +7,13 @@ Expects an Ultralytics detect export:
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from typing import NamedTuple
 
 import numpy as np
 
 from openpilot.selfdrive.speedsignd.detect_types import MUTCD_MPH, SpeedSign
 from openpilot.selfdrive.speedsignd.nv12 import detect_crop_rect
-
-# Crop reader must beat this to override the YOLO class (real Highway Gothic
-# usually agrees; synthetic/block digits often need the override).
-CROP_OVERRIDE_CONF = 0.55
 from openpilot.selfdrive.speedsignd.weights_manifest import (
   YOLO_CLASS_NAMES,
   YOLO_IMGSZ,
@@ -24,6 +21,22 @@ from openpilot.selfdrive.speedsignd.weights_manifest import (
   YOLO_MAX_DET,
   YOLO_MIN_CONF,
 )
+
+# Crop reader must beat this to override *any* YOLO class (clear digits).
+CROP_OVERRIDE_CONF = 0.55
+# On-car ROAD frames systematically swap 50↔65 (and junk 65/70 heads).
+# Digit OCR already requires min digit NCC ≥ 0.25; prefer refine on these
+# pairs well below 0.55 so a parked close 50 does not stick as 65.
+CONFUSION_OVERRIDE_CONF = 0.28
+CLASS_MARGIN = 0.12
+CONFUSION_PAIRS = frozenset({
+  frozenset({50, 65}),
+  frozenset({50, 70}),
+  frozenset({60, 65}),
+  frozenset({65, 70}),
+  frozenset({55, 65}),
+  frozenset({45, 65}),
+})
 
 _SPEED_RE = re.compile(r"^speedLimit(\d+)$")
 
@@ -256,11 +269,18 @@ def decode_yolov8(
   # HUD only keeps speedLimit*. Argmax over stop/yield would drop an R2-1 that
   # shares an anchor with a stronger stop (Justin's n_over=10 stop frames).
   sl_idx = [k for k in speed_limit_class_indices(names) if k < scores.shape[1]]
+  alt_cls = None
+  alt_conf = None
   if sl_idx:
     sl = scores[:, np.array(sl_idx, dtype=np.int32)]
     local = sl.argmax(axis=1)
     conf = sl.max(axis=1)
     cls = np.array(sl_idx, dtype=np.int32)[local]
+    sl2 = sl.copy()
+    sl2[np.arange(sl2.shape[0]), local] = -1.0
+    local2 = sl2.argmax(axis=1)
+    alt_conf = sl2.max(axis=1)
+    alt_cls = np.array(sl_idx, dtype=np.int32)[local2]
   else:
     cls = scores.argmax(axis=1)
     conf = scores.max(axis=1)
@@ -270,6 +290,9 @@ def decode_yolov8(
   boxes_xywh = boxes_xywh[mask]
   conf = conf[mask]
   cls = cls[mask]
+  if alt_cls is not None and alt_conf is not None:
+    alt_cls = alt_cls[mask]
+    alt_conf = alt_conf[mask]
 
   cx, cy, bw, bh = boxes_xywh[:, 0], boxes_xywh[:, 1], boxes_xywh[:, 2], boxes_xywh[:, 3]
   xyxy = np.stack([cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2], axis=1)
@@ -295,15 +318,47 @@ def decode_yolov8(
       continue
     w = min(w, src_w - x)
     h = min(h, src_h - y)
-    found.append(SpeedSign(mph=mph, conf=float(conf[i]), bbox=(x, y, w, h)))
+    alt_mph = None
+    alt_c = 0.0
+    if alt_cls is not None and alt_conf is not None:
+      alt_name = names[int(alt_cls[i])] if 0 <= int(alt_cls[i]) < len(names) else ""
+      alt_mph = class_to_mph(alt_name)
+      alt_c = float(alt_conf[i])
+      if alt_mph == mph:
+        alt_mph, alt_c = None, 0.0
+    found.append(SpeedSign(
+      mph=mph, conf=float(conf[i]), bbox=(x, y, w, h),
+      class_mph=mph, class_conf=float(conf[i]),
+      alt_mph=alt_mph, alt_conf=alt_c,
+    ))
     if len(found) >= max_det:
       break
   found.sort(key=lambda s: s.conf, reverse=True)
   return found
 
 
+def prefer_refine(sign: SpeedSign, mph: int, conf: float) -> bool:
+  """When crop digits disagree with the YOLO class, keep the class only if
+  the read is weak *and* this is not the 50↔65 / junk-65 family."""
+  if conf >= CROP_OVERRIDE_CONF:
+    return True
+  class_mph = sign.class_mph if sign.class_mph is not None else sign.mph
+  pair = frozenset({int(class_mph), int(mph)})
+  if pair in CONFUSION_PAIRS and conf >= CONFUSION_OVERRIDE_CONF:
+    return True
+  margin = float(sign.conf) - float(sign.alt_conf)
+  if sign.alt_mph == int(mph) and margin < CLASS_MARGIN and conf >= CONFUSION_OVERRIDE_CONF:
+    return True
+  return False
+
+
 def refine_mph(sign: SpeedSign, y: np.ndarray | None, read_mph) -> SpeedSign:
-  """Optional digit read on the YOLO crop. Does not invent a detection."""
+  """Digit read on every in-threshold speedLimit* crop. Does not invent a hit.
+
+  YOLO on-car ROAD frames confuse 50 with 65 most of the time. If the crop
+  reads a valid MUTCD mph, prefer that over the class for 50↔65 (and the
+  junk 65/70 heads). Logs keep both class_mph and refine_mph.
+  """
   if y is None or y.ndim != 2:
     return sign
   x, yy, w, h = sign.bbox
@@ -320,10 +375,18 @@ def refine_mph(sign: SpeedSign, y: np.ndarray | None, read_mph) -> SpeedSign:
   if crop.size == 0:
     return sign
   mph, conf = read_mph(crop)
+  class_mph = sign.class_mph if sign.class_mph is not None else sign.mph
+  tagged = replace(
+    sign,
+    class_mph=int(class_mph),
+    class_conf=float(sign.class_conf or sign.conf),
+    refine_mph=int(mph) if mph is not None and mph in MUTCD_MPH else None,
+    refine_conf=float(conf) if mph is not None and mph in MUTCD_MPH else 0.0,
+  )
   if mph is None or mph not in MUTCD_MPH:
-    return sign
+    return tagged
   if mph == sign.mph:
-    return SpeedSign(mph=mph, conf=float(min(1.0, max(sign.conf, conf))), bbox=sign.bbox)
-  if conf >= CROP_OVERRIDE_CONF:
-    return SpeedSign(mph=int(mph), conf=float(conf), bbox=sign.bbox)
-  return sign
+    return replace(tagged, conf=float(min(1.0, max(sign.conf, conf))))
+  if prefer_refine(sign, int(mph), float(conf)):
+    return replace(tagged, mph=int(mph), conf=float(conf))
+  return tagged

@@ -422,6 +422,22 @@ def format_infer_diag(diag: dict | None, *, allow_detect: bool) -> str:
     posted_s = " cls=" + ",".join(f"{int(mph)}:{float(c):.2f}" for mph, c in posted)
   else:
     posted_s = ""
+  refine = d.get("refine") or ()
+  if refine:
+    parts = []
+    for row in refine:
+      if not row or len(row) < 4:
+        continue
+      class_mph, hud_mph, ref_mph, ref_conf = row[0], row[1], row[2], row[3]
+      if ref_mph is None:
+        parts.append(f"-({int(class_mph)})")
+      elif int(ref_mph) == int(hud_mph) == int(class_mph):
+        parts.append(f"{int(ref_mph)}:{float(ref_conf):.2f}")
+      else:
+        parts.append(f"{int(hud_mph)}:{float(ref_conf):.2f}(class={int(class_mph)})")
+    refine_s = " refine=" + ",".join(parts) if parts else ""
+  else:
+    refine_s = ""
   return (
     f"backend={d.get('backend', '?')} "
     + f"frame={int(d.get('frame_w', 0) or 0)}x{int(d.get('frame_h', 0) or 0)} "
@@ -434,6 +450,7 @@ def format_infer_diag(diag: dict | None, *, allow_detect: bool) -> str:
     + f" n_over_sl={int(d.get('n_over_sl', 0) or 0)}"
     + top_s
     + posted_s
+    + refine_s
     + " "
     + f"luma={float(d.get('luma_mean', 0.0) or 0.0):.0f}/{float(d.get('luma_std', 0.0) or 0.0):.0f} "
     + f"chroma={int(d.get('chroma', 0) or 0)} "

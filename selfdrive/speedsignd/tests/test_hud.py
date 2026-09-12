@@ -163,6 +163,41 @@ def test_publish_fields_flag_missing_weights_without_mph():
   assert live and held == 45
 
 
+def test_hold_shows_refined_50_not_stuck_65():
+  h = LiveSignHold(hold_s=3.0)
+  # First infer: class 65 that refine already flipped to 50.
+  signs = [SpeedSign(
+    mph=50, conf=0.71, bbox=(0, 0, 10, 10),
+    class_mph=65, class_conf=0.81, refine_mph=50, refine_conf=0.71,
+  )]
+  live, mph, _ = h.update(signs, 10.0)
+  assert live and mph == 50
+  live, mph, _ = h.update([], 11.0)
+  assert live and mph == 50
+
+
+def test_process_frame_hud_lights_refined_50(tmp_path):
+  from openpilot.selfdrive.speedsignd.debounce import SignDebounce
+
+  class _Det:
+    onnx = object()
+
+    def detect(self, y, min_conf=None, rgb=None, nv12=None):
+      return [SpeedSign(
+        mph=50, conf=0.71, bbox=(0, 0, 8, 8),
+        class_mph=65, class_conf=0.82, refine_mph=50, refine_conf=0.71,
+      )]
+
+  log = JsonlLogger(str(tmp_path / "out.jsonl"))
+  debounce = SignDebounce()
+  y = _scene()
+  signs, written = process_frame(
+    y, 45.0, -95.0, 0.0, True, _Det(), log, now=1.0, debounce=debounce,
+  )
+  assert signs and signs[0].mph == 50
+  assert written == []
+
+
 def test_detect_without_gps_still_returns_signs(tmp_path):
   y = _scene()
   paint_mutcd_r2_1(y, 35, x=200, y=30, w=90, h=112)

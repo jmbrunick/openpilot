@@ -458,6 +458,7 @@ def test_format_infer_diag_has_on_car_fields():
       "n_over_sl": 0,
       "top3": (("stop", 0.91), ("yield", 0.22), ("speedLimit55", 0.12)),
       "posted": ((30, 0.01), (50, 0.02), (60, 0.03)),
+      "refine": ((65, 50, 50, 0.71),),
       "luma_mean": 88.0,
       "luma_std": 22.0,
       "chroma": 1,
@@ -477,6 +478,7 @@ def test_format_infer_diag_has_on_car_fields():
   assert "n_over_sl=0" in text
   assert "top=stop:0.91,yield:0.22,speedLimit55:0.12" in text
   assert "cls=30:0.01,50:0.02,60:0.03" in text
+  assert "refine=50:0.71(class=65)" in text
   assert "out=1x25x2100" in text
   assert "luma=88/22" in text
   assert "chroma=1" in text

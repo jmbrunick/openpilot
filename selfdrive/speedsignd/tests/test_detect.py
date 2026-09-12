@@ -132,3 +132,15 @@ def test_y_plane_from_nv12():
 def test_mutcd_set_is_us_r2_1():
   assert 15 in MUTCD_MPH and 25 in MUTCD_MPH and 70 in MUTCD_MPH
   assert 47 not in MUTCD_MPH
+
+
+def test_read_mph_washes_out_above_fixed_90():
+  """ROAD plates often have ink ≥ 90. Old threshold returned None → HUD kept 65."""
+  from openpilot.selfdrive.speedsignd.detect import _read_mph
+  y = _scene(seed=7)
+  paint_mutcd_r2_1(y, 50, x=200, y=30, w=90, h=112)
+  crop = y[30:142, 200:290].copy()
+  crop[crop < 90] = 100
+  mph, conf = _read_mph(crop)
+  assert mph == 50
+  assert conf >= 0.25

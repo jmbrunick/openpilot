@@ -15,7 +15,7 @@ from typing import Any
 
 import numpy as np
 
-from openpilot.selfdrive.speedsignd.detect_types import MUTCD_MPH, SpeedSign
+from openpilot.selfdrive.speedsignd.detect_types import MUTCD_MPH, SpeedSign, shift_sign
 from openpilot.selfdrive.speedsignd.nv12 import letterbox_rgb_from_nv12_crop, rgb_from_y
 from openpilot.selfdrive.speedsignd.paths import default_onnx_path
 from openpilot.selfdrive.speedsignd.weights_manifest import (
@@ -317,8 +317,8 @@ def _components(mask: np.ndarray) -> list[tuple[int, int, int, int, int]]:
   return boxes
 
 
-def _digit_score(patch: np.ndarray) -> tuple[int, float]:
-  ink = (patch < 90).astype(np.uint8)
+def _digit_score(patch: np.ndarray, thr: float = 90.0) -> tuple[int, float]:
+  ink = (patch < thr).astype(np.uint8)
   if ink.mean() < 0.05 or ink.mean() > 0.85:
     return 0, 0.0
   templ = _resize(ink, DIGIT_H, DIGIT_W)
@@ -381,17 +381,28 @@ def _split_digit_boxes(ink: np.ndarray) -> list[tuple[int, int, int, int]]:
   return merged[:3]
 
 
-def _read_mph(crop: np.ndarray) -> tuple[int | None, float]:
-  h, w = crop.shape
-  if h < 12 or w < 12:
-    return None, 0.0
-  lower = crop[int(h * 0.42):, int(w * 0.08):int(w * 0.92)]
-  if lower.size == 0:
-    return None, 0.0
-  ink = (lower < 90).astype(np.uint8)
+READ_MPH_MIN_DIGIT = 0.25
+
+
+def _ink_thresholds(gray: np.ndarray) -> list[float]:
+  """Fixed 90 plus a mid-gray split. ROAD plates wash out above 90."""
+  if gray.size == 0:
+    return [90.0]
+  p20, p80 = np.percentile(gray.astype(np.float32), (20.0, 80.0))
+  mid = float(max(40.0, min(160.0, (p20 + p80) * 0.5)))
+  out: list[float] = []
+  for t in (90.0, mid, 70.0, 110.0, 130.0):
+    t = float(max(40.0, min(160.0, t)))
+    if all(abs(t - s) > 4.0 for s in out):
+      out.append(t)
+  return out
+
+
+def _read_mph_at(lower: np.ndarray, thr: float) -> tuple[int, float, float] | None:
+  ink = (lower < thr).astype(np.uint8)
   boxes = _split_digit_boxes(ink)
   if not boxes:
-    return None, 0.0
+    return None
   digits = []
   scores = []
   for x, y, bw, bh in boxes:
@@ -399,17 +410,41 @@ def _read_mph(crop: np.ndarray) -> tuple[int | None, float]:
     y0 = max(0, y - pad)
     x0 = max(0, x - pad)
     patch = lower[y0:min(lower.shape[0], y + bh + pad), x0:min(lower.shape[1], x + bw + pad)]
-    d, s = _digit_score(patch)
+    d, s = _digit_score(patch, thr)
     digits.append(d)
     scores.append(s)
-  if not scores or min(scores) < 0.25:
-    return None, 0.0
+  if not scores or min(scores) < READ_MPH_MIN_DIGIT:
+    return None
   value = 0
   for d in digits:
     value = value * 10 + d
   if value not in MUTCD_MPH:
+    return None
+  return int(value), float(sum(scores) / len(scores)), float(min(scores))
+
+
+def _read_mph(crop: np.ndarray) -> tuple[int | None, float]:
+  h, w = crop.shape
+  if h < 12 or w < 12:
     return None, 0.0
-  conf = float(sum(scores) / len(scores))
+  bands = (
+    crop[int(h * 0.42):, int(w * 0.08):int(w * 0.92)],
+    crop[int(h * 0.38):int(max(int(h * 0.38) + 12, h * 0.98)), int(w * 0.10):int(w * 0.90)],
+  )
+  best: tuple[float, float, int] | None = None  # min_digit, conf, mph
+  for lower in bands:
+    if lower.size == 0 or lower.shape[0] < 8 or lower.shape[1] < 8:
+      continue
+    for thr in _ink_thresholds(lower):
+      got = _read_mph_at(lower, thr)
+      if got is None:
+        continue
+      value, conf, min_s = got
+      if best is None or min_s > best[0]:
+        best = (min_s, conf, value)
+  if best is None:
+    return None, 0.0
+  _min_s, conf, value = best
   # Extra boost when the upper third looks like stacked word bars (SPEED LIMIT).
   upper = crop[:int(h * 0.40), int(w * 0.10):int(w * 0.90)]
   if upper.size and upper.std() > 18.0:
@@ -511,6 +546,7 @@ class OnnxSpeedSignDetector:
       "n_over_sl": 0,
       "top3": (),
       "posted": (),
+      "refine": (),
       "error": "",
       "luma_mean": 0.0,
       "luma_std": 0.0,
@@ -635,10 +671,16 @@ class OnnxSpeedSignDetector:
           luma = work[:, :, 1]
         refined = [refine_mph(s, luma, _read_mph) for s in hits]
         if cx or cy:
-          refined = [
-            SpeedSign(s.mph, s.conf, (s.bbox[0] + cx, s.bbox[1] + cy, s.bbox[2], s.bbox[3]))
-            for s in refined
-          ]
+          refined = [shift_sign(s, cx, cy) for s in refined]
+        diag["refine"] = tuple(
+          (
+            int(s.class_mph if s.class_mph is not None else s.mph),
+            int(s.mph),
+            None if s.refine_mph is None else int(s.refine_mph),
+            float(s.refine_conf),
+          )
+          for s in refined
+        )
         return refined
       arr = (y if y is not None else rgb[:, :, 1]).astype(np.float32) / 255.0
       if shape is not None and len(shape) == 4:
@@ -824,6 +866,7 @@ class SpeedSignDetector:
       "n_over_sl": 0,
       "top3": (),
       "posted": (),
+      "refine": (),
       "error": "",
       "luma_mean": 0.0,
       "luma_std": 0.0,
