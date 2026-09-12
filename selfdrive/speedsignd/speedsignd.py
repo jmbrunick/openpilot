@@ -667,7 +667,9 @@ def main():
   backend = detector.backend_name()
   weights_sha = detector.weights_sha_short()
   cloudlog.info(
-    "speedsignd starting log=%s backend=%s onnx=%s sha=%s sm_hz=%.1f detect_hz=%.2f budget_ms=%.0f cap_ms=%.0f threads=%d cores=%s nice=%d no_onnx_while_controlling=1 crop_rgb=1",
+    "speedsignd starting log=%s backend=%s onnx=%s sha=%s sm_hz=%.1f detect_hz=%.2f "
+    + "budget_ms=%.0f cap_ms=%.0f threads=%d cores=%s nice=%d "
+    + "no_onnx_while_controlling=1 crop_rgb=1",
     log_path, backend, onnx_path, weights_sha, SM_HZ, hz, INFER_BUDGET_MS, cap_ms, threads,
     ",".join(str(c) for c in SPEEDSIGND_CORES), SPEEDSIGND_NICE,
   )
