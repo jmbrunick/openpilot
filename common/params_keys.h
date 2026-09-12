@@ -180,7 +180,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // yield fully cancels. Settings can turn Off.
     {"NAPDriverLatHandoff", {PERSISTENT, BOOL, "1"}},
     // Pre-AP DM: light hands-on (EPAS handsOnLevel >= 1) resets the first
-    // look-at-road prompt (~3 s vision). Orange / red still escalate.
+    // look-at-road prompt. First prompt is random in 2.0–4.5 s each cycle
+    // (not a fixed 3 s). Orange / red still escalate.
     // Settings → NAP → Driving Mannerisms. Default On.
     {"NAPDmHandsOnReset", {PERSISTENT, BOOL, "1"}},
     // Settings → NAP → Force Offroad. Default off. Not persistent: reboot

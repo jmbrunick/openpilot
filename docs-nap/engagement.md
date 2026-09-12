@@ -175,9 +175,9 @@ Do these at a quiet road / parking lot first, then a known pothole stretch. Peda
 
 ## Driver monitoring hands-on reset
 
-Stock DM stays on while engaged. Vision timeouts are still **3 / 5 / 11 s** (`DRIVER_MONITOR_SETTINGS` in `selfdrive/monitoring/policy.py`). Pre-AP often has light hands on the rim (`EPAS_handsOnLevel >= 1`) without `steeringPressed`, so the first look-at-road prompt can bark even when the driver is present.
+Stock DM stays on while engaged. Orange / red vision timeouts are still **5 / 11 s** (`DRIVER_MONITOR_SETTINGS` in `selfdrive/monitoring/policy.py`). The first look-at-road prompt is **not** a fixed 3 s: with `NAPDmHandsOnReset` On, each full awareness reset draws a new timeout uniformly in **2.0–4.5 s** (always before orange). Pre-AP often has light hands on the rim (`EPAS_handsOnLevel >= 1`) without `steeringPressed`, so that first prompt can bark even when the driver is present.
 
-`NAPDmHandsOnReset` (default On, Settings → NAP → Driving Mannerisms) treats that same `handsOnLevel` field soft-lat already publishes as **soft presence**: when awareness is approaching or in the **first prompt band** (near alert 1, still above orange), reset awareness. Orange (alert 2) and red (alert 3 / terminal) still escalate if the driver ignores DM (no hands, no look-back, no gas / firm steer). Always-on DM when not engaged does **not** use this reset.
+`NAPDmHandsOnReset` (default On, Settings → NAP → Driving Mannerisms) treats that same `handsOnLevel` field soft-lat already publishes as **soft presence**: when awareness is approaching or in the **first prompt band** (near the drawn alert 1, still above orange), reset awareness and draw a new first-prompt time. Orange (alert 2) and red (alert 3 / terminal) still escalate if the driver ignores DM (no hands, no look-back, no gas / firm steer). Always-on DM when not engaged does **not** use this reset.
 
 Other cars do not publish `handsOnLevel` (read as 0) so they stay on stock DM. Turn the toggle **Off** for stock first-prompt behavior on Pre-AP.
 

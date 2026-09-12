@@ -30,7 +30,7 @@ class DrivingMannerismsLayoutMici(NavScroller):
     lat_handoff.set_value("On — free-wheel yield; Off if false-yield")
 
     dm_hands_on = BigParamControl("hands-on look-at-road reset", NAP_DM_HANDS_ON_RESET)
-    dm_hands_on.set_value("On — rim contact resets first DM prompt")
+    dm_hands_on.set_value("On — rim contact; first prompt 2.0–4.5 s random")
 
     self._scroller.add_widgets([
       adaptive_accel,

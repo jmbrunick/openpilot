@@ -37,9 +37,11 @@ DRIVER_LAT_HANDOFF_DESCRIPTION = (
 )
 DM_HANDS_ON_RESET_DESCRIPTION = (
   "Default On. Pre-AP only. Light hands on the rim (EPAS hands-on ≥ 1) "
-  + "reset the first look-at-road prompt (~3 s). Orange and red still "
-  + "escalate if you ignore them. A firm steering yank or gas still "
-  + "reset as stock. Always-on DM is unchanged. Turn Off for stock DM."
+  + "reset the first look-at-road prompt. That first prompt is drawn "
+  + "at random in 2.0–4.5 s each cycle (not a fixed 3 s). Orange and "
+  + "red still escalate if you ignore them. A firm steering yank or "
+  + "gas still reset as stock. Always-on DM is unchanged. Turn Off "
+  + "for stock DM."
 )
 FORCE_OFFROAD_DESCRIPTION = (
   "WARNING: Forces the device offroad and disengages openpilot even while "

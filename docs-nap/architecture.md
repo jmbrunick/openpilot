@@ -86,7 +86,7 @@ Pre-AP `TurnIndLvr_Stat` is only IDLE / LEFT / RIGHT / SNA — no tip vs latch b
 
 ## Driver monitoring (first look-at-road prompt)
 
-Stock vision timeouts stay **3 / 5 / 11 s**. On Pre-AP while engaged, `NAPDmHandsOnReset` (default On) treats `handsOnLevel >= 1` as enough to **reset awareness in the first prompt band only** (approaching / at alert 1, not orange or red). A firm `steeringPressed` yank or gas is still the stock full reset. Always-on DM when not engaged is unchanged. Turn Off in Settings → NAP → Driving Mannerisms for stock DM. See [engagement.md](engagement.md#driver-monitoring-hands-on-reset).
+Orange / red stay **5 / 11 s**. On Pre-AP while engaged, `NAPDmHandsOnReset` (default On) draws a **random first-prompt timeout in 2.0–4.5 s** on each full awareness reset (not a fixed 3 s) and treats `handsOnLevel >= 1` as enough to **reset awareness in that first prompt band only** (not orange or red). A firm `steeringPressed` yank or gas is still the stock full reset. Always-on DM when not engaged is unchanged. Turn Off in Settings → NAP → Driving Mannerisms for stock DM. See [engagement.md](engagement.md#driver-monitoring-hands-on-reset).
 
 ## OSM map speed (MAX)
 
