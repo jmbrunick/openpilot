@@ -7,6 +7,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   FOLLOW_DISTANCE_DEFAULT,
   FOLLOW_DISTANCE_LABELS,
   FOLLOW_DISTANCE_VALUES,
+  NAP_DM_HANDS_ON_RESET,
   NAP_DRIVER_LAT_HANDOFF,
 )
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys
@@ -28,10 +29,14 @@ class DrivingMannerismsLayoutMici(NavScroller):
     lat_handoff = BigParamControl("soft lateral handoff", NAP_DRIVER_LAT_HANDOFF)
     lat_handoff.set_value("On — free-wheel yield; Off if false-yield")
 
+    dm_hands_on = BigParamControl("hands-on look-at-road reset", NAP_DM_HANDS_ON_RESET)
+    dm_hands_on.set_value("On — rim contact; first prompt 2.0–4.5 s random")
+
     self._scroller.add_widgets([
       adaptive_accel,
       follow_distance,
       lat_handoff,
+      dm_hands_on,
     ])
 
 

@@ -5,13 +5,15 @@ from openpilot.system.ui.widgets.list_view import toggle_item, multiple_button_i
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   DRIVER_LAT_HANDOFF_DESCRIPTION,
+  DM_HANDS_ON_RESET_DESCRIPTION,
+  NAP_DM_HANDS_ON_RESET,
   NAP_DRIVER_LAT_HANDOFF,
 )
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys
 
 
 class DrivingMannerismsLayout(Widget):
-  """Nested NAP page for accel feel, follow distance, and soft lateral handoff."""
+  """Nested NAP page for accel feel, follow distance, soft-lat, and DM reset."""
 
   def __init__(self, on_back):
     super().__init__()
@@ -58,6 +60,14 @@ class DrivingMannerismsLayout(Widget):
     )
     self._all_items.append(self._lat_handoff)
 
+    self._dm_hands_on = toggle_item(
+      "Hands-On Look-at-Road Reset",
+      description=DM_HANDS_ON_RESET_DESCRIPTION,
+      initial_state=self._params.get_bool(NAP_DM_HANDS_ON_RESET),
+      callback=self._on_dm_hands_on,
+    )
+    self._all_items.append(self._dm_hands_on)
+
   def _on_adaptive_accel(self, state):
     self._params.put_bool(NAPParamKeys.ADAPTIVE_ACCEL, state)
 
@@ -67,11 +77,15 @@ class DrivingMannerismsLayout(Widget):
   def _on_lat_handoff(self, state):
     self._params.put_bool(NAP_DRIVER_LAT_HANDOFF, state)
 
+  def _on_dm_hands_on(self, state):
+    self._params.put_bool(NAP_DM_HANDS_ON_RESET, state)
+
   def refresh(self):
     self._adaptive_accel.action_item.set_state(self._params.get_bool(NAPParamKeys.ADAPTIVE_ACCEL))
     follow_dist = self._params.get(NAPParamKeys.FOLLOW_DISTANCE, return_default=True)
     self._follow_buttons.action_item.set_selected_button(max(0, min(6, follow_dist - 1)))
     self._lat_handoff.action_item.set_state(self._params.get_bool(NAP_DRIVER_LAT_HANDOFF))
+    self._dm_hands_on.action_item.set_state(self._params.get_bool(NAP_DM_HANDS_ON_RESET))
 
   def show_event(self):
     self._scroller.show_event()
