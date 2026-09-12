@@ -33,6 +33,7 @@ from openpilot.selfdrive.controls.lib.hypermile import (
   read_hypermile_params,
   read_hypermile_step_down,
   step_down_applies,
+  step_down_offset_mph,
   stepped_map_target_kph,
   stalk_adjusts_follow,
   step_hypermile_level,
@@ -147,37 +148,55 @@ def test_eco_comfort_bias_early_light_not_late_bite():
   assert map_accel_a_ms2(LOOKAHEAD_EARLY, 1) < map_accel_a_ms2(LOOKAHEAD_NORMAL, 5)
 
 
-def test_step_down_15_mph_under_posted_no_stack_inert_when_hypermile_off():
+def test_step_down_scales_with_posted_not_flat_minus_fifteen():
+  """Hypermile On + Step Down On: same 50→80 scale as eco, −15 at 80."""
   assert STEP_DOWN_MPH == 15.0
   assert read_hypermile_step_down(FakeParams()) is False
   assert step_down_applies(True, False) is False
   assert step_down_applies(False, True) is False
   assert step_down_applies(True, True) is True
 
-  posted_75 = 75.0 * CV.MPH_TO_KPH
-  posted_55 = 55.0 * CV.MPH_TO_KPH
-  eco_off = -5.0 * CV.MPH_TO_KPH
-
   def _approx(a, b):
     assert abs(float(a) - float(b)) < 1e-6, (a, b)
 
-  # Hypermile On + Step Down Off: live posted-scaled eco (not the −5 param).
-  # 75 is 25/30 of the way from 50→80 → −6.666… → ~68.333.
+  _approx(step_down_offset_mph(30), 0.0)
+  _approx(step_down_offset_mph(50), 0.0)
+  _approx(step_down_offset_mph(65), -7.5)
+  _approx(step_down_offset_mph(75), -12.5)
+  _approx(step_down_offset_mph(80), -15.0)
+  _approx(step_down_offset_mph(90), -15.0)
+  _approx(step_down_offset_mph(None), 0.0)
+
+  eco_off = -5.0 * CV.MPH_TO_KPH
+  posted_75 = 75.0 * CV.MPH_TO_KPH
+  # Eco alone still uses the −8 scale (75 → ~68.333). Step Down replaces it.
   _approx(stepped_map_target_kph(
     posted_75, hypermile_on=True, step_down_on=False, map_offset_kph=eco_off,
   ), (75.0 + eco_map_offset_mph(75.0)) * CV.MPH_TO_KPH)
-  # On: 75→60, 55→40. Eco does not stack to 55/35.
-  _approx(stepped_map_target_kph(
-    posted_75, hypermile_on=True, step_down_on=True, map_offset_kph=eco_off,
-  ), 60.0 * CV.MPH_TO_KPH)
-  _approx(stepped_map_target_kph(
-    posted_55, hypermile_on=True, step_down_on=True, map_offset_kph=eco_off,
-  ), 40.0 * CV.MPH_TO_KPH)
+
+  cases = (
+    (30.0, 30.0),
+    (50.0, 50.0),
+    (65.0, 57.5),
+    (75.0, 62.5),
+    (80.0, 65.0),
+    (90.0, 75.0),
+  )
+  for posted_mph, want_mph in cases:
+    posted = posted_mph * CV.MPH_TO_KPH
+    got = stepped_map_target_kph(
+      posted, hypermile_on=True, step_down_on=True, map_offset_kph=eco_off,
+    )
+    _approx(got, want_mph * CV.MPH_TO_KPH)
+    # Eco −8 does not stack; user slider is ignored.
+    _approx(got, (posted_mph + step_down_offset_mph(posted_mph)) * CV.MPH_TO_KPH)
+
   # Hypermile Off: step-down param On is inert; user offset still applies.
   _approx(stepped_map_target_kph(
     posted_75, hypermile_on=False, step_down_on=True, map_offset_kph=eco_off,
   ), 70.0 * CV.MPH_TO_KPH)
-  _approx(map_target_offset_kph(eco_off, hypermile_on=True, step_down_on=True), -15.0 * CV.MPH_TO_KPH)
+  # No posted: do not invent a −15 drop.
+  _approx(map_target_offset_kph(eco_off, hypermile_on=True, step_down_on=True), 0.0)
   # Never more than 15 under; never above posted while stepping down.
   raw = 80.0 * CV.MPH_TO_KPH
   target = stepped_map_target_kph(raw, hypermile_on=True, step_down_on=True, map_offset_kph=-50.0)
@@ -239,13 +258,13 @@ def test_eco_offset_scales_with_posted_not_flat_minus_five():
   _approx(stepped_map_target_kph(
     30.0 * CV.MPH_TO_KPH, hypermile_on=False, step_down_on=False, map_offset_kph=user_minus_five,
   ), 25.0 * CV.MPH_TO_KPH)
-  # Step Down On still replaces eco with a fixed −15.
+  # Step Down On: town stays 30; 80→65 (replaces eco, no stack).
   _approx(stepped_map_target_kph(
     30.0 * CV.MPH_TO_KPH, hypermile_on=True, step_down_on=True, map_offset_kph=user_plus_five,
-  ), 15.0 * CV.MPH_TO_KPH)
+  ), 30.0 * CV.MPH_TO_KPH)
   _approx(stepped_map_target_kph(
-    90.0 * CV.MPH_TO_KPH, hypermile_on=True, step_down_on=True, map_offset_kph=0.0,
-  ), 75.0 * CV.MPH_TO_KPH)
+    80.0 * CV.MPH_TO_KPH, hypermile_on=True, step_down_on=True, map_offset_kph=0.0,
+  ), 65.0 * CV.MPH_TO_KPH)
 
 
 def test_le_50_uses_far_gap_gt_50_uses_stalk_level():
@@ -380,7 +399,8 @@ def test_settings_and_docs_wire_hypermile():
   assert "hypermile.md" in readme
   assert "Hypermile" in docs
   assert "Step Down Speed" in docs
-  assert "15 mph under" in docs
+  assert "15 mph under" in docs or "−15 at 80" in docs
+  assert "step_down_offset_mph" in hm_src
   assert "early, light regenerative" in docs.lower() or "early, light" in docs.lower()
   assert "not maximum regen" in docs.lower() or "not max regen" in docs.lower()
   assert "posted-scaled" in docs.lower() or "scaled" in docs.lower()
@@ -391,4 +411,5 @@ def test_settings_and_docs_wire_hypermile():
   assert "Early" in hm_rel
   assert "30" in hm_rel and "25" in hm_rel
   assert "−8" in hm_rel
+  assert "−15" in hm_rel
   assert "nap-release" not in docs.lower() or "not a nap-release" in docs.lower()

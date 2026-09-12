@@ -43,20 +43,20 @@ Second toggle under Hypermile: **Step Down Speed** (`NAPHypermileStepDown`, defa
 | Hypermile | Step Down | Map MAX target |
 |-----------|-----------|----------------|
 | On | Off | Posted + posted-scaled eco (30 stays 30; 80→72; 90→82) |
-| On | On | **15 mph under raw posted** (75→60, 55→40). Replaces eco — does not stack |
+| On | On | Same 50→80 scale, **−15 at 80** (30 stays 30; 75→62.5; 80→65; 90→75). Replaces eco — does not stack |
 | Off | On or Off | Step-down ignored. Normal posted / held MAX |
 
-Hard cap: never more than 15 mph under posted, never above posted. Legal: step-down only lowers.
+Same breakpoints as eco: **0** at/under 50, linear to the 80 value, cap above 80. Hard cap: never more than 15 mph under posted, never above posted. Legal: step-down only lowers. No flat −15 on town limits.
 
 This is an offset on the **posted/map target** Cap/Follow already use (`posted_kph` / `apply_map_speed_kph` offset). Sticky / one-SET / rebase are not rewritten.
 
 **What wins**
 
-- **Follow + stalk SET:** driver can hold above the step-down (up to posted). Sticky until the posted *value* changes, then MAX rebases to the new posted−15.
-- **Cap:** cannot exceed the stepped posted (75 posted + step-down → cap 60).
+- **Follow + stalk SET:** driver can hold above the step-down (up to posted). Sticky until the posted *value* changes, then MAX rebases to the new scaled step-down target.
+- **Cap:** cannot exceed the stepped posted (80 posted + step-down → cap 65).
 - **One-SET** after a long pause: resume held MAX (already rebased if posted or step-down changed).
 - **Double SET:** take the current map target (stepped if On).
-- Toggling Step Down On/Off mid-drive changes the posted target (scaled eco ↔ posted−15), which Follow treats as a posted change and rebases.
+- Toggling Step Down On/Off mid-drive changes the posted target (scaled eco ↔ scaled step-down), which Follow treats as a posted change and rebases.
 
 ## B — Speed-split follow + stalk 1–5
 
@@ -102,7 +102,7 @@ When the 1–5 level changes onroad, selfdrived fires `EventName.hypermileFollow
 
 ## Tests
 
-`selfdrive/controls/tests/test_hypermile.py` — On snaps + Off restore (offset param not written −5); posted-scaled eco (30 stays 30; 50 / 65 / 80 / 90); ≤50 far gap; >50 stalk level; stalk up/down 1–5; safe floor; settings/docs wiring.
+`selfdrive/controls/tests/test_hypermile.py` — On snaps + Off restore (offset param not written −5); posted-scaled eco (30 stays 30; 80→72) and Step Down (30 stays 30; 75→62.5; 80→65); ≤50 far gap; >50 stalk level; stalk up/down 1–5; safe floor; settings/docs wiring.
 
 `selfdrive/controls/lib/tests/test_curve_max_hold.py` — curve snapshot/restore (sticky 60 survives a bend; a lower posted/eco target does not replace it).
 

@@ -18,8 +18,8 @@ PARAM_FOLLOW_LEVEL = "NAPHypermileFollowLevel"
 PARAM_SAVED = "NAPHypermileSaved"
 PARAM_STEP_DOWN = "NAPHypermileStepDown"
 
-# Mileage defer: fixed 15 mph under raw OSM posted. Does not stack with the
-# posted-scaled eco offset. Hard cap — never more than this under posted.
+# Mileage defer: same 50→80 posted scale as eco, larger drop. Does not
+# stack with eco. Hard cap — never more than this under posted.
 STEP_DOWN_MPH = 15.0
 
 # Stalk-selected band while Hypermile is On.
@@ -148,10 +148,21 @@ def step_down_applies(hypermile_on: bool, step_down_on: bool) -> bool:
   return bool(hypermile_on) and bool(step_down_on)
 
 
-def eco_map_offset_mph(posted_mph: float | None) -> float:
-  """Posted-scaled Hypermile eco offset (mph). Town stays posted.
+def _posted_mph(posted_kph: float | None) -> float | None:
+  if posted_kph is None:
+    return None
+  try:
+    pk = float(posted_kph)
+  except (TypeError, ValueError):
+    return None
+  if pk <= 0:
+    return None
+  return pk * CV.KPH_TO_MPH
 
-  ≤50 → 0; 80 → −8; >80 → −8 cap; linear 50→80.
+
+def posted_scale_offset_mph(posted_mph: float | None, full_offset_mph: float) -> float:
+  """0 at/under 50, linear to full_offset at 80, cap above 80.
+
   Unknown / non-positive posted → 0 (do not invent a town drop).
   """
   if posted_mph is None:
@@ -163,10 +174,26 @@ def eco_map_offset_mph(posted_mph: float | None) -> float:
   if posted <= ECO_OFFSET_START_MPH:
     return 0.0
   if posted >= ECO_OFFSET_FULL_MPH:
-    return float(ECO_MAP_OFFSET_MPH)
+    return float(full_offset_mph)
   span = ECO_OFFSET_FULL_MPH - ECO_OFFSET_START_MPH
   t = (float(posted) - ECO_OFFSET_START_MPH) / span
-  return float(ECO_MAP_OFFSET_MPH) * t
+  return float(full_offset_mph) * t
+
+
+def eco_map_offset_mph(posted_mph: float | None) -> float:
+  """Posted-scaled Hypermile eco offset (mph). Town stays posted.
+
+  ≤50 → 0; 80 → −8; >80 → −8 cap; linear 50→80.
+  """
+  return posted_scale_offset_mph(posted_mph, ECO_MAP_OFFSET_MPH)
+
+
+def step_down_offset_mph(posted_mph: float | None) -> float:
+  """Posted-scaled Step Down offset (mph). Same breakpoints as eco, −15 at 80.
+
+  ≤50 → 0; 80 → −15; >80 → −15 cap. Replaces eco — does not stack.
+  """
+  return posted_scale_offset_mph(posted_mph, -STEP_DOWN_MPH)
 
 
 def map_target_offset_kph(
@@ -178,22 +205,15 @@ def map_target_offset_kph(
 ) -> float:
   """Offset added to raw OSM posted for Cap/Follow.
 
-  Hypermile On + Step Down On: −15 mph, replacing the eco/user offset so
-  75→60 (not 55). Hypermile On + Step Down Off: live posted-scaled eco
-  (≤50 → 0, 80+ → −8), not the Map Speed Offset param. Hypermile Off:
-  step-down is inert; keep map_offset_kph.
+  Hypermile On + Step Down On: posted-scaled −15 at 80 (0 at/under 50),
+  replacing eco so 80→65 (not 57). Hypermile On + Step Down Off: live
+  posted-scaled eco (≤50 → 0, 80+ → −8). Unknown posted → 0. Hypermile
+  Off: step-down is inert; keep map_offset_kph.
   """
+  posted_mph = _posted_mph(posted_kph)
   if step_down_applies(hypermile_on, step_down_on):
-    return -STEP_DOWN_MPH * CV.MPH_TO_KPH
+    return step_down_offset_mph(posted_mph) * CV.MPH_TO_KPH
   if hypermile_on:
-    posted_mph = None
-    if posted_kph is not None:
-      try:
-        pk = float(posted_kph)
-      except (TypeError, ValueError):
-        pk = 0.0
-      if pk > 0:
-        posted_mph = pk * CV.KPH_TO_MPH
     return eco_map_offset_mph(posted_mph) * CV.MPH_TO_KPH
   return float(map_offset_kph)
 

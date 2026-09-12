@@ -33,7 +33,7 @@ class DrivingMannerismsLayoutMici(NavScroller):
     hypermile.set_value("Off default — early light eco, not max regen")
 
     step_down = BigParamControl("step down speed", NAP_HYPERMILE_STEP_DOWN)
-    step_down.set_value("Off — 15 mph under posted when On")
+    step_down.set_value("Off — scaled drop, −15 at 80 when On")
     step_down.set_visible(lambda: self._params.get_bool(NAP_HYPERMILE))
 
     adaptive_accel = BigParamControl("adaptive accel limits", NAPParamKeys.ADAPTIVE_ACCEL)

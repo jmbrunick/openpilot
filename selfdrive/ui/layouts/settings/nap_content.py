@@ -45,13 +45,14 @@ HYPERMILE_FOLLOW_DESCRIPTION = (
 )
 HYPERMILE_STEP_DOWN_DESCRIPTION = (
   "Default Off. Defer Speed for Range — only while Hypermile is On. "
-  + "On: Cap/Follow targets 15 mph under the posted map limit "
-  + "(75→60, 55→40). Never more than 15 under, never above posted. "
-  + "Does not stack with the posted-scaled eco offset. Off: hold posted / held "
-  + "MAX as usual. Follow sticky: a stalk SET can still hold above "
-  + "the step-down (up to posted) until the posted value changes. "
-  + "Cap cannot exceed the stepped target. One-SET resumes held MAX. "
-  + "Double SET takes the current map target (stepped if On)."
+  + "On: same posted-scale as eco, larger drop — 0 under 50 mph so "
+  + "town 30 stays 30, −15 at 80 (80→65), cap −15 above. Never more "
+  + "than 15 under, never above posted. Does not stack with eco. Off: "
+  + "hold posted / held MAX as usual. Follow sticky: a stalk SET can "
+  + "still hold above the step-down (up to posted) until the posted "
+  + "value changes. Cap cannot exceed the stepped target. One-SET "
+  + "resumes held MAX. Double SET takes the current map target "
+  + "(stepped if On)."
 )
 
 NAP_SPEED_SIGN_LOG = "NAPSpeedSignLog"
