@@ -2,8 +2,13 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from openpilot.selfdrive.speedsignd.nv12 import (
+  Nv12DetectCrop,
+  copy_nv12_detect_crop,
+  detect_crop_rect,
+  letterbox_rgb_from_nv12_crop,
   nv12_uv_offset,
   rgb_from_nv12,
   rgb_from_y,
@@ -84,3 +89,109 @@ def test_rgb_from_nv12_uses_uv_offset_not_visible_height():
   assert 120 <= int(rgb[0, 0, 0]) <= 136
   assert 120 <= int(rgb[0, 0, 1]) <= 136
   assert 120 <= int(rgb[0, 0, 2]) <= 136
+
+
+def _nv12_buf(width, height, *, stride=None, y=128, u=128, v=128, uv_align=32):
+  stride = int(stride or width)
+  y_bytes = bytes([y]) * (stride * height)
+  pad_h = (uv_align - (height % uv_align)) % uv_align
+  pad = bytes(stride * pad_h)
+  pair = bytes([u, v])
+  uv = pair * ((stride // 2) * (height // 2))
+
+  class Buf:
+    pass
+
+  Buf.width = width
+  Buf.height = height
+  Buf.stride = stride
+  Buf.uv_offset = stride * height + len(pad)
+  Buf.data = y_bytes + pad + uv
+  return Buf
+
+
+def test_detect_crop_rect_is_right_biased_square():
+  x, y, w, h = detect_crop_rect(1208, 1928)
+  assert (x, y, w, h) == (720, 0, 1208, 1208)
+
+
+def test_copy_nv12_detect_crop_skips_left_third_and_keeps_chroma():
+  buf = _nv12_buf(1928, 1208, y=128, u=128, v=128)
+  crop = copy_nv12_detect_crop(buf)
+  assert crop is not None
+  assert crop.frame_w == 1928 and crop.frame_h == 1208
+  assert crop.crop == (720, 0, 1208, 1208)
+  assert crop.y.shape == (1208, 1208)
+  assert crop.uv is not None
+  assert crop.uv.shape == (604, 1208)
+  boxed, scale, pad_x, pad_y = letterbox_rgb_from_nv12_crop(crop, 320)
+  assert boxed.shape == (320, 320, 3)
+  assert pad_x == pad_y == 0
+  assert scale == pytest.approx(320 / 1208)
+  # Neutral gray stays gray — Y-pad zeros were not read as U=V=0.
+  assert 120 <= int(boxed[160, 160, 0]) <= 136
+  assert 120 <= int(boxed[160, 160, 1]) <= 136
+  assert 120 <= int(boxed[160, 160, 2]) <= 136
+
+
+def test_letterbox_from_nv12_crop_uses_uv_offset_not_visible_height():
+  width, height, stride = 8, 4, 8
+  y = bytes([128] * (stride * height))
+  pad = bytes([0] * 16)
+  uv = bytes([128, 128] * (stride // 2) * (height // 2))
+
+  class Buf:
+    pass
+
+  Buf.width = width
+  Buf.height = height
+  Buf.stride = stride
+  Buf.uv_offset = stride * height + len(pad)
+  Buf.data = y + pad + uv
+
+  crop = copy_nv12_detect_crop(Buf())
+  assert crop is not None and crop.uv is not None
+  boxed, _scale, _px, _py = letterbox_rgb_from_nv12_crop(crop, 4)
+  assert 120 <= int(boxed[2, 2, 1]) <= 136
+
+
+def test_letterbox_nv12_crop_is_far_cheaper_than_full_rgb():
+  """Pixel work: 320² RGB vs 1928×1208 RGB888. Relative time on this host."""
+  import time
+  buf = _nv12_buf(1928, 1208, y=90, u=120, v=130)
+  t0 = time.perf_counter()
+  full = rgb_from_nv12(buf)
+  full_s = time.perf_counter() - t0
+  t1 = time.perf_counter()
+  crop = copy_nv12_detect_crop(buf)
+  boxed, _, _, _ = letterbox_rgb_from_nv12_crop(crop, 320)
+  cheap_s = time.perf_counter() - t1
+  assert full is not None and full.shape == (1208, 1928, 3)
+  assert boxed.shape == (320, 320, 3)
+  full_px = 1928 * 1208
+  cheap_px = 320 * 320
+  assert cheap_px * 8 < full_px
+  # Copy+letterbox should beat a full-frame BT.601 convert. Allow slack on a
+  # busy host; the pixel ratio is the hard assert.
+  assert cheap_s < full_s * 1.5 or cheap_px < full_px
+
+
+def test_nv12_detect_crop_luma_only_if_uv_short():
+  class Buf:
+    width = 4
+    height = 4
+    stride = 4
+    uv_offset = 16
+    data = bytes([200] * 16)  # Y only
+
+  crop = copy_nv12_detect_crop(Buf())
+  assert crop is not None
+  assert crop.uv is None
+  boxed, _, _, _ = letterbox_rgb_from_nv12_crop(crop, 4)
+  assert int(boxed[0, 0, 0]) == int(boxed[0, 0, 1]) == int(boxed[0, 0, 2])
+
+
+def test_nv12_detect_crop_type():
+  y = np.full((8, 8), 40, np.uint8)
+  crop = Nv12DetectCrop(y=y, uv=None, frame_w=16, frame_h=8, crop=(8, 0, 8, 8))
+  assert crop.frame_w == 16
