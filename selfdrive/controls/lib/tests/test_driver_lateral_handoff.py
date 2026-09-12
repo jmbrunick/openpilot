@@ -77,10 +77,11 @@ def _step(h, *, torque=0.0, rate=0.0, engaged=True, lat=True, alc=False,
   )
 
 
-def _yield(h, torque=0.85, rate=25.0, hands_on=1):
+def _yield(h, torque=0.85, rate=25.0, hands_on=1, blinker_paused=False):
   out = None
   for _ in range(max(SOFT_YIELD_DEBOUNCE_FRAMES, required_press_frames(torque))):
-    out = _step(h, torque=torque, rate=rate, hands_on=hands_on)
+    out = _step(h, torque=torque, rate=rate, hands_on=hands_on,
+                blinker_paused=blinker_paused)
   assert out is not None
   assert out.yielded
   assert out.authority == 0.0
@@ -103,9 +104,10 @@ def _quiet(h, seconds):
   return _step(h, torque=0.0, rate=0.0, hands_on=0, dt=seconds)
 
 
-def _hands_off(h, *, torque=0.0, rate=0.0):
+def _hands_off(h, *, torque=0.0, rate=0.0, blinker_paused=False, lat=True):
   """Confirm handsOnLevel==0 for HANDS_OFF_CONFIRM_S — starts the 1 s blend."""
-  return _step(h, torque=torque, rate=rate, hands_on=0, dt=HANDS_OFF_CONFIRM_S)
+  return _step(h, torque=torque, rate=rate, hands_on=0, dt=HANDS_OFF_CONFIRM_S,
+               blinker_paused=blinker_paused, lat=lat)
 
 
 def test_thresholds_are_derived_from_real_steering_pressed():
@@ -521,6 +523,15 @@ def test_blinker_and_alc_paths_unchanged_and_do_not_arm_from_handoff():
     left_blinker=True, right_blinker=False, hold=hold, engaged=True,
   )
   assert not lat
+  hold_on = BlinkerLateralHold()
+  lat_soft = lat_active_with_blinker_pause(
+    active=True, steer_fault_temporary=False, steer_fault_permanent=False,
+    standstill=False, steer_at_standstill=False,
+    left_blinker=True, right_blinker=False, hold=hold_on, engaged=True,
+    soft_lat_on=True,
+  )
+  assert lat_soft
+  assert hold_on.turn_active
   h = _new()
   out = _step(h, torque=0.8, lat=False, blinker_paused=True)
   assert out.authority == 1.0
@@ -534,12 +545,103 @@ def test_blinker_and_alc_paths_unchanged_and_do_not_arm_from_handoff():
   assert out.authority == 1.0
 
 
-def test_blinker_pause_gates_handoff_resume_blends_immediately():
-  """Post-turn grab: blinker resume used to restore authority=1 onto model.
+def test_soft_lat_blinker_on_does_not_strip_lat():
+  """Blinker rise alone must not clear lat / force EPS free."""
+  h = _new()
+  out = _step(h, torque=0.2, lat=True, blinker_paused=True)
+  assert out.authority == 1.0
+  assert not out.yielded
+  assert not out.blending
+  assert lat_active_after_handoff(True, out.yielded)
+  for _ in range(int(1.0 / DT)):
+    out = _step(h, torque=0.2, lat=True, blinker_paused=True)
+    assert out.authority == 1.0
+    assert not out.yielded
+    assert not out.blending
 
-  Soft-yield stays gated during the pause. Rising edge starts the 1 s
-  blend this frame (QUIET_WAIT_S == 0) — no yank, no extra quiet delay.
-  Standstill-style lat-down without blinker_paused does not blend.
+
+def test_soft_lat_may_still_yield_while_driver_turn_blinker_on():
+  h = _new()
+  _step(h, torque=0.2, lat=True, blinker_paused=True)
+  out = _yield(h, blinker_paused=True)
+  assert out.yielded
+  assert not lat_active_after_handoff(True, out.yielded)
+  # Blinker still on: stay yielded (do not start take-back).
+  out = _hands_off(h, torque=0.0, blinker_paused=True)
+  assert out.yielded
+  assert not out.blending
+
+
+def test_soft_lat_blinker_on_blocks_reenable_and_aborts_blend():
+  """Yielded or blending + driver-turn blinker → stay yielded."""
+  h = _new()
+  _yield(h)
+  out = _hands_off(h)
+  assert out.blending
+  assert not out.yielded
+  out = _step(h, torque=0.0, lat=True, blinker_paused=True, hands_on=0)
+  assert out.yielded
+  assert not out.blending
+  assert out.authority == 0.0
+  for _ in range(int((HANDS_OFF_CONFIRM_S + BLEND_TIME_S) / DT) + 5):
+    out = _step(h, torque=0.0, lat=True, blinker_paused=True, hands_on=0)
+    assert out.yielded
+    assert not out.blending
+    assert out.authority == 0.0
+
+
+def test_soft_lat_blinker_clear_lands_in_yield_then_normal_resume():
+  """After blinker clear: enter yield, then 0.15 s confirm + 1 s blend.
+
+  No dedicated blinker rising-edge blend. Keep-control through the
+  blinker (never yielded) must not be stripped on the falling edge.
+  """
+  h = _new()
+  _yield(h)
+  for _ in range(20):
+    out = _step(h, torque=0.2, lat=True, blinker_paused=True, hands_on=1)
+    assert out.yielded
+    assert not out.blending
+  # Falling edge, hands still on: stay yielded (not an immediate blend).
+  out = _step(h, torque=0.2, lat=True, blinker_paused=False, hands_on=1)
+  assert out.yielded
+  assert not out.blending
+  assert out.authority == 0.0
+  assert not lat_active_after_handoff(True, out.yielded)
+  # Hands off for the confirm — not a 1 s blinker shortcut this frame.
+  out = _step(h, torque=0.0, lat=True, blinker_paused=False, hands_on=0,
+              dt=HANDS_OFF_CONFIRM_S - DT)
+  assert out.yielded
+  assert not out.blending
+  out = _hands_off(h)
+  assert out.blending
+  assert not out.yielded
+  assert out.authority == 0.0
+  for _ in range(int(BLEND_TIME_S / DT)):
+    out = _step(h, torque=0.0)
+  assert out.authority == 1.0
+  assert not out.blending
+  assert not out.ui_paused
+
+  # Never yielded: blinker on then off keeps control.
+  h = _new()
+  for _ in range(20):
+    out = _step(h, torque=0.2, lat=True, blinker_paused=True)
+    assert out.authority == 1.0
+    assert not out.yielded
+  out = _step(h, torque=0.2, lat=True, blinker_paused=False)
+  assert out.authority == 1.0
+  assert not out.yielded
+  assert not out.blending
+
+
+def test_blinker_pause_lat_down_resume_enters_yield_not_immediate_blend():
+  """Standstill/fault lat-down during a driver-turn: do not 1 s-blend back.
+
+  Soft-lat On no longer uses lamp latch as lat-down. If lat *is* down
+  (standstill) while the turn is latched, remember it and land in yield
+  when lat returns — then the normal 0.15 s confirm + 1 s blend.
+  Standstill-style lat-down without blinker_paused does not yield/blend.
   """
   h = _new()
   for _ in range(int(1.5 / DT)):
@@ -548,10 +650,13 @@ def test_blinker_pause_gates_handoff_resume_blends_immediately():
     assert not out.yielded
     assert not out.blending
   out = _step(h, torque=0.2, lat=True, blinker_paused=False)
-  assert out.blending
-  assert not out.yielded
+  assert out.yielded
+  assert not out.blending
   assert out.authority == 0.0
   assert out.ui_paused
+  out = _hands_off(h, torque=0.0)
+  assert out.blending
+  assert not out.yielded
   for _ in range(int(BLEND_TIME_S / DT)):
     out = _step(h, torque=0.0)
   assert out.authority == 1.0
@@ -563,6 +668,7 @@ def test_blinker_pause_gates_handoff_resume_blends_immediately():
     _step(h, torque=0.0, lat=False, blinker_paused=False)
   out = _step(h, torque=0.0, lat=True)
   assert not out.blending
+  assert not out.yielded
   assert out.authority == 1.0
 
 
@@ -734,20 +840,30 @@ def test_unyielded_lat_inactive_still_uses_measured_curvature():
 
 
 def test_blinker_resume_pins_then_blends_from_wheel_not_model():
-  """Lot turn: model points at grass; resume must not command that instantly."""
+  """Lot turn: model points at grass; resume must not command that instantly.
+
+  Soft-lat On keeps lat during the blinker unless yielded. After a
+  yielded turn, falling blinker lands in yield (pin), then the normal
+  confirm + 1 s blend from the wheel — not a grass-pointing snap.
+  """
   h = _new()
   model_curv = 0.02  # "into the grass"
   meas_curv = 0.001
   meas_angle = _angle_from_curv(meas_curv)
   desired = 0.015  # lagged planner from the turn
 
+  _yield(h, blinker_paused=True)
   for _ in range(10):
-    out = _step(h, torque=0.2, lat=False, blinker_paused=True)
-    assert not out.yielded
+    out = _step(h, torque=0.2, lat=True, blinker_paused=True, hands_on=1)
+    assert out.yielded
     assert pin_desired_curvature_to_measured(out.yielded, lat_active=False)
     desired = meas_curv  # controlsd snap-pin while lat down
 
-  out = _step(h, torque=0.0, lat=True, blinker_paused=False)
+  out = _step(h, torque=0.0, lat=True, blinker_paused=False, hands_on=0)
+  assert out.yielded
+  assert not out.blending
+  assert pin_desired_curvature_to_measured(out.yielded, lat_active=False)
+  out = _hands_off(h)
   assert out.blending
   assert out.authority == 0.0
   assert not pin_desired_curvature_to_measured(out.yielded, lat_active=True)
@@ -765,7 +881,8 @@ def test_blinker_resume_pins_then_blends_from_wheel_not_model():
   assert abs(desired - meas_curv) < abs(model_curv - meas_curv)
   cs = (Path(__file__).resolve().parents[4] / "selfdrive/controls/controlsd.py").read_text()
   assert "blinker_paused" in cs
-  assert "blinker_lat_hold.holding" in cs
+  assert "blinker_lat_hold.turn_active" in cs
+  assert "soft_lat_on" in cs
 
 
 def test_disabled_for_non_preap_is_identity():
@@ -777,10 +894,11 @@ def test_disabled_for_non_preap_is_identity():
 
 
 def test_blinker_resume_with_hands_on_yields_instead_of_blend():
-  """Rising edge while still on the rim must not pull toward the model."""
+  """After a yielded turn, blinker falling while still on the rim stays yielded."""
   h = _new()
+  _yield(h, blinker_paused=True)
   for _ in range(10):
-    _step(h, torque=0.2, lat=False, blinker_paused=True, hands_on=1)
+    _step(h, torque=0.2, lat=True, blinker_paused=True, hands_on=1)
   out = _step(h, torque=0.2, lat=True, blinker_paused=False, hands_on=1)
   assert out.yielded
   assert not out.blending

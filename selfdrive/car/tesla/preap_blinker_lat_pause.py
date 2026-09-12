@@ -470,11 +470,16 @@ def _update_preap(cs, can_parsers):
   engagement = getattr(cs, "engagement", None)
   if engagement is not None:
     hold = getattr(engagement, "_nap_lat_hold", None)
-    blinker_paused = bool(hold is not None and (hold.holding or hold.turn_active))
+    # Driver-turn latch only (not ALC, not post-turn hand-on). Soft-lat
+    # On must not treat lamp latch as lat-down — that reset the card
+    # handoff and forgot a yield (emergency cancel / inhibit). Soft-lat
+    # Off is identity here; BlinkerLateralHold still frees lat in
+    # controlsd.
+    driver_turn = bool(hold is not None and hold.turn_active)
     canceled = update_card_lat_handoff(
       engagement,
       engaged=bool(getattr(engagement, "cruiseEnabled", False)),
-      lat_would_be_active=not blinker_paused,
+      lat_would_be_active=True,
       steering_torque=float(getattr(ret, "steeringTorque", 0.0) or 0.0),
       steering_rate_deg=float(getattr(ret, "steeringRateDeg", 0.0) or 0.0),
       hands_on_level=hands,
@@ -482,7 +487,7 @@ def _update_preap(cs, can_parsers):
       a_ego=float(getattr(ret, "aEgo", 0.0) or 0.0),
       v_ego=float(getattr(ret, "vEgo", 0.0) or 0.0),
       alc_active=bool(getattr(engagement, "_nap_alc_active", False)),
-      blinker_paused=blinker_paused,
+      blinker_paused=driver_turn,
     )
     if canceled:
       if hasattr(ret, "cruiseState"):

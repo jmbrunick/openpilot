@@ -17,8 +17,16 @@ Yield now reuses the blinker lat-pause EPS release: latActive false →
 carcontroller sends DAS_steeringControlType=0. Hands stay detected
 via EPAS_handsOnLevel (and a light probe). Resume is still pin-to-
 wheel while lat is down + the same 1 s blend; hands still on the rim
-stay yielded (do not blend onto the model). Blinker rising-edge
-re-entry is unchanged.
+stay yielded (do not blend onto the model).
+
+Driver-turn blinker (soft-lat On): lamp latch must not strip lat.
+Keep control if we still have it. Soft-lat may still yield on a
+driver push. While the driver-turn blinker is latched, do not
+re-enable (stay yielded / do not finish a take-back blend). After
+it clears, land in yield and use the normal 0.15 s hands-off
+confirm + 1 s blend — no dedicated blinker rising-edge blend.
+Soft-lat Off keeps the stock lamp-latch lat pause so turns still
+free the wheel.
 
 Intent (Pre-AP EPAS) — required to *enter* yield:
   EPAS_torsionBarTorque / CS.steeringTorque
@@ -85,10 +93,12 @@ Emergency / hard brake (see emergency_brake() and docs-nap/engagement.md):
   This module does not call the silent long-pause path.
 
 While yielded, latActive is false (EPS released) and controlsd pins
-desired_curvature to measured so resume clips from the wheel. Blinker
-lat-pause is a different path: this module resets to identity and
-remembers the pause so the rising edge can 1 s blend (or stay yielded
-if hands are still on).
+desired_curvature to measured so resume clips from the wheel. A
+driver-turn blinker is not a lat-down by itself when soft-lat is On:
+this module treats it as a re-enable inhibit and, on the falling
+edge after a yield / lat-down, enters yield so the normal resume
+owns the take-back. Soft-lat Off still uses BlinkerLateralHold to
+clear latActive on lamp latch.
 """
 
 from __future__ import annotations
@@ -521,15 +531,19 @@ class DriverLateralHandoff:
       self._reset()
       return self._identity()
 
-    # lat_would_be_active is the *pre-yield* request (blinker / standstill
-    # / faults). Caller drops CC.latActive after this update when yielded
-    # so the EPS is free — do not feed that dropped bit back in or we
-    # reset to identity and forget we yielded.
+    # lat_would_be_active is the *pre-yield* request (standstill / faults;
+    # and lamp-latch pause only when soft-lat is Off). Caller drops
+    # CC.latActive after this update when yielded so the EPS is free —
+    # do not feed that dropped bit back in or we reset to identity and
+    # forget we yielded.
     # ALC wheel-nudge uses steeringPressed at 1 Nm and must not be softened.
     # Full disengage (cancel / door / hands-on >= 2) clears engaged.
-    # Soft-yield stays gated (identity) while blinker already paused lat.
-    # Remember a driver-turn pause so the rising edge can 1 s blend
-    # instead of restoring authority=1 onto the model.
+    # blinker_paused is a latched *driver-turn* (not ALC tip/keep-alive).
+    # Soft-lat On: do not strip lat on lamp latch. Inhibit re-enable
+    # while the turn blinker is on; after it clears, enter yield so
+    # the normal 0.15 s confirm + 1 s blend owns resume (no dedicated
+    # blinker rising-edge blend). Soft-lat Off never reaches here
+    # (enabled=False → identity); BlinkerLateralHold still frees lat.
     if not engaged or alc_active:
       self._reset()
       return self._identity()
@@ -546,15 +560,27 @@ class DriverLateralHandoff:
     hands_on = hands_still_on(hands_on_level)
     firm_push = mag >= SOFT_YIELD_TRIGGER_NM
 
-    if self._blinker_was_paused:
-      self._blinker_was_paused = False
-      # Blinker pause already waited for steeringPressed release. Keep
-      # the #74 1 s re-entry. If a hand is still on the rim, yield
-      # instead of blending toward the model.
-      if hands_on or firm_push:
+    if blinker_paused:
+      # Keep control if we still have it. A driver push may still yield.
+      # Already yielded / blending / coming back from lat-down: stay
+      # yielded. Do not finish a take-back blend while the turn lamp
+      # is latched.
+      if self._yielded or self._blending or self._blinker_was_paused:
         self._enter_yield()
-      else:
-        self._start_blend()
+        self._blinker_was_paused = True
+      elif pressed:
+        self._enter_yield()
+        self._blinker_was_paused = True
+    elif self._blinker_was_paused:
+      # Driver-turn blinker just cleared (or lat came back after a
+      # blinker + standstill/fault). No dedicated 1 s blend shortcut.
+      # Land in yield; normal hands-off confirm owns the resume.
+      self._blinker_was_paused = False
+      self._enter_yield()
+      if not (hands_on or firm_push):
+        self._hands_off_s += dt
+        if self._hands_off_s + 1e-12 >= HANDS_OFF_CONFIRM_S:
+          self._start_blend()
     elif not self._yielded and not self._blending:
       if pressed:
         self._enter_yield()
