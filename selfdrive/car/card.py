@@ -24,6 +24,9 @@ from openpilot.selfdrive.mapd.map_speed_policy import (
   MapCruiseHold, apply_map_speed_kph, decide_map_cruise, effective_map_limit_ms,
   map_slew_a_ms2, read_map_speed_params, should_write_preap_pedal, slew_map_speed_ms,
 )
+from openpilot.selfdrive.controls.lib.hypermile import (
+  button_event_closer, detect_hypermile_stalk, persist_follow_level,
+)
 
 REPLAY = "REPLAY" in os.environ
 
@@ -69,7 +72,7 @@ class Car:
 
   def __init__(self, CI=None, RI=None) -> None:
     self.can_sock = messaging.sub_sock('can', timeout=20)
-    self.sm = messaging.SubMaster(['pandaStates', 'carControl', 'onroadEvents', 'liveMapDataNAP'])
+    self.sm = messaging.SubMaster(['pandaStates', 'carControl', 'onroadEvents', 'liveMapDataNAP', 'radarState'])
     self.pm = messaging.PubMaster(['sendcan', 'carState', 'carParams', 'carOutput', 'liveTracks'])
 
     self.can_rcv_cum_timeout_counter = 0
@@ -157,6 +160,7 @@ class Car:
     self._map_hold = MapCruiseHold()
     self._map_slew_ms: float | None = None
     self._last_pedal_kph: float | None = None
+    self._hypermile_stalk_mono: float = 0.0
     self._map_speed_mode, self._map_speed_offset_kph, self._map_speed_lookahead, self._map_speed_accel = (
       read_map_speed_params(self.params)
     )
@@ -230,6 +234,7 @@ class Car:
         # brake / driver-turn long pause so sticky MAX can rebase. The first
         # pull is lateral-only and must not seed or arm a sticky hold.
         raw_kph = float(CS.cruiseState.speed * CV.MS_TO_KPH)
+        raw_kph, hypermile_stalk = self._maybe_hypermile_stalk(CS, raw_kph)
         long_active = bool(getattr(CS, 'pedalLongActive', False))
         long_active_prev = bool(getattr(self.CS_prev, 'pedalLongActive', False))
         engage_rising = long_active and not long_active_prev
@@ -251,7 +256,7 @@ class Car:
         session_engaged = bool(session_enabled) and (
           soft_long or has_held or resume_held or take_speed_now
         )
-        stalk_pressed = self._preap_stalk_set_pressed(CS)
+        stalk_pressed = (not hypermile_stalk) and self._preap_stalk_set_pressed(CS)
         posted_kph = None
         map_kph = None
         map_valid = bool(self.sm.valid.get('liveMapDataNAP', False) and self.sm['liveMapDataNAP'].speedLimitValid)
@@ -385,6 +390,42 @@ class Car:
     eng = self._preap_engagement()
     if eng is not None:
       eng._nap_held_max_kph = float(self._map_hold.held_max_kph)
+
+  def _maybe_hypermile_stalk(self, CS, raw_kph: float) -> tuple[float, bool]:
+    """Route Pre-AP stalk +/- to Hypermile 1–5 when On and a lead is present.
+
+    Undoes the CI.update MAX step so sticky / Follow overlay does not arm.
+    No lead: leave stalk as MAX adjust. During a long pause, cruiseState.speed
+    is ego — only button edges remap follow.
+    """
+    has_lead = bool(
+      self.sm.valid.get("radarState", False)
+      and getattr(self.sm["radarState"].leadOne, "status", False)
+    )
+    soft_long = bool(getattr(CS, "enableLongControl", False))
+    prev_raw = None
+    try:
+      prev_raw = float(self.CS_prev.cruiseState.speed) * CV.MS_TO_KPH
+    except Exception:
+      prev_raw = None
+    is_stalk, closer, undo = detect_hypermile_stalk(
+      self.params,
+      has_lead=has_lead,
+      button_closer=button_event_closer(getattr(CS, "buttonEvents", None)),
+      raw_kph=raw_kph if soft_long else None,
+      prev_raw_kph=prev_raw if soft_long else None,
+    )
+    if not is_stalk:
+      return raw_kph, False
+    now = time.monotonic()
+    if closer is not None and (now - self._hypermile_stalk_mono) >= 0.25:
+      persist_follow_level(self.params, bool(closer))
+      self._hypermile_stalk_mono = now
+    if undo is not None and soft_long:
+      self._write_preap_pedal_speed(CS, undo)
+      self._last_pedal_kph = float(undo)
+      return float(undo), True
+    return raw_kph, True
 
   @staticmethod
   def _preap_stalk_set_pressed(CS) -> bool:

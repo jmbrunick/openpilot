@@ -20,6 +20,25 @@ MAP_SPEED_ACCEL_DEFAULT = 5
 FOLLOW_DISTANCE_VALUES = list(range(1, 8))
 FOLLOW_DISTANCE_LABELS = [str(i) for i in FOLLOW_DISTANCE_VALUES]
 FOLLOW_DISTANCE_DEFAULT = 4
+HYPERMILE_FOLLOW_VALUES = list(range(1, 6))
+HYPERMILE_FOLLOW_LABELS = [str(i) for i in HYPERMILE_FOLLOW_VALUES]
+HYPERMILE_FOLLOW_DEFAULT = 3
+NAP_HYPERMILE = "NAPHypermile"
+NAP_HYPERMILE_FOLLOW_LEVEL = "NAPHypermileFollowLevel"
+HYPERMILE_DESCRIPTION = (
+  "Default Off. On snaps Adaptive Accel and map-speed eco knobs "
+  + "(Cap/Follow, −5 mph offset, lookahead on, gentler climb) and "
+  + "restores them when you turn Off. Soft-lat, DM, and blinker stay "
+  + "as you set them. Below ~50 mph follow sits far back; above 50 mph "
+  + "uses a stalk 1–5 draft band (1=closest safe, 5=furthest). With a "
+  + "lead, stalk up=closer and down=farther. No lead: stalk still "
+  + "adjusts MAX. Never bumper-drafts; lead braking stays on."
+)
+HYPERMILE_FOLLOW_DESCRIPTION = (
+  "Hypermile follow (1=closest draft, 3=standard, 5=furthest). "
+  + "Used above ~50 mph. At or below 50 mph NAP holds a far gap to "
+  + "cut stop-and-go. Stalk up/down steps this while a lead is present."
+)
 
 NAP_SPEED_SIGN_LOG = "NAPSpeedSignLog"
 NAP_DRIVER_LAT_HANDOFF = "NAPDriverLatHandoff"

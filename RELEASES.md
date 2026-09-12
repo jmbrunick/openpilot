@@ -1,3 +1,7 @@
+NAP Hypermile (2026-09-12)
+========================
+* Settings → NAP → Driving Mannerisms → **Hypermile** (default Off, nap-dev only). On snaps Adaptive Accel + Cap/Follow / −5 mph / lookahead / gentler map climb, then restores those knobs when Off. Soft-lat / DM / blinker unchanged. Below ~50 mph follow sits far back (stock 7 / 1.9 s); above 50 mph uses a stalk 1–5 draft band (1=closest safe 0.9 s, 5=1.7 s). With a lead, stalk up=closer and down=farther (MAX unchanged). No lead: stalk still adjusts MAX. HUD shows **Hypermile: Follow N** when the level changes. Not a nap-release change.
+
 NAP driver monitoring (2026-09-12)
 ========================
 * Pre-AP engaged: **Simulate Look-at-Road** (default On) injects a simulated glance on the **stock vision looking-path** (`face_detected` + low pose std + `driver_distraction_filter.x < 0.37`) and **holds** that attentive state until stock gradual recovery returns awareness to **1.0** (not a one-frame pulse / mute). After drain starts, wait **past 1.0 s**, then fire at a **random time in the next 2.0 s** — fire is uniform in **(1.0 s, 3.0 s]** of that countdown. After a full reset the same rule applies to the next countdown. Orange / red stay stock **5 / 11 s** if the toggle is Off. Hands-on ≥ 2 / stalk / door / reverse hard cancels unchanged. Replaces the #103 hands-on-only first-band reset. Settings → NAP → Driving Mannerisms. Not a nap-release change.
