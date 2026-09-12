@@ -4,7 +4,7 @@ from cereal import log
 from openpilot.common.realtime import DT_DMON
 from openpilot.selfdrive.monitoring.policy import (
   DriverMonitoring, DRIVER_MONITOR_SETTINGS, PARAM_DM_HANDS_ON_RESET,
-  HANDS_ON_DM_RESET_LEVEL, in_first_prompt_band,
+  HANDS_ON_DM_RESET_LEVEL, in_first_prompt_band, cs_hands_on_level_for_dm,
 )
 
 EventName = log.OnroadEvent.EventName
@@ -243,6 +243,19 @@ class TestMonitoring:
     assert alert_lvls[int((INVISIBLE_SECONDS_TO_ORANGE-1+DT_DMON*s._HI_STD_FALLBACK_TIME-0.1)/DT_DMON)] == 1
     assert alert_lvls[int((INVISIBLE_SECONDS_TO_ORANGE-1+DT_DMON*s._HI_STD_FALLBACK_TIME+0.1)/DT_DMON)] == 2
     assert alert_lvls[int((INVISIBLE_SECONDS_TO_RED-1+DT_DMON*s._HI_STD_FALLBACK_TIME+0.1)/DT_DMON)] == 3
+
+  def test_hands_on_reader_matches_soft_lat(self):
+    """DM uses the same cereal / stash / disengage read as soft-lat."""
+    from openpilot.selfdrive.controls.lib.driver_lateral_handoff import cs_hands_on_level
+    cases = [
+      _NS(handsOnLevel=1, steeringTorqueEps=0.0, steeringDisengage=False),
+      _NS(handsOnLevel=0, steeringTorqueEps=1.0, steeringDisengage=False),
+      _NS(handsOnLevel=0, steeringTorqueEps=0.0, steeringDisengage=True),
+      _NS(handsOnLevel=0, steeringTorqueEps=0.0, steeringDisengage=False),
+    ]
+    for cs in cases:
+      assert cs_hands_on_level_for_dm(cs) == cs_hands_on_level(cs)
+    assert HANDS_ON_DM_RESET_LEVEL == 1
 
   def test_stock_vision_timeouts_unchanged(self):
     s = DRIVER_MONITOR_SETTINGS()

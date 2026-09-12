@@ -3,12 +3,15 @@ from math import atan2, radians
 import numpy as np
 
 from cereal import car, log
-import cereal.messaging as messaging
 from openpilot.common.realtime import DT_DMON
 from openpilot.common.filter_simple import FirstOrderFilter
-from openpilot.common.params import Params
 from openpilot.common.stat_live import RunningStatFilter
 from openpilot.common.transformations.camera import DEVICE_CAMERAS
+
+try:
+  from openpilot.common.params import Params
+except Exception:  # params_pyx not built in some unit-test hosts
+  Params = None
 
 AlertLevel = log.DriverMonitoringState.AlertLevel
 MonitoringPolicy = log.DriverMonitoringState.MonitoringPolicy
@@ -30,6 +33,8 @@ HANDS_ON_DM_RESET_LEVEL = 1
 
 
 def _param_bool(name: str, default: bool) -> bool:
+  if Params is None:
+    return default
   try:
     return bool(Params().get_bool(name))
   except Exception:
@@ -38,8 +43,21 @@ def _param_bool(name: str, default: bool) -> bool:
 
 def cs_hands_on_level_for_dm(CS) -> int:
   """Same Pre-AP hands-on read as soft-lat (cereal + steeringTorqueEps stash)."""
-  from openpilot.selfdrive.controls.lib.driver_lateral_handoff import cs_hands_on_level
-  return cs_hands_on_level(CS)
+  vals = []
+  if hasattr(CS, 'handsOnLevel'):
+    try:
+      vals.append(int(CS.handsOnLevel or 0))
+    except (TypeError, ValueError):
+      pass
+  try:
+    ev = int(round(float(getattr(CS, 'steeringTorqueEps', 0.0) or 0.0)))
+    if 0 <= ev <= 3:
+      vals.append(ev)
+  except (TypeError, ValueError):
+    pass
+  if getattr(CS, 'steeringDisengage', False):
+    vals.append(2)
+  return max(vals) if vals else 0
 
 
 def in_first_prompt_band(awareness, step_change, threshold_alert_1, threshold_alert_2):
@@ -180,7 +198,7 @@ class DriverMonitoring:
     self.threshold_alert_2 = 0.
     self.dcam_uncertain_cnt = 0
     self.dcam_reset_cnt = 0
-    self.too_distracted = Params().get_bool("DriverTooDistracted")
+    self.too_distracted = _param_bool("DriverTooDistracted", False)
     # Default On. Settings → NAP → Driving Mannerisms can turn Off.
     self.nap_dm_hands_on_reset = _param_bool(PARAM_DM_HANDS_ON_RESET, True)
 
@@ -390,6 +408,7 @@ class DriverMonitoring:
 
   def get_state_packet(self, valid=True):
     # build driverMonitoringState packet
+    import cereal.messaging as messaging
     dat = messaging.new_message('driverMonitoringState', valid=valid)
     dm = dat.driverMonitoringState
 
