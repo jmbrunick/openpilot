@@ -1,8 +1,11 @@
 """Blinker-lamp lateral pause.
 
-Any single lit indicator lamp means the driver is turning and wants NAP to
-release steering while staying engaged. Tesla lamps stay on after the stalk
-returns, so the pause follows leftBlinker / rightBlinker, not the stalk enum.
+Any single lit indicator lamp means the driver is turning. Tesla lamps stay
+on after the stalk returns, so the hold follows leftBlinker / rightBlinker,
+not the stalk enum. Soft-lat Off still releases steering (clears latActive)
+while staying engaged. Soft-lat On keeps latActive on lamp latch — the
+handoff owns yield / re-enable inhibit / resume — but this helper still
+latches a *driver turn* for long pause and the soft-lat gate.
 
 Those lamp bits flash: they go dark between blinks. Latch turn-active as
 soon as one lamp is seen, and keep it through flash gaps until both lamps
@@ -240,7 +243,16 @@ def lat_active_with_blinker_pause(*, active, steer_fault_temporary, steer_fault_
                                   left_blinker, right_blinker,
                                   steering_pressed=False, hold=None, dt=None,
                                   alc_active=False, v_ego=0.0, stalk_state=0,
-                                  steering_disengage=False, engaged=None) -> bool:
+                                  steering_disengage=False, engaged=None,
+                                  soft_lat_on=False) -> bool:
+  """Blinker lamp latch vs latActive.
+
+  Always updates *hold* so a driver-turn (not ALC tip/keep-alive) is
+  still detected for long pause and the soft-lat re-enable gate.
+  When soft-lat is On, lamp latch must not clear latActive — the
+  handoff owns yield / inhibit / resume. Soft-lat Off keeps today's
+  pause so a held turn still frees the wheel.
+  """
   lat_active = bool(active) and not steer_fault_temporary and not steer_fault_permanent and \
                (not standstill or steer_at_standstill)
   if engaged is None:
@@ -253,6 +265,6 @@ def lat_active_with_blinker_pause(*, active, steer_fault_temporary, steer_fault_
   else:
     gated = pause_gated_by_alc(alc_active=alc_active)
     paused = blinker_pauses_lateral(left_blinker, right_blinker) and not gated
-  if paused:
+  if paused and not soft_lat_on:
     return False
   return lat_active
