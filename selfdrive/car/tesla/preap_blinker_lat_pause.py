@@ -16,7 +16,8 @@ Drop while a turn lamp or held LEFT/RIGHT is showing. After lamps/stalk
 go idle, long stays off until SET — including during the ~1s dark latch
 and while lat is still paused for hand-on. One stalk SET restores long
 whether lat is still paused or already active, and keeps the held MAX
-(which may already have rebased if posted changed). Default double-pull
+(which may already have rebased if posted changed). At a stop, that SET
+arms resume but does not take long until a light throttle. Default double-pull
 would otherwise treat that SET as a first pull (lat-only) and require a
 second pull inside the window; that path is skipped while a drop-long-keep-lat
 resume is pending. A second SET in the double-pull window forgets sticky
@@ -60,6 +61,10 @@ _ORIG_PROCESS = None
 _ORIG_DROP = None
 _ORIG_CHECK = None
 _installed = False
+
+# Same floor as controlsd lat standstill: abs(vEgo) <= max(minSteerSpeed, 0.3).
+# Pre-AP minSteerSpeed is 0, so 0.3 m/s (~0.7 mph) is "at a stop."
+RESUME_STANDSTILL_V_EGO = 0.3
 
 
 def _peek_blinker_lamps(can_parsers):
@@ -258,6 +263,30 @@ def _peek_stalk_and_speed(can_parsers):
     return 0, 0.0
 
 
+def _peek_gas_pressed(cs, can_parsers) -> bool:
+  """Light throttle: interceptor (prior frame) or DI_pedalPos this frame."""
+  if bool(getattr(getattr(cs, "pedal", None), "gas_pressed", False)):
+    return True
+  try:
+    from opendbc.car import Bus
+    from opendbc.car.tesla.preap.nap_conf import PEDAL_DI_PRESSED
+    pos = can_parsers[Bus.pt].vl["DI_torque1"].get("DI_pedalPos", 0)
+    if float(pos or 0) > PEDAL_DI_PRESSED:
+      return True
+  except Exception:
+    pass
+  return False
+
+
+def _peek_standstill(can_parsers) -> bool:
+  try:
+    from opendbc.car import Bus
+    sts = can_parsers[Bus.chassis].vl["ESP_B"].get("ESP_vehicleStandstillSts", 0)
+    return int(sts or 0) == 1
+  except Exception:
+    return False
+
+
 def _hold_for(engagement):
   hold = getattr(engagement, "_nap_lat_hold", None)
   if hold is None:
@@ -347,11 +376,61 @@ def _use_pedal(args, kwargs):
   return bool(kwargs.get("use_pedal", False))
 
 
+def _v_ego_ms(args, kwargs) -> float:
+  if len(args) >= 2:
+    return float(args[1] or 0.0)
+  return float(kwargs.get("v_ego", 0.0) or 0.0)
+
+
+def _long_control_allowed(args, kwargs) -> bool:
+  if len(args) >= 6:
+    return bool(args[5])
+  return bool(kwargs.get("long_control_allowed", False))
+
+
+def _real_brake_pressed(args, kwargs) -> bool:
+  if len(args) >= 7:
+    return bool(args[6])
+  return bool(kwargs.get("real_brake_pressed", False))
+
+
+def _at_standstill(engagement, v_ego: float) -> bool:
+  if bool(getattr(engagement, "_nap_standstill", False)):
+    return True
+  return abs(float(v_ego or 0.0)) <= RESUME_STANDSTILL_V_EGO
+
+
+def _gas_pressed(engagement) -> bool:
+  return bool(getattr(engagement, "_nap_gas_pressed", False))
+
+
+def _restore_held_max(engagement) -> None:
+  held = getattr(engagement, "_nap_held_max_kph", None)
+  if held is not None:
+    engagement.pedal_speed_kph = float(held)
+
+
+def _complete_standstill_resume(engagement, *, long_allowed: bool) -> None:
+  """Gas (or rolling SET) after an armed stop-SET: take long, keep held MAX."""
+  if not long_allowed or not engagement.cruiseEnabled:
+    return
+  engagement.enableLongControl = True
+  engagement.enableJustCC = False
+  engagement.pending_enable = False
+  engagement._nap_set_resume_long = True
+  _restore_held_max(engagement)
+  engagement._nap_long_resume_pending = False
+  engagement._nap_resume_wait_gas = False
+  if hasattr(engagement, "_clear_pedal_unavailable"):
+    engagement._clear_pedal_unavailable()
+
+
 def _clear_session_max_flags(engagement):
   engagement._nap_long_resume_pending = False
   engagement._nap_held_max_kph = None
   engagement._nap_set_resume_long = False
   engagement._nap_set_take_speed_now = False
+  engagement._nap_resume_wait_gas = False
 
 
 def _process_buttons(self, cruise_buttons, prev_cruise_buttons, *args, **kwargs):
@@ -370,6 +449,10 @@ def _process_buttons(self, cruise_buttons, prev_cruise_buttons, *args, **kwargs)
 
   curr_time_ms = _curr_time_ms(args, kwargs)
   use_pedal = _use_pedal(args, kwargs)
+  v_ego = _v_ego_ms(args, kwargs)
+  at_stop = _at_standstill(self, v_ego)
+  gas = _gas_pressed(self)
+  brake = _real_brake_pressed(args, kwargs)
   set_edge = (
     cruise_buttons == CruiseButtons.MAIN
     and prev_cruise_buttons != CruiseButtons.MAIN
@@ -387,12 +470,19 @@ def _process_buttons(self, cruise_buttons, prev_cruise_buttons, *args, **kwargs)
   # showing, SET must not stick — drop again after the FSM so long stays
   # off. After lamps/stalk go idle, SET sticks even if the ~1s flash
   # latch has not expired yet.
-  resume = (
+  # At a stop, one SET must not take long / creep from 0. Arm wait-for-gas
+  # and keep held MAX. Double SET in the window is still take-speed-now.
+  # Rolling: unchanged one-SET resume.
+  resume_set = (
     set_edge
     and bool(self.cruiseEnabled)
     and bool(getattr(self, "_nap_long_resume_pending", False))
     and not _should_drop_long_for_turn(self)
   )
+  swallow_standstill_set = (
+    resume_set and at_stop and not gas and not in_double_window
+  )
+  resume = resume_set and not swallow_standstill_set
   # Already lat+long in pedal mode: first SET only arms the double-SET
   # window (do not drop long). Second SET in the window forgets sticky /
   # take speed now. No-pedal keeps the stock first-pull pending_enable path.
@@ -411,16 +501,19 @@ def _process_buttons(self, cruise_buttons, prev_cruise_buttons, *args, **kwargs)
   saved_double = self.enableDoublePull
   if resume:
     self.enableDoublePull = False
-  orig_buttons = prev_cruise_buttons if swallow_set else cruise_buttons
+  orig_buttons = prev_cruise_buttons if (swallow_set or swallow_standstill_set) else cruise_buttons
   was_long = bool(self.enableLongControl)
+  was_wait_gas = bool(getattr(self, "_nap_resume_wait_gas", False))
   try:
     result = _ORIG_PROCESS(self, orig_buttons, prev_cruise_buttons, *args, **kwargs)
   finally:
     self.enableDoublePull = saved_double
 
-  if swallow_set:
+  if swallow_set or swallow_standstill_set:
     self.stalk_pull_time_ms = curr_time_ms
     self.last_stalk_non_cancel_ms = curr_time_ms
+  if swallow_standstill_set:
+    self._nap_resume_wait_gas = True
 
   _drop_long_if_driver_turn(self)
 
@@ -428,11 +521,27 @@ def _process_buttons(self, cruise_buttons, prev_cruise_buttons, *args, **kwargs)
     _clear_session_max_flags(self)
     return result
 
+  # Armed stop-SET: gas touch completes held-MAX resume. Brake still down
+  # stays waiting (silent pause would drop long again anyway).
+  if (
+    getattr(self, "_nap_resume_wait_gas", False)
+    and not self.enableLongControl
+    and gas and not brake
+    and not _should_drop_long_for_turn(self)
+  ):
+    _complete_standstill_resume(
+      self, long_allowed=_long_control_allowed(args, kwargs))
+
   if resume and self.enableLongControl:
-    self._nap_set_resume_long = True
-    held = getattr(self, "_nap_held_max_kph", None)
-    if held is not None:
-      self.pedal_speed_kph = float(held)
+    # Second SET in the window after a stop-SET is still take-speed-now.
+    if was_wait_gas and in_double_window and set_edge:
+      self._nap_set_take_speed_now = True
+      self._nap_held_max_kph = None
+      self._nap_resume_wait_gas = False
+    else:
+      self._nap_set_resume_long = True
+      _restore_held_max(self)
+      self._nap_resume_wait_gas = False
     self.stalk_pull_time_ms = curr_time_ms
     self.last_stalk_non_cancel_ms = curr_time_ms
   elif take_now_in_session and self.enableLongControl:
@@ -444,6 +553,7 @@ def _process_buttons(self, cruise_buttons, prev_cruise_buttons, *args, **kwargs)
 
   if self.enableLongControl:
     self._nap_long_resume_pending = False
+    self._nap_resume_wait_gas = False
   return result
 
 
@@ -482,6 +592,8 @@ def _update_preap(cs, can_parsers):
     engagement._nap_steering_pressed = pressed or disengage
     engagement._nap_stalk_state = stalk
     engagement._nap_v_ego = v_ego
+    engagement._nap_gas_pressed = _peek_gas_pressed(cs, can_parsers)
+    engagement._nap_standstill = _peek_standstill(can_parsers)
     _hold_for(engagement).update(
       left, right, pressed, engaged=bool(getattr(engagement, "cruiseEnabled", False)),
       steering_disengage=disengage,
@@ -528,6 +640,24 @@ def _update_preap(cs, can_parsers):
       cs.pedal_speed_kph = 0.0
       cs.preap_cc_cancel_needed = True
       cs.longCtrlEvent = getattr(engagement, "longCtrlEvent", None)
+    else:
+      # Interceptor gas is published after process_buttons. A stop-SET
+      # armed this frame / last frame completes here on a light throttle.
+      gas = bool(getattr(ret, "gasPressed", False)) or _peek_gas_pressed(cs, can_parsers)
+      engagement._nap_gas_pressed = gas
+      if bool(getattr(ret, "standstill", False)):
+        engagement._nap_standstill = True
+      if (
+        getattr(engagement, "_nap_resume_wait_gas", False)
+        and gas
+        and not real_brake
+        and not bool(getattr(engagement, "enableLongControl", False))
+        and not _should_drop_long_for_turn(engagement)
+      ):
+        _complete_standstill_resume(engagement, long_allowed=True)
+        cs.enableLongControl = engagement.enableLongControl
+        cs.enableJustCC = engagement.enableJustCC
+        cs.pedal_speed_kph = engagement.pedal_speed_kph
   return ret
 
 

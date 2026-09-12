@@ -1,6 +1,7 @@
-NAP Pre-AP reverse / gear (2026-09-12)
+NAP Pre-AP reverse / gear / standstill SET (2026-09-12)
 ========================
 * Reverse (and any gear out of Drive / door) is a **full hard cancel**: session down, sticky MAX forgotten, soft-lat reset, CANCEL spoof so panda can re-arm `controls_allowed`. After Drive returns, a normal double SET engages without Controls Mismatch or a prior disable dance. Soft-lat Off blinker pause and sticky-MAX brake/turn pause unchanged. Port of the nap-dev reverse teardown.
+* One SET after a silent long pause **at a stop** does not take long / creep from 0. SET still keeps held MAX (“I want resume”); a light throttle touch then resumes at that MAX. Rolling one-SET resume and double SET / forget-sticky unchanged.
 
 NAP driver lat handoff (2026-09-12)
 ========================
