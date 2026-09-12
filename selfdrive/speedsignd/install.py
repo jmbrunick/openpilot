@@ -83,8 +83,8 @@ def download_url(url: str, dest: str) -> int:
   except urllib.error.HTTPError as e:
     raise RuntimeError(
       f"Download failed HTTP {e.code} for {url}. "
-      "Publish speed_sign.onnx as a GitHub Release asset, or export locally "
-      "(python -m scripts.nap.export_speed_sign_onnx) and pass the file."
+      + "Publish speed_sign.onnx as a GitHub Release asset, or export locally "
+      + "(python -m scripts.nap.export_speed_sign_onnx) and pass the file."
     ) from e
   except urllib.error.URLError as e:
     raise RuntimeError(f"Download failed: {e}. Need Wi-Fi, or pass a local .onnx.") from e

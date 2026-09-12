@@ -64,8 +64,9 @@ YOLO_MIN_CONF = 0.40
 YOLO_IOU = 0.45
 YOLO_MAX_DET = 3
 
-# Two agreeing frames at ~1 Hz (or after a skip-on-overrun gap) before HUD /
-# JSONL accept a mph. The old 0.75 s window cannot confirm two 1 Hz hits.
+# JSONL still needs two agreeing frames. HUD lights on the first in-threshold
+# hit — a 1 Hz + skip-on-overrun pair often cannot land while a real R2-1 is
+# in view (highway dwell ~1–3 s; a 1.5 s infer spaces hits by ~3 s).
 DEBOUNCE_HITS = 2
 DEBOUNCE_WINDOW_S = 4.0
 

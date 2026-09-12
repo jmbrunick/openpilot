@@ -232,7 +232,9 @@ def _resolve_live_fix(
   live_fix: object,
 ) -> tuple[float, float] | None:
   if live_fix is not _UNSET:
-    return live_fix if isinstance(live_fix, tuple) else None
+    if isinstance(live_fix, tuple) and len(live_fix) >= 2:
+      return float(live_fix[0]), float(live_fix[1])
+    return None
   if lat is not None and lon is not None:
     return None
   _p(f"Waiting up to {REFRESH_GNSS_WAIT_S:.0f}s for a satellite fix...")
@@ -314,14 +316,14 @@ def refresh_local_maps(
   if fill_unmarked:
     _p(
       f"Received {len(ways)} highway ways from OSM "
-      f"({tagged_n} tagged maxspeed, {filled_n} MN statutory fills)."
+      + f"({tagged_n} tagged maxspeed, {filled_n} MN statutory fills)."
     )
   else:
     _p(f"Received {len(ways)} maxspeed ways from OSM.")
   if not ways:
     raise RefreshMapsError(
       "No usable highway speed limits found in OSM for this 100-mile area. "
-      "Previous maps were left unchanged."
+      + "Previous maps were left unchanged."
     )
 
   extra_meta = {

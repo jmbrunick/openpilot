@@ -10,8 +10,8 @@ from openpilot.selfdrive.speedsignd.detect import (
   SpeedSignDetector,
   detect_mutcd_speed_signs,
   paint_mutcd_r2_1,
-  y_plane_from_nv12,
 )
+from openpilot.selfdrive.speedsignd.nv12 import y_plane_from_nv12
 
 
 def _scene(h=240, w=320, seed=0) -> np.ndarray:

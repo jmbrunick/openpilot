@@ -14,7 +14,7 @@ import os
 import numpy as np
 
 from openpilot.selfdrive.speedsignd.detect_types import MUTCD_MPH, SpeedSign
-from openpilot.selfdrive.speedsignd.nv12 import rgb_from_y, y_plane_from_nv12
+from openpilot.selfdrive.speedsignd.nv12 import rgb_from_y
 from openpilot.selfdrive.speedsignd.paths import default_onnx_path
 from openpilot.selfdrive.speedsignd.weights_manifest import (
   YOLO_CLASS_NAMES,
