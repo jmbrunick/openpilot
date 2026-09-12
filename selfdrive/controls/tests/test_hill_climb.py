@@ -2,11 +2,8 @@
 import math
 from pathlib import Path
 
-import numpy as np
 import pytest
 
-from cereal import log, messaging
-from openpilot.common.constants import CV
 from openpilot.selfdrive.controls.lib.hill_climb import (
   CLIMB_EXTRA_MAX_MS2,
   CREST_EASE_MS2,
@@ -23,34 +20,14 @@ from openpilot.selfdrive.controls.lib.hill_climb import (
   hill_climb_applies,
   read_hypermile_hill_climb,
 )
-from openpilot.selfdrive.controls.lib.lead_approach import (
-  LEAD_APPROACH_A_MS2,
-  lead_approach_need_m,
-)
-from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
-  LongitudinalPlanSource,
-  T_IDXS,
-  get_T_FOLLOW,
-)
-from openpilot.selfdrive.controls.lib.longitudinal_planner import (
-  LongitudinalPlanner,
-  get_max_accel,
-)
+from openpilot.selfdrive.controls.lib.lead_approach import LEAD_APPROACH_A_MS2
 from openpilot.selfdrive.controls.tests.test_hypermile import FakeParams
-from openpilot.selfdrive.controls.tests.test_tesla_preap_following import (
-  STOP_DISTANCE_M,
-  _ConstantAccelerationMpc,
-  _PlannerInputs,
-  _make_preap_params,
-)
 from openpilot.selfdrive.mapd.constants import (
   LOOKAHEAD_EARLY,
   MODE_FOLLOW,
   map_accel_a_ms2,
 )
 from openpilot.selfdrive.mapd.map_speed_policy import map_track_accel_ms2
-from openpilot.selfdrive.modeld.constants import ModelConstants
 
 
 UPHILL_RAD = math.radians(4.0)  # existing full-loop fixture; clearly above 2°
@@ -60,76 +37,111 @@ FLAT_RAD = 0.0
 FLAT_ACCEL_1 = map_accel_a_ms2(LOOKAHEAD_EARLY, 1)
 
 
-class _HillParams:
-  def __init__(self, *, hypermile=False, hill_climb=True, map_mode=MODE_FOLLOW, accel=1, lookahead=LOOKAHEAD_EARLY):
-    self.hypermile = hypermile
-    self.hill_climb = hill_climb
-    self.map_mode = map_mode
-    self.accel = accel
-    self.lookahead = lookahead
+def _planner_harness():
+  """Planner fixtures need cereal + compiled params_pyx (scons)."""
+  repo = Path(__file__).resolve().parents[3]
+  if not (repo / "opendbc_repo/opendbc/car/car.capnp").is_file():
+    pytest.skip("opendbc/cereal not checked out")
+  pytest.importorskip("capnp")
+  try:
+    import openpilot.common.params_pyx  # noqa: F401
+  except ModuleNotFoundError:
+    pytest.skip("params_pyx not built")
+  from openpilot.common.constants import CV
+  from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
+  from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_T_FOLLOW
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import (
+    LongitudinalPlanner,
+    get_max_accel,
+  )
+  from openpilot.selfdrive.controls.tests.test_tesla_preap_following import (
+    STOP_DISTANCE_M,
+    _ConstantAccelerationMpc,
+    _PlannerInputs,
+    _make_preap_params,
+  )
+  from openpilot.selfdrive.modeld.constants import ModelConstants
+  import numpy as np
+  from cereal import log, messaging
 
-  def get(self, key, return_default=False):
-    if key == "NAPFollowDistance":
-      return 4
-    if key == "NAPHypermileFollowLevel":
-      return 3
-    if key == "NAPMapSpeedMode":
-      return self.map_mode
-    if key == "NAPMapSpeedOffsetMph":
-      return -5
-    if key == "NAPMapSpeedLookahead":
-      return self.lookahead
-    if key == "NAPMapSpeedAccel":
-      return self.accel
-    raise AssertionError(key)
+  class HillParams:
+    def __init__(self, *, hypermile=False, hill_climb=True, map_mode=MODE_FOLLOW, accel=1, lookahead=LOOKAHEAD_EARLY):
+      self.hypermile = hypermile
+      self.hill_climb = hill_climb
+      self.map_mode = map_mode
+      self.accel = accel
+      self.lookahead = lookahead
 
-  def get_bool(self, key):
-    if key == "NAPAdaptiveAccel":
-      return True
-    if key == "NAPHypermile":
-      return self.hypermile
-    if key == "NAPHypermileHillClimb":
-      return self.hill_climb
-    raise AssertionError(key)
+    def get(self, key, return_default=False):
+      if key == "NAPFollowDistance":
+        return 4
+      if key == "NAPHypermileFollowLevel":
+        return 3
+      if key == "NAPMapSpeedMode":
+        return self.map_mode
+      if key == "NAPMapSpeedOffsetMph":
+        return -5
+      if key == "NAPMapSpeedLookahead":
+        return self.lookahead
+      if key == "NAPMapSpeedAccel":
+        return self.accel
+      raise AssertionError(key)
 
+    def get_bool(self, key):
+      if key == "NAPAdaptiveAccel":
+        return True
+      if key == "NAPHypermile":
+        return self.hypermile
+      if key == "NAPHypermileHillClimb":
+        return self.hill_climb
+      raise AssertionError(key)
 
-def _planner_inputs(v_ego, v_cruise_ms, pitch):
-  radar = messaging.new_message("radarState").radarState
-  controls = messaging.new_message("controlsState").controlsState
-  selfdrive = messaging.new_message("selfdriveState").selfdriveState
-  car_state = messaging.new_message("carState").carState
-  car_control = messaging.new_message("carControl").carControl
-  live_parameters = messaging.new_message("liveParameters").liveParameters
-  model = messaging.new_message("modelV2").modelV2
+  def planner_inputs(v_ego, v_cruise_ms, pitch):
+    radar = messaging.new_message("radarState").radarState
+    controls = messaging.new_message("controlsState").controlsState
+    selfdrive = messaging.new_message("selfdriveState").selfdriveState
+    car_state = messaging.new_message("carState").carState
+    car_control = messaging.new_message("carControl").carControl
+    live_parameters = messaging.new_message("liveParameters").liveParameters
+    model = messaging.new_message("modelV2").modelV2
+    controls.longControlState = LongCtrlState.pid
+    selfdrive.personality = log.LongitudinalPersonality.standard
+    car_state.vEgo = v_ego
+    car_state.vCruise = v_cruise_ms * CV.MS_TO_KPH
+    car_control.orientationNED = [0.0, float(pitch), 0.0]
+    model.position.x = (v_ego * np.array(ModelConstants.T_IDXS)).tolist()
+    model.velocity.x = (v_ego * np.ones_like(ModelConstants.T_IDXS)).tolist()
+    model.acceleration.x = np.zeros_like(ModelConstants.T_IDXS).tolist()
+    model.meta.disengagePredictions.gasPressProbs = [1.0] * 6
+    return _PlannerInputs({
+      "radarState": radar,
+      "controlsState": controls,
+      "selfdriveState": selfdrive,
+      "carState": car_state,
+      "carControl": car_control,
+      "liveParameters": live_parameters,
+      "modelV2": model,
+    })
 
-  controls.longControlState = LongCtrlState.pid
-  selfdrive.personality = log.LongitudinalPersonality.standard
-  car_state.vEgo = v_ego
-  car_state.vCruise = v_cruise_ms * CV.MS_TO_KPH
-  car_control.orientationNED = [0.0, float(pitch), 0.0]
-  model.position.x = (v_ego * np.array(ModelConstants.T_IDXS)).tolist()
-  model.velocity.x = (v_ego * np.ones_like(ModelConstants.T_IDXS)).tolist()
-  model.acceleration.x = np.zeros_like(ModelConstants.T_IDXS).tolist()
-  model.meta.disengagePredictions.gasPressProbs = [1.0] * 6
-  return _PlannerInputs({
-    "radarState": radar,
-    "controlsState": controls,
-    "selfdriveState": selfdrive,
-    "carState": car_state,
-    "carControl": car_control,
-    "liveParameters": live_parameters,
-    "modelV2": model,
-  })
+  def run_map_climb(hypermile, hill_climb, pitch, *, v_ego=20.0, v_cruise=31.29, mpc_a=0.0):
+    params = HillParams(hypermile=hypermile, hill_climb=hill_climb)
+    planner = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
+    planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=mpc_a)
+    planner.prev_accel_clip = [-1.2, get_max_accel(v_ego)]
+    planner.update(planner_inputs(v_ego, v_cruise, pitch))
+    return planner
 
-
-def _run_map_climb(hypermile, hill_climb, pitch, *, v_ego=20.0, v_cruise=31.29, mpc_a=0.0):
-  params = _HillParams(hypermile=hypermile, hill_climb=hill_climb)
-  planner = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
-  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=mpc_a)
-  planner.prev_accel_clip = [-1.2, get_max_accel(v_ego)]
-  inputs = _planner_inputs(v_ego, v_cruise, pitch)
-  planner.update(inputs)
-  return planner
+  return {
+    "HillParams": HillParams,
+    "planner_inputs": planner_inputs,
+    "run_map_climb": run_map_climb,
+    "LongitudinalPlanner": LongitudinalPlanner,
+    "get_max_accel": get_max_accel,
+    "_ConstantAccelerationMpc": _ConstantAccelerationMpc,
+    "_make_preap_params": _make_preap_params,
+    "get_T_FOLLOW": get_T_FOLLOW,
+    "STOP_DISTANCE_M": STOP_DISTANCE_M,
+  }
 
 
 def test_default_on_and_inert_unless_hypermile():
@@ -262,41 +274,42 @@ def test_never_raises_max_or_fights_lead_brake():
 
 
 def test_planner_gates_and_uphill_authority():
+  h = _planner_harness()
   v_ego = 20.0
   v_cruise = 31.29
   flat_a = map_track_accel_ms2(v_ego, v_cruise, FLAT_ACCEL_1)
   assert flat_a is not None and flat_a > 0.0
 
-  off = _run_map_climb(False, True, UPHILL_RAD, v_ego=v_ego, v_cruise=v_cruise)
-  hill_off = _run_map_climb(True, False, UPHILL_RAD, v_ego=v_ego, v_cruise=v_cruise)
-  flat = _run_map_climb(True, True, FLAT_RAD, v_ego=v_ego, v_cruise=v_cruise)
-  climb = _run_map_climb(True, True, UPHILL_RAD, v_ego=v_ego, v_cruise=v_cruise)
+  off = h["run_map_climb"](False, True, UPHILL_RAD, v_ego=v_ego, v_cruise=v_cruise)
+  hill_off = h["run_map_climb"](True, False, UPHILL_RAD, v_ego=v_ego, v_cruise=v_cruise)
+  flat = h["run_map_climb"](True, True, FLAT_RAD, v_ego=v_ego, v_cruise=v_cruise)
+  climb = h["run_map_climb"](True, True, UPHILL_RAD, v_ego=v_ego, v_cruise=v_cruise)
 
   assert off.output_a_target == pytest.approx(flat_a, abs=0.06)
   assert hill_off.output_a_target == pytest.approx(flat_a, abs=0.06)
   assert flat.output_a_target == pytest.approx(flat_a, abs=0.06)
   assert climb.output_a_target > flat.output_a_target + 0.20
   # Still under cruise safety clip; never a MAX raise (vCruise untouched).
-  assert climb.output_a_target <= get_max_accel(v_ego) + 1e-9
+  assert climb.output_a_target <= h["get_max_accel"](v_ego) + 1e-9
   assert climb.output_a_target <= climb_authority_ms2(flat_a, UPHILL_RAD) + 1e-6
 
 
 def test_planner_lead_still_wins_on_uphill():
+  h = _planner_harness()
   v_ego = 26.8
   v_lead = 22.4
   v_cruise = 31.29
-  t_follow = get_T_FOLLOW(nap_follow_dist=4)
-  d_follow = t_follow * v_lead + STOP_DISTANCE_M
-  need = lead_approach_need_m(v_ego, v_lead, t_follow=t_follow)
+  t_follow = h["get_T_FOLLOW"](nap_follow_dist=4)
+  d_follow = t_follow * v_lead + h["STOP_DISTANCE_M"]
   v_rel = v_ego - v_lead
   rel_need = (v_rel * v_rel) / (2.0 * LEAD_APPROACH_A_MS2)
   d_rel = d_follow + rel_need
 
-  params = _HillParams(hypermile=True, hill_climb=True)
-  planner = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
-  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=0.0)
-  planner.prev_accel_clip = [-1.2, get_max_accel(v_ego)]
-  inputs = _planner_inputs(v_ego, v_cruise, UPHILL_RAD)
+  params = h["HillParams"](hypermile=True, hill_climb=True)
+  planner = h["LongitudinalPlanner"](h["_make_preap_params"](), init_v=v_ego, params=params)
+  planner.mpc = h["_ConstantAccelerationMpc"](v_ego, acceleration_mps2=0.0)
+  planner.prev_accel_clip = [-1.2, h["get_max_accel"](v_ego)]
+  inputs = h["planner_inputs"](v_ego, v_cruise, UPHILL_RAD)
   lead = inputs["radarState"].leadOne
   lead.status = True
   lead.dRel = d_rel
@@ -305,19 +318,20 @@ def test_planner_lead_still_wins_on_uphill():
   assert planner.output_a_target < 0.0
   assert planner.output_a_target == pytest.approx(-LEAD_APPROACH_A_MS2, abs=0.08)
 
-  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
+  planner.mpc = h["_ConstantAccelerationMpc"](v_ego, acceleration_mps2=-2.0)
   planner.update(inputs)
   assert planner.output_a_target == pytest.approx(-2.0, abs=0.08)
 
 
 def test_planner_crest_ease_near_max():
+  h = _planner_harness()
   v_cruise = 31.29
-  planner = _run_map_climb(True, True, PITCH_CREST_RAD - 0.005, v_ego=v_cruise, v_cruise=v_cruise)
+  planner = h["run_map_climb"](True, True, PITCH_CREST_RAD - 0.005, v_ego=v_cruise, v_cruise=v_cruise)
   # First frame has prev_pitch=0 so no crest; seed a climb then flatten.
   planner._hill_pitch = UPHILL_RAD
-  inputs = _planner_inputs(v_cruise, v_cruise, PITCH_CREST_RAD - 0.005)
-  planner.mpc = _ConstantAccelerationMpc(v_cruise, acceleration_mps2=0.0)
-  planner.prev_accel_clip = [-1.2, get_max_accel(v_cruise)]
+  inputs = h["planner_inputs"](v_cruise, v_cruise, PITCH_CREST_RAD - 0.005)
+  planner.mpc = h["_ConstantAccelerationMpc"](v_cruise, acceleration_mps2=0.0)
+  planner.prev_accel_clip = [-1.2, h["get_max_accel"](v_cruise)]
   planner.update(inputs)
   assert planner.output_a_target == pytest.approx(-CREST_EASE_MS2, abs=0.06)
 
