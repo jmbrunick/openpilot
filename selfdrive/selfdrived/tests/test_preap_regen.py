@@ -107,7 +107,7 @@ CHIME_EDGES = [
   (False, True,  False, True,  False, False, False, False, "hold long-only"),
   (False, True,  True,  True,  True,  False, False, False, "add lat to long"),
   (True,  True,  False, False, False, True,  False, True,  "stalk cancel both"),
-  (True,  True,  True,  False, False, False, False, False, "brake/turn long pause"),
+  (True,  True,  True,  False, False, False, False, False, "brake long pause"),
   (True,  True,  False, True,  False, True,  False, False, "lat cancel keeps long"),
   (True,  True,  True,  True,  False, False, False, False, "hold both / gas override"),
 ]
