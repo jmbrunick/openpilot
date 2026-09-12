@@ -16,6 +16,10 @@ HUD_HOLD_S = 10.0
 # top=65:0.73, cls=50:0.00). Do not light those mph unless crop refine
 # returned that value (or another MUTCD mph to override).
 HUD_REFINE_REQUIRED_MPH = frozenset({65, 70})
+# Justin: refine=50 @0.43–0.53 then refine=65 @0.47–0.51 must keep HUD 50.
+# Overturn a held non-65/70 to 65/70 only when refine is clearly stronger.
+HUD_OVERTURN_65_MIN_CONF = 0.60
+HUD_OVERTURN_65_MARGIN = 0.10
 HUD_LABEL = "SIGN"
 # Logger On + ONNX missing: show this instead of a blank plate or a fake mph.
 HUD_MISSING_WEIGHTS_TEXT = "NO WT"
@@ -214,6 +218,25 @@ def _class_mph(sign: SpeedSign) -> int:
   return int(sign.mph)
 
 
+def should_replace_held_mph(held_mph: int, held_conf: float, new_mph: int, new_conf: float) -> bool:
+  """True if a new accepted mph may replace a still-valid hold.
+
+  Same mph refreshes. Other MUTCD swaps (50→55, 65→50) apply immediately.
+  Held 50/55/… → 65/70 needs refine ≥ 0.60 *and* ≥ held + 0.10 so a
+  neighboring 0.5/0.5 OCR flip cannot steal the plate.
+  """
+  if int(held_mph) <= 0:
+    return True
+  if int(new_mph) == int(held_mph):
+    return True
+  if int(new_mph) in HUD_REFINE_REQUIRED_MPH and int(held_mph) not in HUD_REFINE_REQUIRED_MPH:
+    return (
+      float(new_conf) >= HUD_OVERTURN_65_MIN_CONF
+      and float(new_conf) >= float(held_conf) + HUD_OVERTURN_65_MARGIN
+    )
+  return True
+
+
 def accepted_hud_sign(sign: SpeedSign | None) -> SpeedSign | None:
   """HUD-safe sign, or None (blank / hold last-good). Does not invent mph.
 
@@ -260,9 +283,13 @@ class LiveSignHold:
         accepted.append(a)
     if accepted:
       best = max(accepted, key=lambda s: s.conf)
-      self.mph = int(best.mph)
-      self.conf = float(best.conf)
-      self.until = now + self.hold_s
+      new_mph = int(best.mph)
+      new_conf = float(best.conf)
+      holding = now < self.until and self.mph > 0
+      if (not holding) or should_replace_held_mph(self.mph, self.conf, new_mph, new_conf):
+        self.mph = new_mph
+        self.conf = new_conf
+        self.until = now + self.hold_s
     live = now < self.until and self.mph > 0
     if not live:
       return False, 0, 0.0

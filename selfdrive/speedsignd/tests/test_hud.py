@@ -10,8 +10,11 @@ from openpilot.selfdrive.speedsignd.hud import (
   HUD_DETECT_PAUSED_TEXT,
   HUD_HOLD_S,
   HUD_MISSING_WEIGHTS_TEXT,
+  HUD_OVERTURN_65_MARGIN,
+  HUD_OVERTURN_65_MIN_CONF,
   HUD_REFINE_REQUIRED_MPH,
   LiveSignHold,
+  should_replace_held_mph,
   TICI_CONFIRM_BTN_H,
   TICI_SIGN_H,
   TICI_SIGN_W,
@@ -240,6 +243,8 @@ def test_hold_duration_constant():
   # Covers one 3–4 s tinygrad infer + cap payback (~8–9 s to the next HUD tick).
   assert HUD_HOLD_S == 10.0
   assert HUD_REFINE_REQUIRED_MPH == frozenset({65, 70})
+  assert HUD_OVERTURN_65_MIN_CONF == 0.60
+  assert HUD_OVERTURN_65_MARGIN == 0.10
 
 
 def test_hold_last_good_across_infer_skips():
@@ -332,6 +337,59 @@ def test_yolo_65_refine_agree_may_light_65():
   assert accepted is not None and accepted.mph == 65
   h = LiveSignHold()
   live, mph, _ = h.update([sign], 1.0)
+  assert live and mph == 65
+
+
+def _sign(mph, conf, *, class_mph=None, refine_mph=None, refine_conf=0.0):
+  return SpeedSign(
+    mph=mph, conf=conf, bbox=(0, 0, 10, 10),
+    class_mph=class_mph if class_mph is not None else mph,
+    class_conf=conf,
+    refine_mph=refine_mph, refine_conf=refine_conf,
+  )
+
+
+def test_held_50_not_overturned_by_neighbor_refine_65():
+  """refine=50 @0.5 then refine=65 @0.5 must keep HUD 50 while hold is live."""
+  assert not should_replace_held_mph(50, 0.50, 65, 0.50)
+  assert not should_replace_held_mph(50, 0.43, 65, 0.51)
+  assert not should_replace_held_mph(50, 0.53, 70, 0.55)
+  h = LiveSignHold()
+  live, mph, _ = h.update([_sign(50, 0.50, class_mph=65, refine_mph=50, refine_conf=0.50)], 1.0)
+  assert live and mph == 50
+  weak65 = _sign(65, 0.51, class_mph=65, refine_mph=65, refine_conf=0.51)
+  assert accepted_hud_sign(weak65) is not None and accepted_hud_sign(weak65).mph == 65
+  live, mph, _ = h.update([weak65], 2.0)
+  assert live and mph == 50
+  live, mph, _ = h.update([_sign(65, 0.47, class_mph=65, refine_mph=65, refine_conf=0.47)], 3.0)
+  assert live and mph == 50
+
+
+def test_held_50_overturns_to_65_only_when_refine_clearly_stronger():
+  h = LiveSignHold()
+  h.update([_sign(50, 0.50, class_mph=65, refine_mph=50, refine_conf=0.50)], 1.0)
+  strong = _sign(65, 0.80, class_mph=65, refine_mph=65, refine_conf=0.80)
+  assert should_replace_held_mph(50, 0.50, 65, 0.80)
+  live, mph, _ = h.update([strong], 2.0)
+  assert live and mph == 65
+
+
+def test_held_65_yields_to_refine_50():
+  """Leaving a wrong 65 for a 50 must not wait for the 0.60 floor."""
+  assert should_replace_held_mph(65, 0.51, 50, 0.43)
+  h = LiveSignHold()
+  h.update([_sign(65, 0.80, class_mph=65, refine_mph=65, refine_conf=0.80)], 1.0)
+  live, mph, _ = h.update([_sign(50, 0.43, class_mph=65, refine_mph=50, refine_conf=0.43)], 2.0)
+  assert live and mph == 50
+
+
+def test_expired_hold_allows_refine_65():
+  """After the hold window, a refine-agreed 65 may light (no last-good)."""
+  h = LiveSignHold(hold_s=1.0)
+  h.update([_sign(50, 0.50, class_mph=65, refine_mph=50, refine_conf=0.50)], 1.0)
+  live, mph, _ = h.update([], 2.01)
+  assert not live
+  live, mph, _ = h.update([_sign(65, 0.51, class_mph=65, refine_mph=65, refine_conf=0.51)], 2.02)
   assert live and mph == 65
 
 
