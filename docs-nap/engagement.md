@@ -173,6 +173,14 @@ Do these at a quiet road / parking lot first, then a known pothole stretch. Peda
 11. **Hard yank / hands-on 2**, stalk cancel, door: full disengage, unchanged.
 12. **Reverse while engaged:** session ends (not a pause). HUD reverse / take-control, then after Drive a normal double SET must engage without Controls Mismatch and without a prior on-device disable. Soft-lat / blinker / sticky MAX must not stay wedged.
 
+## Driver monitoring hands-on reset
+
+Stock DM stays on while engaged. Vision timeouts are still **3 / 5 / 11 s** (`DRIVER_MONITOR_SETTINGS` in `selfdrive/monitoring/policy.py`). Pre-AP often has light hands on the rim (`EPAS_handsOnLevel >= 1`) without `steeringPressed`, so the first look-at-road prompt can bark even when the driver is present.
+
+`NAPDmHandsOnReset` (default On, Settings → NAP → Driving Mannerisms) treats that same `handsOnLevel` field soft-lat already publishes as **soft presence**: when awareness is approaching or in the **first prompt band** (near alert 1, still above orange), reset awareness. Orange (alert 2) and red (alert 3 / terminal) still escalate if the driver ignores DM (no hands, no look-back, no gas / firm steer). Always-on DM when not engaged does **not** use this reset.
+
+Other cars do not publish `handsOnLevel` (read as 0) so they stay on stock DM. Turn the toggle **Off** for stock first-prompt behavior on Pre-AP.
+
 ## Where to look
 
 - `opendbc_repo/opendbc/car/tesla/preap/engagement.py` — stalk FSM
@@ -182,3 +190,5 @@ Do these at a quiet road / parking lot first, then a known pothole stretch. Peda
 - `opendbc_repo/opendbc/car/tesla/preap/tests/test_preap_engagement.py` — FSM tests (brake drop, steering disengage, double-pull)
 - `selfdrive/car/tesla/tests/test_preap_blinker_lat_pause.py` — blinker lat pause, turn drops long, one SET resumes
 - `selfdrive/car/tesla/tests/test_preap_sticky_max.py` — sticky MAX across brake/turn pause, one vs double SET, cancel
+- `selfdrive/monitoring/policy.py` — first-prompt hands-on reset (`NAPDmHandsOnReset`)
+- `selfdrive/monitoring/test_monitoring.py` — reset near alert 1; still escalates without hands

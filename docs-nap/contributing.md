@@ -15,6 +15,8 @@ Do not push sunnypilot-specific code (MADS, `CP_SP`, etc.) to `nap-dev` or `nap-
 
 Soft Lateral Handoff (`NAPDriverLatHandoff`) defaults **On** (Settings → NAP → Driving Mannerisms). Yield is a light purposeful push (torsion ≥ ~0.55 Nm / ~90 ms + hands) that **frees the EPS** (`latActive` false), not follow-measured angle hold. Rate is not an entry gate. Gravel spikes and low-torsion wind must not yield. Parking-lot blinker 1 s re-entry stays. Emergency/hard brake during yield fully cancels; light brake must keep the silent long-pause / one-SET path. Turn the toggle **Off** if false-yields remain.
 
+Hands-On Look-at-Road Reset (`NAPDmHandsOnReset`) defaults **On**. Pre-AP light rim contact (`handsOnLevel >= 1`) resets only the first (~3 s) vision prompt. Orange / red still escalate. Always-on DM is unchanged. Turn **Off** for stock DM.
+
 ## Submodules
 
 `panda` and `opendbc_repo` use NotAutopilot forks. After checkout:

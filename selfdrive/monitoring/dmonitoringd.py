@@ -2,7 +2,7 @@
 import cereal.messaging as messaging
 from openpilot.common.params import Params
 from openpilot.common.realtime import config_realtime_process
-from openpilot.selfdrive.monitoring.policy import DriverMonitoring
+from openpilot.selfdrive.monitoring.policy import DriverMonitoring, PARAM_DM_HANDS_ON_RESET
 
 
 def dmonitoringd_thread():
@@ -32,9 +32,13 @@ def dmonitoringd_thread():
     dat = DM.get_state_packet(valid=valid)
     pm.send('driverMonitoringState', dat)
 
-    # load live always-on toggle
+    # load live always-on toggle and NAP first-prompt hands-on reset
     if sm['driverStateV2'].frameId % 40 == 1:
       DM.always_on = params.get_bool("AlwaysOnDM")
+      try:
+        DM.nap_dm_hands_on_reset = params.get_bool(PARAM_DM_HANDS_ON_RESET)
+      except Exception:
+        DM.nap_dm_hands_on_reset = True
       demo_mode = params.get_bool("IsDriverViewEnabled")
 
     # save rhd virtual toggle every 5 mins

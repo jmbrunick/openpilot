@@ -179,6 +179,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // handsOnLevel >= 1; blend after ~80 ms hands-off. Hard brake during
     // yield fully cancels. Settings can turn Off.
     {"NAPDriverLatHandoff", {PERSISTENT, BOOL, "1"}},
+    // Pre-AP DM: light hands-on (EPAS handsOnLevel >= 1) resets the first
+    // look-at-road prompt (~3 s vision). Orange / red still escalate.
+    // Settings → NAP → Driving Mannerisms. Default On.
+    {"NAPDmHandsOnReset", {PERSISTENT, BOOL, "1"}},
     // Settings → NAP → Force Offroad. Default off. Not persistent: reboot
     // (manager start) and the next ignition ON clear it. Toggle Off and
     // Reset to Defaults also clear. When on, hardwared keeps started=false.
