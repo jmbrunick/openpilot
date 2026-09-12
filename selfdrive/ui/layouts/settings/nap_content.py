@@ -30,7 +30,7 @@ HYPERMILE_DESCRIPTION = (
   "Default Off. Comfort-biased efficiency — early light ease, not max "
   + "regen bite. On snaps Adaptive Accel, Cap/Follow, Early "
   + "lookahead, and lazy climb (Accel 1), then restores them when Off. "
-  + "Eco offset is posted-scaled (0 under 50 mph, −5 at 80+, linear "
+  + "Eco offset is posted-scaled (0 under 50 mph, −8 at 80+, linear "
   + "between) so town 30 stays 30 — not a flat −5. Soft-lat, DM, and "
   + "blinker stay as you set them. Below ~50 mph follow sits far back; "
   + "above 50 mph uses a stalk 1–5 draft band (1=closest safe, "

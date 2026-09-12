@@ -28,9 +28,9 @@ Turning **Off** restores that snapshot. Soft Lateral Handoff, Simulate Look-at-R
 |--------|------------|------------|
 | &lt; 50 mph (town 30) | **0** | 30 stays 30 |
 | 50 mph | **0** (scale starts) | 50 |
-| 50–80 mph | linear 0 → −5 | 65 → 62.5 |
-| 80 mph | **−5** | 75 |
-| &gt; 80 mph | **−5** (cap) | 90 → 85 |
+| 50–80 mph | linear 0 → −8 | 65 → 61 |
+| 80 mph | **−8** | 72 |
+| &gt; 80 mph | **−8** (cap) | 90 → 82 |
 
 **Curves:** eco is the live posted-scaled Cap/Follow target. If MAX was 60 before a sharp bend (sticky hold or that displayed set), curve slowing may move HUD MAX through the corner, then **restore 60** — not leave the eco target. The bend must not permanently rebase sticky / map target. See [map-speed.md](map-speed.md#safety-invariants).
 
@@ -42,7 +42,7 @@ Second toggle under Hypermile: **Step Down Speed** (`NAPHypermileStepDown`, defa
 
 | Hypermile | Step Down | Map MAX target |
 |-----------|-----------|----------------|
-| On | Off | Posted + posted-scaled eco (30 stays 30; 80→75; 90→85) |
+| On | Off | Posted + posted-scaled eco (30 stays 30; 80→72; 90→82) |
 | On | On | **15 mph under raw posted** (75→60, 55→40). Replaces eco — does not stack |
 | Off | On or Off | Step-down ignored. Normal posted / held MAX |
 

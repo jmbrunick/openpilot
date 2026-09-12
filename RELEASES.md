@@ -4,7 +4,7 @@ NAP curve MAX (2026-09-12)
 
 NAP Hypermile (2026-09-12)
 ========================
-* Hypermile On + Step Down Off no longer snaps Map Speed Offset to a flat **−5** (that dropped town posted **30 → 25**). Eco offset is live from the posted/OSM limit: **0** at/under 50 mph so 30 stays 30 and 50 stays 50; linear 0 → −5 from 50 to 80 (65 → 62.5); **−5** at 80 (→75) and capped −5 above (90 → 85). Off still restores the saved offset slider. Step Down On is still a fixed **15 mph under** posted (replaces eco, no stack). Early lookahead / Accel 1 / stalk 1–5 / 50 mph follow split / curve hold / lead-close / soft-lat unchanged. Not a nap-release change.
+* Hypermile On + Step Down Off no longer snaps Map Speed Offset to a flat **−5** (that dropped town posted **30 → 25**). Eco offset is live from the posted/OSM limit: **0** at/under 50 mph so 30 stays 30 and 50 stays 50; linear 0 → −8 from 50 to 80 (65 → 61); **−8** at 80 (→72) and capped −8 above (90 → 82). Off still restores the saved offset slider. Step Down On is still a fixed **15 mph under** posted (replaces eco, no stack). Early lookahead / Accel 1 / stalk 1–5 / 50 mph follow split / curve hold / lead-close / soft-lat unchanged. Not a nap-release change.
 
 NAP blinker (2026-09-12)
 ========================

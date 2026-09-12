@@ -162,7 +162,7 @@ def test_step_down_15_mph_under_posted_no_stack_inert_when_hypermile_off():
     assert abs(float(a) - float(b)) < 1e-6, (a, b)
 
   # Hypermile On + Step Down Off: live posted-scaled eco (not the −5 param).
-  # 75 is 25/30 of the way from 50→80 → −4.166… → ~70.833.
+  # 75 is 25/30 of the way from 50→80 → −6.666… → ~68.333.
   _approx(stepped_map_target_kph(
     posted_75, hypermile_on=True, step_down_on=False, map_offset_kph=eco_off,
   ), (75.0 + eco_map_offset_mph(75.0)) * CV.MPH_TO_KPH)
@@ -187,10 +187,10 @@ def test_step_down_15_mph_under_posted_no_stack_inert_when_hypermile_off():
 
 
 def test_eco_offset_scales_with_posted_not_flat_minus_five():
-  """Hypermile On + Step Down Off: town stays posted; highway eases to −5."""
+  """Hypermile On + Step Down Off: town stays posted; highway eases to −8."""
   assert ECO_OFFSET_START_MPH == 50.0
   assert ECO_OFFSET_FULL_MPH == 80.0
-  assert ECO_MAP_OFFSET_MPH == -5
+  assert ECO_MAP_OFFSET_MPH == -8
 
   def _approx(a, b):
     assert abs(float(a) - float(b)) < 1e-6, (a, b)
@@ -199,9 +199,9 @@ def test_eco_offset_scales_with_posted_not_flat_minus_five():
   _approx(eco_map_offset_mph(30), 0.0)
   _approx(eco_map_offset_mph(49.9), 0.0)
   _approx(eco_map_offset_mph(50), 0.0)
-  _approx(eco_map_offset_mph(65), -2.5)
-  _approx(eco_map_offset_mph(80), -5.0)
-  _approx(eco_map_offset_mph(90), -5.0)
+  _approx(eco_map_offset_mph(65), -4.0)
+  _approx(eco_map_offset_mph(80), -8.0)
+  _approx(eco_map_offset_mph(90), -8.0)
   _approx(eco_map_offset_mph(None), 0.0)
   _approx(eco_map_offset_mph(0), 0.0)
 
@@ -211,9 +211,9 @@ def test_eco_offset_scales_with_posted_not_flat_minus_five():
   cases = (
     (30.0, 30.0),
     (50.0, 50.0),
-    (65.0, 62.5),
-    (80.0, 75.0),
-    (90.0, 85.0),
+    (65.0, 61.0),
+    (80.0, 72.0),
+    (90.0, 82.0),
   )
   for posted_mph, want_mph in cases:
     posted = posted_mph * CV.MPH_TO_KPH
@@ -385,8 +385,10 @@ def test_settings_and_docs_wire_hypermile():
   assert "not maximum regen" in docs.lower() or "not max regen" in docs.lower()
   assert "posted-scaled" in docs.lower() or "scaled" in docs.lower()
   assert "30 stays 30" in docs or "town 30" in docs.lower()
+  assert "−8" in docs
   hm_rel = next(p for p in releases.split("\n\n") if p.startswith("NAP Hypermile"))
   assert "Hypermile" in hm_rel
   assert "Early" in hm_rel
   assert "30" in hm_rel and "25" in hm_rel
+  assert "−8" in hm_rel
   assert "nap-release" not in docs.lower() or "not a nap-release" in docs.lower()

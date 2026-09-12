@@ -45,13 +45,13 @@ SPLIT_MS = SPLIT_MPH * CV.MPH_TO_MS
 # it holds speed then dumps regen. Safety / MPC hard brake unchanged.
 # Soft-lat / DM / blinker / stock 1–7 follow are not touched.
 # Map offset is *not* snapped to a flat −5 (that forced town 30→25).
-# Live eco offset is posted-scaled: 0 at/under 50, −5 at 80, cap −5 above.
+# Live eco offset is posted-scaled: 0 at/under 50, −8 at 80, cap −8 above.
 ECO_ADAPTIVE_ACCEL = True
 ECO_MAP_MODE_FOLLOW = 3  # NAPMapSpeedMode Follow
 ECO_MAP_MODE_CAP = 2
-ECO_MAP_OFFSET_MPH = -5  # highway cap; interpolated from 50→80 posted
+ECO_MAP_OFFSET_MPH = -8  # highway cap; interpolated from 50→80 posted
 ECO_OFFSET_START_MPH = 50.0  # posted at/below: no eco drop
-ECO_OFFSET_FULL_MPH = 80.0  # posted at/above: full −5
+ECO_OFFSET_FULL_MPH = 80.0  # posted at/above: full −8
 ECO_MAP_LOOKAHEAD_EARLY = 3  # NAPMapSpeedLookahead Early
 ECO_MAP_ACCEL = 1  # laziest Follow climb (lower peak a / jerk)
 
@@ -151,7 +151,7 @@ def step_down_applies(hypermile_on: bool, step_down_on: bool) -> bool:
 def eco_map_offset_mph(posted_mph: float | None) -> float:
   """Posted-scaled Hypermile eco offset (mph). Town stays posted.
 
-  ≤50 → 0; 80 → −5; >80 → −5 cap; linear 50→80.
+  ≤50 → 0; 80 → −8; >80 → −8 cap; linear 50→80.
   Unknown / non-positive posted → 0 (do not invent a town drop).
   """
   if posted_mph is None:
@@ -180,7 +180,7 @@ def map_target_offset_kph(
 
   Hypermile On + Step Down On: −15 mph, replacing the eco/user offset so
   75→60 (not 55). Hypermile On + Step Down Off: live posted-scaled eco
-  (≤50 → 0, 80+ → −5), not the Map Speed Offset param. Hypermile Off:
+  (≤50 → 0, 80+ → −8), not the Map Speed Offset param. Hypermile Off:
   step-down is inert; keep map_offset_kph.
   """
   if step_down_applies(hypermile_on, step_down_on):
