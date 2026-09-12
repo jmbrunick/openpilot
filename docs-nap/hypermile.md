@@ -22,6 +22,8 @@ Turning **On** remembers the current values, then snaps:
 
 Turning **Off** restores that snapshot. Soft Lateral Handoff, Simulate Look-at-Road, blinker / sticky MAX / one-SET / standstill gas-gate / reverse hard-cancel, and the stock 1–7 Follow Distance param are **not** changed. The stalk / 50 mph follow design is separate and unchanged by this eco bias.
 
+**Curves:** eco −5 is the steady Cap/Follow target (posted 60 → 55). If MAX was 60 before a sharp bend (sticky hold or that displayed set), curve slowing may move HUD MAX through the corner, then **restore 60** — not leave eco 55. The bend must not permanently rebase sticky / map target. See [map-speed.md](map-speed.md#safety-invariants).
+
 Params: `NAPHypermile` (bool, default 0), `NAPHypermileSaved` (JSON snapshot).
 
 ## Step Down Speed (mileage defer)
@@ -91,5 +93,7 @@ When the 1–5 level changes onroad, selfdrived fires `EventName.hypermileFollow
 ## Tests
 
 `selfdrive/controls/tests/test_hypermile.py` — On snaps + Off restore; ≤50 far gap; >50 stalk level; stalk up/down 1–5; safe floor; settings/docs wiring.
+
+`selfdrive/controls/lib/tests/test_curve_max_hold.py` — curve snapshot/restore (sticky 60 survives a bend; eco 55 does not replace it).
 
 Existing `test_following_distance` / Pre-AP following tests stay on the stock 1–7 path while Hypermile is Off (default).

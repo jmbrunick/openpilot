@@ -1337,7 +1337,11 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   # Must not seed/overlay on lateral-only first pull (CC.enabled).
   assert "engage_rising = long_active and not long_active_prev" in card
   # Must not clobber stalk by writing Follow HUD onto pedal every frame.
-  assert "should_write_preap_pedal(dec.seed_kph, preap_v_cruise_kph, self._last_pedal_kph)" in card
+  assert "should_write_preap_pedal(seed_kph, preap_v_cruise_kph, self._last_pedal_kph)" in card
+  # Curve snapshot/restore: freeze posted flicker, restore pre-curve MAX.
+  assert "CurveMaxHold" in card
+  assert "begin_cycle" in card
+  assert "restore_seed_kph" in card
   assert "if long_active and dec.seed_kph is not None:" not in card
   # Sticky hold must not slew toward nextSpeedLimit.
   assert "not dec.sticky:" in card
@@ -1359,4 +1363,4 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   # Delayed pedalLongActive rising after one SET must not take traveled.
   assert "not bool(resume_held) and hold.held_max_kph is None" in policy
   # Sticky / stalk path unchanged.
-  assert "should_write_preap_pedal(dec.seed_kph, preap_v_cruise_kph, self._last_pedal_kph)" in card
+  assert "should_write_preap_pedal(seed_kph, preap_v_cruise_kph, self._last_pedal_kph)" in card

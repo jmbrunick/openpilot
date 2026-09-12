@@ -23,6 +23,7 @@ Licenses: pfeiferj/mapd and sunnypilot SLA are MIT; we did **not** vendor the Go
 - **No-pedal / stock CC**: display only. We do not spoof stalk +/- to chase map limits.
 - **Cap**: `MAX = min(driver set, OSM limit + offset)`. Never raises.
 - **Follow** (preferred): MAX tracks the OSM limit. A manual stalk set — **above or below** posted `a` — holds that absolute MAX until the posted value changes to `b`, then MAX **rebases to `b`** (driving or long-paused). Do not continuously overwrite sticky toward posted every frame while posted is unchanged. GPS / match drop is posted unknown: keep held MAX, never invent a posted.
+- **Sharp curve:** snapshot HUD MAX / sticky / held at curve entry (lat accel or steer). Temporary corner slowing may lower published MAX (`limit_accel_in_turns` plus a comfort lat-accel cap). After lat accel / steer are straight-ish, restore that pre-curve set. Do not let the bend permanently rebase sticky or the map target (OSM flicker on a ramp must not bounce 60 → eco 55). A posted change that is still there after exit is a real new zone and may rebase.
 - **Engage / SET:** **Double SET** (initial engage from fully disengaged, or second SET in the window while already in session) forgets sticky: maps on + posted known → HUD MAX and `pedal_speed_kph` = current posted (+ offset); maps off / posted unknown → current traveled speed. **One SET** after a brake long pause resumes longitudinal only at the held MAX (already rebased if posted changed). Pedal write-back is **take-speed-now**, **resume-held**, a **real stalk step**, or **Follow/system raise** when the posted limit increased. A sticky hold must **not** write every frame (that ate stalk +/- after CI.update). Stalk +/- is a 1 or 5 mph `pedal_speed` step; button events are extra. An ego jump is not a stalk.
 - **Display / Off**: no control change.
 - **Lookahead (Cap/Follow):** a **lower** OSM maxspeed ahead eases MAX down so you reach about the new limit as you enter that way. A **higher** limit ahead does **not** raise MAX early — Follow raises only once GPS is on the faster segment.
@@ -157,7 +158,8 @@ pytest selfdrive/mapd/tests/test_map_speed_policy.py \
   selfdrive/car/tesla/tests/test_preap_sticky_max.py \
   selfdrive/car/tesla/tests/test_preap_blinker_lat_pause.py \
   selfdrive/selfdrived/tests/test_preap_regen.py \
-  selfdrive/controls/lib/tests/test_driver_lateral_handoff.py -q
+  selfdrive/controls/lib/tests/test_driver_lateral_handoff.py \
+  selfdrive/controls/lib/tests/test_curve_max_hold.py -q
 ```
 
 Policy tests include lead precedence, fetch of a tiny sqlite over HTTP, and Refresh maps location/merge (no network).
@@ -182,6 +184,7 @@ Policy tests include lead precedence, fetch of a tiny sqlite over HTTP, and Refr
 5. Follow: set 55 in a 65 — MAX stays 55 until the posted limit changes; set 45 in a 65 — same. Posted 65→45 (or 65→70), driving or long-paused, rebases MAX to the new posted. Brake pause then one SET resumes the held MAX (55 in a 65, or the rebased posted). Double SET with maps on takes current posted; maps off / unknown posted takes current traveled speed. GPS glitch must not wipe sticky or invent a posted. Double-pull engage with a valid limit: MAX **and** the car start at the posted limit immediately.
 6. Top-middle live speed must match wheel/ESP (about 45 if that is actual), not MAX (56) and not LIMIT.
 7. Cancel is a full disengage (held MAX forgotten). Brake is a long pause: one SET resumes held MAX; double SET takes posted or current speed as above. A latched driver turn does not pause long.
+8. **Sharp curve, Hypermile On / Step Down Off:** if MAX is 60 before the bend (sticky or that displayed set; eco target for posted 60 is 55), the car may slow and HUD MAX may move through the corner. After exit MAX must return to **60**, not stay on eco 55. A real posted change that is still there after the bend may rebase.
 
 **No-pedal:** LIMIT sign only; stock CC set speed is unchanged. Sticky MAX / one-SET resume is pedal software cruise only.
 
