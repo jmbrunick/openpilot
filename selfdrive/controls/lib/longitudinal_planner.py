@@ -25,6 +25,9 @@ from openpilot.selfdrive.mapd.map_speed_policy import (
   cap_planner_v_cruise_ms, map_in_track_deadband, map_track_accel_ms2, map_track_decel_ms2,
   read_map_speed_params,
 )
+from openpilot.selfdrive.controls.lib.hypermile import (
+  effective_nap_follow_dist, read_hypermile_params,
+)
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 
@@ -57,7 +60,6 @@ def get_preap_follow_cap_strength(v_ego, lead_distance, lead_speed, t_follow):
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 ALLOW_THROTTLE_THRESHOLD = 0.4
 MIN_ALLOW_THROTTLE_SPEED = 2.5
-NAP_FOLLOW_DISTANCE_RANGE = range(1, 8)
 
 # Lookup table for turns
 _A_TOTAL_MAX_V = [1.7, 3.2]
@@ -96,10 +98,13 @@ class LongitudinalPlanner:
     self._params = Params() if params is None else params
     self.nap_follow_dist = self._params.get("NAPFollowDistance", return_default=True) if self._is_preap else None
     self.nap_adaptive_accel = self._params.get_bool("NAPAdaptiveAccel") if self._is_preap else False
+    self._hypermile_on, self._hypermile_level = read_hypermile_params(self._params) if self._is_preap else (False, 3)
     self._map_speed_mode, self._map_speed_offset_kph, self._map_speed_lookahead, self._map_speed_accel = (
       read_map_speed_params(self._params) if self._is_preap else (0, 0.0, 0, 5)
     )
-    self.active_nap_follow_dist = self.nap_follow_dist if self._is_preap and self.nap_follow_dist in NAP_FOLLOW_DISTANCE_RANGE else None
+    self.active_nap_follow_dist = effective_nap_follow_dist(
+      self._is_preap, self.nap_follow_dist, self._hypermile_on, self._hypermile_level, init_v,
+    )
     self.t_follow = get_T_FOLLOW(nap_follow_dist=self.active_nap_follow_dist)
     self._frame = 0
 
@@ -135,12 +140,15 @@ class LongitudinalPlanner:
 
   def update(self, sm):
     self._frame += 1
-    if self._is_preap and self._frame % 20 == 0:
-      self.nap_follow_dist = self._params.get("NAPFollowDistance", return_default=True)
-      self.nap_adaptive_accel = self._params.get_bool("NAPAdaptiveAccel")
-      self._map_speed_mode, self._map_speed_offset_kph, self._map_speed_lookahead, self._map_speed_accel = (
-        read_map_speed_params(self._params)
-      )
+    if self._is_preap:
+      # Stalk 1–5 must land on the next plan; do not wait for the 20-frame poll.
+      self._hypermile_on, self._hypermile_level = read_hypermile_params(self._params)
+      if self._frame % 20 == 0:
+        self.nap_follow_dist = self._params.get("NAPFollowDistance", return_default=True)
+        self.nap_adaptive_accel = self._params.get_bool("NAPAdaptiveAccel")
+        self._map_speed_mode, self._map_speed_offset_kph, self._map_speed_lookahead, self._map_speed_accel = (
+          read_map_speed_params(self._params)
+        )
 
     if len(sm['carControl'].orientationNED) == 3:
       accel_coast = get_coast_accel(sm['carControl'].orientationNED[1])
@@ -196,7 +204,9 @@ class LongitudinalPlanner:
     if (not force_slow_decel) and self._is_preap and self._map_speed_mode in (MODE_CAP, MODE_FOLLOW):
       v_cruise = cap_planner_v_cruise_ms(v_hud_ms, None, mode=self._map_speed_mode)
 
-    self.active_nap_follow_dist = self.nap_follow_dist if self._is_preap and self.nap_follow_dist in NAP_FOLLOW_DISTANCE_RANGE else None
+    self.active_nap_follow_dist = effective_nap_follow_dist(
+      self._is_preap, self.nap_follow_dist, self._hypermile_on, self._hypermile_level, v_ego,
+    )
     self.t_follow = get_T_FOLLOW(sm['selfdriveState'].personality, self.active_nap_follow_dist)
 
     # Pre-AP adaptive accel: only limit accel when the lead's obstacle-equivalent

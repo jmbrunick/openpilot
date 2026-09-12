@@ -24,6 +24,8 @@ Pre-AP has two modes depending on whether a Comma Pedal is installed. Mode is se
 
 Interface flags for this mode: `openpilotLongitudinalControl=True`, `pcmCruise=False`. Long planner runs; accel goes to pedal.
 
+**Hypermile (nap-dev, default Off):** Settings → NAP → Driving Mannerisms. While On and a radar lead is present, stalk up/down steps Hypermile follow 1–5 (closer/farther) instead of MAX. No lead: stalk still adjusts MAX. Opt-in **Step Down Speed** (default Off) targets 15 mph under posted for range; Follow stalk SET can still hold above that until posted changes. See [hypermile.md](hypermile.md). Soft-lat / DM / blinker / sticky MAX / one-SET / standstill gas-gate / reverse hard-cancel unchanged.
+
 ## No-pedal mode
 
 `use_pedal=False`, no pedal hardware:

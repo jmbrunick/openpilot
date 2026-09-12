@@ -17,6 +17,8 @@ Soft Lateral Handoff (`NAPDriverLatHandoff`) defaults **On** (Settings â†’ NAP â
 
 Simulate Look-at-Road (`NAPDmSimulateLooking`) defaults **On**. While engaged, after drain is past **1.0 s**, fire a held glance at a random time in the next **2.0 s** (**(1.0 s, 3.0 s]** of that countdown) until awareness recovers to 1.0. Same rule after each full reset. Not a mute. Turn **Off** for stock DM.
 
+Hypermile (`NAPHypermile`) defaults **Off** (nap-dev experimental). See [hypermile.md](hypermile.md). Do not merge Hypermile into nap-release until Justin signs off.
+
 ## Submodules
 
 `panda` and `opendbc_repo` use NotAutopilot forks. After checkout:

@@ -11,6 +11,7 @@ Documentation for contributors working on NotAutopilot. These are NAP-specific �
 - **[force-offroad.md](force-offroad.md)** — Settings → NAP Force Offroad / Go Offline (started=false while moving)
 - **[speed-sign-log.md](speed-sign-log.md)** — on-drive MUTCD speed-sign JSONL logger (log-only, default off)
 - **[engagement.md](engagement.md)** — stalk FSM, pedal-vs-no-pedal engagement paths, brake behavior, driver-wheel lateral handoff (default On; intent-to-steer yield; emergency hard-brake full cancel; Settings can disable)
+- **[hypermile.md](hypermile.md)** — Hypermile eco snap + speed-split follow 1–5 (nap-dev experimental, default Off)
 
 ## Layout
 

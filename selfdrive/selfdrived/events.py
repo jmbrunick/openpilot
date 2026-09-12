@@ -406,6 +406,13 @@ def personality_changed_alert(CP: car.CarParams, CS: car.CarState, sm: messaging
   return NormalPermanentAlert(f"Driving Personality: {personality}", duration=1.5)
 
 
+def hypermile_follow_changed_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
+  from openpilot.selfdrive.controls.lib.hypermile import follow_level_hud_text, read_hypermile_params
+  from openpilot.common.params import Params
+  _on, level = read_hypermile_params(Params())
+  return NormalPermanentAlert(follow_level_hud_text(level), duration=1.5)
+
+
 def invalid_lkas_setting_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
   text = "Toggle stock LKAS on or off to engage"
   if CP.brand == "tesla":
@@ -1113,6 +1120,10 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
     ET.PERMANENT: audio_feedback_alert,
   },
 }
+
+_hypermile_follow_changed = getattr(EventName, "hypermileFollowChanged", None)
+if _hypermile_follow_changed is not None:
+  EVENTS[_hypermile_follow_changed] = {ET.WARNING: hypermile_follow_changed_alert}
 
 
 if HARDWARE.get_device_type() == 'mici':
