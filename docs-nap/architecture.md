@@ -84,9 +84,9 @@ Pre-AP `TurnIndLvr_Stat` is only IDLE / LEFT / RIGHT / SNA — no tip vs latch b
 
 **Default On** (`NAPDriverLatHandoff=1`). Yield on **driver intent** (sustained torsion + aligned steer rate + hands on the rim), not gravel/wind/crown. Stay yielded while `EPAS_handsOnLevel >= 1`; 1 s blend starts after ~0.15 s of hands truly off. Emergency/hard brake (`aEgo <= −3.5 m/s²` for 80 ms + digital Applied) during yield / 2 s window fully cancels OP. Light brake is still the silent long pause. A driver-turn blinker does not strip lat when soft-lat is On; after a yielded turn, resume is yield + 0.15 s confirm + 1 s blend (no dedicated blinker blend). Turn Off in Settings → NAP → Driving Mannerisms if false-yields remain — Off also restores stock blinker lat-pause. See [engagement.md](engagement.md#driver-wheel-temporary-lateral-handoff).
 
-## Driver monitoring (first look-at-road prompt)
+## Driver monitoring (simulate looking)
 
-Orange / red stay **5 / 11 s**. On Pre-AP while engaged, `NAPDmHandsOnReset` (default On) draws a **random first-prompt timeout in 2.0–4.5 s** on each full awareness reset (not a fixed 3 s) and treats `handsOnLevel >= 1` as enough to **reset awareness in that first prompt band only** (not orange or red). A firm `steeringPressed` yank or gas is still the stock full reset. Always-on DM when not engaged is unchanged. Turn Off in Settings → NAP → Driving Mannerisms for stock DM. See [engagement.md](engagement.md#driver-monitoring-hands-on-reset).
+Stock DM timers stay **3 / 5 / 11 s**. On nap-dev while engaged, `NAPDmSimulateLooking` (default On) waits until awareness has drained **~1 s**, then injects a simulated glance on the **same vision looking-path** a real look uses (`face_detected`, low pose std, distraction filter below 0.37) so awareness **resets**. The next pulse is a **random 2–3 s** (redrawn after each pulse). Toggle Off = stock DM, no simulation. Hard cancels (hands-on ≥ 2, stalk, door, reverse) are unchanged. See [engagement.md](engagement.md#driver-monitoring-simulate-looking).
 
 ## OSM map speed (MAX)
 

@@ -26,14 +26,17 @@ def to_percent(v):
 #  We recommend that you do not change these numbers from the defaults.
 # ******************************************************************************************
 
-# NAP Pre-AP: light rim contact can reset the *first* look-at-road prompt.
-# Stock orange / red stay 5 / 11 s. First prompt is drawn in [2.0, 4.5] s
-# on each full awareness reset (not a fixed 3 s). Gate is param +
-# EPAS handsOnLevel (only Pre-AP publishes it).
-PARAM_DM_HANDS_ON_RESET = "NAPDmHandsOnReset"
-HANDS_ON_DM_RESET_LEVEL = 1
-VISION_ALERT_1_TIMEOUT_MIN = 2.0
-VISION_ALERT_1_TIMEOUT_MAX = 4.5
+# NAP experiment (nap-dev only): simulate looking at the road so stock
+# awareness recovers/resets on the same vision path as a real glance.
+# After the timer has drained past ~1 s, pulse on a random 2–3 s
+# interval (redraw after each pulse). Toggle Off = stock DM. Default On.
+# Hands-on ≥ 2 / stalk / door / reverse hard cancels are unchanged.
+PARAM_DM_SIMULATE_LOOKING = "NAPDmSimulateLooking"
+LOOK_SIM_COUNTDOWN_MIN_S = 1.0
+LOOK_SIM_INTERVAL_MIN_S = 2.0
+LOOK_SIM_INTERVAL_MAX_S = 3.0
+# Stock looking-path: filter.x below this + face + low pose std.
+VISION_LOOKING_FILTER_X = 0.37
 
 
 def _param_bool(name: str, default: bool) -> bool:
@@ -45,30 +48,9 @@ def _param_bool(name: str, default: bool) -> bool:
     return default
 
 
-def cs_hands_on_level_for_dm(CS) -> int:
-  """Same Pre-AP hands-on read as soft-lat (cereal + steeringTorqueEps stash)."""
-  vals = []
-  if hasattr(CS, 'handsOnLevel'):
-    try:
-      vals.append(int(CS.handsOnLevel or 0))
-    except (TypeError, ValueError):
-      pass
-  try:
-    ev = int(round(float(getattr(CS, 'steeringTorqueEps', 0.0) or 0.0)))
-    if 0 <= ev <= 3:
-      vals.append(ev)
-  except (TypeError, ValueError):
-    pass
-  if getattr(CS, 'steeringDisengage', False):
-    vals.append(2)
-  return max(vals) if vals else 0
-
-
-def in_first_prompt_band(awareness, step_change, threshold_alert_1, threshold_alert_2):
-  """True from just before alert 1 until orange (alert 2) starts."""
-  if awareness <= 0. or awareness <= threshold_alert_2:
-    return False
-  return awareness <= threshold_alert_1 or (awareness - step_change) <= threshold_alert_1
+def vision_looking_path(face_detected, low_std, distraction_filter_x) -> bool:
+  """True when stock DM treats the driver as looking / attentive."""
+  return bool(face_detected and low_std and distraction_filter_x < VISION_LOOKING_FILTER_X)
 
 
 class DRIVER_MONITOR_SETTINGS:
@@ -81,9 +63,6 @@ class DRIVER_MONITOR_SETTINGS:
     self._VISION_POLICY_ALERT_1_TIMEOUT = 3.
     self._VISION_POLICY_ALERT_2_TIMEOUT = 5.
     self._VISION_POLICY_ALERT_3_TIMEOUT = 11.
-    # NAP only: random first-prompt band. Always before orange (5 s).
-    self._VISION_POLICY_ALERT_1_TIMEOUT_MIN = VISION_ALERT_1_TIMEOUT_MIN
-    self._VISION_POLICY_ALERT_1_TIMEOUT_MAX = VISION_ALERT_1_TIMEOUT_MAX
 
     self._TIMEOUT_RECOVERY_FACTOR_MAX = 5.
     self._TIMEOUT_RECOVERY_FACTOR_MIN = 1.25
@@ -207,40 +186,50 @@ class DriverMonitoring:
     self.dcam_reset_cnt = 0
     self.too_distracted = _param_bool("DriverTooDistracted", False)
     # Default On. Settings → NAP → Driving Mannerisms can turn Off.
-    self.nap_dm_hands_on_reset = _param_bool(PARAM_DM_HANDS_ON_RESET, True)
+    self.nap_dm_simulate_looking = _param_bool(PARAM_DM_SIMULATE_LOOKING, True)
     self._rng = random.Random()
-    self.vision_alert_1_timeout = self.settings._VISION_POLICY_ALERT_1_TIMEOUT
+    self._look_sim_countdown_s = 0.0
+    self._sim_looking_pulse = False
+    self._redraw_look_sim_interval()
 
     self._reset_awareness()
     self._set_policy(MonitoringPolicy.vision)
 
-  def _current_vision_alert_1_timeout(self):
-    if self.nap_dm_hands_on_reset:
-      return self.vision_alert_1_timeout
-    return self.settings._VISION_POLICY_ALERT_1_TIMEOUT
+  def _redraw_look_sim_interval(self):
+    """New 2–3 s pulse delay. Unpredictable across cycles."""
+    self._look_sim_interval_s = float(self._rng.uniform(
+      LOOK_SIM_INTERVAL_MIN_S, LOOK_SIM_INTERVAL_MAX_S))
 
-  def _apply_vision_alert_thresholds(self):
-    t3 = self.settings._VISION_POLICY_ALERT_3_TIMEOUT
-    self.threshold_alert_1 = 1. - self._current_vision_alert_1_timeout() / t3
-    self.threshold_alert_2 = 1. - self.settings._VISION_POLICY_ALERT_2_TIMEOUT / t3
+  def _apply_simulated_looking(self):
+    """Force the same predicates a real glance uses on the vision path."""
+    self.face_detected = True
+    self.pose.low_std = True
+    self.is_model_uncertain = False
+    self.driver_distracted = False
+    self.driver_distraction_filter.x = 0.0
 
-  def _redraw_vision_alert_1(self):
-    """New first-prompt time for this awareness cycle. Stock 3 s when NAP off."""
-    s = self.settings
-    if self.nap_dm_hands_on_reset:
-      lo = s._VISION_POLICY_ALERT_1_TIMEOUT_MIN
-      hi = s._VISION_POLICY_ALERT_1_TIMEOUT_MAX
-      self.vision_alert_1_timeout = float(self._rng.uniform(lo, hi))
+  def _maybe_simulate_looking(self, op_engaged, allow_look_sim):
+    """After ~1 s of countdown, pulse looking on the drawn 2–3 s interval."""
+    self._sim_looking_pulse = False
+    if not (allow_look_sim and self.nap_dm_simulate_looking and op_engaged):
+      if not op_engaged:
+        self._look_sim_countdown_s = 0.0
+      return
+    if self.awareness < 1.0:
+      self._look_sim_countdown_s += DT_DMON
     else:
-      self.vision_alert_1_timeout = s._VISION_POLICY_ALERT_1_TIMEOUT
+      self._look_sim_countdown_s = 0.0
+      return
+    if (self._look_sim_countdown_s >= LOOK_SIM_COUNTDOWN_MIN_S and
+        self._look_sim_countdown_s + 1e-9 >= self._look_sim_interval_s):
+      self._apply_simulated_looking()
+      self._sim_looking_pulse = True
 
   def _reset_awareness(self):
     self.awareness = 1.
     self.last_vision_awareness = 1.
     self.last_wheeltouch_awareness = 1.
-    self._redraw_vision_alert_1()
-    if self.active_policy == MonitoringPolicy.vision:
-      self._apply_vision_alert_thresholds()
+    self._look_sim_countdown_s = 0.0
 
   def _set_policy(self, target_policy):
     if self.active_policy == MonitoringPolicy.vision and self.awareness <= self.threshold_alert_2:
@@ -258,7 +247,8 @@ class DriverMonitoring:
         self.last_wheeltouch_awareness = self.awareness
         self.awareness = self.last_vision_awareness
 
-      self._apply_vision_alert_thresholds()
+      self.threshold_alert_1 = 1. - self.settings._VISION_POLICY_ALERT_1_TIMEOUT / self.settings._VISION_POLICY_ALERT_3_TIMEOUT
+      self.threshold_alert_2 = 1. - self.settings._VISION_POLICY_ALERT_2_TIMEOUT / self.settings._VISION_POLICY_ALERT_3_TIMEOUT
       self.step_change = DT_DMON / self.settings._VISION_POLICY_ALERT_3_TIMEOUT
       self.active_policy = MonitoringPolicy.vision
     else:
@@ -373,9 +363,10 @@ class DriverMonitoring:
     elif self.face_detected and self.pose.low_std:
       self.hi_stds = 0
 
-  def _update_events(self, driver_engaged, op_engaged, standstill, wrong_gear, soft_presence=False):
+  def _update_events(self, driver_engaged, op_engaged, standstill, wrong_gear, allow_look_sim=True):
     self.alert_level = AlertLevel.none
     self.driver_interacting = driver_engaged
+    self._maybe_simulate_looking(op_engaged, allow_look_sim)
 
     if self.terminal_alert_cnt >= self.settings._MAX_TERMINAL_ALERTS or \
        self.terminal_time >= self.settings._MAX_TERMINAL_DURATION:
@@ -392,19 +383,19 @@ class DriverMonitoring:
     awareness_prev = self.awareness
     _reaching_alert_1 = self.awareness - self.step_change <= self.threshold_alert_1
     _reaching_alert_3 = self.awareness - self.step_change <= 0
-    # Pre-AP NAP: light hands-on resets only in the first (~3 s vision) band.
-    # Does not clear orange / red. AlwaysOnDM when not engaged is unchanged.
-    if (soft_presence and op_engaged and
-        in_first_prompt_band(self.awareness, self.step_change,
-                             self.threshold_alert_1, self.threshold_alert_2)):
-      self.driver_interacting = True
-      self._reset_awareness()
-      return
     standstill_exemption = standstill and _reaching_alert_1
     always_on_exemption = always_on_valid and not op_engaged and _reaching_alert_3
 
-    if self.awareness > 0 and \
-       ((self.driver_distraction_filter.x < 0.37 and self.face_detected and self.pose.low_std) or standstill_exemption):
+    looking = vision_looking_path(self.face_detected, self.pose.low_std,
+                                  self.driver_distraction_filter.x)
+    if looking and self._sim_looking_pulse:
+      # Same looking-path reset a real glance uses, including leftover
+      # orange / red so a prior nag does not stay stuck.
+      self._redraw_look_sim_interval()
+      self._reset_awareness()
+      self._sim_looking_pulse = False
+      return
+    if self.awareness > 0 and (looking or standstill_exemption):
       if self.driver_interacting:
         self._reset_awareness()
         return
@@ -513,15 +504,10 @@ class DriverMonitoring:
       steering_angle_deg=steering_angle_deg,
     )
 
-    # Pre-AP publishes handsOnLevel (cereal or steeringTorqueEps stash).
-    # Other cars stay 0 → stock DM. Param Off also stays stock.
-    soft_presence = False
-    if (not demo) and self.nap_dm_hands_on_reset and enabled:
-      soft_presence = cs_hands_on_level_for_dm(sm['carState']) >= HANDS_ON_DM_RESET_LEVEL
     self._update_events(
       driver_engaged=driver_engaged,
       op_engaged=enabled,
       standstill=standstill,
       wrong_gear=wrong_gear,
-      soft_presence=soft_presence,
+      allow_look_sim=not demo,
     )

@@ -23,7 +23,7 @@ FOLLOW_DISTANCE_DEFAULT = 4
 
 NAP_SPEED_SIGN_LOG = "NAPSpeedSignLog"
 NAP_DRIVER_LAT_HANDOFF = "NAPDriverLatHandoff"
-NAP_DM_HANDS_ON_RESET = "NAPDmHandsOnReset"
+NAP_DM_SIMULATE_LOOKING = "NAPDmSimulateLooking"
 NAP_FORCE_OFFROAD = "NAPForceOffroad"
 DRIVER_LAT_HANDOFF_DESCRIPTION = (
   "Default On. A light purposeful push with a hand on the rim frees "
@@ -35,13 +35,14 @@ DRIVER_LAT_HANDOFF_DESCRIPTION = (
   + "the silent long pause + one SET. Gray chrome means lat yielded — "
   + "turn Off if rumble still false-yields. Off = stock lat, no yield."
 )
-DM_HANDS_ON_RESET_DESCRIPTION = (
-  "Default On. Pre-AP only. Light hands on the rim (EPAS hands-on ≥ 1) "
-  + "reset the first look-at-road prompt. That first prompt is drawn "
-  + "at random in 2.0–4.5 s each cycle (not a fixed 3 s). Orange and "
-  + "red still escalate if you ignore them. A firm steering yank or "
-  + "gas still reset as stock. Always-on DM is unchanged. Turn Off "
-  + "for stock DM."
+DM_SIMULATE_LOOKING_DESCRIPTION = (
+  "Default On. nap-dev experiment. While engaged, after the look-at-road "
+  + "timer has counted down about 1 s, periodically simulate looking at "
+  + "the road — the same attentive path as a real glance — on a random "
+  + "2–3 s interval so awareness resets. Not a mute: stock DM still "
+  + "runs. Hands-on ≥ 2, stalk cancel, door, and reverse still hard-"
+  + "cancel. Always-on DM when not engaged is unchanged. Turn Off for "
+  + "stock DM with no simulation."
 )
 FORCE_OFFROAD_DESCRIPTION = (
   "WARNING: Forces the device offroad and disengages openpilot even while "

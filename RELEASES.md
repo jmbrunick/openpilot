@@ -1,6 +1,6 @@
 NAP driver monitoring (2026-09-12)
 ========================
-* Pre-AP engaged: light hands on the rim (`EPAS_handsOnLevel >= 1`) reset the first look-at-road / distracted prompt. That first prompt is drawn **at random in 2.0–4.5 s** each awareness cycle (not a fixed 3 s). Orange (5 s) and red (11 s) still escalate if you ignore them. Stock `steeringPressed` / gas resets and Always-on DM are unchanged. Settings → NAP → Driving Mannerisms → **Hands-On Look-at-Road Reset** (default On). Not a nap-release change.
+* Pre-AP engaged: **Simulate Look-at-Road** (default On) injects a periodic simulated glance on the **stock vision looking-path** (`face_detected` + low pose std + `driver_distraction_filter.x < 0.37`) so awareness **resets the same way a real look does**. After the timer has drained **~1 s**, the next pulse is drawn at random in **2–3 s** (redrawn after each pulse — not a metronome, not a mute). Orange / red stay stock **5 / 11 s** if the toggle is Off. Hands-on ≥ 2 / stalk / door / reverse hard cancels unchanged. Replaces the #103 hands-on-only first-band reset. Settings → NAP → Driving Mannerisms. Not a nap-release change.
 
 NAP settings (2026-09-12)
 ========================

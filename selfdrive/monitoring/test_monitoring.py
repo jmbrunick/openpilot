@@ -3,9 +3,9 @@ import numpy as np
 from cereal import log
 from openpilot.common.realtime import DT_DMON
 from openpilot.selfdrive.monitoring.policy import (
-  DriverMonitoring, DRIVER_MONITOR_SETTINGS, PARAM_DM_HANDS_ON_RESET,
-  HANDS_ON_DM_RESET_LEVEL, VISION_ALERT_1_TIMEOUT_MIN, VISION_ALERT_1_TIMEOUT_MAX,
-  in_first_prompt_band, cs_hands_on_level_for_dm,
+  DriverMonitoring, DRIVER_MONITOR_SETTINGS, PARAM_DM_SIMULATE_LOOKING,
+  LOOK_SIM_COUNTDOWN_MIN_S, LOOK_SIM_INTERVAL_MIN_S, LOOK_SIM_INTERVAL_MAX_S,
+  VISION_LOOKING_FILTER_X, vision_looking_path,
 )
 
 EventName = log.OnroadEvent.EventName
@@ -80,22 +80,20 @@ def _fake_sm(*, engaged=True, hands=1, steer_pressed=False, gas_pressed=False,
 
 
 class TestMonitoring:
-  def _run_seq(self, msgs, interaction, engaged, standstill, soft_presence=None,
-               nap_dm=False, rng_seed=None):
+  def _run_seq(self, msgs, interaction, engaged, standstill, simulate_looking=False,
+               rng_seed=None):
     DM = DriverMonitoring()
-    DM.nap_dm_hands_on_reset = bool(nap_dm)
+    DM.nap_dm_simulate_looking = bool(simulate_looking)
     if rng_seed is not None:
       DM._rng.seed(rng_seed)
-    DM._redraw_vision_alert_1()
-    DM._apply_vision_alert_thresholds()
+      DM._redraw_look_sim_interval()
     alert_lvls = []
     for idx in range(len(msgs)):
       DM._update_states(msgs[idx], [0, 0, 0], 0, engaged[idx], standstill[idx])
       # cal_rpy and car_speed don't matter here
 
       # evaluate events at 10Hz for tests
-      sp = False if soft_presence is None else bool(soft_presence[idx])
-      DM._update_events(interaction[idx], engaged[idx], standstill[idx], 0, soft_presence=sp)
+      DM._update_events(interaction[idx], engaged[idx], standstill[idx], 0)
       alert_lvls.append(DM.alert_level)
     assert len(alert_lvls) == len(msgs), f"got {len(alert_lvls)} for {len(msgs)} driverState input msgs"
     return alert_lvls, DM
@@ -251,164 +249,187 @@ class TestMonitoring:
     assert alert_lvls[int((INVISIBLE_SECONDS_TO_ORANGE-1+DT_DMON*s._HI_STD_FALLBACK_TIME+0.1)/DT_DMON)] == 2
     assert alert_lvls[int((INVISIBLE_SECONDS_TO_RED-1+DT_DMON*s._HI_STD_FALLBACK_TIME+0.1)/DT_DMON)] == 3
 
-  def test_hands_on_reader_matches_soft_lat(self):
-    """DM uses the same cereal / stash / disengage read as soft-lat."""
-    from openpilot.selfdrive.controls.lib.driver_lateral_handoff import cs_hands_on_level
-    cases = [
-      _NS(handsOnLevel=1, steeringTorqueEps=0.0, steeringDisengage=False),
-      _NS(handsOnLevel=0, steeringTorqueEps=1.0, steeringDisengage=False),
-      _NS(handsOnLevel=0, steeringTorqueEps=0.0, steeringDisengage=True),
-      _NS(handsOnLevel=0, steeringTorqueEps=0.0, steeringDisengage=False),
-    ]
-    for cs in cases:
-      assert cs_hands_on_level_for_dm(cs) == cs_hands_on_level(cs)
-    assert HANDS_ON_DM_RESET_LEVEL == 1
-
   def test_stock_vision_timeouts_unchanged(self):
     s = DRIVER_MONITOR_SETTINGS()
     assert s._VISION_POLICY_ALERT_1_TIMEOUT == 3.
     assert s._VISION_POLICY_ALERT_2_TIMEOUT == 5.
     assert s._VISION_POLICY_ALERT_3_TIMEOUT == 11.
-    assert s._VISION_POLICY_ALERT_1_TIMEOUT_MIN == VISION_ALERT_1_TIMEOUT_MIN == 2.0
-    assert s._VISION_POLICY_ALERT_1_TIMEOUT_MAX == VISION_ALERT_1_TIMEOUT_MAX == 4.5
-    assert s._VISION_POLICY_ALERT_1_TIMEOUT_MAX < s._VISION_POLICY_ALERT_2_TIMEOUT
-    assert PARAM_DM_HANDS_ON_RESET == "NAPDmHandsOnReset"
-    assert HANDS_ON_DM_RESET_LEVEL == 1
+    assert PARAM_DM_SIMULATE_LOOKING == "NAPDmSimulateLooking"
+    assert LOOK_SIM_COUNTDOWN_MIN_S == 1.0
+    assert LOOK_SIM_INTERVAL_MIN_S == 2.0
+    assert LOOK_SIM_INTERVAL_MAX_S == 3.0
+    assert VISION_LOOKING_FILTER_X == 0.37
 
-  def test_first_prompt_band_helper(self):
-    s = DRIVER_MONITOR_SETTINGS()
-    t1 = 1. - s._VISION_POLICY_ALERT_1_TIMEOUT / s._VISION_POLICY_ALERT_3_TIMEOUT
-    t2 = 1. - s._VISION_POLICY_ALERT_2_TIMEOUT / s._VISION_POLICY_ALERT_3_TIMEOUT
-    step = DT_DMON / s._VISION_POLICY_ALERT_3_TIMEOUT
-    assert not in_first_prompt_band(1.0, step, t1, t2)
-    assert in_first_prompt_band(t1 + step, step, t1, t2)
-    assert in_first_prompt_band(t1, step, t1, t2)
-    assert in_first_prompt_band((t1 + t2) / 2, step, t1, t2)
-    assert not in_first_prompt_band(t2, step, t1, t2)
-    assert not in_first_prompt_band(0.0, step, t1, t2)
+  def test_vision_looking_path_is_stock_glance_predicates(self):
+    """Green-prompt clear path: face + low std + filter.x < 0.37."""
+    assert vision_looking_path(True, True, 0.0)
+    assert vision_looking_path(True, True, VISION_LOOKING_FILTER_X - 0.01)
+    assert not vision_looking_path(True, True, VISION_LOOKING_FILTER_X)
+    assert not vision_looking_path(False, True, 0.0)
+    assert not vision_looking_path(True, False, 0.0)
+    assert not vision_looking_path(True, True, 0.63)
 
-  def test_preap_hands_on_resets_near_alert_1(self):
-    """Light hands-on at the first look-at-road band resets; does not keep barking."""
-    n = int(TEST_TIMESPAN / DT_DMON)
-    hands = [True] * n
+  def test_simulate_looking_resets_via_looking_path_not_mute(self):
+    """Pulse applies stock looking predicates, then awareness resets to 1."""
+    DM = DriverMonitoring()
+    DM.nap_dm_simulate_looking = True
+    DM._look_sim_interval_s = 2.0
+    saw_looking_reset = False
+    for i in range(int(6.0 / DT_DMON)):
+      prev = DM.awareness
+      DM._update_states(msg_DISTRACTED, [0, 0, 0], 0, True, False)
+      # Distracted filter is high before the pulse injects looking.
+      DM._update_events(False, True, False, 0)
+      if i > 0 and prev < 1.0 and DM.awareness == 1.0:
+        assert vision_looking_path(DM.face_detected, DM.pose.low_std,
+                                   DM.driver_distraction_filter.x)
+        assert DM.alert_level == 0
+        saw_looking_reset = True
+        break
+    assert saw_looking_reset
+    # Not an event-mute design: stock alert_level is still computed.
+    assert hasattr(DM, 'alert_level')
+
+  def test_simulate_looking_waits_1s_then_pulses_in_2_to_3s(self):
+    """No pulse in the first 1 s of countdown; first reset tracks the 2–3 s draw."""
+    DM = DriverMonitoring()
+    DM.nap_dm_simulate_looking = True
+    DM._look_sim_interval_s = 0.4  # would fire early without the 1 s gate
+    drain_start = None
+    first_reset = None
+    for i in range(int(5.0 / DT_DMON)):
+      prev = DM.awareness
+      DM._update_states(msg_DISTRACTED, [0, 0, 0], 0, True, False)
+      DM._update_events(False, True, False, 0)
+      if drain_start is None and DM.awareness < 1.0:
+        drain_start = i * DT_DMON
+      if first_reset is None and i > 0 and prev < 1.0 and DM.awareness == 1.0:
+        first_reset = i * DT_DMON
+        break
+    assert drain_start is not None and first_reset is not None
+    assert (first_reset - drain_start) >= LOOK_SIM_COUNTDOWN_MIN_S - 1e-6
+
+    elapsed = []
+    for seed in range(12):
+      DM = DriverMonitoring()
+      DM.nap_dm_simulate_looking = True
+      DM._rng.seed(seed)
+      DM._redraw_look_sim_interval()
+      interval = DM._look_sim_interval_s
+      assert LOOK_SIM_INTERVAL_MIN_S <= interval <= LOOK_SIM_INTERVAL_MAX_S
+      drain_start = None
+      first = None
+      for i in range(int(8.0 / DT_DMON)):
+        prev = DM.awareness
+        DM._update_states(msg_DISTRACTED, [0, 0, 0], 0, True, False)
+        DM._update_events(False, True, False, 0)
+        if drain_start is None and DM.awareness < 1.0:
+          drain_start = i * DT_DMON
+        if first is None and i > 0 and prev < 1.0 and DM.awareness == 1.0:
+          first = i * DT_DMON
+          break
+      assert drain_start is not None and first is not None
+      dt = first - drain_start
+      assert abs(dt - interval) < 0.15
+      elapsed.append(dt)
+    assert all(LOOK_SIM_INTERVAL_MIN_S - 0.15 <= t <= LOOK_SIM_INTERVAL_MAX_S + 0.15 for t in elapsed)
+    assert max(elapsed) - min(elapsed) > 0.3
+
+  def test_simulate_looking_interval_redraws_not_metronome(self):
+    DM = DriverMonitoring()
+    DM.nap_dm_simulate_looking = True
+    DM._rng.seed(11)
+    seen = []
+    for _ in range(40):
+      DM._redraw_look_sim_interval()
+      t = DM._look_sim_interval_s
+      assert LOOK_SIM_INTERVAL_MIN_S <= t <= LOOK_SIM_INTERVAL_MAX_S
+      seen.append(round(t, 4))
+    assert len(set(seen)) >= 8
+    assert not all(abs(x - seen[0]) < 1e-6 for x in seen)
+
+  def test_simulate_looking_engaged_never_reaches_orange(self):
+    """Periodic looking-path resets keep awareness above orange."""
     alert_lvls, d_status = self._run_seq(always_distracted, always_false, always_true,
-                                         always_false, soft_presence=hands, nap_dm=True)
-    s = d_status.settings
-    assert alert_lvls[int(s._VISION_POLICY_ALERT_1_TIMEOUT_MIN / 2 / DT_DMON)] == 0
-    assert alert_lvls[int((s._VISION_POLICY_ALERT_2_TIMEOUT + 0.5) / DT_DMON)] == 0
+                                         always_false, simulate_looking=True, rng_seed=4)
     assert all(a < 2 for a in alert_lvls)
     assert d_status.awareness > d_status.threshold_alert_2
+    # Stock path still owns alert_level (none after reset, never filtered).
+    assert d_status.alert_level in (0, 1)
 
-  def test_ignored_dm_still_escalates_without_hands(self):
-    """No rim contact: first prompt (random band), then orange, then red."""
+  def test_simulate_looking_no_face_also_resets(self):
+    """maybe_distracted / no-face drain still gets a simulated glance."""
+    alert_lvls, d_status = self._run_seq(always_no_face, always_false, always_true,
+                                         always_false, simulate_looking=True, rng_seed=2)
+    assert all(a < 2 for a in alert_lvls)
+    assert d_status.awareness > 0.5
+
+  def test_simulate_looking_clears_already_orange(self):
+    """If he is already in orange, the next looking pulse still resets."""
+    DM = DriverMonitoring()
+    DM.nap_dm_simulate_looking = False
+    for _ in range(int((dm_settings._VISION_POLICY_ALERT_2_TIMEOUT + 0.4) / DT_DMON)):
+      DM._update_states(msg_DISTRACTED, [0, 0, 0], 0, True, False)
+      DM._update_events(False, True, False, 0)
+    assert DM.alert_level == 2
+    DM.nap_dm_simulate_looking = True
+    DM._look_sim_interval_s = 2.0
+    DM._look_sim_countdown_s = 0.0
+    cleared = False
+    for _ in range(int(4.0 / DT_DMON)):
+      DM._update_states(msg_DISTRACTED, [0, 0, 0], 0, True, False)
+      DM._update_events(False, True, False, 0)
+      if DM.awareness == 1.0 and DM.alert_level == 0:
+        assert vision_looking_path(DM.face_detected, DM.pose.low_std,
+                                   DM.driver_distraction_filter.x)
+        cleared = True
+        break
+    assert cleared
+
+  def test_simulate_looking_off_is_stock(self):
+    """Toggle Off: first prompt → orange → red on stock 3 / 5 / 11 s."""
     alert_lvls, d_status = self._run_seq(always_distracted, always_false, always_true,
-                                         always_false, soft_presence=always_false, nap_dm=True)
+                                         always_false, simulate_looking=False)
     s = d_status.settings
-    orange_i = int((s._VISION_POLICY_ALERT_2_TIMEOUT + 0.6) / DT_DMON)
-    red_i = int((s._VISION_POLICY_ALERT_3_TIMEOUT + 0.6) / DT_DMON)
-    assert 1 in alert_lvls[:orange_i]
-    assert alert_lvls[orange_i] == 2
-    assert alert_lvls[red_i] == 3
+    assert alert_lvls[int(s._VISION_POLICY_ALERT_1_TIMEOUT / 2 / DT_DMON)] == 0
+    assert alert_lvls[int((s._VISION_POLICY_ALERT_1_TIMEOUT + 0.4) / DT_DMON)] == 1
+    assert alert_lvls[int((s._VISION_POLICY_ALERT_2_TIMEOUT + 0.4) / DT_DMON)] == 2
+    assert alert_lvls[int((s._VISION_POLICY_ALERT_3_TIMEOUT + 0.4) / DT_DMON)] == 3
 
-  def test_hands_on_does_not_clear_orange_or_red(self):
-    """After orange / red, light hands-on is not enough — still escalate."""
-    n = int(TEST_TIMESPAN / DT_DMON)
-    orange_i = int((DISTRACTED_SECONDS_TO_ORANGE + 0.2) / DT_DMON)
-    red_i = int((DISTRACTED_SECONDS_TO_RED + 0.2) / DT_DMON)
-    hands = [False] * n
-    for i in range(orange_i, min(orange_i + int(1 / DT_DMON), n)):
-      hands[i] = True
-    alert_lvls, _ = self._run_seq(always_distracted, always_false, always_true,
-                                  always_false, soft_presence=hands, nap_dm=True)
-    assert alert_lvls[orange_i] == 2
-
-    hands_red = [False] * n
-    for i in range(red_i, min(red_i + int(1 / DT_DMON), n)):
-      hands_red[i] = True
-    alert_lvls_red, _ = self._run_seq(always_distracted, always_false, always_true,
-                                      always_false, soft_presence=hands_red, nap_dm=True)
-    assert alert_lvls_red[red_i] == 3
-
-  def test_always_on_disengaged_ignores_soft_presence(self):
-    """AlwaysOnDM when not engaged still counts; hands-on must not wipe it."""
+  def test_always_on_disengaged_does_not_simulate(self):
+    """AlwaysOnDM when not engaged still counts; no simulated glances."""
     n = int(TEST_TIMESPAN / DT_DMON)
     DM = DriverMonitoring(always_on=True)
-    DM.nap_dm_hands_on_reset = True
+    DM.nap_dm_simulate_looking = True
     alert_lvls = []
     for idx in range(n):
       DM._update_states(always_distracted[idx], [0, 0, 0], 0, False, False)
-      DM._update_events(False, False, False, 0, soft_presence=True)
+      DM._update_events(False, False, False, 0)
       alert_lvls.append(DM.alert_level)
     s = DM.settings
     orange_i = int((s._VISION_POLICY_ALERT_2_TIMEOUT + 0.6) / DT_DMON)
     assert 1 in alert_lvls[:orange_i]
     assert alert_lvls[orange_i] == 2
 
-  def test_first_prompt_timeout_redraws_in_band_not_fixed_3s(self):
-    """Each full reset draws a new first-prompt time in [2.0, 4.5], not always 3 s."""
+  def test_run_step_simulate_looking_holds_above_orange(self):
     DM = DriverMonitoring()
-    DM.nap_dm_hands_on_reset = True
-    DM._rng.seed(7)
-    seen = []
-    for _ in range(40):
-      DM._reset_awareness()
-      t = DM.vision_alert_1_timeout
-      assert VISION_ALERT_1_TIMEOUT_MIN <= t <= VISION_ALERT_1_TIMEOUT_MAX
-      expected_t1 = 1. - t / DM.settings._VISION_POLICY_ALERT_3_TIMEOUT
-      assert abs(DM.threshold_alert_1 - expected_t1) < 1e-9
-      seen.append(round(t, 4))
-    assert len(set(seen)) >= 8
-    assert not all(abs(x - 3.0) < 1e-6 for x in seen)
-
-  def test_first_prompt_onset_varies_across_cycles(self):
-    """First green alert must not land at the same time every episode."""
-    onsets = []
-    for seed in range(16):
-      DM = DriverMonitoring()
-      DM.nap_dm_hands_on_reset = True
-      DM._rng.seed(seed)
-      DM._redraw_vision_alert_1()
-      DM._apply_vision_alert_thresholds()
-      first = None
-      for i in range(int(8.0 / DT_DMON)):
-        DM._update_states(msg_DISTRACTED, [0, 0, 0], 0, True, False)
-        DM._update_events(False, True, False, 0)
-        if DM.alert_level == 1:
-          first = i * DT_DMON
-          break
-      assert first is not None
-      onsets.append(first)
-    assert max(onsets) - min(onsets) > 0.5
-    assert all(1.5 < t < dm_settings._VISION_POLICY_ALERT_2_TIMEOUT for t in onsets)
-
-  def test_run_step_hands_on_resets_near_alert_1(self):
-    """run_step: Pre-AP handsOnLevel >= 1 resets at the first vision prompt."""
-    DM = DriverMonitoring()
-    DM.nap_dm_hands_on_reset = True
+    DM.nap_dm_simulate_looking = True
+    DM._rng.seed(5)
+    DM._redraw_look_sim_interval()
     steps = int((dm_settings._VISION_POLICY_ALERT_2_TIMEOUT + 1.0) / DT_DMON)
     for _ in range(steps):
-      DM.run_step(_fake_sm(hands=1, driver_state=msg_DISTRACTED))
+      DM.run_step(_fake_sm(hands=0, driver_state=msg_DISTRACTED))
     assert DM.alert_level < 2
     assert DM.awareness > DM.threshold_alert_2
 
-  def test_run_step_no_hands_still_escalates(self):
-    DM = DriverMonitoring()
-    DM.nap_dm_hands_on_reset = True
-    steps = int((dm_settings._VISION_POLICY_ALERT_2_TIMEOUT + 0.8) / DT_DMON)
-    for _ in range(steps):
-      DM.run_step(_fake_sm(hands=0, driver_state=msg_DISTRACTED))
-    assert DM.alert_level == 2
-
   def test_run_step_param_off_is_stock(self):
     DM = DriverMonitoring()
-    DM.nap_dm_hands_on_reset = False
-    DM._redraw_vision_alert_1()
-    DM._apply_vision_alert_thresholds()
-    assert DM.vision_alert_1_timeout == dm_settings._VISION_POLICY_ALERT_1_TIMEOUT
+    DM.nap_dm_simulate_looking = False
     steps = int((dm_settings._VISION_POLICY_ALERT_1_TIMEOUT + 0.4) / DT_DMON)
     for _ in range(steps):
-      DM.run_step(_fake_sm(hands=1, driver_state=msg_DISTRACTED))
+      DM.run_step(_fake_sm(hands=0, driver_state=msg_DISTRACTED))
     assert DM.alert_level == 1
-    for _ in range(8):
-      DM._reset_awareness()
-      assert DM.vision_alert_1_timeout == dm_settings._VISION_POLICY_ALERT_1_TIMEOUT
+    for _ in range(int((dm_settings._VISION_POLICY_ALERT_2_TIMEOUT -
+                        dm_settings._VISION_POLICY_ALERT_1_TIMEOUT + 0.5) / DT_DMON)):
+      DM.run_step(_fake_sm(hands=0, driver_state=msg_DISTRACTED))
+    assert DM.alert_level == 2

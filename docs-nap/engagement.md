@@ -173,13 +173,13 @@ Do these at a quiet road / parking lot first, then a known pothole stretch. Peda
 11. **Hard yank / hands-on 2**, stalk cancel, door: full disengage, unchanged.
 12. **Reverse while engaged:** session ends (not a pause). HUD reverse / take-control, then after Drive a normal double SET must engage without Controls Mismatch and without a prior on-device disable. Soft-lat / blinker / sticky MAX must not stay wedged.
 
-## Driver monitoring hands-on reset
+## Driver monitoring simulate looking
 
-Stock DM stays on while engaged. Orange / red vision timeouts are still **5 / 11 s** (`DRIVER_MONITOR_SETTINGS` in `selfdrive/monitoring/policy.py`). The first look-at-road prompt is **not** a fixed 3 s: with `NAPDmHandsOnReset` On, each full awareness reset draws a new timeout uniformly in **2.0–4.5 s** (always before orange). Pre-AP often has light hands on the rim (`EPAS_handsOnLevel >= 1`) without `steeringPressed`, so that first prompt can bark even when the driver is present.
+Stock DM stays on while engaged. Vision timeouts stay **3 / 5 / 11 s** (`DRIVER_MONITOR_SETTINGS` in `selfdrive/monitoring/policy.py`). The #103 hands-on-only first-band reset did not stop look-at-road nagging: light rim contact is not what `dmonitoringd` treats as looking, orange/red still fired, and `maybe_distracted` (no face / uncertain) kept draining.
 
-`NAPDmHandsOnReset` (default On, Settings → NAP → Driving Mannerisms) treats that same `handsOnLevel` field soft-lat already publishes as **soft presence**: when awareness is approaching or in the **first prompt band** (near the drawn alert 1, still above orange), reset awareness and draw a new first-prompt time. Orange (alert 2) and red (alert 3 / terminal) still escalate if the driver ignores DM (no hands, no look-back, no gas / firm steer). Always-on DM when not engaged does **not** use this reset.
+`NAPDmSimulateLooking` (default On, Settings → NAP → Driving Mannerisms) does **not** mute banners. After awareness has started counting down and has gone **past ~1 s**, it injects a simulated glance on the **stock vision looking-path** — `face_detected` and `pose.low_std` and `driver_distraction_filter.x < 0.37` — the same predicates that clear the green prompt when he actually looks. That pulse takes the existing looking-path reset so awareness returns to full and the timer can start again. The delay to the next pulse is drawn uniformly in **2–3 s** and redrawn after each pulse (not a fixed metronome).
 
-Other cars do not publish `handsOnLevel` (read as 0) so they stay on stock DM. Turn the toggle **Off** for stock first-prompt behavior on Pre-AP.
+Always-on DM when not engaged does **not** simulate. Toggle **Off** = stock DM with no pulses. Hands-on ≥ 2 / steer disengage, door, reverse, and stalk cancel are unchanged.
 
 ## Where to look
 
@@ -190,5 +190,5 @@ Other cars do not publish `handsOnLevel` (read as 0) so they stay on stock DM. T
 - `opendbc_repo/opendbc/car/tesla/preap/tests/test_preap_engagement.py` — FSM tests (brake drop, steering disengage, double-pull)
 - `selfdrive/car/tesla/tests/test_preap_blinker_lat_pause.py` — blinker lat pause, turn drops long, one SET resumes
 - `selfdrive/car/tesla/tests/test_preap_sticky_max.py` — sticky MAX across brake/turn pause, one vs double SET, cancel
-- `selfdrive/monitoring/policy.py` — first-prompt hands-on reset (`NAPDmHandsOnReset`)
-- `selfdrive/monitoring/test_monitoring.py` — reset near alert 1; still escalates without hands
+- `selfdrive/monitoring/policy.py` — simulate looking (`NAPDmSimulateLooking`) on the stock vision looking-path
+- `selfdrive/monitoring/test_monitoring.py` — pulse timing 2–3 s after ~1 s countdown; Off is stock
