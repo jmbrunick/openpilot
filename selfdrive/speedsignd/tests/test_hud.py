@@ -343,7 +343,9 @@ def test_publish_fields_yolo_65_refine_fail_blank_or_hold():
     class_mph=65, class_conf=0.73, refine_mph=None,
   )]
   msg_valid, mph, conf, missing, paused = live_sign_publish_fields(h, bad, 1.0, False)
-  assert msg_valid and not missing and not paused and mph == 0 and conf == 0.0
+  # No accepted detect yet: cereal mph stays 0 (plate blank), same as no-hit.
+  assert not missing and not paused and mph == 0 and conf == 0.0
+  assert not msg_valid
 
   good = [SpeedSign(
     mph=50, conf=0.71, bbox=(0, 0, 10, 10),
