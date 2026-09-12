@@ -1,4 +1,4 @@
-"""Pre-AP sticky MAX: brake / turn long pause, one SET vs double SET.
+"""Pre-AP sticky MAX: brake long pause, one SET vs double SET.
 
 Pedal mode. Soft lateral handoff (#71) and speedsignd are not this path.
 """
@@ -186,20 +186,18 @@ def test_set_while_long_on_does_not_drop_long():
   assert not getattr(eng, "_nap_set_resume_long", False)
 
 
-def test_blinker_turn_one_set_resumes_held_max():
+def test_blinker_turn_keeps_held_max_and_long():
   install_blinker_lat_pause()
   held = 55 * CV.MPH_TO_KPH
   eng = _engaged(pedal_kph=held)
   eng._nap_left_blinker = True
   eng.handle_steering_disengage(False)
-  assert not eng.enableLongControl
+  assert eng.enableLongControl
   assert eng.cruiseEnabled
   assert abs(eng.pedal_speed_kph - held) < 1e-6
+  assert not getattr(eng, "_nap_long_resume_pending", False)
   _end_turn_latch(eng, pressed=True)
-  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=5000, v_ego=10.0)
-  assert eng.cruiseEnabled
   assert eng.enableLongControl
-  assert getattr(eng, "_nap_set_resume_long", False)
   assert abs(eng.pedal_speed_kph - held) < 1e-6
   assert eng._nap_lat_hold.holding
 
@@ -449,7 +447,7 @@ def test_brake_pause_does_not_chime_disengage_or_resume_fanfare():
   assert not prev.long_paused
 
 
-def test_blinker_turn_pause_does_not_chime_disengage():
+def test_blinker_turn_does_not_chime_or_pause_long():
   install_blinker_lat_pause()
   eng = _engaged()
   prev = PreAPChimeState(lat_engaged=True, long_engaged=True)
@@ -457,9 +455,9 @@ def test_blinker_turn_pause_does_not_chime_disengage():
   eng.handle_steering_disengage(False)
   chimes, prev = _chime_for(eng, prev)
   assert eng.cruiseEnabled
-  assert not eng.enableLongControl
+  assert eng.enableLongControl
   assert not chimes.long_disengage
-  assert prev.long_paused
+  assert not prev.long_paused
 
 
 def test_cancel_after_engaged_still_chimes_long_disengage():
@@ -475,7 +473,7 @@ def test_cancel_after_engaged_still_chimes_long_disengage():
 
 
 def test_handoff_module_does_not_drop_long():
-  """#71 soft lat handoff must not share the brake/turn long-pause path."""
+  """#71 soft lat handoff must not share the brake long-pause path."""
   from pathlib import Path
   src = (Path(__file__).resolve().parents[4] / "selfdrive/controls/lib/driver_lateral_handoff.py").read_text()
   assert "_drop_longitudinal_keep_lateral" not in src
