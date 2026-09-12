@@ -118,11 +118,13 @@ def test_on_snaps_eco_and_off_restores_prior():
   assert params.get_bool("NAPDmSimulateLooking") is False
   assert params.get("NAPFollowDistance") == 4
   assert not params.get(PARAM_SAVED)
-  # Step-down is an independent opt-in — eco snap/restore must not touch it.
+  # Step-down / Hill Climb are independent — eco snap/restore must not touch them.
   params.put_bool(PARAM_STEP_DOWN, True)
+  params.put_bool("NAPHypermileHillClimb", False)
   apply_hypermile_toggle(params, True)
   apply_hypermile_toggle(params, False)
   assert params.get_bool(PARAM_STEP_DOWN) is True
+  assert params.get_bool("NAPHypermileHillClimb") is False
 
 
 def test_eco_comfort_bias_early_light_not_late_bite():
@@ -423,12 +425,16 @@ def test_settings_and_docs_wire_hypermile():
     assert "Hypermile" in src or "hypermile" in src
     assert "NAP_HYPERMILE" in src
     assert "NAP_HYPERMILE_STEP_DOWN" in src
+    assert "NAP_HYPERMILE_HILL_CLIMB" in src
     assert "apply_hypermile_toggle" in src
   assert "Hypermile" in nap
   assert "put_bool(NAP_HYPERMILE, False)" in nap
   assert "put_bool(NAP_HYPERMILE_STEP_DOWN, False)" in nap
+  assert "put_bool(NAP_HYPERMILE_HILL_CLIMB, True)" in nap
   assert "Step Down Speed" in tici
+  assert "Hill Climb" in tici
   assert "step down speed" in mici
+  assert "hill climb" in mici
   assert "map_target_offset_kph" in card
   assert "_live_map_offset_kph" in card
   assert "maps_posted" in card
@@ -442,7 +448,9 @@ def test_settings_and_docs_wire_hypermile():
   assert "NAPHypermile" in keys
   assert "NAPHypermileFollowLevel" in keys
   assert "NAPHypermileStepDown" in keys
+  assert "NAPHypermileHillClimb" in keys
   assert 'BOOL, "0"' in next(ln for ln in keys.splitlines() if '"NAPHypermileStepDown"' in ln)
+  assert 'BOOL, "1"' in next(ln for ln in keys.splitlines() if '"NAPHypermileHillClimb"' in ln)
   assert 'BOOL, "0"' in next(ln for ln in keys.splitlines() if '"NAPHypermile"' in ln)
   assert 'INT, "3"' in next(ln for ln in keys.splitlines() if '"NAPHypermileFollowLevel"' in ln)
   assert "effective_nap_follow_dist" in planner
@@ -457,6 +465,7 @@ def test_settings_and_docs_wire_hypermile():
   assert "hypermile.md" in readme
   assert "Hypermile" in docs
   assert "Step Down Speed" in docs
+  assert "Hill Climb" in docs
   assert "15 mph under" in docs or "−15 at 80" in docs
   assert "step_down_offset_mph" in hm_src
   assert "early, light regenerative" in docs.lower() or "early, light" in docs.lower()
@@ -465,7 +474,8 @@ def test_settings_and_docs_wire_hypermile():
   assert "30 stays 30" in docs or "town 30" in docs.lower()
   assert "−8" in docs
   assert "maps" in docs.lower() and ("unknown" in docs.lower() or "invent" in docs.lower())
-  hm_rel = next(p for p in releases.split("\n\n") if p.startswith("NAP Hypermile"))
+  # "NAP Hypermile Hill Climb" must not steal the scaled-eco RELEASES block.
+  hm_rel = next(p for p in releases.split("\n\n") if p.startswith("NAP Hypermile ("))
   assert "Hypermile" in hm_rel
   assert "Early" in hm_rel
   assert "30" in hm_rel and "25" in hm_rel

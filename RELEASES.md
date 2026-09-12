@@ -1,3 +1,7 @@
+NAP Hypermile Hill Climb (2026-09-12)
+========================
+* Settings → NAP → Driving Mannerisms → **Hill Climb** (default **On**, hidden/inert unless Hypermile is On). IMU pitch (`orientationNED[1]`) raises Accel 1 climb authority on a real uphill so Hypermile does not sag under HUD MAX, and eases lightly on a flattening crest / downhill. **Maps-elevation lookahead is NOT included.** Never raises MAX. Lead / MPC hard brake still win. Soft-lat, blinker, sticky MAX, Step Down, lead-close, DM unchanged. Not a nap-release change.
+
 NAP curve MAX (2026-09-12)
 ========================
 * Sharp curve: still slow for a comfortable corner (`limit_accel_in_turns` + a temporary lat-accel MAX cap). Snapshot HUD MAX / sticky at entry; after the bend (lat accel / steer straight-ish) restore that pre-curve set. Do not permanently bounce MAX down through a turn — Hypermile eco −5 (posted 60 → steady 55) must not replace a pre-curve MAX of 60. Step Down, lead-close, soft-lat, and blinker-keep-long unchanged.

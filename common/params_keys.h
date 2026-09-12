@@ -146,6 +146,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Lowers the Cap/Follow posted target by a fixed 15 mph (75→60).
     // Does not stack with the eco −5 offset. Never exceeds posted.
     {"NAPHypermileStepDown", {PERSISTENT, BOOL, "0"}},
+    // Hypermile sub-toggle. Default On. Inert unless Hypermile is On.
+    // IMU-pitch climb hold + crest/downhill ease. No maps-elevation lookahead.
+    // Never raises HUD MAX. Lead / MPC brake still wins.
+    {"NAPHypermileHillClimb", {PERSISTENT, BOOL, "1"}},
     {"NAPForcePreAP", {PERSISTENT, BOOL, "1"}},
     {"NAPiBoosterEnabled", {PERSISTENT, BOOL}},
     {"NAPPedalCalibDone", {PERSISTENT, BOOL}},

@@ -16,6 +16,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   NAP_DRIVER_LAT_HANDOFF,
   NAP_HYPERMILE,
   NAP_HYPERMILE_FOLLOW_LEVEL,
+  NAP_HYPERMILE_HILL_CLIMB,
   NAP_HYPERMILE_STEP_DOWN,
 )
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys
@@ -35,6 +36,10 @@ class DrivingMannerismsLayoutMici(NavScroller):
     step_down = BigParamControl("step down speed", NAP_HYPERMILE_STEP_DOWN)
     step_down.set_value("Off — scaled drop, −15 at 80 when On")
     step_down.set_visible(lambda: self._params.get_bool(NAP_HYPERMILE))
+
+    hill_climb = BigParamControl("hill climb", NAP_HYPERMILE_HILL_CLIMB)
+    hill_climb.set_value("On — grade hold on climbs; light crest ease")
+    hill_climb.set_visible(lambda: self._params.get_bool(NAP_HYPERMILE))
 
     adaptive_accel = BigParamControl("adaptive accel limits", NAPParamKeys.ADAPTIVE_ACCEL)
 
@@ -65,6 +70,7 @@ class DrivingMannerismsLayoutMici(NavScroller):
     self._scroller.add_widgets([
       hypermile,
       step_down,
+      hill_climb,
       adaptive_accel,
       follow_distance,
       hypermile_follow,

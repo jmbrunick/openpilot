@@ -36,6 +36,25 @@ Turning **Off** restores that snapshot. Soft Lateral Handoff, Simulate Look-at-R
 
 Params: `NAPHypermile` (bool, default 0), `NAPHypermileSaved` (JSON snapshot).
 
+## Hill Climb (grade-aware Accel 1)
+
+Third toggle under Hypermile: **Hill Climb** (`NAPHypermileHillClimb`, default **On**). Hidden/inert unless Hypermile is On. Same visibility pattern as Step Down Speed.
+
+**v1 signal is IMU pitch** (`carControl.orientationNED[1]`, the same value `get_coast_accel` already reads). **Maps-elevation lookahead is NOT included** — that is a later phase.
+
+Hypermile snaps Acceleration to **1**. Flat-road `map_track_accel` is then a fixed comfort `a` (Early + Accel 1 → 0.30 m/s²). Grade gravity is not in that number, so a real climb droops under HUD MAX. Stock `get_coast_accel` only lowers +a when `allow_throttle` is false; Pre-AP always allows throttle, so that path does not hold a hill.
+
+| Pitch (NED) | Under HUD MAX | At / near MAX |
+|-------------|----------------|---------------|
+| ≥ **2.0°** uphill (≈3.5% grade) | Add `g·sin(pitch)` to Accel 1 (extra capped at 0.80 m/s²). Leftover Accel 1 still walks toward MAX. | Hold against gravity only. **Does not raise MAX.** |
+| Flattening crest (pitch falling through < 2° after a climb) | Leave climb alone if still well under MAX (grade term is already shrinking). | Early **light** regen **0.15 m/s²** — not Late 1.20. |
+| ≤ **−2.0°** downhill | Lower +a by the grade (gravity already pulls toward MAX). No regen bite away from MAX. | Light regen **0.15–0.25 m/s²**. |
+| \|pitch\| < 2° (flat / crown) | Existing Accel 1 / map_track / lead-close unchanged. | Unchanged. |
+
+Cruise `get_max_accel` and the lead-close +a cap still clip after this. Lead-approach and MPC hard brake `min()` after hill climb and still win. Never invents or raises MAX above Cap/Follow / sticky / posted.
+
+**Why these numbers:** 1° is typical road crown + IMU bias; 2° is a real grade Accel 1 (0.30) cannot hold (`g·sin(2°)≈0.34`). Full `g·sin` matches the Pre-AP VirtualDAS plant (not the shallower 5.65 coast fit). Ease stays well under Early map brake (0.55) so it is comfort, not a dump.
+
 ## Step Down Speed (mileage defer)
 
 Second toggle under Hypermile: **Step Down Speed** (`NAPHypermileStepDown`, default **Off**). Hidden/inert unless Hypermile is On.
@@ -101,10 +120,13 @@ When the 1–5 level changes onroad, selfdrived fires `EventName.hypermileFollow
 - Do not disable lead braking
 - Tighten only within the 0.9 s floor above 50 mph
 - Soft-lat / DM / blinker / sticky MAX / one-SET / standstill gas-gate / reverse hard-cancel unchanged
+- Hill Climb does not raise MAX and does not disable lead braking
 
 ## Tests
 
 `selfdrive/controls/tests/test_hypermile.py` — On snaps + Off restore (offset param not written −5); posted-scaled eco (30 stays 30; 80→72) and Step Down (30 stays 30; 75→62.5; 80→65); maps-only (no invent without posted); ≤50 far gap; >50 stalk level; stalk up/down 1–5; safe floor; settings/docs wiring.
+
+`selfdrive/controls/tests/test_hill_climb.py` — Hypermile Off / Hill Climb Off inert; uphill under MAX raises Accel 1 authority; crest/downhill ease direction; never exceeds MAX; lead / MPC brake still wins.
 
 `selfdrive/controls/lib/tests/test_curve_max_hold.py` — curve snapshot/restore (sticky 60 survives a bend; a lower posted/eco target does not replace it).
 
