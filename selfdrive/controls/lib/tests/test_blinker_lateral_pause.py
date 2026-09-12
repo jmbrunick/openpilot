@@ -30,12 +30,12 @@ def _lat_kwargs(**overrides):
 
 def _lat_active(hold, *, left=False, right=False, pressed=False, active=True, dt=None,
                 alc_active=False, v_ego=0.0, stalk_state=0, disengage=False,
-                engaged=None):
+                engaged=None, soft_lat_on=False):
   return lat_active_with_blinker_pause(
     **_lat_kwargs(left_blinker=left, right_blinker=right, steering_pressed=pressed,
                   active=active, hold=hold, alc_active=alc_active, v_ego=v_ego,
                   stalk_state=stalk_state, steering_disengage=disengage,
-                  engaged=engaged),
+                  engaged=engaged, soft_lat_on=soft_lat_on),
     dt=dt,
   )
 
@@ -456,3 +456,42 @@ def test_hold_does_not_reset_when_active_drops_but_enabled_stays():
   assert not _lat_active(hold, left=True, disengage=True, active=False, engaged=True)
   assert hold.turn_active
   assert hold.blocks_steer_disengage
+
+
+def test_soft_lat_on_does_not_clear_lat_but_still_latches_driver_turn():
+  """Soft-lat On: lamp latch must not drop latActive; still detect a turn."""
+  hold = BlinkerLateralHold()
+  assert _lat_active(hold, left=True, soft_lat_on=True)
+  assert hold.turn_active
+  assert hold.holding
+  # Flash gap still latches the driver turn; lat stays up.
+  assert _lat_active(hold, soft_lat_on=True, dt=0.4)
+  assert hold.turn_active
+  # Soft-lat Off still frees the wheel on the same latch.
+  hold_off = BlinkerLateralHold()
+  assert not _lat_active(hold_off, left=True, soft_lat_on=False)
+  assert hold_off.turn_active
+
+
+def test_soft_lat_on_alc_tip_still_does_not_latch_driver_turn():
+  hold = BlinkerLateralHold()
+  _tip_then_idle(hold, v_ego=30.0)
+  assert _lat_active(hold, left=True, v_ego=30.0, stalk_state=0, soft_lat_on=True)
+  assert not hold.turn_active
+  assert hold.blocks_steer_disengage
+
+
+def test_soft_lat_off_held_stalk_still_pauses_lat():
+  hold = BlinkerLateralHold()
+  _hold_past_tip(hold, v_ego=30.0)
+  assert not _lat_active(hold, left=True, v_ego=30.0, stalk_state=1, soft_lat_on=False)
+  assert hold.turn_active
+  # Same held turn with soft-lat On: lat stays, turn still latched.
+  hold_on = BlinkerLateralHold()
+  n = int(round(STALK_TIP_HOLD_S / 0.01))
+  for _ in range(n - 1):
+    assert _lat_active(hold_on, left=True, v_ego=30.0, stalk_state=1, dt=0.01,
+                       soft_lat_on=True)
+  assert _lat_active(hold_on, left=True, v_ego=30.0, stalk_state=1, dt=0.01,
+                     soft_lat_on=True)
+  assert hold_on.turn_active
