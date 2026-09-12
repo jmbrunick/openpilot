@@ -1,3 +1,7 @@
+NAP settings (2026-09-12)
+========================
+* Settings → NAP: Adaptive Accel Limits, Follow Distance, and Soft Lateral Handoff move into **Driving Mannerisms**. Same params and behavior. Back returns to NAP (not the side Settings list). Map Speed Limit, Radar, pedal, beams, speed-sign, and EPAS stay on the main NAP list.
+
 NAP driver lat handoff (2026-09-12)
 ========================
 * Soft-lat **On**: a driver-turn blinker no longer strips lateral. Lamp latch does not clear `latActive` / force EPS free — keep control if we still have it. Soft-lat may still yield if the driver pushes. While the driver-turn blinker is latched, do not re-enable (stay yielded / do not finish a take-back blend). After it clears, resume goes through soft yield + the normal **0.15 s** hands-off confirm + **1 s** blend — no dedicated blinker rising-edge blend. Soft-lat **Off** keeps today’s blinker lat-pause so a held turn still frees the wheel. ALC tip/keep-alive, long sticky-MAX turn pause, yield thresholds, emergency hard-brake cancel, and hazards unchanged.
