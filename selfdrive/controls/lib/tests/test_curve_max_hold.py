@@ -189,7 +189,7 @@ def test_real_posted_change_through_curve_does_not_restore_old_max():
   steer = _sharp_steer_deg()
   _run_bend(curve, hold, last_hud=sticky_60, posted_now=posted_a, steer=steer)
   assert curve.snapshot is not None
-  assert posted_limits_same := abs(curve.snapshot.posted_kph - posted_a) < 1.0
+  assert abs(curve.snapshot.posted_kph - posted_a) < 1.0
 
   out = None
   for _ in range(int(CURVE_EXIT_HOLD_S / 0.01) + 3):
