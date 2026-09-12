@@ -7,17 +7,19 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 
 from openpilot.selfdrive.speedsignd.detect_types import MUTCD_MPH, SpeedSign
+from openpilot.selfdrive.speedsignd.weights_manifest import YOLO_MIN_CONF
 
-# Hold a recent *accepted* mph across 1 Hz skip-on-overrun. A 3–4 s tinygrad
-# infer plus cap payback blanks the next ~8–9 s; 10 s keeps SIGN lit until
-# the next infer (or a better / conflicting refine). Never invents an mph.
-HUD_HOLD_S = 10.0
-# YOLO speedLimit65/70 is often a confident miss on a close 50 (Justin:
-# top=65:0.73, cls=50:0.00). Do not light those mph unless crop refine
-# returned that value (or another MUTCD mph to override).
-HUD_REFINE_REQUIRED_MPH = frozenset({65, 70})
-# Justin: refine=50 @0.43–0.53 then refine=65 @0.47–0.51 must keep HUD 50.
-# Overturn a held non-65/70 to 65/70 only when refine is clearly stronger.
+# Hold a recent *accepted* mph across 1 Hz skip-on-overrun. Justin's parked
+# 50 went blank after 10 s while tinygrad infer stayed 3–5 s / intermittent,
+# then flashed 60 / 70 / 40. 45 s plus a soft refresh on any in-threshold
+# speedLimit* box (even refine fail / junk class) keeps SIGN lit without
+# inventing an mph.
+HUD_HOLD_S = 45.0
+# YOLO 40/60/65/70 is junk on a close 50 (SIGN 70 photo, then 40). Never
+# light those from YOLO alone — HUD mph must come from refine, and a weak
+# refine of those values is dropped (need ≥ 0.60 to first-light).
+HUD_REFINE_REQUIRED_MPH = frozenset({40, 60, 65, 70})
+HUD_OVERTURN_JUNK_MPH = HUD_REFINE_REQUIRED_MPH
 HUD_OVERTURN_65_MIN_CONF = 0.60
 HUD_OVERTURN_65_MARGIN = 0.10
 HUD_LABEL = "SIGN"
@@ -218,18 +220,30 @@ def _class_mph(sign: SpeedSign) -> int:
   return int(sign.mph)
 
 
-def should_replace_held_mph(held_mph: int, held_conf: float, new_mph: int, new_conf: float) -> bool:
+def should_replace_held_mph(
+  held_mph: int, held_conf: float, new_mph: int, new_conf: float,
+  refine_mph: int | None = None,
+) -> bool:
   """True if a new accepted mph may replace a still-valid hold.
 
-  Same mph refreshes. Other MUTCD swaps (50→55, 65→50) apply immediately.
-  Held 50/55/… → 65/70 needs refine ≥ 0.60 *and* ≥ held + 0.10 so a
-  neighboring 0.5/0.5 OCR flip cannot steal the plate.
+  Same mph refreshes. A different mph must be refine-backed. Junk
+  40/60/65/70 also needs refine ≥ 0.60 and ≥ held + 0.10. Refine-backed
+  50/55/… may leave a wrong junk hold immediately (Justin's 65→50).
+  YOLO-only swaps never replace a live hold.
   """
   if int(held_mph) <= 0:
     return True
   if int(new_mph) == int(held_mph):
     return True
-  if int(new_mph) in HUD_REFINE_REQUIRED_MPH and int(held_mph) not in HUD_REFINE_REQUIRED_MPH:
+  if refine_mph is None:
+    refine_mph = new_mph
+  try:
+    refine_i = int(refine_mph)
+  except (TypeError, ValueError):
+    return False
+  if refine_i != int(new_mph):
+    return False
+  if int(new_mph) in HUD_OVERTURN_JUNK_MPH:
     return (
       float(new_conf) >= HUD_OVERTURN_65_MIN_CONF
       and float(new_conf) >= float(held_conf) + HUD_OVERTURN_65_MARGIN
@@ -237,12 +251,43 @@ def should_replace_held_mph(held_mph: int, held_conf: float, new_mph: int, new_c
   return True
 
 
+def is_speed_limit_sighting(sign: SpeedSign | None) -> bool:
+  """True if YOLO posted any in-threshold speedLimit* (refine may have failed).
+
+  Used only to extend a live hold — never to invent or change mph.
+  """
+  if sign is None:
+    return False
+  try:
+    conf = float(sign.conf)
+  except (TypeError, ValueError):
+    return False
+  if conf < YOLO_MIN_CONF:
+    return False
+  refine = getattr(sign, "refine_mph", None)
+  if refine is not None:
+    try:
+      if int(refine) in MUTCD_MPH:
+        return True
+    except (TypeError, ValueError):
+      pass
+  try:
+    if int(sign.mph) in MUTCD_MPH:
+      return True
+  except (TypeError, ValueError):
+    pass
+  try:
+    return _class_mph(sign) in MUTCD_MPH
+  except (TypeError, ValueError):
+    return False
+
+
 def accepted_hud_sign(sign: SpeedSign | None) -> SpeedSign | None:
   """HUD-safe sign, or None (blank / hold last-good). Does not invent mph.
 
-  Refine win: use refine_mph (already the usual override). Refine miss on a
-  65/70 class (or posted 65/70): drop — YOLO 65 is Justin's parked-50 miss.
-  Other MUTCD classes may light from YOLO alone.
+  Classes 40/60/65/70 never light from YOLO alone — HUD mph is refine_mph.
+  A weak refine of those junk values (< 0.60) is dropped so SIGN 70 cannot
+  first-light on a parked 50. Other MUTCD classes may light from YOLO.
   """
   if sign is None:
     return None
@@ -253,15 +298,17 @@ def accepted_hud_sign(sign: SpeedSign | None) -> SpeedSign | None:
   if posted <= 0:
     return None
   refine = getattr(sign, "refine_mph", None)
+  refine_conf = float(getattr(sign, "refine_conf", 0.0) or 0.0)
   if refine is not None:
     try:
       refine_i = int(refine)
     except (TypeError, ValueError):
       refine_i = None
     if refine_i is not None and refine_i in MUTCD_MPH:
+      if refine_i in HUD_REFINE_REQUIRED_MPH and refine_conf < HUD_OVERTURN_65_MIN_CONF:
+        return None
       if refine_i != posted:
-        conf = float(getattr(sign, "refine_conf", 0.0) or sign.conf)
-        return replace(sign, mph=refine_i, conf=conf)
+        return replace(sign, mph=refine_i, conf=float(refine_conf or sign.conf))
       return sign
   if posted in HUD_REFINE_REQUIRED_MPH or _class_mph(sign) in HUD_REFINE_REQUIRED_MPH:
     return None
@@ -281,15 +328,24 @@ class LiveSignHold:
       a = accepted_hud_sign(s)
       if a is not None:
         accepted.append(a)
+    holding = now < self.until and self.mph > 0
     if accepted:
       best = max(accepted, key=lambda s: s.conf)
       new_mph = int(best.mph)
       new_conf = float(best.conf)
-      holding = now < self.until and self.mph > 0
-      if (not holding) or should_replace_held_mph(self.mph, self.conf, new_mph, new_conf):
+      refine = getattr(best, "refine_mph", None)
+      if (not holding) or should_replace_held_mph(
+        self.mph, self.conf, new_mph, new_conf, refine_mph=refine,
+      ):
         self.mph = new_mph
         self.conf = new_conf
         self.until = now + self.hold_s
+      else:
+        # Saw a plate but rejected a junk 60/65/70 — keep mph, extend hold.
+        self.until = now + self.hold_s
+    elif holding and any(is_speed_limit_sighting(s) for s in (signs or [])):
+      # Refine failed / class junk, but a speedLimit* box is still in view.
+      self.until = now + self.hold_s
     live = now < self.until and self.mph > 0
     if not live:
       return False, 0, 0.0

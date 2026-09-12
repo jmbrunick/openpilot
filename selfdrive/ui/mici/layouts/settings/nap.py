@@ -331,15 +331,15 @@ class NAPLayoutMici(NavScroller):
     restore_epas_btn.set_enabled(ui_state.is_offroad)
 
     self._scroller.add_widgets([
+      speed_sign_log,
+      self._weights_status,
+      install_weights_btn,
       force_offroad,
       pedal_enabled,
       adaptive_accel,
       follow_distance,
       map_speed_btn,
       lat_handoff,
-      speed_sign_log,
-      self._weights_status,
-      install_weights_btn,
       pedal_can_bus,
       pedal_calib_status,
       calibrate_pedal_btn,
