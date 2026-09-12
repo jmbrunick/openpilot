@@ -25,6 +25,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   INSTALL_SPEED_SIGN_WEIGHTS_INSTRUCTIONS, PEDAL_CAN_BUS_VALUES,
   HIGH_LOW_BEAM_DESCRIPTION, HIGH_LOW_BEAM_LABELS, HIGH_LOW_BEAM_VALUES,
   MAP_SPEED_ACCEL_DEFAULT,
+  NAP_DM_HANDS_ON_RESET,
   NAP_DRIVER_LAT_HANDOFF,
   NAP_FORCE_OFFROAD,
   NAP_SPEED_SIGN_LOG,
@@ -149,7 +150,7 @@ class NAPLayout(Widget):
     self._driving_mannerisms_btn = button_item(
       "Driving Mannerisms",
       "Open",
-      description="Adaptive accel limits, follow distance, and soft lateral handoff.",
+      description="Adaptive accel limits, follow distance, soft lateral handoff, and hands-on look-at-road reset.",
       callback=self._open_driving_mannerisms,
     )
     self._main_items.append(self._driving_mannerisms_btn)
@@ -750,6 +751,7 @@ class NAPLayout(Widget):
     self._params.remove("NAPMapSpeedDbPath")
     self._params.put_bool(NAP_SPEED_SIGN_LOG, False)
     self._params.put_bool(NAP_DRIVER_LAT_HANDOFF, True)
+    self._params.put_bool(NAP_DM_HANDS_ON_RESET, True)
     self._params.put_bool(NAP_FORCE_OFFROAD, False)
     self._page = "main"
     # Force Pre-AP is locked on in the panel but DEFAULTS keeps it off

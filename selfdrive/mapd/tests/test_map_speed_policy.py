@@ -1270,22 +1270,27 @@ def test_driving_mannerisms_submenu_wires_params():
   nap = (root / "selfdrive/ui/layouts/settings/nap.py").read_text()
   nap_mici = (root / "selfdrive/ui/mici/layouts/settings/nap.py").read_text()
   for src in (tici, mici):
-    for key in ("ADAPTIVE_ACCEL", "FOLLOW_DISTANCE", "NAP_DRIVER_LAT_HANDOFF"):
+    for key in ("ADAPTIVE_ACCEL", "FOLLOW_DISTANCE", "NAP_DRIVER_LAT_HANDOFF", "NAP_DM_HANDS_ON_RESET"):
       assert key in src
   assert "Adaptive Accel Limits" in tici
   assert "Follow Distance" in tici
   assert "Soft Lateral Handoff" in tici
+  assert "Hands-On Look-at-Road Reset" in tici
   assert '"Back To"' in tici
   assert "Return to NAP settings." in tici
   assert "adaptive accel limits" in mici
   assert "follow distance" in mici
   assert "soft lateral handoff" in mici
+  assert "hands-on look-at-road reset" in mici
   assert "self._scroller.add_widgets" in mici
   assert "DrivingMannerismsLayout" in nap
   assert "_open_driving_mannerisms" in nap
   assert "_close_driving_mannerisms" in nap
   assert 'self._page = "driving_mannerisms"' in nap
   assert "self._driving_mannerisms_page.render" in nap
+  assert "NAP_DM_HANDS_ON_RESET" in nap
+  assert "put_bool(NAP_DM_HANDS_ON_RESET, True)" in nap
+  assert "NAPDmHandsOnReset" in (root / "common/params_keys.h").read_text()
   assert "DrivingMannerismsLayoutMici" in nap_mici
   assert "driving mannerisms" in nap_mici
   # Map Speed Limit submenu must stay on the main NAP list.
