@@ -7,9 +7,11 @@ drop long.
 
 from pathlib import Path
 
-from opendbc.car import Bus
+from opendbc.car import Bus, structs
 from opendbc.car.tesla.preap.engagement import PreAPEngagement
 from opendbc.car.tesla.values import CruiseButtons
+
+GearShifter = structs.CarState.GearShifter
 
 from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import (
   _peek_blinker_lamps,
@@ -578,3 +580,79 @@ def test_card_update_preap_does_not_clear_lat_on_blinker_when_soft_lat_on():
   assert "lat_would_be_active=True" in src
   assert "hold.turn_active" in src
   assert "lat_would_be_active=not blinker_paused" not in src
+
+
+def test_reverse_while_engaged_hard_cancels_session():
+  """Reverse must full-teardown, not leave sticky / soft-lat / panda latch."""
+  install_blinker_lat_pause()
+  eng = _engaged(double_pull=True)
+  eng._nap_long_resume_pending = True
+  eng._nap_held_max_kph = 100.0
+  eng._nap_left_blinker = True
+  for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES):
+    update_card_lat_handoff(
+      eng, engaged=True, lat_would_be_active=True,
+      steering_torque=0.85, steering_rate_deg=20.0, hands_on_level=1,
+      brake_applied=False, a_ego=0.0, v_ego=15.0, param_on=True)
+  assert eng._nap_lat_handoff._yielded
+
+  assert not eng.check_can_engage(False, GearShifter.reverse, False)
+  assert not eng.cruiseEnabled
+  assert not eng.enableLongControl
+  assert not eng.enableJustCC
+  assert not eng.pending_enable
+  assert eng.pedal_speed_kph == 0.0
+  assert eng.preap_cc_cancel_needed
+  assert getattr(eng, "_nap_held_max_kph", None) is None
+  assert not getattr(eng, "_nap_long_resume_pending", False)
+  assert not eng._nap_lat_handoff._yielded
+
+  # Door uses the same hard-cancel path.
+  eng = _engaged(double_pull=True)
+  eng._nap_held_max_kph = 70.0
+  assert not eng.check_can_engage(True, GearShifter.drive, False)
+  assert not eng.cruiseEnabled
+  assert eng.preap_cc_cancel_needed
+  assert getattr(eng, "_nap_held_max_kph", None) is None
+
+
+def test_reverse_then_drive_allows_fresh_engage_not_sticky_resume():
+  """After Drive returns, double SET is a new session — no Controls Mismatch latch."""
+  install_blinker_lat_pause()
+  eng = _engaged(double_pull=True)
+  eng._nap_long_resume_pending = True
+  eng._nap_held_max_kph = 88.5
+
+  assert not eng.check_can_engage(False, GearShifter.reverse, False)
+  assert not eng.cruiseEnabled
+  assert eng.preap_cc_cancel_needed
+
+  # Gear back to Drive: session stays down until a normal engage.
+  assert eng.check_can_engage(False, GearShifter.drive, False)
+  assert not eng.cruiseEnabled
+  assert not getattr(eng, "_nap_long_resume_pending", False)
+
+  # First SET is lat-only (double-pull), not a silent long resume at held MAX.
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=5000)
+  assert eng.cruiseEnabled
+  assert not eng.enableLongControl
+  assert getattr(eng, "_nap_held_max_kph", None) is None
+  _buttons(eng, t_ms=5050)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=5400)
+  assert eng.cruiseEnabled
+  assert eng.enableLongControl
+
+
+def test_park_while_engaged_is_also_hard_cancel():
+  install_blinker_lat_pause()
+  eng = _engaged()
+  assert not eng.check_can_engage(False, GearShifter.park, False)
+  assert not eng.cruiseEnabled
+  assert eng.preap_cc_cancel_needed
+
+
+def test_check_can_engage_wrapper_is_installed():
+  src = (Path(__file__).resolve().parents[4] /
+         "selfdrive/car/tesla/preap_blinker_lat_pause.py").read_text()
+  assert "PreAPEngagement.check_can_engage = _check_can_engage" in src
+  assert "hard_cancel_session(self)" in src
