@@ -1,3 +1,7 @@
+NAP settings (2026-09-12)
+========================
+* Settings → NAP: Adaptive Accel Limits, Follow Distance, and Soft Lateral Handoff move into **Driving Mannerisms**. Same params and behavior. Back returns to NAP (not the side Settings list). Map Speed Limit, Radar, pedal, and EPAS stay on the main NAP list. Port of the nap-dev Driving Mannerisms submenu.
+
 NAP driver lat handoff (2026-09-11)
 ========================
 * Soft-lat hands-off confirm before take-back shortened from **0.25 s → 0.15 s** (`HANDS_OFF_CONFIRM_S`). Free-wheel yield, 1 s blend, blinker re-entry, and emergency cancel unchanged. Renewed hands-on or a firm push during the 0.15 s wait still re-yields and resets. Port of the nap-dev 0.15 s confirm.
