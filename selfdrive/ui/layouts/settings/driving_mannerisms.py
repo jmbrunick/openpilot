@@ -56,7 +56,7 @@ class DrivingMannerismsLayout(Widget):
 
     self._adaptive_accel = toggle_item(
       "Adaptive Accel Limits",
-      description="Reduces acceleration authority when close to a lead car to prevent overshoot. Full accel on open road or when closing a large gap.",
+      description="Reduces acceleration authority when close to a lead car to prevent overshoot. Full accel on open road (no lead). Coming up behind a lead uses the Accel 1–10 close cap, not a full-gap punch.",
       initial_state=self._params.get_bool(NAPParamKeys.ADAPTIVE_ACCEL),
       callback=self._on_adaptive_accel,
     )

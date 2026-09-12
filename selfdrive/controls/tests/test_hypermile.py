@@ -311,6 +311,7 @@ def test_settings_and_docs_wire_hypermile():
   assert "15 mph under" in docs
   assert "early, light regenerative" in docs.lower() or "early, light" in docs.lower()
   assert "not maximum regen" in docs.lower() or "not max regen" in docs.lower()
-  assert "Hypermile" in releases.split("\n\n", 1)[0]
-  assert "Early" in releases.split("\n\n", 1)[0]
+  hm_rel = next(p for p in releases.split("\n\n") if p.startswith("NAP Hypermile"))
+  assert "Hypermile" in hm_rel
+  assert "Early" in hm_rel
   assert "nap-release" not in docs.lower() or "not a nap-release" in docs.lower()

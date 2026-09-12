@@ -11,8 +11,14 @@ comes and goes.
 
 This uses relative kinematics so extra speed is bled while closing onto the
 selected Follow Distance (t_follow), not while holding outside radar.
+
+Positive close-the-gap accel is a separate cap (`lead_close_accel_ms2`).
+Map Accel 1–10 used to gate only MAX-rise climb; Adaptive Accel used the
+full cruise profile (1.6–0.6) when the gap was large. That is the punch.
 """
 from __future__ import annotations
+
+from openpilot.selfdrive.mapd.constants import accel_scale_factor
 
 # Keep in sync with long_mpc.STOP_DISTANCE (acados cruise/lead obstacle).
 STOP_DISTANCE = 6.0
@@ -27,11 +33,36 @@ LEAD_APPROACH_MAX_START_M = 140.0
 LEAD_APPROACH_DV_MS = 0.5  # ~1 mph; ignore radar jitter
 NAP_T_FOLLOW = (0.7, 0.9, 1.1, 1.3, 1.5, 1.7, 1.9)
 
+# Max +a when coming up behind a radar lead (gap close / catch-up).
+# Accel 5 → 0.30; Accel 1 → 0.20; Accel 10 → 0.50. Cruise get_max_accel is
+# 1.6–0.6; do not raise the min. Does not change MPC danger / hard brake.
+LEAD_CLOSE_A_BASE_MS2 = 0.30
+LEAD_CLOSE_A_MIN_MS2 = 0.20
+LEAD_CLOSE_A_MAX_MS2 = 0.50
+
 
 def nap_t_follow(nap_follow_dist: int | None) -> float | None:
   if nap_follow_dist in range(1, len(NAP_T_FOLLOW) + 1):
     return NAP_T_FOLLOW[nap_follow_dist - 1]
   return None
+
+
+def lead_close_accel_ms2(accel_level: int = 5) -> float:
+  """Max positive a (m/s²) when closing the gap on a radar lead.
+
+  Accel 1–10 scales this. Separate from map MAX-rise climb (0.36–1.60)
+  and from lead_approach decel (0.80). MPC −a / danger is unchanged.
+  """
+  a = LEAD_CLOSE_A_BASE_MS2 * accel_scale_factor(int(accel_level))
+  return max(LEAD_CLOSE_A_MIN_MS2, min(LEAD_CLOSE_A_MAX_MS2, a))
+
+
+def lead_close_should_cap(d_rel) -> bool:
+  """True when a radar lead is in the close-cap window (not a 160 m flicker)."""
+  if d_rel is None:
+    return False
+  d = float(d_rel)
+  return 0.0 < d <= LEAD_APPROACH_MAX_START_M
 
 
 def lead_approach_need_m(v_ego, v_lead, a_comfort=LEAD_APPROACH_A_MS2, t_follow=None) -> float:

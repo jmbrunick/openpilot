@@ -1218,6 +1218,8 @@ def test_map_speed_submenu_wires_params():
   assert "self._scroller.add_widgets" in mici
   assert "Brake to a lower MAX is locked" in tici
   assert "0.80 m/s² at Normal" in tici
+  assert "lead-close 0.20" in tici
+  assert "comes up behind a lead" in tici
   assert "1.20 m/s² at Normal" not in tici
   assert "pauses Follow for 10s" not in tici
   assert "holds until the posted limit changes" in tici
@@ -1311,10 +1313,13 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   hold_at = planner.find("map_in_track_deadband(v_ego, v_hud_ms)")
   track_at = planner.find("a_brake = map_track_decel_ms2")
   lead_at = planner.find("a_lead = lead_approach_decel_ms2")
+  close_at = planner.find("lead_close_accel_ms2(self._map_speed_accel)")
   assert 0 <= cap_at < mpc_at
   assert 0 <= mpc_at < hold_at < track_at < lead_at
+  assert 0 <= close_at < mpc_at
   assert "map_brake_a_ms2" in planner
   assert "map_track_accel_ms2" in planner
+  assert "lead_close_should_cap" in planner
   assert "min(float(output_a_target), a_brake)" in planner
   assert "if float(output_a_target) >= 0.0:" in planner
   assert "output_a_target = 0.0" in planner
