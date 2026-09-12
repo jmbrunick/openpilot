@@ -29,6 +29,7 @@ from openpilot.selfdrive.controls.lib.hypermile import (
   follow_level_hud_text,
   hypermile_level_to_stock,
   map_target_offset_kph,
+  maps_posted_known,
   persist_follow_level,
   read_hypermile_params,
   read_hypermile_step_down,
@@ -267,6 +268,60 @@ def test_eco_offset_scales_with_posted_not_flat_minus_five():
   ), 65.0 * CV.MPH_TO_KPH)
 
 
+def test_hypermile_offsets_maps_only_no_invent_without_posted():
+  """Eco / Step Down never invent a drop without maps + a real posted limit."""
+  user_minus_five = -5.0 * CV.MPH_TO_KPH
+  posted_80 = 80.0 * CV.MPH_TO_KPH
+
+  def _approx(a, b):
+    assert abs(float(a) - float(b)) < 1e-6, (a, b)
+
+  assert maps_posted_known(None) is False
+  assert maps_posted_known(0.0) is False
+  assert maps_posted_known(-1.0) is False
+  assert maps_posted_known(posted_80, maps_posted=False) is False
+  assert maps_posted_known(posted_80, maps_posted=True) is True
+  assert maps_posted_known(30.0 * CV.MPH_TO_KPH) is True
+
+  unknown = (None, 0.0, -1.0)
+  for posted in unknown:
+    for step in (False, True):
+      _approx(map_target_offset_kph(
+        user_minus_five, hypermile_on=True, step_down_on=step, posted_kph=posted,
+      ), 0.0)
+  # Maps off / no match: even a leftover 80 mph number must not drop MAX.
+  _approx(map_target_offset_kph(
+    user_minus_five, hypermile_on=True, step_down_on=False,
+    posted_kph=posted_80, maps_posted=False,
+  ), 0.0)
+  _approx(map_target_offset_kph(
+    user_minus_five, hypermile_on=True, step_down_on=True,
+    posted_kph=posted_80, maps_posted=False,
+  ), 0.0)
+  # Maps + known posted: scale applies.
+  _approx(map_target_offset_kph(
+    user_minus_five, hypermile_on=True, step_down_on=False,
+    posted_kph=posted_80, maps_posted=True,
+  ), -8.0 * CV.MPH_TO_KPH)
+  _approx(map_target_offset_kph(
+    user_minus_five, hypermile_on=True, step_down_on=True,
+    posted_kph=posted_80, maps_posted=True,
+  ), -15.0 * CV.MPH_TO_KPH)
+  # Town 30 with maps: still no drop.
+  _approx(stepped_map_target_kph(
+    30.0 * CV.MPH_TO_KPH, hypermile_on=True, step_down_on=False,
+  ), 30.0 * CV.MPH_TO_KPH)
+  _approx(stepped_map_target_kph(
+    30.0 * CV.MPH_TO_KPH, hypermile_on=True, step_down_on=True,
+  ), 30.0 * CV.MPH_TO_KPH)
+  # Hypermile Off: user slider still returned (apply_map_speed ignores it
+  # when map_kph is None — no invented posted).
+  _approx(map_target_offset_kph(
+    user_minus_five, hypermile_on=False, step_down_on=True, posted_kph=None,
+    maps_posted=False,
+  ), user_minus_five)
+
+
 def test_le_50_uses_far_gap_gt_50_uses_stalk_level():
   v_low = 50.0 * CV.MPH_TO_MS
   v_high = 50.0 * CV.MPH_TO_MS + 0.1
@@ -376,9 +431,12 @@ def test_settings_and_docs_wire_hypermile():
   assert "step down speed" in mici
   assert "map_target_offset_kph" in card
   assert "_live_map_offset_kph" in card
+  assert "maps_posted" in card
+  assert "never invent" in card
   assert "_refresh_map_speed_params" in card
   hm_src = (root / "selfdrive/controls/lib/hypermile.py").read_text()
   assert "eco_map_offset_mph" in hm_src
+  assert "maps_posted_known" in hm_src
   assert "ECO_OFFSET_START_MPH" in hm_src
   assert '"NAPMapSpeedOffsetMph": ECO_MAP_OFFSET_MPH' not in hm_src
   assert "NAPHypermile" in keys
@@ -406,10 +464,12 @@ def test_settings_and_docs_wire_hypermile():
   assert "posted-scaled" in docs.lower() or "scaled" in docs.lower()
   assert "30 stays 30" in docs or "town 30" in docs.lower()
   assert "−8" in docs
+  assert "maps" in docs.lower() and ("unknown" in docs.lower() or "invent" in docs.lower())
   hm_rel = next(p for p in releases.split("\n\n") if p.startswith("NAP Hypermile"))
   assert "Hypermile" in hm_rel
   assert "Early" in hm_rel
   assert "30" in hm_rel and "25" in hm_rel
   assert "−8" in hm_rel
   assert "−15" in hm_rel
+  assert "Maps-only" in hm_rel or "invent" in hm_rel.lower()
   assert "nap-release" not in docs.lower() or "not a nap-release" in docs.lower()

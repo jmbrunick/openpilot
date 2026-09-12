@@ -160,6 +160,17 @@ def _posted_mph(posted_kph: float | None) -> float | None:
   return pk * CV.KPH_TO_MPH
 
 
+def maps_posted_known(posted_kph: float | None, maps_posted: bool | None = None) -> bool:
+  """True only with maps present and a real OSM/posted limit.
+
+  Same spirit as sticky MAX: do not invent posted when maps are off,
+  unmatched, or speedLimit is unknown / non-positive.
+  """
+  if maps_posted is False:
+    return False
+  return _posted_mph(posted_kph) is not None
+
+
 def posted_scale_offset_mph(posted_mph: float | None, full_offset_mph: float) -> float:
   """0 at/under 50, linear to full_offset at 80, cap above 80.
 
@@ -202,14 +213,18 @@ def map_target_offset_kph(
   hypermile_on: bool,
   step_down_on: bool,
   posted_kph: float | None = None,
+  maps_posted: bool | None = None,
 ) -> float:
   """Offset added to raw OSM posted for Cap/Follow.
 
-  Hypermile On + Step Down On: posted-scaled −15 at 80 (0 at/under 50),
-  replacing eco so 80→65 (not 57). Hypermile On + Step Down Off: live
-  posted-scaled eco (≤50 → 0, 80+ → −8). Unknown posted → 0. Hypermile
-  Off: step-down is inert; keep map_offset_kph.
+  Hypermile eco / Step Down apply only when maps are present and the
+  OSM/posted limit is known. Maps off, no match, or unknown posted → 0
+  (no invented drop). Hypermile On + Step Down On: posted-scaled −15 at
+  80 (0 at/under 50), replacing eco so 80→65. Step Down Off: eco
+  (≤50 → 0, 80+ → −8). Hypermile Off: keep map_offset_kph.
   """
+  if hypermile_on and not maps_posted_known(posted_kph, maps_posted):
+    return 0.0
   posted_mph = _posted_mph(posted_kph)
   if step_down_applies(hypermile_on, step_down_on):
     return step_down_offset_mph(posted_mph) * CV.MPH_TO_KPH

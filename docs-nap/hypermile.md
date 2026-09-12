@@ -48,6 +48,8 @@ Second toggle under Hypermile: **Step Down Speed** (`NAPHypermileStepDown`, defa
 
 Same breakpoints as eco: **0** at/under 50, linear to the 80 value, cap above 80. Hard cap: never more than 15 mph under posted, never above posted. Legal: step-down only lowers. No flat −15 on town limits.
 
+**Maps-only:** eco and Step Down apply only when maps are present and that road has a known OSM/posted `speedLimit`. Maps off, no match, or posted unknown → **offset 0** — do not invent a drop. Same spirit as sticky MAX (no invented posted without maps). Town 30 with maps stays 30.
+
 This is an offset on the **posted/map target** Cap/Follow already use (`posted_kph` / `apply_map_speed_kph` offset). Sticky / one-SET / rebase are not rewritten.
 
 **What wins**
@@ -102,7 +104,7 @@ When the 1–5 level changes onroad, selfdrived fires `EventName.hypermileFollow
 
 ## Tests
 
-`selfdrive/controls/tests/test_hypermile.py` — On snaps + Off restore (offset param not written −5); posted-scaled eco (30 stays 30; 80→72) and Step Down (30 stays 30; 75→62.5; 80→65); ≤50 far gap; >50 stalk level; stalk up/down 1–5; safe floor; settings/docs wiring.
+`selfdrive/controls/tests/test_hypermile.py` — On snaps + Off restore (offset param not written −5); posted-scaled eco (30 stays 30; 80→72) and Step Down (30 stays 30; 75→62.5; 80→65); maps-only (no invent without posted); ≤50 far gap; >50 stalk level; stalk up/down 1–5; safe floor; settings/docs wiring.
 
 `selfdrive/controls/lib/tests/test_curve_max_hold.py` — curve snapshot/restore (sticky 60 survives a bend; a lower posted/eco target does not replace it).
 
