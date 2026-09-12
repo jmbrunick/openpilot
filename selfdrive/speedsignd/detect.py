@@ -10,6 +10,7 @@ legend: SPEED LIMIT over a 1–3 digit mph value.
 from __future__ import annotations
 
 import os
+from typing import Any
 
 import numpy as np
 
@@ -23,7 +24,7 @@ from openpilot.selfdrive.speedsignd.weights_manifest import (
   YOLO_MAX_DET,
   YOLO_MIN_CONF,
 )
-from openpilot.selfdrive.speedsignd.yolo import decode_yolov8, letterbox_rgb, refine_mph
+from openpilot.selfdrive.speedsignd.yolo import decode_yolov8, letterbox_rgb, refine_mph, road_detect_crop, yolo_peak
 
 MIN_CONF = 0.42
 MAX_DET = 3
@@ -431,30 +432,59 @@ class OnnxSpeedSignDetector:
          A [1,2] (mph, conf) output is also accepted.
   """
 
-  def __init__(self, path: str, session=None):
+  def __init__(self, path: str, session=None, backend: str | None = None):
     self.path = path
     self.session = session
+    self.backend = backend or session_backend(session)
+    self.sha = _sha_short(path)
+    self.last_diag: dict[str, Any] = self._empty_diag()
+
+  def _empty_diag(self) -> dict[str, Any]:
+    return {
+      "backend": self.backend,
+      "frame_w": 0,
+      "frame_h": 0,
+      "letterbox": YOLO_IMGSZ,
+      "crop": (0, 0, 0, 0),
+      "weights_path": self.path or "",
+      "weights_sha": self.sha,
+      "out_shape": (),
+      "peak_conf": 0.0,
+      "peak_name": "",
+      "n_over": 0,
+      "error": "",
+    }
+
+  def diag_dict(self) -> dict[str, Any]:
+    return dict(self.last_diag)
 
   @classmethod
   def try_load(cls, path: str | None = None) -> OnnxSpeedSignDetector | None:
     path = path or default_onnx_path()
     if not path or not os.path.isfile(path):
       return None
-    session = _onnx_session(path)
+    session, backend = _onnx_session(path)
     if session is None:
       return None
-    return cls(path, session)
+    return cls(path, session, backend=backend)
 
   def detect(self, y: np.ndarray, min_conf: float | None = None, rgb: np.ndarray | None = None) -> list[SpeedSign]:
+    diag = self._empty_diag()
+    self.last_diag = diag
     if self.session is None:
+      diag["error"] = "no-session"
       return []
     if rgb is None:
       if y is None or y.ndim != 2:
+        diag["error"] = "no-frame"
         return []
       rgb = rgb_from_y(y)
     if rgb.ndim != 3 or rgb.shape[-1] != 3:
+      diag["error"] = "bad-rgb"
       return []
     src_h, src_w = rgb.shape[:2]
+    diag["frame_w"] = int(src_w)
+    diag["frame_h"] = int(src_h)
     inp = _onnx_input_name(self.session)
     shape = _onnx_input_shape(self.session)
     yolo = _is_yolo_input(shape)
@@ -465,16 +495,37 @@ class OnnxSpeedSignDetector:
           h = int(shape[2]) if shape[2] not in (None, 0, -1) else YOLO_IMGSZ
           w = int(shape[3]) if shape[3] not in (None, 0, -1) else YOLO_IMGSZ
           size = h if h == w else YOLO_IMGSZ
-        boxed, scale, pad_x, pad_y = letterbox_rgb(rgb, size)
+        diag["letterbox"] = int(size)
+        work, crop = road_detect_crop(rgb)
+        diag["crop"] = crop
+        cx, cy, _cw, _ch = crop
+        boxed, scale, pad_x, pad_y = letterbox_rgb(work, size)
         blob = boxed.transpose(2, 0, 1)[None, ...].astype(np.float32) / 255.0
         raw = self.session.run(None, {inp: blob})[0]
+        out_shape, peak_conf, peak_name, n_over = yolo_peak(raw)
+        diag["out_shape"] = out_shape
+        diag["peak_conf"] = peak_conf
+        diag["peak_name"] = peak_name
+        diag["n_over"] = n_over
         thr = YOLO_MIN_CONF if min_conf is None else min_conf
+        crop_h, crop_w = work.shape[:2]
         hits = decode_yolov8(
-          raw, scale=scale, pad_x=pad_x, pad_y=pad_y, src_hw=(src_h, src_w),
+          raw, scale=scale, pad_x=pad_x, pad_y=pad_y, src_hw=(crop_h, crop_w),
           names=YOLO_CLASS_NAMES, min_conf=thr, iou=YOLO_IOU, max_det=YOLO_MAX_DET,
         )
-        luma = y if y is not None and getattr(y, "ndim", 0) == 2 else rgb[:, :, 1]
-        return [refine_mph(s, luma, _read_mph) for s in hits]
+        if y is not None and getattr(y, "ndim", 0) == 2:
+          luma = y[cy:cy + crop_h, cx:cx + crop_w]
+          if luma.shape[:2] != (crop_h, crop_w):
+            luma = work[:, :, 1]
+        else:
+          luma = work[:, :, 1]
+        refined = [refine_mph(s, luma, _read_mph) for s in hits]
+        if cx or cy:
+          refined = [
+            SpeedSign(s.mph, s.conf, (s.bbox[0] + cx, s.bbox[1] + cy, s.bbox[2], s.bbox[3]))
+            for s in refined
+          ]
+        return refined
       arr = (y if y is not None else rgb[:, :, 1]).astype(np.float32) / 255.0
       if shape is not None and len(shape) == 4:
         _n, c, h, w = [int(v) if v not in (None, 0, -1) else None for v in shape]
@@ -488,26 +539,53 @@ class OnnxSpeedSignDetector:
       else:
         blob = arr[None, None, ...]
       raw = self.session.run(None, {inp: blob.astype(np.float32)})[0]
-    except Exception:
+    except Exception as e:
+      diag["error"] = f"{type(e).__name__}: {e}"
       return []
     thr = MIN_CONF if min_conf is None else min_conf
     return _parse_onnx_dets(raw, (src_h, src_w), thr)
 
 
-def _onnx_session(path: str):
+def _sha_short(path: str | None, n: int = 12) -> str:
+  if not path or not os.path.isfile(path):
+    return ""
+  try:
+    from openpilot.selfdrive.speedsignd.install import sha256_file
+    return sha256_file(path)[:n]
+  except Exception:
+    return ""
+
+
+def session_backend(session) -> str:
+  if session is None:
+    return "none"
+  tagged = getattr(session, "_nap_backend", None)
+  if tagged:
+    return str(tagged)
+  mod = getattr(type(session), "__module__", "")
+  if "onnxruntime" in mod:
+    return "onnxruntime"
+  name = type(session).__name__
+  if name == "_TinyOrtSession":
+    return "tinygrad"
+  return name
+
+
+def _onnx_session(path: str) -> tuple[object | None, str]:
   try:
     import onnxruntime as ort
     opts = ort.SessionOptions()
     opts.intra_op_num_threads = 1
-    return ort.InferenceSession(path, opts, providers=["CPUExecutionProvider"])
+    sess = ort.InferenceSession(path, opts, providers=["CPUExecutionProvider"])
+    return sess, "onnxruntime"
   except Exception:
     pass
   try:
     from tinygrad import Tensor
     from tinygrad.nn.onnx import OnnxRunner
-    return _TinyOrtSession(OnnxRunner(path), Tensor)
+    return _TinyOrtSession(OnnxRunner(path), Tensor), "tinygrad"
   except Exception:
-    return None
+    return None, ""
 
 
 class _TinyOrtSession:
@@ -516,6 +594,7 @@ class _TinyOrtSession:
   def __init__(self, runner, tensor_cls):
     self.runner = runner
     self._tensor = tensor_cls
+    self._nap_backend = "tinygrad"
     names = list(getattr(runner, "graph_inputs", {}) or {"images": None})
     self._inputs = [type("I", (), {"name": names[0] if names else "images", "shape": [1, 3, YOLO_IMGSZ, YOLO_IMGSZ]})()]
 
@@ -594,6 +673,34 @@ class SpeedSignDetector:
 
   def weights_missing(self) -> bool:
     return self.onnx is None
+
+  def backend_name(self) -> str:
+    if self.onnx is None:
+      return "numpy-mutcd"
+    return self.onnx.backend or "yolo-onnx"
+
+  def weights_sha_short(self) -> str:
+    if self.onnx is not None and self.onnx.sha:
+      return self.onnx.sha
+    return _sha_short(self.onnx_path)
+
+  def diag_dict(self) -> dict[str, Any]:
+    if self.onnx is not None:
+      return self.onnx.diag_dict()
+    return {
+      "backend": "numpy-mutcd",
+      "frame_w": 0,
+      "frame_h": 0,
+      "letterbox": 0,
+      "crop": (0, 0, 0, 0),
+      "weights_path": self.onnx_path or "",
+      "weights_sha": self.weights_sha_short(),
+      "out_shape": (),
+      "peak_conf": 0.0,
+      "peak_name": "",
+      "n_over": 0,
+      "error": "",
+    }
 
   def try_reload(self) -> bool:
     """Load ONNX if the file appeared after Settings install. True if newly loaded."""
