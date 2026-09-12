@@ -20,6 +20,37 @@ MAP_SPEED_ACCEL_DEFAULT = 5
 FOLLOW_DISTANCE_VALUES = list(range(1, 8))
 FOLLOW_DISTANCE_LABELS = [str(i) for i in FOLLOW_DISTANCE_VALUES]
 FOLLOW_DISTANCE_DEFAULT = 4
+HYPERMILE_FOLLOW_VALUES = list(range(1, 6))
+HYPERMILE_FOLLOW_LABELS = [str(i) for i in HYPERMILE_FOLLOW_VALUES]
+HYPERMILE_FOLLOW_DEFAULT = 3
+NAP_HYPERMILE = "NAPHypermile"
+NAP_HYPERMILE_FOLLOW_LEVEL = "NAPHypermileFollowLevel"
+NAP_HYPERMILE_STEP_DOWN = "NAPHypermileStepDown"
+HYPERMILE_DESCRIPTION = (
+  "Default Off. Comfort-biased efficiency — early light ease, not max "
+  + "regen bite. On snaps Adaptive Accel, Cap/Follow, −5 mph, Early "
+  + "lookahead, and lazy climb (Accel 1), then restores them when Off. "
+  + "Soft-lat, DM, and blinker stay as you set them. Below ~50 mph "
+  + "follow sits far back; above 50 mph uses a stalk 1–5 draft band "
+  + "(1=closest safe, 5=furthest). With a lead, stalk up=closer and "
+  + "down=farther. No lead: stalk still adjusts MAX. Never "
+  + "bumper-drafts; lead braking stays on."
+)
+HYPERMILE_FOLLOW_DESCRIPTION = (
+  "Hypermile follow (1=closest draft, 3=standard, 5=furthest). "
+  + "Used above ~50 mph. At or below 50 mph NAP holds a far gap to "
+  + "cut stop-and-go. Stalk up/down steps this while a lead is present."
+)
+HYPERMILE_STEP_DOWN_DESCRIPTION = (
+  "Default Off. Defer Speed for Range — only while Hypermile is On. "
+  + "On: Cap/Follow targets 15 mph under the posted map limit "
+  + "(75→60, 55→40). Never more than 15 under, never above posted. "
+  + "Does not stack with the eco −5 offset. Off: hold posted / held "
+  + "MAX as usual. Follow sticky: a stalk SET can still hold above "
+  + "the step-down (up to posted) until the posted value changes. "
+  + "Cap cannot exceed the stepped target. One-SET resumes held MAX. "
+  + "Double SET takes the current map target (stepped if On)."
+)
 
 NAP_SPEED_SIGN_LOG = "NAPSpeedSignLog"
 NAP_DRIVER_LAT_HANDOFF = "NAPDriverLatHandoff"

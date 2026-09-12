@@ -141,6 +141,7 @@ struct OnroadEvent @0xc4fa6047f024e718 {
     teslaCCNotArmed @105;
     pedalNotCalibrated @106;
     pedalUnavailable @107;
+    hypermileFollowChanged @108;
 
     soundsUnavailableDEPRECATED @47;
   }
