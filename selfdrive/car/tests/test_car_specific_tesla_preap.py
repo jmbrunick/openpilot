@@ -206,3 +206,48 @@ def test_preap_pcm_disable_still_fires_when_cruise_already_off():
     _blinker_cs(enabled=True, steering_disengage=False),
     car.CarControl.new_message())
   assert EventName.pcmDisable in events.names
+
+
+def test_reverse_user_disables_and_blocks_entry():
+  """HUD reverse / take-control is reverseGear USER_DISABLE + NO_ENTRY."""
+  assert ET.USER_DISABLE in EVENTS[EventName.reverseGear]
+  assert ET.NO_ENTRY in EVENTS[EventName.reverseGear]
+  cse = CarSpecificEvents(_make_cp())
+  prev = _make_cs()
+  prev.cruiseState.enabled = True
+  prev.gearShifter = "drive"
+  cs = _make_cs()
+  cs.cruiseState.enabled = False
+  cs.gearShifter = "reverse"
+  events = cse.update(cs, prev, car.CarControl.new_message())
+  assert EventName.reverseGear in events.names
+  assert EventName.pcmDisable in events.names
+  assert EventName.wrongGear in events.names
+  assert EventName.controlsMismatch not in events.names
+
+
+def test_drive_after_reverse_rising_edge_can_pcm_enable():
+  """After Drive returns, a new cruise rising edge is a normal engage.
+
+  No leftover reverseGear / controlsMismatch. The FSM must have dropped
+  cruiseEnabled during reverse so this rising edge exists.
+  """
+  cse = CarSpecificEvents(_make_cp())
+  reverse = _make_cs()
+  reverse.cruiseState.enabled = False
+  reverse.gearShifter = "reverse"
+  parked = _make_cs()
+  parked.cruiseState.enabled = False
+  parked.gearShifter = "drive"
+  events = cse.update(parked, reverse, car.CarControl.new_message())
+  assert EventName.reverseGear not in events.names
+  assert EventName.pcmDisable in events.names
+  assert EventName.controlsMismatch not in events.names
+
+  engaged = _make_cs()
+  engaged.cruiseState.enabled = True
+  engaged.gearShifter = "drive"
+  events = cse.update(engaged, parked, car.CarControl.new_message())
+  assert EventName.pcmEnable in events.names
+  assert EventName.reverseGear not in events.names
+  assert EventName.controlsMismatch not in events.names
