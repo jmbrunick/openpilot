@@ -10,20 +10,16 @@ does not fully disengage NAP. Stalk cancel / door / reverse (gear
 out of Drive) still full-teardown via hard_cancel_session so panda's
 cruise latch can re-arm.
 
-A latched *driver turn* (not ALC tip/keep-alive) also drops longitudinal
-the same way brake does: enableLongControl=False, cruiseEnabled stays.
-Drop while a turn lamp or held LEFT/RIGHT is showing. After lamps/stalk
-go idle, long stays off until SET — including during the ~1s dark latch
-and while lat is still paused for hand-on. One stalk SET restores long
-whether lat is still paused or already active, and keeps the held MAX
-(which may already have rebased if posted changed). At a stop, that SET
-arms resume but does not take long until a light throttle. Default double-pull
-would otherwise treat that SET as a first pull (lat-only) and require a
-second pull inside the window; that path is skipped while a drop-long-keep-lat
-resume is pending. A second SET in the double-pull window forgets sticky
-and takes posted (maps on + known) or current traveled speed (maps off /
-unknown posted). SET while a turn lamp/stalk is still showing does not
-stick. Tip ALC never uses this long-pause path.
+A latched *driver turn* (not ALC tip/keep-alive) does **not** drop
+longitudinal. enableLongControl stays true; lead/map braking and accel
+apply through the turn. Brake still uses the silent long pause:
+enableLongControl=False, cruiseEnabled stays, held MAX remembered.
+After a brake pause, one stalk SET restores long (skipped double-pull
+first-pull) and keeps the held MAX. At a stop, that SET arms resume
+but does not take long until a light throttle. A second SET in the
+double-pull window forgets sticky and takes posted (maps on + known)
+or current traveled speed (maps off / unknown posted). Tip ALC was
+already not a driver turn and never used the long-pause path.
 
 card.py imports tesla.carstate (binding update_preap) before this install.
 Patch both the source module and that imported name, or the live path
@@ -44,9 +40,7 @@ controlsMismatch that would otherwise full-cancel after 2s.
 from openpilot.common.constants import CV
 from openpilot.selfdrive.controls.lib.blinker_lateral_pause import (
   BlinkerLateralHold,
-  blinker_pauses_lateral,
   blinker_turn_blocks_steering_disengage,
-  stalk_is_left_or_right,
 )
 from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   PARAM_DRIVER_LAT_HANDOFF,
@@ -306,41 +300,23 @@ def _hold_kwargs(engagement, dt=None):
   return kwargs
 
 
-def _driver_turn_active(engagement) -> bool:
-  hold = getattr(engagement, "_nap_lat_hold", None)
-  return hold is not None and bool(hold.turn_active)
+def _should_drop_long_for_turn(_engagement) -> bool:
+  """Driver-turn blinker must not pause longitudinal.
 
-
-def _should_drop_long_for_turn(engagement) -> bool:
-  """Drop long while a driver turn is *showing*, not during the dark latch.
-
-  turn_active stays up through Tesla flash gaps and ~1s after the last
-  flash. Blocking SET for that whole latch is what forced a second stalk
-  pull: the driver sees the blinker off, SETs, and long does not stick.
-  Keep dropping only while one lamp is lit or the stalk is still LEFT/RIGHT.
-  After lamps/stalk are idle, one SET restores long even if turn_active
-  or lat holding is still true. A later flash (still the same turn)
-  drops long again.
+  Long stays engaged through a latched turn (lamp, held LEFT/RIGHT, or
+  flash latch). Brake still uses the silent long-pause path. Kept as a
+  predicate so SET/resume gates stay readable.
   """
-  if not _driver_turn_active(engagement):
-    return False
-  left = bool(getattr(engagement, "_nap_left_blinker", False))
-  right = bool(getattr(engagement, "_nap_right_blinker", False))
-  if blinker_pauses_lateral(left, right):
-    return True
-  stalk = int(getattr(engagement, "_nap_stalk_state", 0) or 0)
-  return stalk_is_left_or_right(stalk)
+  return False
 
 
-def _drop_long_if_driver_turn(engagement):
-  """Brake-style long drop while a latched driver turn is showing.
+def _drop_long_if_driver_turn(_engagement):
+  """No-op: latching the blinker stalk must not drop enableLongControl.
 
-  ALC tip/keep-alive never sets turn_active, so those flashes keep long.
-  Post-turn hand-on (holding) does not keep dropping: one SET can restore
-  long while lat is still paused.
+  ALC tip/keep-alive never set turn_active. Soft-lat Off still pauses
+  lat in BlinkerLateralHold / controlsd; that is independent of long.
   """
-  if _should_drop_long_for_turn(engagement):
-    engagement._drop_longitudinal_keep_lateral()
+  return
 
 
 def _drop_longitudinal_keep_lateral(self):
@@ -465,11 +441,9 @@ def _process_buttons(self, cruise_buttons, prev_cruise_buttons, *args, **kwargs)
     and 0 <= dt_ms < window_ms
   )
 
-  # One SET restores long after brake/blinker drop-keep-lat. Do not start
-  # a new double-pull window. While a turn lamp or held stalk is still
-  # showing, SET must not stick — drop again after the FSM so long stays
-  # off. After lamps/stalk go idle, SET sticks even if the ~1s flash
-  # latch has not expired yet.
+  # One SET restores long after brake drop-keep-lat. Do not start a new
+  # double-pull window. A latched driver turn no longer drops long and
+  # no longer blocks that resume.
   # At a stop, one SET must not take long / creep from 0. Arm wait-for-gas
   # and keep held MAX. Double SET in the window is still take-speed-now.
   # Rolling: unchanged one-SET resume.

@@ -223,8 +223,8 @@ class MapCruiseHold:
   Follow holds the stalk set (above or below `a`) until posted leaves `a`.
   Cap still never exceeds the posted sign. No 10s raise-above timer.
 
-  `held_max_kph` is the HUD MAX to resume after a long pause (brake / driver
-  turn). It survives `enableLongControl` dropping; only a full disengage
+  `held_max_kph` is the HUD MAX to resume after a long pause (brake).
+  It survives `enableLongControl` dropping; only a full disengage
   (cruiseEnabled down) or a double SET (take-speed-now) forgets it.
   `last_posted_kph` is the last *known* OSM posted (+ offset). GPS / match
   drop must not clear it or invent a replacement.
@@ -295,8 +295,8 @@ def decide_map_cruise(
 ) -> MapCruiseDecision:
   """Engage seed + sticky hold. posted_kph is OSM current maxspeed + offset.
 
-  `engaged` is the OP session (`cruiseEnabled`), not just pedal-long. A brake
-  or driver-turn long pause must keep sticky / held MAX. Full disengage
+  `engaged` is the OP session (`cruiseEnabled`), not just pedal-long. A
+  brake long pause must keep sticky / held MAX. Full disengage
   (cancel / door / gear / steer fault) resets.
 
   Double SET / initial engage is `take_speed_now` (or `engage_rising` when
