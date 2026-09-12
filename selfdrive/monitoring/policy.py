@@ -1,5 +1,6 @@
 from collections import defaultdict
 from math import atan2, radians
+import math
 import random
 import numpy as np
 
@@ -27,16 +28,24 @@ def to_percent(v):
 # ******************************************************************************************
 
 # NAP experiment (nap-dev only): simulate looking at the road so stock
-# awareness recovers/resets on the same vision path as a real glance.
-# After the timer has drained past ~1 s, pulse on a random 2–3 s
-# interval (redraw after each pulse). Toggle Off = stock DM. Default On.
+# awareness recovers on the same vision path as a real glance.
+# After the timer has drained past ~1 s, hold looking for long enough
+# that gradual recovery returns awareness to 1.0 (not a one-frame
+# pulse). Next hold starts on a random 2–3 s interval (redraw after
+# each hold). Toggle Off = stock DM. Default On.
 # Hands-on ≥ 2 / stalk / door / reverse hard cancels are unchanged.
 PARAM_DM_SIMULATE_LOOKING = "NAPDmSimulateLooking"
 LOOK_SIM_COUNTDOWN_MIN_S = 1.0
 LOOK_SIM_INTERVAL_MIN_S = 2.0
 LOOK_SIM_INTERVAL_MAX_S = 3.0
+# Always hold at least this long so recovery is not a single tick.
+LOOK_SIM_HOLD_MIN_S = 0.5
+# Covers wheeltouch recovery from empty awareness (~11 s) plus margin.
+LOOK_SIM_HOLD_MAX_S = 12.0
 # Stock looking-path: filter.x below this + face + low pose std.
 VISION_LOOKING_FILTER_X = 0.37
+VISION_RECOVERY_FACTOR_MAX = 5.0
+VISION_RECOVERY_FACTOR_MIN = 1.25
 
 
 def _param_bool(name: str, default: bool) -> bool:
@@ -51,6 +60,21 @@ def _param_bool(name: str, default: bool) -> bool:
 def vision_looking_path(face_detected, low_std, distraction_filter_x) -> bool:
   """True when stock DM treats the driver as looking / attentive."""
   return bool(face_detected and low_std and distraction_filter_x < VISION_LOOKING_FILTER_X)
+
+
+def looking_recovery_time_s(awareness, alert_3_timeout,
+                            rmax=VISION_RECOVERY_FACTOR_MAX,
+                            rmin=VISION_RECOVERY_FACTOR_MIN) -> float:
+  """Seconds of stock looking-path recovery to return awareness to 1.0.
+
+  Integrates da/dt = ((Rmax-Rmin)*(1-a)+Rmin)/T3 until a=1.
+  """
+  u0 = max(0.0, 1.0 - float(awareness))
+  if u0 <= 1e-12 or alert_3_timeout <= 0:
+    return 0.0
+  k = (rmax - rmin) / alert_3_timeout
+  c = rmin / alert_3_timeout
+  return math.log((k * u0 + c) / c) / k
 
 
 class DRIVER_MONITOR_SETTINGS:
@@ -189,14 +213,16 @@ class DriverMonitoring:
     self.nap_dm_simulate_looking = _param_bool(PARAM_DM_SIMULATE_LOOKING, True)
     self._rng = random.Random()
     self._look_sim_countdown_s = 0.0
-    self._sim_looking_pulse = False
+    self._look_sim_holding = False
+    self._look_sim_hold_s = 0.0
+    self._look_sim_hold_start_awareness = 1.0
     self._redraw_look_sim_interval()
 
     self._reset_awareness()
     self._set_policy(MonitoringPolicy.vision)
 
   def _redraw_look_sim_interval(self):
-    """New 2–3 s pulse delay. Unpredictable across cycles."""
+    """New 2–3 s delay to the next hold. Unpredictable across cycles."""
     self._look_sim_interval_s = float(self._rng.uniform(
       LOOK_SIM_INTERVAL_MIN_S, LOOK_SIM_INTERVAL_MAX_S))
 
@@ -208,13 +234,39 @@ class DriverMonitoring:
     self.driver_distracted = False
     self.driver_distraction_filter.x = 0.0
 
+  def _end_look_sim_hold(self, redraw=True):
+    self._look_sim_holding = False
+    self._look_sim_hold_s = 0.0
+    self._look_sim_countdown_s = 0.0
+    if redraw:
+      self._redraw_look_sim_interval()
+
+  def _look_sim_hold_done(self) -> bool:
+    if not self._look_sim_holding:
+      return False
+    if self._look_sim_hold_s + 1e-9 >= LOOK_SIM_HOLD_MAX_S:
+      return True
+    return (self.awareness >= 1.0 - 1e-9 and
+            self._look_sim_hold_s + 1e-9 >= LOOK_SIM_HOLD_MIN_S)
+
   def _maybe_simulate_looking(self, op_engaged, allow_look_sim):
-    """After ~1 s of countdown, pulse looking on the drawn 2–3 s interval."""
-    self._sim_looking_pulse = False
+    """After ~1 s of countdown, hold looking until awareness recovers to 1.0."""
     if not (allow_look_sim and self.nap_dm_simulate_looking and op_engaged):
       if not op_engaged:
-        self._look_sim_countdown_s = 0.0
+        self._end_look_sim_hold(redraw=False)
       return
+
+    if self._look_sim_holding:
+      self._apply_simulated_looking()
+      self._look_sim_hold_s += DT_DMON
+      self._look_sim_countdown_s = 0.0
+      # Stock looking recovery requires awareness > 0 (red does not climb).
+      if self.awareness <= 0. and self._look_sim_hold_s + 1e-9 >= LOOK_SIM_HOLD_MIN_S:
+        self._reset_awareness()
+      if self._look_sim_hold_done():
+        self._end_look_sim_hold(redraw=True)
+      return
+
     if self.awareness < 1.0:
       self._look_sim_countdown_s += DT_DMON
     else:
@@ -222,8 +274,10 @@ class DriverMonitoring:
       return
     if (self._look_sim_countdown_s >= LOOK_SIM_COUNTDOWN_MIN_S and
         self._look_sim_countdown_s + 1e-9 >= self._look_sim_interval_s):
+      self._look_sim_holding = True
+      self._look_sim_hold_s = DT_DMON
+      self._look_sim_hold_start_awareness = self.awareness
       self._apply_simulated_looking()
-      self._sim_looking_pulse = True
 
   def _reset_awareness(self):
     self.awareness = 1.
@@ -388,13 +442,6 @@ class DriverMonitoring:
 
     looking = vision_looking_path(self.face_detected, self.pose.low_std,
                                   self.driver_distraction_filter.x)
-    if looking and self._sim_looking_pulse:
-      # Same looking-path reset a real glance uses, including leftover
-      # orange / red so a prior nag does not stay stuck.
-      self._redraw_look_sim_interval()
-      self._reset_awareness()
-      self._sim_looking_pulse = False
-      return
     if self.awareness > 0 and (looking or standstill_exemption):
       if self.driver_interacting:
         self._reset_awareness()

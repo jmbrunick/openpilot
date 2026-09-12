@@ -86,7 +86,7 @@ Pre-AP `TurnIndLvr_Stat` is only IDLE / LEFT / RIGHT / SNA — no tip vs latch b
 
 ## Driver monitoring (simulate looking)
 
-Stock DM timers stay **3 / 5 / 11 s**. On nap-dev while engaged, `NAPDmSimulateLooking` (default On) waits until awareness has drained **~1 s**, then injects a simulated glance on the **same vision looking-path** a real look uses (`face_detected`, low pose std, distraction filter below 0.37) so awareness **resets**. The next pulse is a **random 2–3 s** (redrawn after each pulse). Toggle Off = stock DM, no simulation. Hard cancels (hands-on ≥ 2, stalk, door, reverse) are unchanged. See [engagement.md](engagement.md#driver-monitoring-simulate-looking).
+Stock DM timers stay **3 / 5 / 11 s**. On nap-dev while engaged, `NAPDmSimulateLooking` (default On) waits until awareness has drained **~1 s**, then **holds** a simulated glance on the **same vision looking-path** a real look uses (`face_detected`, low pose std, distraction filter below 0.37) until stock gradual recovery returns awareness to **1.0**. The next hold is a **random 2–3 s** (redrawn after each hold). Toggle Off = stock DM, no simulation. Hard cancels (hands-on ≥ 2, stalk, door, reverse) are unchanged. See [engagement.md](engagement.md#driver-monitoring-simulate-looking).
 
 ## OSM map speed (MAX)
 

@@ -37,12 +37,13 @@ DRIVER_LAT_HANDOFF_DESCRIPTION = (
 )
 DM_SIMULATE_LOOKING_DESCRIPTION = (
   "Default On. nap-dev experiment. While engaged, after the look-at-road "
-  + "timer has counted down about 1 s, periodically simulate looking at "
-  + "the road — the same attentive path as a real glance — on a random "
-  + "2–3 s interval so awareness resets. Not a mute: stock DM still "
-  + "runs. Hands-on ≥ 2, stalk cancel, door, and reverse still hard-"
-  + "cancel. Always-on DM when not engaged is unchanged. Turn Off for "
-  + "stock DM with no simulation."
+  + "timer has counted down about 1 s, simulate looking at the road — "
+  + "the same attentive path as a real glance — and hold that looking "
+  + "state until stock gradual recovery returns awareness to full (not "
+  + "a one-frame pulse). The next hold is a random 2–3 s later. Not a "
+  + "mute: stock DM still runs. Hands-on ≥ 2, stalk cancel, door, and "
+  + "reverse still hard-cancel. Always-on DM when not engaged is "
+  + "unchanged. Turn Off for stock DM with no simulation."
 )
 FORCE_OFFROAD_DESCRIPTION = (
   "WARNING: Forces the device offroad and disengages openpilot even while "
