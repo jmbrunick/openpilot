@@ -458,6 +458,7 @@ def test_format_infer_diag_has_on_car_fields():
       "n_over_sl": 0,
       "top3": (("stop", 0.91), ("yield", 0.22), ("speedLimit55", 0.12)),
       "posted": ((30, 0.01), (50, 0.02), (60, 0.03)),
+      "refine": ((65, 50, 50, 0.71),),
       "luma_mean": 88.0,
       "luma_std": 22.0,
       "chroma": 1,
@@ -477,6 +478,7 @@ def test_format_infer_diag_has_on_car_fields():
   assert "n_over_sl=0" in text
   assert "top=stop:0.91,yield:0.22,speedLimit55:0.12" in text
   assert "cls=30:0.01,50:0.02,60:0.03" in text
+  assert "refine=50:0.71(class=65)" in text
   assert "out=1x25x2100" in text
   assert "luma=88/22" in text
   assert "chroma=1" in text
@@ -525,6 +527,28 @@ def test_format_infer_diag_noise_peak_has_blank_class():
   assert "peak=0.00/" in text
   assert "speedLimit65" not in text
   assert "cls=30:0.00,50:0.00,60:0.00" in text
+
+
+def test_format_infer_diag_parked_50_shows_refine_over_confident_65():
+  """Justin: top=65:0.73, cls=50:0.00, hud must log refine=50 (class=65)."""
+  text = format_infer_diag(
+    {
+      "backend": "tinygrad",
+      "peak_conf": 0.73,
+      "peak_name": "speedLimit65",
+      "n_over": 1,
+      "sl_peak_conf": 0.73,
+      "sl_peak_name": "speedLimit65",
+      "n_over_sl": 1,
+      "top3": (("speedLimit65", 0.73),),
+      "posted": ((30, 0.00), (50, 0.00), (60, 0.00), (65, 0.73)),
+      "refine": ((65, 50, 50, 0.71),),
+    },
+    allow_detect=True,
+  )
+  assert "peak=0.73/speedLimit65" in text
+  assert "cls=30:0.00,50:0.00,60:0.00,65:0.73" in text
+  assert "refine=50:0.71(class=65)" in text
 
 
 def test_format_infer_diag_missing_sl_fields_stays_parseable():
