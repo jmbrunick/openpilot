@@ -1,3 +1,7 @@
+NAP blinker (2026-09-12)
+========================
+* A latched driver-turn blinker no longer drops / pauses longitudinal. `enableLongControl` stays true through a held stalk / flash-latched turn; lead/map braking and accel still apply. Soft-lat On/Off lat behavior, brake silent long pause + sticky MAX + one SET / double SET, ALC tip/keep-alive, reverse hard-cancel, standstill one-SET gas gate, Hypermile, and lead-close accel unchanged.
+
 NAP lead follow (2026-09-12)
 ========================
 * Pre-AP: closing on / coming up behind a radar lead no longer uses the cruise **1.6–0.6 m/s²** punch (Adaptive Accel used the full profile on a large gap; map Accel 1–10 only gated MAX-rise climb). Catch-up **+a** is now `lead_close_accel_ms2`: **0.20** at Accel 1, **0.30** at 5, **0.50** at 10, inside ~140 m. Still closes onto the selected Follow Distance. MPC danger / hard brake, Hypermile, sticky MAX, soft-lat, and DM unchanged. Settings → NAP → Map Speed Limit → Acceleration.
