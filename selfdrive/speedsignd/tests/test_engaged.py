@@ -12,6 +12,7 @@ from openpilot.selfdrive.speedsignd.speedsignd import (
   UNKNOWN_GRACE_S,
   InferSlot,
   detect_if_allowed,
+  detect_skip_reason,
   drain_vision_latest,
   engaged_from_sm,
   engagement_from_sm,
@@ -435,6 +436,8 @@ def test_format_infer_diag_has_on_car_fields():
       "peak_conf": 0.12,
       "peak_name": "stop",
       "n_over": 0,
+      "luma_mean": 88.0,
+      "luma_std": 22.0,
     },
     allow_detect=True,
   )
@@ -445,6 +448,16 @@ def test_format_infer_diag_has_on_car_fields():
   assert "allow=1" in text
   assert "peak=0.12/stop" in text
   assert "out=1x25x2100" in text
+  assert "luma=88/22" in text
+
+
+def test_detect_skip_reason_names_infer_never_ran():
+  assert detect_skip_reason(connected=False, onnx=True, busy=False, holdoff=False) == "vision-disconnected"
+  assert detect_skip_reason(connected=True, onnx=False, busy=False, holdoff=False) == "no-onnx"
+  assert detect_skip_reason(connected=True, onnx=True, busy=False, holdoff=False, buf_empty=True) == "road-recv-empty"
+  assert detect_skip_reason(connected=True, onnx=True, busy=False, holdoff=False, parse_fail=True) == "nv12-parse"
+  assert detect_skip_reason(connected=True, onnx=True, busy=True, holdoff=False) == "infer-busy"
+  assert detect_skip_reason(connected=True, onnx=True, busy=False, holdoff=True) == "holdoff"
 
 
 def test_infer_slot_keeps_result_when_not_paused():
@@ -478,3 +491,5 @@ def test_detect_gate_is_not_parked_or_force_offroad():
   assert "_gen" in text
   assert "format_infer_diag" in text
   assert "peak=" in text
+  assert "waiting-infer" in text
+  assert "detect_skip_reason" in text

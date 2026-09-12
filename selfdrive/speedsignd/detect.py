@@ -453,6 +453,8 @@ class OnnxSpeedSignDetector:
       "peak_name": "",
       "n_over": 0,
       "error": "",
+      "luma_mean": 0.0,
+      "luma_std": 0.0,
     }
 
   def diag_dict(self) -> dict[str, Any]:
@@ -485,6 +487,12 @@ class OnnxSpeedSignDetector:
     src_h, src_w = rgb.shape[:2]
     diag["frame_w"] = int(src_w)
     diag["frame_h"] = int(src_h)
+    if y is not None and getattr(y, "ndim", 0) == 2:
+      diag["luma_mean"] = float(y.mean())
+      diag["luma_std"] = float(y.std())
+    else:
+      diag["luma_mean"] = float(rgb.mean())
+      diag["luma_std"] = float(rgb.std())
     inp = _onnx_input_name(self.session)
     shape = _onnx_input_shape(self.session)
     yolo = _is_yolo_input(shape)
@@ -700,6 +708,8 @@ class SpeedSignDetector:
       "peak_name": "",
       "n_over": 0,
       "error": "",
+      "luma_mean": 0.0,
+      "luma_std": 0.0,
     }
 
   def try_reload(self) -> bool:
