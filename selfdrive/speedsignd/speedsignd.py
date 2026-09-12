@@ -12,13 +12,13 @@ openpilot is actively controlling actuators (selfdriveState.active, or
 state in enabled / softDisabling / overriding). Manual driving — including
 moving, stock CC, no assist — still runs 1 Hz detect (skip-on-overrun,
 nice 19, little cores 0-3, 1 ONNX thread). HUD lights on the first
-in-threshold YOLO hit; JSONL still needs two agreeing frames. SubMaster
-is polled at 20 Hz so 100 Hz selfdriveState alive/valid does not
-false-trigger WAIT. Unknown cereal after a short startup allows throttled
-detect (not WAIT). Not gated on park / Force Offroad. Detect copies a
-ROAD crop and letterboxes after downsample — never a full-frame RGB
-convert. 4 Hz YOLO on a 3X starved modeld and can TAKE CONTROL /
-process-timeout.
+accepted in-threshold hit (65/70 need crop refine) and holds last-good
+across skips; JSONL still needs two agreeing frames. SubMaster is polled
+at 20 Hz so 100 Hz selfdriveState alive/valid does not false-trigger WAIT.
+Unknown cereal after a short startup allows throttled detect (not WAIT).
+Not gated on park / Force Offroad. Detect copies a ROAD crop and
+letterboxes after downsample — never a full-frame RGB convert. 4 Hz YOLO
+on a 3X starved modeld and can TAKE CONTROL / process-timeout.
 """
 from __future__ import annotations
 
@@ -393,6 +393,20 @@ class InferOutcome:
   diag: dict | None = None
 
 
+def format_refine_token(class_mph, hud_mph, ref_mph, ref_conf) -> str:
+  """Unambiguous refine= token. Fail is `refine=- class=65`, never `-(65)`.
+
+  Agree: `65:0.47`. Override: `50:0.43 class=65`. Parentheses around 65
+  were misread as refine=(65) in Justin's journalctl paste.
+  """
+  if ref_mph is None:
+    return f"- class={int(class_mph)}"
+  token = f"{int(ref_mph)}:{float(ref_conf):.2f}"
+  if int(ref_mph) == int(hud_mph) == int(class_mph):
+    return token
+  return f"{int(hud_mph)}:{float(ref_conf):.2f} class={int(class_mph)}"
+
+
 def format_infer_diag(diag: dict | None, *, allow_detect: bool) -> str:
   """One-line on-car fields: backend, frame, letterbox, crop, sha, peak."""
   d = diag or {}
@@ -429,12 +443,7 @@ def format_infer_diag(diag: dict | None, *, allow_detect: bool) -> str:
       if not row or len(row) < 4:
         continue
       class_mph, hud_mph, ref_mph, ref_conf = row[0], row[1], row[2], row[3]
-      if ref_mph is None:
-        parts.append(f"-({int(class_mph)})")
-      elif int(ref_mph) == int(hud_mph) == int(class_mph):
-        parts.append(f"{int(ref_mph)}:{float(ref_conf):.2f}")
-      else:
-        parts.append(f"{int(hud_mph)}:{float(ref_conf):.2f}(class={int(class_mph)})")
+      parts.append(format_refine_token(class_mph, hud_mph, ref_mph, ref_conf))
     refine_s = " refine=" + ",".join(parts) if parts else ""
   else:
     refine_s = ""

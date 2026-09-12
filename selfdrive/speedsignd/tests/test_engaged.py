@@ -18,6 +18,7 @@ from openpilot.selfdrive.speedsignd.speedsignd import (
   engagement_from_sm,
   engagement_log_fields,
   format_infer_diag,
+  format_refine_token,
   op_controlling,
   should_reset_detect_after_wait,
   should_run_onnx_detect,
@@ -478,7 +479,8 @@ def test_format_infer_diag_has_on_car_fields():
   assert "n_over_sl=0" in text
   assert "top=stop:0.91,yield:0.22,speedLimit55:0.12" in text
   assert "cls=30:0.01,50:0.02,60:0.03" in text
-  assert "refine=50:0.71(class=65)" in text
+  assert "refine=50:0.71 class=65" in text
+  assert "refine=-(" not in text
   assert "out=1x25x2100" in text
   assert "luma=88/22" in text
   assert "chroma=1" in text
@@ -548,7 +550,26 @@ def test_format_infer_diag_parked_50_shows_refine_over_confident_65():
   )
   assert "peak=0.73/speedLimit65" in text
   assert "cls=30:0.00,50:0.00,60:0.00,65:0.73" in text
-  assert "refine=50:0.71(class=65)" in text
+  assert "refine=50:0.71 class=65" in text
+  assert "refine=-(" not in text
+  assert "refine=(65)" not in text
+
+
+def test_format_refine_token_fail_is_dash_not_paren_65():
+  """Justin read refine=(65) from refine=-(65). Fail must be refine=- class=65."""
+  assert format_refine_token(65, 65, None, 0.0) == "- class=65"
+  text = format_infer_diag({"refine": ((65, 65, None, 0.0),)}, allow_detect=True)
+  assert "refine=- class=65" in text
+  assert "refine=-(" not in text
+  assert "refine=(65)" not in text
+  assert "refine=65:" not in text
+
+
+def test_format_refine_token_agree_65_has_conf():
+  assert format_refine_token(65, 65, 65, 0.47) == "65:0.47"
+  text = format_infer_diag({"refine": ((65, 65, 65, 0.47),)}, allow_detect=True)
+  assert "refine=65:0.47" in text
+  assert "refine=-" not in text
 
 
 def test_format_infer_diag_missing_sl_fields_stays_parseable():
