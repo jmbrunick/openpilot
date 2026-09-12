@@ -35,9 +35,11 @@ YOLO_IMGSZ = 320
 YOLO_INPUT_NAME = "images"
 YOLO_OUTPUT_LAYOUT = (1, 25, 2100)  # 4 + 21 classes, 2100 anchors
 
-# Class order from JC YOLOv8 `trainv8/weights/best.pt` `names` (index→name, nc=21).
-# 0 doNotEnter … 4 speedLimit15 … 12 speedLimit55 … 19 stop 20 yield.
-# stop has ~18× the samples of speedLimit55; the head was trained at imgsz=640.
+# Class order from speed_sign.onnx metadata `names` (same as JC best.pt).
+# 0 doNotEnter … 7 speedLimit30 … 11 speedLimit50 … 13 speedLimit60 …
+# 19 stop 20 yield. Isolated MUTCD SVG 30/50/60 at 320 peak ~0.93 on the
+# matching class — not an off-by-one. stop has ~18× the samples of
+# speedLimit55; the head was trained at imgsz=640.
 YOLO_CLASS_NAMES: tuple[str, ...] = (
   "doNotEnter",
   "noLeftTurn",

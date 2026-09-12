@@ -417,6 +417,11 @@ def format_infer_diag(diag: dict | None, *, allow_detect: bool) -> str:
     top_s = " top=" + ",".join(f"{n}:{c:.2f}" for n, c in list(top3)[:3])
   else:
     top_s = ""
+  posted = d.get("posted") or ()
+  if posted:
+    posted_s = " cls=" + ",".join(f"{int(mph)}:{float(c):.2f}" for mph, c in posted)
+  else:
+    posted_s = ""
   return (
     f"backend={d.get('backend', '?')} "
     + f"frame={int(d.get('frame_w', 0) or 0)}x{int(d.get('frame_h', 0) or 0)} "
@@ -428,6 +433,7 @@ def format_infer_diag(diag: dict | None, *, allow_detect: bool) -> str:
     + sl_s
     + f" n_over_sl={int(d.get('n_over_sl', 0) or 0)}"
     + top_s
+    + posted_s
     + " "
     + f"luma={float(d.get('luma_mean', 0.0) or 0.0):.0f}/{float(d.get('luma_std', 0.0) or 0.0):.0f} "
     + f"chroma={int(d.get('chroma', 0) or 0)} "

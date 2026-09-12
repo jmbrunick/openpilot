@@ -27,6 +27,12 @@ from openpilot.selfdrive.speedsignd.weights_manifest import (
 
 _SPEED_RE = re.compile(r"^speedLimit(\d+)$")
 
+# Below this, a class name is argmax-of-noise (Justin's 0.00/speedLimit65 with
+# no 65 on the route). Do not treat it as a mph read.
+PEAK_NAME_MIN = 0.05
+# Justin's posted limits tonight. Always log these heads — not the noise argmax.
+POSTED_LOG_MPH = (30, 50, 60)
+
 
 def class_to_mph(name: str) -> int | None:
   m = _SPEED_RE.match(str(name))
@@ -42,7 +48,7 @@ def speed_limit_class_indices(names: tuple[str, ...] = YOLO_CLASS_NAMES) -> tupl
 
 
 class YoloPeak(NamedTuple):
-  """Pre-threshold snapshot: global peak, speedLimit* peak, top-3 class peaks."""
+  """Pre-threshold snapshot: global peak, speedLimit* peak, top-3, posted heads."""
   shape: tuple
   conf: float
   name: str
@@ -51,6 +57,7 @@ class YoloPeak(NamedTuple):
   sl_name: str = ""
   n_over_sl: int = 0
   top3: tuple[tuple[str, float], ...] = ()
+  posted: tuple[tuple[int, float], ...] = ()
 
 
 def letterbox_rgb(rgb: np.ndarray, size: int = YOLO_IMGSZ) -> tuple[np.ndarray, float, int, int]:
@@ -75,6 +82,9 @@ def road_detect_crop_rect(h: int, w: int) -> tuple[int, int, int, int]:
   A 1928×1208 ROAD frame letterboxed to 320 is scale 0.166 — a clear 24×30 in
   R2-1 at ~60 ft is ~15 px, below YOLOv8s-320. Short-side square is 0.265.
   US MUTCD plates live on the right; the left third is oncoming / unused.
+  Tighter 800/640 crops were measured on official R2-1 plates: ~15 px still
+  peaks at 0.06–0.17 (under 0.40). Do not shrink the crop — it clips center
+  and does not lift Justin's 60/50/30 near-zero.
   """
   return detect_crop_rect(h, w)
 
@@ -187,6 +197,8 @@ def yolo_peak(raw, names: tuple[str, ...] = YOLO_CLASS_NAMES) -> YoloPeak:
   max_conf = float(conf[i])
   top = int(cls[i]) if cls.size else 0
   name = names[top] if 0 <= top < len(names) else str(top)
+  if max_conf < PEAK_NAME_MIN:
+    name = ""
   n_over = int(np.sum(conf >= YOLO_MIN_CONF))
 
   sl_conf, sl_name, n_over_sl = 0.0, "", 0
@@ -199,15 +211,27 @@ def yolo_peak(raw, names: tuple[str, ...] = YOLO_CLASS_NAMES) -> YoloPeak:
     sl_local = int(sl[:, j].argmax())
     sl_top = sl_idx[sl_local]
     sl_name = names[sl_top] if 0 <= sl_top < len(names) else str(sl_top)
+    if sl_conf < PEAK_NAME_MIN:
+      sl_name = ""
     n_over_sl = int(np.sum(sl_per_anchor >= YOLO_MIN_CONF))
 
   class_peak = scores.max(axis=1)
-  order = class_peak.argsort()[::-1][:3]
+  order = class_peak.argsort()[::-1]
   top3 = tuple(
     (names[int(k)] if 0 <= int(k) < len(names) else str(int(k)), float(class_peak[k]))
     for k in order
-  )
-  return YoloPeak(shape, max_conf, name, n_over, sl_conf, sl_name, n_over_sl, top3)
+    if float(class_peak[k]) >= PEAK_NAME_MIN
+  )[:3]
+  posted: list[tuple[int, float]] = []
+  for mph in POSTED_LOG_MPH:
+    label = f"speedLimit{mph}"
+    try:
+      idx = names.index(label)
+    except ValueError:
+      posted.append((mph, 0.0))
+      continue
+    posted.append((mph, float(class_peak[idx]) if idx < class_peak.shape[0] else 0.0))
+  return YoloPeak(shape, max_conf, name, n_over, sl_conf, sl_name, n_over_sl, top3, tuple(posted))
 
 
 def decode_yolov8(
