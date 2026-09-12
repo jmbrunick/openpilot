@@ -1,3 +1,7 @@
+NAP blinker (2026-09-12)
+========================
+* A latched driver-turn blinker no longer drops / pauses longitudinal. `enableLongControl` stays true through a held stalk / flash-latched turn; lead/map braking and accel still apply. Soft-lat On/Off lat behavior, brake silent long pause + sticky MAX + one SET / double SET, ALC tip/keep-alive, reverse hard-cancel, and standstill one-SET gas gate unchanged. Port of the nap-dev blinker long-keep.
+
 NAP Pre-AP reverse / gear / standstill SET (2026-09-12)
 ========================
 * Reverse (and any gear out of Drive / door) is a **full hard cancel**: session down, sticky MAX forgotten, soft-lat reset, CANCEL spoof so panda can re-arm `controls_allowed`. After Drive returns, a normal double SET engages without Controls Mismatch or a prior disable dance. Soft-lat Off blinker pause and sticky-MAX brake/turn pause unchanged. Port of the nap-dev reverse teardown.
