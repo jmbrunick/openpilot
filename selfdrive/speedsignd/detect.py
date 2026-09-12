@@ -10,12 +10,13 @@ legend: SPEED LIMIT over a 1–3 digit mph value.
 from __future__ import annotations
 
 import os
+import time
 from typing import Any
 
 import numpy as np
 
 from openpilot.selfdrive.speedsignd.detect_types import MUTCD_MPH, SpeedSign
-from openpilot.selfdrive.speedsignd.nv12 import rgb_from_y
+from openpilot.selfdrive.speedsignd.nv12 import letterbox_rgb_from_nv12_crop, rgb_from_y
 from openpilot.selfdrive.speedsignd.paths import default_onnx_path
 from openpilot.selfdrive.speedsignd.weights_manifest import (
   YOLO_CLASS_NAMES,
@@ -31,6 +32,16 @@ MAX_DET = 3
 DIGIT_H, DIGIT_W = 24, 16
 # Downsample the ROAD frame so CC stays cheap on the 3X.
 MAX_DETECT_WIDTH = 320
+# tinygrad OnnxRunner / OpenBLAS will otherwise take every core.
+THREADS_ENV = "NAP_SPEED_SIGN_THREADS"
+THREADS_DEFAULT = 1
+THREADS_MAX = 2
+# Soft cap: cannot kill an in-flight tinygrad kernel; skip/pay-back uses this
+# plus infer time so a 1.8 s session cannot immediately start another.
+CAP_MS_ENV = "NAP_SPEED_SIGN_INFER_CAP_MS"
+CAP_MS_DEFAULT = 800.0
+CAP_MS_MIN = 50.0
+CAP_MS_MAX = 5000.0
 
 
 def _resize(img: np.ndarray, h: int, w: int) -> np.ndarray:
@@ -150,6 +161,49 @@ def _digit_templates() -> dict[int, np.ndarray]:
 
 
 DIGIT_TEMPLATES = _digit_templates()
+
+
+def parse_infer_threads(raw: str | None, default: int = THREADS_DEFAULT) -> int:
+  """1 thread on the 3X. 2 is the hard max — never all 8 cores."""
+  if raw is None or str(raw).strip() == "":
+    return int(default)
+  try:
+    n = int(float(raw))
+  except (TypeError, ValueError):
+    return int(default)
+  return max(1, min(THREADS_MAX, n))
+
+
+def parse_infer_cap_ms(raw: str | None, default: float = CAP_MS_DEFAULT) -> float:
+  """0 disables the cap. Otherwise clamp to a sane skip budget."""
+  if raw is None or str(raw).strip() == "":
+    return float(default)
+  try:
+    ms = float(raw)
+  except (TypeError, ValueError):
+    return float(default)
+  if not (ms == ms) or ms < 0:  # NaN or negative
+    return float(default)
+  if ms == 0.0:
+    return 0.0
+  return min(CAP_MS_MAX, max(CAP_MS_MIN, ms))
+
+
+def limit_infer_threads(n: int | None = None) -> int:
+  """Pin BLAS / OpenMP / OpenCV thread pools before the first ONNX run."""
+  threads = parse_infer_threads(os.environ.get(THREADS_ENV) if n is None else str(n))
+  n_s = str(threads)
+  for key in (
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+    "BLIS_NUM_THREADS",
+    "OPENCV_FOR_THREADS_NUM",
+  ):
+    os.environ[key] = n_s
+  return threads
 
 
 def paint_digit(canvas: np.ndarray, digit: int, r0: int, c0: int, scale: int = 2, ink: int = 20) -> None:
@@ -455,6 +509,9 @@ class OnnxSpeedSignDetector:
       "error": "",
       "luma_mean": 0.0,
       "luma_std": 0.0,
+      "chroma": 0,
+      "prep_ms": 0.0,
+      "sess_ms": 0.0,
     }
 
   def diag_dict(self) -> dict[str, Any]:
@@ -470,29 +527,58 @@ class OnnxSpeedSignDetector:
       return None
     return cls(path, session, backend=backend)
 
-  def detect(self, y: np.ndarray, min_conf: float | None = None, rgb: np.ndarray | None = None) -> list[SpeedSign]:
+  def detect(self, y: np.ndarray, min_conf: float | None = None, rgb: np.ndarray | None = None,
+             nv12=None) -> list[SpeedSign]:
     diag = self._empty_diag()
     self.last_diag = diag
     if self.session is None:
       diag["error"] = "no-session"
       return []
-    if rgb is None:
-      if y is None or y.ndim != 2:
+    t_prep = time.monotonic()
+    luma_src = None
+    boxed = None
+    work = None
+    crop = (0, 0, 0, 0)
+    scale = 1.0
+    pad_x = pad_y = 0
+    src_h = src_w = 0
+    if nv12 is not None:
+      y_crop = getattr(nv12, "y", None)
+      if y_crop is None or getattr(y_crop, "ndim", 0) != 2:
         diag["error"] = "no-frame"
         return []
-      rgb = rgb_from_y(y)
-    if rgb.ndim != 3 or rgb.shape[-1] != 3:
-      diag["error"] = "bad-rgb"
-      return []
-    src_h, src_w = rgb.shape[:2]
-    diag["frame_w"] = int(src_w)
-    diag["frame_h"] = int(src_h)
-    if y is not None and getattr(y, "ndim", 0) == 2:
-      diag["luma_mean"] = float(y.mean())
-      diag["luma_std"] = float(y.std())
+      src_w = int(getattr(nv12, "frame_w", 0) or y_crop.shape[1])
+      src_h = int(getattr(nv12, "frame_h", 0) or y_crop.shape[0])
+      crop = tuple(getattr(nv12, "crop", (0, 0, y_crop.shape[1], y_crop.shape[0])))
+      diag["frame_w"] = src_w
+      diag["frame_h"] = src_h
+      diag["crop"] = crop
+      diag["luma_mean"] = float(y_crop.mean())
+      diag["luma_std"] = float(y_crop.std())
+      uv = getattr(nv12, "uv", None)
+      diag["chroma"] = 1 if uv is not None and getattr(uv, "size", 0) else 0
+      luma_src = y_crop
     else:
-      diag["luma_mean"] = float(rgb.mean())
-      diag["luma_std"] = float(rgb.std())
+      rgb_given = rgb is not None
+      if rgb is None:
+        if y is None or y.ndim != 2:
+          diag["error"] = "no-frame"
+          return []
+        rgb = rgb_from_y(y)
+      if rgb.ndim != 3 or rgb.shape[-1] != 3:
+        diag["error"] = "bad-rgb"
+        return []
+      src_h, src_w = rgb.shape[:2]
+      diag["frame_w"] = int(src_w)
+      diag["frame_h"] = int(src_h)
+      if y is not None and getattr(y, "ndim", 0) == 2:
+        diag["luma_mean"] = float(y.mean())
+        diag["luma_std"] = float(y.std())
+      else:
+        diag["luma_mean"] = float(rgb.mean())
+        diag["luma_std"] = float(rgb.std())
+      # Caller RGB may be real chroma; rgb_from_y is luma-only.
+      diag["chroma"] = 1 if rgb_given else 0
     inp = _onnx_input_name(self.session)
     shape = _onnx_input_shape(self.session)
     yolo = _is_yolo_input(shape)
@@ -504,24 +590,34 @@ class OnnxSpeedSignDetector:
           w = int(shape[3]) if shape[3] not in (None, 0, -1) else YOLO_IMGSZ
           size = h if h == w else YOLO_IMGSZ
         diag["letterbox"] = int(size)
-        work, crop = road_detect_crop(rgb)
-        diag["crop"] = crop
-        cx, cy, _cw, _ch = crop
-        boxed, scale, pad_x, pad_y = letterbox_rgb(work, size)
+        if nv12 is not None:
+          boxed, scale, pad_x, pad_y = letterbox_rgb_from_nv12_crop(nv12, size)
+          crop_h, crop_w = luma_src.shape[:2]
+          cx, cy = int(crop[0]), int(crop[1])
+        else:
+          work, crop = road_detect_crop(rgb)
+          diag["crop"] = crop
+          cx, cy, _cw, _ch = crop
+          boxed, scale, pad_x, pad_y = letterbox_rgb(work, size)
+          crop_h, crop_w = work.shape[:2]
         blob = boxed.transpose(2, 0, 1)[None, ...].astype(np.float32) / 255.0
+        diag["prep_ms"] = (time.monotonic() - t_prep) * 1000.0
+        t_sess = time.monotonic()
         raw = self.session.run(None, {inp: blob})[0]
+        diag["sess_ms"] = (time.monotonic() - t_sess) * 1000.0
         out_shape, peak_conf, peak_name, n_over = yolo_peak(raw)
         diag["out_shape"] = out_shape
         diag["peak_conf"] = peak_conf
         diag["peak_name"] = peak_name
         diag["n_over"] = n_over
         thr = YOLO_MIN_CONF if min_conf is None else min_conf
-        crop_h, crop_w = work.shape[:2]
         hits = decode_yolov8(
           raw, scale=scale, pad_x=pad_x, pad_y=pad_y, src_hw=(crop_h, crop_w),
           names=YOLO_CLASS_NAMES, min_conf=thr, iou=YOLO_IOU, max_det=YOLO_MAX_DET,
         )
-        if y is not None and getattr(y, "ndim", 0) == 2:
+        if luma_src is not None:
+          luma = luma_src
+        elif y is not None and getattr(y, "ndim", 0) == 2:
           luma = y[cy:cy + crop_h, cx:cx + crop_w]
           if luma.shape[:2] != (crop_h, crop_w):
             luma = work[:, :, 1]
@@ -546,9 +642,13 @@ class OnnxSpeedSignDetector:
           blob = resized[None, None, ...]
       else:
         blob = arr[None, None, ...]
+      diag["prep_ms"] = (time.monotonic() - t_prep) * 1000.0
+      t_sess = time.monotonic()
       raw = self.session.run(None, {inp: blob.astype(np.float32)})[0]
+      diag["sess_ms"] = (time.monotonic() - t_sess) * 1000.0
     except Exception as e:
       diag["error"] = f"{type(e).__name__}: {e}"
+      diag["prep_ms"] = (time.monotonic() - t_prep) * 1000.0
       return []
     thr = MIN_CONF if min_conf is None else min_conf
     return _parse_onnx_dets(raw, (src_h, src_w), thr)
@@ -580,10 +680,12 @@ def session_backend(session) -> str:
 
 
 def _onnx_session(path: str) -> tuple[object | None, str]:
+  threads = limit_infer_threads()
   try:
     import onnxruntime as ort
     opts = ort.SessionOptions()
-    opts.intra_op_num_threads = 1
+    opts.intra_op_num_threads = threads
+    opts.inter_op_num_threads = 1
     sess = ort.InferenceSession(path, opts, providers=["CPUExecutionProvider"])
     return sess, "onnxruntime"
   except Exception:
@@ -710,6 +812,9 @@ class SpeedSignDetector:
       "error": "",
       "luma_mean": 0.0,
       "luma_std": 0.0,
+      "chroma": 0,
+      "prep_ms": 0.0,
+      "sess_ms": 0.0,
     }
 
   def try_reload(self) -> bool:
@@ -722,9 +827,10 @@ class SpeedSignDetector:
     self.onnx = loaded
     return True
 
-  def detect(self, y: np.ndarray, min_conf: float | None = None, rgb: np.ndarray | None = None) -> list[SpeedSign]:
+  def detect(self, y: np.ndarray, min_conf: float | None = None, rgb: np.ndarray | None = None,
+             nv12=None) -> list[SpeedSign]:
     if self.onnx is not None:
       thr = YOLO_MIN_CONF if min_conf is None else min_conf
-      return self.onnx.detect(y, min_conf=thr, rgb=rgb)
+      return self.onnx.detect(y, min_conf=thr, rgb=rgb, nv12=nv12)
     thr = MIN_CONF if min_conf is None else min_conf
     return detect_mutcd_speed_signs(y, min_conf=thr)

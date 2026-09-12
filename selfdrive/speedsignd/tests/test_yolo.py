@@ -7,6 +7,7 @@ import pytest
 from openpilot.selfdrive.speedsignd.detect import OnnxSpeedSignDetector, SpeedSign, SpeedSignDetector, paint_mutcd_r2_1
 from openpilot.selfdrive.speedsignd.tests.test_detect import _scene
 from openpilot.selfdrive.speedsignd.weights_manifest import YOLO_CLASS_NAMES, YOLO_IMGSZ, YOLO_MIN_CONF
+from openpilot.selfdrive.speedsignd.nv12 import Nv12DetectCrop
 from openpilot.selfdrive.speedsignd.yolo import (
   _resize_rgb,
   class_to_mph,
@@ -15,6 +16,7 @@ from openpilot.selfdrive.speedsignd.yolo import (
   nms_xyxy,
   refine_mph,
   road_detect_crop,
+  road_detect_crop_rect,
   yolo_peak,
 )
 
@@ -69,6 +71,7 @@ def test_road_detect_crop_keeps_center_and_right():
   assert x <= 964 < x + w  # 3X ROAD optical center stays in-frame
   # Scale vs full-frame letterbox: 320/1208 vs 320/1928.
   assert (YOLO_IMGSZ / float(h)) > (YOLO_IMGSZ / 1928.0) * 1.5
+  assert road_detect_crop_rect(1208, 1928) == (720, 0, 1208, 1208)
 
 
 def test_yolo_peak_reports_below_threshold_class():
@@ -222,6 +225,30 @@ def test_refine_overrides_wrong_yolo_class_on_clear_crop():
 
 def test_yolo_min_conf_constant():
   assert YOLO_MIN_CONF == 0.40
+
+
+def test_onnx_nv12_crop_path_offsets_and_chroma():
+  """On-car detect uses the crop copy, not a full-frame RGB convert."""
+  det = OnnxSpeedSignDetector("/tmp/fake.onnx", _YoloSess(), backend="tinygrad")
+  y = np.full((1208, 1208), 88, np.uint8)
+  u = np.full((604, 604), 128, np.uint8)
+  v = np.full((604, 604), 128, np.uint8)
+  uv = np.empty((604, 1208), np.uint8)
+  uv[:, 0::2] = u
+  uv[:, 1::2] = v
+  nv12 = Nv12DetectCrop(y=y, uv=uv, frame_w=1928, frame_h=1208, crop=(720, 0, 1208, 1208))
+  hits = det.detect(None, min_conf=0.4, nv12=nv12)
+  assert hits and hits[0].mph == 60
+  assert hits[0].bbox[0] >= 720
+  d = det.diag_dict()
+  assert d["backend"] == "tinygrad"
+  assert d["frame_w"] == 1928 and d["frame_h"] == 1208
+  assert d["crop"] == (720, 0, 1208, 1208)
+  assert d["letterbox"] == 320
+  assert d["chroma"] == 1
+  assert d["luma_mean"] == pytest.approx(88.0, abs=1.0)
+  assert d["prep_ms"] >= 0.0
+  assert d["sess_ms"] >= 0.0
 
 
 @pytest.mark.skipif(

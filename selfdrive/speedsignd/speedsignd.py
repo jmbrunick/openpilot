@@ -11,11 +11,13 @@ Safety: Logger On starts the process + HUD. Heavy YOLO never runs while
 openpilot is actively controlling actuators (selfdriveState.active, or
 state in enabled / softDisabling / overriding). Manual driving — including
 moving, stock CC, no assist — still runs 1 Hz detect (skip-on-overrun,
-nice 19). HUD lights on the first in-threshold YOLO hit; JSONL still needs
-two agreeing frames. SubMaster is polled at 20 Hz so 100 Hz selfdriveState
-alive/valid does not false-trigger WAIT. Unknown cereal after a short
-startup allows throttled detect (not WAIT). Not gated on park / Force
-Offroad. 4 Hz YOLO on a 3X starved modeld and can TAKE CONTROL /
+nice 19, little cores 0-3, 1 ONNX thread). HUD lights on the first
+in-threshold YOLO hit; JSONL still needs two agreeing frames. SubMaster
+is polled at 20 Hz so 100 Hz selfdriveState alive/valid does not
+false-trigger WAIT. Unknown cereal after a short startup allows throttled
+detect (not WAIT). Not gated on park / Force Offroad. Detect copies a
+ROAD crop and letterboxes after downsample — never a full-frame RGB
+convert. 4 Hz YOLO on a 3X starved modeld and can TAKE CONTROL /
 process-timeout.
 """
 from __future__ import annotations
@@ -28,10 +30,19 @@ from dataclasses import dataclass
 from typing import Any
 
 from openpilot.selfdrive.speedsignd.debounce import SignDebounce
-from openpilot.selfdrive.speedsignd.detect import SpeedSignDetector
 from openpilot.selfdrive.speedsignd.hud import LiveSignHold, apply_live_sign
 from openpilot.selfdrive.speedsignd.jsonl import JsonlLogger, make_record
-from openpilot.selfdrive.speedsignd.nv12 import rgb_from_nv12, y_plane_from_nv12
+from openpilot.selfdrive.speedsignd.detect import (
+  CAP_MS_DEFAULT,
+  CAP_MS_ENV,
+  THREADS_DEFAULT,
+  THREADS_ENV,
+  SpeedSignDetector,
+  limit_infer_threads,
+  parse_infer_cap_ms,
+  parse_infer_threads,
+)
+from openpilot.selfdrive.speedsignd.nv12 import copy_nv12_detect_crop
 from openpilot.selfdrive.speedsignd.paths import PARAM_KEY, default_log_path, default_onnx_path
 
 # Safe default. 4 Hz YOLOv8s tinygrad on ROAD frames saturates a 3X CPU core
@@ -48,8 +59,11 @@ UNKNOWN_GRACE_S = 2.0
 # If an ONNX infer exceeds this (or the detect period), skip frames until free.
 INFER_BUDGET_MS = 100.0
 INFER_LOG_PERIOD_S = 15.0
-# Clearly below modeld (SCHED_FIFO 55). Do not raise modeld.
+# Clearly below modeld (SCHED_FIFO 55 on core 7). Do not raise modeld.
+# Shared little cluster — same mask as loggerd / athenad. Isolcpus 4-7 stay
+# with camerad / modeld.
 SPEEDSIGND_NICE = 19
+SPEEDSIGND_CORES = (0, 1, 2, 3)
 VISION_TIMEOUT_MS = 200
 SERVICE_NAME = "liveSpeedSignNAP"
 # Retry ONNX after Settings → Install weights without requiring a reboot.
@@ -266,16 +280,21 @@ def infer_overran(infer_s: float, period_s: float, budget_s: float) -> bool:
   return infer_s > period_s or infer_s > budget_s
 
 
-def next_detect_mono(infer_end: float, infer_s: float, period_s: float, budget_s: float) -> float:
+def next_detect_mono(infer_end: float, infer_s: float, period_s: float, budget_s: float,
+                     cap_s: float = 0.0) -> float:
   """Earliest monotonic time another ONNX infer may start.
 
   Cheap infer: Ratekeeper spaces the next loop (return infer_end).
   Overrun: skip until free — wait max(period, infer) after the infer ends so
-  Ratekeeper cannot pile catch-up work.
+  Ratekeeper cannot pile catch-up work. Over the optional infer cap: one extra
+  period so a 1.8 s tinygrad session cannot immediately start another.
   """
+  wait = 0.0
   if infer_overran(infer_s, period_s, budget_s):
-    return infer_end + max(period_s, infer_s)
-  return infer_end
+    wait = max(period_s, infer_s)
+  if cap_s > 0.0 and infer_s > cap_s:
+    wait = max(wait, infer_s) + period_s
+  return infer_end + wait if wait else infer_end
 
 
 def reset_ratekeeper_if_behind(rk, now: float) -> bool:
@@ -287,13 +306,18 @@ def reset_ratekeeper_if_behind(rk, now: float) -> bool:
 
 
 def yield_to_modeld() -> None:
-  """SCHED_OTHER + nice 19. Lowers speedsignd only; modeld stays FIFO."""
-  from openpilot.common.realtime import drop_realtime
+  """SCHED_OTHER + nice 19 + little cores. Lowers speedsignd only; modeld stays FIFO."""
+  from openpilot.common.realtime import drop_realtime, set_core_affinity
   drop_realtime()
   try:
     os.nice(SPEEDSIGND_NICE)
   except OSError:
     pass
+  try:
+    set_core_affinity(list(SPEEDSIGND_CORES))
+  except Exception:
+    pass
+  limit_infer_threads()
 
 
 def should_reset_detect_after_wait(last_allow: bool | None, allow_detect: bool) -> bool:
@@ -322,13 +346,14 @@ def process_frame(
   now: float,
   rgb=None,
   debounce: SignDebounce | None = None,
+  nv12=None,
 ) -> tuple[list, list[dict]]:
   """Detect on every ROAD frame. JSONL only with a GNSS fix.
 
   With `debounce`: HUD uses the first in-threshold hit; JSONL still needs
   two agreeing frames. Tests omit debounce and see raw detections.
   """
-  signs = [] if (y is None and rgb is None) else detector.detect(y, rgb=rgb)
+  signs = [] if (y is None and rgb is None and nv12 is None) else detector.detect(y, rgb=rgb, nv12=nv12)
   hud_signs = signs
   jsonl_signs = signs
   if debounce is not None:
@@ -389,7 +414,10 @@ def format_infer_diag(diag: dict | None, *, allow_detect: bool) -> str:
     + f"allow={int(bool(allow_detect))} out={out_s} "
     + f"peak={float(d.get('peak_conf', 0.0) or 0.0):.2f}/{d.get('peak_name', '')} "
     + f"n_over={int(d.get('n_over', 0) or 0)} "
-    + f"luma={float(d.get('luma_mean', 0.0) or 0.0):.0f}/{float(d.get('luma_std', 0.0) or 0.0):.0f}"
+    + f"luma={float(d.get('luma_mean', 0.0) or 0.0):.0f}/{float(d.get('luma_std', 0.0) or 0.0):.0f} "
+    + f"chroma={int(d.get('chroma', 0) or 0)} "
+    + f"prep={float(d.get('prep_ms', 0.0) or 0.0):.0f} "
+    + f"sess={float(d.get('sess_ms', 0.0) or 0.0):.0f}"
   )
 
 
@@ -513,13 +541,14 @@ def detect_if_allowed(
   controlling: bool,
   rgb=None,
   debounce: SignDebounce | None = None,
+  nv12=None,
 ) -> tuple[list, list[dict]]:
   """ONNX/JSONL only when OP is not commanding actuators. HUD is the caller's job."""
   if not should_run_onnx_detect(controlling):
     return [], []
   return process_frame(
     y, lat, lon, bearing, gps_ok, detector, logger, now,
-    rgb=rgb, debounce=debounce,
+    rgb=rgb, debounce=debounce, nv12=nv12,
   )
 
 
@@ -587,6 +616,9 @@ def main():
   hz = parse_detect_hz(os.environ.get(HZ_ENV))
   period_s = 1.0 / hz
   budget_s = INFER_BUDGET_MS / 1000.0
+  threads = parse_infer_threads(os.environ.get(THREADS_ENV), THREADS_DEFAULT)
+  cap_ms = parse_infer_cap_ms(os.environ.get(CAP_MS_ENV), CAP_MS_DEFAULT)
+  cap_s = cap_ms / 1000.0 if cap_ms > 0 else 0.0
 
   log_path = default_log_path()
   onnx_path = default_onnx_path()
@@ -597,8 +629,9 @@ def main():
   backend = detector.backend_name()
   weights_sha = detector.weights_sha_short()
   cloudlog.info(
-    "speedsignd starting log=%s backend=%s onnx=%s sha=%s sm_hz=%.1f detect_hz=%.2f budget_ms=%.0f nice=%d no_onnx_while_controlling=1",
-    log_path, backend, onnx_path, weights_sha, SM_HZ, hz, INFER_BUDGET_MS, SPEEDSIGND_NICE,
+    "speedsignd starting log=%s backend=%s onnx=%s sha=%s sm_hz=%.1f detect_hz=%.2f budget_ms=%.0f cap_ms=%.0f threads=%d cores=%s nice=%d no_onnx_while_controlling=1 crop_rgb=1",
+    log_path, backend, onnx_path, weights_sha, SM_HZ, hz, INFER_BUDGET_MS, cap_ms, threads,
+    ",".join(str(c) for c in SPEEDSIGND_CORES), SPEEDSIGND_NICE,
   )
   if detector.onnx is None:
     cloudlog.warning(
@@ -681,7 +714,7 @@ def main():
         infer_ms.append(outcome.infer_s * 1000.0)
         next_detect = max(
           next_detect,
-          next_detect_mono(now_mono, outcome.infer_s, period_s, budget_s),
+          next_detect_mono(now_mono, outcome.infer_s, period_s, budget_s, cap_s),
         )
         raw = list(getattr(debounce, "last_raw", []))
         diag = outcome.diag if outcome.diag is not None else detector.diag_dict()
@@ -739,8 +772,7 @@ def main():
       if not sample.allow_detect:
         slot.pause()
       else:
-        y = y_plane_from_nv12(buf, copy=True) if buf is not None else None
-        rgb = rgb_from_nv12(buf) if buf is not None else None
+        nv12 = copy_nv12_detect_crop(buf) if buf is not None else None
         if buf is None:
           last_skip_reason = detect_skip_reason(
             connected=True, onnx=detector.onnx is not None, busy=False, holdoff=False,
@@ -750,7 +782,7 @@ def main():
           if now_empty - last_empty_frame_log >= INFER_LOG_PERIOD_S:
             cloudlog.info("speedsignd ROAD recv empty (timeout_ms=%d)", VISION_TIMEOUT_MS)
             last_empty_frame_log = now_empty
-        elif y is None and rgb is None:
+        elif nv12 is None:
           last_skip_reason = detect_skip_reason(
             connected=True, onnx=detector.onnx is not None, busy=False, holdoff=False,
             parse_fail=True,
@@ -766,12 +798,12 @@ def main():
             last_empty_frame_log = now_empty
         lat, lon, bearing, gps_ok = gps_sample_from_sm(sm, now=time.monotonic())
         # On-road: do not run numpy-mutcd when weights are missing (no fake mph / JSONL).
-        have_frame = detector.onnx is not None and (y is not None or rgb is not None)
+        have_frame = detector.onnx is not None and nv12 is not None
         if have_frame:
-          def _run(y=y, rgb=rgb, lat=lat, lon=lon, bearing=bearing, gps_ok=gps_ok):
+          def _run(nv12=nv12, lat=lat, lon=lon, bearing=bearing, gps_ok=gps_ok):
             signs_w = detect_if_allowed(
-              y, lat, lon, bearing, gps_ok, detector, logger, time.monotonic(),
-              controlling=False, rgb=rgb, debounce=debounce,
+              nv12.y, lat, lon, bearing, gps_ok, detector, logger, time.monotonic(),
+              controlling=False, rgb=None, debounce=debounce, nv12=nv12,
             )
             return signs_w[0], signs_w[1], detector.diag_dict()
           if slot.start(_run):
@@ -792,6 +824,11 @@ def main():
       if not in_holdoff:
         skip_count += 1
         in_holdoff = True
+      if slot.busy:
+        try:
+          os.sched_yield()
+        except Exception:
+          pass
     _publish_live(
       pm, hold, signs, now_mono, messaging,
       detector.weights_missing(), detect_paused=sample.detect_paused,

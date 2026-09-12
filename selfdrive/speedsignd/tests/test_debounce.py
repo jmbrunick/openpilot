@@ -55,7 +55,7 @@ def test_process_frame_debounce_blocks_jsonl(tmp_path):
   class _Det:
     onnx = None
 
-    def detect(self, y, min_conf=None, rgb=None):
+    def detect(self, y, min_conf=None, rgb=None, nv12=None):
       return [SpeedSign(mph=55, conf=0.9, bbox=(0, 0, 8, 8))]
 
   log = JsonlLogger(str(tmp_path / "out.jsonl"))

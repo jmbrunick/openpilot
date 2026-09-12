@@ -26,16 +26,18 @@ from openpilot.selfdrive.speedsignd.speedsignd import (
 
 
 class _RaiseIfDetect:
-  def detect(self, y, min_conf=None, rgb=None):
+  def detect(self, y, min_conf=None, rgb=None, nv12=None):
     raise AssertionError("ONNX detect must not run while OP is controlling")
 
 
 class _HitDetect:
   def __init__(self):
     self.calls = 0
+    self.nv12 = None
 
-  def detect(self, y, min_conf=None, rgb=None):
+  def detect(self, y, min_conf=None, rgb=None, nv12=None):
     self.calls += 1
+    self.nv12 = nv12
     return [SpeedSign(mph=55, conf=0.9, bbox=(0, 0, 8, 8))]
 
 
@@ -86,6 +88,21 @@ def test_detect_if_allowed_skips_onnx_and_jsonl_when_controlling(tmp_path):
   )
   assert signs == [] and written == []
   assert not (tmp_path / "out.jsonl").exists()
+
+
+def test_detect_if_allowed_passes_nv12_crop(tmp_path):
+  det = _HitDetect()
+  log = JsonlLogger(str(tmp_path / "out.jsonl"))
+  nv12 = __import__("openpilot.selfdrive.speedsignd.nv12", fromlist=["Nv12DetectCrop"]).Nv12DetectCrop(
+    y=__import__("numpy").zeros((32, 32), __import__("numpy").uint8),
+    uv=None, frame_w=64, frame_h=32, crop=(32, 0, 32, 32),
+  )
+  signs, written = detect_if_allowed(
+    nv12.y, 45.0, -95.0, 0.0, True, det, log, now=1.0, controlling=False, nv12=nv12,
+  )
+  assert det.calls == 1
+  assert det.nv12 is nv12
+  assert signs and written
 
 
 def test_detect_if_allowed_runs_when_disengaged_moving(tmp_path):
@@ -438,6 +455,9 @@ def test_format_infer_diag_has_on_car_fields():
       "n_over": 0,
       "luma_mean": 88.0,
       "luma_std": 22.0,
+      "chroma": 1,
+      "prep_ms": 12.0,
+      "sess_ms": 420.0,
     },
     allow_detect=True,
   )
@@ -449,6 +469,9 @@ def test_format_infer_diag_has_on_car_fields():
   assert "peak=0.12/stop" in text
   assert "out=1x25x2100" in text
   assert "luma=88/22" in text
+  assert "chroma=1" in text
+  assert "prep=12" in text
+  assert "sess=420" in text
 
 
 def test_detect_skip_reason_names_infer_never_ran():
@@ -491,5 +514,12 @@ def test_detect_gate_is_not_parked_or_force_offroad():
   assert "_gen" in text
   assert "format_infer_diag" in text
   assert "peak=" in text
+  assert "luma=" in text
+  assert "backend=" in text
   assert "waiting-infer" in text
   assert "detect_skip_reason" in text
+  assert "copy_nv12_detect_crop" in text
+  assert "rgb_from_nv12" not in text
+  assert "SPEEDSIGND_CORES" in text
+  assert "sched_yield" in text
+  assert "crop_rgb=1" in text

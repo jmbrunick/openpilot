@@ -33,7 +33,23 @@ Reset to Defaults turns the logger back off. Weights on `/data` stay.
 
 Optional detect rate when **not controlling** (default 1 Hz, clamped 0.2–4): `NAP_SPEED_SIGN_HZ=0.5` in the process environment. Do not raise this on a 3X. While OP is controlling, detect is always 0 Hz, regardless of this env.
 
-Onroad, `swaglog` prints `speedsignd detect paused (controlling=True enabled=… active=… state=… alive=… valid=…)` when you SET, `speedsignd abandon in-flight ONNX` if a YOLO was still running, and `speedsignd timing hz=… infer_ms mean=… max=… n=… skip=…` about every 15 s while disengaged. Mean/max infer well above 100 ms is expected for YOLOv8s on tinygrad CPU; `skip` should climb when an infer overruns. If TAKE CONTROL / “driving model is lagging” / Communication Issue comes back, Logger Off + nap-release. If WAIT is stuck while you are driving manually, those same `speedsignd detect` lines explain why.
+Manual detect is **cheap-path** so Logger On is less likely to starve `modeld` even when YOLO still takes ~1 s:
+
+- ROAD **crop only** (right-biased 1208² on a 3X), downsample, then BT.601 — never a full-frame 1928×1208 RGB convert on the 20 Hz loop
+- **1 ONNX / BLAS thread** (`NAP_SPEED_SIGN_THREADS`, max 2)
+- pinned to **little cores 0–3** (modeld stays FIFO on core 7)
+- `NAP_SPEED_SIGN_INFER_CAP_MS` default **800**: a session over the cap pays back infer time **plus one extra period** (cannot kill an in-flight tinygrad kernel)
+- `os.sched_yield()` while an infer is busy
+
+YOLOv8s-320 on tinygrad CPU is ~8.7 GFLOP plus Python `OnnxRunner` overhead. Justin measured **mean infer 1819 ms** on `cursor/speedsignd-manual-mph-b6f2` with full-frame RGB on the main thread. The crop path cuts preprocess (look for `prep=` tens of ms, `sess=` still the YOLO run). **Mean well under 500 ms is not feasible on stock 3X tinygrad with this 43 MB 320² export** — that needs `onnxruntime`, a nano re-export, or a precompiled TinyJit. This branch does not change weights or Hz.
+
+Onroad, `swaglog` prints `speedsignd detect paused (controlling=True enabled=… active=… state=… alive=… valid=…)` when you SET, `speedsignd abandon in-flight ONNX` if a YOLO was still running, and every infer:
+
+```
+speedsignd infer 420ms backend=tinygrad frame=1928x1208 letterbox=320 crop=720,0 1208x1208 … peak=0.12/stop n_over=0 luma=90/35 chroma=1 prep=18 sess=400 raw=[] hud=[] jsonl=[]
+```
+
+`speedsignd timing hz=… infer_ms mean=… max=… n=… skip=…` about every 15 s while disengaged. `skip` should climb when an infer overruns. If TAKE CONTROL / “driving model is lagging” / Communication Issue comes back, Logger Off + nap-release. If WAIT is stuck while you are driving manually, those same `speedsignd detect` lines explain why.
 
 ## Install weights on the 3X
 
@@ -150,7 +166,7 @@ If you see **TAKE CONTROL IMMEDIATELY** or “Communication Issue Between Proces
 
 ## Accuracy limits (honest)
 
-This is a small CPU detector at **1 Hz when not controlling** (was 4 Hz always) on a 320² letterbox of the ROAD camera. It is **not** a modeld head and is **not** used for control. It must not starve `modeld`: **no ONNX while OP is controlling**; if a manual infer takes longer than the period or ~100 ms, speedsignd skips frames and sleeps instead of Ratekeeper catch-up. `swaglog` logs `speedsignd detect paused/running` with `enabled` / `active` / `state` / alive / valid on those edges and `speedsignd timing … infer_ms mean/max` / `skip=` about every 15 s so you can see cost on the device.
+This is a small CPU detector at **1 Hz when not controlling** (was 4 Hz always) on a 320² letterbox of the **right-biased ROAD crop**. It is **not** a modeld head and is **not** used for control. It must not starve `modeld`: **no ONNX while OP is controlling**; little cores + 1 thread + skip-on-overrun + infer-cap extra skip. `swaglog` logs `speedsignd detect paused/running` with `enabled` / `active` / `state` / alive / valid on those edges and every infer `backend=` `peak=` `luma=` `chroma=` `prep=` `sess=` `raw=` plus `speedsignd timing … infer_ms mean/max` / `skip=` about every 15 s so you can see cost on the device.
 
 **Usually works:** daylight, dry, a standard white R2-1 facing the car, large enough in the ROAD frame (near / mid roadside, not a speck on the horizon). 55 and 60 are in the trained class set.
 

@@ -11,6 +11,7 @@ import re
 import numpy as np
 
 from openpilot.selfdrive.speedsignd.detect_types import MUTCD_MPH, SpeedSign
+from openpilot.selfdrive.speedsignd.nv12 import detect_crop_rect
 
 # Crop reader must beat this to override the YOLO class (real Highway Gothic
 # usually agrees; synthetic/block digits often need the override).
@@ -50,19 +51,22 @@ def letterbox_rgb(rgb: np.ndarray, size: int = YOLO_IMGSZ) -> tuple[np.ndarray, 
   return canvas, scale, left, top
 
 
-def road_detect_crop(rgb: np.ndarray) -> tuple[np.ndarray, tuple[int, int, int, int]]:
+def road_detect_crop_rect(h: int, w: int) -> tuple[int, int, int, int]:
   """Right-biased square of the short side. Keeps optical center + right shoulder.
 
   A 1928×1208 ROAD frame letterboxed to 320 is scale 0.166 — a clear 24×30 in
   R2-1 at ~60 ft is ~15 px, below YOLOv8s-320. Short-side square is 0.265.
   US MUTCD plates live on the right; the left third is oncoming / unused.
   """
+  return detect_crop_rect(h, w)
+
+
+def road_detect_crop(rgb: np.ndarray) -> tuple[np.ndarray, tuple[int, int, int, int]]:
+  """Right-biased square of the short side. Keeps optical center + right shoulder."""
   if rgb.ndim != 3 or rgb.shape[2] != 3:
     raise ValueError("road_detect_crop expects HxWx3")
   h, w = rgb.shape[:2]
-  side = min(h, w)
-  x = max(0, w - side)
-  y = max(0, (h - side) // 2)
+  x, y, side, _ = road_detect_crop_rect(h, w)
   return rgb[y:y + side, x:x + side], (x, y, side, side)
 
 
