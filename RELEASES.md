@@ -1,3 +1,7 @@
+NAP Pre-AP reverse / gear (2026-09-12)
+========================
+* Reverse (and any gear out of Drive / door) is a **full hard cancel**: session down, sticky MAX forgotten, soft-lat reset, CANCEL spoof so panda can re-arm `controls_allowed`. After Drive returns, a normal double SET engages without Controls Mismatch or a prior disable dance. Soft-lat Off blinker pause and sticky-MAX brake/turn pause unchanged. Port of the nap-dev reverse teardown.
+
 NAP driver lat handoff (2026-09-12)
 ========================
 * Soft-lat **On**: a driver-turn blinker no longer strips lateral. Lamp latch does not clear `latActive` / force EPS free — keep control if we still have it. Soft-lat may still yield if the driver pushes. While the driver-turn blinker is latched, do not re-enable (stay yielded / do not finish a take-back blend). After it clears, resume goes through soft yield + the normal **0.15 s** hands-off confirm + **1 s** blend — no dedicated blinker rising-edge blend. Soft-lat **Off** keeps today’s blinker lat-pause so a held turn still frees the wheel. ALC tip/keep-alive, long sticky-MAX turn pause, yield thresholds, emergency hard-brake cancel, and hazards unchanged. Port of nap-dev #94.

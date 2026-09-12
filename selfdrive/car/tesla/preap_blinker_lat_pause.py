@@ -6,7 +6,9 @@ GTW lamp bits flash, so BlinkerLateralHold latches turn-active through
 those gaps. During that turn we have already released steering, so a
 wheel input must not drop cruiseEnabled. After ~1s of continuous dark,
 keep that suppression until torque is released so a finishing hand-steer
-does not fully disengage NAP. Stalk cancel is unchanged.
+does not fully disengage NAP. Stalk cancel / door / reverse (gear
+out of Drive) still full-teardown via hard_cancel_session so panda's
+cruise latch can re-arm.
 
 A latched *driver turn* (not ALC tip/keep-alive) also drops longitudinal
 the same way brake does: enableLongControl=False, cruiseEnabled stays.
@@ -56,6 +58,7 @@ _ORIG_HANDLE = None
 _ORIG_UPDATE = None
 _ORIG_PROCESS = None
 _ORIG_DROP = None
+_ORIG_CHECK = None
 _installed = False
 
 
@@ -130,9 +133,14 @@ def _handoff_param_on() -> bool:
 def hard_cancel_session(engagement) -> None:
   """Full OP session teardown (hard cancel), not silent long pause.
 
-  Same FSM contract as stalk cancel / hands-on >= 2: cruiseEnabled down,
-  held MAX forgotten, disengage chime via pcmDisable + long falling while
-  lat is also down. Do not call _drop_longitudinal_keep_lateral.
+  Same FSM contract as stalk cancel / door / gear-out-of-Drive /
+  hands-on >= 2: cruiseEnabled down, held MAX forgotten, disengage
+  chime via pcmDisable + long falling while lat is also down. Sets
+  preap_cc_cancel_needed so the carcontroller spoofs CANCEL and panda
+  runs pcm_cruise_check(false). tesla_preap drops controls_allowed on
+  leaving Drive without that latch reset; a later SET would then
+  enable selfdrived while panda stays !controls_allowed →
+  controlsMismatch. Do not call _drop_longitudinal_keep_lateral.
   """
   was_long = bool(getattr(engagement, "enableLongControl", False))
   engagement.cruiseEnabled = False
@@ -153,6 +161,25 @@ def hard_cancel_session(engagement) -> None:
   h = getattr(engagement, "_nap_lat_handoff", None)
   if h is not None:
     h.reset()
+
+
+def _check_can_engage(self, door_open, gear_shifter, seatbelt_unlatched):
+  """Door / gear-out-of-Drive / seatbelt must full-teardown, not a partial reset.
+
+  Orig check_can_engage zeros cruiseEnabled / long but leaves sticky MAX,
+  soft-lat yield, stalk timers, and preap_cc_cancel_needed unset. Panda
+  tesla_preap already set controls_allowed=false on leaving Drive without
+  pcm_cruise_check(false). Without the CANCEL spoof, the next Drive SET
+  raises Python cruise while panda cruise_engaged_prev stays latched —
+  selfdrived enables, panda does not, controlsMismatch after ~2s.
+  """
+  from opendbc.car import structs
+
+  in_drive = gear_shifter == structs.CarState.GearShifter.drive
+  can_engage = not door_open and in_drive and not seatbelt_unlatched
+  if not can_engage and self.cruiseEnabled:
+    hard_cancel_session(self)
+  return can_engage
 
 
 def update_card_lat_handoff(engagement, *, engaged: bool,
@@ -333,9 +360,9 @@ def _process_buttons(self, cruise_buttons, prev_cruise_buttons, *args, **kwargs)
   self._nap_set_resume_long = False
   self._nap_set_take_speed_now = False
 
-  # Full disengage (cancel, door, previous cycle) must not leave a stale
-  # resume latch that would skip double-pull on the next first SET, or a
-  # held MAX from the previous session.
+  # Full disengage (cancel, door, reverse/gear, previous cycle) must not
+  # leave a stale resume latch that would skip double-pull on the next
+  # first SET, or a held MAX from the previous session.
   if not self.cruiseEnabled:
     _clear_session_max_flags(self)
 
@@ -521,7 +548,7 @@ def _rewire_tesla_carstate_update():
 
 def install_blinker_lat_pause():
   """Patch Pre-AP engagement so a lamp-on turn does not tear down cruise."""
-  global _installed, _ORIG_HANDLE, _ORIG_UPDATE, _ORIG_PROCESS, _ORIG_DROP
+  global _installed, _ORIG_HANDLE, _ORIG_UPDATE, _ORIG_PROCESS, _ORIG_DROP, _ORIG_CHECK
   from opendbc.car.tesla.preap import carstate as preap_carstate
   from opendbc.car.tesla.preap.engagement import PreAPEngagement
 
@@ -530,9 +557,11 @@ def install_blinker_lat_pause():
     _ORIG_UPDATE = preap_carstate.update_preap
     _ORIG_PROCESS = PreAPEngagement.process_buttons
     _ORIG_DROP = PreAPEngagement._drop_longitudinal_keep_lateral
+    _ORIG_CHECK = PreAPEngagement.check_can_engage
     PreAPEngagement.handle_steering_disengage = _handle_steering_disengage
     PreAPEngagement.process_buttons = _process_buttons
     PreAPEngagement._drop_longitudinal_keep_lateral = _drop_longitudinal_keep_lateral
+    PreAPEngagement.check_can_engage = _check_can_engage
     preap_carstate.update_preap = _update_preap
     _installed = True
   _rewire_tesla_carstate_update()

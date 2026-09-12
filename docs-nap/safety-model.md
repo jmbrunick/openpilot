@@ -29,7 +29,7 @@ All actual safety logic remains active:
 - `controls_allowed` gating on every TX
 - Disengage on hands-on override (level >= 2), except during a blinker-latched driver turn (one lamp or held LEFT/RIGHT, flash-latched ~1s, then hand-on until release)
 - Disengage on EPAS error codes 6–9, except during that same turn pause
-- Disengage on door open, gear out of Drive
+- Disengage on door open, gear out of Drive. Gear-out currently sets `controls_allowed = false` **directly** (not `pcm_cruise_check(false)`). That leaves `cruise_engaged_prev` latched, so the next stalk SET does not re-allow until a real/spoofed CANCEL runs `pcm_cruise_check(false)`. Python reverse/door `hard_cancel_session` spoofs that CANCEL so returning to Drive + double SET does not `controlsMismatch`. Steering disengage already uses `pcm_cruise_check(false)` for the same re-arm.
 - Disengage on stalk cancel (with 600 ms echo filter)
 - AEB events blocked from openpilot
 - EPB `epasControl` mode validation
