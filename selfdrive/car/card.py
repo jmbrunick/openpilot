@@ -225,7 +225,7 @@ class Car:
       else:
         # Pre-AP pedal mode owns set-speed via pedal_speed_kph. Overlay OSM
         # onto vCruise/MAX for the OP session (cruiseEnabled), including a
-        # brake / driver-turn long pause so sticky MAX can rebase. The first
+        # brake long pause so sticky MAX can rebase. The first
         # pull is lateral-only and must not seed or arm a sticky hold.
         raw_kph = float(CS.cruiseState.speed * CV.MS_TO_KPH)
         long_active = bool(getattr(CS, 'pedalLongActive', False))
@@ -234,7 +234,7 @@ class Car:
         session_enabled = bool(getattr(CS.cruiseState, 'enabled', False))
         resume_held, take_speed_now = self._preap_set_events()
         # Overlay held can be None (maps off never stalk-latched). The FSM
-        # still has the brake/turn MAX — adopt it before pause substitution
+        # still has the brake-pause MAX — adopt it before pause substitution
         # so we never treat ego as held, and so session_engaged stays up.
         self._adopt_preap_fsm_held_max()
         # Software long (enableLongControl), not pedal authority. Pause and
@@ -351,7 +351,7 @@ class Car:
   def _preap_set_events(self) -> tuple[bool, bool]:
     """Consume one-shot SET flags from the Pre-AP engagement patch.
 
-    resume_held: one SET after brake / driver-turn long pause.
+    resume_held: one SET after a brake long pause.
     take_speed_now: double SET / initial engage (forget sticky).
     """
     eng = self._preap_engagement()

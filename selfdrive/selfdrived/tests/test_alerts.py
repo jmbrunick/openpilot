@@ -118,7 +118,7 @@ class TestAlerts:
   def test_preap_pedal_cruise_alerts_fire_while_disabled(self):
     # ET.WARNING is omitted on the USER_DISABLE frame, so these must be
     # permanent to play the disengage prompt on stalk cancel / full
-    # teardown. Brake / driver-turn long pause must not add this event.
+    # teardown. Brake long pause must not add this event.
     for name, text, sound in (
       (log.OnroadEvent.EventName.pedalCruiseEnabled, "Pedal Cruise Engaged", AudibleAlert.engage),
       (log.OnroadEvent.EventName.pedalCruiseDisabled, "Pedal Cruise Disengaged", AudibleAlert.disengage),

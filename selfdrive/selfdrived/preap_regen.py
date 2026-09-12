@@ -11,10 +11,11 @@ stalk engage chimes immediately. Gas override is not an engagement edge:
 enableLongControl stays true while the driver is on the pedal, so press
 and release are silent.
 
-A brake or driver-turn long drop that keeps cruiseEnabled is a silent
-pause: do not fire pedalCruiseDisabled / AudibleAlert.disengage. One SET
-that only restores long from that pause is also quiet. Full cancel
-(session down) still chimes disengage.
+A brake long drop that keeps cruiseEnabled is a silent pause: do not
+fire pedalCruiseDisabled / AudibleAlert.disengage. One SET that only
+restores long from that pause is also quiet. A latched driver-turn
+blinker does not drop long. Full cancel (session down) still chimes
+disengage.
 """
 import math
 from typing import NamedTuple

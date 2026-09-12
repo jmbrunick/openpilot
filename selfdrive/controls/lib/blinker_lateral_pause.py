@@ -5,7 +5,8 @@ on after the stalk returns, so the hold follows leftBlinker / rightBlinker,
 not the stalk enum. Soft-lat Off still releases steering (clears latActive)
 while staying engaged. Soft-lat On keeps latActive on lamp latch — the
 handoff owns yield / re-enable inhibit / resume — but this helper still
-latches a *driver turn* for long pause and the soft-lat gate.
+latches a *driver turn* for the soft-lat re-enable gate. Long stays
+engaged through that latch.
 
 Those lamp bits flash: they go dark between blinks. Latch turn-active as
 soon as one lamp is seen, and keep it through flash gaps until both lamps
@@ -14,8 +15,9 @@ does not end the turn.
 
 After the turn is complete, keep lateral released until the wheel is no
 longer held (steeringPressed). This helper only pauses lat. Pre-AP's
-engagement FSM drops longitudinal on turn_active (not ALC tip/keep-alive)
-and restores it on one stalk SET after the latch ends.
+engagement FSM does not drop longitudinal on a driver turn; long stays
+engaged (lead/map braking and accel still apply). Brake still uses the
+silent long-pause path.
 
 Automatic lane change is the other blinker user. OP drives the lamps while
 ALC is armed or in progress, so those flashes must not pause lat or latch a
@@ -248,7 +250,7 @@ def lat_active_with_blinker_pause(*, active, steer_fault_temporary, steer_fault_
   """Blinker lamp latch vs latActive.
 
   Always updates *hold* so a driver-turn (not ALC tip/keep-alive) is
-  still detected for long pause and the soft-lat re-enable gate.
+  still detected for the soft-lat re-enable gate.
   When soft-lat is On, lamp latch must not clear latActive — the
   handoff owns yield / inhibit / resume. Soft-lat Off keeps today's
   pause so a held turn still frees the wheel.
