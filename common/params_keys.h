@@ -142,6 +142,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"NAPHypermile", {PERSISTENT, BOOL, "0"}},
     {"NAPHypermileFollowLevel", {PERSISTENT, INT, "3"}},
     {"NAPHypermileSaved", {PERSISTENT, STRING}},
+    // Opt-in mileage defer. Default Off. Inert unless Hypermile is On.
+    // Lowers the Cap/Follow posted target by a fixed 15 mph (75→60).
+    // Does not stack with the eco −5 offset. Never exceeds posted.
+    {"NAPHypermileStepDown", {PERSISTENT, BOOL, "0"}},
     {"NAPForcePreAP", {PERSISTENT, BOOL, "1"}},
     {"NAPiBoosterEnabled", {PERSISTENT, BOOL}},
     {"NAPPedalCalibDone", {PERSISTENT, BOOL}},

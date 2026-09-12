@@ -13,6 +13,8 @@ from openpilot.selfdrive.controls.lib.hypermile import (
   PARAM_FOLLOW_LEVEL,
   PARAM_HYPERMILE,
   PARAM_SAVED,
+  PARAM_STEP_DOWN,
+  STEP_DOWN_MPH,
   SAFE_FLOOR_STOCK,
   SPLIT_MS,
   apply_hypermile_toggle,
@@ -23,8 +25,12 @@ from openpilot.selfdrive.controls.lib.hypermile import (
   effective_nap_follow_dist,
   follow_level_hud_text,
   hypermile_level_to_stock,
+  map_target_offset_kph,
   persist_follow_level,
   read_hypermile_params,
+  read_hypermile_step_down,
+  step_down_applies,
+  stepped_map_target_kph,
   stalk_adjusts_follow,
   step_hypermile_level,
 )
@@ -106,6 +112,11 @@ def test_on_snaps_eco_and_off_restores_prior():
   assert params.get_bool("NAPDmSimulateLooking") is False
   assert params.get("NAPFollowDistance") == 4
   assert not params.get(PARAM_SAVED)
+  # Step-down is an independent opt-in — eco snap/restore must not touch it.
+  params.put_bool(PARAM_STEP_DOWN, True)
+  apply_hypermile_toggle(params, True)
+  apply_hypermile_toggle(params, False)
+  assert params.get_bool(PARAM_STEP_DOWN) is True
 
 
 def test_eco_comfort_bias_early_light_not_late_bite():
@@ -130,6 +141,44 @@ def test_eco_comfort_bias_early_light_not_late_bite():
   # Early brake is lighter than Late; climb Accel 1 is below default 5.
   assert map_brake_a_ms2(LOOKAHEAD_EARLY) < map_brake_a_ms2(LOOKAHEAD_LATE)
   assert map_accel_a_ms2(LOOKAHEAD_EARLY, 1) < map_accel_a_ms2(LOOKAHEAD_NORMAL, 5)
+
+
+def test_step_down_15_mph_under_posted_no_stack_inert_when_hypermile_off():
+  assert STEP_DOWN_MPH == 15.0
+  assert read_hypermile_step_down(FakeParams()) is False
+  assert step_down_applies(True, False) is False
+  assert step_down_applies(False, True) is False
+  assert step_down_applies(True, True) is True
+
+  posted_75 = 75.0 * CV.MPH_TO_KPH
+  posted_55 = 55.0 * CV.MPH_TO_KPH
+  eco_off = -5.0 * CV.MPH_TO_KPH
+
+  def _approx(a, b):
+    assert abs(float(a) - float(b)) < 1e-6, (a, b)
+
+  # Off: keep eco/user offset (75→70).
+  _approx(stepped_map_target_kph(
+    posted_75, hypermile_on=True, step_down_on=False, map_offset_kph=eco_off,
+  ), 70.0 * CV.MPH_TO_KPH)
+  # On: 75→60, 55→40. Eco −5 does not stack to 55/35.
+  _approx(stepped_map_target_kph(
+    posted_75, hypermile_on=True, step_down_on=True, map_offset_kph=eco_off,
+  ), 60.0 * CV.MPH_TO_KPH)
+  _approx(stepped_map_target_kph(
+    posted_55, hypermile_on=True, step_down_on=True, map_offset_kph=eco_off,
+  ), 40.0 * CV.MPH_TO_KPH)
+  # Hypermile Off: step-down param On is inert.
+  _approx(stepped_map_target_kph(
+    posted_75, hypermile_on=False, step_down_on=True, map_offset_kph=eco_off,
+  ), 70.0 * CV.MPH_TO_KPH)
+  _approx(map_target_offset_kph(eco_off, hypermile_on=True, step_down_on=True), -15.0 * CV.MPH_TO_KPH)
+  # Never more than 15 under; never above posted while stepping down.
+  raw = 80.0 * CV.MPH_TO_KPH
+  target = stepped_map_target_kph(raw, hypermile_on=True, step_down_on=True, map_offset_kph=-50.0)
+  _approx(target, 65.0 * CV.MPH_TO_KPH)
+  assert target <= raw
+  _approx(raw - target, 15.0 * CV.MPH_TO_KPH)
 
 
 def test_le_50_uses_far_gap_gt_50_uses_stalk_level():
@@ -232,11 +281,19 @@ def test_settings_and_docs_wire_hypermile():
   for src in (tici, mici):
     assert "Hypermile" in src or "hypermile" in src
     assert "NAP_HYPERMILE" in src
+    assert "NAP_HYPERMILE_STEP_DOWN" in src
     assert "apply_hypermile_toggle" in src
   assert "Hypermile" in nap
   assert "put_bool(NAP_HYPERMILE, False)" in nap
+  assert "put_bool(NAP_HYPERMILE_STEP_DOWN, False)" in nap
+  assert "Step Down Speed" in tici
+  assert "step down speed" in mici
+  assert "map_target_offset_kph" in card
+  assert "_refresh_map_speed_params" in card
   assert "NAPHypermile" in keys
   assert "NAPHypermileFollowLevel" in keys
+  assert "NAPHypermileStepDown" in keys
+  assert 'BOOL, "0"' in next(ln for ln in keys.splitlines() if '"NAPHypermileStepDown"' in ln)
   assert 'BOOL, "0"' in next(ln for ln in keys.splitlines() if '"NAPHypermile"' in ln)
   assert 'INT, "3"' in next(ln for ln in keys.splitlines() if '"NAPHypermileFollowLevel"' in ln)
   assert "effective_nap_follow_dist" in planner
@@ -250,6 +307,8 @@ def test_settings_and_docs_wire_hypermile():
   assert "not max" in content.lower()
   assert "hypermile.md" in readme
   assert "Hypermile" in docs
+  assert "Step Down Speed" in docs
+  assert "15 mph under" in docs
   assert "early, light regenerative" in docs.lower() or "early, light" in docs.lower()
   assert "not maximum regen" in docs.lower() or "not max regen" in docs.lower()
   assert "Hypermile" in releases.split("\n\n", 1)[0]

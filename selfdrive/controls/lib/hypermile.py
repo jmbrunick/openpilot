@@ -16,6 +16,11 @@ from openpilot.selfdrive.mapd.map_speed_policy import is_cruise_stalk_step
 PARAM_HYPERMILE = "NAPHypermile"
 PARAM_FOLLOW_LEVEL = "NAPHypermileFollowLevel"
 PARAM_SAVED = "NAPHypermileSaved"
+PARAM_STEP_DOWN = "NAPHypermileStepDown"
+
+# Mileage defer: fixed 15 mph under raw OSM posted. Does not stack with the
+# eco −5 offset. Hard cap — never more than this under posted.
+STEP_DOWN_MPH = 15.0
 
 # Stalk-selected band while Hypermile is On.
 FOLLOW_LEVEL_MIN = 1
@@ -128,6 +133,50 @@ def read_hypermile_params(params) -> tuple[bool, int]:
   return _get_bool(params, PARAM_HYPERMILE, False), clamp_follow_level(
     _get_int(params, PARAM_FOLLOW_LEVEL, FOLLOW_LEVEL_DEFAULT)
   )
+
+
+def read_hypermile_step_down(params) -> bool:
+  """Opt-in mileage defer. Default Off. Inert unless Hypermile is On."""
+  return _get_bool(params, PARAM_STEP_DOWN, False)
+
+
+def step_down_applies(hypermile_on: bool, step_down_on: bool) -> bool:
+  return bool(hypermile_on) and bool(step_down_on)
+
+
+def map_target_offset_kph(
+  map_offset_kph: float,
+  *,
+  hypermile_on: bool,
+  step_down_on: bool,
+) -> float:
+  """Offset added to raw OSM posted for Cap/Follow.
+
+  Hypermile On + Step Down On: −15 mph, replacing the eco/user offset so
+  75→60 (not 55). Hypermile Off: step-down is inert; keep map_offset_kph.
+  """
+  if step_down_applies(hypermile_on, step_down_on):
+    return -STEP_DOWN_MPH * CV.MPH_TO_KPH
+  return float(map_offset_kph)
+
+
+def stepped_map_target_kph(
+  raw_posted_kph: float,
+  *,
+  hypermile_on: bool,
+  step_down_on: bool,
+  map_offset_kph: float = 0.0,
+) -> float:
+  """Map MAX target from raw posted (kph). Step-down only lowers, ≤15 mph under."""
+  raw = float(raw_posted_kph)
+  off = map_target_offset_kph(
+    map_offset_kph, hypermile_on=hypermile_on, step_down_on=step_down_on,
+  )
+  target = raw + off
+  if step_down_applies(hypermile_on, step_down_on):
+    floor = raw - STEP_DOWN_MPH * CV.MPH_TO_KPH
+    target = min(raw, max(floor, target))
+  return target
 
 
 def read_snapshot_values(params) -> dict:

@@ -9,10 +9,12 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   DM_SIMULATE_LOOKING_DESCRIPTION,
   HYPERMILE_DESCRIPTION,
   HYPERMILE_FOLLOW_DESCRIPTION,
+  HYPERMILE_STEP_DOWN_DESCRIPTION,
   NAP_DM_SIMULATE_LOOKING,
   NAP_DRIVER_LAT_HANDOFF,
   NAP_HYPERMILE,
   NAP_HYPERMILE_FOLLOW_LEVEL,
+  NAP_HYPERMILE_STEP_DOWN,
 )
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys
 
@@ -43,6 +45,14 @@ class DrivingMannerismsLayout(Widget):
       callback=self._on_hypermile,
     )
     self._all_items.append(self._hypermile)
+
+    self._step_down = toggle_item(
+      "Step Down Speed",
+      description=HYPERMILE_STEP_DOWN_DESCRIPTION,
+      initial_state=self._params.get_bool(NAP_HYPERMILE_STEP_DOWN),
+      callback=self._on_step_down,
+    )
+    self._all_items.append(self._step_down)
 
     self._adaptive_accel = toggle_item(
       "Adaptive Accel Limits",
@@ -96,6 +106,9 @@ class DrivingMannerismsLayout(Widget):
     apply_hypermile_toggle(self._params, bool(state))
     self.refresh()
 
+  def _on_step_down(self, state):
+    self._params.put_bool(NAP_HYPERMILE_STEP_DOWN, state)
+
   def _on_adaptive_accel(self, state):
     self._params.put_bool(NAPParamKeys.ADAPTIVE_ACCEL, state)
 
@@ -114,6 +127,8 @@ class DrivingMannerismsLayout(Widget):
   def refresh(self):
     hypermile_on = self._params.get_bool(NAP_HYPERMILE)
     self._hypermile.action_item.set_state(hypermile_on)
+    self._step_down.action_item.set_state(self._params.get_bool(NAP_HYPERMILE_STEP_DOWN))
+    self._step_down.set_visible(hypermile_on)
     self._adaptive_accel.action_item.set_state(self._params.get_bool(NAPParamKeys.ADAPTIVE_ACCEL))
     follow_dist = self._params.get(NAPParamKeys.FOLLOW_DISTANCE, return_default=True)
     self._follow_buttons.action_item.set_selected_button(max(0, min(6, follow_dist - 1)))

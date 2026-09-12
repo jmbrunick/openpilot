@@ -25,7 +25,8 @@ from openpilot.selfdrive.mapd.map_speed_policy import (
   map_slew_a_ms2, read_map_speed_params, should_write_preap_pedal, slew_map_speed_ms,
 )
 from openpilot.selfdrive.controls.lib.hypermile import (
-  button_event_closer, detect_hypermile_stalk, persist_follow_level,
+  button_event_closer, detect_hypermile_stalk, map_target_offset_kph,
+  persist_follow_level, read_hypermile_params, read_hypermile_step_down,
 )
 
 REPLAY = "REPLAY" in os.environ
@@ -161,9 +162,7 @@ class Car:
     self._map_slew_ms: float | None = None
     self._last_pedal_kph: float | None = None
     self._hypermile_stalk_mono: float = 0.0
-    self._map_speed_mode, self._map_speed_offset_kph, self._map_speed_lookahead, self._map_speed_accel = (
-      read_map_speed_params(self.params)
-    )
+    self._refresh_map_speed_params()
 
     self.is_metric = self.params.get_bool("IsMetric")
     self.experimental_mode = self.params.get_bool("ExperimentalMode")
@@ -544,13 +543,23 @@ class Car:
     self.initialized_prev = initialized
     self.CS_prev = CS
 
+  def _refresh_map_speed_params(self):
+    mode, offset, lookahead, accel = read_map_speed_params(self.params)
+    hm_on, _level = read_hypermile_params(self.params)
+    self._map_speed_mode = mode
+    self._map_speed_offset_kph = map_target_offset_kph(
+      offset,
+      hypermile_on=hm_on,
+      step_down_on=read_hypermile_step_down(self.params),
+    )
+    self._map_speed_lookahead = lookahead
+    self._map_speed_accel = accel
+
   def params_thread(self, evt):
     while not evt.is_set():
       self.is_metric = self.params.get_bool("IsMetric")
       self.experimental_mode = self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl
-      self._map_speed_mode, self._map_speed_offset_kph, self._map_speed_lookahead, self._map_speed_accel = (
-        read_map_speed_params(self.params)
-      )
+      self._refresh_map_speed_params()
       time.sleep(0.1)
 
   def card_thread(self):

@@ -24,6 +24,28 @@ Turning **Off** restores that snapshot. Soft Lateral Handoff, Simulate Look-at-R
 
 Params: `NAPHypermile` (bool, default 0), `NAPHypermileSaved` (JSON snapshot).
 
+## Step Down Speed (mileage defer)
+
+Second toggle under Hypermile: **Step Down Speed** (`NAPHypermileStepDown`, default **Off**). Hidden/inert unless Hypermile is On.
+
+| Hypermile | Step Down | Map MAX target |
+|-----------|-----------|----------------|
+| On | Off | Posted + eco/user offset (today: −5 mph → 75 holds ~70) |
+| On | On | **15 mph under raw posted** (75→60, 55→40). Replaces eco −5 — does not stack to 20 under |
+| Off | On or Off | Step-down ignored. Normal posted / held MAX |
+
+Hard cap: never more than 15 mph under posted, never above posted. Legal: step-down only lowers.
+
+This is an offset on the **posted/map target** Cap/Follow already use (`posted_kph` / `apply_map_speed_kph` offset). Sticky / one-SET / rebase are not rewritten.
+
+**What wins**
+
+- **Follow + stalk SET:** driver can hold above the step-down (up to posted). Sticky until the posted *value* changes, then MAX rebases to the new posted−15.
+- **Cap:** cannot exceed the stepped posted (75 posted + step-down → cap 60).
+- **One-SET** after a long pause: resume held MAX (already rebased if posted or step-down changed).
+- **Double SET:** take the current map target (stepped if On).
+- Toggling Step Down On/Off mid-drive changes the posted target (70↔60 on a 75), which Follow treats as a posted change and rebases.
+
 ## B — Speed-split follow + stalk 1–5
 
 While On, the stock 1–7 Follow Distance UI is hidden. The active control is **Hypermile Follow 1–5** (`NAPHypermileFollowLevel`, default 3, persists across the drive):

@@ -16,6 +16,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   NAP_DRIVER_LAT_HANDOFF,
   NAP_HYPERMILE,
   NAP_HYPERMILE_FOLLOW_LEVEL,
+  NAP_HYPERMILE_STEP_DOWN,
 )
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys
 
@@ -30,6 +31,10 @@ class DrivingMannerismsLayoutMici(NavScroller):
 
     hypermile = BigParamControl("hypermile", NAP_HYPERMILE, toggle_callback=on_hypermile)
     hypermile.set_value("Off default — early light eco, not max regen")
+
+    step_down = BigParamControl("step down speed", NAP_HYPERMILE_STEP_DOWN)
+    step_down.set_value("Off — 15 mph under posted when On")
+    step_down.set_visible(lambda: self._params.get_bool(NAP_HYPERMILE))
 
     adaptive_accel = BigParamControl("adaptive accel limits", NAPParamKeys.ADAPTIVE_ACCEL)
 
@@ -59,6 +64,7 @@ class DrivingMannerismsLayoutMici(NavScroller):
 
     self._scroller.add_widgets([
       hypermile,
+      step_down,
       adaptive_accel,
       follow_distance,
       hypermile_follow,
