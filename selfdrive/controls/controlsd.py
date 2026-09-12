@@ -109,13 +109,25 @@ class Controls:
 
     # Check which actuators can be enabled
     standstill = abs(CS.vEgo) <= max(self.CP.minSteerSpeed, 0.3) or CS.standstill
-    # Driver-turn lamps pause lat (latched through flash gaps). ALC keep-alive
-    # flashes must not: gate pause while laneChangeState != off, and on a
-    # stalk tip (LEFT/RIGHT then IDLE within 0.40s) so latActive stays up
-    # for DesireHelper. A held stalk past that window is a turn at any speed
-    # when ALC is not latched. During ALC / leftover keep-alive, same-direction
-    # stalk must stay on >1.0s to steal ALC as a turn.
+    # Driver-turn lamps latch through flash gaps. Soft-lat Off still pauses
+    # lat on that latch; Soft-lat On keeps latActive and lets handoff
+    # inhibit re-enable. ALC keep-alive flashes must not latch a driver
+    # turn: gate while laneChangeState != off, and on a stalk tip
+    # (LEFT/RIGHT then IDLE within 0.40s) so latActive stays up for
+    # DesireHelper. A held stalk past that window is a turn at any speed
+    # when ALC is not latched. During ALC / leftover keep-alive,
+    # same-direction stalk must stay on >1.0s to steal ALC as a turn.
     alc_active = model_v2.meta.laneChangeState != LaneChangeState.off
+    # Soft yield frees the EPS the same way blinker pause does (latActive
+    # false → DAS_steeringControlType=0). Do not keep latActive and track
+    # measured angle — that is follow-the-rim holding, not a free wheel.
+    # Handoff still sees the pre-yield bit so it does not reset itself.
+    # Longitudinal / enabled are untouched. ALC is not this path.
+    # Soft-lat On: lamp latch must not clear latActive. Soft-lat Off:
+    # keep today's blinker lat-pause so a held turn still frees the wheel.
+    self.lat_handoff.enabled = handoff_enabled(
+      fingerprint=self.CP.carFingerprint,
+      param_on=bool(self.params.get_bool(PARAM_DRIVER_LAT_HANDOFF)))
     lat_would_be_active = lat_active_with_blinker_pause(
       active=self.sm['selfdriveState'].active,
       steer_fault_temporary=CS.steerFaultTemporary,
@@ -131,27 +143,19 @@ class Controls:
       alc_active=alc_active,
       v_ego=CS.vEgo,
       stalk_state=getattr(CS, 'turnSignalStalkState', 0),
+      soft_lat_on=self.lat_handoff.enabled,
     )
     CC.longActive = CC.enabled and not any(e.overrideLongitudinal for e in self.sm['onroadEvents']) and self.CP.openpilotLongitudinalControl
-    # Soft yield frees the EPS the same way blinker pause does (latActive
-    # false → DAS_steeringControlType=0). Do not keep latActive and track
-    # measured angle — that is follow-the-rim holding, not a free wheel.
-    # Handoff still sees the pre-yield bit so it does not reset itself.
-    # Longitudinal / enabled are untouched. ALC is not this path.
-    self.lat_handoff.enabled = handoff_enabled(
-      fingerprint=self.CP.carFingerprint,
-      param_on=bool(self.params.get_bool(PARAM_DRIVER_LAT_HANDOFF)))
-    # hold.holding / turn_active are set during the blinker-turn pause.
-    # On the resume frame they are already clear; handoff latches the flag
-    # from earlier paused frames.
+    # turn_active is the latched driver-turn blinker (not ALC, not the
+    # post-turn hand-on hold). Soft-lat uses it as re-enable inhibit +
+    # falling-edge enter-yield. Soft-lat Off ignores it (identity).
     self._lat_handoff = self.lat_handoff.update(
       engaged=bool(CC.enabled),
       lat_would_be_active=bool(lat_would_be_active),
       steering_torque=float(CS.steeringTorque),
       steering_rate_deg=float(CS.steeringRateDeg),
       alc_active=alc_active,
-      blinker_paused=bool(
-        self.blinker_lat_hold.holding or self.blinker_lat_hold.turn_active),
+      blinker_paused=bool(self.blinker_lat_hold.turn_active),
       hands_on_level=cs_hands_on_level(CS),
       tracking_error=float(self.desired_curvature - self.curvature),
       brake_applied=cs_real_brake_pressed(CS),
@@ -180,11 +184,11 @@ class Controls:
 
     # Steering PID loop and lateral MPC
     # Reset desired curvature to current to avoid violating the limits on engage.
-    # Yield and blinker pause both clear latActive (EPS free). Pin to the
-    # wheel while lat is down so resume clips from there — blinker rising
-    # edge also starts the 1 s blend so a lot turn does not yank onto a
-    # grass-pointing model path. Hands still on after a blinker rising
-    # edge stay yielded (free wheel), they do not blend onto the model.
+    # Yield (and soft-lat Off blinker pause) clear latActive (EPS free).
+    # Pin to the wheel while lat is down so resume clips from there.
+    # Soft-lat On does not drop lat on lamp latch; after a yielded turn
+    # the falling blinker enters yield and the normal 0.15 s confirm +
+    # 1 s blend owns take-back. Hands still on stay yielded.
     if self.sm.valid['lateralManeuverPlan']:
       model_or_plan_curvature = self.sm['lateralManeuverPlan'].desiredCurvature
     else:
