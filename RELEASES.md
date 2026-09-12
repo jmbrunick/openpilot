@@ -1,3 +1,7 @@
+NAP driver lat handoff (2026-09-12)
+========================
+* Soft-lat **On**: a driver-turn blinker no longer strips lateral. Lamp latch does not clear `latActive` / force EPS free — keep control if we still have it. Soft-lat may still yield if the driver pushes. While the driver-turn blinker is latched, do not re-enable (stay yielded / do not finish a take-back blend). After it clears, resume goes through soft yield + the normal **0.15 s** hands-off confirm + **1 s** blend — no dedicated blinker rising-edge blend. Soft-lat **Off** keeps today’s blinker lat-pause so a held turn still frees the wheel. ALC tip/keep-alive, long sticky-MAX turn pause, yield thresholds, emergency hard-brake cancel, and hazards unchanged.
+
 NAP driver lat handoff (2026-09-11)
 ========================
 * Soft-lat hands-off confirm before take-back shortened from **0.25 s → 0.15 s** (`HANDS_OFF_CONFIRM_S`). Free-wheel yield, 1 s blend, blinker re-entry, and emergency cancel unchanged. Renewed hands-on or a firm push during the 0.15 s wait still re-yields and resets.
