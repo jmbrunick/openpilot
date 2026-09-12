@@ -1230,11 +1230,21 @@ def test_map_speed_submenu_wires_params():
   assert "acceleration only" in mici
   assert "Map Speed Limit" in nap
   assert "Radar Settings" in nap
+  assert "Driving Mannerisms" in nap
   assert "map speed limit" in nap_mici
   assert "radar settings" in nap_mici
-  assert "gradual ease-off farther back" in nap
-  assert "not a harder brake" in nap
-  assert "follow distance" in nap_mici
+  assert "driving mannerisms" in nap_mici
+  manner = (root / "selfdrive/ui/layouts/settings/driving_mannerisms.py").read_text()
+  manner_mici = (root / "selfdrive/ui/mici/layouts/settings/driving_mannerisms.py").read_text()
+  assert "gradual ease-off farther back" in manner
+  assert "not a harder brake" in manner
+  assert "follow distance" in manner_mici
+  assert "Adaptive Accel Limits" not in nap
+  assert "Follow Distance" not in nap
+  assert "Soft Lateral Handoff" not in nap
+  assert "adaptive accel limits" not in nap_mici
+  assert "follow distance" not in nap_mici
+  assert "soft lateral handoff" not in nap_mici
   assert "Refresh maps" in tici
   assert '"Back To"' in tici
   assert "←" not in tici
@@ -1249,6 +1259,38 @@ def test_map_speed_submenu_wires_params():
   assert "NAPMapSpeedAccel" in (root / "common/params_keys.h").read_text()
   assert "NAPMapSpeedDbRevision" in (root / "common/params_keys.h").read_text()
   assert "NAPMapSpeedDbSha256" in (root / "common/params_keys.h").read_text()
+
+
+def test_driving_mannerisms_submenu_wires_params():
+  """Driving Mannerisms submenu mirrors Map Speed Limit open/close/render."""
+  from pathlib import Path
+  root = Path(__file__).resolve().parents[3]
+  tici = (root / "selfdrive/ui/layouts/settings/driving_mannerisms.py").read_text()
+  mici = (root / "selfdrive/ui/mici/layouts/settings/driving_mannerisms.py").read_text()
+  nap = (root / "selfdrive/ui/layouts/settings/nap.py").read_text()
+  nap_mici = (root / "selfdrive/ui/mici/layouts/settings/nap.py").read_text()
+  for src in (tici, mici):
+    for key in ("ADAPTIVE_ACCEL", "FOLLOW_DISTANCE", "NAP_DRIVER_LAT_HANDOFF"):
+      assert key in src
+  assert "Adaptive Accel Limits" in tici
+  assert "Follow Distance" in tici
+  assert "Soft Lateral Handoff" in tici
+  assert '"Back To"' in tici
+  assert "Return to NAP settings." in tici
+  assert "adaptive accel limits" in mici
+  assert "follow distance" in mici
+  assert "soft lateral handoff" in mici
+  assert "self._scroller.add_widgets" in mici
+  assert "DrivingMannerismsLayout" in nap
+  assert "_open_driving_mannerisms" in nap
+  assert "_close_driving_mannerisms" in nap
+  assert 'self._page = "driving_mannerisms"' in nap
+  assert "self._driving_mannerisms_page.render" in nap
+  assert "DrivingMannerismsLayoutMici" in nap_mici
+  assert "driving mannerisms" in nap_mici
+  # Map Speed Limit submenu must stay on the main NAP list.
+  assert "Map Speed Limit" in nap
+  assert "map speed limit" in nap_mici
 
 
 def test_planner_and_mpc_keep_radar_after_map_cap():

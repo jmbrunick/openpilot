@@ -16,16 +16,13 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   BACKUP_EPAS_INSTRUCTIONS,
   CALIBRATE_PEDAL_INSTRUCTIONS,
   FLASH_EPAS_INSTRUCTIONS,
-  FOLLOW_DISTANCE_DEFAULT,
-  FOLLOW_DISTANCE_LABELS,
-  FOLLOW_DISTANCE_VALUES,
   PEDAL_CAN_BUS_VALUES,
   RADAR_OFFSET_MAX,
   RADAR_OFFSET_MIN,
   RESTORE_EPAS_INSTRUCTIONS,
-  NAP_DRIVER_LAT_HANDOFF,
   NAP_FORCE_OFFROAD,
 )
+from openpilot.selfdrive.ui.mici.layouts.settings.driving_mannerisms import DrivingMannerismsLayoutMici
 from openpilot.selfdrive.ui.mici.layouts.settings.map_speed import MapSpeedLimitLayoutMici
 from openpilot.selfdrive.ui.radar.radar_view import RadarMonitorDialog
 from openpilot.selfdrive.ui.ui_state import ui_state
@@ -205,22 +202,13 @@ class NAPLayoutMici(NavScroller):
                                      toggle_callback=_reboot_on_toggle)
     pedal_enabled.set_enabled(ui_state.is_offroad)
 
-    adaptive_accel = BigParamControl("adaptive accel limits", NAPParamKeys.ADAPTIVE_ACCEL)
-
-    follow_distance = BigMultiValueParamToggle(
-      "follow distance",
-      NAPParamKeys.FOLLOW_DISTANCE,
-      values=FOLLOW_DISTANCE_VALUES,
-      labels=FOLLOW_DISTANCE_LABELS,
-      default_value=FOLLOW_DISTANCE_DEFAULT,
-    )
+    self._driving_mannerisms_page = DrivingMannerismsLayoutMici()
+    driving_mannerisms_btn = BigButton("driving mannerisms", "open")
+    driving_mannerisms_btn.set_click_callback(lambda: gui_app.push_widget(self._driving_mannerisms_page))
 
     self._map_speed_page = MapSpeedLimitLayoutMici()
     map_speed_btn = BigButton("map speed limit", "open")
     map_speed_btn.set_click_callback(lambda: gui_app.push_widget(self._map_speed_page))
-
-    lat_handoff = BigParamControl("soft lateral handoff", NAP_DRIVER_LAT_HANDOFF)
-    lat_handoff.set_value("On — free-wheel yield; Off if false-yield")
 
     # ── Pedal hardware ───────────────────────────────
     # default_value=2 matches NAPPedalCanBus declared default in params_keys.h
@@ -293,10 +281,8 @@ class NAPLayoutMici(NavScroller):
     self._scroller.add_widgets([
       force_offroad,
       pedal_enabled,
-      adaptive_accel,
-      follow_distance,
+      driving_mannerisms_btn,
       map_speed_btn,
-      lat_handoff,
       pedal_can_bus,
       pedal_calib_status,
       calibrate_pedal_btn,
