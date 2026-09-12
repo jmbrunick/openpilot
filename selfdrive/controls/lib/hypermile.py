@@ -19,7 +19,7 @@ PARAM_SAVED = "NAPHypermileSaved"
 PARAM_STEP_DOWN = "NAPHypermileStepDown"
 
 # Mileage defer: fixed 15 mph under raw OSM posted. Does not stack with the
-# eco −5 offset. Hard cap — never more than this under posted.
+# posted-scaled eco offset. Hard cap — never more than this under posted.
 STEP_DOWN_MPH = 15.0
 
 # Stalk-selected band while Hypermile is On.
@@ -44,10 +44,14 @@ SPLIT_MS = SPLIT_MPH * CV.MPH_TO_MS
 # and a lazy climb (Accel 1). Late lookahead (1.20 m/s²) is the wrong trade:
 # it holds speed then dumps regen. Safety / MPC hard brake unchanged.
 # Soft-lat / DM / blinker / stock 1–7 follow are not touched.
+# Map offset is *not* snapped to a flat −5 (that forced town 30→25).
+# Live eco offset is posted-scaled: 0 at/under 50, −5 at 80, cap −5 above.
 ECO_ADAPTIVE_ACCEL = True
 ECO_MAP_MODE_FOLLOW = 3  # NAPMapSpeedMode Follow
 ECO_MAP_MODE_CAP = 2
-ECO_MAP_OFFSET_MPH = -5
+ECO_MAP_OFFSET_MPH = -5  # highway cap; interpolated from 50→80 posted
+ECO_OFFSET_START_MPH = 50.0  # posted at/below: no eco drop
+ECO_OFFSET_FULL_MPH = 80.0  # posted at/above: full −5
 ECO_MAP_LOOKAHEAD_EARLY = 3  # NAPMapSpeedLookahead Early
 ECO_MAP_ACCEL = 1  # laziest Follow climb (lower peak a / jerk)
 
@@ -144,19 +148,53 @@ def step_down_applies(hypermile_on: bool, step_down_on: bool) -> bool:
   return bool(hypermile_on) and bool(step_down_on)
 
 
+def eco_map_offset_mph(posted_mph: float | None) -> float:
+  """Posted-scaled Hypermile eco offset (mph). Town stays posted.
+
+  ≤50 → 0; 80 → −5; >80 → −5 cap; linear 50→80.
+  Unknown / non-positive posted → 0 (do not invent a town drop).
+  """
+  if posted_mph is None:
+    return 0.0
+  try:
+    posted = float(posted_mph)
+  except (TypeError, ValueError):
+    return 0.0
+  if posted <= ECO_OFFSET_START_MPH:
+    return 0.0
+  if posted >= ECO_OFFSET_FULL_MPH:
+    return float(ECO_MAP_OFFSET_MPH)
+  span = ECO_OFFSET_FULL_MPH - ECO_OFFSET_START_MPH
+  t = (float(posted) - ECO_OFFSET_START_MPH) / span
+  return float(ECO_MAP_OFFSET_MPH) * t
+
+
 def map_target_offset_kph(
   map_offset_kph: float,
   *,
   hypermile_on: bool,
   step_down_on: bool,
+  posted_kph: float | None = None,
 ) -> float:
   """Offset added to raw OSM posted for Cap/Follow.
 
   Hypermile On + Step Down On: −15 mph, replacing the eco/user offset so
-  75→60 (not 55). Hypermile Off: step-down is inert; keep map_offset_kph.
+  75→60 (not 55). Hypermile On + Step Down Off: live posted-scaled eco
+  (≤50 → 0, 80+ → −5), not the Map Speed Offset param. Hypermile Off:
+  step-down is inert; keep map_offset_kph.
   """
   if step_down_applies(hypermile_on, step_down_on):
     return -STEP_DOWN_MPH * CV.MPH_TO_KPH
+  if hypermile_on:
+    posted_mph = None
+    if posted_kph is not None:
+      try:
+        pk = float(posted_kph)
+      except (TypeError, ValueError):
+        pk = 0.0
+      if pk > 0:
+        posted_mph = pk * CV.KPH_TO_MPH
+    return eco_map_offset_mph(posted_mph) * CV.MPH_TO_KPH
   return float(map_offset_kph)
 
 
@@ -171,6 +209,7 @@ def stepped_map_target_kph(
   raw = float(raw_posted_kph)
   off = map_target_offset_kph(
     map_offset_kph, hypermile_on=hypermile_on, step_down_on=step_down_on,
+    posted_kph=raw,
   )
   target = raw + off
   if step_down_applies(hypermile_on, step_down_on):
@@ -193,7 +232,9 @@ def eco_preset_from(current: dict) -> dict:
   """Comfort-biased eco knobs. Keep Cap if already Cap; Off/Display → Follow.
 
   Always Early lookahead + Accel 1. Do not keep Late (late hard regen).
-  Soft-lat / DM not included.
+  Do not write NAPMapSpeedOffsetMph — a flat −5 drops town 30→25.
+  Live eco offset is posted-scaled in map_target_offset_kph. Soft-lat / DM
+  not included.
   """
   mode = int(current.get("NAPMapSpeedMode", 0) or 0)
   if mode not in (ECO_MAP_MODE_CAP, ECO_MAP_MODE_FOLLOW):
@@ -201,7 +242,6 @@ def eco_preset_from(current: dict) -> dict:
   return {
     "NAPAdaptiveAccel": ECO_ADAPTIVE_ACCEL,
     "NAPMapSpeedMode": mode,
-    "NAPMapSpeedOffsetMph": ECO_MAP_OFFSET_MPH,
     "NAPMapSpeedLookahead": ECO_MAP_LOOKAHEAD_EARLY,
     "NAPMapSpeedAccel": ECO_MAP_ACCEL,
   }

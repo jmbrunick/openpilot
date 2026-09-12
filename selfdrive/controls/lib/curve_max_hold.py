@@ -5,12 +5,12 @@ and/or a comfort lat-accel cruise cap) may lower published MAX so the car
 takes an appropriate corner speed. That lower value must not permanently
 rebase sticky MAX or the Cap/Follow map target.
 
-Hypermile eco −5 (posted 60 → steady target 55) is unchanged. If MAX was
+Hypermile eco is the live posted-scaled Cap/Follow target. If MAX was
 60 before the bend (sticky hold or that displayed set), restore 60 — not
-the eco target the curve path would otherwise land on.
+the live eco / posted target the curve path would otherwise land on.
 
 GPS / OSM flicker on a bend used to look like posted `a` → `b`, wipe
-sticky, then restore to posted+offset (55). Freeze that rebase while the
+sticky, then restore to posted+offset. Freeze that rebase while the
 curve is active; after lat accel / steer are straight-ish, put MAX back.
 A posted change that is still there after exit is a real new zone and
 is allowed to rebase.

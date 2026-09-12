@@ -1,4 +1,4 @@
-"""Hypermile phase 1+2: eco snap/restore, speed-split follow, stalk 1–5, safe floor."""
+"""Hypermile phase 1+2: eco snap/restore, posted-scaled offset, speed-split follow."""
 from types import SimpleNamespace
 
 from openpilot.common.constants import CV
@@ -8,6 +8,8 @@ from openpilot.selfdrive.controls.lib.hypermile import (
   ECO_MAP_MODE_CAP,
   ECO_MAP_MODE_FOLLOW,
   ECO_MAP_OFFSET_MPH,
+  ECO_OFFSET_FULL_MPH,
+  ECO_OFFSET_START_MPH,
   FOLLOW_LEVEL_DEFAULT,
   LOW_SPEED_STOCK,
   PARAM_FOLLOW_LEVEL,
@@ -21,6 +23,7 @@ from openpilot.selfdrive.controls.lib.hypermile import (
   button_event_closer,
   consume_hypermile_stalk,
   detect_hypermile_stalk,
+  eco_map_offset_mph,
   eco_preset_from,
   effective_nap_follow_dist,
   follow_level_hud_text,
@@ -87,7 +90,8 @@ def test_on_snaps_eco_and_off_restores_prior():
   assert params.get_bool(PARAM_HYPERMILE) is True
   assert params.get_bool("NAPAdaptiveAccel") is True
   assert params.get("NAPMapSpeedMode") == ECO_MAP_MODE_FOLLOW
-  assert params.get("NAPMapSpeedOffsetMph") == ECO_MAP_OFFSET_MPH
+  # Do not snap a flat −5 — that forced town 30→25. Offset stays the user's.
+  assert params.get("NAPMapSpeedOffsetMph") == 5
   assert params.get("NAPMapSpeedLookahead") == ECO_MAP_LOOKAHEAD_EARLY
   assert params.get("NAPMapSpeedAccel") == ECO_MAP_ACCEL
   assert ECO_MAP_LOOKAHEAD_EARLY == 3
@@ -99,7 +103,7 @@ def test_on_snaps_eco_and_off_restores_prior():
 
   # Second On is a no-op (does not re-snapshot the eco values).
   apply_hypermile_toggle(params, True)
-  assert params.get("NAPMapSpeedOffsetMph") == ECO_MAP_OFFSET_MPH
+  assert params.get("NAPMapSpeedOffsetMph") == 5
 
   assert apply_hypermile_toggle(params, False) is False
   assert params.get_bool(PARAM_HYPERMILE) is False
@@ -136,7 +140,7 @@ def test_eco_comfort_bias_early_light_not_late_bite():
   assert eco["NAPMapSpeedLookahead"] == ECO_MAP_LOOKAHEAD_EARLY == LOOKAHEAD_EARLY
   assert eco["NAPMapSpeedLookahead"] != LOOKAHEAD_LATE
   assert eco["NAPMapSpeedLookahead"] != LOOKAHEAD_NORMAL
-  assert eco["NAPMapSpeedOffsetMph"] == ECO_MAP_OFFSET_MPH
+  assert "NAPMapSpeedOffsetMph" not in eco
   assert eco["NAPMapSpeedAccel"] == ECO_MAP_ACCEL == 1
   # Early brake is lighter than Late; climb Accel 1 is below default 5.
   assert map_brake_a_ms2(LOOKAHEAD_EARLY) < map_brake_a_ms2(LOOKAHEAD_LATE)
@@ -157,18 +161,19 @@ def test_step_down_15_mph_under_posted_no_stack_inert_when_hypermile_off():
   def _approx(a, b):
     assert abs(float(a) - float(b)) < 1e-6, (a, b)
 
-  # Off: keep eco/user offset (75→70).
+  # Hypermile On + Step Down Off: live posted-scaled eco (not the −5 param).
+  # 75 is 25/30 of the way from 50→80 → −4.166… → ~70.833.
   _approx(stepped_map_target_kph(
     posted_75, hypermile_on=True, step_down_on=False, map_offset_kph=eco_off,
-  ), 70.0 * CV.MPH_TO_KPH)
-  # On: 75→60, 55→40. Eco −5 does not stack to 55/35.
+  ), (75.0 + eco_map_offset_mph(75.0)) * CV.MPH_TO_KPH)
+  # On: 75→60, 55→40. Eco does not stack to 55/35.
   _approx(stepped_map_target_kph(
     posted_75, hypermile_on=True, step_down_on=True, map_offset_kph=eco_off,
   ), 60.0 * CV.MPH_TO_KPH)
   _approx(stepped_map_target_kph(
     posted_55, hypermile_on=True, step_down_on=True, map_offset_kph=eco_off,
   ), 40.0 * CV.MPH_TO_KPH)
-  # Hypermile Off: step-down param On is inert.
+  # Hypermile Off: step-down param On is inert; user offset still applies.
   _approx(stepped_map_target_kph(
     posted_75, hypermile_on=False, step_down_on=True, map_offset_kph=eco_off,
   ), 70.0 * CV.MPH_TO_KPH)
@@ -179,6 +184,68 @@ def test_step_down_15_mph_under_posted_no_stack_inert_when_hypermile_off():
   _approx(target, 65.0 * CV.MPH_TO_KPH)
   assert target <= raw
   _approx(raw - target, 15.0 * CV.MPH_TO_KPH)
+
+
+def test_eco_offset_scales_with_posted_not_flat_minus_five():
+  """Hypermile On + Step Down Off: town stays posted; highway eases to −5."""
+  assert ECO_OFFSET_START_MPH == 50.0
+  assert ECO_OFFSET_FULL_MPH == 80.0
+  assert ECO_MAP_OFFSET_MPH == -5
+
+  def _approx(a, b):
+    assert abs(float(a) - float(b)) < 1e-6, (a, b)
+
+  # mph-domain scale (the posted/OSM limit, not a param write).
+  _approx(eco_map_offset_mph(30), 0.0)
+  _approx(eco_map_offset_mph(49.9), 0.0)
+  _approx(eco_map_offset_mph(50), 0.0)
+  _approx(eco_map_offset_mph(65), -2.5)
+  _approx(eco_map_offset_mph(80), -5.0)
+  _approx(eco_map_offset_mph(90), -5.0)
+  _approx(eco_map_offset_mph(None), 0.0)
+  _approx(eco_map_offset_mph(0), 0.0)
+
+  user_plus_five = 5.0 * CV.MPH_TO_KPH
+  user_minus_five = -5.0 * CV.MPH_TO_KPH
+
+  cases = (
+    (30.0, 30.0),
+    (50.0, 50.0),
+    (65.0, 62.5),
+    (80.0, 75.0),
+    (90.0, 85.0),
+  )
+  for posted_mph, want_mph in cases:
+    posted = posted_mph * CV.MPH_TO_KPH
+    # User slider is ignored while Hypermile is On (Step Down Off).
+    got = stepped_map_target_kph(
+      posted, hypermile_on=True, step_down_on=False, map_offset_kph=user_plus_five,
+    )
+    _approx(got, want_mph * CV.MPH_TO_KPH)
+    got_neg = stepped_map_target_kph(
+      posted, hypermile_on=True, step_down_on=False, map_offset_kph=user_minus_five,
+    )
+    _approx(got_neg, want_mph * CV.MPH_TO_KPH)
+    _approx(
+      map_target_offset_kph(
+        user_minus_five, hypermile_on=True, step_down_on=False, posted_kph=posted,
+      ),
+      eco_map_offset_mph(posted_mph) * CV.MPH_TO_KPH,
+    )
+
+  # No posted: do not invent a town drop.
+  _approx(map_target_offset_kph(user_minus_five, hypermile_on=True, step_down_on=False), 0.0)
+  # Hypermile Off: user offset still applies (30→25 if they chose −5).
+  _approx(stepped_map_target_kph(
+    30.0 * CV.MPH_TO_KPH, hypermile_on=False, step_down_on=False, map_offset_kph=user_minus_five,
+  ), 25.0 * CV.MPH_TO_KPH)
+  # Step Down On still replaces eco with a fixed −15.
+  _approx(stepped_map_target_kph(
+    30.0 * CV.MPH_TO_KPH, hypermile_on=True, step_down_on=True, map_offset_kph=user_plus_five,
+  ), 15.0 * CV.MPH_TO_KPH)
+  _approx(stepped_map_target_kph(
+    90.0 * CV.MPH_TO_KPH, hypermile_on=True, step_down_on=True, map_offset_kph=0.0,
+  ), 75.0 * CV.MPH_TO_KPH)
 
 
 def test_le_50_uses_far_gap_gt_50_uses_stalk_level():
@@ -289,7 +356,12 @@ def test_settings_and_docs_wire_hypermile():
   assert "Step Down Speed" in tici
   assert "step down speed" in mici
   assert "map_target_offset_kph" in card
+  assert "_live_map_offset_kph" in card
   assert "_refresh_map_speed_params" in card
+  hm_src = (root / "selfdrive/controls/lib/hypermile.py").read_text()
+  assert "eco_map_offset_mph" in hm_src
+  assert "ECO_OFFSET_START_MPH" in hm_src
+  assert '"NAPMapSpeedOffsetMph": ECO_MAP_OFFSET_MPH' not in hm_src
   assert "NAPHypermile" in keys
   assert "NAPHypermileFollowLevel" in keys
   assert "NAPHypermileStepDown" in keys
@@ -311,7 +383,10 @@ def test_settings_and_docs_wire_hypermile():
   assert "15 mph under" in docs
   assert "early, light regenerative" in docs.lower() or "early, light" in docs.lower()
   assert "not maximum regen" in docs.lower() or "not max regen" in docs.lower()
+  assert "posted-scaled" in docs.lower() or "scaled" in docs.lower()
+  assert "30 stays 30" in docs or "town 30" in docs.lower()
   hm_rel = next(p for p in releases.split("\n\n") if p.startswith("NAP Hypermile"))
   assert "Hypermile" in hm_rel
   assert "Early" in hm_rel
+  assert "30" in hm_rel and "25" in hm_rel
   assert "nap-release" not in docs.lower() or "not a nap-release" in docs.lower()

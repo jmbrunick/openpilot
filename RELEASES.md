@@ -2,6 +2,10 @@ NAP curve MAX (2026-09-12)
 ========================
 * Sharp curve: still slow for a comfortable corner (`limit_accel_in_turns` + a temporary lat-accel MAX cap). Snapshot HUD MAX / sticky at entry; after the bend (lat accel / steer straight-ish) restore that pre-curve set. Do not permanently bounce MAX down through a turn — Hypermile eco −5 (posted 60 → steady 55) must not replace a pre-curve MAX of 60. Step Down, lead-close, soft-lat, and blinker-keep-long unchanged.
 
+NAP Hypermile (2026-09-12)
+========================
+* Hypermile On + Step Down Off no longer snaps Map Speed Offset to a flat **−5** (that dropped town posted **30 → 25**). Eco offset is live from the posted/OSM limit: **0** at/under 50 mph so 30 stays 30 and 50 stays 50; linear 0 → −5 from 50 to 80 (65 → 62.5); **−5** at 80 (→75) and capped −5 above (90 → 85). Off still restores the saved offset slider. Step Down On is still a fixed **15 mph under** posted (replaces eco, no stack). Early lookahead / Accel 1 / stalk 1–5 / 50 mph follow split / curve hold / lead-close / soft-lat unchanged. Not a nap-release change.
+
 NAP blinker (2026-09-12)
 ========================
 * A latched driver-turn blinker no longer drops / pauses longitudinal. `enableLongControl` stays true through a held stalk / flash-latched turn; lead/map braking and accel still apply. Soft-lat On/Off lat behavior, brake silent long pause + sticky MAX + one SET / double SET, ALC tip/keep-alive, reverse hard-cancel, standstill one-SET gas gate, Hypermile, and lead-close accel unchanged.
