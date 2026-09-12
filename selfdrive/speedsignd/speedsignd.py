@@ -406,6 +406,17 @@ def format_infer_diag(diag: dict | None, *, allow_detect: bool) -> str:
     out_s = "x".join(str(int(v)) for v in out) if out else "-"
   else:
     out_s = str(out)
+  sl_conf = float(d.get("sl_peak_conf", 0.0) or 0.0)
+  sl_name = d.get("sl_peak_name", "") or ""
+  n_over = int(d.get("n_over", 0) or 0)
+  # Always log sl_peak — Justin's R2-1 miss is n_over=0 with a weak speedLimit*.
+  # When n_over>0 the global peak is often stop; sl_peak is the HUD-relevant head.
+  sl_s = f" sl_peak={sl_conf:.2f}/{sl_name}"
+  top3 = d.get("top3") or ()
+  if top3:
+    top_s = " top=" + ",".join(f"{n}:{c:.2f}" for n, c in list(top3)[:3])
+  else:
+    top_s = ""
   return (
     f"backend={d.get('backend', '?')} "
     + f"frame={int(d.get('frame_w', 0) or 0)}x{int(d.get('frame_h', 0) or 0)} "
@@ -413,7 +424,11 @@ def format_infer_diag(diag: dict | None, *, allow_detect: bool) -> str:
     + f"onnx={d.get('weights_path', '')} sha={d.get('weights_sha', '')} "
     + f"allow={int(bool(allow_detect))} out={out_s} "
     + f"peak={float(d.get('peak_conf', 0.0) or 0.0):.2f}/{d.get('peak_name', '')} "
-    + f"n_over={int(d.get('n_over', 0) or 0)} "
+    + f"n_over={n_over}"
+    + sl_s
+    + f" n_over_sl={int(d.get('n_over_sl', 0) or 0)}"
+    + top_s
+    + " "
     + f"luma={float(d.get('luma_mean', 0.0) or 0.0):.0f}/{float(d.get('luma_std', 0.0) or 0.0):.0f} "
     + f"chroma={int(d.get('chroma', 0) or 0)} "
     + f"prep={float(d.get('prep_ms', 0.0) or 0.0):.0f} "

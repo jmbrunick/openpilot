@@ -17,6 +17,7 @@ from openpilot.selfdrive.speedsignd.yolo import (
   refine_mph,
   road_detect_crop,
   road_detect_crop_rect,
+  speed_limit_class_indices,
   yolo_peak,
 )
 
@@ -37,6 +38,15 @@ def test_yolo_class_list_covers_highway_speeds():
     assert f"speedLimit{mph}" in names
   assert YOLO_CLASS_NAMES[12] == "speedLimit55"
   assert YOLO_CLASS_NAMES[13] == "speedLimit60"
+  # JC best.pt names: 0 doNotEnter … 19 stop 20 yield. Not frequency order.
+  assert YOLO_CLASS_NAMES[0] == "doNotEnter"
+  assert YOLO_CLASS_NAMES[19] == "stop"
+  assert YOLO_CLASS_NAMES[20] == "yield"
+  assert len(YOLO_CLASS_NAMES) == 21
+  sl = speed_limit_class_indices()
+  assert sl[0] == 4 and YOLO_CLASS_NAMES[4] == "speedLimit15"
+  assert sl[-1] == 18 and YOLO_CLASS_NAMES[18] == "speedLimit85"
+  assert 19 not in sl and 20 not in sl
 
 
 def test_letterbox_keeps_aspect_and_pads():
@@ -77,11 +87,32 @@ def test_road_detect_crop_keeps_center_and_right():
 def test_yolo_peak_reports_below_threshold_class():
   raw = np.zeros((1, 25, 4), np.float32)
   raw[0, 4 + 19, 0] = 0.33  # stop
-  shape, conf, name, n_over = yolo_peak(raw)
-  assert shape == (1, 25, 4)
-  assert conf == pytest.approx(0.33, abs=1e-5)
-  assert name == "stop"
-  assert n_over == 0
+  peak = yolo_peak(raw)
+  assert peak.shape == (1, 25, 4)
+  assert peak.conf == pytest.approx(0.33, abs=1e-5)
+  assert peak.name == "stop"
+  assert peak.n_over == 0
+  assert peak.sl_conf == pytest.approx(0.0, abs=1e-5)
+  assert peak.n_over_sl == 0
+
+
+def test_yolo_peak_splits_stop_from_speed_limit_and_logs_top3():
+  """Justin's STOP-works / R2-1-miss shape: global peak is stop, sl_peak is weak."""
+  raw = np.zeros((1, 25, 4), np.float32)
+  raw[0, 4 + 19, 0] = 0.91  # stop
+  raw[0, 4 + 20, 0] = 0.22  # yield
+  raw[0, 4 + 12, 1] = 0.12  # speedLimit55 on another anchor
+  raw[0, 4 + 6, 1] = 0.08   # speedLimit25
+  peak = yolo_peak(raw)
+  assert peak.name == "stop"
+  assert peak.conf == pytest.approx(0.91, abs=1e-5)
+  assert peak.n_over == 1
+  assert peak.sl_name == "speedLimit55"
+  assert peak.sl_conf == pytest.approx(0.12, abs=1e-5)
+  assert peak.n_over_sl == 0
+  assert [n for n, _c in peak.top3] == ["stop", "yield", "speedLimit55"]
+  assert peak.top3[0][1] == pytest.approx(0.91, abs=1e-5)
+  assert peak.top3[2][1] == pytest.approx(0.12, abs=1e-5)
 
 
 def test_nms_keeps_highest_score():
@@ -132,6 +163,18 @@ def test_decode_yolov8_ignores_stop_and_low_conf():
   raw[0, :4, 1] = [200, 80, 40, 40]
   raw[0, 4 + 13, 1] = 0.2  # speedLimit60 below threshold
   assert decode_yolov8(raw, scale=1.0, pad_x=0, pad_y=0, src_hw=(320, 320), min_conf=0.4) == []
+
+
+def test_decode_yolov8_keeps_speed_limit_under_stronger_stop_on_same_anchor():
+  """Argmax-all-classes used to drop this R2-1 because stop won the anchor."""
+  raw = np.zeros((1, 25, 2), np.float32)
+  raw[0, :4, 0] = [160, 120, 80, 100]
+  raw[0, 4 + 19, 0] = 0.91  # stop
+  raw[0, 4 + 12, 0] = 0.50  # speedLimit55
+  hits = decode_yolov8(raw, scale=1.0, pad_x=0, pad_y=0, src_hw=(320, 320), min_conf=0.4)
+  assert len(hits) == 1
+  assert hits[0].mph == 55
+  assert hits[0].conf == pytest.approx(0.50, abs=1e-5)
 
 
 class _YoloSess:
@@ -189,6 +232,9 @@ def test_onnx_records_peak_when_decode_empty():
   assert d["peak_name"] == "stop"
   assert d["peak_conf"] == pytest.approx(0.33, abs=1e-5)
   assert d["n_over"] == 0
+  assert d["sl_peak_conf"] == pytest.approx(0.0, abs=1e-5)
+  assert d["n_over_sl"] == 0
+  assert d["top3"][0][0] == "stop"
   assert d["error"] == ""
 
 
