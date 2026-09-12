@@ -101,6 +101,8 @@ class _MutablePlannerParams:
       return self.adaptive_accel
     if key == "NAPHypermile":
       return False
+    if key == "NAPHypermileHillClimb":
+      return True
     raise AssertionError(key)
 
 
