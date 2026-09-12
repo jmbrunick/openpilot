@@ -34,13 +34,17 @@ NAP_FOLLOW_DISTANCE_RANGE = range(1, 8)
 SPLIT_MPH = 50.0
 SPLIT_MS = SPLIT_MPH * CV.MPH_TO_MS
 
-# Eco snap. Soft-lat / DM / blinker / stock 1–7 follow are not touched.
+# Eco snap. Comfort-biased efficiency — not maximum regen bite.
+# Early + light map ease (lookahead Early = 0.55 m/s², starts farther out)
+# and a lazy climb (Accel 1). Late lookahead (1.20 m/s²) is the wrong trade:
+# it holds speed then dumps regen. Safety / MPC hard brake unchanged.
+# Soft-lat / DM / blinker / stock 1–7 follow are not touched.
 ECO_ADAPTIVE_ACCEL = True
 ECO_MAP_MODE_FOLLOW = 3  # NAPMapSpeedMode Follow
 ECO_MAP_MODE_CAP = 2
 ECO_MAP_OFFSET_MPH = -5
-ECO_MAP_LOOKAHEAD_NORMAL = 2
-ECO_MAP_ACCEL = 2  # gentler Follow climb than default 5
+ECO_MAP_LOOKAHEAD_EARLY = 3  # NAPMapSpeedLookahead Early
+ECO_MAP_ACCEL = 1  # laziest Follow climb (lower peak a / jerk)
 
 SNAPSHOT_KEYS = (
   "NAPAdaptiveAccel",
@@ -131,28 +135,25 @@ def read_snapshot_values(params) -> dict:
     "NAPAdaptiveAccel": _get_bool(params, "NAPAdaptiveAccel", True),
     "NAPMapSpeedMode": _get_int(params, "NAPMapSpeedMode", 0),
     "NAPMapSpeedOffsetMph": _get_int(params, "NAPMapSpeedOffsetMph", 0),
-    "NAPMapSpeedLookahead": _get_int(params, "NAPMapSpeedLookahead", ECO_MAP_LOOKAHEAD_NORMAL),
+    "NAPMapSpeedLookahead": _get_int(params, "NAPMapSpeedLookahead", 2),
     "NAPMapSpeedAccel": _get_int(params, "NAPMapSpeedAccel", 5),
   }
 
 
 def eco_preset_from(current: dict) -> dict:
-  """Eco-biased knobs. Keep Cap if already Cap; turn Off/Display into Follow.
+  """Comfort-biased eco knobs. Keep Cap if already Cap; Off/Display → Follow.
 
-  Lookahead stays on if already Late/Normal/Early; Off becomes Normal.
-  Offset and climb accel are always snapped. Soft-lat / DM not included.
+  Always Early lookahead + Accel 1. Do not keep Late (late hard regen).
+  Soft-lat / DM not included.
   """
   mode = int(current.get("NAPMapSpeedMode", 0) or 0)
   if mode not in (ECO_MAP_MODE_CAP, ECO_MAP_MODE_FOLLOW):
     mode = ECO_MAP_MODE_FOLLOW
-  lookahead = int(current.get("NAPMapSpeedLookahead", 0) or 0)
-  if lookahead <= 0:
-    lookahead = ECO_MAP_LOOKAHEAD_NORMAL
   return {
     "NAPAdaptiveAccel": ECO_ADAPTIVE_ACCEL,
     "NAPMapSpeedMode": mode,
     "NAPMapSpeedOffsetMph": ECO_MAP_OFFSET_MPH,
-    "NAPMapSpeedLookahead": lookahead,
+    "NAPMapSpeedLookahead": ECO_MAP_LOOKAHEAD_EARLY,
     "NAPMapSpeedAccel": ECO_MAP_ACCEL,
   }
 

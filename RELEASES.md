@@ -1,6 +1,6 @@
 NAP Hypermile (2026-09-12)
 ========================
-* Settings → NAP → Driving Mannerisms → **Hypermile** (default Off, nap-dev only). On snaps Adaptive Accel + Cap/Follow / −5 mph / lookahead / gentler map climb, then restores those knobs when Off. Soft-lat / DM / blinker unchanged. Below ~50 mph follow sits far back (stock 7 / 1.9 s); above 50 mph uses a stalk 1–5 draft band (1=closest safe 0.9 s, 5=1.7 s). With a lead, stalk up=closer and down=farther (MAX unchanged). No lead: stalk still adjusts MAX. HUD shows **Hypermile: Follow N** when the level changes. Not a nap-release change.
+* Settings → NAP → Driving Mannerisms → **Hypermile** (default Off, nap-dev only). Comfort-biased efficiency: On snaps Adaptive Accel + Cap/Follow / −5 mph / **Early** lookahead / **Accel 1** lazy climb (early light ease, not max regen bite), then restores those knobs when Off. Soft-lat / DM / blinker unchanged. Below ~50 mph follow sits far back (stock 7 / 1.9 s); above 50 mph uses a stalk 1–5 draft band (1=closest safe 0.9 s, 5=1.7 s). With a lead, stalk up=closer and down=farther (MAX unchanged). No lead: stalk still adjusts MAX. HUD shows **Hypermile: Follow N** when the level changes. Not a nap-release change.
 
 NAP driver monitoring (2026-09-12)
 ========================

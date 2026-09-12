@@ -135,8 +135,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"NAPBrakeFactor", {PERSISTENT, FLOAT, "1.0"}},
     {"NAPFollowDistance", {PERSISTENT, INT, "4"}},
     // Settings → NAP → Driving Mannerisms → Hypermile. Default Off.
-    // On: eco-snap Adaptive Accel + Cap/Follow / −5 mph / lookahead / gentler
-    // climb; restore those knobs on Off. Soft-lat / DM / blinker unchanged.
+    // On: comfort-biased eco-snap (Adaptive Accel, Cap/Follow, −5 mph,
+    // Early lookahead, Accel 1 lazy climb) — early light ease, not max
+    // regen bite. Restore those knobs on Off. Soft-lat / DM / blinker unchanged.
     // FollowLevel is the stalk 1–5 draft band (persists across the drive).
     {"NAPHypermile", {PERSISTENT, BOOL, "0"}},
     {"NAPHypermileFollowLevel", {PERSISTENT, INT, "3"}},

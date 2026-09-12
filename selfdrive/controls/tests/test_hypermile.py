@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from openpilot.common.constants import CV
 from openpilot.selfdrive.controls.lib.hypermile import (
   ECO_MAP_ACCEL,
-  ECO_MAP_LOOKAHEAD_NORMAL,
+  ECO_MAP_LOOKAHEAD_EARLY,
   ECO_MAP_MODE_CAP,
   ECO_MAP_MODE_FOLLOW,
   ECO_MAP_OFFSET_MPH,
@@ -82,8 +82,10 @@ def test_on_snaps_eco_and_off_restores_prior():
   assert params.get_bool("NAPAdaptiveAccel") is True
   assert params.get("NAPMapSpeedMode") == ECO_MAP_MODE_FOLLOW
   assert params.get("NAPMapSpeedOffsetMph") == ECO_MAP_OFFSET_MPH
-  assert params.get("NAPMapSpeedLookahead") == ECO_MAP_LOOKAHEAD_NORMAL
+  assert params.get("NAPMapSpeedLookahead") == ECO_MAP_LOOKAHEAD_EARLY
   assert params.get("NAPMapSpeedAccel") == ECO_MAP_ACCEL
+  assert ECO_MAP_LOOKAHEAD_EARLY == 3
+  assert ECO_MAP_ACCEL == 1
   assert params.get_bool("NAPDriverLatHandoff") is lat_before
   assert params.get_bool("NAPDmSimulateLooking") is dm_before
   assert params.get("NAPFollowDistance") == follow_before
@@ -106,19 +108,28 @@ def test_on_snaps_eco_and_off_restores_prior():
   assert not params.get(PARAM_SAVED)
 
 
-def test_eco_keeps_existing_cap_and_on_lookahead():
+def test_eco_comfort_bias_early_light_not_late_bite():
+  """Justin: early gentle regen, not late hard regen that makes people sick."""
+  from openpilot.selfdrive.mapd.constants import LOOKAHEAD_EARLY, LOOKAHEAD_LATE, LOOKAHEAD_NORMAL
+  from openpilot.selfdrive.mapd.constants import map_brake_a_ms2, map_accel_a_ms2
+
   current = {
     "NAPAdaptiveAccel": True,
     "NAPMapSpeedMode": ECO_MAP_MODE_CAP,
     "NAPMapSpeedOffsetMph": 0,
-    "NAPMapSpeedLookahead": 3,
+    "NAPMapSpeedLookahead": 1,  # Late — the max-bite setting
     "NAPMapSpeedAccel": 5,
   }
   eco = eco_preset_from(current)
   assert eco["NAPMapSpeedMode"] == ECO_MAP_MODE_CAP
-  assert eco["NAPMapSpeedLookahead"] == 3
+  assert eco["NAPMapSpeedLookahead"] == ECO_MAP_LOOKAHEAD_EARLY == LOOKAHEAD_EARLY
+  assert eco["NAPMapSpeedLookahead"] != LOOKAHEAD_LATE
+  assert eco["NAPMapSpeedLookahead"] != LOOKAHEAD_NORMAL
   assert eco["NAPMapSpeedOffsetMph"] == ECO_MAP_OFFSET_MPH
-  assert eco["NAPMapSpeedAccel"] == ECO_MAP_ACCEL
+  assert eco["NAPMapSpeedAccel"] == ECO_MAP_ACCEL == 1
+  # Early brake is lighter than Late; climb Accel 1 is below default 5.
+  assert map_brake_a_ms2(LOOKAHEAD_EARLY) < map_brake_a_ms2(LOOKAHEAD_LATE)
+  assert map_accel_a_ms2(LOOKAHEAD_EARLY, 1) < map_accel_a_ms2(LOOKAHEAD_NORMAL, 5)
 
 
 def test_le_50_uses_far_gap_gt_50_uses_stalk_level():
@@ -235,7 +246,12 @@ def test_settings_and_docs_wire_hypermile():
   assert "hypermileFollowChanged" in events
   assert "follow_level_hud_text" in events
   assert "NAPHypermile" in content
+  assert "comfort-biased" in content.lower()
+  assert "not max" in content.lower()
   assert "hypermile.md" in readme
   assert "Hypermile" in docs
+  assert "early, light regenerative" in docs.lower() or "early, light" in docs.lower()
+  assert "not maximum regen" in docs.lower() or "not max regen" in docs.lower()
   assert "Hypermile" in releases.split("\n\n", 1)[0]
+  assert "Early" in releases.split("\n\n", 1)[0]
   assert "nap-release" not in docs.lower() or "not a nap-release" in docs.lower()

@@ -29,7 +29,7 @@ class DrivingMannerismsLayoutMici(NavScroller):
       apply_hypermile_toggle(self._params, bool(checked))
 
     hypermile = BigParamControl("hypermile", NAP_HYPERMILE, toggle_callback=on_hypermile)
-    hypermile.set_value("Off default — eco snap + 1–5 draft")
+    hypermile.set_value("Off default — early light eco, not max regen")
 
     adaptive_accel = BigParamControl("adaptive accel limits", NAPParamKeys.ADAPTIVE_ACCEL)
 

@@ -26,13 +26,14 @@ HYPERMILE_FOLLOW_DEFAULT = 3
 NAP_HYPERMILE = "NAPHypermile"
 NAP_HYPERMILE_FOLLOW_LEVEL = "NAPHypermileFollowLevel"
 HYPERMILE_DESCRIPTION = (
-  "Default Off. On snaps Adaptive Accel and map-speed eco knobs "
-  + "(Cap/Follow, −5 mph offset, lookahead on, gentler climb) and "
-  + "restores them when you turn Off. Soft-lat, DM, and blinker stay "
-  + "as you set them. Below ~50 mph follow sits far back; above 50 mph "
-  + "uses a stalk 1–5 draft band (1=closest safe, 5=furthest). With a "
-  + "lead, stalk up=closer and down=farther. No lead: stalk still "
-  + "adjusts MAX. Never bumper-drafts; lead braking stays on."
+  "Default Off. Comfort-biased efficiency — early light ease, not max "
+  + "regen bite. On snaps Adaptive Accel, Cap/Follow, −5 mph, Early "
+  + "lookahead, and lazy climb (Accel 1), then restores them when Off. "
+  + "Soft-lat, DM, and blinker stay as you set them. Below ~50 mph "
+  + "follow sits far back; above 50 mph uses a stalk 1–5 draft band "
+  + "(1=closest safe, 5=furthest). With a lead, stalk up=closer and "
+  + "down=farther. No lead: stalk still adjusts MAX. Never "
+  + "bumper-drafts; lead braking stays on."
 )
 HYPERMILE_FOLLOW_DESCRIPTION = (
   "Hypermile follow (1=closest draft, 3=standard, 5=furthest). "

@@ -6,19 +6,21 @@ Settings → NAP → Driving Mannerisms → **Hypermile**.
 
 This is a small controller (`selfdrive/controls/lib/hypermile.py`) that snaps eco knobs and publishes an **effective** stock follow-distance index (1–7) into the existing MPC / lead-approach path. It does not rewrite longcontrol, disable lead braking, or raise MAX above posted Cap/Follow / sticky MAX.
 
-## A — Eco preset
+## A — Eco preset (comfort-biased, not max regen)
+
+The goal is **early, light regenerative ease** — not the biggest regen bite. Late hard regen that pitches the car and makes the driver sick is the wrong trade. Safety / MPC hard braking is unchanged.
 
 Turning **On** remembers the current values, then snaps:
 
 | Knob | Eco value |
 |------|-----------|
-| Adaptive Accel Limits | On |
+| Adaptive Accel Limits | On (softer peak accel when close to a lead) |
 | Map Speed mode | Follow (3), or keep Cap if already Cap. Off/Display → Follow |
 | Map Speed Offset | −5 mph |
-| Lookahead | Normal (2) if it was Off; keep Late/Early if already on |
-| Acceleration (map climb) | 2 (gentler than default 5) |
+| Lookahead | **Early** (3) — starts farther out at 0.55 m/s². Always snapped (Late/Normal/Off become Early). Late is 1.20 m/s² and is *not* kept. |
+| Acceleration (map climb) | **1** — laziest Follow climb (lower peak a / jerk than default 5) |
 
-Turning **Off** restores that snapshot. Soft Lateral Handoff, Simulate Look-at-Road, blinker / sticky MAX / one-SET / standstill gas-gate / reverse hard-cancel, and the stock 1–7 Follow Distance param are **not** changed.
+Turning **Off** restores that snapshot. Soft Lateral Handoff, Simulate Look-at-Road, blinker / sticky MAX / one-SET / standstill gas-gate / reverse hard-cancel, and the stock 1–7 Follow Distance param are **not** changed. The stalk / 50 mph follow design is separate and unchanged by this eco bias.
 
 Params: `NAPHypermile` (bool, default 0), `NAPHypermileSaved` (JSON snapshot).
 
