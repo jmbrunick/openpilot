@@ -229,6 +229,7 @@ def test_settings_and_docs_wire_hypermile():
   assert 'BOOL, "0"' in next(ln for ln in keys.splitlines() if '"NAPHypermile"' in ln)
   assert 'INT, "3"' in next(ln for ln in keys.splitlines() if '"NAPHypermileFollowLevel"' in ln)
   assert "effective_nap_follow_dist" in planner
+  assert "Stalk 1–5 must land on the next plan" in planner
   assert "detect_hypermile_stalk" in card
   assert "radarState" in card
   assert "hypermileFollowChanged" in events

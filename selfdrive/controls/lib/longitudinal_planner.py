@@ -140,13 +140,15 @@ class LongitudinalPlanner:
 
   def update(self, sm):
     self._frame += 1
-    if self._is_preap and self._frame % 20 == 0:
-      self.nap_follow_dist = self._params.get("NAPFollowDistance", return_default=True)
-      self.nap_adaptive_accel = self._params.get_bool("NAPAdaptiveAccel")
+    if self._is_preap:
+      # Stalk 1–5 must land on the next plan; do not wait for the 20-frame poll.
       self._hypermile_on, self._hypermile_level = read_hypermile_params(self._params)
-      self._map_speed_mode, self._map_speed_offset_kph, self._map_speed_lookahead, self._map_speed_accel = (
-        read_map_speed_params(self._params)
-      )
+      if self._frame % 20 == 0:
+        self.nap_follow_dist = self._params.get("NAPFollowDistance", return_default=True)
+        self.nap_adaptive_accel = self._params.get_bool("NAPAdaptiveAccel")
+        self._map_speed_mode, self._map_speed_offset_kph, self._map_speed_lookahead, self._map_speed_accel = (
+          read_map_speed_params(self._params)
+        )
 
     if len(sm['carControl'].orientationNED) == 3:
       accel_coast = get_coast_accel(sm['carControl'].orientationNED[1])
