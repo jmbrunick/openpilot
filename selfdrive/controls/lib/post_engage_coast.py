@@ -8,11 +8,12 @@ keeps commanded accel at 0 before OP long climbs to MAX.
 
 On the **first detectable pedal decrease** after long engage, take over
 with **positive accel toward MAX** and **keep that climb** until ego is
-at MAX (or brake / FCW / should-stop / hard lead). Do not freeze
-last-pressed DI on the wire (a peak-DI stab retriggers interceptor
-``gasPressed`` → ENABLE 0↔1 → ACQUIRE wipe → pulse / net decel).
-Planner +a that is already climbing harder passes through. MAX remains
-a hard cap.
+at MAX (or brake / FCW / should-stop / hard lead). The same latch covers
+**every later gas-override → OP long handoff** while software long stays
+on (not a one-time post-engage window). Do not freeze last-pressed DI
+on the wire (a peak-DI stab retriggers interceptor ``gasPressed`` →
+ENABLE 0↔1 → ACQUIRE wipe → pulse / net decel). Planner +a that is
+already climbing harder passes through. MAX remains a hard cap.
 
 Leave these paths alone:
 - brake pedal (digital Applied — Pre-AP forces ``brakePressed`` false)
