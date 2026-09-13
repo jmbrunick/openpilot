@@ -28,6 +28,10 @@ from openpilot.selfdrive.mapd.map_speed_policy import (
   MapCruiseHold, apply_map_speed_kph, decide_map_cruise, effective_map_limit_ms,
   map_slew_a_ms2, read_map_speed_params, should_write_preap_pedal, slew_map_speed_ms,
 )
+from openpilot.selfdrive.car.tesla.preap_force_offroad_handoff import (
+  install_force_offroad_handoff,
+  update_force_offroad_handoff,
+)
 
 REPLAY = "REPLAY" in os.environ
 
@@ -176,12 +180,14 @@ class Car:
     self._can_packets: list[CanData] = []
     self.radar_donor_vin = None
     tesla_preap = any(cfg.safetyModel == car.CarParams.SafetyModel.teslaPreap for cfg in self.CP.safetyConfigs)
+    self._tesla_preap = tesla_preap
     if tesla_preap:
       from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import install_blinker_lat_pause
       from opendbc.car.tesla.preap.nap_conf import nap_conf
       from opendbc.car.tesla.preap.radar_donor_vin import RadarDonorVinCommissioner
 
       install_blinker_lat_pause()
+      install_force_offroad_handoff()
 
       def store_donor_vin(vin: str) -> None:
         nap_conf.radar_donor_vin = vin
@@ -200,6 +206,13 @@ class Car:
 
     # Update carState from CAN
     CS = self.CI.update(can_list)
+
+    # Pre-AP Force Offroad stock-CC handoff (or immediate ready if not
+    # software-long). Must run while onroad so CANCEL/SET can still TX.
+    update_force_offroad_handoff(
+      getattr(self.CI, "CS", None) if getattr(self, "_tesla_preap", False) else None,
+      CS,
+    )
 
     # Update radar tracks from CAN
     RD: structs.RadarDataT | None = self.RI.update(can_list)
