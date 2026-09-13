@@ -112,7 +112,7 @@ card.py writes `NAPFollowDistance` so the Driving Mannerisms indicator/slider up
 
 ### HUD
 
-When stock Follow Distance changes onroad, selfdrived fires `EventName.hypermileFollowChanged` — same 1.5 s `NormalPermanentAlert` affordance as Driving Personality: **Follow Distance: N**.
+When stock Follow Distance changes onroad, selfdrived fires `EventName.hypermileFollowChanged` — same 1.5 s `NormalPermanentAlert` affordance as Driving Personality: **Follow Distance: N**. First read seeds the HUD baseline (no toast at process start); every later stalk/settings 1–7 change shows the toast.
 
 ## Safety
 
@@ -125,9 +125,9 @@ When stock Follow Distance changes onroad, selfdrived fires `EventName.hypermile
 
 ## Tests
 
-`selfdrive/controls/tests/test_hypermile.py` — On snaps + Off restore (offset param not written −5; Follow Distance not snapped); posted-scaled eco (30 stays 30; 80→72) and Step Down (30 stays 30; 75→62.5; 80→65); maps-only (no invent without posted); stalk+lead writes `NAPFollowDistance` with Hypermile On and Off (full stock 1–7, including closest 1); no lead still steps MAX; settings/docs wiring.
+`selfdrive/controls/tests/test_hypermile.py` — On snaps + Off restore (offset param not written −5; Follow Distance not snapped); posted-scaled eco (30 stays 30; 80→72) and Step Down (30 stays 30; 75→62.5; 80→65); maps-only (no invent without posted); stalk+lead writes `NAPFollowDistance` with Hypermile On and Off (full stock 1–7, including closest 1); no lead still steps MAX; Follow Distance HUD announces every param change after seed; settings/docs wiring.
 
-`selfdrive/controls/tests/test_hill_climb.py` — Hypermile Off / Hill Climb Off inert; uphill under MAX raises Accel 1 authority; several mph under MAX + downhill does **not** regen; deadband + uphill does **not** invent +g·sin; at/above MAX + downhill still eases; never exceeds MAX; lead / MPC brake still wins.
+`selfdrive/controls/tests/test_hill_climb.py` — Hypermile Off / Hill Climb Off inert; uphill under MAX raises Accel 1 authority; several mph under MAX + downhill does **not** regen; deadband + uphill does **not** invent +g·sin; at/above MAX + downhill still eases; never exceeds MAX; lead / MPC brake still wins; under MAX + valid lead does **not** replace non-negative MPC `a` with map climb (no lead still climbs); above MAX + lead still map-decels.
 
 `selfdrive/controls/lib/tests/test_curve_max_hold.py` — curve snapshot/restore (sticky 60 survives a bend; a lower posted/eco target does not replace it).
 

@@ -26,8 +26,8 @@ from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.selfdrive.mapd.constants import MODE_CAP, MODE_FOLLOW, map_accel_a_ms2, map_brake_a_ms2
 from openpilot.selfdrive.mapd.map_speed_policy import (
-  cap_planner_v_cruise_ms, map_in_track_deadband, map_track_accel_ms2, map_track_decel_ms2,
-  read_map_speed_params,
+  cap_planner_v_cruise_ms, map_climb_replaces_mpc, map_in_track_deadband, map_track_accel_ms2,
+  map_track_decel_ms2, read_map_speed_params,
 )
 from openpilot.selfdrive.controls.lib.hill_climb import (
   apply_hill_climb, read_hypermile_hill_climb,
@@ -275,11 +275,15 @@ class LongitudinalPlanner:
     # Map MAX is a set speed; MPC cruise_obstacle will not track it.
     # Climb at Accel 1–10 until the deadband, then hold so we do not surge
     # past MAX and map_track_decel below it. Brake is locked Accel 5.
-    # Lead (negative aTarget) still wins.
+    # A valid radar lead owns follow: do not replace ~0 / slight+ MPC with
+    # map climb toward MAX (punch + overshoot + sluggish re-match).
+    # map_track_decel when above MAX still mins in. Lead-approach min()
+    # and MPC stay as-is.
     # Hypermile Hill Climb (IMU pitch only — no maps-elevation lookahead)
-    # then raises +a on a real uphill *under* MAX. Crest / downhill ease
-    # only at or above MAX (not TRACK_TAPER). Deadband leaves hold 0 —
-    # no +g·sin past MAX. It never writes vCruise / MAX.
+    # then raises +a on a real uphill *under* MAX when there is no lead.
+    # Crest / downhill ease only at or above MAX (not TRACK_TAPER).
+    # Deadband leaves hold 0 — no +g·sin past MAX. It never writes vCruise / MAX.
+    has_valid_lead = bool(sm['radarState'].leadOne.status)
     if len(sm['carControl'].orientationNED) == 3:
       hill_pitch = float(sm['carControl'].orientationNED[1])
     else:
@@ -288,6 +292,7 @@ class LongitudinalPlanner:
       if map_in_track_deadband(v_ego, v_hud_ms):
         if float(output_a_target) >= 0.0:
           output_a_target = 0.0
+        pre_hill = float(output_a_target)
         output_a_target = apply_hill_climb(
           pitch_rad=hill_pitch,
           prev_pitch_rad=self._hill_pitch,
@@ -298,6 +303,8 @@ class LongitudinalPlanner:
           hypermile_on=self._hypermile_on,
           hill_climb_on=self._hypermile_hill_climb,
         )
+        if has_valid_lead and float(output_a_target) > pre_hill:
+          output_a_target = pre_hill
       else:
         a_brake = map_track_decel_ms2(
           v_ego, v_hud_ms, map_brake_a_ms2(self._map_speed_lookahead),
@@ -308,10 +315,11 @@ class LongitudinalPlanner:
           a_up = map_track_accel_ms2(
             v_ego, v_hud_ms, map_accel_a_ms2(self._map_speed_lookahead, self._map_speed_accel),
           )
-          if a_up is not None and float(output_a_target) >= 0.0:
+          if map_climb_replaces_mpc(a_up, output_a_target, has_valid_lead):
             # min() alone never created climb (MPC holds ~0). Command Accel 1–10
-            # toward MAX; a slower lead (negative aTarget) still outranks map.
+            # toward MAX only when no radar lead is following.
             output_a_target = a_up
+        pre_hill = float(output_a_target)
         output_a_target = apply_hill_climb(
           pitch_rad=hill_pitch,
           prev_pitch_rad=self._hill_pitch,
@@ -322,6 +330,9 @@ class LongitudinalPlanner:
           hypermile_on=self._hypermile_on,
           hill_climb_on=self._hypermile_hill_climb,
         )
+        if has_valid_lead and float(output_a_target) > pre_hill:
+          # Do not add +g·sin punch toward MAX while a lead constrains.
+          output_a_target = pre_hill
     self._hill_pitch = hill_pitch
 
     # Slower radar lead: relative 0.80 ease, 12 s closing-speed head-start

@@ -79,6 +79,26 @@ def follow_distance_hud_text(level: int) -> str:
   return f"Follow Distance: {clamp_follow_distance(level)}"
 
 
+def poll_follow_distance_hud(prev, current) -> tuple[int | None, bool]:
+  """Seed-then-announce Follow Distance HUD.
+
+  First successful read only stores the baseline (no toast on process
+  start). Every later stalk/settings change of the 1–7 slider announces.
+  """
+  if current is None:
+    return prev, False
+  try:
+    cur = clamp_follow_distance(current)
+  except (TypeError, ValueError):
+    return prev, False
+  if prev is None:
+    return cur, False
+  try:
+    return cur, cur != int(prev)
+  except (TypeError, ValueError):
+    return cur, True
+
+
 def _get_int(params, key: str, default: int) -> int:
   try:
     raw = params.get(key, return_default=True)

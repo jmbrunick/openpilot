@@ -500,17 +500,37 @@ class SelfdriveD:
         self.events.add(EventName.personalityChanged)
 
     # Stock Follow Distance 1–7 HUD, same affordance as personalityChanged.
+    # Read the param every frame (stalk writes it from card). First sample
+    # only seeds; every later 1–7 change fires the 1.5 s toast.
+    follow_dist = None
     try:
-      from openpilot.selfdrive.controls.lib.hypermile import read_follow_distance
-      follow_dist = read_follow_distance(self.params)
-    except Exception:
+      raw = self.params.get("NAPFollowDistance", return_default=True)
+      if raw is not None and raw != "":
+        follow_dist = int(raw)
+    except (TypeError, ValueError):
       follow_dist = None
-    if follow_dist is not None:
-      if self._follow_hud_dist is not None and follow_dist != self._follow_hud_dist:
-        follow_evt = getattr(EventName, "hypermileFollowChanged", None)
-        if follow_evt is not None:
-          self.events.add(follow_evt)
-      self._follow_hud_dist = follow_dist
+    if follow_dist is None or follow_dist <= 0:
+      try:
+        plan_d = int(self.sm["longitudinalPlan"].napFollowDistance)
+      except (TypeError, ValueError, KeyError):
+        plan_d = 0
+      if plan_d > 0:
+        follow_dist = plan_d
+    try:
+      from openpilot.selfdrive.controls.lib.hypermile import poll_follow_distance_hud
+      self._follow_hud_dist, announce = poll_follow_distance_hud(self._follow_hud_dist, follow_dist)
+    except Exception:
+      announce = (
+        self._follow_hud_dist is not None
+        and follow_dist is not None
+        and int(follow_dist) != int(self._follow_hud_dist)
+      )
+      if follow_dist is not None:
+        self._follow_hud_dist = int(follow_dist)
+    if announce:
+      follow_evt = getattr(EventName, "hypermileFollowChanged", None) or getattr(EventName, "followDistanceChanged", None)
+      if follow_evt is not None:
+        self.events.add(follow_evt)
 
   def data_sample(self):
     _car_state = messaging.recv_one(self.car_state_sock)

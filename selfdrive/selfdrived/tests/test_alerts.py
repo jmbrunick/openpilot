@@ -9,7 +9,7 @@ from cereal.messaging import SubMaster
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_CTRL
-from openpilot.selfdrive.selfdrived.events import Alert, EVENTS, ET, AudibleAlert
+from openpilot.selfdrive.selfdrived.events import Alert, EVENTS, ET, AudibleAlert, hypermile_follow_changed_alert
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
 from openpilot.selfdrive.test.process_replay.process_replay import CONFIGS
 
@@ -150,6 +150,20 @@ class TestAlerts:
     stock_enable = pcm_enable_alert(stock, *args[1:])
     assert stock_enable.alert_text_1 == ""
     assert stock_enable.audible_alert == AudibleAlert.engage
+
+  def test_follow_distance_changed_alert_matches_mannerisms(self):
+    follow_evt = getattr(log.OnroadEvent.EventName, "hypermileFollowChanged", None) or getattr(
+      log.OnroadEvent.EventName, "followDistanceChanged", None,
+    )
+    assert follow_evt is not None
+    event_types = EVENTS[follow_evt]
+    assert ET.WARNING in event_types
+    assert ET.PERMANENT in event_types
+    alert = hypermile_follow_changed_alert(
+      self.CP, self.CS, self.sm, False, 100, log.LongitudinalPersonality.standard,
+    )
+    assert alert.alert_text_1.startswith("Follow Distance:")
+    assert alert.duration == int(1.5 / DT_CTRL)
 
   def test_preap_pedal_unavailable_alert_is_visible_without_disabling_lateral(self):
     event_types = EVENTS[log.OnroadEvent.EventName.pedalUnavailable]
