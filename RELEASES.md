@@ -1,3 +1,7 @@
+NAP Follow stalk tip vs full press (2026-09-13)
+========================
+* Behind a radar lead, a Pre-AP full stalk press (through 1st detent to 2nd / **5 mph**) no longer also steps Follow Distance. Follow commits only when the lever returns to **IDLE** after a first-detent **tip** (1 mph) that never hit 2nd detent; that tip frame’s MAX is still undone. Raw `SpdCtrlLvr_Stat` / CruiseButtons distinguish UP_1ST vs UP_2ND (and DN). `buttonEvents` alone are not a tip — Pre-AP maps both detents to the same accel/decelCruise. No lead: stalk is still MAX only. Same tip/hold Follow rule as nap-release; Hypermile eco / Hill Climb / Step Down unchanged.
+
 NAP lead-approach earlier ease (2026-09-13)
 ========================
 * Pre-AP comfort ease now starts as soon as radar has **reasonable feedback** on a closing lead (`leadOne` valid and closing), not only near Follow Distance. Start ceiling **200 m** (usable Bosch; far tracks need `radar` + `modelProb` ≥ 0.5 — LeadData has no track age). Head-start **24 s**. Clearly closing (`v_rel` ≥ 1.0 m/s) eases even with large slack, still capped at **0.55** and slewed. Hysteresis from #121 stays. Catch-up +a cap stays at 140 m. MPC / FCW / map climb vs lead (#118) unchanged. No brake-light feature.

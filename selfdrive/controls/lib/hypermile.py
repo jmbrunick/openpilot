@@ -356,36 +356,156 @@ def stalk_is_closer(button_closer: bool | None, raw_delta_kph: float | None) -> 
   return float(raw_delta_kph) > 0.0
 
 
+# Pre-AP STW_ACTN_RQ.SpdCtrlLvr_Stat / CruiseButtons. buttonEvents collapse
+# tip and 2nd detent to the same accelCruise/decelCruise, so detent is the
+# hardware source of truth when present.
+CRUISE_STALK_IDLE = 0
+CRUISE_STALK_UP_2ND = 4    # UP_2ND / RES_ACCEL_2ND  +5
+CRUISE_STALK_DN_2ND = 8    # DN_2ND / DECEL_2ND      −5
+CRUISE_STALK_UP_1ST = 16   # UP_1ST / RES_ACCEL      +1
+CRUISE_STALK_DN_1ST = 32   # DN_1ST / DECEL_SET      −1
+
+
+def cruise_detent_closer(detent: int | None) -> bool | None:
+  if detent in (CRUISE_STALK_UP_1ST, CRUISE_STALK_UP_2ND):
+    return True
+  if detent in (CRUISE_STALK_DN_1ST, CRUISE_STALK_DN_2ND):
+    return False
+  return None
+
+
+def cruise_detent_is_tip(detent: int | None) -> bool:
+  return detent in (CRUISE_STALK_UP_1ST, CRUISE_STALK_DN_1ST)
+
+
+def cruise_detent_is_hold(detent: int | None) -> bool:
+  return detent in (CRUISE_STALK_UP_2ND, CRUISE_STALK_DN_2ND)
+
+
+def cruise_detent_is_idle(detent: int | None) -> bool:
+  return detent == CRUISE_STALK_IDLE
+
+
+class FollowStalkGesture:
+  """Classify Pre-AP cruise-stalk tip vs full press, like ALC tip-vs-hold.
+
+  A physical full press always walks through first detent. Follow Distance
+  is committed only when the lever returns to IDLE after a first-detent
+  tip that never hit 2nd detent (or a clear 5 mph hold step). The tip
+  frame's 1 mph MAX is undone immediately so 2nd detent's +5/−5 applies
+  from the original set. buttonEvents alone are not a tip.
+  """
+
+  def __init__(self):
+    self.reset()
+
+  def reset(self):
+    self.pending_closer: bool | None = None
+    self.saw_hold = False
+    self.undid = False
+
+  @property
+  def is_pending(self) -> bool:
+    return self.pending_closer is not None and not self.saw_hold
+
+  def update(
+    self,
+    *,
+    has_lead: bool,
+    detent: int | None = None,
+    button_closer: bool | None = None,
+    button_released: bool = False,
+    raw_kph: float | None = None,
+    prev_raw_kph: float | None = None,
+  ) -> tuple[bool, bool | None, float | None]:
+    """(commit_follow, closer, undo_raw_kph). Does not write params."""
+    if not stalk_adjusts_follow(has_lead=has_lead):
+      self.reset()
+      return False, None, None
+
+    have_raw = raw_kph is not None and prev_raw_kph is not None
+    hold_step = have_raw and is_cruise_stalk_hold_step(prev_raw_kph, raw_kph)
+    tip_step = have_raw and is_cruise_stalk_tip_step(prev_raw_kph, raw_kph)
+    is_hold = cruise_detent_is_hold(detent) or hold_step
+    is_tip = cruise_detent_is_tip(detent) or tip_step
+    closer = cruise_detent_closer(detent)
+    if closer is None:
+      delta = (float(raw_kph) - float(prev_raw_kph)) if tip_step else None
+      closer = stalk_is_closer(button_closer, delta)
+
+    if is_hold:
+      self.saw_hold = True
+      self.pending_closer = None
+      return False, None, None
+
+    # Second press while already pending, no detent / 5 mph: 2nd detent.
+    if (
+      self.pending_closer is not None
+      and button_closer is not None
+      and detent is None
+      and not tip_step
+    ):
+      self.saw_hold = True
+      self.pending_closer = None
+      return False, None, None
+
+    undo = None
+    if is_tip and not self.saw_hold:
+      if closer is not None:
+        self.pending_closer = closer
+      if tip_step and not self.undid:
+        undo = float(prev_raw_kph)
+        self.undid = True
+
+    if (
+      not is_tip
+      and not is_hold
+      and button_closer is not None
+      and self.pending_closer is None
+      and not self.saw_hold
+    ):
+      self.pending_closer = button_closer
+
+    is_idle = cruise_detent_is_idle(detent) or (detent is None and button_released)
+    if is_idle:
+      if self.pending_closer is not None and not self.saw_hold:
+        closer_out = self.pending_closer
+        self.reset()
+        return True, closer_out, None
+      self.reset()
+      return False, None, None
+
+    return False, None, undo
+
+
 def detect_follow_stalk(
   *,
   has_lead: bool,
   button_closer: bool | None,
   raw_kph: float | None,
   prev_raw_kph: float | None,
+  detent: int | None = None,
+  button_released: bool = False,
+  gesture: FollowStalkGesture | None = None,
 ) -> tuple[bool, bool | None, float | None]:
-  """(is_follow_stalk, closer, undo_raw_kph). Does not write params.
+  """(commit_follow, closer, undo_raw_kph). Does not write params.
 
-  Lead + tip (~1 mph / ~1 kph / MPH_TO_KPH): remap Follow Distance and
-  undo that frame's MAX. Lead + full press (~5 mph / 5 kph / 5×kph):
-  leave MAX; not a follow stalk. Pedal delta magnitude is the source of
-  truth when present. Button-event-only edges (no clear 5 mph hold
-  delta) still count as a tip / bump — Pre-AP buttonEvents do not
-  distinguish tip vs hold.
+  Lead + first-detent tip (~1 mph / 1 kph): undo that frame's MAX and
+  commit Follow only after the lever returns to IDLE without a 2nd
+  detent. Lead + full press (2nd detent / ~5 mph): leave MAX; never a
+  follow stalk, even if the press passed through first detent.
+  Pre-AP buttonEvents do not distinguish tip vs hold — do not treat a
+  button-only press as a completed tip.
   """
-  if not stalk_adjusts_follow(has_lead=has_lead):
-    return False, None, None
-  have_raw = raw_kph is not None and prev_raw_kph is not None
-  # Full press: keep MAX +5/−5. Do not remap Follow Distance.
-  if have_raw and is_cruise_stalk_hold_step(prev_raw_kph, raw_kph):
-    return False, None, None
-  delta = None
-  if have_raw and is_cruise_stalk_tip_step(prev_raw_kph, raw_kph):
-    delta = float(raw_kph) - float(prev_raw_kph)
-  closer = stalk_is_closer(button_closer, delta)
-  if closer is None:
-    return False, None, None
-  undo = float(prev_raw_kph) if prev_raw_kph is not None else None
-  return True, closer, undo
+  g = gesture if gesture is not None else FollowStalkGesture()
+  return g.update(
+    has_lead=has_lead,
+    detent=detent,
+    button_closer=button_closer,
+    button_released=button_released,
+    raw_kph=raw_kph,
+    prev_raw_kph=prev_raw_kph,
+  )
 
 
 def persist_follow_distance(params, closer: bool) -> int:
@@ -405,39 +525,57 @@ def consume_follow_stalk(
   raw_kph: float | None,
   prev_raw_kph: float | None,
   apply: bool = True,
+  detent: int | None = None,
+  button_released: bool = False,
+  gesture: FollowStalkGesture | None = None,
 ) -> tuple[int | None, float | None]:
-  """If this stalk edge is a Follow Distance tip, persist it and undo MAX.
+  """If this stalk edge completes a Follow Distance tip, persist it.
 
   Returns (new_or_same_level, undo_raw_kph). undo_raw_kph is the previous
-  MAX so card can write pedal_speed back. (None, None) means leave stalk
-  as MAX adjust (no lead, or a 5 mph full press). apply=False detects
-  and returns the current level without writing (card uses this during
-  the 0.25 s stalk cooldown).
+  MAX on the tip-press frame so card can write pedal_speed back. Commit
+  (level not None) happens on IDLE after a tip-only gesture. (None, None)
+  means leave stalk as MAX (no lead, full press, or tip still held).
+  apply=False detects without writing (0.25 s stalk cooldown).
   """
   is_stalk, closer, undo = detect_follow_stalk(
     has_lead=has_lead,
     button_closer=button_closer,
     raw_kph=raw_kph,
     prev_raw_kph=prev_raw_kph,
+    detent=detent,
+    button_released=button_released,
+    gesture=gesture,
   )
   if not is_stalk:
-    return None, None
+    return None, undo
   if apply:
     return persist_follow_distance(params, bool(closer)), undo
   return read_follow_distance(params), undo
+
+
+def _button_event_name(be) -> str:
+  typ = getattr(be, "type", None)
+  return str(getattr(typ, "name", typ)).lower().replace("_", "")
+
+
+def _is_cruise_adjust_button(name: str) -> bool:
+  return (
+    "accelcruise" in name or "decelcruise" in name
+    or name in ("accel", "resaccel", "setaccel", "decel", "decelset")
+  )
 
 
 def button_event_closer(button_events) -> bool | None:
   """Parse CarState.buttonEvents: accelCruise → closer, decelCruise → farther.
 
   Press edge only. A tap that also emits a release must not step twice.
+  Pre-AP maps both tip and 2nd detent to these types — not a tip vs hold.
   """
   for be in button_events or []:
     try:
       if not bool(getattr(be, "pressed", True)):
         continue
-      typ = getattr(be, "type", None)
-      name = str(getattr(typ, "name", typ)).lower().replace("_", "")
+      name = _button_event_name(be)
       if "accelcruise" in name or name in ("accel", "resaccel", "setaccel"):
         return True
       if "decelcruise" in name or name in ("decel", "decelset"):
@@ -445,3 +583,16 @@ def button_event_closer(button_events) -> bool | None:
     except Exception:
       continue
   return None
+
+
+def button_event_released(button_events) -> bool:
+  """True on accel/decelCruise release. Used when raw detent is unavailable."""
+  for be in button_events or []:
+    try:
+      if bool(getattr(be, "pressed", True)):
+        continue
+      if _is_cruise_adjust_button(_button_event_name(be)):
+        return True
+    except Exception:
+      continue
+  return False
