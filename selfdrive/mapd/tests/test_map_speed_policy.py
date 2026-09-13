@@ -9,8 +9,8 @@ from openpilot.selfdrive.mapd.map_speed_policy import (
   SOURCE_CRUISE, SOURCE_LEAD0, V_CRUISE_UNSET,
   MapCruiseHold, anticipatory_limit_ms, apply_map_speed_kph, cap_planner_v_cruise_ms,
   decide_map_cruise, effective_map_limit_ms, is_cruise_stalk_step,
-  longitudinal_obstacle_source, map_in_track_deadband, map_slew_a_ms2, map_track_accel_ms2,
-  map_track_decel_ms2, should_write_preap_pedal, slew_map_speed_ms,
+  longitudinal_obstacle_source, map_climb_replaces_mpc, map_in_track_deadband, map_slew_a_ms2,
+  map_track_accel_ms2, map_track_decel_ms2, should_write_preap_pedal, slew_map_speed_ms,
 )
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   MAP_SPEED_ACCEL, MAP_SPEED_ACCEL_DEFAULT, MAP_SPEED_LOOKAHEAD,
@@ -360,6 +360,40 @@ def test_sticky_skips_anticipatory_lookahead():
   assert map_track_decel_ms2(sticky, sticky, a) is None
   # After posted changes, lookahead resumes (sticky=False).
   assert effective_map_limit_ms(current, nxt, dist, current, LOOKAHEAD_NORMAL, sticky=False) == lowered
+
+
+def test_map_climb_does_not_replace_nonneg_mpc_when_lead_present():
+  """Under MAX: map climb may replace ~0 MPC only when there is no lead."""
+  v_ego = 21.5  # ~48 mph
+  v_cruise = 24.6  # ~55 MAX
+  mpc_a = 0.05
+  a_up = map_track_accel_ms2(v_ego, v_cruise, map_accel_a_ms2(LOOKAHEAD_EARLY, 1))
+  assert a_up is not None and a_up > mpc_a
+  assert map_climb_replaces_mpc(a_up, mpc_a, has_valid_lead=False) is True
+  assert map_climb_replaces_mpc(a_up, mpc_a, has_valid_lead=True) is False
+  assert map_climb_replaces_mpc(a_up, 0.0, has_valid_lead=True) is False
+  # Negative MPC (already braking) is never replaced, lead or not.
+  assert map_climb_replaces_mpc(a_up, -0.4, has_valid_lead=False) is False
+  assert map_climb_replaces_mpc(a_up, -0.4, has_valid_lead=True) is False
+  # No climb command available.
+  assert map_climb_replaces_mpc(None, mpc_a, has_valid_lead=False) is False
+
+
+def test_map_decel_still_allowed_above_max_with_lead():
+  """Above MAX: map decel is a min() and is not gated on lead status."""
+  v_cruise = 22.0
+  v_ego = v_cruise + TRACK_TAPER_MS + 0.5
+  a_brake = map_track_decel_ms2(v_ego, v_cruise, map_brake_a_ms2(LOOKAHEAD_EARLY))
+  assert a_brake is not None and a_brake < 0.0
+  mpc_a = 0.0
+  with_lead = min(float(mpc_a), a_brake)
+  no_lead = min(float(mpc_a), a_brake)
+  assert with_lead == a_brake
+  assert no_lead == a_brake
+  # Climb replace stays off above MAX (a_up is None once dv is a brake).
+  a_up = map_track_accel_ms2(v_ego, v_cruise, map_accel_a_ms2(LOOKAHEAD_EARLY, 1))
+  assert a_up is None
+  assert map_climb_replaces_mpc(a_up, mpc_a, has_valid_lead=True) is False
 
 
 def test_hold_deadband_does_not_climb_or_brake():
@@ -1352,6 +1386,9 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   planner_src = planner
   assert "output_a_target = a_up" in planner_src
   assert "min(float(output_a_target), a_up)" not in planner_src
+  assert "map_climb_replaces_mpc" in planner_src
+  assert "has_valid_lead" in planner_src
+  assert "leadOne.status" in planner_src
   mapd = (root / "selfdrive/mapd/mapd.py").read_text()
   osm = (root / "selfdrive/mapd/osm_db.py").read_text()
   constants = (root / "selfdrive/mapd/constants.py").read_text()

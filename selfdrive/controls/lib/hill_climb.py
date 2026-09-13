@@ -113,6 +113,7 @@ def apply_hill_climb(
 
   Caller still `min()`s with lead-approach and clips to cruise / lead-close.
   Negative a_cmd on an uphill (map brake / MPC / lead) is left alone.
+  Planner skips +g·sin extras when a valid radar lead is present.
 
   Climb +g·sin only when clearly under MAX (outside the deadband below).
   Crest / downhill ease only at or above MAX — not while still climbing.

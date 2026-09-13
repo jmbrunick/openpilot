@@ -1120,9 +1120,14 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
   },
 }
 
-_hypermile_follow_changed = getattr(EventName, "hypermileFollowChanged", None)
+# Keep generated EventName.hypermileFollowChanged (@108). nap-release uses
+# followDistanceChanged at the same ordinal — accept either name.
+_hypermile_follow_changed = getattr(EventName, "hypermileFollowChanged", None) or getattr(EventName, "followDistanceChanged", None)
 if _hypermile_follow_changed is not None:
-  EVENTS[_hypermile_follow_changed] = {ET.WARNING: hypermile_follow_changed_alert}
+  EVENTS[_hypermile_follow_changed] = {
+    ET.WARNING: hypermile_follow_changed_alert,
+    ET.PERMANENT: hypermile_follow_changed_alert,
+  }
 
 
 if HARDWARE.get_device_type() == 'mici':

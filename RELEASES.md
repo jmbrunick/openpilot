@@ -1,3 +1,7 @@
+NAP map climb vs lead + Follow HUD (2026-09-13)
+========================
+* Under HUD MAX, map climb (`a_up` Accel 1–10) no longer **replaces** a non-negative MPC `aTarget` when a radar lead is valid. That overwrite pulled ego toward MAX through a slower/matched lead (hard punch while closing, then drop to ~48 and refuse to rematch 53–55). `map_track_decel` above MAX still mins in. Grade-hold `+g·sin` extras are also skipped while a lead constrains. Follow Distance HUD toast restored: stalk/settings 1–7 change shows **Follow Distance: N** for 1.5 s (`hypermileFollowChanged`, same WARNING+permanent affordance as personality). Grade-hold itself stays. Not a nap-release change.
+
 NAP Follow Distance (2026-09-13)
 ========================
 * Unified stock **Follow Distance 1–7** (`NAPFollowDistance`) for stalk adjustments — same whether Hypermile is On or Off. Behind a radar lead, stalk up/down writes that param so the Driving Mannerisms slider updates live, and that frame’s MAX / `pedal_speed` step is undone. No lead: stalk still steps MAX. Full stock seven including closest **1**. Removed the Hypermile-only 1–5 band, the “never stock 1” floor, the ≤50 mph forced far-gap (stock 7) override, and `NAPHypermileFollowLevel`. Follow Distance stays visible while Hypermile is On. HUD shows **Follow Distance: N**. Eco / Step Down / Adaptive Accel / Early / Accel 1 snaps stay; they no longer force follow. Grade-hold behavior is unchanged. Intentional product change: Hypermile no longer owns follow levels. Not a nap-release change.

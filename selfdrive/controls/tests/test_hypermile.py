@@ -26,6 +26,7 @@ from openpilot.selfdrive.controls.lib.hypermile import (
   eco_preset_from,
   effective_nap_follow_dist,
   follow_distance_hud_text,
+  poll_follow_distance_hud,
   map_target_offset_kph,
   maps_posted_known,
   persist_follow_distance,
@@ -386,6 +387,22 @@ def test_stalk_no_lead_leaves_max_and_does_not_write_follow():
     assert is_stalk is False and closer is None and undo is None
 
 
+def test_follow_hud_announces_every_param_change_after_seed():
+  """First read seeds; every later 1–7 change is a Follow Distance toast."""
+  prev, announce = poll_follow_distance_hud(None, 4)
+  assert prev == 4 and announce is False
+  prev, announce = poll_follow_distance_hud(prev, 3)
+  assert prev == 3 and announce is True
+  prev, announce = poll_follow_distance_hud(prev, 3)
+  assert announce is False
+  prev, announce = poll_follow_distance_hud(prev, 2)
+  assert prev == 2 and announce is True
+  prev, announce = poll_follow_distance_hud(prev, None)
+  assert prev == 2 and announce is False
+  prev, announce = poll_follow_distance_hud(None, None)
+  assert prev is None and announce is False
+
+
 def test_button_events_and_hud_text():
   up = SimpleNamespace(type=SimpleNamespace(name="accelCruise"), pressed=True)
   down = SimpleNamespace(type=SimpleNamespace(name="decelCruise"), pressed=True)
@@ -412,6 +429,7 @@ def test_settings_and_docs_wire_hypermile():
   planner = (root / "selfdrive/controls/lib/longitudinal_planner.py").read_text()
   card = (root / "selfdrive/car/card.py").read_text()
   events = (root / "selfdrive/selfdrived/events.py").read_text()
+  selfdrived = (root / "selfdrive/selfdrived/selfdrived.py").read_text()
   docs = (root / "docs-nap/hypermile.md").read_text()
   readme = (root / "docs-nap/README.md").read_text()
   releases = (root / "RELEASES.md").read_text()
@@ -465,6 +483,9 @@ def test_settings_and_docs_wire_hypermile():
   assert "radarState" in card
   assert "hypermileFollowChanged" in events
   assert "follow_distance_hud_text" in events
+  assert "poll_follow_distance_hud" in selfdrived
+  assert "NAPFollowDistance" in selfdrived
+  assert "ET.PERMANENT: hypermile_follow_changed_alert" in events
   assert "NAPHypermile" in content
   assert "comfort-biased" in content.lower()
   assert "not max" in content.lower()
