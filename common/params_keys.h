@@ -136,6 +136,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Stock Follow Distance 1–7. Stalk behind a radar lead writes this
     // (Hypermile On or Off). Driving Mannerisms slider stays visible.
     {"NAPFollowDistance", {PERSISTENT, INT, "4"}},
+    // One-shot Follow Distance HUD. card sets on every stalk persist
+    // (including a tip already at 1 or 7). selfdrived consumes and
+    // holds the toast ~1.5 s. Not a preference.
+    {"NAPFollowHudPending", {CLEAR_ON_MANAGER_START, BOOL, "0"}},
     // Settings → NAP → Driving Mannerisms → Hypermile. Default Off.
     // On: comfort-biased eco-snap (Adaptive Accel, Cap/Follow,
     // Early lookahead, Accel 1 lazy climb) — early light ease, not max
@@ -196,10 +200,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // handsOnLevel >= 1; blend after ~80 ms hands-off. Hard brake during
     // yield fully cancels. Settings can turn Off.
     {"NAPDriverLatHandoff", {PERSISTENT, BOOL, "1"}},
-    // Pre-AP DM: while engaged, no-face / uncertain glance on the stock
-    // vision path. After drain past 1.0 s, fire at random in the next
-    // 2.0 s (fire in (1.0, 3.0] of that countdown). Hold until
-    // awareness recovers. Does not wipe pose, eye, or phone.
+    // Pre-AP DM: while engaged, full looking-path wipe on the stock
+    // vision path (no-face / uncertain / phone / pose / eye). After
+    // drain past 1.0 s, fire at random in the next 2.0 s (fire in
+    // (1.0, 3.0] of that countdown). Hold until awareness recovers.
     // Mutually exclusive with NAPDmFalseAlertIgnore. Triple-tap
     // Settings → NAP. Default On (nap-dev).
     {"NAPDmSimulateLooking", {PERSISTENT, BOOL, "1"}},

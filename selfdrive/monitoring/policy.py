@@ -36,12 +36,14 @@ def to_percent(v):
 # after drain starts, wait past 1.0 s, then fire uniform in (1.0 s, 3.0 s].
 # Hold until gradual recovery returns awareness to 1.0. After a full
 # reset the same rule applies to the next countdown.
-# Simulate Look: no-face / uncertain glance only. Never wipes pose, eye,
-# or phone. False Alert Ignore: soft-clear phone/device false positives
-# only. Pose and eye always drain / alert. Mutually exclusive — only one
-# may be On (both Off is allowed). Stale both-On → Simulate Look On /
-# FAI Off. Either toggle Off = that path is stock. Hands-on ≥ 2 / stalk
-# / door / reverse unchanged.
+# Simulate Look On = pre-FAI full looking-path wipe on that cadence
+# (face + filter + driver_distracted + pose/eye/phone type bits). That
+# is the original "do not nag" recovery for no-face, uncertain, phone,
+# pose, and eye false nags. False Alert Ignore On (Sim Look Off) =
+# phone-only soft-clear; pose and eye still drain. Mutually exclusive
+# — only one may be On (both Off is allowed). nap-dev defaults:
+# Simulate Look On / FAI Off. Stale both-On → Simulate Look On /
+# FAI Off. Hands-on ≥ 2 / stalk / door / reverse unchanged.
 LOOK_SIM_COUNTDOWN_MIN_S = 1.0
 LOOK_SIM_RANDOM_WINDOW_S = 2.0
 LOOK_SIM_FIRE_MAX_S = LOOK_SIM_COUNTDOWN_MIN_S + LOOK_SIM_RANDOM_WINDOW_S  # 3.0
@@ -257,7 +259,7 @@ class DriverMonitoring:
     self._stop_inactive_dm_path()
 
   def _stop_inactive_dm_path(self):
-    """Abort glance hold if Sim Off; end phone soft-clear if FAI Off."""
+    """Abort full-wipe hold if Sim Off; end phone soft-clear if FAI Off."""
     if not self._look_sim_holding:
       return
     if self._look_sim_mode == LOOK_SIM_MODE_GLANCE and not self.nap_dm_simulate_looking:
@@ -298,12 +300,9 @@ class DriverMonitoring:
             and self.face_detected
             and self.pose.low_std)
 
-  def _simulate_look_glance_eligible(self) -> bool:
-    """No-face / uncertain glance. Never pose, eye, or phone."""
-    return (self.nap_dm_simulate_looking
-            and not self._pose_or_eye_alarming()
-            and not self.distracted_types['phone']
-            and (not self.face_detected or self.is_model_uncertain))
+  def _simulate_look_wipe_eligible(self) -> bool:
+    """Simulate Look On: any soft drain is eligible for the full wipe."""
+    return bool(self.nap_dm_simulate_looking)
 
   def _apply_phone_soft_clear(self):
     """Ignore phoneProb / phone distraction only. Pose and eye stay live."""
@@ -314,14 +313,16 @@ class DriverMonitoring:
       self.driver_distraction_filter.x = 0.0
 
   def _apply_simulated_looking(self) -> bool:
-    """Looking-path inject for no-face / uncertain. Not a pose/eye/phone wipe."""
-    if self._pose_or_eye_alarming() or self.distracted_types['phone']:
-      return False
+    """Pre-FAI full looking-path wipe. Recovers no-face / uncertain / phone /
+    pose / eye nags. Does not mute hard cancels (those are outside DM)."""
     self.face_detected = True
     self.pose.low_std = True
     self.is_model_uncertain = False
     self.driver_distracted = False
     self.driver_distraction_filter.x = 0.0
+    self.distracted_types['pose'] = False
+    self.distracted_types['eye'] = False
+    self.distracted_types['phone'] = False
     return True
 
   def _abort_look_sim_hold(self):
@@ -361,26 +362,26 @@ class DriverMonitoring:
       return
 
     if self._look_sim_holding:
-      if self._pose_or_eye_alarming():
-        self._abort_look_sim_hold()
-        # A phone hold snaps the distraction filter to 0. Restore it so a
-        # new pose/eye alarm is not treated as looking for ~0.25 s.
-        if self.driver_distracted:
-          self.driver_distraction_filter.x = max(
-            self.driver_distraction_filter.x, 0.64)
-        return
       if self._look_sim_mode == LOOK_SIM_MODE_PHONE:
+        # FAI phone-only: pose/eye must still drain.
+        if self._pose_or_eye_alarming():
+          self._abort_look_sim_hold()
+          # A phone hold snaps the distraction filter to 0. Restore it so a
+          # new pose/eye alarm is not treated as looking for ~0.25 s.
+          if self.driver_distracted:
+            self.driver_distraction_filter.x = max(
+              self.driver_distraction_filter.x, 0.64)
+          return
         if not self.nap_dm_false_alert_ignore:
           self._end_look_sim_hold(redraw=True)
           return
         self._apply_phone_soft_clear()
       else:
-        if not self.nap_dm_simulate_looking or self.distracted_types['phone']:
-          self._end_look_sim_hold(redraw=True)
-          return
-        if not self._apply_simulated_looking():
+        # Simulate Look: keep the full wipe even if pose/eye/phone return.
+        if not self.nap_dm_simulate_looking:
           self._abort_look_sim_hold()
           return
+        self._apply_simulated_looking()
       self._look_sim_hold_s += DT_DMON
       self._look_sim_countdown_s = 0.0
       # Stock looking recovery requires awareness > 0 (red does not climb).
@@ -398,12 +399,10 @@ class DriverMonitoring:
     # Past 1.0 s of drain, then the drawn time in (1.0, 3.0].
     if (self._look_sim_countdown_s > LOOK_SIM_COUNTDOWN_MIN_S and
         self._look_sim_countdown_s + 1e-9 >= self._look_sim_fire_s):
-      if self._pose_or_eye_alarming():
-        return
       if self._phone_soft_clear_eligible():
         self._start_look_sim_hold(LOOK_SIM_MODE_PHONE)
         self._apply_phone_soft_clear()
-      elif self._simulate_look_glance_eligible():
+      elif self._simulate_look_wipe_eligible():
         self._start_look_sim_hold(LOOK_SIM_MODE_GLANCE)
         self._apply_simulated_looking()
 
