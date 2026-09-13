@@ -432,6 +432,34 @@ def test_interceptor_chatter_does_not_unlatch_or_pulse():
   assert all(a == pytest.approx(1.10) for a in accels)
 
 
+def test_gas_override_then_lift_stays_smooth_climb():
+  """Every gasPressed falling edge while long is on must stay +a, not pulse.
+
+  Justin: not only first engage-on-gas. Manual accel, then OP long
+  handoff again, still pulse/pulse and speed wanders down.
+  """
+  coast = _coast()
+  _engage_with_gas(coast, pedal=14.0, a_ego=1.10)
+  _lift(coast, pedal=12.0, a_ego=-0.40)
+  assert coast.active
+
+  # Override below the re-press deadband — overlay stays latched.
+  for _ in range(10):
+    coast.update(long_engaged=True, gas_pressed=True, pedal_pos=13.0, a_ego=0.90)
+    assert coast.active
+    assert coast.apply(-0.25, v_ego=17.0, v_cruise=25.0) > 0.3
+
+  accels = []
+  for di in (12.5, 10.0, 3.0, 0.0, 3.4, 3.2, 0.0, 0.0):
+    coast.update(long_engaged=True, gas_pressed=False, pedal_pos=di, a_ego=-0.70)
+    a = coast.apply(-0.35, v_ego=17.0, v_cruise=25.0)
+    accels.append(a)
+    assert coast.active
+    assert a > 0.3, (di, a)
+  assert min(accels) > 0.3
+  assert all(a == pytest.approx(1.10) for a in accels)
+
+
 def test_real_repress_then_lift_reclimbs():
   coast = _coast()
   _engage_with_gas(coast, pedal=10.0, a_ego=0.80)
