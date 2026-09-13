@@ -652,6 +652,8 @@ def test_planner_caps_lead_close_accel_at_min_accel_and_keeps_hard_brake():
   planner = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
   planner._map_speed_accel = 1
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=1.5)
+  a_cap = lead_close_accel_ms2(1)
+  planner.prev_accel_clip = [-1.2, a_cap]
   inputs = _make_planner_inputs(v_ego)
   lead = inputs["radarState"].leadOne
   lead.status = True
@@ -691,6 +693,7 @@ def test_planner_lead_close_accel_scales_with_accel_personality():
     planner = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
     planner._map_speed_accel = accel_level
     planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=1.5)
+    planner.prev_accel_clip = [-1.2, lead_close_accel_ms2(accel_level)]
     inputs = _make_planner_inputs(v_ego)
     lead = inputs["radarState"].leadOne
     lead.status = True
