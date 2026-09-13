@@ -1,7 +1,6 @@
 """Pre-AP 1 s post-engage: hold last pressed pedal / accel, not coast."""
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -192,11 +191,21 @@ def test_cs_pedal_di_prefers_interceptor_then_command():
   assert cs_pedal_di(SimpleNamespace(gasPressed=False)) == pytest.approx(0.0)
 
 
+class _FakeTeslaCan:
+  def __init__(self, replacement=None):
+    self.calls = []
+    self.replacement = replacement if replacement is not None else (
+      0x551, bytes([0, 0, 0, 0, 0x81, 0]), 2)
+
+  def create_pedal_command(self, pedal, enable=0):
+    self.calls.append((pedal, enable))
+    return self.replacement
+
+
 def test_apply_held_pedal_rewrites_enabled_gas_command():
   from openpilot.selfdrive.car.tesla import preap_post_engage_hold as hold_mod
 
-  tesla_can = MagicMock()
-  tesla_can.create_pedal_command.return_value = (0x551, bytes([0, 0, 0, 0, 0x81, 0]), 2)
+  tesla_can = _FakeTeslaCan()
   controller = SimpleNamespace(
     prev_pedal_di=3.0,
     preap_long_engage_frame=100,
@@ -211,8 +220,8 @@ def test_apply_held_pedal_rewrites_enabled_gas_command():
 
   assert hold_mod.apply_held_pedal_command(
     controller, cs, tesla_can, sends, 15.0, di_to_pedal=lambda di: di * 2.0)
-  assert sends[-1] == tesla_can.create_pedal_command.return_value
-  tesla_can.create_pedal_command.assert_called_once_with(30.0, enable=1)
+  assert sends[-1] == tesla_can.replacement
+  assert tesla_can.calls == [(30.0, 1)]
   assert controller.prev_pedal_di == pytest.approx(15.0)
   assert controller.vdas.prev_pedal_di == pytest.approx(15.0)
   assert controller.preap_long_handoff_slew_active is False
@@ -222,13 +231,13 @@ def test_apply_held_pedal_rewrites_enabled_gas_command():
 def test_apply_held_pedal_does_not_rewrite_enable_zero():
   from openpilot.selfdrive.car.tesla import preap_post_engage_hold as hold_mod
 
-  tesla_can = MagicMock()
+  tesla_can = _FakeTeslaCan()
   controller = SimpleNamespace(prev_pedal_di=0.0, preap_long_engage_frame=0,
                                preap_long_handoff_slew_active=False)
   cs = SimpleNamespace()
   sends = [(0x551, bytes([0, 0, 0, 0, 0x00, 0]), 2)]
   assert not hold_mod.apply_held_pedal_command(controller, cs, tesla_can, sends, 12.0)
-  tesla_can.create_pedal_command.assert_not_called()
+  assert tesla_can.calls == []
 
 
 def _planner_imports():
