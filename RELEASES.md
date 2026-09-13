@@ -1,6 +1,6 @@
 NAP post-engage pedal hold (2026-09-13)
 ========================
-* Pre-AP pedal long: for **1.0 s** after `enableLongControl` rises, watch the accelerator. As soon as the pedal starts decreasing, **hold the last pressed interceptor DI** (and the last non-negative `aEgo`) for the rest of that window — not a speed/coast clamp to a=0 (that still ramps the pedal down to zero-torque and dips on gas-override handoff). After 1 s, release to normal OP long (climb to MAX). Brake, FCW / should-stop, and lead-driven decel (`|a| >= 0.55`) still apply. Engage with no gas / no lift: unchanged. Planner + controlsd + `GAS_COMMAND` rewrite (`preap_post_engage_hold.py`). Panda still blocks `ENABLE=1` while gas is pressed.
+* Pre-AP pedal long: for **1.0 s** after `enableLongControl` rises, watch the accelerator. As soon as the pedal starts decreasing, **hold the last pressed interceptor DI** (and the last non-negative `aEgo`) for the rest of that window — not a speed/coast clamp to a=0 (that still ramps the pedal down to zero-torque and dips on gas-override handoff). After 1 s, release to normal OP long (climb to MAX). Sticky/cruise MAX is a hard cap: if the held pedal would accelerate above MAX, drop the hold. Brake, FCW / should-stop, and lead-driven decel (`|a| >= 0.55`) still apply. Engage with no gas / no lift: unchanged. Planner + controlsd + `GAS_COMMAND` rewrite (`preap_post_engage_hold.py`). Panda still blocks `ENABLE=1` while gas is pressed.
 
 NAP Follow Distance HUD hold (2026-09-13)
 ========================

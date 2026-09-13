@@ -393,6 +393,8 @@ class LongitudinalPlanner:
         fcw=bool(self.fcw),
         should_stop=bool(self.output_should_stop),
         has_lead=has_valid_lead,
+        v_ego=v_ego,
+        v_cruise=v_cruise,
       )
 
     for idx in range(2):

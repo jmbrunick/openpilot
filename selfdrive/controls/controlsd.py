@@ -202,6 +202,8 @@ class Controls:
         fcw=bool(long_plan.fcw),
         should_stop=bool(long_plan.shouldStop),
         has_lead=bool(long_plan.hasLead),
+        v_ego=float(CS.vEgo),
+        v_cruise=float(CS.vCruise) * CV.KPH_TO_MS,
       )
     actuators.accel = float(self.LoC.update(CC.longActive, CS, a_target, long_plan.shouldStop, pid_accel_limits))
 
