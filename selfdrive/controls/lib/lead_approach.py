@@ -16,13 +16,17 @@ Justin: start that planned comfort ease / speed-match as soon as radar has
 reasonable feedback on a closing lead (`leadOne` valid and closing) — do not
 wait until late in the gap. Farther ceiling + longer head-start + a clear-
 close path (large slack is OK) so later brakes are not as hard. Still soft
-only; MPC / FCW win via min().
+only; MPC / FCW win via min(), except a far/gentle nibble must not
+steal lead-close catch-up +a.
 
 On a slight grade, radar `v_rel` / slack chatter around the follow gap used
 to snap this overlay on/off (regen bite → Accel-1 crawl → bite). Enter/exit
 hysteresis plus a per-frame slew on more-negative `a` hold a steady ease
 instead of chattering. Off / milder `a` is immediate so rematch is not stuck
-in regen.
+in regen. After the first hysteresis pass, leftover occasional bump-pull
+was still that gap-edge rematch (overlay |a| ~0.06–0.13, then Accel-1),
+not the 0.55 peak. Raise enter only so rematch does not re-bite; keep the
+0.20 exit so we still close onto Follow Distance (a lower exit parked far).
 
 Positive close-the-gap accel is a separate cap (`lead_close_accel_ms2`).
 Map Accel 1–10 used to gate only MAX-rise climb; Adaptive Accel used the
@@ -54,13 +58,16 @@ LEAD_APPROACH_MAX_HOLD_M = 8.0
 LEAD_APPROACH_RELIABLE_M = 140.0
 LEAD_APPROACH_MODEL_PROB_MIN = 0.50  # radard association gate
 # Clearly closing: skip the need window and ease from first reliable track.
-# ~2.2 mph. Below this, the (now longer) head-start need still applies.
-LEAD_APPROACH_CLEAR_DV_MS = 1.0
+# 2.5 m/s (~5.6 mph). 1.0 stole Accel-1 catch-up / Follow Distance close
+# (overlay min() beat +a while slack was still large). 10 mph still skips need.
+LEAD_APPROACH_CLEAR_DV_MS = 2.5
 
 # Enter / exit (hysteresis). A single v_rel / slack gate chatters around
-# the follow gap on a slight incline (regen ↔ Accel-1).
-LEAD_APPROACH_DV_MS = 0.5          # enter: ~1 mph closing; ignore radar jitter
-LEAD_APPROACH_DV_OFF_MS = 0.20     # exit: ~0.45 mph; hold through ±0.15 noise
+# the follow gap on a slight incline (regen ↔ Accel-1). First pass was
+# 0.50 / 0.20; leftover bump-pull was rematch re-crossing 0.50. Raise
+# enter only — a 0.12 exit held ease too long and parked far back.
+LEAD_APPROACH_DV_MS = 0.55         # enter: ~1.2 mph closing; ignore radar jitter
+LEAD_APPROACH_DV_OFF_MS = 0.20     # exit: ~0.45 mph; drop so rematch can finish the close
 LEAD_APPROACH_SLACK_ON_M = 1.0     # enter only with slack above Follow Distance
 LEAD_APPROACH_SLACK_OFF_M = 0.0    # stay until at/inside the follow gap
 LEAD_APPROACH_NEED_HOLD_M = 4.0    # extra slack (m) before dropping after open
@@ -68,6 +75,9 @@ LEAD_APPROACH_NEED_HOLD_M = 4.0    # extra slack (m) before dropping after open
 # Gradual regen onset (planner frame). Same step as accel_clip slew.
 # At DT_MDL=0.05 s → 1.0 m/s²/s. Release / milder a is immediate.
 LEAD_APPROACH_SLEW_MS2 = 0.05
+# Softer than this is a nibble (matching-traffic / far slack, |a| ~0.06–0.13).
+# Catch-up +a may ignore it; real ease and MPC 0/−a still use min().
+LEAD_APPROACH_NIBBLE_MS2 = 0.15
 
 NAP_T_FOLLOW = (0.7, 0.9, 1.1, 1.3, 1.5, 1.7, 1.9)
 
@@ -160,6 +170,22 @@ def slew_lead_approach_a(target, prev, slew=LEAD_APPROACH_SLEW_MS2):
   if t < p:
     return max(t, p - float(slew))
   return t
+
+
+def apply_lead_approach_overlay(output_a, a_lead, nibble=LEAD_APPROACH_NIBBLE_MS2):
+  """Soft overlay via min(), except a nibble must not steal catch-up +a.
+
+  Matching-traffic / far-slack overlay sits at |a| ~0.06–0.13. That must
+  not beat lead-close +a (Follow Distance close / rematch). Real ease and
+  MPC 0 / −a still use min().
+  """
+  if a_lead is None:
+    return float(output_a)
+  out = float(output_a)
+  a = float(a_lead)
+  if out <= 0.0 or a <= -float(nibble):
+    return min(out, a)
+  return out
 
 
 def lead_approach_decel_ms2(v_ego, v_lead, d_rel, t_follow, a_comfort=LEAD_APPROACH_A_MS2,
