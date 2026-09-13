@@ -16,7 +16,7 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_APPROACH_MAX_START_M,
   LEAD_CLOSE_A_MAX_MS2,
   LEAD_CLOSE_A_MIN_MS2,
-  lead_approach_need_m,
+  LEAD_CLOSE_MAX_M,
   lead_close_accel_ms2,
 )
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
@@ -371,9 +371,9 @@ def test_preap_follow_cap_uses_obstacle_equivalent_distance(lead_speed, obstacle
 
 def test_planner_adaptive_cap_changes_the_delivered_acceleration_for_unequal_speed_lead():
   speed_mps = 30.0
-  # Slower lead so obstacle-ratio 1.35 is still a physical gap beyond the
-  # 140 m lead-close window. This test is Adaptive Accel only.
-  lead_speed_mps = 28.0
+  # Same-speed lead so ease does not fire. Obstacle-ratio 1.35 is still a
+  # physical gap beyond the 140 m lead-close window. Adaptive Accel only.
+  lead_speed_mps = 30.0
   obstacle_ratio = 1.35
   t_follow = 1.9
   params = _MutablePlannerParams(nap_follow_dist=7, adaptive_accel=True)
@@ -384,7 +384,7 @@ def test_planner_adaptive_cap_changes_the_delivered_acceleration_for_unequal_spe
   lead.status = True
   lead.dRel = _physical_lead_distance(speed_mps, lead_speed_mps, t_follow, obstacle_ratio)
   lead.vLead = lead_speed_mps
-  assert lead.dRel > LEAD_APPROACH_MAX_START_M
+  assert lead.dRel > LEAD_CLOSE_MAX_M
 
   for _ in range(32):
     planner.update(inputs)
@@ -601,7 +601,6 @@ def test_planner_eases_for_slower_lead_before_mpc_and_lead_can_brake_harder():
   v_lead = 22.4
   t_follow = get_T_FOLLOW(nap_follow_dist=4)
   d_follow = t_follow * v_lead + STOP_DISTANCE_M
-  need = lead_approach_need_m(v_ego, v_lead, t_follow=t_follow)
   v_rel = v_ego - v_lead
   rel_need = (v_rel * v_rel) / (2.0 * LEAD_APPROACH_A_MS2)
   d_rel = d_follow + rel_need
@@ -622,15 +621,20 @@ def test_planner_eases_for_slower_lead_before_mpc_and_lead_can_brake_harder():
   planner.update(inputs)
   assert planner.output_a_target == pytest.approx(-2.0, abs=0.08)
 
-  # Farther than the relative window (radar-range hang): no extra crawl.
+  # Farther closing lead (old 140 m / short need stayed off): now eases.
   lead.dRel = 160.0
-  assert 160.0 > d_follow + need
+  lead.modelProb = 1.0
+  lead.radar = True
+  assert 160.0 > d_follow + (v_rel * v_rel) / (2.0 * LEAD_APPROACH_A_MS2) + v_rel * 12.0
+  planner._lead_approach_active = False
+  planner._lead_approach_a = None
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=0.0)
   planner.update(inputs)
-  assert planner.output_a_target == pytest.approx(0.0, abs=0.08)
+  assert planner.output_a_target < 0.0
+  assert planner.output_a_target >= -LEAD_APPROACH_A_MS2 - 0.08
 
-  # Outside the window: no extra crawl.
-  lead.dRel = d_follow + need + 20.0
+  # Past usable Bosch: no extra crawl.
+  lead.dRel = LEAD_APPROACH_MAX_START_M + 15.0
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=0.0)
   planner.update(inputs)
   assert planner.output_a_target == pytest.approx(0.0, abs=0.08)
@@ -642,7 +646,7 @@ def test_planner_caps_lead_close_accel_at_min_accel_and_keeps_hard_brake():
   v_lead = 25.0
   t_follow = get_T_FOLLOW(nap_follow_dist=4)
   d_follow = t_follow * v_lead + STOP_DISTANCE_M
-  d_rel = min(LEAD_APPROACH_MAX_START_M - 1.0, d_follow + 40.0)
+  d_rel = min(LEAD_CLOSE_MAX_M - 1.0, d_follow + 40.0)
 
   params = _MutablePlannerParams(nap_follow_dist=4, map_speed_accel=1)
   planner = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
@@ -680,7 +684,7 @@ def test_planner_lead_close_accel_scales_with_accel_personality():
   v_ego = 25.0
   v_lead = 24.0
   t_follow = get_T_FOLLOW(nap_follow_dist=4)
-  d_rel = min(LEAD_APPROACH_MAX_START_M - 1.0, t_follow * v_lead + STOP_DISTANCE_M + 35.0)
+  d_rel = min(LEAD_CLOSE_MAX_M - 1.0, t_follow * v_lead + STOP_DISTANCE_M + 35.0)
 
   def _run(accel_level):
     params = _MutablePlannerParams(nap_follow_dist=4, map_speed_accel=accel_level)
