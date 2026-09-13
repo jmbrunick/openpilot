@@ -20,7 +20,7 @@ Turning **On** remembers the current values, then snaps:
 | Lookahead | **Early** (3) — starts farther out at 0.55 m/s². Always snapped (Late/Normal/Off become Early). Late is 1.20 m/s² and is *not* kept. |
 | Acceleration (map climb + lead-close) | **1** — laziest Follow climb and lead-close +a (0.20 m/s² catch-up) |
 
-Turning **Off** restores that snapshot. Soft Lateral Handoff, Simulate Look (triple-tap NAP popup), blinker / sticky MAX / one-SET / standstill gas-gate / reverse hard-cancel, and the stock 1–7 Follow Distance param are **not** changed (eco does not snap or restore follow).
+Turning **Off** restores that snapshot. Soft Lateral Handoff, Simulate Look / False Alert Ignore (triple-tap NAP popup), blinker / sticky MAX / one-SET / standstill gas-gate / reverse hard-cancel, and the stock 1–7 Follow Distance param are **not** changed (eco does not snap or restore follow).
 
 **Posted-scaled eco offset** (Hypermile On, Step Down Off), from the raw posted/OSM limit in mph — not a forever `NAPMapSpeedOffsetMph = −5`:
 
