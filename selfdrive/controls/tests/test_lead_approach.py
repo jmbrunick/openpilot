@@ -62,11 +62,16 @@ def test_lead_approach_keeps_early_map_brake_not_map_110m_margin():
   assert LEAD_APPROACH_A_MS2 < 0.80
   assert LEAD_APPROACH_A_MS2 < 1.0
   assert LEAD_APPROACH_A_MS2 < 2.5
+  # Tiny comfort tune: leftover bump-pull was gap rematch, not the 0.55 peak.
+  assert abs(LEAD_APPROACH_DV_MS - 0.55) < 1e-9
+  assert abs(LEAD_APPROACH_DV_OFF_MS - 0.12) < 1e-9
   assert LEAD_APPROACH_DV_OFF_MS < LEAD_APPROACH_DV_MS
+  assert (LEAD_APPROACH_DV_MS - LEAD_APPROACH_DV_OFF_MS) > 0.30  # wider than 0.50/0.20
   assert LEAD_APPROACH_SLACK_OFF_M < LEAD_APPROACH_SLACK_ON_M
   assert LEAD_APPROACH_NEED_HOLD_M > 0.0
   assert LEAD_APPROACH_MAX_HOLD_M > 0.0
   assert abs(LEAD_APPROACH_SLEW_MS2 - 0.05) < 1e-9
+  assert abs(LEAD_APPROACH_A_MS2 - 0.55) < 1e-9  # peak unchanged
   import openpilot.selfdrive.controls.lib.lead_approach as lead_approach
   assert not hasattr(lead_approach, "LEAD_APPROACH_MARGIN_M")
 
@@ -294,6 +299,47 @@ def test_lead_approach_hysteresis_holds_through_v_rel_and_slack_noise():
   assert lead_approach_decel_ms2(v_lead, v_lead, d_rel, t4, active=True) is None
   assert lead_approach_decel_ms2(v_lead - 0.5, v_lead, d_rel, t4, active=True) is None
   assert lead_approach_decel_ms2(v_ego, v_lead, d_follow - 0.5, t4, active=True) is None
+
+  # Rematch-adjacent leftover chatter after #121: v_rel 0.16 (below old 0.20
+  # exit) must stay on; v_rel 0.52 (old enter, below new 0.55) must not re-enter.
+  v_hold = v_lead + 0.16
+  assert LEAD_APPROACH_DV_OFF_MS < 0.16 < 0.20
+  assert lead_approach_decel_ms2(v_hold, v_lead, d_rel, t4, active=False) is None
+  assert lead_approach_decel_ms2(v_hold, v_lead, d_rel, t4, active=True) is not None
+  v_old_enter = v_lead + 0.52
+  assert 0.50 < 0.52 < LEAD_APPROACH_DV_MS
+  assert lead_approach_decel_ms2(v_old_enter, v_lead, d_rel, t4, active=False) is None
+  assert lead_approach_decel_ms2(v_lead + LEAD_APPROACH_DV_MS + 0.01, v_lead, d_rel, t4, active=False) is not None
+  assert lead_approach_decel_ms2(v_lead + LEAD_APPROACH_DV_OFF_MS - 0.02, v_lead, d_rel, t4, active=True) is None
+
+
+def test_lead_approach_gap_edge_rematch_does_not_chatter():
+  """Slight-grade rematch: Accel-1 after a 0.20 exit used to re-cross 0.50.
+
+  Live band (0.55 / 0.12) holds through rematch-adjacent v_rel and does not
+  re-enter at the old 0.50 gate. Slack-off / matched still drop so we close.
+  """
+  v_lead = 22.0
+  t4 = nap_t_follow(4)
+  d_follow = t4 * v_lead + STOP_DISTANCE
+  d_rel = d_follow + 3.0
+
+  v_on = v_lead + LEAD_APPROACH_DV_MS + 0.05
+  assert lead_approach_decel_ms2(v_on, v_lead, d_rel, t4, active=False) is not None
+
+  # Hold through the old 0.20 exit (Accel rematch used to punch here).
+  for dv in (0.19, 0.16, 0.14, 0.13):
+    assert LEAD_APPROACH_DV_OFF_MS < dv < 0.20
+    assert lead_approach_decel_ms2(v_lead + dv, v_lead, d_rel, t4, active=True) is not None
+
+  assert lead_approach_decel_ms2(v_lead + 0.08, v_lead, d_rel, t4, active=True) is None
+
+  # After drop, old enter 0.50–0.54 stays off so rematch does not re-bite.
+  for dv in (0.50, 0.52, 0.54):
+    assert 0.50 <= dv < LEAD_APPROACH_DV_MS
+    assert lead_approach_decel_ms2(v_lead + dv, v_lead, d_rel, t4, active=False) is None
+
+  assert lead_approach_decel_ms2(v_lead + LEAD_APPROACH_DV_MS + 0.01, v_lead, d_rel, t4, active=False) is not None
 
 
 def test_lead_approach_slew_softens_onset_and_releases_immediately():
