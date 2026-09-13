@@ -1062,6 +1062,7 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
 
   EventName.followDistanceChanged: {
     ET.WARNING: follow_distance_changed_alert,
+    ET.PERMANENT: follow_distance_changed_alert,
   },
 
   EventName.pedalCruiseEnabled: {

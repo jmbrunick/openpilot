@@ -11,6 +11,11 @@ from openpilot.selfdrive.ui.layouts.settings.triple_tap import (
 ROOT = Path(__file__).resolve().parents[3]
 
 
+def _code_without_comments(src: str) -> str:
+  """Drop '# ...' tails so source-string checks ignore comments."""
+  return "\n".join(line.split("#", 1)[0] for line in src.splitlines())
+
+
 def test_window_and_count_constants():
   assert WINDOW_S == 1.0
   assert TAP_COUNT == 3
@@ -108,8 +113,19 @@ def test_hidden_toggles_removed_from_normal_lists():
   assert "apply_dm_simulate_looking" in popup
   assert "apply_dm_false_alert_ignore" in popup
   assert "read_exclusive_dm_toggles" in popup
-  assert "set_state(self._params.get_bool(NAP_DM_FALSE_ALERT_IGNORE))" in popup
-  assert "set_state(self._params.get_bool(NAP_DM_SIMULATE_LOOKING))" in popup
+  # Live switch: paint sibling from apply() return, not a stale get_bool.
+  on_sim = _code_without_comments(
+    popup[popup.index("def _on_dm_sim_looking"):popup.index("def _on_false_alert_ignore")]
+  )
+  on_fai = _code_without_comments(
+    popup[popup.index("def _on_false_alert_ignore"):popup.index("def _on_force_offroad")]
+  )
+  assert "apply_dm_simulate_looking(self._params, bool(state))" in on_sim
+  assert "set_state(fai)" in on_sim
+  assert "get_bool(" not in on_sim
+  assert "apply_dm_false_alert_ignore(self._params, bool(state))" in on_fai
+  assert "set_state(sim)" in on_fai
+  assert "get_bool(" not in on_fai
   assert popup.index('"Force Offroad"') < popup.index('"Simulate Look"')
   assert popup.index('"Simulate Look"') < popup.index('"False Alert Ignore"')
 
@@ -125,8 +141,20 @@ def test_hidden_toggles_removed_from_normal_lists():
   assert "apply_dm_simulate_looking" in overlay
   assert "apply_dm_false_alert_ignore" in overlay
   assert "read_exclusive_dm_toggles" in overlay
-  assert "self._fai.refresh()" in overlay
-  assert "self._dm.refresh()" in overlay
+  on_sim_m = _code_without_comments(
+    overlay[overlay.index("def _on_simulate_look"):overlay.index("def _on_false_alert_ignore")]
+  )
+  on_fai_m = _code_without_comments(
+    overlay[overlay.index("def _on_false_alert_ignore"):overlay.index("def show_event")]
+  )
+  assert "apply_dm_simulate_looking(self._params, bool(state))" in on_sim_m
+  assert "set_checked(fai)" in on_sim_m
+  assert "refresh()" not in on_sim_m
+  assert "get_bool(" not in on_sim_m
+  assert "apply_dm_false_alert_ignore(self._params, bool(state))" in on_fai_m
+  assert "set_checked(sim)" in on_fai_m
+  assert "refresh()" not in on_fai_m
+  assert "get_bool(" not in on_fai_m
   assert "set_enabled(ui_state.is_offroad)" not in overlay
 
   assert "TripleTapDetector" in settings
