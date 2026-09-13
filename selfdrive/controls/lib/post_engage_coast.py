@@ -109,6 +109,7 @@ class PostEngageCoast:
     self._holding = False
     self._hold_di = 0.0
     self._hold_a = 0.0
+    self._prev_gas = False
 
   @property
   def active(self) -> bool:
@@ -133,6 +134,7 @@ class PostEngageCoast:
     self._holding = False
     self._hold_di = 0.0
     self._hold_a = 0.0
+    self._prev_gas = False
 
   def update(self, *, long_engaged: bool, gas_pressed: bool = False,
              pedal_pos: float | None = None, a_ego: float = 0.0,
@@ -150,6 +152,9 @@ class PostEngageCoast:
       if di <= 0.0 and gas_pressed:
         di = BINARY_PRESSED_DI
 
+    gas = bool(gas_pressed)
+    gas_falling = self._prev_gas and not gas
+
     if not self._prev_long:
       # Watch from engage. Do not start a 1 s timer — holding the pedal
       # past 1 s must still hand off, and the climb must last until MAX.
@@ -160,9 +165,10 @@ class PostEngageCoast:
       self._saw_pressed = self._last_pressed_di > PEDAL_PRESSED_DI
       self._last_good_a = max(float(a_ego), 0.0) if self._saw_pressed else 0.0
     else:
-      self._track_pedal(di, float(a_ego), bool(gas_pressed))
+      self._track_pedal(di, float(a_ego), gas, gas_falling)
 
     self._prev_long = True
+    self._prev_gas = gas
 
   def _climb_floor(self) -> float:
     return max(float(self._last_good_a), CLIMB_FLOOR_MS2)
@@ -175,27 +181,31 @@ class PostEngageCoast:
     self._hold_a = self._climb_floor()
     self._holding = True
 
-  def _track_pedal(self, di: float, a_ego: float, gas_pressed: bool) -> None:
-    lifting = self._saw_pressed and di <= self._last_pressed_di - PEDAL_DROP_DI
+  def _track_pedal(self, di: float, a_ego: float, gas_pressed: bool,
+                   gas_falling: bool) -> None:
+    # Once latched this long session, stay latched until MAX / long off.
+    # Unlatching on a re-press re-armed on every gasPressed falling edge
+    # (manual accel → OP long) and pulsed again.
+    if self._holding:
+      return
+
+    lifting = self._saw_pressed and (
+      gas_falling or di <= self._last_pressed_di - PEDAL_DROP_DI)
     if di > PEDAL_PRESSED_DI:
       self._saw_pressed = True
-      # Do not recapture aEgo on the lift frame — that sample is already
-      # the regen hole. Keep the last non-negative a from the pressed peak.
+      # Do not recapture aEgo on the lift / gas-falling frame — that
+      # sample is already the regen hole. Keep the last non-negative a.
       if a_ego >= 0.0 and not lifting:
         self._last_good_a = a_ego
-      if not self._holding:
-        if di + 1e-9 >= self._last_pressed_di:
-          self._last_pressed_di = di
-      elif gas_pressed and di > self._hold_di + REPRESS_DI:
-        # Real driver override, not interceptor chatter / command echo.
-        self._holding = False
+      if di + 1e-9 >= self._last_pressed_di:
         self._last_pressed_di = di
 
-    if not self._saw_pressed or self._holding:
+    if not self._saw_pressed:
       return
     if self._last_pressed_di <= PEDAL_PRESSED_DI:
       return
-    if di <= self._last_pressed_di - PEDAL_DROP_DI:
+    # Analog drop *or* gasPressed falling edge (override → OP long).
+    if gas_falling or di <= self._last_pressed_di - PEDAL_DROP_DI:
       self._latch_climb()
 
   def at_or_above_max(self, v_ego, v_cruise) -> bool:
