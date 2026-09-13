@@ -43,7 +43,7 @@ class HiddenTogglesOverlayMici(Widget):
 
     self._dm = BigParamControl("simulate look", NAP_DM_SIMULATE_LOOKING,
                                toggle_callback=self._on_simulate_look)
-    self._dm.set_value("On — no-face glance in 1–3 s of drain")
+    self._dm.set_value("On — full awareness wipe in 1–3 s")
 
     self._fai = BigParamControl("false alert ignore", NAP_DM_FALSE_ALERT_IGNORE,
                                 toggle_callback=self._on_false_alert_ignore)
