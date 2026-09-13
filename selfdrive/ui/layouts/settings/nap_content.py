@@ -17,23 +17,44 @@ MAP_SPEED_LOOKAHEAD_LABELS = ["Off", "Late", "Normal", "Early"]
 MAP_SPEED_ACCEL = list(range(1, 11))
 MAP_SPEED_ACCEL_LABELS = [str(i) for i in MAP_SPEED_ACCEL]
 MAP_SPEED_ACCEL_DEFAULT = 5
+MAP_SPEED_ACCEL_DESCRIPTION = (
+  "MAX climb / open-road feel (1 lazy → 10 quicker). Follow climb only. "
+  + "Brake to a lower MAX stays Accel 5. Lead still owns follow."
+)
+ADAPTIVE_ACCEL_DESCRIPTION = (
+  "Softer accel near a lead so you don't overshoot. "
+  + "Open road uses Acceleration 1–10."
+)
+MAP_SPEED_MODE_DESCRIPTION = (
+  "OSM posted limit for HUD MAX. Off: no change. Display: LIMIT sign only. "
+  + "Cap: never exceed. Follow: track the limit. A stalk set "
+  + "holds until the posted limit changes. Cap/Follow need the pedal."
+)
+MAP_SPEED_OFFSET_DESCRIPTION = (
+  "Added to the OSM limit for Cap/Follow (mph)."
+)
+MAP_SPEED_LOOKAHEAD_DESCRIPTION = (
+  "Ease MAX down for a lower limit ahead. Off: wait until GPS is on that way. "
+  + "A stalk set holds; lookahead pauses while that set is active. "
+  + "A higher limit far ahead never raises MAX. Radar lead still outranks map."
+)
 FOLLOW_DISTANCE_VALUES = list(range(1, 8))
 FOLLOW_DISTANCE_LABELS = [str(i) for i in FOLLOW_DISTANCE_VALUES]
 FOLLOW_DISTANCE_DEFAULT = 4
+FOLLOW_DISTANCE_DESCRIPTION = (
+  "1 closest, 7 farthest. A slower car ahead eases off farther back "
+  + "(more distance, not a harder brake). Behind a lead, a stalk tip "
+  + "steps this 1–7; a full press still steps MAX. No lead: both still adjust MAX."
+)
 
 NAP_DRIVER_LAT_HANDOFF = "NAPDriverLatHandoff"
 NAP_DM_SIMULATE_LOOKING = "NAPDmSimulateLooking"
 NAP_DM_FALSE_ALERT_IGNORE = "NAPDmFalseAlertIgnore"
 NAP_FORCE_OFFROAD = "NAPForceOffroad"
 DRIVER_LAT_HANDOFF_DESCRIPTION = (
-  "Default On. A light purposeful push with a hand on the rim frees "
-  + "the wheel (OP stops steering the EPS) — typically avoiding "
-  + "something. Long stays on. Stays free while hands are on the rim. "
-  + "Hands off ~0.15 s, then the wheel blends back over 1 s. Gravel / "
-  + "wind / road-crown pressure should not trip. A hard brake during "
-  + "that yield fully cancels openpilot (chime); a light brake is still "
-  + "the silent long pause + one SET. Gray chrome means lat yielded — "
-  + "turn Off if rumble still false-yields. Off = stock lat, no yield."
+  "Default On. A light purposeful push frees the wheel. Hands off "
+  + "~0.15 s, then it blends back. Turn Off if rumble false-yields. "
+  + "Off = stock lat."
 )
 DM_SIMULATE_LOOKING_DESCRIPTION = (
   "Default Off on nap-release. Stock DM until you enable this via the "
