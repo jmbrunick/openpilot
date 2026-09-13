@@ -23,6 +23,8 @@ from openpilot.selfdrive.controls.lib.follow_stalk import (
   detect_follow_stalk,
   follow_distance_hud_text,
   persist_follow_distance,
+  poll_follow_distance_hud,
+  PARAM_FOLLOW_HUD_PENDING,
   stalk_adjusts_follow,
   step_follow_distance,
 )
@@ -31,6 +33,7 @@ from openpilot.selfdrive.controls.lib.follow_stalk import (
 class FakeParams:
   def __init__(self, follow=FOLLOW_DEFAULT):
     self._ints = {PARAM_FOLLOW: int(follow)}
+    self._bools = {}
 
   def get(self, key, return_default=False):
     if key in self._ints:
@@ -39,6 +42,12 @@ class FakeParams:
 
   def put(self, key, value):
     self._ints[key] = int(value)
+
+  def put_bool(self, key, value):
+    self._bools[key] = bool(value)
+
+  def get_bool(self, key):
+    return bool(self._bools.get(key, False))
 
 
 def _tip_then_idle(params, *, closer, raw_kph, prev_raw_kph, apply=True):
@@ -194,6 +203,27 @@ def test_button_events_and_hud_text():
   assert button_event_released([up]) is False
   assert follow_distance_hud_text(3) == "Follow Distance: 3"
   assert follow_distance_hud_text(7) == "Follow Distance: 7"
+
+
+def test_follow_hud_announces_every_param_change_after_seed():
+  prev, announce = poll_follow_distance_hud(None, 4)
+  assert prev == 4 and announce is False
+  prev, announce = poll_follow_distance_hud(prev, 3)
+  assert prev == 3 and announce is True
+  prev, announce = poll_follow_distance_hud(prev, 3)
+  assert announce is False
+  prev, announce = poll_follow_distance_hud(prev, None)
+  assert prev == 3 and announce is False
+
+
+def test_persist_follow_marks_hud_pending_even_at_limit():
+  p = FakeParams(follow=1)
+  assert persist_follow_distance(p, closer=True) == 1
+  assert p.get(PARAM_FOLLOW) == 1
+  assert p.get_bool(PARAM_FOLLOW_HUD_PENDING) is True
+  p = FakeParams(follow=7)
+  assert persist_follow_distance(p, closer=False) == 7
+  assert p.get_bool(PARAM_FOLLOW_HUD_PENDING) is True
   is_stalk, closer, undo = detect_follow_stalk(
     FakeParams(follow=4),
     has_lead=True, button_closer=True, raw_kph=None, prev_raw_kph=None,
@@ -309,6 +339,12 @@ def test_card_and_hud_wire_stock_follow_only():
   assert "follow_distance_hud_text" in events
   assert "followDistanceChanged" in selfdrived
   assert "NAPFollowDistance" in selfdrived
+  assert "NAPFollowHudPending" in selfdrived
+  assert "_follow_hud_until" in selfdrived
+  assert "poll_follow_distance_hud" in selfdrived
+  assert "ET.PERMANENT: follow_distance_changed_alert" in events
+  keys = (root / "common/params_keys.h").read_text()
+  assert "NAPFollowHudPending" in keys
   releases = (root / "RELEASES.md").read_text()
   docs = (root / "docs-nap/engagement.md").read_text()
   assert "Follow Distance: N" in releases
