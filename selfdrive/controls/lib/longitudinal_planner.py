@@ -26,8 +26,8 @@ from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.selfdrive.mapd.constants import MODE_CAP, MODE_FOLLOW, map_accel_a_ms2, map_brake_a_ms2
 from openpilot.selfdrive.mapd.map_speed_policy import (
-  cap_planner_v_cruise_ms, map_in_track_deadband, map_track_accel_ms2, map_track_decel_ms2,
-  read_map_speed_params,
+  cap_planner_v_cruise_ms, map_climb_replaces_mpc, map_in_track_deadband, map_track_accel_ms2,
+  map_track_decel_ms2, read_map_speed_params,
 )
 from openpilot.selfdrive.controls.lib.hill_climb import (
   apply_hill_climb, read_hypermile_hill_climb,
@@ -315,7 +315,7 @@ class LongitudinalPlanner:
           a_up = map_track_accel_ms2(
             v_ego, v_hud_ms, map_accel_a_ms2(self._map_speed_lookahead, self._map_speed_accel),
           )
-          if a_up is not None and float(output_a_target) >= 0.0 and not has_valid_lead:
+          if map_climb_replaces_mpc(a_up, output_a_target, has_valid_lead):
             # min() alone never created climb (MPC holds ~0). Command Accel 1–10
             # toward MAX only when no radar lead is following.
             output_a_target = a_up

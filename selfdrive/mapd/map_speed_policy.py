@@ -153,12 +153,22 @@ def map_track_decel_ms2(v_ego_ms: float, v_cruise_ms: float, a_comfort: float) -
   return -float(a_comfort) * scale
 
 
+def map_climb_replaces_mpc(a_up, output_a_target, has_valid_lead: bool) -> bool:
+  """True when map climb may replace a non-negative MPC aTarget.
+
+  A valid radar lead owns follow. Replacing ~0 / slight+ MPC with Accel 1–10
+  toward MAX punches through that lead, then overshoots and will not rematch.
+  map_track_decel when above MAX is a separate min() and is not gated here.
+  """
+  return a_up is not None and float(output_a_target) >= 0.0 and not bool(has_valid_lead)
+
+
 def map_track_accel_ms2(v_ego_ms: float, v_cruise_ms: float, a_comfort: float) -> float | None:
   """Comfort accel (positive m/s²) when catching a higher Follow MAX, or None.
 
   MPC cruise_obstacle will not climb to a higher MAX (V_EGO_COST=0). The
-  planner commands this a when ego is below MAX and MPC is not braking.
-  Accel 1–10 sets the climb rate. A slower lead (negative aTarget) still wins.
+  planner commands this a when ego is below MAX and MPC is not braking
+  *and* there is no valid radar lead. Accel 1–10 sets the climb rate.
   """
   if a_comfort <= 0 or v_ego_ms <= 0 or v_cruise_ms <= 0:
     return None

@@ -521,7 +521,7 @@ def test_settings_and_docs_wire_hill_climb():
   assert "maps-elevation lookahead" in planner
   assert "orientationNED" in planner
   assert "has_valid_lead" in planner
-  assert "not has_valid_lead" in planner
+  assert "map_climb_replaces_mpc" in planner
   hill = (root / "selfdrive/controls/lib/hill_climb.py").read_text()
   assert "TRACK_TAPER_MS" not in hill
   assert "_at_or_above_max" in hill
