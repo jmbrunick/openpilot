@@ -18,13 +18,25 @@ MAP_SPEED_ACCEL = list(range(1, 11))
 MAP_SPEED_ACCEL_LABELS = [str(i) for i in MAP_SPEED_ACCEL]
 MAP_SPEED_ACCEL_DEFAULT = 5
 MAP_SPEED_ACCEL_DESCRIPTION = (
-  "Scales MAX climb and open-road accel feel (1 lazy → 10 quicker). "
-  + "Also scales how hard it comes up behind a lead (close-the-gap +a). "
-  + "1=gentlest (MAX climb 0.36 / lead-close 0.20 m/s²), "
-  + "5=0.80 / 0.30, 10=quickest climb 1.60 (lead-close still 0.50). "
-  + "Brake to a lower MAX is locked at Accel 5 (0.80 m/s² at Normal). "
-  + "Lead still owns follow — map climb does not punch through a lead. "
-  + "A slower lead can still brake harder."
+  "MAX climb / open-road feel (1 lazy → 10 quicker). "
+  + "Brake to a lower MAX stays Accel 5. Lead still owns follow."
+)
+ADAPTIVE_ACCEL_DESCRIPTION = (
+  "Softer accel near a lead so you don't overshoot. "
+  + "Open road uses Acceleration 1–10."
+)
+MAP_SPEED_MODE_DESCRIPTION = (
+  "OSM posted limit for HUD MAX. Off: no change. Display: LIMIT sign only. "
+  + "Cap: never exceed. Follow: track the limit. A stalk set "
+  + "holds until the posted limit changes. Cap/Follow need the pedal."
+)
+MAP_SPEED_OFFSET_DESCRIPTION = (
+  "Added to the OSM limit for Cap/Follow (mph)."
+)
+MAP_SPEED_LOOKAHEAD_DESCRIPTION = (
+  "Ease MAX down for a lower limit ahead. Off: wait until GPS is on that way. "
+  + "A stalk set holds; lookahead pauses while that set is active. "
+  + "A higher limit far ahead never raises MAX. Radar lead still outranks map."
 )
 FOLLOW_DISTANCE_VALUES = list(range(1, 8))
 FOLLOW_DISTANCE_LABELS = [str(i) for i in FOLLOW_DISTANCE_VALUES]
@@ -34,40 +46,22 @@ NAP_HYPERMILE_STEP_DOWN = "NAPHypermileStepDown"
 NAP_HYPERMILE_HILL_CLIMB = "NAPHypermileHillClimb"
 HYPERMILE_DESCRIPTION = (
   "Default Off. Comfort-biased efficiency — early light ease, not max "
-  + "regen bite. On snaps Adaptive Accel, Cap/Follow, Early "
-  + "lookahead, and lazy climb (Accel 1), then restores them when Off. "
-  + "Eco offset is posted-scaled (0 under 50 mph, −8 at 80+, linear "
-  + "between) so town 30 stays 30 — not a flat −5. Only with a known "
-  + "map posted limit; maps off / unknown posted does not drop MAX. "
-  + "Soft-lat, DM, and blinker stay as you set them. Follow Distance "
-  + "1–7 stays the stock slider — stalk behind a lead steps that same "
-  + "param whether Hypermile is On or Off. Lead braking stays on."
+  + "regen. On snaps Adaptive Accel, Cap/Follow, Early lookahead, and "
+  + "Accel 1; Off restores. Eco offset is posted-scaled so town 30 stays "
+  + "30. Follow Distance stays the stock slider. Lead braking stays on."
 )
 FOLLOW_DISTANCE_DESCRIPTION = (
-  "Follow distance (1=closest, 7=farthest). A slower car ahead starts a "
-  + "gradual ease-off farther back (more distance, not a harder brake). "
-  + "Behind a radar lead, a stalk tip (1 mph) steps this instead of MAX; "
-  + "a full press (5 mph) still steps MAX. No lead: both still adjust MAX. "
-  + "Same param with Hypermile On or Off."
+  "1 closest, 7 farthest. A slower car ahead eases off farther back "
+  + "(more distance, not a harder brake). Behind a lead, a stalk tip "
+  + "steps this; a full press still steps MAX."
 )
 HYPERMILE_STEP_DOWN_DESCRIPTION = (
-  "Default Off. Defer Speed for Range — only while Hypermile is On. "
-  + "On: same posted-scale as eco, larger drop — 0 under 50 mph so "
-  + "town 30 stays 30, −15 at 80 (80→65), cap −15 above. Never more "
-  + "than 15 under, never above posted. Maps off / unknown posted does "
-  + "not invent a drop. Does not stack with eco. Off: "
-  + "hold posted / held MAX as usual. Follow sticky: a stalk SET can "
-  + "still hold above the step-down (up to posted) until the posted "
-  + "value changes. Cap cannot exceed the stepped target. One-SET "
-  + "resumes held MAX. Double SET takes the current map target "
-  + "(stepped if On)."
+  "Default Off. Only while Hypermile is On. Larger posted-scale drop "
+  + "(0 under 50 mph, −15 at 80). Maps-only; does not invent a drop."
 )
 HYPERMILE_HILL_CLIMB_DESCRIPTION = (
-  "Default On. Only while Hypermile is On. Uses IMU pitch (not a map "
-  + "elevation lookahead). Uphill: add grade to Accel 1 so the car does "
-  + "not sag under HUD MAX. Crest / downhill: early light regen, not a "
-  + "hard bite. Never raises MAX. Lead / MPC brake still wins. Off: "
-  + "stock Hypermile Accel 1 / map-track on flat and hills."
+  "Default On. Only while Hypermile is On. IMU pitch holds grade on "
+  + "Accel 1 climbs. Never raises MAX. Lead / MPC brake still wins."
 )
 
 NAP_SPEED_SIGN_LOG = "NAPSpeedSignLog"
@@ -76,14 +70,9 @@ NAP_DM_SIMULATE_LOOKING = "NAPDmSimulateLooking"
 NAP_DM_FALSE_ALERT_IGNORE = "NAPDmFalseAlertIgnore"
 NAP_FORCE_OFFROAD = "NAPForceOffroad"
 DRIVER_LAT_HANDOFF_DESCRIPTION = (
-  "Default On. A light purposeful push with a hand on the rim frees "
-  + "the wheel (OP stops steering the EPS) — typically avoiding "
-  + "something. Long stays on. Stays free while hands are on the rim. "
-  + "Hands off ~0.15 s, then the wheel blends back over 1 s. Gravel / "
-  + "wind / road-crown pressure should not trip. A hard brake during "
-  + "that yield fully cancels openpilot (chime); a light brake is still "
-  + "the silent long pause + one SET. Gray chrome means lat yielded — "
-  + "turn Off if rumble still false-yields. Off = stock lat, no yield."
+  "Default On. A light purposeful push frees the wheel. Hands off "
+  + "~0.15 s, then it blends back. Turn Off if rumble false-yields. "
+  + "Off = stock lat."
 )
 DM_SIMULATE_LOOKING_DESCRIPTION = (
   "Default On. nap-dev experiment. While engaged, after the look-at-road "

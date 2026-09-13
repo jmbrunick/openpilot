@@ -1,6 +1,6 @@
 NAP Acceleration settings placement (2026-09-13)
 ========================
-* Settings → NAP → **Driving Mannerisms** now has **Acceleration** 1–10 (`NAPMapSpeedAccel`, default 5). Same temperament as before: scales MAX climb / open-road accel feel (1 lazy → 10 quicker); map brake to a lower MAX stays Accel 5; lead still owns follow. Removed from Map Speed Limit so it sits with Adaptive Accel. Hypermile still snaps/restores Accel 1. No longitudinal math change.
+* Settings → NAP → **Driving Mannerisms** now has **Acceleration** 1–10 (`NAPMapSpeedAccel`, default 5). Same temperament as before: scales MAX climb / open-road accel feel (1 lazy → 10 quicker); map brake to a lower MAX stays Accel 5; lead still owns follow. Removed from Map Speed Limit so it sits with Adaptive Accel. Mannerisms order is accel feel → follow → soft lat → Hypermile; Map Speed is mode/offset/lookahead → refresh/download → status. Shorter settings copy. Hypermile still snaps/restores Accel 1. No longitudinal math change.
 
 NAP post-engage overlay stack revert (2026-09-13)
 ========================

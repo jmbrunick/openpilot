@@ -56,10 +56,10 @@ class MapSpeedLimitLayoutMici(NavScroller):
       map_mode,
       map_offset,
       map_lookahead,
-      self._map_db_status,
-      self._map_revision,
       refresh_maps_btn,
       download_maps_btn,
+      self._map_db_status,
+      self._map_revision,
     ])
 
   def show_event(self):
