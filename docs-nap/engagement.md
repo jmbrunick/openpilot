@@ -24,6 +24,10 @@ Pre-AP has two modes depending on whether a Comma Pedal is installed. Mode is se
 
 Interface flags for this mode: `openpilotLongitudinalControl=True`, `pcmCruise=False`. Long planner runs; accel goes to pedal.
 
+**Stock CC vs pedal long:** on the rising edge of `enableLongControl` (and while DI stays **ENABLED** or **STANDBY**), card keeps `preap_cc_cancel_needed` until `di_cruise_state` is neither. One CANCEL from ENABLED typically lands in STANDBY; a second CANCEL takes it OFF. That closes the gap where stock CC stayed armed and could fight the pedal. `PreAPLongController` already one-shots CANCEL on long rising / falling / a stalk press — the persist-until-off path is in `preap_force_offroad_handoff.py`.
+
+**Force Offroad while software long is on:** on-road, a big **Yes / No** (**Ready to resume steering control?**) comes first. **No** clears the toggle and leaves long as it was. **Yes**, then do **not** drop `started` until stock CC is ENABLED at current speed (CANCEL → STANDBY → drop OP long → SET_ACCEL). See [force-offroad.md](force-offroad.md). The handoff suppresses the engage-kill so it can park DI in STANDBY and SET.
+
 ## No-pedal mode
 
 `use_pedal=False`, no pedal hardware:
@@ -191,7 +195,9 @@ Always-on DM when not engaged does **not** simulate. Toggle **Off** = stock DM w
 - `selfdrive/car/tesla/preap_blinker_lat_pause.py` — blinker lat pause / soft-lat gate (does not drop long on driver turn)
 - `opendbc_repo/opendbc/car/tesla/preap/carstate.py:120+` — button event pump + cruise state publish
 - `opendbc_repo/opendbc/car/tesla/preap/carcontroller.py:40+` — pedal TX + stalk spoof scheduling
+- `selfdrive/car/tesla/preap_force_offroad_handoff.py` — Force Offroad cancel→STANDBY→drop long→SET; kill stock CC on OP long engage
 - `opendbc_repo/opendbc/car/tesla/preap/tests/test_preap_engagement.py` — FSM tests (brake drop, steering disengage, double-pull)
+- `selfdrive/car/tesla/tests/test_preap_force_offroad_handoff.py` — handoff ordering + kill-on-long
 - `selfdrive/car/tesla/tests/test_preap_blinker_lat_pause.py` — blinker lat pause, latched turn keeps long, brake still drops long
 - `selfdrive/car/tesla/tests/test_preap_sticky_max.py` — sticky MAX / silent long pause / one SET / double SET
 - `selfdrive/mapd/tests/test_map_speed_policy.py` — maps rebase only on posted-value change

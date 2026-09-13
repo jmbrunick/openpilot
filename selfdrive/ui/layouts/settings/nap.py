@@ -673,6 +673,8 @@ class NAPLayout(Widget):
     self._params.put_bool(NAP_DRIVER_LAT_HANDOFF, True)
     self._params.put_bool(NAP_DM_SIMULATE_LOOKING, False)
     self._params.put_bool(NAP_FORCE_OFFROAD, False)
+    self._params.put_bool("NAPForceOffroadConfirmed", False)
+    self._params.put_bool("NAPForceOffroadHandoffReady", False)
     self._page = "main"
     # Force Pre-AP is locked on in the panel but DEFAULTS keeps it off
     # for non-UI consumers. Re-apply the lock after the wholesale loop

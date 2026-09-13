@@ -15,6 +15,8 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   NAP_DM_SIMULATE_LOOKING,
   NAP_FORCE_OFFROAD,
 )
+from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.system.hardware.nap_force_offroad import apply_force_offroad_toggle
 from openpilot.system.ui.lib.application import gui_app, FontWeight, MousePos
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.button import Button, ButtonStyle
@@ -71,7 +73,7 @@ class HiddenTogglesPopup(Widget):
     self._params.put_bool(NAP_DM_SIMULATE_LOOKING, state)
 
   def _on_force_offroad(self, state):
-    self._params.put_bool(NAP_FORCE_OFFROAD, state)
+    apply_force_offroad_toggle(self._params, bool(state), started=bool(ui_state.started))
 
   def refresh(self):
     self._dm_item.action_item.set_state(self._params.get_bool(NAP_DM_SIMULATE_LOOKING))
@@ -134,6 +136,8 @@ class HiddenTogglesPopup(Widget):
     if content.height < ITEM_BASE_HEIGHT * 2:
       content.height = ITEM_BASE_HEIGHT * 2
     self._scroller.render(content)
+    # No on the confirm dialog clears the param; keep the switch in sync.
+    self._offroad_item.action_item.set_state(self._params.get_bool(NAP_FORCE_OFFROAD))
 
     if rl.is_key_pressed(rl.KeyboardKey.KEY_ESCAPE):
       self._dismiss()
