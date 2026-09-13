@@ -275,7 +275,8 @@ class LongitudinalPlanner:
     # Slower radar lead: Early 0.55 ease as soon as radar feedback is
     # reasonable (200 m Bosch ceiling, 24 s head-start, clear-close skips
     # the late-gap need). Far tracks need radar + modelProb; LeadData has
-    # no track age. Hysteresis + slew keep regen from chattering.
+    # no track age. Hysteresis (enter 0.55 / exit 0.12) + slew keep regen
+    # from chattering at the follow gap.
     # Map's +110 m is road distance to a sign and must not be used here.
     # Overlay never harder than 0.55; MPC close-in / FCW may still brake
     # harder. Map MAX overlay cannot cancel this.
