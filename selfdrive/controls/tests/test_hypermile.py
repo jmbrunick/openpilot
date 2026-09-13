@@ -87,10 +87,12 @@ def test_on_snaps_eco_and_off_restores_prior():
       "NAPAdaptiveAccel": False,
       "NAPDriverLatHandoff": True,
       "NAPDmSimulateLooking": False,
+      "NAPDmFalseAlertIgnore": False,
     },
   )
   lat_before = params.get_bool("NAPDriverLatHandoff")
   dm_before = params.get_bool("NAPDmSimulateLooking")
+  fai_before = params.get_bool("NAPDmFalseAlertIgnore")
   follow_before = params.get("NAPFollowDistance")
 
   assert apply_hypermile_toggle(params, True) is True
@@ -105,6 +107,7 @@ def test_on_snaps_eco_and_off_restores_prior():
   assert ECO_MAP_ACCEL == 1
   assert params.get_bool("NAPDriverLatHandoff") is lat_before
   assert params.get_bool("NAPDmSimulateLooking") is dm_before
+  assert params.get_bool("NAPDmFalseAlertIgnore") is fai_before
   assert params.get("NAPFollowDistance") == follow_before
   assert params.get(PARAM_SAVED)
 
@@ -121,6 +124,7 @@ def test_on_snaps_eco_and_off_restores_prior():
   assert params.get("NAPMapSpeedAccel") == 8
   assert params.get_bool("NAPDriverLatHandoff") is True
   assert params.get_bool("NAPDmSimulateLooking") is False
+  assert params.get_bool("NAPDmFalseAlertIgnore") is False
   assert params.get("NAPFollowDistance") == 4
   assert not params.get(PARAM_SAVED)
   # Step-down / Hill Climb are independent — eco snap/restore must not touch them.
