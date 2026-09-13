@@ -1,3 +1,7 @@
+NAP Follow Distance stalk tip vs hold (2026-09-13)
+========================
+* Behind a radar lead, a Tesla stalk **tip / bump** (1 mph / 1 kph cruise step) adjusts stock Follow Distance 1–7 only and undoes that frame’s MAX / `pedal_speed` step (HUD **Follow Distance: N**). A **full press** (5 mph / 5 kph) keeps MAX +5/−5 and does not remap Follow Distance. No lead: tip and hold both still step MAX as stock. Pedal delta magnitude is the source of truth; a button-only edge without a clear 5 mph delta still counts as a tip. Not Hypermile.
+
 NAP Follow Distance stalk (2026-09-13)
 ========================
 * With a radar lead, stalk up/down steps stock Follow Distance **1–7** (`NAPFollowDistance`) — the same control as Settings → NAP → Driving Mannerisms. HUD shows **Follow Distance: N**. That frame's MAX / `pedal_speed` step is undone so sticky MAX does not arm. No lead: stalk still adjusts MAX / RES+/−. Full stock 1–7 including closest. Not Hypermile (no 1–5, Step Down, Hill Climb, eco offsets, or ≤50 far-gap).
