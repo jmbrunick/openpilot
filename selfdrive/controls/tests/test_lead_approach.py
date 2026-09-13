@@ -9,6 +9,7 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_APPROACH_MAX_HOLD_M,
   LEAD_APPROACH_MAX_START_M,
   LEAD_APPROACH_MODEL_PROB_MIN,
+  LEAD_APPROACH_NIBBLE_MS2,
   LEAD_APPROACH_NEED_HOLD_M,
   LEAD_APPROACH_RELIABLE_M,
   LEAD_APPROACH_SLACK_OFF_M,
@@ -16,6 +17,7 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_APPROACH_SLEW_MS2,
   NAP_T_FOLLOW,
   STOP_DISTANCE,
+  apply_lead_approach_overlay,
   lead_approach_decel_ms2,
   lead_approach_need_m,
   lead_approach_track_ok,
@@ -48,18 +50,25 @@ def test_lead_approach_keeps_early_map_brake_not_map_110m_margin():
   assert abs(LEAD_APPROACH_HEADSTART_S - 24.0) < 1e-9
   assert abs(LEAD_APPROACH_MAX_START_M - 200.0) < 1e-9
   assert abs(LEAD_APPROACH_RELIABLE_M - 140.0) < 1e-9
-  assert abs(LEAD_APPROACH_CLEAR_DV_MS - 1.0) < 1e-9
+  assert abs(LEAD_APPROACH_CLEAR_DV_MS - 2.5) < 1e-9
   assert abs(LEAD_APPROACH_MODEL_PROB_MIN - 0.50) < 1e-9
   assert LEAD_APPROACH_RELIABLE_M < LEAD_APPROACH_MAX_START_M
   assert LEAD_APPROACH_CLEAR_DV_MS > LEAD_APPROACH_DV_MS
   assert LEAD_APPROACH_A_MS2 < 0.80
   assert LEAD_APPROACH_A_MS2 < 1.0
   assert LEAD_APPROACH_A_MS2 < 2.5
+  # Tiny comfort tune: raise enter only. Exit stays 0.20 so we still close.
+  assert abs(LEAD_APPROACH_DV_MS - 0.55) < 1e-9
+  assert abs(LEAD_APPROACH_DV_OFF_MS - 0.20) < 1e-9
   assert LEAD_APPROACH_DV_OFF_MS < LEAD_APPROACH_DV_MS
+  assert LEAD_APPROACH_DV_MS > 0.50  # harder rematch re-enter than #122
   assert LEAD_APPROACH_SLACK_OFF_M < LEAD_APPROACH_SLACK_ON_M
   assert LEAD_APPROACH_NEED_HOLD_M > 0.0
   assert LEAD_APPROACH_MAX_HOLD_M > 0.0
   assert abs(LEAD_APPROACH_SLEW_MS2 - 0.05) < 1e-9
+  assert abs(LEAD_APPROACH_NIBBLE_MS2 - 0.15) < 1e-9
+  assert LEAD_APPROACH_NIBBLE_MS2 > 0.13  # covers matching-traffic |a|
+  assert abs(LEAD_APPROACH_A_MS2 - 0.55) < 1e-9  # peak unchanged
   import openpilot.selfdrive.controls.lib.lead_approach as lead_approach
   assert not hasattr(lead_approach, "LEAD_APPROACH_MARGIN_M")
 
@@ -233,6 +242,43 @@ def test_lead_approach_hysteresis_holds_through_v_rel_and_slack_noise():
   assert lead_approach_decel_ms2(v_lead - 0.5, v_lead, d_rel, t4, active=True) is None
   assert lead_approach_decel_ms2(v_ego, v_lead, d_follow - 0.5, t4, active=True) is None
 
+  # Exit stays 0.20 so a 0.16 rematch-adjacent close can finish onto the gap.
+  v_finish = v_lead + 0.16
+  assert v_finish - v_lead < LEAD_APPROACH_DV_OFF_MS
+  assert lead_approach_decel_ms2(v_finish, v_lead, d_rel, t4, active=True) is None
+  # Rematch at the old 0.50 enter must not re-bite.
+  v_old_enter = v_lead + 0.52
+  assert 0.50 < 0.52 < LEAD_APPROACH_DV_MS
+  assert lead_approach_decel_ms2(v_old_enter, v_lead, d_rel, t4, active=False) is None
+  assert lead_approach_decel_ms2(v_lead + LEAD_APPROACH_DV_MS + 0.01, v_lead, d_rel, t4, active=False) is not None
+  assert lead_approach_decel_ms2(v_lead + LEAD_APPROACH_DV_OFF_MS - 0.02, v_lead, d_rel, t4, active=True) is None
+
+
+def test_lead_approach_gap_edge_rematch_does_not_chatter():
+  """Slight-grade rematch: rematch after a 0.20 exit used to re-cross 0.50.
+
+  Enter 0.55 blocks that re-bite. Exit stays 0.20 so we still drop and close.
+  """
+  v_lead = 22.0
+  t4 = nap_t_follow(4)
+  d_follow = t4 * v_lead + STOP_DISTANCE
+  d_rel = d_follow + 3.0
+
+  v_on = v_lead + LEAD_APPROACH_DV_MS + 0.05
+  assert lead_approach_decel_ms2(v_on, v_lead, d_rel, t4, active=False) is not None
+
+  # Hold just above the 0.20 exit; drop at/under it so rematch can finish.
+  assert lead_approach_decel_ms2(v_lead + 0.21, v_lead, d_rel, t4, active=True) is not None
+  assert lead_approach_decel_ms2(v_lead + 0.19, v_lead, d_rel, t4, active=True) is None
+  assert lead_approach_decel_ms2(v_lead + 0.08, v_lead, d_rel, t4, active=True) is None
+
+  # After drop, old enter 0.50–0.54 stays off so rematch does not re-bite.
+  for dv in (0.50, 0.52, 0.54):
+    assert 0.50 <= dv < LEAD_APPROACH_DV_MS
+    assert lead_approach_decel_ms2(v_lead + dv, v_lead, d_rel, t4, active=False) is None
+
+  assert lead_approach_decel_ms2(v_lead + LEAD_APPROACH_DV_MS + 0.01, v_lead, d_rel, t4, active=False) is not None
+
 
 def test_lead_approach_slew_softens_onset_and_releases_immediately():
   """Regen onset is gradual; milder / off is not held in regen."""
@@ -240,17 +286,18 @@ def test_lead_approach_slew_softens_onset_and_releases_immediately():
   a = slew_lead_approach_a(target, None)
   assert a == pytest.approx(-LEAD_APPROACH_SLEW_MS2)
   prev = None
-  frames = 0
-  for frames in range(1, 20):
+  reached = 0
+  for n in range(1, 20):
     prev = slew_lead_approach_a(target, prev)
     assert prev is not None
     assert prev >= target - 1e-9
+    reached = n
     if abs(prev - target) < 1e-9:
       break
   else:
     raise AssertionError("slew did not reach comfort peak")
   assert abs(prev + LEAD_APPROACH_A_MS2) < 1e-9
-  assert frames == int(round(LEAD_APPROACH_A_MS2 / LEAD_APPROACH_SLEW_MS2))
+  assert reached == int(round(LEAD_APPROACH_A_MS2 / LEAD_APPROACH_SLEW_MS2))
 
   assert slew_lead_approach_a(-0.10, -0.40) == pytest.approx(-0.10)
   assert slew_lead_approach_a(None, -0.40) is None
@@ -310,6 +357,17 @@ def test_far_flicker_rejected_without_radar_or_model_prob():
   ) is None
 
 
+def test_accel1_catchup_at_one_ms_is_not_clear_close():
+  """v_rel=1.0 / 35 m slack is Accel-1 catch-up. Overlay must stay off."""
+  v_ego = 25.0
+  v_lead = 24.0
+  t4 = nap_t_follow(4)
+  d_follow = t4 * v_lead + STOP_DISTANCE
+  assert v_ego - v_lead < LEAD_APPROACH_CLEAR_DV_MS
+  assert lead_approach_decel_ms2(v_ego, v_lead, d_follow + 35.0, t4) is None
+  assert lead_approach_decel_ms2(v_lead + LEAD_APPROACH_CLEAR_DV_MS + 0.2, v_lead, d_follow + 35.0, t4) is not None
+
+
 def test_clear_close_allows_large_slack_still_capped():
   """v_rel clearly positive + valid lead: ease even with slack past need."""
   v_ego = 60.0 * 0.44704
@@ -333,6 +391,18 @@ def test_clear_close_allows_large_slack_still_capped():
   ) is None
 
 
+def test_nibble_overlay_does_not_steal_catchup_plus_a():
+  """Far/gentle overlay must not beat rematch +a. Real ease / MPC 0/−a still min()."""
+  assert apply_lead_approach_overlay(0.20, -0.05) == pytest.approx(0.20)
+  assert apply_lead_approach_overlay(0.20, -0.13) == pytest.approx(0.20)
+  assert apply_lead_approach_overlay(0.20, -LEAD_APPROACH_NIBBLE_MS2) == pytest.approx(-LEAD_APPROACH_NIBBLE_MS2)
+  assert apply_lead_approach_overlay(0.20, -0.20) == pytest.approx(-0.20)
+  assert apply_lead_approach_overlay(0.0, -0.05) == pytest.approx(-0.05)
+  assert apply_lead_approach_overlay(-0.30, -0.05) == pytest.approx(-0.30)
+  assert apply_lead_approach_overlay(-0.10, -0.20) == pytest.approx(-0.20)
+  assert apply_lead_approach_overlay(0.20, None) == pytest.approx(0.20)
+
+
 def test_planner_wires_hysteresis_and_slew():
   """Overlay stays after map track; MPC hard path is still a min()."""
   from pathlib import Path
@@ -341,6 +411,6 @@ def test_planner_wires_hysteresis_and_slew():
   assert "model_prob=lead.modelProb" in planner
   assert "radar=lead.radar" in planner
   assert "slew_lead_approach_a(a_lead, self._lead_approach_a)" in planner
-  assert "min(float(output_a_target), a_lead)" in planner
+  assert "apply_lead_approach_overlay(output_a_target, a_lead)" in planner
   assert "hypermile" not in planner.lower()
   assert "hill_climb" not in planner.lower()
