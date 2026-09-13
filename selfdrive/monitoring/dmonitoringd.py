@@ -2,7 +2,9 @@
 import cereal.messaging as messaging
 from openpilot.common.params import Params
 from openpilot.common.realtime import config_realtime_process
-from openpilot.selfdrive.monitoring.policy import DriverMonitoring
+from openpilot.selfdrive.monitoring.policy import (
+  DriverMonitoring, PARAM_DM_FALSE_ALERT_IGNORE, PARAM_DM_SIMULATE_LOOKING,
+)
 
 
 def dmonitoringd_thread():
@@ -32,9 +34,17 @@ def dmonitoringd_thread():
     dat = DM.get_state_packet(valid=valid)
     pm.send('driverMonitoringState', dat)
 
-    # load live always-on toggle
+    # load live always-on toggle and hidden NAP DM toggles
     if sm['driverStateV2'].frameId % 40 == 1:
       DM.always_on = params.get_bool("AlwaysOnDM")
+      try:
+        DM.nap_dm_simulate_looking = params.get_bool(PARAM_DM_SIMULATE_LOOKING)
+      except Exception:
+        DM.nap_dm_simulate_looking = False
+      try:
+        DM.nap_dm_false_alert_ignore = params.get_bool(PARAM_DM_FALSE_ALERT_IGNORE)
+      except Exception:
+        DM.nap_dm_false_alert_ignore = False
       demo_mode = params.get_bool("IsDriverViewEnabled")
 
     # save rhd virtual toggle every 5 mins

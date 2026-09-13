@@ -27,15 +27,17 @@ def to_percent(v):
 #  We recommend that you do not change these numbers from the defaults.
 # ******************************************************************************************
 
-# NAP: simulate looking at the road so stock awareness recovers on the
-# same vision path as a real glance. Hidden: Settings → triple-tap NAP.
-# Default Off on nap-release (stock DM until Justin enables it).
-# After drain starts: wait past 1.0 s, then fire at a random time in
-# the next 2.0 s — fire time uniform in (1.0 s, 3.0 s]. Hold looking
-# until gradual recovery returns awareness to 1.0. After a full reset
-# the same rule applies to the next countdown. Toggle Off = stock DM.
-# Hands-on ≥ 2 / stalk / door / reverse hard cancels are unchanged.
+# NAP hidden DM toggles (triple-tap Settings → NAP). Shared cadence:
+# after drain starts, wait past 1.0 s, then fire uniform in (1.0 s, 3.0 s].
+# Hold until gradual recovery returns awareness to 1.0. After a full
+# reset the same rule applies to the next countdown.
+# Simulate Look: no-face / uncertain glance only. Never wipes pose, eye,
+# or phone. False Alert Ignore: soft-clear phone/device false positives
+# only. Pose and eye always drain / alert. Default Off on nap-release
+# (stock DM until Justin enables a toggle). Hands-on ≥ 2 / stalk /
+# door / reverse unchanged.
 PARAM_DM_SIMULATE_LOOKING = "NAPDmSimulateLooking"
+PARAM_DM_FALSE_ALERT_IGNORE = "NAPDmFalseAlertIgnore"
 LOOK_SIM_COUNTDOWN_MIN_S = 1.0
 LOOK_SIM_RANDOM_WINDOW_S = 2.0
 LOOK_SIM_FIRE_MAX_S = LOOK_SIM_COUNTDOWN_MIN_S + LOOK_SIM_RANDOM_WINDOW_S  # 3.0
@@ -43,6 +45,8 @@ LOOK_SIM_FIRE_MAX_S = LOOK_SIM_COUNTDOWN_MIN_S + LOOK_SIM_RANDOM_WINDOW_S  # 3.0
 LOOK_SIM_HOLD_MIN_S = 0.5
 # Covers wheeltouch recovery from empty awareness (~11 s) plus margin.
 LOOK_SIM_HOLD_MAX_S = 12.0
+LOOK_SIM_MODE_PHONE = "phone"
+LOOK_SIM_MODE_GLANCE = "glance"
 # Stock looking-path: filter.x below this + face + low pose std.
 VISION_LOOKING_FILTER_X = 0.37
 VISION_RECOVERY_FACTOR_MAX = 5.0
@@ -212,11 +216,13 @@ class DriverMonitoring:
     self.too_distracted = _param_bool("DriverTooDistracted", False)
     # Default Off on nap-release. Hidden triple-tap NAP popup can turn On.
     self.nap_dm_simulate_looking = _param_bool(PARAM_DM_SIMULATE_LOOKING, False)
+    self.nap_dm_false_alert_ignore = _param_bool(PARAM_DM_FALSE_ALERT_IGNORE, False)
     self._rng = random.Random()
     self._look_sim_countdown_s = 0.0
     self._look_sim_holding = False
     self._look_sim_hold_s = 0.0
     self._look_sim_hold_start_awareness = 1.0
+    self._look_sim_mode = None
     self._redraw_look_sim_interval()
 
     self._reset_awareness()
@@ -228,18 +234,57 @@ class DriverMonitoring:
     delay = (1.0 - self._rng.random()) * LOOK_SIM_RANDOM_WINDOW_S
     self._look_sim_fire_s = LOOK_SIM_COUNTDOWN_MIN_S + delay
 
-  def _apply_simulated_looking(self):
-    """Force the same predicates a real glance uses on the vision path."""
+  def _look_sim_active(self) -> bool:
+    return bool(self.nap_dm_simulate_looking or self.nap_dm_false_alert_ignore)
+
+  def _pose_or_eye_alarming(self) -> bool:
+    return bool(self.distracted_types['pose'] or self.distracted_types['eye'])
+
+  def _phone_soft_clear_eligible(self) -> bool:
+    """False device only: phone bit, face + low std, pose/eye not alarming."""
+    return (self.nap_dm_false_alert_ignore
+            and bool(self.distracted_types['phone'])
+            and not self._pose_or_eye_alarming()
+            and self.face_detected
+            and self.pose.low_std)
+
+  def _simulate_look_glance_eligible(self) -> bool:
+    """No-face / uncertain glance. Never pose, eye, or phone."""
+    return (self.nap_dm_simulate_looking
+            and not self._pose_or_eye_alarming()
+            and not self.distracted_types['phone']
+            and (not self.face_detected or self.is_model_uncertain))
+
+  def _apply_phone_soft_clear(self):
+    """Ignore phoneProb / phone distraction only. Pose and eye stay live."""
+    self.distracted_types['phone'] = False
+    self.driver_distracted = (any(self.distracted_types.values())
+                              and self.face_detected and self.pose.low_std)
+    if not self.driver_distracted:
+      self.driver_distraction_filter.x = 0.0
+
+  def _apply_simulated_looking(self) -> bool:
+    """Looking-path inject for no-face / uncertain. Not a pose/eye/phone wipe."""
+    if self._pose_or_eye_alarming() or self.distracted_types['phone']:
+      return False
     self.face_detected = True
     self.pose.low_std = True
     self.is_model_uncertain = False
     self.driver_distracted = False
     self.driver_distraction_filter.x = 0.0
+    return True
+
+  def _abort_look_sim_hold(self):
+    """Stop a hold without consuming the fire window — pose/eye must drain."""
+    self._look_sim_holding = False
+    self._look_sim_hold_s = 0.0
+    self._look_sim_mode = None
 
   def _end_look_sim_hold(self, redraw=True):
     self._look_sim_holding = False
     self._look_sim_hold_s = 0.0
     self._look_sim_countdown_s = 0.0
+    self._look_sim_mode = None
     if redraw:
       self._redraw_look_sim_interval()
 
@@ -251,15 +296,40 @@ class DriverMonitoring:
     return (self.awareness >= 1.0 - 1e-9 and
             self._look_sim_hold_s + 1e-9 >= LOOK_SIM_HOLD_MIN_S)
 
+  def _start_look_sim_hold(self, mode):
+    self._look_sim_holding = True
+    self._look_sim_mode = mode
+    self._look_sim_hold_s = DT_DMON
+    self._look_sim_hold_start_awareness = self.awareness
+
   def _maybe_simulate_looking(self, op_engaged, allow_look_sim):
-    """After ~1 s of countdown, hold looking until awareness recovers to 1.0."""
-    if not (allow_look_sim and self.nap_dm_simulate_looking and op_engaged):
+    """Shared 1–3 s cadence for False Alert Ignore and Simulate Look."""
+    if not (allow_look_sim and self._look_sim_active() and op_engaged):
       if not op_engaged:
         self._end_look_sim_hold(redraw=False)
       return
 
     if self._look_sim_holding:
-      self._apply_simulated_looking()
+      if self._pose_or_eye_alarming():
+        self._abort_look_sim_hold()
+        # A phone hold snaps the distraction filter to 0. Restore it so a
+        # new pose/eye alarm is not treated as looking for ~0.25 s.
+        if self.driver_distracted:
+          self.driver_distraction_filter.x = max(
+            self.driver_distraction_filter.x, 0.64)
+        return
+      if self._look_sim_mode == LOOK_SIM_MODE_PHONE:
+        if not self.nap_dm_false_alert_ignore:
+          self._end_look_sim_hold(redraw=True)
+          return
+        self._apply_phone_soft_clear()
+      else:
+        if not self.nap_dm_simulate_looking or self.distracted_types['phone']:
+          self._end_look_sim_hold(redraw=True)
+          return
+        if not self._apply_simulated_looking():
+          self._abort_look_sim_hold()
+          return
       self._look_sim_hold_s += DT_DMON
       self._look_sim_countdown_s = 0.0
       # Stock looking recovery requires awareness > 0 (red does not climb).
@@ -277,10 +347,14 @@ class DriverMonitoring:
     # Past 1.0 s of drain, then the drawn time in (1.0, 3.0].
     if (self._look_sim_countdown_s > LOOK_SIM_COUNTDOWN_MIN_S and
         self._look_sim_countdown_s + 1e-9 >= self._look_sim_fire_s):
-      self._look_sim_holding = True
-      self._look_sim_hold_s = DT_DMON
-      self._look_sim_hold_start_awareness = self.awareness
-      self._apply_simulated_looking()
+      if self._pose_or_eye_alarming():
+        return
+      if self._phone_soft_clear_eligible():
+        self._start_look_sim_hold(LOOK_SIM_MODE_PHONE)
+        self._apply_phone_soft_clear()
+      elif self._simulate_look_glance_eligible():
+        self._start_look_sim_hold(LOOK_SIM_MODE_GLANCE)
+        self._apply_simulated_looking()
 
   def _reset_awareness(self):
     self.awareness = 1.
