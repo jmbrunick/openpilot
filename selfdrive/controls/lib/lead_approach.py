@@ -22,7 +22,9 @@ On a slight grade, radar `v_rel` / slack chatter around the follow gap used
 to snap this overlay on/off (regen bite → Accel-1 crawl → bite). Enter/exit
 hysteresis plus a per-frame slew on more-negative `a` hold a steady ease
 instead of chattering. Off / milder `a` is immediate so rematch is not stuck
-in regen.
+in regen. After the first hysteresis pass, leftover occasional bump-pull
+was still that gap-edge rematch (overlay |a| ~0.06–0.13, then Accel-1),
+not the 0.55 peak — so the band is a bit wider; peak and onset slew stay.
 
 Positive close-the-gap accel is a separate cap (`lead_close_accel_ms2`).
 Map Accel 1–10 used to gate only MAX-rise climb; Adaptive Accel used the
@@ -58,9 +60,11 @@ LEAD_APPROACH_MODEL_PROB_MIN = 0.50  # radard association gate
 LEAD_APPROACH_CLEAR_DV_MS = 1.0
 
 # Enter / exit (hysteresis). A single v_rel / slack gate chatters around
-# the follow gap on a slight incline (regen ↔ Accel-1).
-LEAD_APPROACH_DV_MS = 0.5          # enter: ~1 mph closing; ignore radar jitter
-LEAD_APPROACH_DV_OFF_MS = 0.20     # exit: ~0.45 mph; hold through ±0.15 noise
+# the follow gap on a slight incline (regen ↔ Accel-1). First pass was
+# 0.50 / 0.20; leftover bump-pull was rematch re-crossing 0.50 after an
+# exit at 0.20. Slightly wider band; do not park far back (slack gates stay).
+LEAD_APPROACH_DV_MS = 0.55         # enter: ~1.2 mph closing; ignore radar jitter
+LEAD_APPROACH_DV_OFF_MS = 0.12     # exit: ~0.27 mph; hold through rematch noise
 LEAD_APPROACH_SLACK_ON_M = 1.0     # enter only with slack above Follow Distance
 LEAD_APPROACH_SLACK_OFF_M = 0.0    # stay until at/inside the follow gap
 LEAD_APPROACH_NEED_HOLD_M = 4.0    # extra slack (m) before dropping after open
