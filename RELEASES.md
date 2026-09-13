@@ -1,6 +1,6 @@
 NAP lead-follow comfort (2026-09-13)
 ========================
-* Pre-AP lead-approach hysteresis is a bit wider so occasional **bump-pull** (regen bite → Accel rematch → bite) at the follow gap is less chatty. Enter `v_rel` **0.55** m/s (~1.2 mph), exit **0.12** m/s (~0.27 mph); was 0.50 / 0.20. Comfort peak **0.55**, onset slew **0.05**/frame, slack gates, and immediate release stay. Still closes onto Follow Distance 1–7. MPC / FCW / danger braking unchanged.
+* Pre-AP lead-approach enter is a bit higher so occasional **bump-pull** (regen bite → Accel rematch → bite) at the follow gap is less chatty. Enter `v_rel` **0.55** m/s (~1.2 mph); exit stays **0.20** (a 0.12 exit parked far back of Follow Distance). Clear-close skip is **1.05** m/s so Accel-1 catch-up at 1.0 m/s / large slack stays +a. Comfort peak **0.55**, onset slew **0.05**/frame, slack gates, and immediate release stay. Still closes onto Follow Distance 1–7. MPC / FCW / danger braking unchanged.
 
 NAP Follow stalk tip vs full press (2026-09-13)
 ========================
