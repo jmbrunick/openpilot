@@ -1,3 +1,7 @@
+NAP Force Offroad stock-CC handoff (2026-09-13)
+========================
+* Pre-AP pedal / software long (`enableLongControl`): Force Offroad first shows a big on-road **Yes / No** (**Ready to resume steering control?**). No cancels the toggle and leaves assist as-is. Yes then holds `started` until stock Tesla CC is **ENABLED** at current speed (CANCEL toward STANDBY, drop OP long, SET_ACCEL). Avoids the hard regen bite when OP long dropped with nothing holding speed. Lat-only / stock-CC / not engaged: Yes still required on-road, then today's immediate offroad. Parked: no popup. On OP long engage, stock CC is canceled off if it was ENABLED or STANDBY so it does not fight the pedal. 2.5 s card / 3.0 s hardwared fallback if DI never takes SET (timeout starts only after Yes).
+
 NAP lead-follow comfort (2026-09-13)
 ========================
 * Pre-AP lead-approach enter is a bit higher so occasional **bump-pull** (regen bite → Accel rematch → bite) at the follow gap is less chatty. Enter `v_rel` **0.55** m/s (~1.2 mph); exit stays **0.20**. A far/gentle overlay nibble (|a| < **0.15**) must not steal Accel-1 catch-up / Follow Distance close; real ease and MPC 0/−a still use `min()`. Clear-close skip is **2.5** m/s (~5.6 mph). Comfort peak **0.55**, onset slew **0.05**/frame, slack gates, and immediate release stay. Still closes onto Follow Distance 1–7. MPC / FCW / danger braking unchanged.

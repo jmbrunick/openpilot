@@ -10,6 +10,8 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   NAP_DM_SIMULATE_LOOKING,
   NAP_FORCE_OFFROAD,
 )
+from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.system.hardware.nap_force_offroad import apply_force_offroad_toggle
 from openpilot.system.ui.lib.application import MousePos
 from openpilot.system.ui.widgets import Widget
 from openpilot.selfdrive.ui.mici.widgets.button import BigParamControl
@@ -28,11 +30,15 @@ class HiddenTogglesOverlayMici(Widget):
     self._card_rect = rl.Rectangle(0, 0, 0, 0)
 
     # Must stay enabled while onroad — that is the point of Force Offroad.
-    self._offroad = BigParamControl("force offroad", NAP_FORCE_OFFROAD)
+    self._offroad = BigParamControl("force offroad", NAP_FORCE_OFFROAD,
+                                    toggle_callback=self._on_force_offroad)
     self._offroad.set_value("WARNING: stops OP — drive manually")
 
     self._dm = BigParamControl("simulate look", NAP_DM_SIMULATE_LOOKING)
     self._dm.set_value("On — hold glance at random in 1–3 s of drain")
+
+  def _on_force_offroad(self, state):
+    apply_force_offroad_toggle(self._params, bool(state), started=bool(ui_state.started))
 
   def show_event(self):
     super().show_event()
@@ -64,3 +70,4 @@ class HiddenTogglesOverlayMici(Widget):
     self._offroad.render(rl.Rectangle(x, y, self._offroad.rect.width, self._offroad.rect.height))
     y += self._offroad.rect.height + CARD_PAD
     self._dm.render(rl.Rectangle(x, y, self._dm.rect.width, self._dm.rect.height))
+    self._offroad.refresh()

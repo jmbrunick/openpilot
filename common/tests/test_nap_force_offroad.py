@@ -12,14 +12,20 @@ _mod = importlib.util.module_from_spec(_spec)
 assert _spec.loader is not None
 _spec.loader.exec_module(_mod)
 PARAM = _mod.PARAM
+HANDOFF_READY_PARAM = _mod.HANDOFF_READY_PARAM
+CONFIRMED_PARAM = _mod.CONFIRMED_PARAM
+CONFIRM_PROMPT = _mod.CONFIRM_PROMPT
 allows_onroad = _mod.allows_onroad
+apply_force_offroad_toggle = _mod.apply_force_offroad_toggle
+cancel_force_offroad = _mod.cancel_force_offroad
+confirm_force_offroad = _mod.confirm_force_offroad
+handoff_wait_timed_out = _mod.handoff_wait_timed_out
+needs_driver_confirm = _mod.needs_driver_confirm
 should_start_now = _mod.should_start_now
 
 
-def test_param_default_off_and_clears_on_ignition_and_manager():
-  keys = (ROOT / "common" / "params_keys.h").read_text(encoding="utf-8")
-  assert PARAM == "NAPForceOffroad"
-  line = next(ln for ln in keys.splitlines() if '"NAPForceOffroad"' in ln)
+def _assert_force_offroad_param_line(keys: str, name: str):
+  line = next(ln for ln in keys.splitlines() if f'"{name}"' in ln)
   assert "CLEAR_ON_MANAGER_START" in line
   assert "CLEAR_ON_IGNITION_ON" in line
   assert "PERSISTENT" not in line
@@ -28,9 +34,66 @@ def test_param_default_off_and_clears_on_ignition_and_manager():
   assert 'BOOL, "0"' in line
 
 
+def test_param_default_off_and_clears_on_ignition_and_manager():
+  keys = (ROOT / "common" / "params_keys.h").read_text(encoding="utf-8")
+  assert PARAM == "NAPForceOffroad"
+  assert HANDOFF_READY_PARAM == "NAPForceOffroadHandoffReady"
+  assert CONFIRMED_PARAM == "NAPForceOffroadConfirmed"
+  assert CONFIRM_PROMPT == "Ready to resume steering control?"
+  _assert_force_offroad_param_line(keys, PARAM)
+  _assert_force_offroad_param_line(keys, HANDOFF_READY_PARAM)
+  _assert_force_offroad_param_line(keys, CONFIRMED_PARAM)
+
+
 def test_allows_onroad_default_and_toggle():
   assert allows_onroad(False) is True
   assert allows_onroad(True) is False
+
+
+def test_allows_onroad_holds_while_handoff_pending():
+  """Already onroad + Force Offroad: keep started until stock CC ENABLED or timeout."""
+  assert allows_onroad(True, already_started=True, handoff_ready=False) is True
+  assert allows_onroad(True, already_started=True, handoff_ready=True) is False
+  assert allows_onroad(True, already_started=True, handoff_ready=False, timed_out=True) is False
+  # Parked / not started: do not wait — stay offroad.
+  assert allows_onroad(True, already_started=False, handoff_ready=False) is False
+  assert handoff_wait_timed_out(None, 10.0) is False
+  assert handoff_wait_timed_out(0.0, 2.9) is False
+  assert handoff_wait_timed_out(0.0, 3.0) is True
+
+
+def test_onroad_confirm_holds_started_until_yes():
+  assert needs_driver_confirm(True, False, True) is True
+  assert needs_driver_confirm(True, True, True) is False
+  assert needs_driver_confirm(True, False, False) is False
+  assert needs_driver_confirm(False, False, True) is False
+  # Yes not tapped: stay onroad even if handoff_ready leaked.
+  assert allows_onroad(True, already_started=True, confirmed=False, handoff_ready=True) is True
+  assert allows_onroad(True, already_started=True, confirmed=True, handoff_ready=True) is False
+
+
+def test_apply_toggle_and_no_clears_intent():
+  class P:
+    def __init__(self):
+      self.d = {}
+    def put_bool(self, k, v):
+      self.d[k] = bool(v)
+    def get_bool(self, k):
+      return bool(self.d.get(k, False))
+
+  p = P()
+  apply_force_offroad_toggle(p, True, started=True)
+  assert p.get_bool(PARAM) is True
+  assert p.get_bool(CONFIRMED_PARAM) is False
+  confirm_force_offroad(p)
+  assert p.get_bool(CONFIRMED_PARAM) is True
+  cancel_force_offroad(p)
+  assert p.get_bool(PARAM) is False
+  assert p.get_bool(CONFIRMED_PARAM) is False
+  assert p.get_bool(HANDOFF_READY_PARAM) is False
+
+  apply_force_offroad_toggle(p, True, started=False)
+  assert p.get_bool(CONFIRMED_PARAM) is True
 
 
 def test_force_offroad_blocks_should_start_while_ignition_on():
@@ -60,6 +123,10 @@ def test_hardwared_hooks_param_before_ign_edge():
   assert "nap_force_offroad_allows_onroad" in text
   assert "should_start_now" in text
   assert "NAP_FORCE_OFFROAD_PARAM" in text
+  assert "NAP_FORCE_OFFROAD_HANDOFF_READY_PARAM" in text
+  assert "NAP_FORCE_OFFROAD_CONFIRMED_PARAM" in text
+  assert "handoff_ready" in text
+  assert "force_offroad_confirmed" in text
   cond = text.index('onroad_conditions["not_force_offroad"]')
   edge = text.index("ign_edge =")
   assert cond < edge
@@ -92,9 +159,14 @@ def test_settings_and_docs_cover_warning_and_reset():
   assert "WARNING" in content
   assert "Drive manually" in content
   assert "NAPForceOffroad" in docs
+  assert "NAPForceOffroadHandoffReady" in docs
+  assert "NAPForceOffroadConfirmed" in docs
+  assert "Ready to resume steering control?" in docs
   assert "CLEAR_ON_IGNITION_ON" in docs
   assert "deviceState.started" in docs
   assert "triple-tap" in docs
+  assert "STANDBY" in docs
+  assert "enableLongControl" in docs
   assert "force-offroad.md" in readme
   assert "NAP Force Offroad" in ui_state
 
