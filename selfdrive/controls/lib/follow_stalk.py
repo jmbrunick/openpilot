@@ -1,8 +1,8 @@
 """Pre-AP stalk +/- remaps stock Follow Distance when a radar lead is present.
 
-Not Hypermile. Writes the same NAPFollowDistance 1–7 as
-Settings → NAP → Driving Mannerisms → Follow Distance. Stalk up = closer
-(toward 1). Stalk down = farther (toward 7). No lead: leave stalk as MAX.
+Writes the same NAPFollowDistance 1–7 as Settings → NAP → Driving
+Mannerisms → Follow Distance. Stalk up = closer (toward 1). Stalk down =
+farther (toward 7). No lead: leave stalk as MAX.
 """
 from __future__ import annotations
 

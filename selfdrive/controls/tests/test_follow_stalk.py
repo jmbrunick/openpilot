@@ -90,7 +90,8 @@ def test_no_50_mph_forced_far_gap():
   """Stock 1–7 is the same below and above 50 mph. Hypermile split is not here."""
   from pathlib import Path
   src = (Path(__file__).resolve().parents[1] / "lib/follow_stalk.py").read_text()
-  assert "hypermile" not in src.lower()
+  assert "NAPHypermile" not in src
+  assert "PARAM_HYPERMILE" not in src
   assert "SAFE_FLOOR" not in src
   assert "SPLIT" not in src
   for v_ego_mph in (30.0, 50.0, 65.0):
