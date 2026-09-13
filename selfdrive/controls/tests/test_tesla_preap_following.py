@@ -614,7 +614,8 @@ def test_planner_eases_for_slower_lead_before_mpc_and_lead_can_brake_harder():
   lead.status = True
   lead.dRel = d_rel
   lead.vLead = v_lead
-  planner.update(inputs)
+  for _ in range(16):
+    planner.update(inputs)
   assert planner.output_a_target == pytest.approx(-LEAD_APPROACH_A_MS2, abs=0.08)
 
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
