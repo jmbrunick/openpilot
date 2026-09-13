@@ -356,11 +356,14 @@ def test_stalk_with_lead_writes_nap_follow_distance_on_and_off():
     persist_follow_distance(params, closer=False)
     assert params.get(PARAM_FOLLOW_DISTANCE) == 2
 
+    # 1 kph tip + button: Follow Distance, undo MAX.
+    tip_prev = 100.0
+    tip_cur = tip_prev - 1.0
     level, undo = consume_follow_stalk(
-      params, has_lead=True, button_closer=False, raw_kph=100.0, prev_raw_kph=105.0,
+      params, has_lead=True, button_closer=False, raw_kph=tip_cur, prev_raw_kph=tip_prev,
     )
     assert level == 3
-    assert undo == 105.0
+    assert undo == tip_prev
     assert params.get(PARAM_FOLLOW_DISTANCE) == 3
 
     # A Follow/posted MAX jump is not a 1/5 mph stalk step.
@@ -372,19 +375,72 @@ def test_stalk_with_lead_writes_nap_follow_distance_on_and_off():
 
 
 def test_stalk_no_lead_leaves_max_and_does_not_write_follow():
-  """No radar lead: stalk stays MAX / RES+/−. Follow Distance is not written."""
+  """No radar lead: tip and hold both stay MAX / RES+/−. Follow Distance is not written."""
+  tip_prev = 65.0 * CV.MPH_TO_KPH
+  tip_cur = tip_prev + 1.0 * CV.MPH_TO_KPH
+  hold_cur = tip_prev + 5.0 * CV.MPH_TO_KPH
   for hm_on in (False, True):
     params = FakeParams(bools={PARAM_HYPERMILE: hm_on}, ints={PARAM_FOLLOW_DISTANCE: 4})
     before = params.get(PARAM_FOLLOW_DISTANCE)
     none_level, none_undo = consume_follow_stalk(
-      params, has_lead=False, button_closer=True, raw_kph=110.0, prev_raw_kph=105.0,
+      params, has_lead=False, button_closer=True, raw_kph=tip_cur, prev_raw_kph=tip_prev,
     )
     assert none_level is None and none_undo is None
     assert params.get(PARAM_FOLLOW_DISTANCE) == before
+    hold_level, hold_undo = consume_follow_stalk(
+      params, has_lead=False, button_closer=True, raw_kph=hold_cur, prev_raw_kph=tip_prev,
+    )
+    assert hold_level is None and hold_undo is None
+    assert params.get(PARAM_FOLLOW_DISTANCE) == before
     is_stalk, closer, undo = detect_follow_stalk(
-      has_lead=False, button_closer=True, raw_kph=110.0, prev_raw_kph=105.0,
+      has_lead=False, button_closer=True, raw_kph=tip_cur, prev_raw_kph=tip_prev,
     )
     assert is_stalk is False and closer is None and undo is None
+
+
+def test_lead_tip_remaps_follow_hold_keeps_max():
+  """Lead + 1 mph tip → Follow Distance; lead + 5 mph hold → MAX kept."""
+  tip_prev = 65.0 * CV.MPH_TO_KPH
+  tip_cur = tip_prev + 1.0 * CV.MPH_TO_KPH
+  hold_cur = tip_prev + 5.0 * CV.MPH_TO_KPH
+  metric_tip = 100.0 - 1.0
+  metric_hold = 100.0 - 5.0
+
+  params = FakeParams(bools={PARAM_HYPERMILE: False}, ints={PARAM_FOLLOW_DISTANCE: 4})
+  level, undo = consume_follow_stalk(
+    params, has_lead=True, button_closer=None, raw_kph=tip_cur, prev_raw_kph=tip_prev,
+  )
+  assert level == 3
+  assert undo == tip_prev
+  assert params.get(PARAM_FOLLOW_DISTANCE) == 3
+
+  # Metric 1 kph tip also remaps (and undoes MAX).
+  level, undo = consume_follow_stalk(
+    params, has_lead=True, button_closer=None, raw_kph=metric_tip, prev_raw_kph=100.0,
+  )
+  assert level == 2
+  assert undo == 100.0
+  assert params.get(PARAM_FOLLOW_DISTANCE) == 2
+
+  # 5 mph full press: MAX kept, Follow Distance unchanged.
+  before = params.get(PARAM_FOLLOW_DISTANCE)
+  hold_level, hold_undo = consume_follow_stalk(
+    params, has_lead=True, button_closer=None, raw_kph=hold_cur, prev_raw_kph=tip_prev,
+  )
+  assert hold_level is None and hold_undo is None
+  assert params.get(PARAM_FOLLOW_DISTANCE) == before
+
+  # Metric 5 kph hold, even with a button edge: delta is source of truth.
+  hold_level, hold_undo = consume_follow_stalk(
+    params, has_lead=True, button_closer=True, raw_kph=metric_hold, prev_raw_kph=100.0,
+  )
+  assert hold_level is None and hold_undo is None
+  assert params.get(PARAM_FOLLOW_DISTANCE) == before
+
+  is_stalk, closer, undo = detect_follow_stalk(
+    has_lead=True, button_closer=True, raw_kph=hold_cur, prev_raw_kph=tip_prev,
+  )
+  assert is_stalk is False and closer is None and undo is None
 
 
 def test_follow_hud_announces_every_param_change_after_seed():
@@ -495,6 +551,8 @@ def test_settings_and_docs_wire_hypermile():
   assert "NAPHypermileFollowLevel" not in docs
   assert "Follow Distance: N" in docs
   assert "NAPFollowDistance" in docs
+  assert "1 mph" in docs and "5 mph" in docs
+  assert "full press" in docs.lower() or "full press" in releases.lower()
   assert "Step Down Speed" in docs
   assert "Hill Climb" in docs
   assert "15 mph under" in docs or "−15 at 80" in docs

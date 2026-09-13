@@ -103,12 +103,12 @@ Normally stalk up/down is RES+/RES− and steps MAX / `pedal_speed` 1 or 5 mph.
 
 With a **radar lead present** (Hypermile On **or** Off):
 
-- Stalk **up** = closer (toward stock 1)
-- Stalk **down** = farther (toward stock 7)
+- Stalk **tip / bump** (Tesla **1 mph** / 1 kph cruise step) = Follow Distance 1–7 only. Stalk **up** = closer (toward stock 1). Stalk **down** = farther (toward stock 7). That frame’s MAX / `pedal_speed` step is undone. HUD **Follow Distance: N**.
+- Stalk **full press** (Tesla **5 mph** / 5 kph) = keep MAX +5/−5. Do **not** remap Follow Distance.
 
-card.py writes `NAPFollowDistance` so the Driving Mannerisms indicator/slider updates live, and undoes that frame’s MAX / `pedal_speed` step so Follow sticky does not arm. Cooldown 0.25 s so a held lever does not race 1→7.
+card.py writes `NAPFollowDistance` on a tip so the Driving Mannerisms indicator/slider updates live. Cooldown 0.25 s so a held lever does not race 1→7. Pedal delta magnitude is the source of truth when present; a button-event-only edge without a clear 5 mph delta still counts as a tip.
 
-**No lead:** stalk stays MAX adjust (documented rule). During a long pause, `cruiseState.speed` is ego — only button edges remap follow.
+**No lead:** tip and hold both stay MAX adjust (documented rule). During a long pause, `cruiseState.speed` is ego — only button edges remap follow.
 
 ### HUD
 
@@ -125,7 +125,7 @@ When stock Follow Distance changes onroad, selfdrived fires `EventName.hypermile
 
 ## Tests
 
-`selfdrive/controls/tests/test_hypermile.py` — On snaps + Off restore (offset param not written −5; Follow Distance not snapped); posted-scaled eco (30 stays 30; 80→72) and Step Down (30 stays 30; 75→62.5; 80→65); maps-only (no invent without posted); stalk+lead writes `NAPFollowDistance` with Hypermile On and Off (full stock 1–7, including closest 1); no lead still steps MAX; Follow Distance HUD announces every param change after seed; settings/docs wiring.
+`selfdrive/controls/tests/test_hypermile.py` — On snaps + Off restore (offset param not written −5; Follow Distance not snapped); posted-scaled eco (30 stays 30; 80→72) and Step Down (30 stays 30; 75→62.5; 80→65); maps-only (no invent without posted); stalk tip+lead writes `NAPFollowDistance` with Hypermile On and Off (full stock 1–7, including closest 1); lead + 5 mph hold keeps MAX; no lead still steps MAX on tip and hold; Follow Distance HUD announces every param change after seed; settings/docs wiring.
 
 `selfdrive/controls/tests/test_hill_climb.py` — Hypermile Off / Hill Climb Off inert; uphill under MAX raises Accel 1 authority; several mph under MAX + downhill does **not** regen; deadband + uphill does **not** invent +g·sin; at/above MAX + downhill still eases; never exceeds MAX; lead / MPC brake still wins; under MAX + valid lead does **not** replace non-negative MPC `a` with map climb (no lead still climbs); above MAX + lead still map-decels.
 
