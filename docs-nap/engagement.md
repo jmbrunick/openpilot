@@ -76,7 +76,7 @@ No-pedal / stock CC does not own software MAX. Brake does not pause NAP long (st
 
 ### Follow Distance stalk (radar lead)
 
-When `radarState.leadOne` is present, a Pre-AP stalk **tip** (first detent, 1 mph / 1 kph) undoes that frame’s MAX and steps stock Follow Distance **1–7** (`NAPFollowDistance`) when the lever returns to IDLE — the same param as Settings → NAP → Driving Mannerisms → Follow Distance. Stalk up = closer (toward 1). Stalk down = farther (toward 7). Closest (1) is allowed. A **full press** (2nd detent, 5 mph / 5 kph) keeps MAX +5/−5 and does not remap Follow Distance, even though a physical full press walks through first detent. Raw `SpdCtrlLvr_Stat` / CruiseButtons distinguish tip vs hold; `buttonEvents` alone do not. HUD shows **Follow Distance: N** (`EventName.followDistanceChanged`). No lead: tip and hold both stay MAX / RES+/−. This is not Hypermile (no 1–5, no ≤50 forced far gap). Helper: `selfdrive/controls/lib/follow_stalk.py`; remap lives in `card.py` (`_maybe_follow_stalk`).
+When `radarState.leadOne` is present, a Pre-AP stalk **tip** (first detent, 1 mph / 1 kph) undoes that frame’s MAX and steps stock Follow Distance **1–7** (`NAPFollowDistance`) when the lever returns to IDLE — the same param as Settings → NAP → Driving Mannerisms → Follow Distance. Stalk up = closer (toward 1). Stalk down = farther (toward 7). Closest (1) is allowed. A **full press** (2nd detent, 5 mph / 5 kph) keeps MAX +5/−5 and does not remap Follow Distance, even though a physical full press walks through first detent. Raw `SpdCtrlLvr_Stat` / CruiseButtons distinguish tip vs hold; `buttonEvents` alone do not. HUD shows **Follow Distance: N** (`EventName.followDistanceChanged`, WARNING + PERMANENT, held ~1.5 s). A tip already at 1 or 7 still requests the HUD (`NAPFollowHudPending`). No lead: tip and hold both stay MAX / RES+/−. This is not Hypermile (no 1–5, no ≤50 forced far gap). Helper: `selfdrive/controls/lib/follow_stalk.py`; remap lives in `card.py` (`_maybe_follow_stalk`).
 
 ## Steering disengage
 
@@ -183,11 +183,11 @@ Stock DM stays on while engaged. Vision timeouts stay **3 / 5 / 11 s** (`DRIVER_
 
 Triple-tap **NAP** (1.0 s window → side popup; not under Driving Mannerisms) order: **Force Offroad**, **Simulate Look**, **False Alert Ignore**. Both DM toggles default **Off** on nap-release (stock until Justin enables them). They are **mutually exclusive** — turning one On clears the other (and aborts the other in-flight path). Both Off is allowed. A stale both-On from older nap-dev installs resolves to Simulate Look On / FAI Off on first read. Shared cadence: after awareness has gone **past 1.0 s**, fire uniform in **(1.0 s, 3.0 s]** and **hold** (minimum 0.5 s, until awareness is 1.0). Not a mute and not `driver_interacting` full reset.
 
-`NAPDmSimulateLooking` injects a simulated glance on the **stock vision looking-path** only when the camera lost the face or is uncertain. It does **not** force recovery while **pose** or **eye** are alarming, and it does **not** wipe phone distraction.
+`NAPDmSimulateLooking` restores the pre-FAI **full looking-path wipe** on that cadence: face + low std + `driver_distracted` / filter + pose / eye / phone type bits. That recovers no-face, uncertain, phone, pose, and eye false nags the way Simulate Look did before the False Alert Ignore split. It is not a mute of hard cancels.
 
-`NAPDmFalseAlertIgnore` owns the phone/device path: when `phoneProb` is above `_PHONE_THRESH` (0.5) and pose/eye are **not** alarming, it soft-clears only `distracted_types['phone']` so a false device “Driver Distracted” can recover without a real glance. If pose or eye are actively alarming, it does **not** start or keep a hold — those timers keep draining.
+`NAPDmFalseAlertIgnore` (only when Simulate Look is Off) owns the **phone-only** path: when `phoneProb` is above `_PHONE_THRESH` (0.5) and pose/eye are **not** alarming, it soft-clears only `distracted_types['phone']` so a false device “Driver Distracted” can recover without a real glance. If pose or eye are actively alarming, it does **not** start or keep a hold — those timers keep draining.
 
-Always-on DM when not engaged does **not** simulate or ignore. Either toggle **Off** = that path is stock. DM never applies phone soft-clear and glance inject in the same session from both params On. Hands-on ≥ 2 / steer disengage, door, reverse, and stalk cancel are unchanged.
+Always-on DM when not engaged does **not** simulate or ignore. Either toggle **Off** = that path is stock. Mutex: only one On. Hands-on ≥ 2 / steer disengage, door, reverse, and stalk cancel are unchanged.
 
 ## Where to look
 
@@ -202,4 +202,4 @@ Always-on DM when not engaged does **not** simulate or ignore. Either toggle **O
 - `selfdrive/monitoring/dm_toggles.py` — mutually exclusive write/read helpers (Simulate Look wins stale both-On)
 - `selfdrive/monitoring/policy.py` — stock DM + optional Simulate Look (`NAPDmSimulateLooking`, default Off) and False Alert Ignore (`NAPDmFalseAlertIgnore`, default Off)
 - `selfdrive/ui/layouts/settings/hidden_toggles.py` — triple-tap NAP popup (Force Offroad, Simulate Look, False Alert Ignore)
-- `selfdrive/monitoring/test_monitoring.py` — phone-only recover vs pose/eye blocked; mutual exclusion
+- `selfdrive/monitoring/test_monitoring.py` — Simulate Look full-wipe recover; FAI phone-only vs pose/eye; mutual exclusion

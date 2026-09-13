@@ -134,6 +134,7 @@ class SelfdriveD:
     self.prev_preap_chimes = PreAPChimeState()
     self.preap_regen_demand = RegenDemandCheck()
     self._follow_hud_dist = None
+    self._follow_hud_until = 0.0
 
     # Determine startup event
     self.startup_event = EventName.startup if build_metadata.openpilot.comma_remote and build_metadata.tested_channel else EventName.startupMaster
@@ -499,17 +500,39 @@ class SelfdriveD:
         self.params.put('LongitudinalPersonality', self.personality)
         self.events.add(EventName.personalityChanged)
 
-    # Stock Follow Distance 1–7 HUD, same affordance as personalityChanged.
+    # Stock Follow Distance 1–7 HUD. Seed then announce; hold ~1.5 s so a
+    # one-frame poll is not lost to another alert. A tip at 1/7 still toasts
+    # via NAPFollowHudPending (value-only poll would miss a no-op write).
+    follow = None
     try:
-      follow = int(self.params.get("NAPFollowDistance", return_default=True) or 0)
+      raw = self.params.get("NAPFollowDistance", return_default=True)
+      if raw is not None and raw != "":
+        follow = int(raw)
     except (TypeError, ValueError):
       follow = None
-    if self._follow_hud_dist is not None and follow is not None and follow != self._follow_hud_dist:
+    try:
+      from openpilot.selfdrive.controls.lib.follow_stalk import poll_follow_distance_hud
+      self._follow_hud_dist, announce = poll_follow_distance_hud(self._follow_hud_dist, follow)
+    except Exception:
+      announce = (
+        self._follow_hud_dist is not None
+        and follow is not None
+        and int(follow) != int(self._follow_hud_dist)
+      )
+      if follow is not None:
+        self._follow_hud_dist = int(follow)
+    try:
+      if self.params.get_bool("NAPFollowHudPending"):
+        announce = True
+        self.params.put_bool("NAPFollowHudPending", False)
+    except Exception:
+      pass
+    if announce:
+      self._follow_hud_until = time.monotonic() + 1.5
+    if time.monotonic() < self._follow_hud_until:
       follow_evt = getattr(EventName, "followDistanceChanged", None)
       if follow_evt is not None:
         self.events.add(follow_evt)
-    if follow is not None:
-      self._follow_hud_dist = follow
 
   def data_sample(self):
     _car_state = messaging.recv_one(self.car_state_sock)
