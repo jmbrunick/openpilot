@@ -665,6 +665,10 @@ def test_settings_and_docs_wire_hypermile():
   assert "set_visible(not hypermile_on)" not in tici
   assert "FOLLOW_DISTANCE" in tici
   assert "FOLLOW_DISTANCE" in mici
+  assert "NAPMapSpeedAccel" in tici
+  assert "NAPMapSpeedAccel" in mici
+  assert "Acceleration" in tici
+  assert '"acceleration"' in mici
   assert "NAPHypermileStepDown" in keys
   assert "NAPHypermileHillClimb" in keys
   assert 'BOOL, "0"' in next(ln for ln in keys.splitlines() if '"NAPHypermileStepDown"' in ln)

@@ -113,7 +113,7 @@ All map-speed controls live in this submenu (main NAP stays uncluttered). TICI a
 - **Map Speed (MAX)** (`NAPMapSpeedMode`): Off / Display / Cap / Follow
 - **Map Speed Offset** (`NAPMapSpeedOffsetMph`): -5 / 0 / +5 mph
 - **Lookahead** (`NAPMapSpeedLookahead`): Off / Late / Normal (default) / Early
-- **Acceleration** (`NAPMapSpeedAccel`): 1–10, Follow climb **and** lead-close +a (default 5). Brake to a lower MAX is locked at 5.
+- **Acceleration** 1–10 lives under **Settings → NAP → Driving Mannerisms** (`NAPMapSpeedAccel`) — not this page
 - **Map revision**: published US pack revision after Download US Maps (Refresh maps does not bump this)
 - **Refresh maps**: live OSM within 100 miles, merged into the installed US sqlite (listed above Download)
 - **Download US Maps**: first install of the current published pack
@@ -136,7 +136,7 @@ When the upcoming drop is inside that window, MAX interpolates from the current 
 
 **HUD current speed** (top-middle on the 3X) is wheel/ESP `vEgo` only. `vEgoCluster` is Tesla `DI_digitalSpeed`, which pre-AP also uses as `cruiseState.speed`. Map-speed writes MAX into `vCruise` / `pedal_speed` / `cruiseState.speed` (90 kph = **56 mph**). LIMIT/MAX may show the map limit; the live number must not.
 
-**Acceleration** scales **Follow climb** (MAX rising, no overriding lead) **and** the lead-close +a cap when coming up behind a radar lead. Brake uses Accel 5 (`map_brake_a_ms2` / `map_track_decel`). Adaptive Accel no longer uses the full cruise profile to punch a large follow gap.
+**Acceleration** (Settings → NAP → Driving Mannerisms) scales **Follow climb** (MAX rising, no overriding lead) **and** the lead-close +a cap when coming up behind a radar lead. Brake uses Accel 5 (`map_brake_a_ms2` / `map_track_decel`). Adaptive Accel no longer uses the full cruise profile to punch a large follow gap.
 
 | Accel | Factor | MAX climb `a` (Normal) | Lead-close +a | Used for |
 |---|---|---|---|---|

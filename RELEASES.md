@@ -1,3 +1,7 @@
+NAP Acceleration settings placement (2026-09-13)
+========================
+* Settings → NAP → **Driving Mannerisms** now has **Acceleration** 1–10 (`NAPMapSpeedAccel`, default 5). Same temperament as before: scales MAX climb / open-road accel feel (1 lazy → 10 quicker); map brake to a lower MAX stays Accel 5; lead still owns follow. Removed from Map Speed Limit so it sits with Adaptive Accel. Hypermile still snaps/restores Accel 1. No longitudinal math change.
+
 NAP post-engage overlay stack revert (2026-09-13)
 ========================
 * Removed the whole post-engage overlay stack for driveability: climb-to-MAX / climb-sustain (#144, #146), last-pressed pedal hold (#142), and the 1 s speed-coast (#136). Those paths added delay and an intrusive climb/pedal/`ENABLE` rewrite that surged / pulsed. Handoff is stock OP long again (no `post_engage_coast.py` / `preap_post_engage_hold.py`). Will revisit later with a lighter approach. Locationd safety unchanged.
