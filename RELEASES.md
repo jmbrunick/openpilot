@@ -1,14 +1,6 @@
-NAP post-engage climb sustain (2026-09-13)
+NAP post-engage overlay stack revert (2026-09-13)
 ========================
-* Pre-AP pedal long: #144/#145 took over on first lift (sit-then-go fixed) but **pulsed** and **did not keep climbing** — speed fell ~38→~28 mph. Same pulse on **every later gas-override → OP long handoff**, not only first engage. Root cause: the one-frame `GAS_COMMAND` rewrite used **last-pressed peak DI**, then dropped. That stab retriggers interceptor `gasPressed` (raw > 650) → ENABLE 0↔1 → ACQUIRE `vdas.reset(0)` → another peak rewrite; VDAS then rate-limits *down* from the peak; the 1 s timer expired while still in the regen hole. **Fix:** latch a **sustained climb until sticky MAX** so each lift/handoff stays +a (brake / FCW / should-stop / hard lead still win). Once latched, do **not** unlatch on a later gas press (that re-armed every override). Rewrite **only the ACQUIRE** ENABLE=1 frame with a **VDAS climb DI** (never last-pressed; never the rest of the 0.5 s grace). Re-seed after ACQUIRE only. Planner +a that is already climbing harder still passes through.
-
-NAP post-engage climb-to-MAX (2026-09-13)
-========================
-* Pre-AP pedal long: on the **first detectable pedal decrease** after `enableLongControl` (0.05 DI, timer starts on the **lift**), immediately **accelerate toward MAX**. Do not sit/coast at a=0 and do not freeze last-pressed DI. The 0.5 s pedal engage grace (`ENGAGE_GRACE_FRAMES` / `vdas.reset(commanded_accel=0)`) is expired on the handoff so ACQUIRE cannot floor accel at 0. Planner +a that is already climbing harder passes through. Sticky/cruise MAX is a hard cap. Brake, FCW / should-stop, and lead-driven decel (`|a| >= 0.55`) still apply. Engage with no gas / no lift: unchanged. Panda still blocks `ENABLE=1` while gas is pressed; the first enabled frame is already a climb.
-
-NAP post-engage pedal hold (2026-09-13)
-========================
-* Pre-AP pedal long: for **1.0 s** after `enableLongControl` rises, watch the accelerator. As soon as the pedal starts decreasing, **hold the last pressed interceptor DI** (and the last non-negative `aEgo`) for the rest of that window — not a speed/coast clamp to a=0 (that still ramps the pedal down to zero-torque and dips on gas-override handoff). After 1 s, release to normal OP long (climb to MAX). Sticky/cruise MAX is a hard cap: if the held pedal would accelerate above MAX, drop the hold. Brake, FCW / should-stop, and lead-driven decel (`|a| >= 0.55`) still apply. Engage with no gas / no lift: unchanged. Planner + controlsd + `GAS_COMMAND` rewrite (`preap_post_engage_hold.py`). Panda still blocks `ENABLE=1` while gas is pressed.
+* Removed the whole post-engage overlay stack for driveability: climb-to-MAX / climb-sustain (#144, #146), last-pressed pedal hold (#142), and the 1 s speed-coast (#136). Those paths added delay and an intrusive climb/pedal/`ENABLE` rewrite that surged / pulsed. Handoff is stock OP long again (no `post_engage_coast.py` / `preap_post_engage_hold.py`). Will revisit later with a lighter approach. Locationd safety unchanged.
 
 NAP Follow Distance HUD hold (2026-09-13)
 ========================
@@ -17,10 +9,6 @@ NAP Follow Distance HUD hold (2026-09-13)
 NAP Simulate Look full wipe restore (2026-09-13)
 ========================
 * **Simulate Look On** is again the pre–False Alert Ignore full looking-path wipe on the existing **1–3 s** cadence (no-face / uncertain / phone / pose / eye). The FAI split had narrowed it to a no-face glance that still let phone/pose/eye nag. **False Alert Ignore On** (Sim Look Off) stays phone-only soft-clear; pose/eye still drain. Mutex unchanged. Hard cancels (hands-on ≥ 2 / stalk / door / reverse) unchanged. nap-dev defaults stay Simulate Look **On** / FAI **Off**. Same behavior as nap-release (defaults differ).
-
-NAP post-engage coast (2026-09-13)
-========================
-* Pre-AP pedal long: for **1.0 s** after `enableLongControl` rises, lifting the accelerator must not command soft regen / a speed dip before OP long climbs toward a higher MAX. Coast/hold (clamp soft −a to 0). Brake pedal, FCW / should-stop, and lead-driven decel (`|a| >= 0.55`) still apply. After 1 s, or engage with no gas in the window, behavior is unchanged. Does not write MAX / sticky / Follow. Planner + controlsd; pedal-layer 0.5 s engage grace is unchanged.
 
 NAP Simulate Look / False Alert Ignore exclusive (2026-09-13)
 ========================

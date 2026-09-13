@@ -1367,10 +1367,9 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   hold_at = planner.find("map_in_track_deadband(v_ego, v_hud_ms)")
   track_at = planner.find("a_brake = map_track_decel_ms2")
   lead_at = planner.find("a_lead = lead_approach_decel_ms2")
-  coast_at = planner.find("self._post_engage_coast.apply(")
   close_at = planner.find("lead_close_accel_ms2(self._map_speed_accel)")
   assert 0 <= cap_at < mpc_at
-  assert 0 <= mpc_at < hold_at < track_at < lead_at < coast_at
+  assert 0 <= mpc_at < hold_at < track_at < lead_at
   assert 0 <= close_at < mpc_at
   assert "map_brake_a_ms2" in planner
   assert "map_track_accel_ms2" in planner
