@@ -1,7 +1,7 @@
 """Earlier, gentler catch-up to a slower radar lead.
 
-Overlay peak is 0.80 m/s² (map Normal brake), never harder. MPC 2.5 m/s²
-still owns close-in / stopping if needed.
+Comfort peak is Early map brake (0.55 m/s²), not Normal 0.80. MPC 2.5 m/s²
+still owns close-in / stopping if needed. FCW is untouched.
 
 Map drops use road-distance kinematics plus 110 m because the sign does not
 move. A radar lead does: (v_lead² - v_ego²) / (2 * slack) matches speed after
@@ -11,20 +11,40 @@ comes and goes.
 
 This uses relative kinematics so extra speed is bled while closing onto the
 selected Follow Distance (t_follow), not while holding outside radar.
+
+On a slight grade, radar `v_rel` / slack chatter around the follow gap used
+to snap this overlay on/off (regen bite → rematch crawl → bite). Enter/exit
+hysteresis plus a per-frame slew on more-negative `a` hold a steady ease
+instead of chattering. Off / milder `a` is immediate so rematch is not stuck
+in regen.
 """
 from __future__ import annotations
 
 # Keep in sync with long_mpc.STOP_DISTANCE (acados cruise/lead obstacle).
 STOP_DISTANCE = 6.0
-# Map Normal brake. Gentler than overlay 1.0 and MPC 2.5. Do not raise.
-LEAD_APPROACH_A_MS2 = 0.80
-# Seconds of current closing-speed added before the last-second 0.80 catch.
-# 12 s vs 8 s: ~18 m / ~4 s earlier on a 10 mph close, lighter a at the open
-# (~0.15 vs ~0.21), same 0.80 peak near Follow Distance. Still inside radar.
+# Comfort peak |a|. Early map brake, not Normal 0.80 — Tesla VirtualDAS
+# regen at 0.80 then rematch chatters on a slight grade. Do not raise.
+# MPC 2.5 / FCW still own danger.
+LEAD_APPROACH_A_MS2 = 0.55
+# Seconds of current closing-speed added before the last-second catch.
+# 12 s vs 8 s: ~18 m / ~4 s earlier on a 10 mph close, lighter a at the open,
+# same comfort peak near Follow Distance. Still inside radar.
 LEAD_APPROACH_HEADSTART_S = 12.0
 # Bosch-range ceiling so we do not open on a flickering 160 m track.
 LEAD_APPROACH_MAX_START_M = 140.0
-LEAD_APPROACH_DV_MS = 0.5  # ~1 mph; ignore radar jitter
+
+# Enter / exit (hysteresis). A single v_rel / slack gate chatters around
+# the follow gap on a slight incline (regen ↔ accel).
+LEAD_APPROACH_DV_MS = 0.5          # enter: ~1 mph closing; ignore radar jitter
+LEAD_APPROACH_DV_OFF_MS = 0.20     # exit: ~0.45 mph; hold through ±0.15 noise
+LEAD_APPROACH_SLACK_ON_M = 1.0     # enter only with slack above Follow Distance
+LEAD_APPROACH_SLACK_OFF_M = 0.0    # stay until at/inside the follow gap
+LEAD_APPROACH_NEED_HOLD_M = 4.0    # extra slack (m) before dropping after open
+
+# Gradual regen onset (planner frame). Same step as accel_clip slew.
+# At DT_MDL=0.05 s → 1.0 m/s²/s. Release / milder a is immediate.
+LEAD_APPROACH_SLEW_MS2 = 0.05
+
 NAP_T_FOLLOW = (0.7, 0.9, 1.1, 1.3, 1.5, 1.7, 1.9)
 
 
@@ -40,7 +60,7 @@ def lead_approach_need_m(v_ego, v_lead, a_comfort=LEAD_APPROACH_A_MS2, t_follow=
   vt = max(0.0, float(v_lead))
   if v_rel <= 0.0 or a_comfort <= 0:
     return 0.0
-  # Relative 0.80 catch, plus head-start so we begin gently — not map's +110 m.
+  # Relative comfort catch, plus head-start so we begin gently — not map's +110 m.
   need = (v_rel * v_rel) / (2.0 * float(a_comfort)) + v_rel * LEAD_APPROACH_HEADSTART_S
   if t_follow is not None and float(t_follow) > 0:
     d_follow = float(t_follow) * vt + STOP_DISTANCE
@@ -48,13 +68,33 @@ def lead_approach_need_m(v_ego, v_lead, a_comfort=LEAD_APPROACH_A_MS2, t_follow=
   return need
 
 
-def lead_approach_decel_ms2(v_ego, v_lead, d_rel, t_follow, a_comfort=LEAD_APPROACH_A_MS2):
+def slew_lead_approach_a(target, prev, slew=LEAD_APPROACH_SLEW_MS2):
+  """Ramp more-negative overlay a. Immediate milder / off.
+
+  Onset is the Tesla regen bite. Off / less brake must not stay latched
+  in regen after speeds match or slack is gone.
+  """
+  if target is None:
+    return None
+  t = float(target)
+  p = 0.0 if prev is None else float(prev)
+  if t < p:
+    return max(t, p - float(slew))
+  return t
+
+
+def lead_approach_decel_ms2(v_ego, v_lead, d_rel, t_follow, a_comfort=LEAD_APPROACH_A_MS2,
+                           active=False):
   """Comfort decel to close onto the Follow Distance gap, or None.
 
   a = -v_rel² / (2 * slack) so we arrive at the selected gap with matching
-  speed. |a| at the open is below 0.80 and only reaches 0.80 near that gap.
-  None when speeds match, the lead is faster, or the lead is still outside
-  the window (no crawl / no radar-edge hang).
+  speed. |a| at the open is below the comfort peak and only reaches that
+  peak near the gap. None when speeds match, the lead is faster, or the
+  lead is still outside the window (no crawl / no radar-edge hang).
+
+  `active` is last frame's overlay (hysteresis). Enter uses DV_MS / SLACK_ON;
+  hold uses DV_OFF / SLACK_OFF / need+NEED_HOLD so small radar noise does
+  not chatter regen ↔ accel.
   """
   if t_follow is None or float(t_follow) <= 0 or a_comfort <= 0:
     return None
@@ -63,14 +103,17 @@ def lead_approach_decel_ms2(v_ego, v_lead, d_rel, t_follow, a_comfort=LEAD_APPRO
   v0 = float(v_ego)
   vt = max(0.0, float(v_lead))
   v_rel = v0 - vt
-  if v_rel < LEAD_APPROACH_DV_MS:
+  dv_gate = LEAD_APPROACH_DV_OFF_MS if active else LEAD_APPROACH_DV_MS
+  if v_rel < dv_gate:
     return None
   d_follow = float(t_follow) * vt + STOP_DISTANCE
   slack = float(d_rel) - d_follow
-  if slack <= 1.0:
+  slack_min = LEAD_APPROACH_SLACK_OFF_M if active else LEAD_APPROACH_SLACK_ON_M
+  if slack <= slack_min:
     return None
   need_m = lead_approach_need_m(v0, vt, a_comfort, t_follow)
-  if slack > need_m:
+  need_gate = need_m + (LEAD_APPROACH_NEED_HOLD_M if active else 0.0)
+  if slack > need_gate:
     return None
   a_needed = -(v_rel * v_rel) / (2.0 * slack)
   return max(float(a_needed), -float(a_comfort))

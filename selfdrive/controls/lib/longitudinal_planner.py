@@ -16,7 +16,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_stopped_equivalence_factor,
   get_T_FOLLOW,
 )
-from openpilot.selfdrive.controls.lib.lead_approach import lead_approach_decel_ms2
+from openpilot.selfdrive.controls.lib.lead_approach import lead_approach_decel_ms2, slew_lead_approach_a
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
@@ -102,6 +102,8 @@ class LongitudinalPlanner:
     self.active_nap_follow_dist = self.nap_follow_dist if self._is_preap and self.nap_follow_dist in NAP_FOLLOW_DISTANCE_RANGE else None
     self.t_follow = get_T_FOLLOW(nap_follow_dist=self.active_nap_follow_dist)
     self._frame = 0
+    self._lead_approach_active = False
+    self._lead_approach_a = None
 
     self.a_desired = init_a
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
@@ -173,6 +175,8 @@ class LongitudinalPlanner:
       self.v_desired_filter.x = v_ego
       # Clip aEgo to cruise limits to prevent large accelerations when becoming active
       self.a_desired = np.clip(sm['carState'].aEgo, accel_clip[0], accel_clip[1])
+      self._lead_approach_active = False
+      self._lead_approach_a = None
 
     # Prevent divergence, smooth in current v_ego
     self.v_desired_filter.x = max(0.0, self.v_desired_filter.update(v_ego))
@@ -268,16 +272,24 @@ class LongitudinalPlanner:
             # toward MAX; a slower lead (negative aTarget) still outranks map.
             output_a_target = a_up
 
-    # Slower radar lead: relative 0.80 ease, 12 s closing-speed head-start
-    # (light earlier open, not a harder peak). Map's +110 m is road distance
-    # to a sign and must not be used here (it matches speed at radar range).
-    # Overlay never harder than 0.80; MPC close-in may still brake harder.
-    # Map MAX overlay cannot cancel this.
+    # Slower radar lead: Early 0.55 ease, 12 s closing-speed head-start,
+    # enter/exit hysteresis, slew on more-negative a (no regen chatter).
+    # Map's +110 m is road distance to a sign and must not be used here.
+    # Overlay never harder than 0.55; MPC close-in / FCW may still brake
+    # harder. Map MAX overlay cannot cancel this.
     if self._is_preap and sm['radarState'].leadOne.status:
       lead = sm['radarState'].leadOne
-      a_lead = lead_approach_decel_ms2(v_ego, lead.vLead, lead.dRel, self.t_follow)
+      a_lead = lead_approach_decel_ms2(
+        v_ego, lead.vLead, lead.dRel, self.t_follow, active=self._lead_approach_active,
+      )
+      a_lead = slew_lead_approach_a(a_lead, self._lead_approach_a)
+      self._lead_approach_active = a_lead is not None
+      self._lead_approach_a = a_lead
       if a_lead is not None:
         output_a_target = min(float(output_a_target), a_lead)
+    else:
+      self._lead_approach_active = False
+      self._lead_approach_a = None
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)

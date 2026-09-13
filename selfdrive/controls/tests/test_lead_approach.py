@@ -1,14 +1,28 @@
+import pytest
+
 from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_APPROACH_A_MS2,
+  LEAD_APPROACH_DV_MS,
+  LEAD_APPROACH_DV_OFF_MS,
   LEAD_APPROACH_HEADSTART_S,
   LEAD_APPROACH_MAX_START_M,
+  LEAD_APPROACH_NEED_HOLD_M,
+  LEAD_APPROACH_SLACK_OFF_M,
+  LEAD_APPROACH_SLACK_ON_M,
+  LEAD_APPROACH_SLEW_MS2,
   NAP_T_FOLLOW,
   STOP_DISTANCE,
   lead_approach_decel_ms2,
   lead_approach_need_m,
   nap_t_follow,
+  slew_lead_approach_a,
 )
-from openpilot.selfdrive.mapd.constants import DECREASE_START_MARGIN_M, LOOKAHEAD_NORMAL, map_brake_a_ms2
+from openpilot.selfdrive.mapd.constants import (
+  DECREASE_START_MARGIN_M,
+  LOOKAHEAD_EARLY,
+  LOOKAHEAD_NORMAL,
+  map_brake_a_ms2,
+)
 
 
 def test_nap_t_follow_matches_follow_distance_slider():
@@ -20,21 +34,27 @@ def test_nap_t_follow_matches_follow_distance_slider():
   assert list(NAP_T_FOLLOW) == [0.7, 0.9, 1.1, 1.3, 1.5, 1.7, 1.9]
 
 
-def test_lead_approach_keeps_map_brake_not_map_110m_margin():
-  """0.80 overlay like map Normal. Map's +110 m is a sign drop, not a lead."""
-  assert abs(LEAD_APPROACH_A_MS2 - 0.80) < 1e-9
-  assert abs(LEAD_APPROACH_A_MS2 - map_brake_a_ms2(LOOKAHEAD_NORMAL)) < 1e-9
+def test_lead_approach_keeps_early_map_brake_not_map_110m_margin():
+  """0.55 overlay like map Early. Map's +110 m is a sign drop, not a lead."""
+  assert abs(LEAD_APPROACH_A_MS2 - 0.55) < 1e-9
+  assert abs(LEAD_APPROACH_A_MS2 - map_brake_a_ms2(LOOKAHEAD_EARLY)) < 1e-9
+  assert LEAD_APPROACH_A_MS2 < map_brake_a_ms2(LOOKAHEAD_NORMAL)
   assert abs(DECREASE_START_MARGIN_M - 110.0) < 1e-9
   assert abs(LEAD_APPROACH_HEADSTART_S - 12.0) < 1e-9
   assert abs(LEAD_APPROACH_MAX_START_M - 140.0) < 1e-9
+  assert LEAD_APPROACH_A_MS2 < 0.80
   assert LEAD_APPROACH_A_MS2 < 1.0
   assert LEAD_APPROACH_A_MS2 < 2.5
+  assert LEAD_APPROACH_DV_OFF_MS < LEAD_APPROACH_DV_MS
+  assert LEAD_APPROACH_SLACK_OFF_M < LEAD_APPROACH_SLACK_ON_M
+  assert LEAD_APPROACH_NEED_HOLD_M > 0.0
+  assert abs(LEAD_APPROACH_SLEW_MS2 - 0.05) < 1e-9
   import openpilot.selfdrive.controls.lib.lead_approach as lead_approach
   assert not hasattr(lead_approach, "LEAD_APPROACH_MARGIN_M")
 
 
 def test_lead_approach_eases_before_mpc_comfort_brake_window():
-  """Slower lead: relative 0.80 + head-start, peak overlay 0.80, not MPC 2.5."""
+  """Slower lead: relative Early 0.55 + head-start, peak overlay 0.55, not MPC 2.5."""
   v_ego = 60.0 * 0.44704
   v_lead = 50.0 * 0.44704
   v_rel = v_ego - v_lead
@@ -94,8 +114,8 @@ def test_lead_approach_starts_a_little_earlier_with_lighter_open():
   a_new_open = lead_approach_decel_ms2(v_ego, v_lead, d_open_12 - 1.0, t4)
   assert a_new_open is not None
   assert a_old_open < a_new_open < 0.0  # new open is lighter (less negative)
-  assert abs(a_new_open) < 0.18
-  assert abs(a_old_open) > 0.19
+  assert abs(a_new_open) < 0.16
+  assert abs(a_old_open) > abs(a_new_open) + 0.02
   peak = lead_approach_decel_ms2(v_ego, v_lead, d_follow + rel_need, t4)
   assert peak is not None
   assert abs(peak + LEAD_APPROACH_A_MS2) < 0.05
@@ -153,3 +173,88 @@ def test_stopped_lead_still_plans_a_comfortable_stop_gap():
   assert a is not None and a < 0.0
   assert abs(a) <= LEAD_APPROACH_A_MS2 + 1e-9
   assert lead_approach_decel_ms2(v_ego, 0.0, d_follow + need + 20.0, t4) is None
+
+
+def test_lead_approach_hysteresis_holds_through_v_rel_and_slack_noise():
+  """Slight-grade follow: ±noise around the old 0.5 / slack=1 gates must not chatter."""
+  v_lead = 22.0
+  t4 = nap_t_follow(4)
+  d_follow = t4 * v_lead + STOP_DISTANCE
+  v_ego = v_lead + LEAD_APPROACH_DV_MS + 0.05
+  d_rel = d_follow + 3.0
+  assert lead_approach_decel_ms2(v_ego, v_lead, d_rel, t4, active=False) is not None
+
+  v_jitter = v_lead + LEAD_APPROACH_DV_MS - 0.08
+  assert v_jitter - v_lead > LEAD_APPROACH_DV_OFF_MS
+  assert lead_approach_decel_ms2(v_jitter, v_lead, d_rel, t4, active=False) is None
+  held = lead_approach_decel_ms2(v_jitter, v_lead, d_rel, t4, active=True)
+  assert held is not None and held < 0.0
+
+  d_near = d_follow + 0.4
+  assert lead_approach_decel_ms2(v_ego, v_lead, d_near, t4, active=False) is None
+  near = lead_approach_decel_ms2(v_ego, v_lead, d_near, t4, active=True)
+  assert near is not None and near < 0.0
+  assert abs(near) <= LEAD_APPROACH_A_MS2 + 1e-9
+
+  need = lead_approach_need_m(v_ego, v_lead, t_follow=t4)
+  just_out = d_follow + need + 1.5
+  assert lead_approach_decel_ms2(v_ego, v_lead, just_out, t4, active=False) is None
+  assert lead_approach_decel_ms2(v_ego, v_lead, just_out, t4, active=True) is not None
+  far_out = d_follow + need + LEAD_APPROACH_NEED_HOLD_M + 1.0
+  assert lead_approach_decel_ms2(v_ego, v_lead, far_out, t4, active=True) is None
+
+  assert lead_approach_decel_ms2(v_lead, v_lead, d_rel, t4, active=True) is None
+  assert lead_approach_decel_ms2(v_lead - 0.5, v_lead, d_rel, t4, active=True) is None
+  assert lead_approach_decel_ms2(v_ego, v_lead, d_follow - 0.5, t4, active=True) is None
+
+
+def test_lead_approach_slew_softens_onset_and_releases_immediately():
+  """Regen onset is gradual; milder / off is not held in regen."""
+  target = -LEAD_APPROACH_A_MS2
+  a = slew_lead_approach_a(target, None)
+  assert a == pytest.approx(-LEAD_APPROACH_SLEW_MS2)
+  prev = None
+  frames = 0
+  for frames in range(1, 20):
+    prev = slew_lead_approach_a(target, prev)
+    assert prev is not None
+    assert prev >= target - 1e-9
+    if abs(prev - target) < 1e-9:
+      break
+  else:
+    raise AssertionError("slew did not reach comfort peak")
+  assert abs(prev + LEAD_APPROACH_A_MS2) < 1e-9
+  assert frames == int(round(LEAD_APPROACH_A_MS2 / LEAD_APPROACH_SLEW_MS2))
+
+  assert slew_lead_approach_a(-0.10, -0.40) == pytest.approx(-0.10)
+  assert slew_lead_approach_a(None, -0.40) is None
+
+
+def test_lead_approach_peak_stays_at_early_comfort_not_mpc():
+  """Comfort overlay caps at 0.55. Does not own MPC 2.5 / hard brake."""
+  v_ego = 26.8
+  v_lead = 22.4
+  t4 = nap_t_follow(4)
+  d_follow = t4 * v_lead + STOP_DISTANCE
+  v_rel = v_ego - v_lead
+  rel_need = (v_rel * v_rel) / (2.0 * LEAD_APPROACH_A_MS2)
+  peak = lead_approach_decel_ms2(v_ego, v_lead, d_follow + rel_need, t4)
+  assert peak is not None
+  assert abs(peak + LEAD_APPROACH_A_MS2) < 1e-9
+  assert abs(peak) <= 0.55 + 1e-9
+  assert abs(peak) < 0.80
+  assert abs(peak) < 2.5
+  tight = lead_approach_decel_ms2(v_ego, v_lead, d_follow + 1.05, t4)
+  assert tight is not None
+  assert tight == pytest.approx(-LEAD_APPROACH_A_MS2)
+
+
+def test_planner_wires_hysteresis_and_slew():
+  """Overlay stays after map track; MPC hard path is still a min()."""
+  from pathlib import Path
+  planner = (Path(__file__).resolve().parents[1] / "lib/longitudinal_planner.py").read_text()
+  assert "active=self._lead_approach_active" in planner
+  assert "slew_lead_approach_a(a_lead, self._lead_approach_a)" in planner
+  assert "min(float(output_a_target), a_lead)" in planner
+  assert "hypermile" not in planner.lower()
+  assert "hill_climb" not in planner.lower()
