@@ -9,6 +9,7 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_APPROACH_MAX_HOLD_M,
   LEAD_APPROACH_MAX_START_M,
   LEAD_APPROACH_MODEL_PROB_MIN,
+  LEAD_APPROACH_NIBBLE_MS2,
   LEAD_APPROACH_NEED_HOLD_M,
   LEAD_APPROACH_RELIABLE_M,
   LEAD_APPROACH_SLACK_OFF_M,
@@ -16,6 +17,7 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_APPROACH_SLEW_MS2,
   NAP_T_FOLLOW,
   STOP_DISTANCE,
+  apply_lead_approach_overlay,
   lead_approach_decel_ms2,
   lead_approach_need_m,
   lead_approach_track_ok,
@@ -48,7 +50,7 @@ def test_lead_approach_keeps_early_map_brake_not_map_110m_margin():
   assert abs(LEAD_APPROACH_HEADSTART_S - 24.0) < 1e-9
   assert abs(LEAD_APPROACH_MAX_START_M - 200.0) < 1e-9
   assert abs(LEAD_APPROACH_RELIABLE_M - 140.0) < 1e-9
-  assert abs(LEAD_APPROACH_CLEAR_DV_MS - 1.05) < 1e-9
+  assert abs(LEAD_APPROACH_CLEAR_DV_MS - 2.5) < 1e-9
   assert abs(LEAD_APPROACH_MODEL_PROB_MIN - 0.50) < 1e-9
   assert LEAD_APPROACH_RELIABLE_M < LEAD_APPROACH_MAX_START_M
   assert LEAD_APPROACH_CLEAR_DV_MS > LEAD_APPROACH_DV_MS
@@ -64,6 +66,8 @@ def test_lead_approach_keeps_early_map_brake_not_map_110m_margin():
   assert LEAD_APPROACH_NEED_HOLD_M > 0.0
   assert LEAD_APPROACH_MAX_HOLD_M > 0.0
   assert abs(LEAD_APPROACH_SLEW_MS2 - 0.05) < 1e-9
+  assert abs(LEAD_APPROACH_NIBBLE_MS2 - 0.15) < 1e-9
+  assert LEAD_APPROACH_NIBBLE_MS2 > 0.13  # covers matching-traffic |a|
   assert abs(LEAD_APPROACH_A_MS2 - 0.55) < 1e-9  # peak unchanged
   import openpilot.selfdrive.controls.lib.lead_approach as lead_approach
   assert not hasattr(lead_approach, "LEAD_APPROACH_MARGIN_M")
@@ -361,7 +365,7 @@ def test_accel1_catchup_at_one_ms_is_not_clear_close():
   d_follow = t4 * v_lead + STOP_DISTANCE
   assert v_ego - v_lead < LEAD_APPROACH_CLEAR_DV_MS
   assert lead_approach_decel_ms2(v_ego, v_lead, d_follow + 35.0, t4) is None
-  assert lead_approach_decel_ms2(v_ego + 0.2, v_lead, d_follow + 35.0, t4) is not None
+  assert lead_approach_decel_ms2(v_lead + LEAD_APPROACH_CLEAR_DV_MS + 0.2, v_lead, d_follow + 35.0, t4) is not None
 
 
 def test_clear_close_allows_large_slack_still_capped():
@@ -387,6 +391,18 @@ def test_clear_close_allows_large_slack_still_capped():
   ) is None
 
 
+def test_nibble_overlay_does_not_steal_catchup_plus_a():
+  """Far/gentle overlay must not beat rematch +a. Real ease / MPC 0/−a still min()."""
+  assert apply_lead_approach_overlay(0.20, -0.05) == pytest.approx(0.20)
+  assert apply_lead_approach_overlay(0.20, -0.13) == pytest.approx(0.20)
+  assert apply_lead_approach_overlay(0.20, -LEAD_APPROACH_NIBBLE_MS2) == pytest.approx(-LEAD_APPROACH_NIBBLE_MS2)
+  assert apply_lead_approach_overlay(0.20, -0.20) == pytest.approx(-0.20)
+  assert apply_lead_approach_overlay(0.0, -0.05) == pytest.approx(-0.05)
+  assert apply_lead_approach_overlay(-0.30, -0.05) == pytest.approx(-0.30)
+  assert apply_lead_approach_overlay(-0.10, -0.20) == pytest.approx(-0.20)
+  assert apply_lead_approach_overlay(0.20, None) == pytest.approx(0.20)
+
+
 def test_planner_wires_hysteresis_and_slew():
   """Overlay stays after map track; MPC hard path is still a min()."""
   from pathlib import Path
@@ -395,6 +411,6 @@ def test_planner_wires_hysteresis_and_slew():
   assert "model_prob=lead.modelProb" in planner
   assert "radar=lead.radar" in planner
   assert "slew_lead_approach_a(a_lead, self._lead_approach_a)" in planner
-  assert "min(float(output_a_target), a_lead)" in planner
+  assert "apply_lead_approach_overlay(output_a_target, a_lead)" in planner
   assert "hypermile" not in planner.lower()
   assert "hill_climb" not in planner.lower()

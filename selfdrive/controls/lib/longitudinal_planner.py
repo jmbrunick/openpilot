@@ -16,7 +16,11 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_stopped_equivalence_factor,
   get_T_FOLLOW,
 )
-from openpilot.selfdrive.controls.lib.lead_approach import lead_approach_decel_ms2, slew_lead_approach_a
+from openpilot.selfdrive.controls.lib.lead_approach import (
+  apply_lead_approach_overlay,
+  lead_approach_decel_ms2,
+  slew_lead_approach_a,
+)
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
@@ -278,8 +282,8 @@ class LongitudinalPlanner:
     # no track age. Hysteresis (enter 0.55 / exit 0.20) + slew keep regen
     # from re-biting after rematch; exit stays 0.20 so we still close.
     # Map's +110 m is road distance to a sign and must not be used here.
-    # Overlay never harder than 0.55; MPC close-in / FCW may still brake
-    # harder. Map MAX overlay cannot cancel this.
+    # Overlay never harder than 0.55; a nibble must not steal catch-up +a.
+    # MPC close-in / FCW may still brake harder. Map MAX cannot cancel this.
     if self._is_preap and sm['radarState'].leadOne.status:
       lead = sm['radarState'].leadOne
       a_lead = lead_approach_decel_ms2(
@@ -290,7 +294,7 @@ class LongitudinalPlanner:
       self._lead_approach_active = a_lead is not None
       self._lead_approach_a = a_lead
       if a_lead is not None:
-        output_a_target = min(float(output_a_target), a_lead)
+        output_a_target = apply_lead_approach_overlay(output_a_target, a_lead)
     else:
       self._lead_approach_active = False
       self._lead_approach_a = None
