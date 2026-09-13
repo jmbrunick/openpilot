@@ -16,8 +16,6 @@ from opendbc.car.tesla.preap.nap_params import NAPParamKeys
 class DrivingMannerismsLayoutMici(NavScroller):
   def __init__(self):
     super().__init__()
-    adaptive_accel = BigParamControl("adaptive accel limits", NAPParamKeys.ADAPTIVE_ACCEL)
-
     self._accel = BigMultiValueParamToggle(
       "acceleration",
       "NAPMapSpeedAccel",
@@ -25,6 +23,9 @@ class DrivingMannerismsLayoutMici(NavScroller):
       labels=MAP_SPEED_ACCEL_LABELS,
       default_value=MAP_SPEED_ACCEL_DEFAULT,
     )
+
+    adaptive_accel = BigParamControl("adaptive accel", NAPParamKeys.ADAPTIVE_ACCEL)
+    adaptive_accel.set_value("Softer near a lead")
 
     self._follow_distance = BigMultiValueParamToggle(
       "follow distance",
@@ -38,8 +39,8 @@ class DrivingMannerismsLayoutMici(NavScroller):
     lat_handoff.set_value("On — free-wheel yield; Off if false-yield")
 
     self._scroller.add_widgets([
-      adaptive_accel,
       self._accel,
+      adaptive_accel,
       self._follow_distance,
       lat_handoff,
     ])

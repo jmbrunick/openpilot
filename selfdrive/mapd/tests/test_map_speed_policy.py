@@ -1226,18 +1226,23 @@ def test_map_speed_submenu_wires_params():
     for key in ("NAPMapSpeedMode", "NAPMapSpeedOffsetMph", "NAPMapSpeedLookahead"):
       assert key in src
     assert "NAPMapSpeedAccel" not in src
+  content = (root / "selfdrive/ui/layouts/settings/nap_content.py").read_text()
+  docs = (root / "docs-nap/map-speed.md").read_text()
   assert "self._scroller.add_widgets" in mici
   assert "Acceleration" not in tici
   assert "acceleration" not in mici
   assert "1.20 m/s² at Normal" not in tici
   assert "pauses Follow for 10s" not in tici
-  assert "holds until the posted limit changes" in tici
-  assert "lookahead pauses while that set is active" in tici
+  assert "holds until the posted limit changes" in content
+  assert "lookahead pauses while that set is active" in content
   assert "decreases still ease with lookahead" not in tici
-  assert "every decrease eases with kin+110 m" in tici
-  assert "1.5 s GPS lag raises posted at the" in tici
-  assert "A higher limit far ahead never raises MAX" in tici
+  assert "decreases still ease with lookahead" not in content
+  assert "kin + 110 m" in docs
+  assert "1.5 s GPS lag" not in tici
+  assert "A higher limit far ahead never raises MAX" in content
   assert "A higher limit ahead never raises MAX early" not in tici
+  assert "A higher limit ahead never raises MAX early" not in content
+  assert tici.index("_all_items.append(self._refresh_btn)") < tici.index("_all_items.append(self._db_status)")
   assert "Map Speed Limit" in nap
   assert "Radar Settings" in nap
   assert "Driving Mannerisms" in nap
@@ -1246,12 +1251,12 @@ def test_map_speed_submenu_wires_params():
   assert "driving mannerisms" in nap_mici
   manner = (root / "selfdrive/ui/layouts/settings/driving_mannerisms.py").read_text()
   manner_mici = (root / "selfdrive/ui/mici/layouts/settings/driving_mannerisms.py").read_text()
-  content = (root / "selfdrive/ui/layouts/settings/nap_content.py").read_text()
   assert "MAP_SPEED_ACCEL_DESCRIPTION" in manner
+  assert "ADAPTIVE_ACCEL_DESCRIPTION" in manner
+  assert "FOLLOW_DISTANCE_DESCRIPTION" in manner
   assert "MAP_SPEED_ACCEL_DESCRIPTION" in content
   assert "1 lazy" in content
-  assert "gradual ease-off farther back" in manner
-  assert "not a harder brake" in manner
+  assert "not a harder brake" in content
   assert "follow distance" in manner_mici
   assert "Adaptive Accel Limits" not in nap
   assert "Follow Distance" not in nap
@@ -1287,14 +1292,17 @@ def test_driving_mannerisms_submenu_wires_params():
   for src in (tici, mici):
     for key in ("ADAPTIVE_ACCEL", "FOLLOW_DISTANCE", "NAP_DRIVER_LAT_HANDOFF", "NAPMapSpeedAccel"):
       assert key in src
-  assert "Adaptive Accel Limits" in tici
+  assert "Adaptive Accel" in tici
   assert "Acceleration" in tici
   assert "MAP_SPEED_ACCEL_DESCRIPTION" in tici
-  assert "Brake to a lower MAX is locked" in content
-  assert "0.80 m/s² at Normal" in content
+  assert "ADAPTIVE_ACCEL_DESCRIPTION" in tici
+  assert "stays Accel 5" in content
+  assert "Lead still owns follow" in content
   assert "1 lazy" in content
-  assert tici.index("Adaptive Accel Limits") < tici.index('"Acceleration"')
-  assert tici.index("self._accel_buttons") < tici.index("self._follow_buttons")
+  assert tici.index('"Acceleration"') < tici.index('"Adaptive Accel"')
+  assert tici.index("self._accel_buttons") < tici.index("self._adaptive_accel")
+  assert tici.index("self._adaptive_accel") < tici.index("self._follow_buttons")
+  assert tici.index("self._follow_buttons") < tici.index("self._lat_handoff")
   assert "Follow Distance" in tici
   assert "Soft Lateral Handoff" in tici
   assert "Simulate Look" not in tici
@@ -1303,19 +1311,20 @@ def test_driving_mannerisms_submenu_wires_params():
   assert "NAP_DM_FALSE_ALERT_IGNORE" not in tici
   assert '"Back To"' in tici
   assert "Return to NAP settings." in tici
-  assert "adaptive accel limits" in mici
+  assert "adaptive accel" in mici
   assert '"acceleration"' in mici
   assert "NAPMapSpeedAccel" in mici
   mici_widgets = mici.split("self._scroller.add_widgets", 1)[1]
-  assert mici_widgets.index("adaptive_accel") < mici_widgets.index("self._accel")
-  assert mici_widgets.index("self._accel") < mici_widgets.index("self._follow_distance")
+  assert mici_widgets.index("self._accel") < mici_widgets.index("adaptive_accel")
+  assert mici_widgets.index("adaptive_accel") < mici_widgets.index("self._follow_distance")
+  assert mici_widgets.index("self._follow_distance") < mici_widgets.index("lat_handoff")
   assert "follow distance" in mici
   assert "soft lateral handoff" in mici
   assert "simulate look" not in mici
   assert "false alert ignore" not in mici
   assert "self._scroller.add_widgets" in mici
   assert "DrivingMannerismsLayout" in nap
-  assert "acceleration, follow distance" in nap
+  assert "Accel feel, follow" in nap
   assert "lookahead, acceleration" not in nap
   assert "_open_driving_mannerisms" in nap
   assert "_close_driving_mannerisms" in nap
