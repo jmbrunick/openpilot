@@ -64,6 +64,7 @@ HYPERMILE_HILL_CLIMB_DESCRIPTION = (
 NAP_SPEED_SIGN_LOG = "NAPSpeedSignLog"
 NAP_DRIVER_LAT_HANDOFF = "NAPDriverLatHandoff"
 NAP_DM_SIMULATE_LOOKING = "NAPDmSimulateLooking"
+NAP_DM_FALSE_ALERT_IGNORE = "NAPDmFalseAlertIgnore"
 NAP_FORCE_OFFROAD = "NAPForceOffroad"
 DRIVER_LAT_HANDOFF_DESCRIPTION = (
   "Default On. A light purposeful push with a hand on the rim frees "
@@ -77,15 +78,25 @@ DRIVER_LAT_HANDOFF_DESCRIPTION = (
 )
 DM_SIMULATE_LOOKING_DESCRIPTION = (
   "Default On. nap-dev experiment. While engaged, after the look-at-road "
-  + "timer has counted down about 1 s, simulate looking at the road — "
-  + "the same attentive path as a real glance — and hold that looking "
-  + "state until stock gradual recovery returns awareness to full (not "
-  + "a one-frame pulse). Fire time is random in the first 3 s of "
-  + "countdown (after 1 s, then within the next 2 s). After a full "
-  + "reset the same rule applies again. Not a "
-  + "mute: stock DM still runs. Hands-on ≥ 2, stalk cancel, door, and "
-  + "reverse still hard-cancel. Always-on DM when not engaged is "
-  + "unchanged. Turn Off for stock DM with no simulation."
+  + "timer has counted down about 1 s, simulate a glance if the camera "
+  + "lost the face or is uncertain — same attentive path as a real look "
+  + "— and hold until stock gradual recovery returns awareness to full "
+  + "(not a one-frame pulse). Fire time is random in the first 3 s of "
+  + "countdown (after 1 s, then within the next 2 s). Does not clear "
+  + "head-pose, eye, or phone alerts. Use False Alert Ignore for false "
+  + "device detection. Not a mute: stock DM still runs. Hands-on ≥ 2, "
+  + "stalk cancel, door, and reverse still hard-cancel. Always-on DM "
+  + "when not engaged is unchanged. Turn Off for no simulated glance."
+)
+DM_FALSE_ALERT_IGNORE_DESCRIPTION = (
+  "Default On. While engaged, ignore false phone/device distraction "
+  + "(phoneProb) on the same random 1–3 s cadence as Simulate Look. "
+  + "Soft-clears only the phone bit so a false device “Driver "
+  + "Distracted” can recover without a real glance. Head-pose "
+  + "looking-away and eye tracking still drain and alert — this does "
+  + "nothing while pose or eye are alarming. Hands-on ≥ 2, stalk, "
+  + "door, and reverse still hard-cancel. Turn Off for stock phone "
+  + "detection."
 )
 FORCE_OFFROAD_DESCRIPTION = (
   "WARNING: Forces the device offroad and disengages openpilot even while "
