@@ -54,7 +54,7 @@ def test_lead_approach_keeps_early_map_brake_not_map_110m_margin():
   assert abs(LEAD_APPROACH_HEADSTART_S - 24.0) < 1e-9
   assert abs(LEAD_APPROACH_MAX_START_M - 200.0) < 1e-9
   assert abs(LEAD_APPROACH_RELIABLE_M - 140.0) < 1e-9
-  assert abs(LEAD_APPROACH_CLEAR_DV_MS - 1.0) < 1e-9
+  assert abs(LEAD_APPROACH_CLEAR_DV_MS - 1.05) < 1e-9
   assert abs(LEAD_APPROACH_MODEL_PROB_MIN - 0.50) < 1e-9
   assert abs(LEAD_CLOSE_MAX_M - 140.0) < 1e-9
   assert LEAD_APPROACH_RELIABLE_M < LEAD_APPROACH_MAX_START_M
@@ -62,11 +62,11 @@ def test_lead_approach_keeps_early_map_brake_not_map_110m_margin():
   assert LEAD_APPROACH_A_MS2 < 0.80
   assert LEAD_APPROACH_A_MS2 < 1.0
   assert LEAD_APPROACH_A_MS2 < 2.5
-  # Tiny comfort tune: leftover bump-pull was gap rematch, not the 0.55 peak.
+  # Tiny comfort tune: raise enter only. Exit stays 0.20 so we still close.
   assert abs(LEAD_APPROACH_DV_MS - 0.55) < 1e-9
-  assert abs(LEAD_APPROACH_DV_OFF_MS - 0.12) < 1e-9
+  assert abs(LEAD_APPROACH_DV_OFF_MS - 0.20) < 1e-9
   assert LEAD_APPROACH_DV_OFF_MS < LEAD_APPROACH_DV_MS
-  assert (LEAD_APPROACH_DV_MS - LEAD_APPROACH_DV_OFF_MS) > 0.30  # wider than 0.50/0.20
+  assert LEAD_APPROACH_DV_MS > 0.50  # harder rematch re-enter than #121
   assert LEAD_APPROACH_SLACK_OFF_M < LEAD_APPROACH_SLACK_ON_M
   assert LEAD_APPROACH_NEED_HOLD_M > 0.0
   assert LEAD_APPROACH_MAX_HOLD_M > 0.0
@@ -300,12 +300,11 @@ def test_lead_approach_hysteresis_holds_through_v_rel_and_slack_noise():
   assert lead_approach_decel_ms2(v_lead - 0.5, v_lead, d_rel, t4, active=True) is None
   assert lead_approach_decel_ms2(v_ego, v_lead, d_follow - 0.5, t4, active=True) is None
 
-  # Rematch-adjacent leftover chatter after #121: v_rel 0.16 (below old 0.20
-  # exit) must stay on; v_rel 0.52 (old enter, below new 0.55) must not re-enter.
-  v_hold = v_lead + 0.16
-  assert LEAD_APPROACH_DV_OFF_MS < 0.16 < 0.20
-  assert lead_approach_decel_ms2(v_hold, v_lead, d_rel, t4, active=False) is None
-  assert lead_approach_decel_ms2(v_hold, v_lead, d_rel, t4, active=True) is not None
+  # Exit stays 0.20 so a 0.16 rematch-adjacent close can finish onto the gap.
+  v_finish = v_lead + 0.16
+  assert v_finish - v_lead < LEAD_APPROACH_DV_OFF_MS
+  assert lead_approach_decel_ms2(v_finish, v_lead, d_rel, t4, active=True) is None
+  # Rematch at the old 0.50 enter must not re-bite.
   v_old_enter = v_lead + 0.52
   assert 0.50 < 0.52 < LEAD_APPROACH_DV_MS
   assert lead_approach_decel_ms2(v_old_enter, v_lead, d_rel, t4, active=False) is None
@@ -316,8 +315,7 @@ def test_lead_approach_hysteresis_holds_through_v_rel_and_slack_noise():
 def test_lead_approach_gap_edge_rematch_does_not_chatter():
   """Slight-grade rematch: Accel-1 after a 0.20 exit used to re-cross 0.50.
 
-  Live band (0.55 / 0.12) holds through rematch-adjacent v_rel and does not
-  re-enter at the old 0.50 gate. Slack-off / matched still drop so we close.
+  Enter 0.55 blocks that re-bite. Exit stays 0.20 so we still drop and close.
   """
   v_lead = 22.0
   t4 = nap_t_follow(4)
@@ -327,11 +325,9 @@ def test_lead_approach_gap_edge_rematch_does_not_chatter():
   v_on = v_lead + LEAD_APPROACH_DV_MS + 0.05
   assert lead_approach_decel_ms2(v_on, v_lead, d_rel, t4, active=False) is not None
 
-  # Hold through the old 0.20 exit (Accel rematch used to punch here).
-  for dv in (0.19, 0.16, 0.14, 0.13):
-    assert LEAD_APPROACH_DV_OFF_MS < dv < 0.20
-    assert lead_approach_decel_ms2(v_lead + dv, v_lead, d_rel, t4, active=True) is not None
-
+  # Hold just above the 0.20 exit; drop at/under it so rematch can finish.
+  assert lead_approach_decel_ms2(v_lead + 0.21, v_lead, d_rel, t4, active=True) is not None
+  assert lead_approach_decel_ms2(v_lead + 0.19, v_lead, d_rel, t4, active=True) is None
   assert lead_approach_decel_ms2(v_lead + 0.08, v_lead, d_rel, t4, active=True) is None
 
   # After drop, old enter 0.50–0.54 stays off so rematch does not re-bite.
@@ -348,17 +344,18 @@ def test_lead_approach_slew_softens_onset_and_releases_immediately():
   a = slew_lead_approach_a(target, None)
   assert a == pytest.approx(-LEAD_APPROACH_SLEW_MS2)
   prev = None
-  frames = 0
-  for frames in range(1, 20):
+  reached = 0
+  for n in range(1, 20):
     prev = slew_lead_approach_a(target, prev)
     assert prev is not None
     assert prev >= target - 1e-9
+    reached = n
     if abs(prev - target) < 1e-9:
       break
   else:
     raise AssertionError("slew did not reach comfort peak")
   assert abs(prev + LEAD_APPROACH_A_MS2) < 1e-9
-  assert frames == int(round(LEAD_APPROACH_A_MS2 / LEAD_APPROACH_SLEW_MS2))
+  assert reached == int(round(LEAD_APPROACH_A_MS2 / LEAD_APPROACH_SLEW_MS2))
 
   # Milder (closing speed dropped) and off: no leftover regen.
   assert slew_lead_approach_a(-0.10, -0.40) == pytest.approx(-0.10)
@@ -433,6 +430,18 @@ def test_far_flicker_rejected_without_radar_or_model_prob():
     v_ego, v_lead, LEAD_APPROACH_MAX_START_M + LEAD_APPROACH_MAX_HOLD_M + 1.0,
     t4, active=True, model_prob=1.0, radar=True,
   ) is None
+
+
+def test_accel1_catchup_at_one_ms_is_not_clear_close():
+  """v_rel=1.0 / 35 m slack is Accel-1 catch-up. Overlay must stay off."""
+  v_ego = 25.0
+  v_lead = 24.0
+  t4 = nap_t_follow(4)
+  d_follow = t4 * v_lead + STOP_DISTANCE
+  assert v_ego - v_lead < LEAD_APPROACH_CLEAR_DV_MS
+  assert lead_approach_decel_ms2(v_ego, v_lead, d_follow + 35.0, t4) is None
+  # A truly faster close still skips need.
+  assert lead_approach_decel_ms2(v_ego + 0.2, v_lead, d_follow + 35.0, t4) is not None
 
 
 def test_clear_close_allows_large_slack_still_capped():
