@@ -152,6 +152,9 @@ class TestAlerts:
     assert stock_enable.audible_alert == AudibleAlert.engage
 
   def test_follow_distance_changed_alert_matches_mannerisms(self):
+    event_types = EVENTS[log.OnroadEvent.EventName.followDistanceChanged]
+    assert ET.WARNING in event_types
+    assert ET.PERMANENT in event_types
     alert = follow_distance_changed_alert(
       self.CP, self.CS, self.sm, False, 100, log.LongitudinalPersonality.standard,
     )
