@@ -45,6 +45,10 @@ PEDAL_DROP_DI = 0.40
 # When only gasPressed is available (planner has not seen analog DI yet).
 BINARY_PRESSED_DI = 8.0
 
+# Sticky / cruise MAX is a hard cap. Holding a pressed pedal must not
+# keep accelerating once ego is at/above vCruise.
+MAX_HOLD_SLACK_MS = 0.15
+
 
 def cs_pedal_di(CS, gas_pressed: bool | None = None) -> float:
   """Measured or last-known accelerator DI. Binary fallback if analog is 0."""
@@ -158,35 +162,53 @@ class PostEngageCoast:
       self._hold_a = self._last_good_a
       self._holding = True
 
+  def at_or_above_max(self, v_ego, v_cruise) -> bool:
+    """True when a pedal hold would push past sticky/cruise MAX."""
+    if v_ego is None or v_cruise is None:
+      return False
+    try:
+      ego = float(v_ego)
+      cruise = float(v_cruise)
+    except (TypeError, ValueError):
+      return False
+    if cruise <= 0.0:
+      return False
+    return ego >= cruise - MAX_HOLD_SLACK_MS
+
   def safety_overrides(self, a_cmd, *, brake_pressed: bool = False,
                        fcw: bool = False, should_stop: bool = False,
-                       has_lead: bool = False) -> bool:
-    """True when a real hazard must win over the pedal freeze."""
+                       has_lead: bool = False, v_ego=None, v_cruise=None) -> bool:
+    """True when a real hazard or MAX cap must win over the pedal freeze."""
     a = float(a_cmd)
     if brake_pressed or fcw or should_stop:
       return True
     if has_lead and a <= -LEAD_KEEP_DECEL_MS2:
       return True
+    if self.at_or_above_max(v_ego, v_cruise):
+      return True
     return False
 
   def apply(self, a_cmd, *, brake_pressed: bool = False, fcw: bool = False,
-            should_stop: bool = False, has_lead: bool = False) -> float:
-    """Hold last pressed accel; pass safety and unused window through."""
+            should_stop: bool = False, has_lead: bool = False,
+            v_ego=None, v_cruise=None) -> float:
+    """Hold last pressed accel; pass safety, MAX, and unused window through."""
     a = float(a_cmd)
     if not self.active:
       return a
     if self.safety_overrides(a, brake_pressed=brake_pressed, fcw=fcw,
-                             should_stop=should_stop, has_lead=has_lead):
+                             should_stop=should_stop, has_lead=has_lead,
+                             v_ego=v_ego, v_cruise=v_cruise):
       return a
     return self._hold_a
 
   def should_hold_pedal(self, a_cmd, *, brake_pressed: bool = False,
                         fcw: bool = False, should_stop: bool = False,
-                        has_lead: bool = False) -> bool:
+                        has_lead: bool = False, v_ego=None, v_cruise=None) -> bool:
     """Carcontroller: freeze GAS_COMMAND only when apply() would hold."""
     if not self.active or self.hold_pedal is None:
       return False
     return not self.safety_overrides(
       a_cmd, brake_pressed=brake_pressed, fcw=fcw,
       should_stop=should_stop, has_lead=has_lead,
+      v_ego=v_ego, v_cruise=v_cruise,
     )

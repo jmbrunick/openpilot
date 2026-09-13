@@ -98,6 +98,29 @@ def _gas_pressed(CS) -> bool:
   return bool(getattr(CS, "gasPressed", False))
 
 
+def _v_ego(CS) -> float:
+  out = getattr(CS, "out", None)
+  if out is not None:
+    return float(getattr(out, "vEgo", 0.0) or 0.0)
+  return float(getattr(CS, "vEgo", 0.0) or 0.0)
+
+
+def _v_cruise_ms(CS) -> float:
+  """HUD / sticky MAX in m/s. Pedal mode owns speed via pedal_speed_kph."""
+  kph = getattr(CS, "pedal_speed_kph", None)
+  if kph:
+    return float(kph) / 3.6
+  out = getattr(CS, "out", None)
+  src = out if out is not None else CS
+  cruise = getattr(src, "cruiseState", None)
+  if cruise is not None:
+    spd = getattr(cruise, "speed", 0.0) or 0.0
+    if spd:
+      return float(spd)
+  vc = getattr(src, "vCruise", 0.0) or 0.0
+  return float(vc) / 3.6 if vc else 0.0
+
+
 def _preap_long_update_with_pedal_hold(self, CC, CS, frame, tesla_can, can_bus_party, now_nanos=0):
   orig = _ORIG_PREAP_LONG_UPDATE
   hold = _hold_for(self)
@@ -114,7 +137,8 @@ def _preap_long_update_with_pedal_hold(self, CC, CS, frame, tesla_can, can_bus_p
 
   a_cmd = float(getattr(getattr(CC, "actuators", None), "accel", 0.0) or 0.0)
   brake = bool(getattr(CS, "real_brake_pressed", False))
-  if hold.should_hold_pedal(a_cmd, brake_pressed=brake):
+  if hold.should_hold_pedal(a_cmd, brake_pressed=brake,
+                            v_ego=_v_ego(CS), v_cruise=_v_cruise_ms(CS)):
     apply_held_pedal_command(self, CS, tesla_can, sends, hold.hold_pedal)
   elif gas and pedal_di > 0.0:
     # Analog lift for planner/controlsd next frame (command is 0 in passthrough).
