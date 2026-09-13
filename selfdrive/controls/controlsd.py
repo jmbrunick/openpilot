@@ -24,7 +24,7 @@ from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, STEER_ANGLE_SATURATION_THRESHOLD
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl
-from openpilot.selfdrive.controls.lib.post_engage_coast import PostEngageCoast, cs_pedal_di
+from openpilot.selfdrive.controls.lib.post_engage_coast import PostEngageCoast, cs_lift_pedal_di
 from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 
@@ -193,7 +193,7 @@ class Controls:
       self._post_engage_coast.update(
         long_engaged=bool(getattr(CS, 'enableLongControl', False)),
         gas_pressed=gas,
-        pedal_pos=cs_pedal_di(CS, gas_pressed=gas),
+        pedal_pos=cs_lift_pedal_di(CS, gas_pressed=gas),
         a_ego=float(CS.aEgo),
       )
       a_target = self._post_engage_coast.apply(

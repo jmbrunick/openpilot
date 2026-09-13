@@ -7,25 +7,25 @@ regen (``enable=0``) already pulls ``aEgo`` down on the way, then grace
 keeps commanded accel at 0 before OP long climbs to MAX.
 
 On the **first detectable pedal decrease** after long engage, take over
-with **positive accel toward MAX**. Do not freeze last-pressed DI (do not
-float at the last pedal). Planner +a that is already climbing harder
-passes through. MAX remains a hard cap.
-
-The 1 s timer starts on the **lift**, not on the engage edge — holding
-the pedal past 1 s after engage must still hand off without a grace
-coast. Pedal-layer ``ENGAGE_GRACE_FRAMES`` is expired by
-``preap_post_engage_hold`` so grace cannot keep a=0 on ACQUIRE.
+with **positive accel toward MAX** and **keep that climb** until ego is
+at MAX (or brake / FCW / should-stop / hard lead). Do not freeze
+last-pressed DI on the wire (a peak-DI stab retriggers interceptor
+``gasPressed`` → ENABLE 0↔1 → ACQUIRE wipe → pulse / net decel).
+Planner +a that is already climbing harder passes through. MAX remains
+a hard cap.
 
 Leave these paths alone:
 - brake pedal (digital Applied — Pre-AP forces ``brakePressed`` false)
 - FCW / should-stop / AEB-class
 - a radar lead already asking ``LEAD_KEEP_DECEL_MS2`` (0.55) or harder
-- after the 1 s handoff (normal OP long toward MAX / lead)
+- at/above sticky MAX (normal OP long owns the cap)
 - engage with no gas / pedal never decreases (no overlay)
 """
 from __future__ import annotations
 
-# Forced-climb duration from the first lift, not from the engage edge.
+# Legacy 1 s window from #144. Climb is now latched until MAX / safety —
+# expiring at 1 s dropped the floor while ACQUIRE/VDAS were still in the
+# regen hole (38→28 mph). Kept so docs/tests can name the old contract.
 POST_ENGAGE_COAST_S = 1.0
 
 # Lead-approach comfort peak. A lead already asking this (or harder)
@@ -42,6 +42,9 @@ PEDAL_PRESSED_DI = 2.0
 # First detectable decrease. 0.40 left the early drop unprotected
 # (ENABLE=0 passthrough + Tesla regen) before the overlay latched.
 PEDAL_DROP_DI = 0.05
+# Real driver re-press while climbing. 0.05 treated interceptor chatter
+# and ENABLE=1 command echo as a new press → unlatch / re-latch pulse.
+REPRESS_DI = 2.0
 # When only gasPressed is available (planner has not seen analog DI yet).
 BINARY_PRESSED_DI = 8.0
 
@@ -68,12 +71,36 @@ def cs_pedal_di(CS, gas_pressed: bool | None = None) -> float:
   return BINARY_PRESSED_DI if pressed else 0.0
 
 
+def cs_driver_pedal_di(CS, gas_pressed: bool | None = None) -> float:
+  """Driver / interceptor DI only — never the ENABLE=1 command echo.
+
+  ``cs_pedal_di`` prefers ``pedal_command_di``. After a climb seed that
+  feedback looks like a still-pressed pedal and re-arms the overlay.
+  """
+  val = getattr(CS, "pedal_interceptor_value", None)
+  if val is not None:
+    try:
+      di = float(val)
+    except (TypeError, ValueError):
+      di = 0.0
+    if di > 0.0:
+      return di
+  pressed = bool(getattr(CS, "gasPressed", False) if gas_pressed is None else gas_pressed)
+  return BINARY_PRESSED_DI if pressed else 0.0
+
+
+def cs_lift_pedal_di(CS, gas_pressed: bool | None = None) -> float:
+  """Pedal for lift detection: interceptor when present, else analog fallback."""
+  if getattr(CS, "pedal_interceptor_value", None) is not None:
+    return cs_driver_pedal_di(CS, gas_pressed=gas_pressed)
+  return cs_pedal_di(CS, gas_pressed=gas_pressed)
+
+
 class PostEngageCoast:
   """Frame-by-frame post-engage climb-to-MAX handoff on first pedal drop."""
 
   def __init__(self, dt: float):
     self.dt = float(dt)
-    self._remain_s = 0.0
     self._prev_long = False
     self._last_pressed_di = 0.0
     self._last_good_a = 0.0
@@ -84,12 +111,12 @@ class PostEngageCoast:
 
   @property
   def active(self) -> bool:
-    """Handoff still open *and* a lift has started the climb."""
-    return self._remain_s > 0.0 and self._holding
+    """A lift has latched the climb (stays until MAX / safety / long off)."""
+    return self._holding
 
   @property
   def hold_pedal(self) -> float | None:
-    """Last pressed DI — VDAS seed only, not a frozen GAS_COMMAND."""
+    """Last pressed DI — diagnostics only, never a GAS_COMMAND stab."""
     return self._hold_di if self.active else None
 
   @property
@@ -98,7 +125,6 @@ class PostEngageCoast:
     return self._hold_a if self.active else 0.0
 
   def reset(self) -> None:
-    self._remain_s = 0.0
     self._prev_long = False
     self._last_pressed_di = 0.0
     self._last_good_a = 0.0
@@ -110,7 +136,8 @@ class PostEngageCoast:
   def update(self, *, long_engaged: bool, gas_pressed: bool = False,
              pedal_pos: float | None = None, a_ego: float = 0.0,
              dt: float | None = None) -> None:
-    step = self.dt if dt is None else float(dt)
+    if dt is not None:
+      self.dt = float(dt)
     if not long_engaged:
       self.reset()
       return
@@ -123,24 +150,16 @@ class PostEngageCoast:
         di = BINARY_PRESSED_DI
 
     if not self._prev_long:
-      # Watch from engage. Do not start the 1 s timer here — holding the
-      # pedal past 1 s must still hand off on the first decrease.
-      self._remain_s = 0.0
+      # Watch from engage. Do not start a 1 s timer — holding the pedal
+      # past 1 s must still hand off, and the climb must last until MAX.
       self._holding = False
       self._hold_di = 0.0
       self._hold_a = 0.0
       self._last_pressed_di = di if di > PEDAL_PRESSED_DI else 0.0
       self._saw_pressed = self._last_pressed_di > PEDAL_PRESSED_DI
       self._last_good_a = max(float(a_ego), 0.0) if self._saw_pressed else 0.0
-    elif self._holding:
-      self._remain_s = max(0.0, self._remain_s - step)
-      if self._remain_s <= 0.0:
-        self._holding = False
-        self._saw_pressed = False
-      else:
-        self._track_pedal(di, float(a_ego))
     else:
-      self._track_pedal(di, float(a_ego))
+      self._track_pedal(di, float(a_ego), bool(gas_pressed))
 
     self._prev_long = True
 
@@ -148,15 +167,14 @@ class PostEngageCoast:
     return max(float(self._last_good_a), CLIMB_FLOOR_MS2)
 
   def _latch_climb(self) -> None:
-    # Seed VDAS from the last pressed peak so the first ENABLE=1 frame
-    # does not start in the regen hole. apply() still lets planner +a
-    # climb past this floor; we do not freeze this DI after grace.
+    # Remember the last pressed peak for re-press detection only.
+    # apply() floors accel; the carcontroller must not put this DI on
+    # GAS_COMMAND (peak stab → interceptor gasPressed → ENABLE chatter).
     self._hold_di = self._last_pressed_di
     self._hold_a = self._climb_floor()
     self._holding = True
-    self._remain_s = POST_ENGAGE_COAST_S
 
-  def _track_pedal(self, di: float, a_ego: float) -> None:
+  def _track_pedal(self, di: float, a_ego: float, gas_pressed: bool) -> None:
     lifting = self._saw_pressed and di <= self._last_pressed_di - PEDAL_DROP_DI
     if di > PEDAL_PRESSED_DI:
       self._saw_pressed = True
@@ -164,15 +182,13 @@ class PostEngageCoast:
       # the regen hole. Keep the last non-negative a from the pressed peak.
       if a_ego >= 0.0 and not lifting:
         self._last_good_a = a_ego
-      if (not self._holding) or di > self._hold_di + PEDAL_DROP_DI:
+      if not self._holding:
         if di + 1e-9 >= self._last_pressed_di:
           self._last_pressed_di = di
-        if self._holding and di > self._hold_di + PEDAL_DROP_DI:
-          # Re-press inside the window: recapture so the next lift
-          # climbs from the new peak, not the earlier freeze.
-          self._holding = False
-          self._remain_s = 0.0
-          self._last_pressed_di = di
+      elif gas_pressed and di > self._hold_di + REPRESS_DI:
+        # Real driver override, not interceptor chatter / command echo.
+        self._holding = False
+        self._last_pressed_di = di
 
     if not self._saw_pressed or self._holding:
       return
