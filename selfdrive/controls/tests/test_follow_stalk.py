@@ -23,7 +23,6 @@ from openpilot.selfdrive.controls.lib.follow_stalk import (
   detect_follow_stalk,
   follow_distance_hud_text,
   persist_follow_distance,
-  read_follow_distance,
   stalk_adjusts_follow,
   step_follow_distance,
 )

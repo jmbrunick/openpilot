@@ -1302,6 +1302,13 @@ def test_driving_mannerisms_submenu_wires_params():
   assert "_close_driving_mannerisms" in nap
   assert 'self._page = "driving_mannerisms"' in nap
   assert "self._driving_mannerisms_page.render" in nap
+  assert "NAP_DM_SIMULATE_LOOKING" in nap
+  assert "put_bool(NAP_DM_SIMULATE_LOOKING, False)" in nap
+  assert "NAP_DM_FALSE_ALERT_IGNORE" in nap
+  assert "put_bool(NAP_DM_FALSE_ALERT_IGNORE, False)" in nap
+  keys = (root / "common/params_keys.h").read_text()
+  assert "NAPDmSimulateLooking" in keys
+  assert "NAPDmFalseAlertIgnore" in keys
   assert "DrivingMannerismsLayoutMici" in nap_mici
   assert "driving mannerisms" in nap_mici
   # Map Speed Limit submenu must stay on the main NAP list.
