@@ -6,7 +6,6 @@ from openpilot.selfdrive.car.tesla.preap_force_offroad_handoff import (
   CANCELING,
   CANCEL_DELAY_FRAMES,
   CC_ENGAGE_TIMEOUT_FRAMES,
-  DROP_AND_SET,
   ENABLED_WAIT_S,
   HANDOFF_READY_PARAM,
   HANDOFF_TIMEOUT_S,
@@ -335,16 +334,23 @@ def test_card_and_hardwared_wire_handoff():
 def test_stock_cc_arm_wrapper_sends_main_after_delay():
   import pytest
   pytest.importorskip("capnp")
-  from unittest.mock import MagicMock
   from openpilot.selfdrive.car.tesla.preap_force_offroad_handoff import (
     install_force_offroad_handoff,
   )
   from opendbc.car.tesla.preap.stock_cc_spoofer import StockCCSpoofer
+  from opendbc.car.tesla.values import CruiseButtons
+
+  class FakeCan:
+    def __init__(self):
+      self.calls: list[tuple] = []
+
+    def create_action_request(self, *args):
+      self.calls.append(args)
+      return ("MAIN",)
 
   install_force_offroad_handoff()
   s = StockCCSpoofer()
-  can = MagicMock()
-  can.create_action_request.return_value = ("MAIN",)
+  can = FakeCan()
   cs = SimpleNamespace(
     preap_cc_cancel_needed=False,
     preap_cc_engage_needed=False,
@@ -358,12 +364,9 @@ def test_stock_cc_arm_wrapper_sends_main_after_delay():
   # Before delay: no MAIN
   for f in range(1, CANCEL_DELAY_FRAMES):
     s.update(cs, f, can, 2)
-  assert can.create_action_request.call_count == 0
+  assert can.calls == []
   # Delay + slot
   for f in range(CANCEL_DELAY_FRAMES, CANCEL_DELAY_FRAMES + 15):
     s.update(cs, f, can, 2)
-  assert can.create_action_request.call_count >= 1
-  from opendbc.car.tesla.values import CruiseButtons
-  can.create_action_request.assert_called_with(
-    CruiseButtons.MAIN, 2, 4, cs.msg_stw_actn_req,
-  )
+  assert len(can.calls) >= 1
+  assert can.calls[-1] == (CruiseButtons.MAIN, 2, 4, cs.msg_stw_actn_req)

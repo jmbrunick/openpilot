@@ -89,12 +89,12 @@ DM_SIMULATE_LOOKING_DESCRIPTION = (
 )
 FORCE_OFFROAD_DESCRIPTION = (
   "WARNING: Forces the device offroad and disengages openpilot even while "
-  "moving. On-road, a big Yes/No asks if you are ready to resume steering "
-  "control — No leaves assist as it was. Drive manually after Yes — no "
-  "steering or accel assist while this is on. Unlocks Download US Maps, "
-  "Refresh maps, software install, and other offroad-only NAP actions. "
-  "Default Off. Clears when you toggle Off, Reset to Defaults, reboot, or "
-  "the next time ignition turns on."
+  + "moving. On-road, a big Yes/No asks if you are ready to resume steering "
+  + "control — No leaves assist as it was. Drive manually after Yes — no "
+  + "steering or accel assist while this is on. Unlocks Download US Maps, "
+  + "Refresh maps, software install, and other offroad-only NAP actions. "
+  + "Default Off. Clears when you toggle Off, Reset to Defaults, reboot, or "
+  + "the next time ignition turns on."
 )
 SPEED_SIGN_LOG_DESCRIPTION = (
   "Log-only MUTCD speed-sign detector on the ROAD camera + GPS. Default Off. "
