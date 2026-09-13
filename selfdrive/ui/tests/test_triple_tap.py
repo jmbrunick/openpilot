@@ -71,30 +71,30 @@ def test_hidden_toggles_removed_from_normal_lists():
   settings = (ROOT / "selfdrive/ui/layouts/settings/settings.py").read_text()
   settings_mici = (ROOT / "selfdrive/ui/mici/layouts/settings/settings.py").read_text()
 
-  assert "Simulate Look-at-Road" not in tici_dm
+  assert "Simulate Look" not in tici_dm
   assert "NAP_DM_SIMULATE_LOOKING" not in tici_dm
-  assert "simulate look-at-road" not in mici_dm
+  assert "simulate look" not in mici_dm
   assert "NAP_DM_SIMULATE_LOOKING" not in mici_dm
 
   assert 'self._add_toggle(\n      NAP_FORCE_OFFROAD' not in nap
   assert "Go Offline" not in nap
-  assert "simulate look-at-road" not in nap
+  assert "simulate look" not in nap
   assert 'put_bool(NAP_FORCE_OFFROAD, False)' in nap
   assert 'put_bool(NAP_DM_SIMULATE_LOOKING, True)' in nap
 
   assert 'BigParamControl("force offroad"' not in nap_mici
   assert "NAP_FORCE_OFFROAD" not in nap_mici
 
-  assert "Simulate Look-at-Road" in popup
+  assert "Simulate Look" in popup
   assert "Force Offroad" in popup
   assert "[self._offroad_item, self._dm_item]" in popup
   assert "NAP_DM_SIMULATE_LOOKING" in popup
   assert "NAP_FORCE_OFFROAD" in popup
   assert "is_offroad" not in popup
 
-  assert "simulate look-at-road" in overlay
+  assert "simulate look" in overlay
   assert "force offroad" in overlay
-  assert overlay.index('BigParamControl("force offroad"') < overlay.index('BigParamControl("simulate look-at-road"')
+  assert overlay.index('BigParamControl("force offroad"') < overlay.index('BigParamControl("simulate look"')
   assert "NAP_DM_SIMULATE_LOOKING" in overlay
   assert "NAP_FORCE_OFFROAD" in overlay
   assert "set_enabled(ui_state.is_offroad)" not in overlay

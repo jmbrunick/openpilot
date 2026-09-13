@@ -1,6 +1,10 @@
+NAP Simulate Look label (2026-09-13)
+========================
+* Triple-tap NAP popup title is **Simulate Look** (was **Simulate Look-at-Road**). Same `NAPDmSimulateLooking` param and behavior. Force Offroad label unchanged. Not a nap-release change.
+
 NAP hidden settings (2026-09-13)
 ========================
-* **Simulate Look-at-Road** and **Force Offroad / Go Offline** are no longer on the normal NAP or Driving Mannerisms lists. Triple-tap **NAP** in Settings (3 taps in a 1.0 s sliding window) opens a side popup with those two toggles only. Tap outside the card to dismiss (X / tap NAP again also work). Same params and Reset-All defaults. Soft-lat, Hypermile, Hill Climb, Step Down unchanged. mici: triple-tap the **nap** button. Not a nap-release change.
+* **Simulate Look** and **Force Offroad / Go Offline** are no longer on the normal NAP or Driving Mannerisms lists. Triple-tap **NAP** in Settings (3 taps in a 1.0 s sliding window) opens a side popup with those two toggles only. Tap outside the card to dismiss (X / tap NAP again also work). Same params and Reset-All defaults. Soft-lat, Hypermile, Hill Climb, Step Down unchanged. mici: triple-tap the **nap** button. Not a nap-release change.
 
 NAP Hypermile Hill Climb (2026-09-12)
 ========================
@@ -28,7 +32,7 @@ NAP Hypermile (2026-09-12)
 
 NAP driver monitoring (2026-09-12)
 ========================
-* Pre-AP engaged: **Simulate Look-at-Road** (default On) injects a simulated glance on the **stock vision looking-path** (`face_detected` + low pose std + `driver_distraction_filter.x < 0.37`) and **holds** that attentive state until stock gradual recovery returns awareness to **1.0** (not a one-frame pulse / mute). After drain starts, wait **past 1.0 s**, then fire at a **random time in the next 2.0 s** — fire is uniform in **(1.0 s, 3.0 s]** of that countdown. After a full reset the same rule applies to the next countdown. Orange / red stay stock **5 / 11 s** if the toggle is Off. Hands-on ≥ 2 / stalk / door / reverse hard cancels unchanged. Replaces the #103 hands-on-only first-band reset. Settings → triple-tap **NAP** (not Driving Mannerisms). Not a nap-release change.
+* Pre-AP engaged: **Simulate Look** (default On) injects a simulated glance on the **stock vision looking-path** (`face_detected` + low pose std + `driver_distraction_filter.x < 0.37`) and **holds** that attentive state until stock gradual recovery returns awareness to **1.0** (not a one-frame pulse / mute). After drain starts, wait **past 1.0 s**, then fire at a **random time in the next 2.0 s** — fire is uniform in **(1.0 s, 3.0 s]** of that countdown. After a full reset the same rule applies to the next countdown. Orange / red stay stock **5 / 11 s** if the toggle is Off. Hands-on ≥ 2 / stalk / door / reverse hard cancels unchanged. Replaces the #103 hands-on-only first-band reset. Settings → triple-tap **NAP** (not Driving Mannerisms). Not a nap-release change.
 
 NAP settings (2026-09-12)
 ========================

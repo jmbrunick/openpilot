@@ -129,7 +129,7 @@ class NAPLayout(Widget):
     self._toggle_map = {}  # param_key -> ListItem (for refresh)
 
     # ── Section 1: Longitudinal Control ──
-    # Force Offroad / Simulate Look-at-Road live in the NAP triple-tap popup.
+    # Force Offroad / Simulate Look live in the NAP triple-tap popup.
     self._main_items.append(section_header_item("Longitudinal Control"))
 
     self._add_toggle(

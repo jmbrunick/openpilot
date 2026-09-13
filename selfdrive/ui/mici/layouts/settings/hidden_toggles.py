@@ -1,4 +1,4 @@
-"""mici overlay: Force Offroad + Simulate Look-at-Road.
+"""mici overlay: Force Offroad + Simulate Look.
 
 Opened by a triple-tap on the Settings **nap** button. Tap outside the
 card to dismiss. Not shown on Driving Mannerisms or the main NAP list.
@@ -31,7 +31,7 @@ class HiddenTogglesOverlayMici(Widget):
     self._offroad = BigParamControl("force offroad", NAP_FORCE_OFFROAD)
     self._offroad.set_value("WARNING: stops OP — drive manually")
 
-    self._dm = BigParamControl("simulate look-at-road", NAP_DM_SIMULATE_LOOKING)
+    self._dm = BigParamControl("simulate look", NAP_DM_SIMULATE_LOOKING)
     self._dm.set_value("On — hold glance at random in 1–3 s of drain")
 
   def show_event(self):
