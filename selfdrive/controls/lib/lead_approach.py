@@ -12,6 +12,12 @@ comes and goes.
 This uses relative kinematics so extra speed is bled while closing onto the
 selected Follow Distance (t_follow), not while holding outside radar.
 
+Justin: start that planned comfort ease / speed-match as soon as radar has
+reasonable feedback on a closing lead (`leadOne` valid and closing) — do not
+wait until late in the gap. Farther ceiling + longer head-start + a clear-
+close path (large slack is OK) so later brakes are not as hard. Still soft
+only; MPC / FCW win via min().
+
 On a slight grade, radar `v_rel` / slack chatter around the follow gap used
 to snap this overlay on/off (regen bite → rematch crawl → bite). Enter/exit
 hysteresis plus a per-frame slew on more-negative `a` hold a steady ease
@@ -27,11 +33,23 @@ STOP_DISTANCE = 6.0
 # MPC 2.5 / FCW still own danger.
 LEAD_APPROACH_A_MS2 = 0.55
 # Seconds of current closing-speed added before the last-second catch.
-# 12 s vs 8 s: ~18 m / ~4 s earlier on a 10 mph close, lighter a at the open,
-# same comfort peak near Follow Distance. Still inside radar.
-LEAD_APPROACH_HEADSTART_S = 12.0
-# Bosch-range ceiling so we do not open on a flickering 160 m track.
-LEAD_APPROACH_MAX_START_M = 140.0
+# 24 s vs 12 s: ~54 m / ~12 s earlier on a 10 mph close (need path).
+# Clear-close (v_rel ≥ CLEAR_DV) skips need and starts at first reliable
+# track. Same 0.55 peak near Follow Distance.
+LEAD_APPROACH_HEADSTART_S = 24.0
+# Usable Bosch ceiling. Old 140 m waited until late in the gap; 200 m is
+# still inside typical Pre-AP Bosch reports. Anti-flicker is quality +
+# hysteresis, not a short ceiling — see lead_approach_track_ok.
+LEAD_APPROACH_MAX_START_M = 200.0
+# Hold a few meters past the ceiling so a track at 199–201 m does not chatter.
+LEAD_APPROACH_MAX_HOLD_M = 8.0
+# Inside this, leadOne.status is enough. Beyond it, require radar + modelProb.
+# LeadData exposes those two; Track.cnt age is not published on Pre-AP.
+LEAD_APPROACH_RELIABLE_M = 140.0
+LEAD_APPROACH_MODEL_PROB_MIN = 0.50  # radard association gate
+# Clearly closing: skip the need window and ease from first reliable track.
+# ~2.2 mph. Below this, the (now longer) head-start need still applies.
+LEAD_APPROACH_CLEAR_DV_MS = 1.0
 
 # Enter / exit (hysteresis). A single v_rel / slack gate chatters around
 # the follow gap on a slight incline (regen ↔ accel).
@@ -54,8 +72,34 @@ def nap_t_follow(nap_follow_dist: int | None) -> float | None:
   return None
 
 
+def lead_approach_track_ok(d_rel, model_prob=None, radar=None, active=False) -> bool:
+  """Far-track anti-flicker. LeadData has modelProb + radar; no track age.
+
+  Inside RELIABLE_M, `leadOne.status` is enough (planner already gated).
+  Beyond it, enter needs a radar-associated lead (`radar=True`) and
+  modelProb at/above radard's 0.5 association gate. Missing quality
+  args (unit kinematics) are treated as ok. Once active, hold through
+  a brief modelProb dip so far tracks do not chatter.
+  """
+  if d_rel is None:
+    return False
+  d = float(d_rel)
+  if d <= LEAD_APPROACH_RELIABLE_M or active:
+    return True
+  if radar is False:
+    return False
+  if model_prob is not None and float(model_prob) < LEAD_APPROACH_MODEL_PROB_MIN:
+    return False
+  return True
+
+
 def lead_approach_need_m(v_ego, v_lead, a_comfort=LEAD_APPROACH_A_MS2, t_follow=None) -> float:
-  """Meters of slack (gap above Follow Distance) at which the ease starts."""
+  """Meters of slack (gap above Follow Distance) at which a *marginal* close starts.
+
+  Clear-close (`v_rel` ≥ CLEAR_DV) skips this and eases from the first
+  reliable track, still capped by MAX_START. Need is never past the
+  Bosch ceiling (no map-style +110 m road hang).
+  """
   v_rel = float(v_ego) - max(0.0, float(v_lead))
   vt = max(0.0, float(v_lead))
   if v_rel <= 0.0 or a_comfort <= 0:
@@ -84,21 +128,31 @@ def slew_lead_approach_a(target, prev, slew=LEAD_APPROACH_SLEW_MS2):
 
 
 def lead_approach_decel_ms2(v_ego, v_lead, d_rel, t_follow, a_comfort=LEAD_APPROACH_A_MS2,
-                           active=False):
+                           active=False, model_prob=None, radar=None):
   """Comfort decel to close onto the Follow Distance gap, or None.
 
   a = -v_rel² / (2 * slack) so we arrive at the selected gap with matching
   speed. |a| at the open is below the comfort peak and only reaches that
   peak near the gap. None when speeds match, the lead is faster, or the
-  lead is still outside the window (no crawl / no radar-edge hang).
+  lead is still outside the window.
 
   `active` is last frame's overlay (hysteresis). Enter uses DV_MS / SLACK_ON;
   hold uses DV_OFF / SLACK_OFF / need+NEED_HOLD so small radar noise does
   not chatter regen ↔ accel.
+
+  When `v_rel` is clearly positive (≥ CLEAR_DV) and the track is reliable,
+  large slack is allowed — speed-match from the first reasonable radar
+  feedback, still capped at 0.55 and slewed by the planner.
   """
   if t_follow is None or float(t_follow) <= 0 or a_comfort <= 0:
     return None
   if d_rel is None or float(d_rel) <= 0:
+    return None
+  d = float(d_rel)
+  d_max = LEAD_APPROACH_MAX_START_M + (LEAD_APPROACH_MAX_HOLD_M if active else 0.0)
+  if d > d_max:
+    return None
+  if not lead_approach_track_ok(d, model_prob, radar, active=active):
     return None
   v0 = float(v_ego)
   vt = max(0.0, float(v_lead))
@@ -107,13 +161,15 @@ def lead_approach_decel_ms2(v_ego, v_lead, d_rel, t_follow, a_comfort=LEAD_APPRO
   if v_rel < dv_gate:
     return None
   d_follow = float(t_follow) * vt + STOP_DISTANCE
-  slack = float(d_rel) - d_follow
+  slack = d - d_follow
   slack_min = LEAD_APPROACH_SLACK_OFF_M if active else LEAD_APPROACH_SLACK_ON_M
   if slack <= slack_min:
     return None
-  need_m = lead_approach_need_m(v0, vt, a_comfort, t_follow)
-  need_gate = need_m + (LEAD_APPROACH_NEED_HOLD_M if active else 0.0)
-  if slack > need_gate:
-    return None
+  clear = v_rel >= LEAD_APPROACH_CLEAR_DV_MS
+  if not clear:
+    need_m = lead_approach_need_m(v0, vt, a_comfort, t_follow)
+    need_gate = need_m + (LEAD_APPROACH_NEED_HOLD_M if active else 0.0)
+    if slack > need_gate:
+      return None
   a_needed = -(v_rel * v_rel) / (2.0 * slack)
   return max(float(a_needed), -float(a_comfort))

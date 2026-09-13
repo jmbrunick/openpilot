@@ -2,11 +2,15 @@ import pytest
 
 from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_APPROACH_A_MS2,
+  LEAD_APPROACH_CLEAR_DV_MS,
   LEAD_APPROACH_DV_MS,
   LEAD_APPROACH_DV_OFF_MS,
   LEAD_APPROACH_HEADSTART_S,
+  LEAD_APPROACH_MAX_HOLD_M,
   LEAD_APPROACH_MAX_START_M,
+  LEAD_APPROACH_MODEL_PROB_MIN,
   LEAD_APPROACH_NEED_HOLD_M,
+  LEAD_APPROACH_RELIABLE_M,
   LEAD_APPROACH_SLACK_OFF_M,
   LEAD_APPROACH_SLACK_ON_M,
   LEAD_APPROACH_SLEW_MS2,
@@ -14,6 +18,7 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   STOP_DISTANCE,
   lead_approach_decel_ms2,
   lead_approach_need_m,
+  lead_approach_track_ok,
   nap_t_follow,
   slew_lead_approach_a,
 )
@@ -40,14 +45,20 @@ def test_lead_approach_keeps_early_map_brake_not_map_110m_margin():
   assert abs(LEAD_APPROACH_A_MS2 - map_brake_a_ms2(LOOKAHEAD_EARLY)) < 1e-9
   assert LEAD_APPROACH_A_MS2 < map_brake_a_ms2(LOOKAHEAD_NORMAL)
   assert abs(DECREASE_START_MARGIN_M - 110.0) < 1e-9
-  assert abs(LEAD_APPROACH_HEADSTART_S - 12.0) < 1e-9
-  assert abs(LEAD_APPROACH_MAX_START_M - 140.0) < 1e-9
+  assert abs(LEAD_APPROACH_HEADSTART_S - 24.0) < 1e-9
+  assert abs(LEAD_APPROACH_MAX_START_M - 200.0) < 1e-9
+  assert abs(LEAD_APPROACH_RELIABLE_M - 140.0) < 1e-9
+  assert abs(LEAD_APPROACH_CLEAR_DV_MS - 1.0) < 1e-9
+  assert abs(LEAD_APPROACH_MODEL_PROB_MIN - 0.50) < 1e-9
+  assert LEAD_APPROACH_RELIABLE_M < LEAD_APPROACH_MAX_START_M
+  assert LEAD_APPROACH_CLEAR_DV_MS > LEAD_APPROACH_DV_MS
   assert LEAD_APPROACH_A_MS2 < 0.80
   assert LEAD_APPROACH_A_MS2 < 1.0
   assert LEAD_APPROACH_A_MS2 < 2.5
   assert LEAD_APPROACH_DV_OFF_MS < LEAD_APPROACH_DV_MS
   assert LEAD_APPROACH_SLACK_OFF_M < LEAD_APPROACH_SLACK_ON_M
   assert LEAD_APPROACH_NEED_HOLD_M > 0.0
+  assert LEAD_APPROACH_MAX_HOLD_M > 0.0
   assert abs(LEAD_APPROACH_SLEW_MS2 - 0.05) < 1e-9
   import openpilot.selfdrive.controls.lib.lead_approach as lead_approach
   assert not hasattr(lead_approach, "LEAD_APPROACH_MARGIN_M")
@@ -70,13 +81,11 @@ def test_lead_approach_eases_before_mpc_comfort_brake_window():
   # Map's road-distance +110 m is much farther (radar-edge hang). Do not use it.
   assert need < map_road_need - 50.0
   assert d_follow + need <= LEAD_APPROACH_MAX_START_M + 1e-6
-  assert d_follow + need < 150.0
-  far = d_follow + need + 15.0
-  assert lead_approach_decel_ms2(v_ego, v_lead, far, t4) is None
+  assert d_follow + need > 140.0  # old 140 m / 12 s window
   at_open = lead_approach_decel_ms2(v_ego, v_lead, d_follow + need - 1.0, t4)
   assert at_open is not None
-  # Entering the window is gentler than peak 0.80; more distance, not more a.
-  assert -0.20 < at_open < -0.10
+  # Longer head-start: open is lighter than the old 12 s ~0.15.
+  assert -0.12 < at_open < -0.05
   mid = lead_approach_decel_ms2(v_ego, v_lead, d_follow + 0.45 * need, t4)
   assert mid is not None and -LEAD_APPROACH_A_MS2 <= mid < 0.0
   assert at_open > mid  # more slack → gentler a (both negative)
@@ -85,51 +94,64 @@ def test_lead_approach_eases_before_mpc_comfort_brake_window():
   assert abs(peak + LEAD_APPROACH_A_MS2) < 0.05
   assert lead_approach_decel_ms2(v_ego, v_ego, 80.0, t4) is None
   assert lead_approach_decel_ms2(v_ego, v_ego + 2.0, 80.0, t4) is None
-  d_open_4 = d_follow + need
-  d_open_7 = t7 * v_lead + STOP_DISTANCE + lead_approach_need_m(v_ego, v_lead, t_follow=t7)
+  # Follow 7 vs 4: marginal close still uses need (v_rel below CLEAR_DV).
+  v_slow = v_lead + LEAD_APPROACH_DV_MS + 0.05
+  assert v_slow - v_lead < LEAD_APPROACH_CLEAR_DV_MS
+  d_open_4 = t4 * v_lead + STOP_DISTANCE + lead_approach_need_m(v_slow, v_lead, t_follow=t4)
+  d_open_7 = t7 * v_lead + STOP_DISTANCE + lead_approach_need_m(v_slow, v_lead, t_follow=t7)
   assert d_open_7 > d_open_4 + 5.0
-  assert lead_approach_decel_ms2(v_ego, v_lead, d_open_4 + 3.0, t7) is not None
-  assert lead_approach_decel_ms2(v_ego, v_lead, d_open_4 + 3.0, t4) is None
+  assert lead_approach_decel_ms2(v_slow, v_lead, d_open_4 + 3.0, t7) is not None
+  assert lead_approach_decel_ms2(v_slow, v_lead, d_open_4 + 3.0, t4) is None
 
 
-def test_lead_approach_starts_a_little_earlier_with_lighter_open():
-  """12 s vs 8 s head-start: earlier and lighter, still closes, not radar hang."""
+def test_lead_approach_starts_much_earlier_with_lighter_open():
+  """24 s vs 12 s head-start: earlier and lighter, still closes onto Follow Distance."""
   v_ego = 60.0 * 0.44704
   v_lead = 50.0 * 0.44704
   v_rel = v_ego - v_lead
   t4 = nap_t_follow(4)
   d_follow = t4 * v_lead + STOP_DISTANCE
   rel_need = (v_rel * v_rel) / (2.0 * LEAD_APPROACH_A_MS2)
-  need_8 = rel_need + v_rel * 8.0
-  need_12 = lead_approach_need_m(v_ego, v_lead, t_follow=t4)
-  assert abs(need_12 - (rel_need + v_rel * 12.0)) < 1e-6
-  extra_m = need_12 - need_8
-  assert 16.0 < extra_m < 20.0  # ~18 m / ~4 s of 10 mph closing
-  d_open_8 = d_follow + need_8
+  need_12 = rel_need + v_rel * 12.0
+  need_24 = lead_approach_need_m(v_ego, v_lead, t_follow=t4)
+  assert abs(need_24 - (rel_need + v_rel * 24.0)) < 1e-6
+  extra_m = need_24 - need_12
+  assert 50.0 < extra_m < 58.0  # ~54 m / ~12 s of 10 mph closing
   d_open_12 = d_follow + need_12
-  assert d_open_12 > d_open_8
-  assert d_open_12 < 110.0
-  assert lead_approach_decel_ms2(v_ego, v_lead, d_open_8 + 3.0, t4) is not None
-  a_old_open = -(v_rel * v_rel) / (2.0 * need_8)
-  a_new_open = lead_approach_decel_ms2(v_ego, v_lead, d_open_12 - 1.0, t4)
+  d_open_24 = d_follow + need_24
+  assert d_open_24 > d_open_12
+  assert d_open_24 > 140.0
+  assert d_open_24 <= LEAD_APPROACH_MAX_START_M + 1e-6
+  assert lead_approach_decel_ms2(v_ego, v_lead, d_open_12 + 3.0, t4) is not None
+  a_old_open = -(v_rel * v_rel) / (2.0 * need_12)
+  a_new_open = lead_approach_decel_ms2(v_ego, v_lead, d_open_24 - 1.0, t4)
   assert a_new_open is not None
   assert a_old_open < a_new_open < 0.0  # new open is lighter (less negative)
-  assert abs(a_new_open) < 0.16
-  assert abs(a_old_open) > abs(a_new_open) + 0.02
+  assert abs(a_new_open) < 0.12
+  assert abs(a_old_open) > abs(a_new_open) + 0.03
   peak = lead_approach_decel_ms2(v_ego, v_lead, d_follow + rel_need, t4)
   assert peak is not None
   assert abs(peak + LEAD_APPROACH_A_MS2) < 0.05
 
 
-def test_lead_approach_does_not_brake_at_radar_edge_for_moderate_delta():
-  """60→50 at ~160 m must close, not overlay-brake (radar flicker / hang)."""
+def test_far_closing_lead_enters_where_old_140m_would_not():
+  """60→50 at 150–180 m now eases. Old 140 m / short need stayed off."""
   v_ego = 60.0 * 0.44704
   v_lead = 50.0 * 0.44704
   t4 = nap_t_follow(4)
   d_follow = t4 * v_lead + STOP_DISTANCE
-  assert d_follow + lead_approach_need_m(v_ego, v_lead, t_follow=t4) < 150.0
-  assert lead_approach_decel_ms2(v_ego, v_lead, 160.0, t4) is None
-  assert lead_approach_decel_ms2(v_ego, v_lead, 150.0, t4) is None
+  old_need = (v_ego - v_lead) ** 2 / (2.0 * LEAD_APPROACH_A_MS2) + (v_ego - v_lead) * 12.0
+  assert d_follow + old_need < 140.0
+  for d_rel in (150.0, 160.0, 180.0):
+    assert d_rel > 140.0
+    a = lead_approach_decel_ms2(
+      v_ego, v_lead, d_rel, t4, model_prob=1.0, radar=True,
+    )
+    assert a is not None and -LEAD_APPROACH_A_MS2 <= a < 0.0
+    assert abs(a) < 0.20  # far slack → gentle
+  assert lead_approach_decel_ms2(
+    v_ego, v_lead, 210.0, t4, model_prob=1.0, radar=True,
+  ) is None
 
 
 def test_lead_approach_closes_onto_follow_distance_not_hang_at_radar():
@@ -138,11 +160,15 @@ def test_lead_approach_closes_onto_follow_distance_not_hang_at_radar():
   v_lead = 50.0 * 0.44704
   t4 = nap_t_follow(4)
   d_follow = t4 * v_lead + STOP_DISTANCE
-  d_rel = 160.0
+  d_rel = 180.0
   dt = 0.05
   min_d_rel = d_rel
-  for _ in range(int(60.0 / dt)):
-    a = lead_approach_decel_ms2(v_ego, v_lead, d_rel, t4)
+  active = False
+  for _ in range(int(80.0 / dt)):
+    a = lead_approach_decel_ms2(
+      v_ego, v_lead, d_rel, t4, active=active, model_prob=1.0, radar=True,
+    )
+    active = a is not None
     if a is None:
       a = 0.0
     v_ego = max(0.0, v_ego + a * dt)
@@ -249,11 +275,71 @@ def test_lead_approach_peak_stays_at_early_comfort_not_mpc():
   assert tight == pytest.approx(-LEAD_APPROACH_A_MS2)
 
 
+def test_far_flicker_rejected_without_radar_or_model_prob():
+  """Beyond 140 m: vision-only / low modelProb stay off. Radar+prob enters."""
+  v_ego = 60.0 * 0.44704
+  v_lead = 50.0 * 0.44704
+  t4 = nap_t_follow(4)
+  d_far = 180.0
+  assert d_far > LEAD_APPROACH_RELIABLE_M
+  assert lead_approach_track_ok(80.0, model_prob=0.0, radar=False) is True
+  assert lead_approach_track_ok(d_far, model_prob=0.2, radar=True) is False
+  assert lead_approach_track_ok(d_far, model_prob=1.0, radar=False) is False
+  assert lead_approach_track_ok(d_far, model_prob=1.0, radar=True) is True
+  assert lead_approach_track_ok(d_far) is True
+  assert lead_approach_decel_ms2(
+    v_ego, v_lead, d_far, t4, model_prob=0.2, radar=True,
+  ) is None
+  assert lead_approach_decel_ms2(
+    v_ego, v_lead, d_far, t4, model_prob=1.0, radar=False,
+  ) is None
+  held = lead_approach_decel_ms2(
+    v_ego, v_lead, d_far, t4, active=True, model_prob=0.2, radar=True,
+  )
+  assert held is not None and held < 0.0
+  just_past = LEAD_APPROACH_MAX_START_M + 3.0
+  assert lead_approach_decel_ms2(
+    v_ego, v_lead, just_past, t4, active=False, model_prob=1.0, radar=True,
+  ) is None
+  assert lead_approach_decel_ms2(
+    v_ego, v_lead, just_past, t4, active=True, model_prob=1.0, radar=True,
+  ) is not None
+  assert lead_approach_decel_ms2(
+    v_ego, v_lead, LEAD_APPROACH_MAX_START_M + LEAD_APPROACH_MAX_HOLD_M + 1.0,
+    t4, active=True, model_prob=1.0, radar=True,
+  ) is None
+
+
+def test_clear_close_allows_large_slack_still_capped():
+  """v_rel clearly positive + valid lead: ease even with slack past need."""
+  v_ego = 60.0 * 0.44704
+  v_lead = 50.0 * 0.44704
+  t4 = nap_t_follow(4)
+  d_follow = t4 * v_lead + STOP_DISTANCE
+  need = lead_approach_need_m(v_ego, v_lead, t_follow=t4)
+  far_slack = d_follow + need + 20.0
+  assert far_slack < LEAD_APPROACH_MAX_START_M
+  assert v_ego - v_lead > LEAD_APPROACH_CLEAR_DV_MS
+  a = lead_approach_decel_ms2(
+    v_ego, v_lead, far_slack, t4, model_prob=1.0, radar=True,
+  )
+  assert a is not None and a < 0.0
+  assert abs(a) <= LEAD_APPROACH_A_MS2 + 1e-9
+  assert abs(a) < 0.15
+  v_slow = v_lead + LEAD_APPROACH_DV_MS + 0.05
+  need_slow = lead_approach_need_m(v_slow, v_lead, t_follow=t4)
+  assert lead_approach_decel_ms2(
+    v_slow, v_lead, d_follow + need_slow + 20.0, t4,
+  ) is None
+
+
 def test_planner_wires_hysteresis_and_slew():
   """Overlay stays after map track; MPC hard path is still a min()."""
   from pathlib import Path
   planner = (Path(__file__).resolve().parents[1] / "lib/longitudinal_planner.py").read_text()
   assert "active=self._lead_approach_active" in planner
+  assert "model_prob=lead.modelProb" in planner
+  assert "radar=lead.radar" in planner
   assert "slew_lead_approach_a(a_lead, self._lead_approach_a)" in planner
   assert "min(float(output_a_target), a_lead)" in planner
   assert "hypermile" not in planner.lower()
