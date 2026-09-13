@@ -6,7 +6,6 @@ from openpilot.selfdrive.ui.mici.widgets.button import BigButton
 from openpilot.selfdrive.ui.mici.layouts.settings.nap_script import launch_script
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   DOWNLOAD_US_MAPS_INSTRUCTIONS,
-  MAP_SPEED_ACCEL, MAP_SPEED_ACCEL_DEFAULT, MAP_SPEED_ACCEL_LABELS,
   MAP_SPEED_LOOKAHEAD, MAP_SPEED_LOOKAHEAD_LABELS,
   MAP_SPEED_MODES, MAP_SPEED_MODE_LABELS, MAP_SPEED_OFFSETS_MPH,
   REFRESH_MAPS_INSTRUCTIONS,
@@ -39,13 +38,6 @@ class MapSpeedLimitLayoutMici(NavScroller):
       labels=[s.lower() for s in MAP_SPEED_LOOKAHEAD_LABELS],
       default_value=2,
     )
-    map_accel = BigMultiValueParamToggle(
-      "acceleration only",
-      "NAPMapSpeedAccel",
-      values=list(MAP_SPEED_ACCEL),
-      labels=MAP_SPEED_ACCEL_LABELS,
-      default_value=MAP_SPEED_ACCEL_DEFAULT,
-    )
     self._map_db_status = BigButton("osm map data", installed_db_summary())
     self._map_revision = BigButton("map revision", installed_revision_summary())
     refresh_maps_btn = BigButton("refresh maps", "start")
@@ -64,11 +56,10 @@ class MapSpeedLimitLayoutMici(NavScroller):
       map_mode,
       map_offset,
       map_lookahead,
-      map_accel,
-      self._map_db_status,
-      self._map_revision,
       refresh_maps_btn,
       download_maps_btn,
+      self._map_db_status,
+      self._map_revision,
     ])
 
   def show_event(self):

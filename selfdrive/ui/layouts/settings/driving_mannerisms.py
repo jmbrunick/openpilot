@@ -4,7 +4,11 @@ from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.list_view import toggle_item, multiple_button_item, button_item
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
+  ADAPTIVE_ACCEL_DESCRIPTION,
   DRIVER_LAT_HANDOFF_DESCRIPTION,
+  FOLLOW_DISTANCE_DESCRIPTION,
+  MAP_SPEED_ACCEL, MAP_SPEED_ACCEL_DEFAULT, MAP_SPEED_ACCEL_DESCRIPTION,
+  MAP_SPEED_ACCEL_LABELS,
   NAP_DRIVER_LAT_HANDOFF,
 )
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys
@@ -29,9 +33,20 @@ class DrivingMannerismsLayout(Widget):
       callback=self._on_back,
     ))
 
+    accel = int(self._params.get("NAPMapSpeedAccel", return_default=True) or MAP_SPEED_ACCEL_DEFAULT)
+    self._accel_buttons = multiple_button_item(
+      "Acceleration",
+      MAP_SPEED_ACCEL_DESCRIPTION,
+      buttons=MAP_SPEED_ACCEL_LABELS,
+      button_width=72,
+      selected_index=self._accel_index(accel),
+      callback=self._on_accel,
+    )
+    self._all_items.append(self._accel_buttons)
+
     self._adaptive_accel = toggle_item(
-      "Adaptive Accel Limits",
-      description="Reduces acceleration authority when close to a lead car to prevent overshoot. Full accel on open road or when closing a large gap.",
+      "Adaptive Accel",
+      description=ADAPTIVE_ACCEL_DESCRIPTION,
       initial_state=self._params.get_bool(NAPParamKeys.ADAPTIVE_ACCEL),
       callback=self._on_adaptive_accel,
     )
@@ -40,10 +55,7 @@ class DrivingMannerismsLayout(Widget):
     follow_dist = self._params.get(NAPParamKeys.FOLLOW_DISTANCE, return_default=True)
     self._follow_buttons = multiple_button_item(
       "Follow Distance",
-      "Follow distance (1=closest, 7=farthest). A slower car ahead starts a " +
-      "gradual ease-off farther back (more distance, not a harder brake). " +
-      "With a radar lead, a stalk tip (1 mph) steps this 1–7 (up=closer); " +
-      "a full press (5 mph) still steps MAX. No lead: both still adjust MAX.",
+      FOLLOW_DISTANCE_DESCRIPTION,
       buttons=["1", "2", "3", "4", "5", "6", "7"],
       button_width=80,
       selected_index=max(0, min(6, follow_dist - 1)),
@@ -62,6 +74,14 @@ class DrivingMannerismsLayout(Widget):
   def _on_adaptive_accel(self, state):
     self._params.put_bool(NAPParamKeys.ADAPTIVE_ACCEL, state)
 
+  def _accel_index(self, value: int) -> int:
+    if value in MAP_SPEED_ACCEL:
+      return MAP_SPEED_ACCEL.index(value)
+    return MAP_SPEED_ACCEL.index(MAP_SPEED_ACCEL_DEFAULT)
+
+  def _on_accel(self, index: int):
+    self._params.put("NAPMapSpeedAccel", MAP_SPEED_ACCEL[index])
+
   def _on_follow_distance(self, index: int):
     self._params.put(NAPParamKeys.FOLLOW_DISTANCE, index + 1)
 
@@ -70,6 +90,8 @@ class DrivingMannerismsLayout(Widget):
 
   def refresh(self):
     self._adaptive_accel.action_item.set_state(self._params.get_bool(NAPParamKeys.ADAPTIVE_ACCEL))
+    accel = int(self._params.get("NAPMapSpeedAccel", return_default=True) or MAP_SPEED_ACCEL_DEFAULT)
+    self._accel_buttons.action_item.set_selected_button(self._accel_index(accel))
     follow_dist = self._params.get(NAPParamKeys.FOLLOW_DISTANCE, return_default=True)
     self._follow_buttons.action_item.set_selected_button(max(0, min(6, follow_dist - 1)))
     self._lat_handoff.action_item.set_state(self._params.get_bool(NAP_DRIVER_LAT_HANDOFF))
