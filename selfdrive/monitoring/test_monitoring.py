@@ -320,7 +320,7 @@ class TestMonitoring:
     DM._update_events(False, True, False, 0)
 
   def test_simulate_looking_holds_until_awareness_recovers(self):
-    """No-face glance hold is many frames on the looking-path; awareness to 1.0."""
+    """Full-wipe hold is many frames on the looking-path; awareness to 1.0."""
     DM = self._dm(simulate_looking=True)
     hold_frames = 0
     start_a = None
@@ -408,8 +408,8 @@ class TestMonitoring:
     assert any(x >= LOOK_SIM_FIRE_MAX_S - 0.5 for x in seen)
 
   def test_simulate_looking_engaged_never_reaches_orange(self):
-    """Periodic no-face looking-path resets keep awareness above orange."""
-    alert_lvls, d_status = self._run_seq(always_no_face, always_false, always_true,
+    """Periodic full-wipe looking-path resets keep awareness above orange."""
+    alert_lvls, d_status = self._run_seq(always_distracted, always_false, always_true,
                                          always_false, simulate_looking=True, rng_seed=4)
     assert all(a < 2 for a in alert_lvls)
     assert d_status.awareness > d_status.threshold_alert_2
@@ -422,14 +422,52 @@ class TestMonitoring:
     assert all(a < 2 for a in alert_lvls)
     assert d_status.awareness > 0.5
 
-  def test_simulate_looking_does_not_wipe_eye(self):
-    """Eye blink still drains to orange/red; Simulate Look does not reset."""
+  def test_simulate_looking_clears_already_orange(self):
+    """If he is already in orange, the next wipe pulse still resets."""
+    DM = self._dm(simulate_looking=False)
+    for _ in range(int((dm_settings._VISION_POLICY_ALERT_2_TIMEOUT + 0.4) / DT_DMON)):
+      self._step(DM, msg_DISTRACTED)
+    assert DM.alert_level == 2
+    DM.set_nap_dm_toggles(simulate_looking=True)
+    DM._look_sim_fire_s = 2.0
+    DM._look_sim_countdown_s = 0.0
+    cleared = False
+    for _ in range(int(12.0 / DT_DMON)):
+      self._step(DM, msg_DISTRACTED)
+      if DM.awareness >= 1.0 - 1e-9 and DM.alert_level == 0:
+        assert vision_looking_path(DM.face_detected, DM.pose.low_std,
+                                   DM.driver_distraction_filter.x)
+        assert DM._look_sim_hold_s + DT_DMON >= LOOK_SIM_HOLD_MIN_S
+        cleared = True
+        break
+    assert cleared
+
+  def test_simulate_looking_recovers_eye(self):
+    """Eye blink drain is wiped on cadence; never reaches orange."""
     alert_lvls, d_status = self._run_seq(always_distracted, always_false, always_true,
                                          always_false, simulate_looking=True, rng_seed=4)
-    s = d_status.settings
-    assert alert_lvls[int((s._VISION_POLICY_ALERT_2_TIMEOUT + 0.4) / DT_DMON)] == 2
-    assert alert_lvls[int((s._VISION_POLICY_ALERT_3_TIMEOUT + 0.4) / DT_DMON)] == 3
-    assert d_status.distracted_types['eye']
+    assert all(a < 2 for a in alert_lvls)
+    assert d_status.awareness > d_status.threshold_alert_2
+
+  def test_simulate_looking_recovers_phone(self):
+    """Phone-only drain is wiped on cadence when Simulate Look is On."""
+    n = int(TEST_TIMESPAN / DT_DMON)
+    alert_lvls, d_status = self._run_seq(
+      [msg_PHONE_ONLY] * n, always_false, always_true, always_false,
+      simulate_looking=True, false_alert_ignore=False, rng_seed=2,
+    )
+    assert all(a < 2 for a in alert_lvls)
+    assert d_status.awareness > d_status.threshold_alert_2
+
+  def test_simulate_looking_recovers_pose(self):
+    """Pose drain is wiped on cadence when Simulate Look is On."""
+    n = int(TEST_TIMESPAN / DT_DMON)
+    alert_lvls, d_status = self._run_seq(
+      [msg_POSE_ONLY] * n, always_false, always_true, always_false,
+      simulate_looking=True, false_alert_ignore=False, rng_seed=3,
+    )
+    assert all(a < 2 for a in alert_lvls)
+    assert d_status.awareness > d_status.threshold_alert_2
 
   def test_simulate_looking_off_is_stock(self):
     """Toggle Off: first prompt → orange → red on stock 3 / 5 / 11 s."""
@@ -465,7 +503,7 @@ class TestMonitoring:
     DM._redraw_look_sim_interval()
     steps = int((dm_settings._VISION_POLICY_ALERT_2_TIMEOUT + 1.0) / DT_DMON)
     for _ in range(steps):
-      DM.run_step(_fake_sm(hands=0, driver_state=msg_NO_FACE_DETECTED))
+      DM.run_step(_fake_sm(hands=0, driver_state=msg_DISTRACTED))
     assert DM.alert_level < 2
     assert DM.awareness > DM.threshold_alert_2
 
@@ -514,11 +552,11 @@ class TestMonitoring:
     assert DM.alert_level == 0
 
   def test_false_alert_ignore_pose_still_drains(self):
-    """Pose alarming: FAI and Simulate Look do not reset the timer."""
+    """Pose alarming: FAI On (Sim Off) does not reset the timer."""
     n = int(TEST_TIMESPAN / DT_DMON)
     alert_lvls, d_status = self._run_seq(
       [msg_POSE_ONLY] * n, always_false, always_true, always_false,
-      simulate_looking=True, false_alert_ignore=True, rng_seed=3,
+      simulate_looking=False, false_alert_ignore=True, rng_seed=3,
     )
     s = d_status.settings
     assert alert_lvls[int((s._VISION_POLICY_ALERT_2_TIMEOUT + 0.4) / DT_DMON)] == 2
@@ -527,11 +565,11 @@ class TestMonitoring:
     assert not d_status._look_sim_holding
 
   def test_false_alert_ignore_eye_still_drains(self):
-    """Eye alarming: FAI does not reset; orange/red fire on stock timers."""
+    """Eye alarming: FAI On (Sim Off) does not reset; orange/red on stock timers."""
     n = int(TEST_TIMESPAN / DT_DMON)
     alert_lvls, d_status = self._run_seq(
       [msg_DISTRACTED] * n, always_false, always_true, always_false,
-      simulate_looking=True, false_alert_ignore=True, rng_seed=3,
+      simulate_looking=False, false_alert_ignore=True, rng_seed=3,
     )
     s = d_status.settings
     assert alert_lvls[int((s._VISION_POLICY_ALERT_2_TIMEOUT + 0.4) / DT_DMON)] == 2
@@ -539,8 +577,8 @@ class TestMonitoring:
     assert d_status.distracted_types['eye']
 
   def test_false_alert_ignore_phone_plus_eye_eye_wins(self):
-    """Phone + eye: eye keeps draining; FAI does not start a phone hold."""
-    DM = self._dm(simulate_looking=True, false_alert_ignore=True, fire_s=1.2)
+    """Phone + eye: FAI On (Sim Off) does not start a phone hold; eye drains."""
+    DM = self._dm(simulate_looking=False, false_alert_ignore=True, fire_s=1.2)
     for _ in range(int((dm_settings._VISION_POLICY_ALERT_2_TIMEOUT + 0.4) / DT_DMON)):
       self._step(DM, msg_PHONE_AND_EYE)
     assert DM.distracted_types['eye']
@@ -549,8 +587,8 @@ class TestMonitoring:
     assert DM.alert_level == 2
 
   def test_false_alert_ignore_phone_plus_pose_pose_wins(self):
-    """Phone + pose: pose keeps draining; no awareness reset from FAI."""
-    DM = self._dm(simulate_looking=True, false_alert_ignore=True, fire_s=1.2)
+    """Phone + pose: FAI On (Sim Off) does not reset; pose keeps draining."""
+    DM = self._dm(simulate_looking=False, false_alert_ignore=True, fire_s=1.2)
     for _ in range(int((dm_settings._VISION_POLICY_ALERT_2_TIMEOUT + 0.4) / DT_DMON)):
       self._step(DM, msg_PHONE_AND_POSE)
     assert DM.distracted_types['pose']
@@ -581,12 +619,12 @@ class TestMonitoring:
     assert recovered
     assert DM.awareness > drained
 
-  def test_false_alert_ignore_off_phone_is_stock(self):
-    """FAI Off: phone-only drains even if Simulate Look is On (no full wipe)."""
+  def test_false_alert_ignore_off_phone_is_stock_without_sim_look(self):
+    """Both Off: phone-only drains on stock timers."""
     n = int(TEST_TIMESPAN / DT_DMON)
     alert_lvls, d_status = self._run_seq(
       [msg_PHONE_ONLY] * n, always_false, always_true, always_false,
-      simulate_looking=True, false_alert_ignore=False, rng_seed=2,
+      simulate_looking=False, false_alert_ignore=False, rng_seed=2,
     )
     s = d_status.settings
     assert alert_lvls[int((s._VISION_POLICY_ALERT_2_TIMEOUT + 0.4) / DT_DMON)] == 2
@@ -622,14 +660,62 @@ class TestMonitoring:
       self._step(DM, msg_PHONE_AND_POSE)
     assert DM.alert_level >= 2
 
-  def test_simulate_looking_does_not_soft_clear_phone(self):
-    """Simulate Look On alone must not own the phone path."""
+  def test_simulate_looking_full_wipe_clears_phone(self):
+    """Simulate Look On owns the full wipe, including phone false nags."""
     DM = self._dm(simulate_looking=True, false_alert_ignore=False, fire_s=1.2)
+    holding = False
     for _ in range(int(4.0 / DT_DMON)):
       self._step(DM, msg_PHONE_ONLY)
-    assert not DM._look_sim_holding
-    assert DM.distracted_types['phone']
-    assert DM.driver_distracted
+      if DM._look_sim_holding:
+        holding = True
+        assert DM._look_sim_mode == LOOK_SIM_MODE_GLANCE
+        assert DM.distracted_types['phone'] is False
+        assert not DM.driver_distracted
+        assert vision_looking_path(DM.face_detected, DM.pose.low_std,
+                                   DM.driver_distraction_filter.x)
+        break
+    assert holding
+
+  def test_simulate_looking_keeps_hold_when_pose_starts(self):
+    """Mid-hold pose must not abort Simulate Look the way FAI aborts."""
+    DM = self._dm(simulate_looking=True, fire_s=1.2)
+    holding = False
+    for _ in range(int(6.0 / DT_DMON)):
+      self._step(DM, msg_NO_FACE_DETECTED)
+      if DM._look_sim_holding:
+        holding = True
+        a_at_hold = DM.awareness
+        break
+    assert holding
+    self._step(DM, msg_POSE_ONLY)
+    assert DM._look_sim_holding
+    assert DM._look_sim_mode == LOOK_SIM_MODE_GLANCE
+    assert DM.distracted_types['pose'] is False
+    assert not DM.driver_distracted
+    assert DM.awareness >= a_at_hold - 1e-6
+    for _ in range(int((dm_settings._VISION_POLICY_ALERT_2_TIMEOUT + 1.0) / DT_DMON)):
+      self._step(DM, msg_POSE_ONLY)
+    assert DM.alert_level < 2
+    assert DM.awareness > DM.threshold_alert_2
+
+  def test_simulate_looking_hold_recovers_phone_pose_eye(self):
+    """One cadence hold recovers awareness for phone, pose, and eye inputs."""
+    for msg in (msg_PHONE_ONLY, msg_POSE_ONLY, msg_DISTRACTED, msg_PHONE_AND_POSE,
+                msg_PHONE_AND_EYE):
+      DM = self._dm(simulate_looking=True, fire_s=1.2)
+      recovered = False
+      for _ in range(int(10.0 / DT_DMON)):
+        self._step(DM, msg)
+        if DM._look_sim_holding:
+          assert DM._look_sim_mode == LOOK_SIM_MODE_GLANCE
+          assert DM.distracted_types['phone'] is False
+          assert DM.distracted_types['pose'] is False
+          assert DM.distracted_types['eye'] is False
+          assert not DM.driver_distracted
+        if DM.awareness >= 1.0 - 1e-9 and DM.alert_level == 0:
+          recovered = True
+          break
+      assert recovered, f"did not recover for {msg}"
 
   def test_run_step_false_alert_ignore_phone_holds_above_orange(self):
     DM = DriverMonitoring()
@@ -643,16 +729,23 @@ class TestMonitoring:
     assert DM.alert_level < 2
     assert DM.awareness > DM.threshold_alert_2
 
-  def test_stale_both_on_prefers_simulate_look_never_phone(self):
-    """Both-On (old install) must not run phone soft-clear in the same session."""
+  def test_stale_both_on_prefers_simulate_look_full_wipe(self):
+    """Both-On (old install) resolves to Simulate Look; phone recovers via wipe."""
     DM = self._dm(simulate_looking=True, false_alert_ignore=True, fire_s=1.2)
+    holding = False
     for _ in range(int(4.0 / DT_DMON)):
       self._step(DM, msg_PHONE_ONLY)
+      if DM._look_sim_holding:
+        holding = True
+        assert DM._look_sim_mode == LOOK_SIM_MODE_GLANCE
+        assert DM.distracted_types['phone'] is False
+        break
     assert DM.nap_dm_simulate_looking is True
     assert DM.nap_dm_false_alert_ignore is False
-    assert not DM._look_sim_holding
-    assert DM.distracted_types['phone']
+    assert holding
     glance = False
+    DM._end_look_sim_hold(redraw=True)
+    DM._look_sim_fire_s = 1.2
     for _ in range(int(6.0 / DT_DMON)):
       self._step(DM, msg_NO_FACE_DETECTED)
       if DM._look_sim_holding:
