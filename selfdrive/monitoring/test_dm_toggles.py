@@ -62,6 +62,40 @@ def test_apply_simulate_look_on_clears_fai():
   assert p.get_bool(PARAM_DM_FALSE_ALERT_IGNORE) is False
 
 
+class DelayedParams(FakeParams):
+  """put_bool is not visible to get_bool until flush — like non-blocking Params."""
+
+  def __init__(self, **bools):
+    super().__init__(**bools)
+    self._pending = {}
+
+  def put_bool(self, name, value):
+    self._pending[name] = bool(value)
+
+  def flush(self):
+    self.d.update(self._pending)
+    self._pending.clear()
+
+
+def test_apply_return_is_live_when_get_bool_is_stale():
+  """Popup must paint the sibling from apply() return, not get_bool."""
+  p = DelayedParams(**{PARAM_DM_SIMULATE_LOOKING: False, PARAM_DM_FALSE_ALERT_IGNORE: True})
+  sim, fai = apply_dm_simulate_looking(p, True)
+  assert (sim, fai) == (True, False)
+  assert p.get_bool(PARAM_DM_FALSE_ALERT_IGNORE) is True  # stale until flush
+  # UI set_state(fai) / set_checked(fai) — not get_bool.
+  painted_fai = fai
+  assert painted_fai is False
+  p.flush()
+  assert p.get_bool(PARAM_DM_FALSE_ALERT_IGNORE) is False
+
+  p = DelayedParams(**{PARAM_DM_SIMULATE_LOOKING: True, PARAM_DM_FALSE_ALERT_IGNORE: False})
+  sim, fai = apply_dm_false_alert_ignore(p, True)
+  assert (sim, fai) == (False, True)
+  assert p.get_bool(PARAM_DM_SIMULATE_LOOKING) is True  # stale
+  assert sim is False
+
+
 def test_apply_fai_on_clears_simulate_look():
   p = FakeParams(**{PARAM_DM_SIMULATE_LOOKING: True, PARAM_DM_FALSE_ALERT_IGNORE: False})
   sim, fai = apply_dm_false_alert_ignore(p, True)

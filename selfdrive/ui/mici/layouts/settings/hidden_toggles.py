@@ -43,7 +43,7 @@ class HiddenTogglesOverlayMici(Widget):
 
     self._dm = BigParamControl("simulate look", NAP_DM_SIMULATE_LOOKING,
                                toggle_callback=self._on_simulate_look)
-    self._dm.set_value("On — no-face glance in 1–3 s of drain")
+    self._dm.set_value("On — full awareness wipe in 1–3 s")
 
     self._fai = BigParamControl("false alert ignore", NAP_DM_FALSE_ALERT_IGNORE,
                                 toggle_callback=self._on_false_alert_ignore)
@@ -53,12 +53,14 @@ class HiddenTogglesOverlayMici(Widget):
     apply_force_offroad_toggle(self._params, bool(state), started=bool(ui_state.started))
 
   def _on_simulate_look(self, state):
-    apply_dm_simulate_looking(self._params, bool(state))
-    self._fai.refresh()
+    # Use apply() return — refresh()/get_bool can still show the old
+    # sibling On (put_bool is non-blocking) until the overlay is reopened.
+    _sim, fai = apply_dm_simulate_looking(self._params, bool(state))
+    self._fai.set_checked(fai)
 
   def _on_false_alert_ignore(self, state):
-    apply_dm_false_alert_ignore(self._params, bool(state))
-    self._dm.refresh()
+    sim, _fai = apply_dm_false_alert_ignore(self._params, bool(state))
+    self._dm.set_checked(sim)
 
   def show_event(self):
     super().show_event()
