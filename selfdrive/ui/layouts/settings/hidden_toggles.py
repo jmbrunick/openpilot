@@ -1,4 +1,4 @@
-"""TICI side popup: Simulate Look-at-Road + Force Offroad.
+"""TICI side popup: Force Offroad + Simulate Look-at-Road.
 
 Opened by a NAP sidebar triple-tap. Not a full settings page and not part
 of Driving Mannerisms. Tap outside the card (primary), the X, Escape, or
@@ -41,20 +41,20 @@ class HiddenTogglesPopup(Widget):
     self._card_rect = rl.Rectangle(0, 0, 0, 0)
     self._font = gui_app.font(FontWeight.BOLD)
 
-    self._dm_item = toggle_item(
-      "Simulate Look-at-Road",
-      description=DM_SIMULATE_LOOKING_DESCRIPTION,
-      initial_state=self._params.get_bool(NAP_DM_SIMULATE_LOOKING),
-      callback=self._on_dm_sim_looking,
-    )
     self._offroad_item = toggle_item(
       "Force Offroad",
       description=FORCE_OFFROAD_DESCRIPTION,
       initial_state=self._params.get_bool(NAP_FORCE_OFFROAD),
       callback=self._on_force_offroad,
     )
+    self._dm_item = toggle_item(
+      "Simulate Look-at-Road",
+      description=DM_SIMULATE_LOOKING_DESCRIPTION,
+      initial_state=self._params.get_bool(NAP_DM_SIMULATE_LOOKING),
+      callback=self._on_dm_sim_looking,
+    )
     self._scroller = Scroller(
-      [self._dm_item, self._offroad_item],
+      [self._offroad_item, self._dm_item],
       line_separator=True,
       spacing=0,
     )

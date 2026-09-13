@@ -1,4 +1,4 @@
-"""mici overlay: Simulate Look-at-Road + Force Offroad.
+"""mici overlay: Force Offroad + Simulate Look-at-Road.
 
 Opened by a triple-tap on the Settings **nap** button. Tap outside the
 card to dismiss. Not shown on Driving Mannerisms or the main NAP list.
@@ -27,12 +27,12 @@ class HiddenTogglesOverlayMici(Widget):
     self._params = Params()
     self._card_rect = rl.Rectangle(0, 0, 0, 0)
 
-    self._dm = BigParamControl("simulate look-at-road", NAP_DM_SIMULATE_LOOKING)
-    self._dm.set_value("On — hold glance at random in 1–3 s of drain")
-
     # Must stay enabled while onroad — that is the point of Force Offroad.
     self._offroad = BigParamControl("force offroad", NAP_FORCE_OFFROAD)
     self._offroad.set_value("WARNING: stops OP — drive manually")
+
+    self._dm = BigParamControl("simulate look-at-road", NAP_DM_SIMULATE_LOOKING)
+    self._dm.set_value("On — hold glance at random in 1–3 s of drain")
 
   def show_event(self):
     super().show_event()
@@ -61,6 +61,6 @@ class HiddenTogglesOverlayMici(Widget):
 
     x = self._card_rect.x + CARD_PAD
     y = self._card_rect.y + CARD_PAD
-    self._dm.render(rl.Rectangle(x, y, self._dm.rect.width, self._dm.rect.height))
-    y += self._dm.rect.height + CARD_PAD
     self._offroad.render(rl.Rectangle(x, y, self._offroad.rect.width, self._offroad.rect.height))
+    y += self._offroad.rect.height + CARD_PAD
+    self._dm.render(rl.Rectangle(x, y, self._dm.rect.width, self._dm.rect.height))

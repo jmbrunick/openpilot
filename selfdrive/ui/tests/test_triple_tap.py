@@ -87,12 +87,14 @@ def test_hidden_toggles_removed_from_normal_lists():
 
   assert "Simulate Look-at-Road" in popup
   assert "Force Offroad" in popup
+  assert "[self._offroad_item, self._dm_item]" in popup
   assert "NAP_DM_SIMULATE_LOOKING" in popup
   assert "NAP_FORCE_OFFROAD" in popup
   assert "is_offroad" not in popup
 
   assert "simulate look-at-road" in overlay
   assert "force offroad" in overlay
+  assert overlay.index('BigParamControl("force offroad"') < overlay.index('BigParamControl("simulate look-at-road"')
   assert "NAP_DM_SIMULATE_LOOKING" in overlay
   assert "NAP_FORCE_OFFROAD" in overlay
   assert "set_enabled(ui_state.is_offroad)" not in overlay
