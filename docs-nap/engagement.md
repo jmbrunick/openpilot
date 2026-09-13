@@ -183,13 +183,13 @@ Do these at a quiet road / parking lot first, then a known pothole stretch. Peda
 
 Stock DM stays on while engaged. Vision timeouts stay **3 / 5 / 11 s** (`DRIVER_MONITOR_SETTINGS` in `selfdrive/monitoring/policy.py`). The #103 hands-on-only first-band reset did not stop look-at-road nagging: light rim contact is not what `dmonitoringd` treats as looking, orange/red still fired, and `maybe_distracted` (no face / uncertain) kept draining.
 
-Triple-tap **NAP** (1.0 s window → side popup; not under Driving Mannerisms) order: **Force Offroad**, **Simulate Look**, **False Alert Ignore**. Both DM toggles default **On** on nap-dev and share a cadence: after awareness has gone **past 1.0 s**, fire uniform in **(1.0 s, 3.0 s]** of that countdown and **hold** (minimum 0.5 s, until awareness is 1.0). Not a mute and not `driver_interacting` full reset.
+Triple-tap **NAP** (1.0 s window → side popup; not under Driving Mannerisms) order: **Force Offroad**, **Simulate Look**, **False Alert Ignore**. On nap-dev, Simulate Look defaults **On** and False Alert Ignore defaults **Off**. They are **mutually exclusive** — turning one On clears the other (and aborts the other in-flight path). Both Off is allowed. A stale both-On from older installs resolves to Simulate Look On / FAI Off on first read. Shared cadence: after awareness has gone **past 1.0 s**, fire uniform in **(1.0 s, 3.0 s]** of that countdown and **hold** (minimum 0.5 s, until awareness is 1.0). Not a mute and not `driver_interacting` full reset.
 
 `NAPDmSimulateLooking` injects a simulated glance on the **stock vision looking-path** only when the camera lost the face or is uncertain. It does **not** force recovery while **pose** or **eye** are alarming, and it does **not** wipe phone distraction.
 
 `NAPDmFalseAlertIgnore` owns the phone/device path: when `phoneProb` is above `_PHONE_THRESH` (0.5) and pose/eye are **not** alarming, it soft-clears only `distracted_types['phone']` so a false device “Driver Distracted” can recover without a real glance. If pose or eye are actively alarming, it does **not** start or keep a hold — those timers keep draining. Phone + pose together: pose still drains; once pose/eye are clear, remaining phone can soft-clear on the same cadence.
 
-Always-on DM when not engaged does **not** simulate or ignore. Either toggle **Off** = that path is stock. Hands-on ≥ 2 / steer disengage, door, reverse, and stalk cancel are unchanged.
+Always-on DM when not engaged does **not** simulate or ignore. Either toggle **Off** = that path is stock. DM never applies phone soft-clear and glance inject in the same session from both params On. Hands-on ≥ 2 / steer disengage, door, reverse, and stalk cancel are unchanged.
 
 ## Where to look
 
@@ -202,5 +202,6 @@ Always-on DM when not engaged does **not** simulate or ignore. Either toggle **O
 - `selfdrive/car/tesla/tests/test_preap_force_offroad_handoff.py` — handoff ordering + kill-on-long
 - `selfdrive/car/tesla/tests/test_preap_blinker_lat_pause.py` — blinker lat pause, latched turn keeps long, brake still drops long
 - `selfdrive/car/tesla/tests/test_preap_sticky_max.py` — sticky MAX across brake pause, one vs double SET, cancel
+- `selfdrive/monitoring/dm_toggles.py` — mutually exclusive write/read helpers (Simulate Look wins stale both-On)
 - `selfdrive/monitoring/policy.py` — Simulate Look (`NAPDmSimulateLooking`) no-face glance; False Alert Ignore (`NAPDmFalseAlertIgnore`) phone-only soft-clear
-- `selfdrive/monitoring/test_monitoring.py` — phone-only recover vs pose/eye blocked; Simulate Look does not wipe phone/pose/eye; Off is stock
+- `selfdrive/monitoring/test_monitoring.py` — phone-only recover vs pose/eye blocked; Simulate Look does not wipe phone/pose/eye; Off is stock; mutual exclusion
