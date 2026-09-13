@@ -320,6 +320,7 @@ def test_card_and_hud_wire_stock_follow_only():
   cereal = (root / "cereal/log.capnp").read_text()
   manner = (root / "selfdrive/ui/layouts/settings/driving_mannerisms.py").read_text()
   manner_mici = (root / "selfdrive/ui/mici/layouts/settings/driving_mannerisms.py").read_text()
+  content = (root / "selfdrive/ui/layouts/settings/nap_content.py").read_text()
   helper = (root / "selfdrive/controls/lib/follow_stalk.py").read_text()
 
   assert "from openpilot.selfdrive.controls.lib.follow_stalk import" in card
@@ -356,8 +357,9 @@ def test_card_and_hud_wire_stock_follow_only():
   assert "NAPFollowDistance" in helper or "PARAM_FOLLOW" in helper
   assert "NAPHypermile" not in helper
   assert "PARAM_HYPERMILE" not in helper
-  assert "steps this 1–7" in manner
-  assert "No lead:" in manner and "MAX" in manner
+  assert "FOLLOW_DISTANCE_DESCRIPTION" in manner
+  assert "steps this 1–7" in content
+  assert "No lead:" in content and "MAX" in content
   assert "1 mph" in helper or "tip" in helper
   assert "5 mph" in helper or "hold" in helper
   assert "1 mph" in docs and "5 mph" in docs

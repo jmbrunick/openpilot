@@ -1257,6 +1257,8 @@ def test_map_speed_submenu_wires_params():
   assert "MAP_SPEED_ACCEL_DESCRIPTION" in content
   assert "1 lazy" in content
   assert "not a harder brake" in content
+  assert "steps this 1–7" in content
+  assert "No lead:" in content
   assert "follow distance" in manner_mici
   assert "Adaptive Accel Limits" not in nap
   assert "Follow Distance" not in nap

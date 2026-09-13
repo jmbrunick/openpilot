@@ -44,7 +44,7 @@ FOLLOW_DISTANCE_DEFAULT = 4
 FOLLOW_DISTANCE_DESCRIPTION = (
   "1 closest, 7 farthest. A slower car ahead eases off farther back "
   + "(more distance, not a harder brake). Behind a lead, a stalk tip "
-  + "steps this; a full press still steps MAX."
+  + "steps this 1–7; a full press still steps MAX. No lead: both still adjust MAX."
 )
 
 NAP_DRIVER_LAT_HANDOFF = "NAPDriverLatHandoff"
