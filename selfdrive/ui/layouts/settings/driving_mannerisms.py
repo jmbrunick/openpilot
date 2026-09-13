@@ -5,6 +5,7 @@ from openpilot.system.ui.widgets.list_view import toggle_item, multiple_button_i
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 from openpilot.selfdrive.controls.lib.hypermile import apply_hypermile_toggle
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
+  ADAPTIVE_ACCEL_DESCRIPTION,
   DRIVER_LAT_HANDOFF_DESCRIPTION,
   FOLLOW_DISTANCE_DESCRIPTION,
   HYPERMILE_DESCRIPTION,
@@ -39,6 +40,44 @@ class DrivingMannerismsLayout(Widget):
       callback=self._on_back,
     ))
 
+    accel = int(self._params.get("NAPMapSpeedAccel", return_default=True) or MAP_SPEED_ACCEL_DEFAULT)
+    self._accel_buttons = multiple_button_item(
+      "Acceleration",
+      MAP_SPEED_ACCEL_DESCRIPTION,
+      buttons=MAP_SPEED_ACCEL_LABELS,
+      button_width=72,
+      selected_index=self._accel_index(accel),
+      callback=self._on_accel,
+    )
+    self._all_items.append(self._accel_buttons)
+
+    self._adaptive_accel = toggle_item(
+      "Adaptive Accel",
+      description=ADAPTIVE_ACCEL_DESCRIPTION,
+      initial_state=self._params.get_bool(NAPParamKeys.ADAPTIVE_ACCEL),
+      callback=self._on_adaptive_accel,
+    )
+    self._all_items.append(self._adaptive_accel)
+
+    follow_dist = self._params.get(NAPParamKeys.FOLLOW_DISTANCE, return_default=True)
+    self._follow_buttons = multiple_button_item(
+      "Follow Distance",
+      FOLLOW_DISTANCE_DESCRIPTION,
+      buttons=["1", "2", "3", "4", "5", "6", "7"],
+      button_width=80,
+      selected_index=max(0, min(6, follow_dist - 1)),
+      callback=self._on_follow_distance,
+    )
+    self._all_items.append(self._follow_buttons)
+
+    self._lat_handoff = toggle_item(
+      "Soft Lateral Handoff",
+      description=DRIVER_LAT_HANDOFF_DESCRIPTION,
+      initial_state=self._params.get_bool(NAP_DRIVER_LAT_HANDOFF),
+      callback=self._on_lat_handoff,
+    )
+    self._all_items.append(self._lat_handoff)
+
     self._hypermile = toggle_item(
       "Hypermile",
       description=HYPERMILE_DESCRIPTION,
@@ -62,44 +101,6 @@ class DrivingMannerismsLayout(Widget):
       callback=self._on_hill_climb,
     )
     self._all_items.append(self._hill_climb)
-
-    self._adaptive_accel = toggle_item(
-      "Adaptive Accel Limits",
-      description="Reduces acceleration authority when close to a lead car to prevent overshoot. Full accel on open road (no lead). Coming up behind a lead uses the Accel 1–10 close cap, not a full-gap punch.",
-      initial_state=self._params.get_bool(NAPParamKeys.ADAPTIVE_ACCEL),
-      callback=self._on_adaptive_accel,
-    )
-    self._all_items.append(self._adaptive_accel)
-
-    accel = int(self._params.get("NAPMapSpeedAccel", return_default=True) or MAP_SPEED_ACCEL_DEFAULT)
-    self._accel_buttons = multiple_button_item(
-      "Acceleration",
-      MAP_SPEED_ACCEL_DESCRIPTION,
-      buttons=MAP_SPEED_ACCEL_LABELS,
-      button_width=72,
-      selected_index=self._accel_index(accel),
-      callback=self._on_accel,
-    )
-    self._all_items.append(self._accel_buttons)
-
-    follow_dist = self._params.get(NAPParamKeys.FOLLOW_DISTANCE, return_default=True)
-    self._follow_buttons = multiple_button_item(
-      "Follow Distance",
-      FOLLOW_DISTANCE_DESCRIPTION,
-      buttons=["1", "2", "3", "4", "5", "6", "7"],
-      button_width=80,
-      selected_index=max(0, min(6, follow_dist - 1)),
-      callback=self._on_follow_distance,
-    )
-    self._all_items.append(self._follow_buttons)
-
-    self._lat_handoff = toggle_item(
-      "Soft Lateral Handoff",
-      description=DRIVER_LAT_HANDOFF_DESCRIPTION,
-      initial_state=self._params.get_bool(NAP_DRIVER_LAT_HANDOFF),
-      callback=self._on_lat_handoff,
-    )
-    self._all_items.append(self._lat_handoff)
 
   def _on_hypermile(self, state):
     apply_hypermile_toggle(self._params, bool(state))

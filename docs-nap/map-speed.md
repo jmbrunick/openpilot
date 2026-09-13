@@ -113,11 +113,11 @@ All map-speed controls live in this submenu (main NAP stays uncluttered). TICI a
 - **Map Speed (MAX)** (`NAPMapSpeedMode`): Off / Display / Cap / Follow
 - **Map Speed Offset** (`NAPMapSpeedOffsetMph`): -5 / 0 / +5 mph
 - **Lookahead** (`NAPMapSpeedLookahead`): Off / Late / Normal (default) / Early
-- **Acceleration** 1–10 lives under **Settings → NAP → Driving Mannerisms** (`NAPMapSpeedAccel`) — not this page
-- **Map revision**: published US pack revision after Download US Maps (Refresh maps does not bump this)
-- **Refresh maps**: live OSM within 100 miles, merged into the installed US sqlite (listed above Download)
+- **Refresh maps**: live OSM within 100 miles, merged into the installed US sqlite
 - **Download US Maps**: first install of the current published pack
+- **OSM Map Data** / **Map revision**: installed pack status (Refresh does not bump revision)
 - Cap/Follow require the pedal interceptor
+- **Acceleration** 1–10 is on **Settings → NAP → Driving Mannerisms** (`NAPMapSpeedAccel`) — not this page
 
 ## Anticipatory decreases and Accel
 

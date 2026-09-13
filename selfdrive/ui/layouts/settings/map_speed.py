@@ -5,8 +5,9 @@ from openpilot.system.ui.widgets.list_view import multiple_button_item, button_i
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   DOWNLOAD_US_MAPS_INSTRUCTIONS,
-  MAP_SPEED_LOOKAHEAD, MAP_SPEED_LOOKAHEAD_LABELS,
-  MAP_SPEED_MODES, MAP_SPEED_MODE_LABELS, MAP_SPEED_OFFSETS_MPH,
+  MAP_SPEED_LOOKAHEAD, MAP_SPEED_LOOKAHEAD_DESCRIPTION, MAP_SPEED_LOOKAHEAD_LABELS,
+  MAP_SPEED_MODE_DESCRIPTION, MAP_SPEED_MODES, MAP_SPEED_MODE_LABELS,
+  MAP_SPEED_OFFSET_DESCRIPTION, MAP_SPEED_OFFSETS_MPH,
   REFRESH_MAPS_INSTRUCTIONS,
 )
 from openpilot.selfdrive.mapd.fetch_maps import installed_db_summary, installed_revision_summary
@@ -37,10 +38,7 @@ class MapSpeedLimitLayout(Widget):
     map_mode = int(self._params.get("NAPMapSpeedMode", return_default=True) or 0)
     self._mode_buttons = multiple_button_item(
       "Map Speed (MAX)",
-      "OpenStreetMap posted limit for HUD MAX. " +
-      "Off: no change. Display: LIMIT sign only. Cap: never exceed the limit. " +
-      "Follow (preferred): track the limit. A stalk set (above or below) holds until the posted limit changes. " +
-      "Cap/Follow need the pedal interceptor; stock CC stays display-only.",
+      MAP_SPEED_MODE_DESCRIPTION,
       buttons=MAP_SPEED_MODE_LABELS,
       button_width=150,
       selected_index=max(0, min(3, map_mode)),
@@ -51,7 +49,7 @@ class MapSpeedLimitLayout(Widget):
     offset_mph = int(self._params.get("NAPMapSpeedOffsetMph", return_default=True) or 0)
     self._offset_buttons = multiple_button_item(
       "Map Speed Offset",
-      "Added to the OSM limit for Cap/Follow (mph). A Follow stalk set holds until the posted limit changes.",
+      MAP_SPEED_OFFSET_DESCRIPTION,
       buttons=["-5 mph", "0", "+5 mph"],
       button_width=150,
       selected_index=self._offset_index(offset_mph),
@@ -62,32 +60,13 @@ class MapSpeedLimitLayout(Widget):
     lookahead = int(self._params.get("NAPMapSpeedLookahead", return_default=True) or 2)
     self._lookahead_buttons = multiple_button_item(
       "Lookahead",
-      "Cap/Follow: ease MAX down for a lower limit ahead. " +
-      "Off: wait until GPS is on that way. Late / Normal / Early: farther preview. " +
-      "A stalk set holds until posted changes; lookahead pauses while that set is active. " +
-      "A higher limit far ahead never raises MAX. 1.5 s GPS lag raises posted at the " +
-      "offset position; every decrease eases with kin+110 m (not a snap). Radar lead still outranks map.",
+      MAP_SPEED_LOOKAHEAD_DESCRIPTION,
       buttons=MAP_SPEED_LOOKAHEAD_LABELS,
       button_width=150,
       selected_index=self._lookahead_index(lookahead),
       callback=self._on_lookahead,
     )
     self._all_items.append(self._lookahead_buttons)
-
-    self._db_status = text_item(
-      "OSM Map Data",
-      installed_db_summary,
-      description="US OpenStreetMap maxspeed ways (ODbL, © OpenStreetMap contributors). " +
-      "Not in git — tap Download US Maps over Wi-Fi after flash. Refresh maps then overlays live OSM within 100 miles.",
-    )
-    self._all_items.append(self._db_status)
-
-    self._revision_status = text_item(
-      "Map revision",
-      installed_revision_summary,
-      description="Published US pack revision after Download US Maps. Refresh maps overlays live OSM within 100 miles and does not bump this number.",
-    )
-    self._all_items.append(self._revision_status)
 
     self._refresh_btn = button_item(
       "Refresh maps",
@@ -106,6 +85,20 @@ class MapSpeedLimitLayout(Widget):
     )
     self._download_btn.action_item.set_enabled(ui_state.is_offroad)
     self._all_items.append(self._download_btn)
+
+    self._db_status = text_item(
+      "OSM Map Data",
+      installed_db_summary,
+      description="US OpenStreetMap maxspeed ways (ODbL). Download after flash; Refresh overlays live OSM within 100 miles.",
+    )
+    self._all_items.append(self._db_status)
+
+    self._revision_status = text_item(
+      "Map revision",
+      installed_revision_summary,
+      description="Published US pack revision. Refresh maps does not bump this number.",
+    )
+    self._all_items.append(self._revision_status)
 
   def _offset_index(self, offset_mph: int) -> int:
     if offset_mph in MAP_SPEED_OFFSETS_MPH:

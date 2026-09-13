@@ -27,19 +27,6 @@ class DrivingMannerismsLayoutMici(NavScroller):
       apply_hypermile_toggle(self._params, bool(checked))
       self._accel.refresh()
 
-    hypermile = BigParamControl("hypermile", NAP_HYPERMILE, toggle_callback=on_hypermile)
-    hypermile.set_value("Off default — early light eco, not max regen")
-
-    step_down = BigParamControl("step down speed", NAP_HYPERMILE_STEP_DOWN)
-    step_down.set_value("Off — scaled drop, −15 at 80 when On")
-    step_down.set_visible(lambda: self._params.get_bool(NAP_HYPERMILE))
-
-    hill_climb = BigParamControl("hill climb", NAP_HYPERMILE_HILL_CLIMB)
-    hill_climb.set_value("On — grade hold on climbs; light crest ease")
-    hill_climb.set_visible(lambda: self._params.get_bool(NAP_HYPERMILE))
-
-    adaptive_accel = BigParamControl("adaptive accel limits", NAPParamKeys.ADAPTIVE_ACCEL)
-
     self._accel = BigMultiValueParamToggle(
       "acceleration",
       "NAPMapSpeedAccel",
@@ -47,6 +34,9 @@ class DrivingMannerismsLayoutMici(NavScroller):
       labels=MAP_SPEED_ACCEL_LABELS,
       default_value=MAP_SPEED_ACCEL_DEFAULT,
     )
+
+    adaptive_accel = BigParamControl("adaptive accel", NAPParamKeys.ADAPTIVE_ACCEL)
+    adaptive_accel.set_value("Softer near a lead")
 
     follow_distance = BigMultiValueParamToggle(
       "follow distance",
@@ -59,14 +49,25 @@ class DrivingMannerismsLayoutMici(NavScroller):
     lat_handoff = BigParamControl("soft lateral handoff", NAP_DRIVER_LAT_HANDOFF)
     lat_handoff.set_value("On — free-wheel yield; Off if false-yield")
 
+    hypermile = BigParamControl("hypermile", NAP_HYPERMILE, toggle_callback=on_hypermile)
+    hypermile.set_value("Off default — early light eco, not max regen")
+
+    step_down = BigParamControl("step down speed", NAP_HYPERMILE_STEP_DOWN)
+    step_down.set_value("Off — scaled drop, −15 at 80 when On")
+    step_down.set_visible(lambda: self._params.get_bool(NAP_HYPERMILE))
+
+    hill_climb = BigParamControl("hill climb", NAP_HYPERMILE_HILL_CLIMB)
+    hill_climb.set_value("On — grade hold on climbs; light crest ease")
+    hill_climb.set_visible(lambda: self._params.get_bool(NAP_HYPERMILE))
+
     self._scroller.add_widgets([
+      self._accel,
+      adaptive_accel,
+      follow_distance,
+      lat_handoff,
       hypermile,
       step_down,
       hill_climb,
-      adaptive_accel,
-      self._accel,
-      follow_distance,
-      lat_handoff,
     ])
 
   def show_event(self):
