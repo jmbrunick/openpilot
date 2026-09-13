@@ -24,6 +24,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   INSTALL_SPEED_SIGN_WEIGHTS_INSTRUCTIONS, PEDAL_CAN_BUS_VALUES,
   HIGH_LOW_BEAM_DESCRIPTION, HIGH_LOW_BEAM_LABELS, HIGH_LOW_BEAM_VALUES,
   MAP_SPEED_ACCEL_DEFAULT,
+  NAP_DM_FALSE_ALERT_IGNORE,
   NAP_DM_SIMULATE_LOOKING,
   NAP_DRIVER_LAT_HANDOFF,
   NAP_FORCE_OFFROAD,
@@ -127,7 +128,7 @@ class NAPLayout(Widget):
     self._toggle_map = {}  # param_key -> ListItem (for refresh)
 
     # ── Section 1: Longitudinal Control ──
-    # Force Offroad / Simulate Look live in the NAP triple-tap popup.
+    # Force Offroad / Simulate Look / False Alert Ignore live in the NAP triple-tap popup.
     self._main_items.append(section_header_item("Longitudinal Control"))
 
     self._add_toggle(
@@ -746,6 +747,7 @@ class NAPLayout(Widget):
     self._params.put_bool(NAP_SPEED_SIGN_LOG, False)
     self._params.put_bool(NAP_DRIVER_LAT_HANDOFF, True)
     self._params.put_bool(NAP_DM_SIMULATE_LOOKING, True)
+    self._params.put_bool(NAP_DM_FALSE_ALERT_IGNORE, True)
     self._params.put_bool(NAP_HYPERMILE, False)
     self._params.put_bool(NAP_HYPERMILE_STEP_DOWN, False)
     self._params.put_bool(NAP_HYPERMILE_HILL_CLIMB, True)
