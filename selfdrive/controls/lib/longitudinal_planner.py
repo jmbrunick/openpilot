@@ -31,8 +31,6 @@ from openpilot.selfdrive.mapd.map_speed_policy import (
 )
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
-from openpilot.selfdrive.controls.lib.post_engage_coast import PostEngageCoast
-from openpilot.selfdrive.controls.lib.driver_lateral_handoff import cs_real_brake_pressed
 
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
@@ -110,7 +108,6 @@ class LongitudinalPlanner:
     self._frame = 0
     self._lead_approach_active = False
     self._lead_approach_a = None
-    self._post_engage_coast = PostEngageCoast(dt=dt) if self._is_preap else None
 
     self.a_desired = init_a
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
@@ -157,14 +154,6 @@ class LongitudinalPlanner:
       accel_coast = ACCEL_MAX
 
     v_ego = sm['carState'].vEgo
-    if self._post_engage_coast is not None:
-      # Software long (enableLongControl), not interceptor / longActive.
-      # Gas override keeps enableLongControl true; the window starts at
-      # engage so a lift inside 1 s is a coast/hold, not a regen dip.
-      self._post_engage_coast.update(
-        long_engaged=bool(getattr(sm['carState'], 'enableLongControl', False)),
-        gas_pressed=bool(sm['carState'].gasPressed),
-      )
     v_cruise_kph = min(sm['carState'].vCruise, V_CRUISE_MAX)
     v_cruise = v_cruise_kph * CV.KPH_TO_MS
     # HUD MAX after card's map overlay (seed / sticky / Follow override).
@@ -190,11 +179,6 @@ class LongitudinalPlanner:
       self.v_desired_filter.x = v_ego
       # Clip aEgo to cruise limits to prevent large accelerations when becoming active
       self.a_desired = np.clip(sm['carState'].aEgo, accel_clip[0], accel_clip[1])
-      # Gas-override reset seeds a_desired from +aEgo. get_accel_from_plan
-      # then inverts that to a soft regen on lift. Hold 0 so the first
-      # active plan coasts or climbs to MAX instead of dipping.
-      if self._post_engage_coast is not None and self._post_engage_coast.active:
-        self.a_desired = 0.0
       self._lead_approach_active = False
       self._lead_approach_a = None
 
@@ -314,17 +298,6 @@ class LongitudinalPlanner:
     else:
       self._lead_approach_active = False
       self._lead_approach_a = None
-
-    # After lead / map: zero the soft "lift-off regen" only.
-    # Lead-driven −a, FCW, should-stop, brake, and hard MPC stay as-is.
-    if self._post_engage_coast is not None:
-      output_a_target = self._post_engage_coast.apply(
-        output_a_target,
-        brake_pressed=cs_real_brake_pressed(sm['carState']),
-        fcw=bool(self.fcw),
-        should_stop=bool(self.output_should_stop),
-        has_lead=bool(sm['radarState'].leadOne.status),
-      )
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
