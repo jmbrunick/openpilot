@@ -224,15 +224,37 @@ def test_planner_gas_release_after_engage_does_not_command_regen():
     v_ego += max(a, -1.1) * DT_MDL
 
 
-def test_planner_brake_inside_window_may_decelerate():
+def test_planner_brake_inside_window_does_not_clamp():
+  """Applied brake is overlay pass-through, not a planner decel source.
+
+  A one-frame MAX drop does not make MPC command −a (CI saw +0.40). The
+  contract is: CS.brake >= 0.5 reaches apply(brake_pressed=True) and that
+  call must not zero the raw command.
+  """
   planner = _new_planner(22.0, 0.8)
   for _ in range(4):
     _run(planner, v_ego=22.0, v_cruise=28.0, a_ego=0.8, gas=True, long_on=True)
 
-  # Digital Applied on CS.brake (brakePressed is forced false on Pre-AP).
-  # Above MAX so map/MPC already want −a; brake must not be zeroed.
-  a = _run(planner, v_ego=22.0, v_cruise=18.0, a_ego=-0.6, gas=False, long_on=True, brake=1.0)
-  assert a < -0.05, a
+  assert planner._post_engage_coast is not None
+  assert planner._post_engage_coast.active
+  assert planner._post_engage_coast.apply(-0.35) == 0.0
+  assert planner._post_engage_coast.apply(-0.35, brake_pressed=True) == pytest.approx(-0.35)
+
+  seen = []
+  orig = planner._post_engage_coast.apply
+
+  def wrapped(a_cmd, **kwargs):
+    out = orig(a_cmd, **kwargs)
+    seen.append((float(a_cmd), dict(kwargs), float(out)))
+    return out
+
+  planner._post_engage_coast.apply = wrapped
+  _run(planner, v_ego=22.0, v_cruise=18.0, a_ego=-0.6, gas=False, long_on=True, brake=1.0)
+
+  assert seen, "planner must call PostEngageCoast.apply"
+  raw, kwargs, out = seen[-1]
+  assert kwargs.get("brake_pressed") is True
+  assert out == pytest.approx(raw)
 
 
 def test_planner_after_window_allows_regen_to_lower_max():
