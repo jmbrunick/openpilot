@@ -14,7 +14,7 @@ from __future__ import annotations
 import math
 
 from openpilot.common.constants import ACCELERATION_DUE_TO_GRAVITY
-from openpilot.selfdrive.mapd.constants import TRACK_DEADBAND_MS, TRACK_TAPER_MS
+from openpilot.selfdrive.mapd.constants import TRACK_DEADBAND_MS
 
 PARAM_HILL_CLIMB = "NAPHypermileHillClimb"
 
@@ -77,10 +77,16 @@ def downhill_ease_ms2(pitch_rad: float) -> float:
   return CREST_EASE_MS2 + (DOWNHILL_EASE_MS2 - CREST_EASE_MS2) * scale
 
 
-def _near_max(v_ego_ms: float, v_cruise_ms: float, in_deadband: bool) -> bool:
+def _at_or_above_max(v_ego_ms: float, v_cruise_ms: float, in_deadband: bool) -> bool:
+  """True in the MAX deadband or at/above HUD MAX (cruise − deadband).
+
+  Crest / downhill ease uses this — never TRACK_TAPER (~4.5 mph under MAX).
+  That taper is map-track climb/brake scaling only. Using it as an ease
+  gate regen'd several mph under MAX and hunted (47–51 under a 54 MAX).
+  """
   if in_deadband:
     return True
-  return float(v_ego_ms) + TRACK_TAPER_MS >= float(v_cruise_ms)
+  return float(v_ego_ms) >= float(v_cruise_ms) - TRACK_DEADBAND_MS
 
 
 def _flattening_crest(pitch_rad: float, prev_pitch_rad: float) -> bool:
@@ -107,6 +113,9 @@ def apply_hill_climb(
 
   Caller still `min()`s with lead-approach and clips to cruise / lead-close.
   Negative a_cmd on an uphill (map brake / MPC / lead) is left alone.
+
+  Climb +g·sin only when clearly under MAX (outside the deadband below).
+  Crest / downhill ease only at or above MAX — not while still climbing.
   """
   if not hill_climb_applies(hypermile_on, hill_climb_on):
     return float(a_cmd)
@@ -114,7 +123,7 @@ def apply_hill_climb(
   pitch = float(pitch_rad)
   cmd = float(a_cmd)
   under_max = (not in_deadband) and (float(v_cruise_ms) - float(v_ego_ms) > TRACK_DEADBAND_MS)
-  near_max = _near_max(v_ego_ms, v_cruise_ms, in_deadband)
+  at_or_above_max = _at_or_above_max(v_ego_ms, v_cruise_ms, in_deadband)
 
   # Map / MPC / lead already braking on an uphill or flat — do not fight.
   if cmd < 0.0 and pitch >= 0.0:
@@ -127,8 +136,9 @@ def apply_hill_climb(
       if cmd >= 0.0:
         return cmd + extra
       return cmd
-    # At / above MAX: hold against gravity only. No extra climb past MAX.
-    return max(cmd, extra) if cmd >= 0.0 else cmd
+    # Deadband / at-or-above MAX: leave map hold (0). Do not invent +g·sin
+    # that fights the deadband zero and punches past MAX (Accel-5 hunt).
+    return cmd
 
   if pitch <= PITCH_DOWN_RAD:
     ease = downhill_ease_ms2(pitch)
@@ -136,11 +146,11 @@ def apply_hill_climb(
     if under_max and cmd > 0.0:
       # Gravity already pulls toward MAX; do not punch +a downhill.
       return max(0.0, cmd - min(CLIMB_EXTRA_MAX_MS2, grade))
-    if near_max:
+    if at_or_above_max:
       return min(cmd, -ease)
     return cmd
 
-  if _flattening_crest(pitch, prev_pitch_rad) and near_max:
+  if _flattening_crest(pitch, prev_pitch_rad) and at_or_above_max:
     # Early light regen over the top — not a Late 1.20 dump.
     return min(cmd, -CREST_EASE_MS2)
 

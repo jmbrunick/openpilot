@@ -1,3 +1,7 @@
+NAP Hypermile Hill Climb gate (2026-09-13)
+========================
+* Hill Climb no longer treats `TRACK_TAPER` (~4.5 mph under MAX) as “near MAX”. Crest / downhill ease only when ego is **at or above MAX** (cruise − deadband). Grade hold (`+g·sin`) only when clearly under MAX — deadband / at-MAX leave the map hold (0) so we do not punch past MAX and hunt with Accel-5. Fixes Hypermile hunting ~4 mph under MAX (47–51 under a 54 MAX) with regen pulses instead of settling. **Maps-elevation lookahead is NOT included.** Never raises MAX. Lead / MPC still win. Not a nap-release change.
+
 NAP Simulate Look label (2026-09-13)
 ========================
 * Triple-tap NAP popup title is **Simulate Look** (was **Simulate Look-at-Road**). Same `NAPDmSimulateLooking` param and behavior. Force Offroad label unchanged. Not a nap-release change.
