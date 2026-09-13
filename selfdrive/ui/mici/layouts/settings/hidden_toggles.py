@@ -2,10 +2,16 @@
 
 Opened by a triple-tap on the Settings **nap** button. Tap outside the
 card to dismiss. Not shown on Driving Mannerisms or the main NAP list.
+Simulate Look and False Alert Ignore are mutually exclusive.
 """
 import pyray as rl
 
 from openpilot.common.params import Params
+from openpilot.selfdrive.monitoring.dm_toggles import (
+  apply_dm_false_alert_ignore,
+  apply_dm_simulate_looking,
+  read_exclusive_dm_toggles,
+)
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   NAP_DM_FALSE_ALERT_IGNORE,
   NAP_DM_SIMULATE_LOOKING,
@@ -35,17 +41,28 @@ class HiddenTogglesOverlayMici(Widget):
                                     toggle_callback=self._on_force_offroad)
     self._offroad.set_value("WARNING: stops OP — drive manually")
 
-    self._dm = BigParamControl("simulate look", NAP_DM_SIMULATE_LOOKING)
+    self._dm = BigParamControl("simulate look", NAP_DM_SIMULATE_LOOKING,
+                               toggle_callback=self._on_simulate_look)
     self._dm.set_value("On — no-face glance in 1–3 s of drain")
 
-    self._fai = BigParamControl("false alert ignore", NAP_DM_FALSE_ALERT_IGNORE)
+    self._fai = BigParamControl("false alert ignore", NAP_DM_FALSE_ALERT_IGNORE,
+                                toggle_callback=self._on_false_alert_ignore)
     self._fai.set_value("On — ignore false phone alerts")
 
   def _on_force_offroad(self, state):
     apply_force_offroad_toggle(self._params, bool(state), started=bool(ui_state.started))
 
+  def _on_simulate_look(self, state):
+    apply_dm_simulate_looking(self._params, bool(state))
+    self._fai.refresh()
+
+  def _on_false_alert_ignore(self, state):
+    apply_dm_false_alert_ignore(self._params, bool(state))
+    self._dm.refresh()
+
   def show_event(self):
     super().show_event()
+    read_exclusive_dm_toggles(self._params)
     self._dm.refresh()
     self._fai.refresh()
     self._offroad.refresh()

@@ -200,14 +200,16 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // vision path. After drain past 1.0 s, fire at random in the next
     // 2.0 s (fire in (1.0, 3.0] of that countdown). Hold until
     // awareness recovers. Does not wipe pose, eye, or phone.
-    // Triple-tap Settings → NAP. Default On (nap-dev).
+    // Mutually exclusive with NAPDmFalseAlertIgnore. Triple-tap
+    // Settings → NAP. Default On (nap-dev).
     {"NAPDmSimulateLooking", {PERSISTENT, BOOL, "1"}},
     // Pre-AP DM: soft-clear false phone/device distraction only
     // (phoneProb / distracted_types phone). Same 1–3 s cadence as
     // Simulate Look. Pose and eye still drain / alert. Triple-tap
-    // Settings → NAP (third item). Default On (nap-dev). PERSISTENT
+    // Settings → NAP (third item). Mutually exclusive with Simulate
+    // Look — default Off on nap-dev so both are not On. PERSISTENT
     // like Simulate Look (preference, not a session flag).
-    {"NAPDmFalseAlertIgnore", {PERSISTENT, BOOL, "1"}},
+    {"NAPDmFalseAlertIgnore", {PERSISTENT, BOOL, "0"}},
     // Settings → NAP → Force Offroad. Default off. Not persistent: reboot
     // (manager start) and the next ignition ON clear it. Toggle Off and
     // Reset to Defaults also clear. When on, hardwared keeps started=false
