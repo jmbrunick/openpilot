@@ -204,8 +204,15 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"NAPDmSimulateLooking", {PERSISTENT, BOOL, "1"}},
     // Settings → NAP → Force Offroad. Default off. Not persistent: reboot
     // (manager start) and the next ignition ON clear it. Toggle Off and
-    // Reset to Defaults also clear. When on, hardwared keeps started=false.
+    // Reset to Defaults also clear. When on, hardwared keeps started=false
+    // after the Pre-AP stock-CC handoff reports ready (or a short timeout).
     {"NAPForceOffroad", {CLEAR_ON_MANAGER_START | CLEAR_ON_IGNITION_ON, BOOL, "0"}},
+    // card → hardwared: stock CC is ENABLED (or handoff gave up). Do not
+    // CLEAR_ON_OFFROAD — going offroad is the point. Default off.
+    {"NAPForceOffroadHandoffReady", {CLEAR_ON_MANAGER_START | CLEAR_ON_IGNITION_ON, BOOL, "0"}},
+    // UI Yes on "Ready to resume steering control?". Default off. Handoff
+    // and started=false wait for this while onroad. Same clear flags.
+    {"NAPForceOffroadConfirmed", {CLEAR_ON_MANAGER_START | CLEAR_ON_IGNITION_ON, BOOL, "0"}},
     {"TermsVersion", {PERSISTENT, STRING}},
     {"TrainingVersion", {PERSISTENT, STRING}},
 };

@@ -25,7 +25,10 @@ from openpilot.system.hardware.power_monitoring import PowerMonitoring
 from openpilot.system.hardware.fan_controller import FanController
 from openpilot.system.hardware.nap_force_offroad import (
   PARAM as NAP_FORCE_OFFROAD_PARAM,
+  HANDOFF_READY_PARAM as NAP_FORCE_OFFROAD_HANDOFF_READY_PARAM,
+  CONFIRMED_PARAM as NAP_FORCE_OFFROAD_CONFIRMED_PARAM,
   allows_onroad as nap_force_offroad_allows_onroad,
+  handoff_wait_timed_out as nap_force_offroad_handoff_timed_out,
   should_start_now,
 )
 from openpilot.system.version import terms_version, training_version
@@ -197,6 +200,7 @@ def hardware_thread(end_event, hw_queue) -> None:
   uptime_offroad: float = params.get("UptimeOffroad", return_default=True)
   uptime_onroad: float = params.get("UptimeOnroad", return_default=True)
   last_uptime_ts: float = time.monotonic()
+  force_offroad_handoff_wait_ts: float | None = None
 
   HARDWARE.initialize_hardware()
   thermal_config = HARDWARE.get_thermal_config()
@@ -217,7 +221,29 @@ def hardware_thread(end_event, hw_queue) -> None:
     # Read every loop so toggling Force Offroad trips ign_edge immediately
     # (same pattern as OnroadCycleRequested). Do not use CLEAR_ON_OFFROAD
     # on this param — going offroad is what the toggle does.
-    onroad_conditions["not_force_offroad"] = nap_force_offroad_allows_onroad(params.get_bool(NAP_FORCE_OFFROAD_PARAM))
+    # While already onroad, hold started until card finishes the Pre-AP
+    # stock-CC handoff (or HANDOFF_TIMEOUT_S) so pedal long does not drop
+    # into hard regen. Cancel/SET live in the onroad carcontroller.
+    force_offroad = params.get_bool(NAP_FORCE_OFFROAD_PARAM)
+    handoff_ready = params.get_bool(NAP_FORCE_OFFROAD_HANDOFF_READY_PARAM)
+    force_offroad_confirmed = params.get_bool(NAP_FORCE_OFFROAD_CONFIRMED_PARAM)
+    already_started = started_ts is not None
+    # Do not start the handoff timeout until the driver taps Yes.
+    if force_offroad and already_started and force_offroad_confirmed and not handoff_ready:
+      if force_offroad_handoff_wait_ts is None:
+        force_offroad_handoff_wait_ts = time.monotonic()
+      handoff_timed_out = nap_force_offroad_handoff_timed_out(
+        force_offroad_handoff_wait_ts, time.monotonic())
+    else:
+      force_offroad_handoff_wait_ts = None
+      handoff_timed_out = False
+    onroad_conditions["not_force_offroad"] = nap_force_offroad_allows_onroad(
+      force_offroad,
+      handoff_ready=handoff_ready,
+      already_started=already_started,
+      timed_out=handoff_timed_out,
+      confirmed=force_offroad_confirmed,
+    )
 
     if sm.updated['pandaStates'] and len(pandaStates) > 0:
 
