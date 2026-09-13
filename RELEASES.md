@@ -1,3 +1,7 @@
+NAP lead-approach earlier ease (2026-09-13)
+========================
+* Pre-AP comfort ease now starts as soon as radar has **reasonable feedback** on a closing lead (`leadOne` valid and closing), not only near Follow Distance. Start ceiling **200 m** (usable Bosch; far tracks need `radar` + `modelProb` ≥ 0.5 — LeadData has no track age). Head-start **24 s**. Clearly closing (`v_rel` ≥ 1.0 m/s) eases even with large slack, still capped at **0.55** and slewed. Hysteresis from #121 stays. Catch-up +a cap stays at 140 m. MPC / FCW / map climb vs lead (#118) unchanged. No brake-light feature.
+
 NAP lead-follow comfort (2026-09-13)
 ========================
 * Pre-AP lead-approach overlay is smoother on a slight grade: enter/exit **hysteresis** on radar `v_rel` / slack so regen does not chatter on/off around the follow gap, comfort peak |a| is **0.55** (Early map, was Normal 0.80), and more-negative overlay `a` slews at **0.05**/frame. Off / milder `a` is immediate. MPC danger / hard brake / FCW unchanged. Map climb still does not replace MPC when a lead is present (#118). Grade-hold for no-lead uphills is unchanged. Not a nap-release change.
