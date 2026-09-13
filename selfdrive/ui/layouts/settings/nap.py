@@ -20,7 +20,6 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   BACKUP_EPAS_INSTRUCTIONS, BRAKE_FACTOR_PRESETS,
   CALIBRATE_PEDAL_INSTRUCTIONS,
   DOWNLOAD_US_MAPS_INSTRUCTIONS,
-  FORCE_OFFROAD_DESCRIPTION,
   FLASH_EPAS_INSTRUCTIONS,
   INSTALL_SPEED_SIGN_WEIGHTS_INSTRUCTIONS, PEDAL_CAN_BUS_VALUES,
   HIGH_LOW_BEAM_DESCRIPTION, HIGH_LOW_BEAM_LABELS, HIGH_LOW_BEAM_VALUES,
@@ -129,16 +128,8 @@ class NAPLayout(Widget):
     self._radar_items = []
     self._toggle_map = {}  # param_key -> ListItem (for refresh)
 
-    # ── Section 0: Go Offline (must stay enabled onroad) ──
-    self._main_items.append(section_header_item("Go Offline"))
-
-    self._add_toggle(
-      NAP_FORCE_OFFROAD,
-      "Force Offroad",
-      FORCE_OFFROAD_DESCRIPTION,
-    )
-
     # ── Section 1: Longitudinal Control ──
+    # Force Offroad / Simulate Look-at-Road live in the NAP triple-tap popup.
     self._main_items.append(section_header_item("Longitudinal Control"))
 
     self._add_toggle(
@@ -155,7 +146,7 @@ class NAPLayout(Widget):
     self._driving_mannerisms_btn = button_item(
       "Driving Mannerisms",
       "Open",
-      description="Hypermile, adaptive accel limits, follow distance, soft lateral handoff, and simulate look-at-road.",
+      description="Hypermile, adaptive accel limits, follow distance, and soft lateral handoff.",
       callback=self._open_driving_mannerisms,
     )
     self._main_items.append(self._driving_mannerisms_btn)

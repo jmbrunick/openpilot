@@ -12,7 +12,6 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   HYPERMILE_FOLLOW_DEFAULT,
   HYPERMILE_FOLLOW_LABELS,
   HYPERMILE_FOLLOW_VALUES,
-  NAP_DM_SIMULATE_LOOKING,
   NAP_DRIVER_LAT_HANDOFF,
   NAP_HYPERMILE,
   NAP_HYPERMILE_FOLLOW_LEVEL,
@@ -64,9 +63,6 @@ class DrivingMannerismsLayoutMici(NavScroller):
     lat_handoff = BigParamControl("soft lateral handoff", NAP_DRIVER_LAT_HANDOFF)
     lat_handoff.set_value("On — free-wheel yield; Off if false-yield")
 
-    dm_sim_looking = BigParamControl("simulate look-at-road", NAP_DM_SIMULATE_LOOKING)
-    dm_sim_looking.set_value("On — hold glance at random in 1–3 s of drain")
-
     self._scroller.add_widgets([
       hypermile,
       step_down,
@@ -75,7 +71,6 @@ class DrivingMannerismsLayoutMici(NavScroller):
       follow_distance,
       hypermile_follow,
       lat_handoff,
-      dm_sim_looking,
     ])
 
 

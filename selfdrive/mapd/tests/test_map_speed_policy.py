@@ -1272,20 +1272,21 @@ def test_driving_mannerisms_submenu_wires_params():
   nap = (root / "selfdrive/ui/layouts/settings/nap.py").read_text()
   nap_mici = (root / "selfdrive/ui/mici/layouts/settings/nap.py").read_text()
   for src in (tici, mici):
-    for key in ("ADAPTIVE_ACCEL", "FOLLOW_DISTANCE", "NAP_DRIVER_LAT_HANDOFF", "NAP_DM_SIMULATE_LOOKING", "NAP_HYPERMILE", "NAP_HYPERMILE_STEP_DOWN"):
+    for key in ("ADAPTIVE_ACCEL", "FOLLOW_DISTANCE", "NAP_DRIVER_LAT_HANDOFF", "NAP_HYPERMILE", "NAP_HYPERMILE_STEP_DOWN"):
       assert key in src
   assert "Hypermile" in tici
   assert "Adaptive Accel Limits" in tici
   assert "Follow Distance" in tici
   assert "Soft Lateral Handoff" in tici
-  assert "Simulate Look-at-Road" in tici
+  assert "Simulate Look-at-Road" not in tici
+  assert "NAP_DM_SIMULATE_LOOKING" not in tici
   assert '"Back To"' in tici
   assert "Return to NAP settings." in tici
   assert "hypermile" in mici
   assert "adaptive accel limits" in mici
   assert "follow distance" in mici
   assert "soft lateral handoff" in mici
-  assert "simulate look-at-road" in mici
+  assert "simulate look-at-road" not in mici
   assert "self._scroller.add_widgets" in mici
   assert "DrivingMannerismsLayout" in nap
   assert "_open_driving_mannerisms" in nap
