@@ -1,18 +1,33 @@
-"""Post-engage climb handoff for Pre-AP GAS_COMMAND.
+"""Sustained post-engage climb handoff for Pre-AP GAS_COMMAND.
 
 Panda blocks ENABLE=1 while gas_pressed (interceptor raw > 650 /
 ``get_longitudinal_allowed`` = controls_allowed && !gas_pressed_prev), so
 an enabled command cannot go on the wire during the analog lift. Tesla
 passthrough regen still runs until override ends.
 
-On the first pedal decrease we still close the sit-then-go gap:
-- Expire ``ENGAGE_GRACE_FRAMES`` immediately so ACQUIRE cannot floor
-  commanded accel at 0 for 0.5 s.
-- Seed VirtualDAS with a positive climb accel (not ``commanded_accel=0``).
-- On the first ENABLE=1 frame, rewrite the grace-floored command to a
-  climb seed. After that, grace is dead and normal OP long climbs to MAX.
+#144 expired grace and rewrote the first ENABLE=1 frame with **last-pressed
+peak DI**, then dropped. That stab:
 
-Do not freeze last-pressed DI for the rest of the window.
+- Looks like a still-pressed pedal on 0x552 (raw > 650) → panda/Python
+  ``gasPressed`` → PedalAuthority RELEASE (ENABLE=0) → ACQUIRE
+  ``vdas.reset(commanded_accel=0)`` → another peak rewrite → pulse.
+- Sets ``prev_pedal_di`` to the peak so the next VDAS update rate-limits
+  *down* toward the climb (accel then coast).
+- Feeds ``pedal_command_di`` back into ``cs_pedal_di`` so the overlay
+  re-arms on command echo.
+
+On-car that was "immediate takeover" then accelerator pulses and
+38→28 mph instead of a climb to sticky MAX.
+
+This wrap keeps a **sustained** climb until MAX / safety:
+
+- Expire ``ENGAGE_GRACE_FRAMES`` on every climb frame (ACQUIRE restarts
+  grace — kill it again).
+- Re-seed VirtualDAS with +a after every ACQUIRE wipe.
+- Rewrite an ACQUIRE / still-in-grace ENABLE=1 with the **VDAS climb DI**
+  (zero-torque + climb step), never last-pressed peak.
+- Later ENABLE=1 frames: grace is dead, VDAS follows planner climb.
+- Do not clear the seed flag on a one-frame safety flicker.
 
 Install-from-card, after force-offroad (wraps the live
 ``PreAPLongController.update``).
@@ -21,7 +36,7 @@ from __future__ import annotations
 
 from openpilot.selfdrive.controls.lib.post_engage_coast import (
   PostEngageCoast,
-  cs_pedal_di,
+  cs_lift_pedal_di,
 )
 
 # card / controlsd rate. Avoid importing openpilot.common.realtime here
@@ -91,7 +106,7 @@ def _enabled_gas_idx(can_sends) -> int | None:
 
 def apply_held_pedal_command(controller, CS, tesla_can, can_sends, hold_di: float,
                              di_to_pedal=None) -> bool:
-  """Replace the last ENABLE=1 GAS_COMMAND with a climb seed. Counter stays consecutive."""
+  """Replace the last ENABLE=1 GAS_COMMAND. Counter stays consecutive."""
   if hold_di is None:
     return False
   if di_to_pedal is None:
@@ -124,34 +139,85 @@ def apply_held_pedal_command(controller, CS, tesla_can, can_sends, hold_di: floa
   return True
 
 
+def _current_command_di(controller, CS) -> float:
+  """Live VDAS / interceptor DI — not last-pressed peak."""
+  prev = float(getattr(controller, "prev_pedal_di", 0.0) or 0.0)
+  if prev > 0.0:
+    return prev
+  vdas = getattr(controller, "vdas", None)
+  if vdas is not None:
+    vprev = float(getattr(vdas, "prev_pedal_di", 0.0) or 0.0)
+    if vprev > 0.0:
+      return vprev
+  interceptor = getattr(CS, "pedal_interceptor_value", None)
+  try:
+    idi = float(interceptor) if interceptor is not None else 0.0
+  except (TypeError, ValueError):
+    idi = 0.0
+  return idi if idi > 0.0 else 0.0
+
+
+def climb_command_di(controller, CS, *, climb_a: float) -> float:
+  """DI that realizes the climb floor. Never last-pressed peak.
+
+  After ACQUIRE, ``prev_pedal_di`` is zero-torque / interceptor (foot up).
+  One VDAS step from that seed is a modest climb, not a 14 DI stab.
+  """
+  seed = _current_command_di(controller, CS)
+  vdas = getattr(controller, "vdas", None)
+  if vdas is not None and hasattr(vdas, "update"):
+    try:
+      di = vdas.update(
+        float(climb_a),
+        _v_ego(CS),
+        seed,
+        a_ego=_a_ego(CS),
+        freeze_integrator=False,
+        orientation_ned=list(getattr(CS, "orientationNED", None) or []),
+      )
+      return float(di)
+    except TypeError:
+      try:
+        di = vdas.update(float(climb_a), _v_ego(CS), seed, a_ego=_a_ego(CS))
+        return float(di)
+      except (TypeError, ValueError):
+        pass
+    except (TypeError, ValueError):
+      pass
+  return seed
+
+
 def apply_climb_handoff(controller, CS, tesla_can, can_sends, hold,
                         frame=None, di_to_pedal=None) -> bool:
-  """Expire grace, seed VDAS climb, rewrite only the grace-floored ENABLE=1."""
+  """Expire grace, re-seed after ACQUIRE, rewrite only a coast ENABLE=1."""
   if frame is None:
     frame = int(getattr(controller, "preap_long_engage_frame", 0) or 0)
   engage_frame = int(getattr(controller, "preap_long_engage_frame", 0) or 0)
   was_grace = (int(frame) - engage_frame) < ENGAGE_GRACE_FRAMES
+  acquire_now = int(frame) == engage_frame
 
   expire_engage_grace(controller, frame=frame)
 
-  seed_di = hold.hold_pedal
-  if seed_di is None:
-    seed_di = float(getattr(controller, "prev_pedal_di", 0.0) or 0.0)
   climb_a = float(hold.hold_accel)
+  seed_di = _current_command_di(controller, CS)
 
-  need_seed = was_grace or not getattr(controller, "_nap_climb_seeded", False)
+  # Re-seed only on ACQUIRE / first handoff. A was_grace seed every frame
+  # resets VDAS and fights OP long (pulse / pulse).
+  need_seed = acquire_now or not getattr(controller, "_nap_climb_seeded", False)
   if need_seed:
     seed_vdas_climb(controller, climb_a=climb_a, pedal_di=float(seed_di),
                     a_ego=_a_ego(CS))
     controller._nap_climb_seeded = True
 
-  # Only the ACQUIRE / still-in-grace ENABLE=1 frame was floored at 0.
-  # Later frames: grace is dead, VDAS follows planner climb to MAX.
-  # ENABLE=0 passthrough is left alone (panda still blocks ENABLE=1
-  # while gas_pressed). Expire + seed still succeed.
-  if was_grace:
+  # Rewrite ONLY the ACQUIRE ENABLE=1 frame (grace-floored at 0).
+  # Rewriting the rest of the 0.5 s grace window fights normal long
+  # every few frames. ENABLE=0 passthrough is left alone.
+  if acquire_now:
+    tx_di = climb_command_di(controller, CS, climb_a=climb_a)
     apply_held_pedal_command(
-      controller, CS, tesla_can, can_sends, seed_di, di_to_pedal=di_to_pedal)
+      controller, CS, tesla_can, can_sends, tx_di, di_to_pedal=di_to_pedal)
+  elif was_grace:
+    expire_engage_grace(controller, frame=frame)
   return True
 
 
@@ -196,7 +262,8 @@ def _preap_long_update_with_pedal_hold(self, CC, CS, frame, tesla_can, can_bus_p
   orig = _ORIG_PREAP_LONG_UPDATE
   hold = _hold_for(self)
   gas = _gas_pressed(CS)
-  pedal_di = cs_pedal_di(CS, gas_pressed=gas)
+  # Lift detection must not see the ENABLE=1 command echo.
+  pedal_di = cs_lift_pedal_di(CS, gas_pressed=gas)
   hold.update(
     long_engaged=bool(getattr(CS, "enableLongControl", False)),
     gas_pressed=gas,
@@ -204,14 +271,24 @@ def _preap_long_update_with_pedal_hold(self, CC, CS, frame, tesla_can, can_bus_p
     a_ego=_a_ego(CS),
   )
 
+  # Floor the actuator *before* orig() so ENABLE frames after ACQUIRE
+  # already request climb_a. Do not rewrite those frames.
+  a_cmd = float(getattr(getattr(CC, "actuators", None), "accel", 0.0) or 0.0)
+  brake = bool(getattr(CS, "real_brake_pressed", False))
+  v_ego = _v_ego(CS)
+  v_cruise = _v_cruise_ms(CS)
+  if hold.should_hold_pedal(a_cmd, brake_pressed=brake, v_ego=v_ego, v_cruise=v_cruise):
+    actuators = getattr(CC, "actuators", None)
+    if actuators is not None and a_cmd < hold.hold_accel:
+      actuators.accel = hold.hold_accel
+
   sends = orig(self, CC, CS, frame, tesla_can, can_bus_party, now_nanos)
 
   a_cmd = float(getattr(getattr(CC, "actuators", None), "accel", 0.0) or 0.0)
-  brake = bool(getattr(CS, "real_brake_pressed", False))
   if hold.should_hold_pedal(a_cmd, brake_pressed=brake,
-                            v_ego=_v_ego(CS), v_cruise=_v_cruise_ms(CS)):
+                            v_ego=v_ego, v_cruise=v_cruise):
     apply_climb_handoff(self, CS, tesla_can, sends, hold, frame=frame)
-  else:
+  elif not hold.active:
     self._nap_climb_seeded = False
     if gas and pedal_di > 0.0:
       # Analog lift for planner/controlsd next frame (command is 0 in passthrough).
