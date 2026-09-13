@@ -1238,8 +1238,10 @@ def test_map_speed_submenu_wires_params():
   assert "driving mannerisms" in nap_mici
   manner = (root / "selfdrive/ui/layouts/settings/driving_mannerisms.py").read_text()
   manner_mici = (root / "selfdrive/ui/mici/layouts/settings/driving_mannerisms.py").read_text()
-  assert "gradual ease-off farther back" in manner
-  assert "not a harder brake" in manner
+  content = (root / "selfdrive/ui/layouts/settings/nap_content.py").read_text()
+  assert "FOLLOW_DISTANCE_DESCRIPTION" in manner
+  assert "gradual ease-off farther back" in content
+  assert "not a harder brake" in content
   assert "follow distance" in manner_mici
   assert "Adaptive Accel Limits" not in nap
   assert "Follow Distance" not in nap

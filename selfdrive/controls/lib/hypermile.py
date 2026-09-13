@@ -1,7 +1,8 @@
-"""Hypermile: eco preset + speed-split follow for Pre-AP NAP.
+"""Hypermile: eco preset for Pre-AP NAP.
 
-Phase 1+2. Not a second long controller. Publishes an effective stock
-follow-distance index (1–7) into the existing MPC / lead-approach path.
+Not a second long controller. Eco snap / Step Down / Hill Climb only.
+Stock Follow Distance 1–7 (`NAPFollowDistance`) is shared — Hypermile
+does not own follow levels or remap the stalk.
 
 Settings → NAP → Driving Mannerisms → Hypermile (default Off).
 """
@@ -14,7 +15,7 @@ from openpilot.selfdrive.mapd.map_speed_policy import is_cruise_stalk_step
 
 # Params
 PARAM_HYPERMILE = "NAPHypermile"
-PARAM_FOLLOW_LEVEL = "NAPHypermileFollowLevel"
+PARAM_FOLLOW_DISTANCE = "NAPFollowDistance"
 PARAM_SAVED = "NAPHypermileSaved"
 PARAM_STEP_DOWN = "NAPHypermileStepDown"
 
@@ -22,28 +23,18 @@ PARAM_STEP_DOWN = "NAPHypermileStepDown"
 # stack with eco. Hard cap — never more than this under posted.
 STEP_DOWN_MPH = 15.0
 
-# Stalk-selected band while Hypermile is On.
-FOLLOW_LEVEL_MIN = 1
-FOLLOW_LEVEL_MAX = 5
-FOLLOW_LEVEL_DEFAULT = 3
-
-# Stock NAPFollowDistance 1–7 → T_FOLLOW 0.7 … 1.9 s.
-# Hypermile 1–5 maps onto stock 2–6 so high-speed draft is tighter than the
-# low-speed far gap, but never stock 1 (0.7 s bumper-draft).
-HYPERMILE_TO_STOCK = (2, 3, 4, 5, 6)
-SAFE_FLOOR_STOCK = 2  # 0.9 s
-LOW_SPEED_STOCK = 7   # 1.9 s — far gap below the split
-NAP_FOLLOW_DISTANCE_RANGE = range(1, 8)
-
-# vEgo ≤ this uses the far gap (cut stop-and-go). Above: stalk 1–5.
-SPLIT_MPH = 50.0
-SPLIT_MS = SPLIT_MPH * CV.MPH_TO_MS
+# Stock Follow Distance 1–7 (Driving Mannerisms + stalk behind a lead).
+# Same param whether Hypermile is On or Off. Includes closest 1.
+FOLLOW_DISTANCE_MIN = 1
+FOLLOW_DISTANCE_MAX = 7
+FOLLOW_DISTANCE_DEFAULT = 4
+NAP_FOLLOW_DISTANCE_RANGE = range(FOLLOW_DISTANCE_MIN, FOLLOW_DISTANCE_MAX + 1)
 
 # Eco snap. Comfort-biased efficiency — not maximum regen bite.
 # Early + light map ease (lookahead Early = 0.55 m/s², starts farther out)
 # and a lazy climb (Accel 1). Late lookahead (1.20 m/s²) is the wrong trade:
 # it holds speed then dumps regen. Safety / MPC hard brake unchanged.
-# Soft-lat / DM / blinker / stock 1–7 follow are not touched.
+# Soft-lat / DM / blinker / stock 1–7 follow are not snapped.
 # Map offset is *not* snapped to a flat −5 (that forced town 30→25).
 # Live eco offset is posted-scaled: 0 at/under 50, −8 at 80, cap −8 above.
 ECO_ADAPTIVE_ACCEL = True
@@ -64,41 +55,28 @@ SNAPSHOT_KEYS = (
 )
 
 
-def clamp_follow_level(level) -> int:
+def clamp_follow_distance(level) -> int:
   try:
-    return max(FOLLOW_LEVEL_MIN, min(FOLLOW_LEVEL_MAX, int(level)))
+    return max(FOLLOW_DISTANCE_MIN, min(FOLLOW_DISTANCE_MAX, int(level)))
   except (TypeError, ValueError):
-    return FOLLOW_LEVEL_DEFAULT
+    return FOLLOW_DISTANCE_DEFAULT
 
 
-def hypermile_level_to_stock(level: int) -> int:
-  """Stalk 1–5 → stock follow index, never below the safe floor."""
-  idx = clamp_follow_level(level) - 1
-  stock = HYPERMILE_TO_STOCK[idx]
-  return max(SAFE_FLOOR_STOCK, int(stock))
+def effective_nap_follow_dist(is_preap: bool, nap_follow_dist) -> int | None:
+  """Follow index the planner/MPC should use, or None to fall back to personality.
 
-
-def effective_nap_follow_dist(
-  is_preap: bool,
-  nap_follow_dist,
-  hypermile_on: bool,
-  hypermile_level: int,
-  v_ego_ms: float,
-) -> int | None:
-  """Follow index the planner/MPC should use, or None to fall back to personality."""
+  Always stock `NAPFollowDistance` 1–7 on Pre-AP. Hypermile does not
+  override (no 1–5 band, no ≤50 mph far-gap force).
+  """
   if not is_preap:
     return None
-  if hypermile_on:
-    if float(v_ego_ms) <= SPLIT_MS:
-      return LOW_SPEED_STOCK
-    return hypermile_level_to_stock(hypermile_level)
   if nap_follow_dist in NAP_FOLLOW_DISTANCE_RANGE:
     return int(nap_follow_dist)
   return None
 
 
-def follow_level_hud_text(level: int) -> str:
-  return f"Hypermile: Follow {clamp_follow_level(level)}"
+def follow_distance_hud_text(level: int) -> str:
+  return f"Follow Distance: {clamp_follow_distance(level)}"
 
 
 def _get_int(params, key: str, default: int) -> int:
@@ -132,11 +110,14 @@ def _get_str(params, key: str) -> str:
   return str(raw)
 
 
-def read_hypermile_params(params) -> tuple[bool, int]:
-  """(on, level 1–5). Unknown / test doubles → Off, 3."""
-  return _get_bool(params, PARAM_HYPERMILE, False), clamp_follow_level(
-    _get_int(params, PARAM_FOLLOW_LEVEL, FOLLOW_LEVEL_DEFAULT)
-  )
+def read_hypermile_params(params) -> bool:
+  """Hypermile On. Unknown / test doubles → Off."""
+  return _get_bool(params, PARAM_HYPERMILE, False)
+
+
+def read_follow_distance(params) -> int:
+  """Stock Follow Distance 1–7 (`NAPFollowDistance`). Default 4."""
+  return clamp_follow_distance(_get_int(params, PARAM_FOLLOW_DISTANCE, FOLLOW_DISTANCE_DEFAULT))
 
 
 def read_hypermile_step_down(params) -> bool:
@@ -293,9 +274,8 @@ def _put_values(params, values: dict) -> None:
 def apply_hypermile_toggle(params, want_on: bool) -> bool:
   """Snap eco on rising On; restore snapshot on falling Off. Idempotent.
 
-  Returns the resulting On state. Soft-lat / DM / blinker / 1–7 follow
-  stay untouched. Follow level 1–5 is kept across Off so the next drive
-  resumes the last stalk choice.
+  Returns the resulting On state. Soft-lat / DM / blinker / stock 1–7
+  Follow Distance stay untouched (not snapped, not restored).
   """
   was_on = _get_bool(params, PARAM_HYPERMILE, False)
   if want_on and not was_on:
@@ -325,18 +305,19 @@ def apply_hypermile_toggle(params, want_on: bool) -> bool:
   return bool(want_on)
 
 
-def stalk_adjusts_follow(*, hypermile_on: bool, has_lead: bool) -> bool:
-  """Stalk +/- remaps 1–5 only while Hypermile is On and a lead is present.
+def stalk_adjusts_follow(*, has_lead: bool) -> bool:
+  """Stalk +/- remaps stock Follow Distance 1–7 when a radar lead is present.
 
-  No lead: leave Pre-AP stalk as MAX / cruise-speed adjust.
+  Same whether Hypermile is On or Off. No lead: leave Pre-AP stalk as
+  MAX / cruise-speed adjust.
   """
-  return bool(hypermile_on) and bool(has_lead)
+  return bool(has_lead)
 
 
-def step_hypermile_level(level: int, closer: bool) -> int:
-  """Stalk up = closer (toward 1). Stalk down = farther (toward 5)."""
+def step_follow_distance(level: int, closer: bool) -> int:
+  """Stalk up = closer (toward 1). Stalk down = farther (toward 7)."""
   delta = -1 if closer else 1
-  return clamp_follow_level(int(level) + delta)
+  return clamp_follow_distance(int(level) + delta)
 
 
 def stalk_is_closer(button_closer: bool | None, raw_delta_kph: float | None) -> bool | None:
@@ -352,8 +333,7 @@ def stalk_is_closer(button_closer: bool | None, raw_delta_kph: float | None) -> 
   return float(raw_delta_kph) > 0.0
 
 
-def detect_hypermile_stalk(
-  params,
+def detect_follow_stalk(
   *,
   has_lead: bool,
   button_closer: bool | None,
@@ -361,8 +341,7 @@ def detect_hypermile_stalk(
   prev_raw_kph: float | None,
 ) -> tuple[bool, bool | None, float | None]:
   """(is_follow_stalk, closer, undo_raw_kph). Does not write params."""
-  on, _level = read_hypermile_params(params)
-  if not stalk_adjusts_follow(hypermile_on=on, has_lead=has_lead):
+  if not stalk_adjusts_follow(has_lead=has_lead):
     return False, None, None
   delta = None
   if raw_kph is not None and prev_raw_kph is not None and is_cruise_stalk_step(prev_raw_kph, raw_kph):
@@ -374,15 +353,16 @@ def detect_hypermile_stalk(
   return True, closer, undo
 
 
-def persist_follow_level(params, closer: bool) -> int:
-  _on, level = read_hypermile_params(params)
-  new_level = step_hypermile_level(level, closer)
+def persist_follow_distance(params, closer: bool) -> int:
+  """Step and write `NAPFollowDistance` so Driving Mannerisms updates live."""
+  level = read_follow_distance(params)
+  new_level = step_follow_distance(level, closer)
   if new_level != level:
-    params.put(PARAM_FOLLOW_LEVEL, int(new_level))
+    params.put(PARAM_FOLLOW_DISTANCE, int(new_level))
   return new_level
 
 
-def consume_hypermile_stalk(
+def consume_follow_stalk(
   params,
   *,
   has_lead: bool,
@@ -391,15 +371,14 @@ def consume_hypermile_stalk(
   prev_raw_kph: float | None,
   apply: bool = True,
 ) -> tuple[int | None, float | None]:
-  """If this stalk edge is a follow-level step, persist it and undo MAX.
+  """If this stalk edge is a Follow Distance step, persist it and undo MAX.
 
   Returns (new_or_same_level, undo_raw_kph). undo_raw_kph is the previous
   MAX so card can write pedal_speed back. (None, None) means leave stalk
-  as MAX adjust. apply=False detects and returns the would-be level
+  as MAX adjust. apply=False detects and returns the current level
   without writing (card uses this during the 0.25 s stalk cooldown).
   """
-  is_stalk, closer, undo = detect_hypermile_stalk(
-    params,
+  is_stalk, closer, undo = detect_follow_stalk(
     has_lead=has_lead,
     button_closer=button_closer,
     raw_kph=raw_kph,
@@ -408,9 +387,8 @@ def consume_hypermile_stalk(
   if not is_stalk:
     return None, None
   if apply:
-    return persist_follow_level(params, bool(closer)), undo
-  _on, level = read_hypermile_params(params)
-  return level, undo
+    return persist_follow_distance(params, bool(closer)), undo
+  return read_follow_distance(params), undo
 
 
 def button_event_closer(button_events) -> bool | None:

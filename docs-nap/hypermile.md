@@ -4,7 +4,7 @@ Experimental on **nap-dev only**. Default **Off**. Not a nap-release change.
 
 Settings → NAP → Driving Mannerisms → **Hypermile**.
 
-This is a small controller (`selfdrive/controls/lib/hypermile.py`) that snaps eco knobs and publishes an **effective** stock follow-distance index (1–7) into the existing MPC / lead-approach path. It does not rewrite longcontrol, disable lead braking, or raise MAX above posted Cap/Follow / sticky MAX.
+This is a small controller (`selfdrive/controls/lib/hypermile.py`) that snaps eco knobs. It does not rewrite longcontrol, disable lead braking, or raise MAX above posted Cap/Follow / sticky MAX. Stock Follow Distance 1–7 (`NAPFollowDistance`) is shared with Driving Mannerisms — Hypermile does **not** own follow levels.
 
 ## A — Eco preset (comfort-biased, not max regen)
 
@@ -20,7 +20,7 @@ Turning **On** remembers the current values, then snaps:
 | Lookahead | **Early** (3) — starts farther out at 0.55 m/s². Always snapped (Late/Normal/Off become Early). Late is 1.20 m/s² and is *not* kept. |
 | Acceleration (map climb + lead-close) | **1** — laziest Follow climb and lead-close +a (0.20 m/s² catch-up) |
 
-Turning **Off** restores that snapshot. Soft Lateral Handoff, Simulate Look (triple-tap NAP popup), blinker / sticky MAX / one-SET / standstill gas-gate / reverse hard-cancel, and the stock 1–7 Follow Distance param are **not** changed. The stalk / 50 mph follow design is separate and unchanged by this eco bias.
+Turning **Off** restores that snapshot. Soft Lateral Handoff, Simulate Look (triple-tap NAP popup), blinker / sticky MAX / one-SET / standstill gas-gate / reverse hard-cancel, and the stock 1–7 Follow Distance param are **not** changed (eco does not snap or restore follow).
 
 **Posted-scaled eco offset** (Hypermile On, Step Down Off), from the raw posted/OSM limit in mph — not a forever `NAPMapSpeedOffsetMph = −5`:
 
@@ -81,55 +81,54 @@ This is an offset on the **posted/map target** Cap/Follow already use (`posted_k
 - **Double SET:** take the current map target (stepped if On).
 - Toggling Step Down On/Off mid-drive changes the posted target (scaled eco ↔ scaled step-down), which Follow treats as a posted change and rebases.
 
-## B — Speed-split follow + stalk 1–5
+## B — Stock Follow Distance 1–7 (not Hypermile-owned)
 
-While On, the stock 1–7 Follow Distance UI is hidden. The active control is **Hypermile Follow 1–5** (`NAPHypermileFollowLevel`, default 3, persists across the drive):
+Follow Distance is the stock Driving Mannerisms slider (`NAPFollowDistance`, 1–7, default 4). It stays **visible** while Hypermile is On. There is no Hypermile 1–5 band, no “never stock 1” floor, and no ≤50 mph forced far-gap (stock 7) override. Planner / MPC always use whatever `NAPFollowDistance` says.
 
-| Hypermile | Stock `NAPFollowDistance` | `T_FOLLOW` |
-|-----------|---------------------------|------------|
-| 1 closest draft | 2 | 0.9 s |
-| 2 | 3 | 1.1 s |
-| 3 standard | 4 | 1.3 s |
-| 4 | 5 | 1.5 s |
-| 5 furthest | 6 | 1.7 s |
-| vEgo ≤ 50 mph (any stalk) | 7 | 1.9 s far gap |
+| Stock `NAPFollowDistance` | `T_FOLLOW` |
+|---------------------------|------------|
+| 1 closest | 0.7 s |
+| 2 | 0.9 s |
+| 3 | 1.1 s |
+| 4 default | 1.3 s |
+| 5 | 1.5 s |
+| 6 | 1.7 s |
+| 7 farthest | 1.9 s |
 
-- **vEgo ≤ 50 mph:** always stock 7 (far). Cuts stop-and-go brake events.
-- **vEgo > 50 mph:** stalk 1–5 as a tighter drafting band. Safe floor is stock 2 / 0.9 s — never stock 1 / 0.7 s bumper-draft.
-- Gaps come from the existing `NAP_T_FOLLOW` table. Lead braking / MPC danger zone stay on. Cruise ceiling is still HUD MAX (posted Cap/Follow + sticky).
+Gaps come from the existing `NAP_T_FOLLOW` table. Lead braking / MPC danger zone stay on. Cruise ceiling is still HUD MAX (posted Cap/Follow + sticky).
 
 ### Stalk remapping (Pre-AP pedal software cruise)
 
 Normally stalk up/down is RES+/RES− and steps MAX / `pedal_speed` 1 or 5 mph.
 
-With Hypermile **On** and a **radar lead present**:
+With a **radar lead present** (Hypermile On **or** Off):
 
-- Stalk **up** = closer (level toward 1)
-- Stalk **down** = farther (level toward 5)
+- Stalk **up** = closer (toward stock 1)
+- Stalk **down** = farther (toward stock 7)
 
-card.py undoes that frame’s MAX step so Follow sticky does not arm. Cooldown 0.25 s so a held lever does not race 1→5.
+card.py writes `NAPFollowDistance` so the Driving Mannerisms indicator/slider updates live, and undoes that frame’s MAX / `pedal_speed` step so Follow sticky does not arm. Cooldown 0.25 s so a held lever does not race 1→7.
 
 **No lead:** stalk stays MAX adjust (documented rule). During a long pause, `cruiseState.speed` is ego — only button edges remap follow.
 
 ### HUD
 
-When the 1–5 level changes onroad, selfdrived fires `EventName.hypermileFollowChanged` — same 1.5 s `NormalPermanentAlert` affordance as Driving Personality: **Hypermile: Follow N**.
+When stock Follow Distance changes onroad, selfdrived fires `EventName.hypermileFollowChanged` — same 1.5 s `NormalPermanentAlert` affordance as Driving Personality: **Follow Distance: N**.
 
 ## Safety
 
 - Default Off
 - Stay at/under MAX and posted Cap/Follow
 - Do not disable lead braking
-- Tighten only within the 0.9 s floor above 50 mph
 - Soft-lat / DM / blinker / sticky MAX / one-SET / standstill gas-gate / reverse hard-cancel unchanged
 - Hill Climb does not raise MAX and does not disable lead braking
+- Eco / Step Down / Hill Climb do not force Follow Distance
 
 ## Tests
 
-`selfdrive/controls/tests/test_hypermile.py` — On snaps + Off restore (offset param not written −5); posted-scaled eco (30 stays 30; 80→72) and Step Down (30 stays 30; 75→62.5; 80→65); maps-only (no invent without posted); ≤50 far gap; >50 stalk level; stalk up/down 1–5; safe floor; settings/docs wiring.
+`selfdrive/controls/tests/test_hypermile.py` — On snaps + Off restore (offset param not written −5; Follow Distance not snapped); posted-scaled eco (30 stays 30; 80→72) and Step Down (30 stays 30; 75→62.5; 80→65); maps-only (no invent without posted); stalk+lead writes `NAPFollowDistance` with Hypermile On and Off (full stock 1–7, including closest 1); no lead still steps MAX; settings/docs wiring.
 
 `selfdrive/controls/tests/test_hill_climb.py` — Hypermile Off / Hill Climb Off inert; uphill under MAX raises Accel 1 authority; several mph under MAX + downhill does **not** regen; deadband + uphill does **not** invent +g·sin; at/above MAX + downhill still eases; never exceeds MAX; lead / MPC brake still wins.
 
 `selfdrive/controls/lib/tests/test_curve_max_hold.py` — curve snapshot/restore (sticky 60 survives a bend; a lower posted/eco target does not replace it).
 
-Existing `test_following_distance` / Pre-AP following tests stay on the stock 1–7 path while Hypermile is Off (default).
+Existing `test_following_distance` / Pre-AP following tests stay on the stock 1–7 path.

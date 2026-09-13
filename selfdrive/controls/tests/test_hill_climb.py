@@ -77,8 +77,6 @@ def _planner_harness():
     def get(self, key, return_default=False):
       if key == "NAPFollowDistance":
         return 4
-      if key == "NAPHypermileFollowLevel":
-        return 3
       if key == "NAPMapSpeedMode":
         return self.map_mode
       if key == "NAPMapSpeedOffsetMph":

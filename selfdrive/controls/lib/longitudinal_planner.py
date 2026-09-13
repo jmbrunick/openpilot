@@ -109,15 +109,13 @@ class LongitudinalPlanner:
     self._params = Params() if params is None else params
     self.nap_follow_dist = self._params.get("NAPFollowDistance", return_default=True) if self._is_preap else None
     self.nap_adaptive_accel = self._params.get_bool("NAPAdaptiveAccel") if self._is_preap else False
-    self._hypermile_on, self._hypermile_level = read_hypermile_params(self._params) if self._is_preap else (False, 3)
+    self._hypermile_on = read_hypermile_params(self._params) if self._is_preap else False
     self._hypermile_hill_climb = read_hypermile_hill_climb(self._params) if self._is_preap else False
     self._hill_pitch = 0.0
     self._map_speed_mode, self._map_speed_offset_kph, self._map_speed_lookahead, self._map_speed_accel = (
       read_map_speed_params(self._params) if self._is_preap else (0, 0.0, 0, 5)
     )
-    self.active_nap_follow_dist = effective_nap_follow_dist(
-      self._is_preap, self.nap_follow_dist, self._hypermile_on, self._hypermile_level, init_v,
-    )
+    self.active_nap_follow_dist = effective_nap_follow_dist(self._is_preap, self.nap_follow_dist)
     self.t_follow = get_T_FOLLOW(nap_follow_dist=self.active_nap_follow_dist)
     self._frame = 0
 
@@ -154,11 +152,11 @@ class LongitudinalPlanner:
   def update(self, sm):
     self._frame += 1
     if self._is_preap:
-      # Stalk 1–5 must land on the next plan; do not wait for the 20-frame poll.
-      self._hypermile_on, self._hypermile_level = read_hypermile_params(self._params)
+      # Stalk Follow Distance 1–7 must land on the next plan.
+      self.nap_follow_dist = self._params.get("NAPFollowDistance", return_default=True)
+      self._hypermile_on = read_hypermile_params(self._params)
       self._hypermile_hill_climb = read_hypermile_hill_climb(self._params)
       if self._frame % 20 == 0:
-        self.nap_follow_dist = self._params.get("NAPFollowDistance", return_default=True)
         self.nap_adaptive_accel = self._params.get_bool("NAPAdaptiveAccel")
         self._map_speed_mode, self._map_speed_offset_kph, self._map_speed_lookahead, self._map_speed_accel = (
           read_map_speed_params(self._params)
@@ -218,9 +216,7 @@ class LongitudinalPlanner:
     if (not force_slow_decel) and self._is_preap and self._map_speed_mode in (MODE_CAP, MODE_FOLLOW):
       v_cruise = cap_planner_v_cruise_ms(v_hud_ms, None, mode=self._map_speed_mode)
 
-    self.active_nap_follow_dist = effective_nap_follow_dist(
-      self._is_preap, self.nap_follow_dist, self._hypermile_on, self._hypermile_level, v_ego,
-    )
+    self.active_nap_follow_dist = effective_nap_follow_dist(self._is_preap, self.nap_follow_dist)
     self.t_follow = get_T_FOLLOW(sm['selfdriveState'].personality, self.active_nap_follow_dist)
 
     # Pre-AP adaptive accel: only limit accel when the lead's obstacle-equivalent
