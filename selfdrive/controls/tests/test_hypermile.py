@@ -403,8 +403,8 @@ def test_lead_tip_remaps_follow_hold_keeps_max():
   tip_prev = 65.0 * CV.MPH_TO_KPH
   tip_cur = tip_prev + 1.0 * CV.MPH_TO_KPH
   hold_cur = tip_prev + 5.0 * CV.MPH_TO_KPH
-  metric_tip = 100.0 - 1.0
-  metric_hold = 100.0 - 5.0
+  metric_tip = 100.0 + 1.0
+  metric_hold = 100.0 + 5.0
 
   params = FakeParams(bools={PARAM_HYPERMILE: False}, ints={PARAM_FOLLOW_DISTANCE: 4})
   level, undo = consume_follow_stalk(
