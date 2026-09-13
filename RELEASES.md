@@ -1,3 +1,7 @@
+NAP Simulate Look / False Alert Ignore exclusive (2026-09-13)
+========================
+* Triple-tap **Simulate Look** and **False Alert Ignore** are **mutually exclusive** — only one may be On (both Off is allowed). Enabling one in the 3X / mici popup clears the other live. Turning FAI On aborts an in-flight glance hold; turning Simulate Look On stops the phone soft-clear path. DM/policy also resolve a stale both-On (old installs) on first read: **Simulate Look On / FAI Off**. nap-dev defaults: Simulate Look **On**, FAI **Off**. nap-release: both **Off**. Pose/eye timers and yaw thresholds unchanged.
+
 NAP False Alert Ignore (2026-09-13)
 ========================
 * Triple-tap NAP popup is now **Force Offroad**, **Simulate Look**, **False Alert Ignore** (third item). New `NAPDmFalseAlertIgnore` (default **Off** on nap-release; persistent like Simulate Look). While engaged and the toggle is On, false **phone/device** distraction (`phoneProb` / phone bit) soft-clears on the same random **(1.0 s, 3.0 s]** cadence. **Pose** and **eye** still drain and alert. Simulate Look no longer full-wipes `driver_distracted` (that was masking pose/eye); it only injects a no-face / uncertain glance. Both toggles stay Off until Justin enables them. Hands-on ≥ 2 / stalk / door / reverse unchanged.

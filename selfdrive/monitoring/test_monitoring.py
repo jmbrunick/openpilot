@@ -2,6 +2,9 @@ import numpy as np
 
 from cereal import log
 from openpilot.common.realtime import DT_DMON
+from openpilot.selfdrive.monitoring.dm_toggles import (
+  DEFAULT_FALSE_ALERT_IGNORE, DEFAULT_SIMULATE_LOOKING,
+)
 from openpilot.selfdrive.monitoring.policy import (
   DriverMonitoring, DRIVER_MONITOR_SETTINGS, PARAM_DM_SIMULATE_LOOKING,
   PARAM_DM_FALSE_ALERT_IGNORE, LOOK_SIM_MODE_PHONE, LOOK_SIM_MODE_GLANCE,
@@ -265,6 +268,8 @@ class TestMonitoring:
     assert s._VISION_POLICY_ALERT_3_TIMEOUT == 11.
     assert PARAM_DM_SIMULATE_LOOKING == "NAPDmSimulateLooking"
     assert PARAM_DM_FALSE_ALERT_IGNORE == "NAPDmFalseAlertIgnore"
+    assert DEFAULT_SIMULATE_LOOKING is False
+    assert DEFAULT_FALSE_ALERT_IGNORE is False
     assert LOOK_SIM_MODE_PHONE == "phone"
     assert LOOK_SIM_MODE_GLANCE == "glance"
     assert LOOK_SIM_COUNTDOWN_MIN_S == 1.0
@@ -284,10 +289,10 @@ class TestMonitoring:
       line = next(ln for ln in keys.splitlines() if name in ln)
       assert 'BOOL, "0"' in line
     policy = Path(__file__).resolve().parents[0].joinpath("policy.py").read_text()
-    assert "_param_bool(PARAM_DM_SIMULATE_LOOKING, False)" in policy
-    assert "_param_bool(PARAM_DM_SIMULATE_LOOKING, True)" not in policy
-    assert "_param_bool(PARAM_DM_FALSE_ALERT_IGNORE, False)" in policy
-    assert "_param_bool(PARAM_DM_FALSE_ALERT_IGNORE, True)" not in policy
+    assert "read_exclusive_dm_toggles" in policy
+    assert "DEFAULT_SIMULATE_LOOKING, DEFAULT_FALSE_ALERT_IGNORE" in policy
+    assert DEFAULT_SIMULATE_LOOKING is False
+    assert DEFAULT_FALSE_ALERT_IGNORE is False
 
   def test_vision_looking_path_is_stock_glance_predicates(self):
     """Green-prompt clear path: face + low std + filter.x < 0.37."""
@@ -650,3 +655,59 @@ class TestMonitoring:
       DM.run_step(_fake_sm(hands=0, driver_state=msg_PHONE_ONLY))
     assert DM.alert_level < 2
     assert DM.awareness > DM.threshold_alert_2
+
+  def test_stale_both_on_prefers_simulate_look_never_phone(self):
+    """Both-On (old install) must not run phone soft-clear in the same session."""
+    DM = self._dm(simulate_looking=True, false_alert_ignore=True, fire_s=1.2)
+    for _ in range(int(4.0 / DT_DMON)):
+      self._step(DM, msg_PHONE_ONLY)
+    assert DM.nap_dm_simulate_looking is True
+    assert DM.nap_dm_false_alert_ignore is False
+    assert not DM._look_sim_holding
+    assert DM.distracted_types['phone']
+    glance = False
+    for _ in range(int(6.0 / DT_DMON)):
+      self._step(DM, msg_NO_FACE_DETECTED)
+      if DM._look_sim_holding:
+        assert DM._look_sim_mode == LOOK_SIM_MODE_GLANCE
+        glance = True
+        break
+    assert glance
+
+  def test_turning_fai_on_aborts_glance_hold(self):
+    DM = self._dm(simulate_looking=True, fire_s=1.2)
+    holding = False
+    for _ in range(int(6.0 / DT_DMON)):
+      self._step(DM, msg_NO_FACE_DETECTED)
+      if DM._look_sim_holding:
+        holding = True
+        assert DM._look_sim_mode == LOOK_SIM_MODE_GLANCE
+        break
+    assert holding
+    DM.set_nap_dm_toggles(false_alert_ignore=True)
+    assert DM.nap_dm_simulate_looking is False
+    assert DM.nap_dm_false_alert_ignore is True
+    assert not DM._look_sim_holding
+    assert DM._look_sim_mode is None
+
+  def test_turning_simulate_look_on_stops_phone_hold(self):
+    DM = self._dm(false_alert_ignore=True, fire_s=1.2)
+    holding = False
+    for _ in range(int(6.0 / DT_DMON)):
+      self._step(DM, msg_PHONE_ONLY)
+      if DM._look_sim_holding:
+        holding = True
+        assert DM._look_sim_mode == LOOK_SIM_MODE_PHONE
+        break
+    assert holding
+    DM.set_nap_dm_toggles(simulate_looking=True)
+    assert DM.nap_dm_simulate_looking is True
+    assert DM.nap_dm_false_alert_ignore is False
+    assert not DM._look_sim_holding
+    assert DM._look_sim_mode is None
+
+  def test_set_both_true_resolves_to_simulate_look(self):
+    DM = self._dm(simulate_looking=False, false_alert_ignore=True)
+    DM.set_nap_dm_toggles(simulate_looking=True, false_alert_ignore=True)
+    assert DM.nap_dm_simulate_looking is True
+    assert DM.nap_dm_false_alert_ignore is False
