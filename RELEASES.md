@@ -1,3 +1,7 @@
+NAP hidden settings (2026-09-13)
+========================
+* **Simulate Look-at-Road** and **Force Offroad / Go Offline** are no longer on the normal NAP or Driving Mannerisms lists. Triple-tap **NAP** in Settings (3 taps in a 1.0 s sliding window) opens a side popup with those two toggles only. Tap outside the card to dismiss (X / tap NAP again also work). Same params and Reset-All defaults. Soft-lat, Hypermile, Hill Climb, Step Down unchanged. mici: triple-tap the **nap** button. Not a nap-release change.
+
 NAP Hypermile Hill Climb (2026-09-12)
 ========================
 * Settings → NAP → Driving Mannerisms → **Hill Climb** (default **On**, hidden/inert unless Hypermile is On). IMU pitch (`orientationNED[1]`) raises Accel 1 climb authority on a real uphill so Hypermile does not sag under HUD MAX, and eases lightly on a flattening crest / downhill. **Maps-elevation lookahead is NOT included.** Never raises MAX. Lead / MPC hard brake still win. Soft-lat, blinker, sticky MAX, Step Down, lead-close, DM unchanged. Not a nap-release change.
@@ -24,7 +28,7 @@ NAP Hypermile (2026-09-12)
 
 NAP driver monitoring (2026-09-12)
 ========================
-* Pre-AP engaged: **Simulate Look-at-Road** (default On) injects a simulated glance on the **stock vision looking-path** (`face_detected` + low pose std + `driver_distraction_filter.x < 0.37`) and **holds** that attentive state until stock gradual recovery returns awareness to **1.0** (not a one-frame pulse / mute). After drain starts, wait **past 1.0 s**, then fire at a **random time in the next 2.0 s** — fire is uniform in **(1.0 s, 3.0 s]** of that countdown. After a full reset the same rule applies to the next countdown. Orange / red stay stock **5 / 11 s** if the toggle is Off. Hands-on ≥ 2 / stalk / door / reverse hard cancels unchanged. Replaces the #103 hands-on-only first-band reset. Settings → NAP → Driving Mannerisms. Not a nap-release change.
+* Pre-AP engaged: **Simulate Look-at-Road** (default On) injects a simulated glance on the **stock vision looking-path** (`face_detected` + low pose std + `driver_distraction_filter.x < 0.37`) and **holds** that attentive state until stock gradual recovery returns awareness to **1.0** (not a one-frame pulse / mute). After drain starts, wait **past 1.0 s**, then fire at a **random time in the next 2.0 s** — fire is uniform in **(1.0 s, 3.0 s]** of that countdown. After a full reset the same rule applies to the next countdown. Orange / red stay stock **5 / 11 s** if the toggle is Off. Hands-on ≥ 2 / stalk / door / reverse hard cancels unchanged. Replaces the #103 hands-on-only first-band reset. Settings → triple-tap **NAP** (not Driving Mannerisms). Not a nap-release change.
 
 NAP settings (2026-09-12)
 ========================

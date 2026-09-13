@@ -1,3 +1,4 @@
+import time
 import pyray as rl
 from dataclasses import dataclass
 from enum import IntEnum
@@ -5,9 +6,11 @@ from collections.abc import Callable
 from openpilot.selfdrive.ui.layouts.settings.developer import DeveloperLayout
 from openpilot.selfdrive.ui.layouts.settings.device import DeviceLayout
 from openpilot.selfdrive.ui.layouts.settings.firehose import FirehoseLayout
+from openpilot.selfdrive.ui.layouts.settings.hidden_toggles import HiddenTogglesPopup
 from openpilot.selfdrive.ui.layouts.settings.nap import NAPLayout
 from openpilot.selfdrive.ui.layouts.settings.software import SoftwareLayout
 from openpilot.selfdrive.ui.layouts.settings.toggles import TogglesLayout
+from openpilot.selfdrive.ui.layouts.settings.triple_tap import TripleTapDetector
 from openpilot.system.ui.lib.application import gui_app, FontWeight, MousePos
 from openpilot.system.ui.lib.multilang import tr, tr_noop
 from openpilot.system.ui.lib.text_measure import measure_text_cached
@@ -69,6 +72,14 @@ class SettingsLayout(Widget):
 
     self._font_medium = gui_app.font(FontWeight.MEDIUM)
     self._close_icon = gui_app.texture("icons/close2.png", CLOSE_ICON_SIZE, CLOSE_ICON_SIZE)
+
+    # Hidden NAP toggles: 3 taps on the NAP sidebar item within 1.0 s.
+    # Counted here (not only in set_current_panel) so re-taps while already
+    # on NAP still count.
+    self._nap_triple_tap = TripleTapDetector()
+    self._hidden_popup_visible = False
+    self._hidden_popup = HiddenTogglesPopup(on_dismiss=self._dismiss_hidden_popup)
+    self._hidden_popup.set_visible(False)
 
     # Callbacks
     self._close_callback: Callable | None = None
@@ -144,6 +155,10 @@ class SettingsLayout(Widget):
     )
     content_rect = rl.Rectangle(rect.x + PANEL_MARGIN, rect.y + 25, rect.width - (PANEL_MARGIN * 2), rect.height - 50)
     # rl.draw_rectangle_rounded(content_rect, 0.03, 30, PANEL_COLOR)
+    if self._hidden_popup_visible:
+      # Skip the live panel so click-outside cannot hit list items underneath.
+      self._hidden_popup.render(rect)
+      return
     panel = self._panels[self._current_panel]
     if panel.instance:
       panel.instance.render(content_rect)
@@ -151,6 +166,7 @@ class SettingsLayout(Widget):
   def _handle_mouse_release(self, mouse_pos: MousePos) -> None:
     # Check close button
     if rl.check_collision_point_rec(mouse_pos, self._close_btn_rect):
+      self._dismiss_hidden_popup()
       if self._close_callback:
         self._close_callback()
       return
@@ -158,8 +174,33 @@ class SettingsLayout(Widget):
     # Check navigation buttons
     for panel_type, panel_info in self._panels.items():
       if rl.check_collision_point_rec(mouse_pos, panel_info.button_rect):
+        if panel_type == PanelType.NAP:
+          self._on_nap_sidebar_tap()
+        else:
+          self._nap_triple_tap.reset()
+          self._dismiss_hidden_popup()
         self.set_current_panel(panel_type)
         return
+
+  def _on_nap_sidebar_tap(self):
+    # Tap NAP again while the popup is open: dismiss, do not immediately re-open.
+    if self._hidden_popup_visible:
+      self._dismiss_hidden_popup()
+      self._nap_triple_tap.reset()
+      return
+    if self._nap_triple_tap.tap(time.monotonic()):
+      self._show_hidden_popup()
+
+  def _show_hidden_popup(self):
+    self._hidden_popup_visible = True
+    self._hidden_popup.set_visible(True)
+    self._hidden_popup.show_event()
+
+  def _dismiss_hidden_popup(self):
+    if not self._hidden_popup_visible:
+      return
+    self._hidden_popup_visible = False
+    self._hidden_popup.set_visible(False)
 
   def set_current_panel(self, panel_type: PanelType):
     if panel_type != self._current_panel:
@@ -173,4 +214,6 @@ class SettingsLayout(Widget):
 
   def hide_event(self):
     super().hide_event()
+    self._dismiss_hidden_popup()
+    self._nap_triple_tap.reset()
     self._panels[self._current_panel].instance.hide_event()

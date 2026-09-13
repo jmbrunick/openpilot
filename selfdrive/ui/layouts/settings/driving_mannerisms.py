@@ -6,12 +6,10 @@ from openpilot.system.ui.widgets.scroller_tici import Scroller
 from openpilot.selfdrive.controls.lib.hypermile import apply_hypermile_toggle
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   DRIVER_LAT_HANDOFF_DESCRIPTION,
-  DM_SIMULATE_LOOKING_DESCRIPTION,
   HYPERMILE_DESCRIPTION,
   HYPERMILE_FOLLOW_DESCRIPTION,
   HYPERMILE_HILL_CLIMB_DESCRIPTION,
   HYPERMILE_STEP_DOWN_DESCRIPTION,
-  NAP_DM_SIMULATE_LOOKING,
   NAP_DRIVER_LAT_HANDOFF,
   NAP_HYPERMILE,
   NAP_HYPERMILE_FOLLOW_LEVEL,
@@ -22,7 +20,7 @@ from opendbc.car.tesla.preap.nap_params import NAPParamKeys
 
 
 class DrivingMannerismsLayout(Widget):
-  """Nested NAP page for Hypermile, accel feel, follow distance, soft-lat, and DM look-sim."""
+  """Nested NAP page for Hypermile, accel feel, follow distance, and soft-lat."""
 
   def __init__(self, on_back):
     super().__init__()
@@ -104,14 +102,6 @@ class DrivingMannerismsLayout(Widget):
     )
     self._all_items.append(self._lat_handoff)
 
-    self._dm_sim_looking = toggle_item(
-      "Simulate Look-at-Road",
-      description=DM_SIMULATE_LOOKING_DESCRIPTION,
-      initial_state=self._params.get_bool(NAP_DM_SIMULATE_LOOKING),
-      callback=self._on_dm_sim_looking,
-    )
-    self._all_items.append(self._dm_sim_looking)
-
   def _on_hypermile(self, state):
     apply_hypermile_toggle(self._params, bool(state))
     self.refresh()
@@ -134,9 +124,6 @@ class DrivingMannerismsLayout(Widget):
   def _on_lat_handoff(self, state):
     self._params.put_bool(NAP_DRIVER_LAT_HANDOFF, state)
 
-  def _on_dm_sim_looking(self, state):
-    self._params.put_bool(NAP_DM_SIMULATE_LOOKING, state)
-
   def refresh(self):
     hypermile_on = self._params.get_bool(NAP_HYPERMILE)
     self._hypermile.action_item.set_state(hypermile_on)
@@ -152,7 +139,6 @@ class DrivingMannerismsLayout(Widget):
     self._follow_buttons.set_visible(not hypermile_on)
     self._hypermile_follow.set_visible(hypermile_on)
     self._lat_handoff.action_item.set_state(self._params.get_bool(NAP_DRIVER_LAT_HANDOFF))
-    self._dm_sim_looking.action_item.set_state(self._params.get_bool(NAP_DM_SIMULATE_LOOKING))
 
   def show_event(self):
     self._scroller.show_event()

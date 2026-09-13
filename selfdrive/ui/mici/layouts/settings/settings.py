@@ -1,3 +1,4 @@
+import time
 from openpilot.common.params import Params
 from openpilot.system.ui.widgets.scroller import NavScroller
 from openpilot.selfdrive.ui.mici.widgets.button import BigButton
@@ -6,7 +7,9 @@ from openpilot.selfdrive.ui.mici.layouts.settings.network.network_layout import 
 from openpilot.selfdrive.ui.mici.layouts.settings.device import DeviceLayoutMici, PairBigButton
 from openpilot.selfdrive.ui.mici.layouts.settings.developer import DeveloperLayoutMici
 from openpilot.selfdrive.ui.mici.layouts.settings.firehose import FirehoseLayout
+from openpilot.selfdrive.ui.mici.layouts.settings.hidden_toggles import HiddenTogglesOverlayMici
 from openpilot.selfdrive.ui.mici.layouts.settings.nap import NAPLayoutMici
+from openpilot.selfdrive.ui.layouts.settings.triple_tap import MICI_NAP_OPEN_DELAY_S, TripleTapDetector
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 
 
@@ -40,9 +43,11 @@ class SettingsLayout(NavScroller):
     firehose_btn = SettingsBigButton("firehose", "", gui_app.texture("icons_mici/settings/firehose.png", 52, 62))
     firehose_btn.set_click_callback(lambda: gui_app.push_widget(firehose_panel))
 
-    nap_panel = NAPLayoutMici()
+    self._nap_panel = NAPLayoutMici()
     nap_btn = SettingsBigButton("nap", "", gui_app.texture("icons_mici/settings/comma_icon.png", 33, 60))
-    nap_btn.set_click_callback(lambda: gui_app.push_widget(nap_panel))
+    nap_btn.set_click_callback(self._on_nap_clicked)
+    self._nap_triple_tap = TripleTapDetector()
+    self._nap_open_at: float | None = None
 
     self._scroller.add_widgets([
       toggles_btn,
@@ -56,3 +61,21 @@ class SettingsLayout(NavScroller):
     ])
 
     self._font_medium = gui_app.font(FontWeight.MEDIUM)
+
+  def _on_nap_clicked(self):
+    now = time.monotonic()
+    if self._nap_triple_tap.tap(now):
+      self._nap_open_at = None
+      gui_app.push_widget(HiddenTogglesOverlayMici())
+      return
+    # Single / double tap: open NAP after a short quiet period so a quick
+    # triple can still win. See TripleTapDetector / MICI_NAP_OPEN_DELAY_S.
+    self._nap_open_at = now + MICI_NAP_OPEN_DELAY_S
+
+  def _update_state(self):
+    super()._update_state()
+    if self._nap_open_at is not None and time.monotonic() >= self._nap_open_at:
+      self._nap_open_at = None
+      self._nap_triple_tap.reset()
+      if self.enabled:
+        gui_app.push_widget(self._nap_panel)
