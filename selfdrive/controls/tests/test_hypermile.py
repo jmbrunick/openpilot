@@ -502,7 +502,7 @@ def test_lead_tip_then_2nd_detent_keeps_max_and_does_not_remap_follow():
   assert params.get(PARAM_FOLLOW_DISTANCE) == 4
   assert g.is_pending is False
 
-  # Release to IDLE must not commit the cancelled tip.
+  # Release to IDLE must not commit the canceled tip.
   level, undo = consume_follow_stalk(
     params, has_lead=True, button_closer=None, raw_kph=hold_cur, prev_raw_kph=hold_cur,
     detent=CRUISE_STALK_IDLE, button_released=True, gesture=g,
