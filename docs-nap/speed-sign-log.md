@@ -139,7 +139,7 @@ Yes/No do not write params, JSONL, or sqlite in this revision. The hook is `on_c
 Speed Sign Logger On, onroad, but SIGN stays dark or never shows mph — almost always missing weights, not a bad model.
 
 1. Look at the onroad plate: **NO WT** means `/data/media/0/nap/speed_sign.onnx` is absent or failed to load. Settings → NAP → Speed Sign Weights should say **Missing**.
-2. Park or turn on Force Offroad. Tap **Install weights** (Wi-Fi). Wait for the runner to finish — do not leave it spinning forever; an error prints on that screen. Or SSH: `python -m scripts.nap.install_speed_sign_weights`.
+2. Park or turn on Force Offroad (Settings → triple-tap **NAP**). Tap **Install weights** (Wi-Fi). Wait for the runner to finish — do not leave it spinning forever; an error prints on that screen. Or SSH: `python -m scripts.nap.install_speed_sign_weights`.
 3. File should be ~43 MB. `ls -l /data/media/0/nap/speed_sign.onnx`. Settings should flip to **Installed**.
 4. No full reboot required: speedsignd retries ONNX every ~15 s. `swaglog` should show `speedsignd starting … backend=yolo-onnx` or `ONNX loaded after retry backend=yolo-onnx` (also `hz=` / `nice=19`).
 5. **Stay manual** (do not engage OP). **WAIT** means detect is paused because openpilot is **controlling**. If WAIT never clears while the UI looks disengaged, it is a bug — `swaglog | grep speedsignd` should show `enabled` / `active` / `state` / alive / valid. Then pass a clear, unobstructed MUTCD R2-1. Confirmed mph lights SIGN. A blank plate with weights Installed and OP not controlling means no detection yet (night, glare, tiny sign — see Accuracy limits).
