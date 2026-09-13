@@ -1,4 +1,4 @@
-"""mici overlay: Force Offroad + Simulate Look.
+"""mici overlay: Force Offroad + Simulate Look + False Alert Ignore.
 
 Opened by a triple-tap on the Settings **nap** button. Tap outside the
 card to dismiss. Not shown on Driving Mannerisms or the main NAP list.
@@ -7,6 +7,7 @@ import pyray as rl
 
 from openpilot.common.params import Params
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
+  NAP_DM_FALSE_ALERT_IGNORE,
   NAP_DM_SIMULATE_LOOKING,
   NAP_FORCE_OFFROAD,
 )
@@ -20,7 +21,7 @@ CARD_PAD = 16
 
 
 class HiddenTogglesOverlayMici(Widget):
-  """Thin full-screen overlay with the two hidden NAP toggles."""
+  """Thin full-screen overlay with the three hidden NAP toggles."""
 
   def __init__(self):
     super().__init__()
@@ -32,18 +33,23 @@ class HiddenTogglesOverlayMici(Widget):
     self._offroad.set_value("WARNING: stops OP — drive manually")
 
     self._dm = BigParamControl("simulate look", NAP_DM_SIMULATE_LOOKING)
-    self._dm.set_value("Off default — hold glance at random in 1–3 s of drain")
+    self._dm.set_value("Off default — no-face glance in 1–3 s of drain")
+
+    self._fai = BigParamControl("false alert ignore", NAP_DM_FALSE_ALERT_IGNORE)
+    self._fai.set_value("Off default — ignore false phone alerts")
 
   def show_event(self):
     super().show_event()
     self._dm.refresh()
+    self._fai.refresh()
     self._offroad.refresh()
 
   def _layout(self):
     w1, h1 = self._dm.rect.width, self._dm.rect.height
     w2, h2 = self._offroad.rect.width, self._offroad.rect.height
-    inner_w = max(w1, w2)
-    inner_h = h1 + h2 + CARD_PAD
+    w3, h3 = self._fai.rect.width, self._fai.rect.height
+    inner_w = max(w1, w2, w3)
+    inner_h = h1 + h2 + h3 + 2 * CARD_PAD
     card_w = inner_w + 2 * CARD_PAD
     card_h = inner_h + 2 * CARD_PAD
     # Left-biased card so it reads as a side panel, not a full page.
@@ -64,3 +70,5 @@ class HiddenTogglesOverlayMici(Widget):
     self._offroad.render(rl.Rectangle(x, y, self._offroad.rect.width, self._offroad.rect.height))
     y += self._offroad.rect.height + CARD_PAD
     self._dm.render(rl.Rectangle(x, y, self._dm.rect.width, self._dm.rect.height))
+    y += self._dm.rect.height + CARD_PAD
+    self._fai.render(rl.Rectangle(x, y, self._fai.rect.width, self._fai.rect.height))

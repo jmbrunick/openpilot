@@ -1,4 +1,4 @@
-"""TICI side popup: Force Offroad + Simulate Look.
+"""TICI side popup: Force Offroad + Simulate Look + False Alert Ignore.
 
 Opened by a NAP sidebar triple-tap. Not a full settings page and not part
 of Driving Mannerisms. Tap outside the card (primary), the X, Escape, or
@@ -10,8 +10,10 @@ import pyray as rl
 
 from openpilot.common.params import Params
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
+  DM_FALSE_ALERT_IGNORE_DESCRIPTION,
   DM_SIMULATE_LOOKING_DESCRIPTION,
   FORCE_OFFROAD_DESCRIPTION,
+  NAP_DM_FALSE_ALERT_IGNORE,
   NAP_DM_SIMULATE_LOOKING,
   NAP_FORCE_OFFROAD,
 )
@@ -22,7 +24,7 @@ from openpilot.system.ui.widgets.list_view import ITEM_BASE_HEIGHT, toggle_item
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 
 CARD_WIDTH = 980
-CARD_HEIGHT = 460
+CARD_HEIGHT = 630
 CARD_MARGIN = 24
 HEADER_H = 72
 CLOSE_SIZE = 64
@@ -32,7 +34,7 @@ TITLE_COLOR = rl.Color(201, 201, 201, 255)
 
 
 class HiddenTogglesPopup(Widget):
-  """Compact side card with the two hidden NAP toggles."""
+  """Compact side card with the three hidden NAP toggles."""
 
   def __init__(self, on_dismiss: Callable[[], None]):
     super().__init__()
@@ -53,8 +55,14 @@ class HiddenTogglesPopup(Widget):
       initial_state=self._params.get_bool(NAP_DM_SIMULATE_LOOKING),
       callback=self._on_dm_sim_looking,
     )
+    self._fai_item = toggle_item(
+      "False Alert Ignore",
+      description=DM_FALSE_ALERT_IGNORE_DESCRIPTION,
+      initial_state=self._params.get_bool(NAP_DM_FALSE_ALERT_IGNORE),
+      callback=self._on_false_alert_ignore,
+    )
     self._scroller = Scroller(
-      [self._offroad_item, self._dm_item],
+      [self._offroad_item, self._dm_item, self._fai_item],
       line_separator=True,
       spacing=0,
     )
@@ -70,11 +78,15 @@ class HiddenTogglesPopup(Widget):
   def _on_dm_sim_looking(self, state):
     self._params.put_bool(NAP_DM_SIMULATE_LOOKING, state)
 
+  def _on_false_alert_ignore(self, state):
+    self._params.put_bool(NAP_DM_FALSE_ALERT_IGNORE, state)
+
   def _on_force_offroad(self, state):
     self._params.put_bool(NAP_FORCE_OFFROAD, state)
 
   def refresh(self):
     self._dm_item.action_item.set_state(self._params.get_bool(NAP_DM_SIMULATE_LOOKING))
+    self._fai_item.action_item.set_state(self._params.get_bool(NAP_DM_FALSE_ALERT_IGNORE))
     self._offroad_item.action_item.set_state(self._params.get_bool(NAP_FORCE_OFFROAD))
 
   def show_event(self):
@@ -89,7 +101,7 @@ class HiddenTogglesPopup(Widget):
 
   def _layout(self):
     width = min(CARD_WIDTH, max(620, self._rect.width - 2 * CARD_MARGIN))
-    height = min(CARD_HEIGHT, max(360, self._rect.height - 2 * CARD_MARGIN))
+    height = min(CARD_HEIGHT, max(480, self._rect.height - 2 * CARD_MARGIN))
     self._card_rect = rl.Rectangle(
       self._rect.x + CARD_MARGIN,
       self._rect.y + CARD_MARGIN,
@@ -130,9 +142,9 @@ class HiddenTogglesPopup(Widget):
       self._card_rect.width - 16,
       self._card_rect.height - HEADER_H - 12,
     )
-    # Two 170px rows; keep a floor so the scroller can expand descriptions.
-    if content.height < ITEM_BASE_HEIGHT * 2:
-      content.height = ITEM_BASE_HEIGHT * 2
+    # Three 170px rows; keep a floor so the scroller can expand descriptions.
+    if content.height < ITEM_BASE_HEIGHT * 3:
+      content.height = ITEM_BASE_HEIGHT * 3
     self._scroller.render(content)
 
     if rl.is_key_pressed(rl.KeyboardKey.KEY_ESCAPE):
