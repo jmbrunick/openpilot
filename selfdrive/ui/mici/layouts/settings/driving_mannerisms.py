@@ -9,6 +9,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   FOLLOW_DISTANCE_DEFAULT,
   FOLLOW_DISTANCE_LABELS,
   FOLLOW_DISTANCE_VALUES,
+  MAP_SPEED_ACCEL, MAP_SPEED_ACCEL_DEFAULT, MAP_SPEED_ACCEL_LABELS,
   NAP_DRIVER_LAT_HANDOFF,
   NAP_HYPERMILE,
   NAP_HYPERMILE_HILL_CLIMB,
@@ -24,6 +25,7 @@ class DrivingMannerismsLayoutMici(NavScroller):
 
     def on_hypermile(checked):
       apply_hypermile_toggle(self._params, bool(checked))
+      self._accel.refresh()
 
     hypermile = BigParamControl("hypermile", NAP_HYPERMILE, toggle_callback=on_hypermile)
     hypermile.set_value("Off default — early light eco, not max regen")
@@ -37,6 +39,14 @@ class DrivingMannerismsLayoutMici(NavScroller):
     hill_climb.set_visible(lambda: self._params.get_bool(NAP_HYPERMILE))
 
     adaptive_accel = BigParamControl("adaptive accel limits", NAPParamKeys.ADAPTIVE_ACCEL)
+
+    self._accel = BigMultiValueParamToggle(
+      "acceleration",
+      "NAPMapSpeedAccel",
+      values=list(MAP_SPEED_ACCEL),
+      labels=MAP_SPEED_ACCEL_LABELS,
+      default_value=MAP_SPEED_ACCEL_DEFAULT,
+    )
 
     follow_distance = BigMultiValueParamToggle(
       "follow distance",
@@ -54,9 +64,14 @@ class DrivingMannerismsLayoutMici(NavScroller):
       step_down,
       hill_climb,
       adaptive_accel,
+      self._accel,
       follow_distance,
       lat_handoff,
     ])
+
+  def show_event(self):
+    super().show_event()
+    self._accel.refresh()
 
 
 def open_driving_mannerisms_menu(page: DrivingMannerismsLayoutMici | None = None) -> DrivingMannerismsLayoutMici:

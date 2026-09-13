@@ -18,7 +18,7 @@ Turning **On** remembers the current values, then snaps:
 | Map Speed mode | Follow (3), or keep Cap if already Cap. Off/Display → Follow |
 | Map Speed Offset | **not snapped**. Live eco offset is posted-scaled from the OSM limit (see below). Off restores the user's saved slider. |
 | Lookahead | **Early** (3) — starts farther out at 0.55 m/s². Always snapped (Late/Normal/Off become Early). Late is 1.20 m/s² and is *not* kept. |
-| Acceleration (map climb + lead-close) | **1** — laziest Follow climb and lead-close +a (0.20 m/s² catch-up) |
+| Acceleration (Driving Mannerisms; map climb + lead-close) | **1** — laziest Follow climb and lead-close +a (0.20 m/s² catch-up) |
 
 Turning **Off** restores that snapshot. Soft Lateral Handoff, Simulate Look / False Alert Ignore (triple-tap NAP popup), blinker / sticky MAX / one-SET / standstill gas-gate / reverse hard-cancel, and the stock 1–7 Follow Distance param are **not** changed (eco does not snap or restore follow).
 
@@ -42,7 +42,7 @@ Third toggle under Hypermile: **Hill Climb** (`NAPHypermileHillClimb`, default *
 
 **v1 signal is IMU pitch** (`carControl.orientationNED[1]`, the same value `get_coast_accel` already reads). **Maps-elevation lookahead is NOT included** — that is a later phase.
 
-Hypermile snaps Acceleration to **1**. Flat-road `map_track_accel` is then a fixed comfort `a` (Early + Accel 1 → 0.30 m/s²). Grade gravity is not in that number, so a real climb droops under HUD MAX. Stock `get_coast_accel` only lowers +a when `allow_throttle` is false; Pre-AP always allows throttle, so that path does not hold a hill.
+Hypermile snaps Driving Mannerisms **Acceleration** (`NAPMapSpeedAccel`) to **1**. Flat-road `map_track_accel` is then a fixed comfort `a` (Early + Accel 1 → 0.30 m/s²). Grade gravity is not in that number, so a real climb droops under HUD MAX. Stock `get_coast_accel` only lowers +a when `allow_throttle` is false; Pre-AP always allows throttle, so that path does not hold a hill.
 
 | Pitch (NED) | Clearly under HUD MAX (outside deadband below) | At / above MAX (ego ≥ cruise − deadband) |
 |-------------|----------------|---------------|

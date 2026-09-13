@@ -1257,13 +1257,12 @@ def test_map_speed_submenu_wires_params():
   nap = (root / "selfdrive/ui/layouts/settings/nap.py").read_text()
   nap_mici = (root / "selfdrive/ui/mici/layouts/settings/nap.py").read_text()
   for src in (tici, mici):
-    for key in ("NAPMapSpeedMode", "NAPMapSpeedOffsetMph", "NAPMapSpeedLookahead", "NAPMapSpeedAccel"):
+    for key in ("NAPMapSpeedMode", "NAPMapSpeedOffsetMph", "NAPMapSpeedLookahead"):
       assert key in src
+    assert "NAPMapSpeedAccel" not in src
   assert "self._scroller.add_widgets" in mici
-  assert "Brake to a lower MAX is locked" in tici
-  assert "0.80 m/s² at Normal" in tici
-  assert "lead-close 0.20" in tici
-  assert "comes up behind a lead" in tici
+  assert "Acceleration" not in tici
+  assert "acceleration" not in mici
   assert "1.20 m/s² at Normal" not in tici
   assert "pauses Follow for 10s" not in tici
   assert "holds until the posted limit changes" in tici
@@ -1273,7 +1272,6 @@ def test_map_speed_submenu_wires_params():
   assert "1.5 s GPS lag raises posted at the" in tici
   assert "A higher limit far ahead never raises MAX" in tici
   assert "A higher limit ahead never raises MAX early" not in tici
-  assert "acceleration only" in mici
   assert "Map Speed Limit" in nap
   assert "Radar Settings" in nap
   assert "Driving Mannerisms" in nap
@@ -1284,6 +1282,9 @@ def test_map_speed_submenu_wires_params():
   manner_mici = (root / "selfdrive/ui/mici/layouts/settings/driving_mannerisms.py").read_text()
   content = (root / "selfdrive/ui/layouts/settings/nap_content.py").read_text()
   assert "FOLLOW_DISTANCE_DESCRIPTION" in manner
+  assert "MAP_SPEED_ACCEL_DESCRIPTION" in manner
+  assert "MAP_SPEED_ACCEL_DESCRIPTION" in content
+  assert "1 lazy" in content
   assert "gradual ease-off farther back" in content
   assert "not a harder brake" in content
   assert "follow distance" in manner_mici
@@ -1318,10 +1319,20 @@ def test_driving_mannerisms_submenu_wires_params():
   nap = (root / "selfdrive/ui/layouts/settings/nap.py").read_text()
   nap_mici = (root / "selfdrive/ui/mici/layouts/settings/nap.py").read_text()
   for src in (tici, mici):
-    for key in ("ADAPTIVE_ACCEL", "FOLLOW_DISTANCE", "NAP_DRIVER_LAT_HANDOFF", "NAP_HYPERMILE", "NAP_HYPERMILE_STEP_DOWN"):
+    for key in ("ADAPTIVE_ACCEL", "FOLLOW_DISTANCE", "NAP_DRIVER_LAT_HANDOFF", "NAP_HYPERMILE", "NAP_HYPERMILE_STEP_DOWN", "NAPMapSpeedAccel"):
       assert key in src
+  content = (root / "selfdrive/ui/layouts/settings/nap_content.py").read_text()
   assert "Hypermile" in tici
   assert "Adaptive Accel Limits" in tici
+  assert "Acceleration" in tici
+  assert "MAP_SPEED_ACCEL_DESCRIPTION" in tici
+  assert "Brake to a lower MAX is locked" in content
+  assert "0.80 m/s² at Normal" in content
+  assert "lead-close 0.20" in content
+  assert "comes up behind a lead" in content
+  assert "1 lazy" in content
+  assert tici.index("Adaptive Accel Limits") < tici.index('"Acceleration"')
+  assert tici.index("self._accel_buttons") < tici.index("self._follow_buttons")
   assert "Follow Distance" in tici
   assert "Soft Lateral Handoff" in tici
   assert "Simulate Look" not in tici
@@ -1332,12 +1343,20 @@ def test_driving_mannerisms_submenu_wires_params():
   assert "Return to NAP settings." in tici
   assert "hypermile" in mici
   assert "adaptive accel limits" in mici
+  assert '"acceleration"' in mici
+  assert "NAPMapSpeedAccel" in mici
+  mici_widgets = mici.split("self._scroller.add_widgets", 1)[1]
+  assert mici_widgets.index("adaptive_accel") < mici_widgets.index("self._accel")
+  assert mici_widgets.index("self._accel") < mici_widgets.index("follow_distance")
   assert "follow distance" in mici
   assert "soft lateral handoff" in mici
   assert "simulate look" not in mici
   assert "false alert ignore" not in mici
   assert "self._scroller.add_widgets" in mici
+  assert "self._accel.refresh()" in mici
   assert "DrivingMannerismsLayout" in nap
+  assert "acceleration, follow distance" in nap
+  assert "lookahead, acceleration" not in nap
   assert "_open_driving_mannerisms" in nap
   assert "_close_driving_mannerisms" in nap
   assert 'self._page = "driving_mannerisms"' in nap
