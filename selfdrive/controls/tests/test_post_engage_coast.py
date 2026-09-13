@@ -9,6 +9,7 @@ from openpilot.selfdrive.controls.lib.post_engage_coast import (
   BINARY_PRESSED_DI,
   HARD_DECEL_MS2,
   LEAD_KEEP_DECEL_MS2,
+  MAX_HOLD_SLACK_MS,
   PEDAL_DROP_DI,
   PEDAL_PRESSED_DI,
   POST_ENGAGE_COAST_S,
@@ -128,6 +129,20 @@ def test_binary_gas_pressed_fallback_holds_on_lift():
   assert coast.active
   assert coast.hold_pedal == pytest.approx(BINARY_PRESSED_DI)
   assert coast.apply(-0.50) == pytest.approx(1.10)
+
+
+def test_hold_does_not_push_past_max():
+  """Sticky/cruise MAX overrides a held pedal that would keep accelerating."""
+  coast = _coast()
+  _engage_with_gas(coast, pedal=14.0, a_ego=1.30)
+  _lift(coast, pedal=12.0, a_ego=1.00)
+  assert coast.active
+  assert coast.apply(-0.20, v_ego=20.0, v_cruise=25.0) == pytest.approx(1.30)
+  # At/above MAX: drop the hold and let normal long command through.
+  assert coast.apply(-0.40, v_ego=25.0, v_cruise=25.0) == pytest.approx(-0.40)
+  assert coast.apply(0.80, v_ego=25.0 + MAX_HOLD_SLACK_MS, v_cruise=25.0) == pytest.approx(0.80)
+  assert not coast.should_hold_pedal(0.80, v_ego=25.0, v_cruise=25.0)
+  assert coast.should_hold_pedal(0.80, v_ego=20.0, v_cruise=25.0)
 
 
 def test_safety_paths_pass_through():
