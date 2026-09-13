@@ -34,7 +34,6 @@ from openpilot.selfdrive.car.tesla.preap_force_offroad_handoff import (
   install_force_offroad_handoff,
   update_force_offroad_handoff,
 )
-from openpilot.selfdrive.car.tesla.preap_post_engage_hold import install_post_engage_hold
 
 REPLAY = "REPLAY" in os.environ
 
@@ -192,7 +191,6 @@ class Car:
       install_blinker_lat_pause()
       install_body_controls_test()
       install_force_offroad_handoff()
-      install_post_engage_hold()
 
       def store_donor_vin(vin: str) -> None:
         nap_conf.radar_donor_vin = vin
