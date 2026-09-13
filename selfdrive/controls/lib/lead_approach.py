@@ -24,7 +24,8 @@ hysteresis plus a per-frame slew on more-negative `a` hold a steady ease
 instead of chattering. Off / milder `a` is immediate so rematch is not stuck
 in regen. After the first hysteresis pass, leftover occasional bump-pull
 was still that gap-edge rematch (overlay |a| ~0.06–0.13, then rematch),
-not the 0.55 peak — so the band is a bit wider; peak and onset slew stay.
+not the 0.55 peak. Raise enter only so rematch does not re-bite; keep the
+0.20 exit so we still close onto Follow Distance (a lower exit parked far).
 """
 from __future__ import annotations
 
@@ -50,15 +51,16 @@ LEAD_APPROACH_MAX_HOLD_M = 8.0
 LEAD_APPROACH_RELIABLE_M = 140.0
 LEAD_APPROACH_MODEL_PROB_MIN = 0.50  # radard association gate
 # Clearly closing: skip the need window and ease from first reliable track.
-# ~2.2 mph. Below this, the (now longer) head-start need still applies.
-LEAD_APPROACH_CLEAR_DV_MS = 1.0
+# Just above 1.0 so Accel-1 catch-up at v_rel=1.0 / large slack stays +a
+# (need window already off). ~2.3 mph. 10 mph closes still skip need.
+LEAD_APPROACH_CLEAR_DV_MS = 1.05
 
 # Enter / exit (hysteresis). A single v_rel / slack gate chatters around
 # the follow gap on a slight incline (regen ↔ accel). First pass was
-# 0.50 / 0.20; leftover bump-pull was rematch re-crossing 0.50 after an
-# exit at 0.20. Slightly wider band; do not park far back (slack gates stay).
+# 0.50 / 0.20; leftover bump-pull was rematch re-crossing 0.50. Raise
+# enter only — a 0.12 exit held ease too long and parked far back.
 LEAD_APPROACH_DV_MS = 0.55         # enter: ~1.2 mph closing; ignore radar jitter
-LEAD_APPROACH_DV_OFF_MS = 0.12     # exit: ~0.27 mph; hold through rematch noise
+LEAD_APPROACH_DV_OFF_MS = 0.20     # exit: ~0.45 mph; drop so rematch can finish the close
 LEAD_APPROACH_SLACK_ON_M = 1.0     # enter only with slack above Follow Distance
 LEAD_APPROACH_SLACK_OFF_M = 0.0    # stay until at/inside the follow gap
 LEAD_APPROACH_NEED_HOLD_M = 4.0    # extra slack (m) before dropping after open
