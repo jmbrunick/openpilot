@@ -31,7 +31,7 @@ from openpilot.selfdrive.mapd.map_speed_policy import (
 )
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
-from openpilot.selfdrive.controls.lib.post_engage_coast import PostEngageCoast, cs_lift_pedal_di
+from openpilot.selfdrive.controls.lib.post_engage_coast import PostEngageCoast, cs_pedal_di
 from openpilot.selfdrive.controls.lib.driver_lateral_handoff import cs_real_brake_pressed
 
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
@@ -160,13 +160,13 @@ class LongitudinalPlanner:
     if self._post_engage_coast is not None:
       # Software long (enableLongControl), not interceptor / longActive.
       # First pedal decrease after engage starts a climb-to-MAX handoff
-      # that stays until MAX (no a=0 coast / no last-pedal freeze / no 1 s drop).
+      # (no a=0 coast / no last-pedal freeze).
       cs = sm['carState']
       gas = bool(cs.gasPressed)
       self._post_engage_coast.update(
         long_engaged=bool(getattr(cs, 'enableLongControl', False)),
         gas_pressed=gas,
-        pedal_pos=cs_lift_pedal_di(cs, gas_pressed=gas),
+        pedal_pos=cs_pedal_di(cs, gas_pressed=gas),
         a_ego=float(cs.aEgo),
       )
     v_cruise_kph = min(sm['carState'].vCruise, V_CRUISE_MAX)
