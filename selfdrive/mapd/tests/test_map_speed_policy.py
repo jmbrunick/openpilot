@@ -1352,6 +1352,8 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   planner_src = planner
   assert "output_a_target = a_up" in planner_src
   assert "min(float(output_a_target), a_up)" not in planner_src
+  assert "not has_valid_lead" in planner_src
+  assert "leadOne.status" in planner_src
   mapd = (root / "selfdrive/mapd/mapd.py").read_text()
   osm = (root / "selfdrive/mapd/osm_db.py").read_text()
   constants = (root / "selfdrive/mapd/constants.py").read_text()

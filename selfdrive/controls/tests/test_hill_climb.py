@@ -123,12 +123,19 @@ def _planner_harness():
       "modelV2": model,
     })
 
-  def run_map_climb(hypermile, hill_climb, pitch, *, v_ego=20.0, v_cruise=31.29, mpc_a=0.0):
+  def run_map_climb(hypermile, hill_climb, pitch, *, v_ego=20.0, v_cruise=31.29, mpc_a=0.0,
+                    has_lead=False, v_lead=None, d_rel=80.0):
     params = HillParams(hypermile=hypermile, hill_climb=hill_climb)
     planner = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
     planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=mpc_a)
     planner.prev_accel_clip = [-1.2, get_max_accel(v_ego)]
-    planner.update(planner_inputs(v_ego, v_cruise, pitch))
+    inputs = planner_inputs(v_ego, v_cruise, pitch)
+    if has_lead:
+      lead = inputs["radarState"].leadOne
+      lead.status = True
+      lead.vLead = float(v_ego if v_lead is None else v_lead)
+      lead.dRel = float(d_rel)
+    planner.update(inputs)
     return planner
 
   return {
@@ -406,6 +413,48 @@ def test_planner_gates_and_uphill_authority():
   assert climb.output_a_target <= climb_authority_ms2(flat_a, UPHILL_RAD) + 1e-6
 
 
+def test_planner_map_climb_does_not_replace_mpc_when_lead_present():
+  """Valid lead + under MAX: keep non-negative MPC a. Do not command map climb."""
+  h = _planner_harness()
+  v_ego = 21.5  # ~48 mph — Justin's "dropped and would not rematch"
+  v_cruise = 24.6  # ~55 mph HUD MAX
+  mpc_a = 0.05
+  flat_a = map_track_accel_ms2(v_ego, v_cruise, FLAT_ACCEL_1)
+  assert flat_a is not None and flat_a > mpc_a
+
+  no_lead = h["run_map_climb"](
+    True, True, FLAT_RAD, v_ego=v_ego, v_cruise=v_cruise, mpc_a=mpc_a, has_lead=False,
+  )
+  with_lead = h["run_map_climb"](
+    True, True, FLAT_RAD, v_ego=v_ego, v_cruise=v_cruise, mpc_a=mpc_a, has_lead=True,
+  )
+  uphill_lead = h["run_map_climb"](
+    True, True, UPHILL_RAD, v_ego=v_ego, v_cruise=v_cruise, mpc_a=mpc_a, has_lead=True,
+  )
+
+  assert no_lead.output_a_target == pytest.approx(flat_a, abs=0.06)
+  assert with_lead.output_a_target == pytest.approx(mpc_a, abs=0.08)
+  assert with_lead.output_a_target < flat_a - 0.10
+  # Hill Climb must not add +g·sin toward MAX while a lead is present.
+  assert uphill_lead.output_a_target == pytest.approx(mpc_a, abs=0.08)
+
+
+def test_planner_map_decel_still_allowed_above_max_with_lead():
+  """Above MAX: map decel still mins in even when a lead is present."""
+  h = _planner_harness()
+  v_cruise = 22.0
+  v_ego = v_cruise + TRACK_TAPER_MS + 0.5
+  with_lead = h["run_map_climb"](
+    True, True, FLAT_RAD, v_ego=v_ego, v_cruise=v_cruise, mpc_a=0.0, has_lead=True,
+  )
+  no_lead = h["run_map_climb"](
+    True, True, FLAT_RAD, v_ego=v_ego, v_cruise=v_cruise, mpc_a=0.0, has_lead=False,
+  )
+  assert with_lead.output_a_target < -0.20
+  assert no_lead.output_a_target < -0.20
+  assert with_lead.output_a_target == pytest.approx(no_lead.output_a_target, abs=0.08)
+
+
 def test_planner_lead_still_wins_on_uphill():
   h = _planner_harness()
   v_ego = 26.8
@@ -471,6 +520,8 @@ def test_settings_and_docs_wire_hill_climb():
   assert "apply_hill_climb" in planner
   assert "maps-elevation lookahead" in planner
   assert "orientationNED" in planner
+  assert "has_valid_lead" in planner
+  assert "not has_valid_lead" in planner
   hill = (root / "selfdrive/controls/lib/hill_climb.py").read_text()
   assert "TRACK_TAPER_MS" not in hill
   assert "_at_or_above_max" in hill
