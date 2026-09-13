@@ -178,10 +178,12 @@ class Car:
     tesla_preap = any(cfg.safetyModel == car.CarParams.SafetyModel.teslaPreap for cfg in self.CP.safetyConfigs)
     if tesla_preap:
       from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import install_blinker_lat_pause
+      from openpilot.selfdrive.car.tesla.preap_post_engage_hold import install_post_engage_hold
       from opendbc.car.tesla.preap.nap_conf import nap_conf
       from opendbc.car.tesla.preap.radar_donor_vin import RadarDonorVinCommissioner
 
       install_blinker_lat_pause()
+      install_post_engage_hold()
 
       def store_donor_vin(vin: str) -> None:
         nap_conf.radar_donor_vin = vin
