@@ -201,21 +201,23 @@ def apply_climb_handoff(controller, CS, tesla_can, can_sends, hold,
   climb_a = float(hold.hold_accel)
   seed_di = _current_command_di(controller, CS)
 
-  need_seed = was_grace or acquire_now or not getattr(controller, "_nap_climb_seeded", False)
+  # Re-seed only on ACQUIRE / first handoff. A was_grace seed every frame
+  # resets VDAS and fights OP long (pulse / pulse).
+  need_seed = acquire_now or not getattr(controller, "_nap_climb_seeded", False)
   if need_seed:
     seed_vdas_climb(controller, climb_a=climb_a, pedal_di=float(seed_di),
                     a_ego=_a_ego(CS))
     controller._nap_climb_seeded = True
 
-  # Only the ACQUIRE / still-in-grace ENABLE=1 frame is floored at 0.
-  # Rewrite that coast with a *climb* DI (VDAS step), not last-pressed peak.
-  # Later frames: grace is dead, VDAS follows planner climb to MAX.
-  # ENABLE=0 passthrough is left alone (panda still blocks ENABLE=1
-  # while gas_pressed). Expire + seed still succeed.
-  if was_grace or acquire_now:
+  # Rewrite ONLY the ACQUIRE ENABLE=1 frame (grace-floored at 0).
+  # Rewriting the rest of the 0.5 s grace window fights normal long
+  # every few frames. ENABLE=0 passthrough is left alone.
+  if acquire_now:
     tx_di = climb_command_di(controller, CS, climb_a=climb_a)
     apply_held_pedal_command(
       controller, CS, tesla_can, can_sends, tx_di, di_to_pedal=di_to_pedal)
+  elif was_grace:
+    expire_engage_grace(controller, frame=frame)
   return True
 
 
@@ -269,12 +271,22 @@ def _preap_long_update_with_pedal_hold(self, CC, CS, frame, tesla_can, can_bus_p
     a_ego=_a_ego(CS),
   )
 
+  # Floor the actuator *before* orig() so ENABLE frames after ACQUIRE
+  # already request climb_a. Do not rewrite those frames.
+  a_cmd = float(getattr(getattr(CC, "actuators", None), "accel", 0.0) or 0.0)
+  brake = bool(getattr(CS, "real_brake_pressed", False))
+  v_ego = _v_ego(CS)
+  v_cruise = _v_cruise_ms(CS)
+  if hold.should_hold_pedal(a_cmd, brake_pressed=brake, v_ego=v_ego, v_cruise=v_cruise):
+    actuators = getattr(CC, "actuators", None)
+    if actuators is not None and a_cmd < hold.hold_accel:
+      actuators.accel = hold.hold_accel
+
   sends = orig(self, CC, CS, frame, tesla_can, can_bus_party, now_nanos)
 
   a_cmd = float(getattr(getattr(CC, "actuators", None), "accel", 0.0) or 0.0)
-  brake = bool(getattr(CS, "real_brake_pressed", False))
   if hold.should_hold_pedal(a_cmd, brake_pressed=brake,
-                            v_ego=_v_ego(CS), v_cruise=_v_cruise_ms(CS)):
+                            v_ego=v_ego, v_cruise=v_cruise):
     apply_climb_handoff(self, CS, tesla_can, sends, hold, frame=frame)
   elif not hold.active:
     self._nap_climb_seeded = False

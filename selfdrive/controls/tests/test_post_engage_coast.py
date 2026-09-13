@@ -408,6 +408,16 @@ def test_climb_handoff_rewrites_grace_enable_then_lets_op_long_climb():
   assert tesla_can.calls == []
   assert sends[0][1][0] == 9
 
+  tesla_can.calls.clear()
+  # Still-in-grace but not the ACQUIRE frame — do not rewrite (fight).
+  controller.preap_long_engage_frame = 50
+  sends = [(0x551, bytes([7, 7, 7, 7, 0x80, 5]), 2)]
+  assert hold_mod.apply_climb_handoff(
+    controller, cs, tesla_can, sends, coast, frame=60,
+    di_to_pedal=lambda di: di)
+  assert tesla_can.calls == []
+  assert sends[0][1][0] == 7
+
 
 def test_interceptor_chatter_does_not_unlatch_or_pulse():
   """0.05 re-press on command echo / DI noise was the #144 pulse."""
@@ -443,9 +453,9 @@ def test_gas_override_then_lift_stays_smooth_climb():
   _lift(coast, pedal=12.0, a_ego=-0.40)
   assert coast.active
 
-  # Override below the re-press deadband — overlay stays latched.
+  # Hard manual accel — must not unlatch / re-arm on the next lift.
   for _ in range(10):
-    coast.update(long_engaged=True, gas_pressed=True, pedal_pos=13.0, a_ego=0.90)
+    coast.update(long_engaged=True, gas_pressed=True, pedal_pos=16.0, a_ego=1.40)
     assert coast.active
     assert coast.apply(-0.25, v_ego=17.0, v_cruise=25.0) > 0.3
 
@@ -460,18 +470,32 @@ def test_gas_override_then_lift_stays_smooth_climb():
   assert all(a == pytest.approx(1.10) for a in accels)
 
 
-def test_real_repress_then_lift_reclimbs():
+def test_gas_falling_edge_latches_without_analog_drop():
+  """Override → OP long: gasPressed falling edge is the handoff."""
   coast = _coast()
-  _engage_with_gas(coast, pedal=10.0, a_ego=0.80)
-  _lift(coast, pedal=8.0, a_ego=-0.30)
-  assert coast.active
-
-  coast.update(long_engaged=True, gas_pressed=True, pedal_pos=10.0 + REPRESS_DI + 0.2,
-               a_ego=0.90)
+  coast.update(long_engaged=True, gas_pressed=True, pedal_pos=12.0, a_ego=1.00)
   assert not coast.active
-  coast.update(long_engaged=True, gas_pressed=True, pedal_pos=10.0, a_ego=0.40)
+  coast.update(long_engaged=True, gas_pressed=False, pedal_pos=12.0, a_ego=0.80)
   assert coast.active
-  assert coast.apply(-0.20) == pytest.approx(0.90)
+  assert coast.apply(-0.30) == pytest.approx(1.00)
+
+
+def test_repeated_override_cycles_never_rear_m_or_flip_sign():
+  """Six manual-accel / lift cycles while long stays on — no pulse."""
+  coast = _coast()
+  _engage_with_gas(coast, pedal=14.0, a_ego=1.20)
+  _lift(coast, pedal=12.0, a_ego=-0.40)
+  accels = []
+  for _ in range(6):
+    for _ in range(5):
+      coast.update(long_engaged=True, gas_pressed=True, pedal_pos=18.0, a_ego=1.50)
+      accels.append(coast.apply(-0.40, v_ego=17.0, v_cruise=25.0))
+    for _ in range(8):
+      coast.update(long_engaged=True, gas_pressed=False, pedal_pos=0.0, a_ego=-0.90)
+      accels.append(coast.apply(-0.40, v_ego=17.0, v_cruise=25.0))
+    assert coast.active
+  assert all(a == pytest.approx(1.20) for a in accels)
+  assert min(accels) > 0.3
 
 
 def test_repeated_acquire_rewrites_climb_di_not_peak():
