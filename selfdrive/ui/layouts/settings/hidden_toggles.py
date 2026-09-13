@@ -84,12 +84,14 @@ class HiddenTogglesPopup(Widget):
     )
 
   def _on_dm_sim_looking(self, state):
-    apply_dm_simulate_looking(self._params, bool(state))
-    self._fai_item.action_item.set_state(self._params.get_bool(NAP_DM_FALSE_ALERT_IGNORE))
+    # Use apply() return — put_bool is non-blocking, so get_bool can still
+    # show the old sibling On until the popup is closed and reopened.
+    _sim, fai = apply_dm_simulate_looking(self._params, bool(state))
+    self._fai_item.action_item.set_state(fai)
 
   def _on_false_alert_ignore(self, state):
-    apply_dm_false_alert_ignore(self._params, bool(state))
-    self._dm_item.action_item.set_state(self._params.get_bool(NAP_DM_SIMULATE_LOOKING))
+    sim, _fai = apply_dm_false_alert_ignore(self._params, bool(state))
+    self._dm_item.action_item.set_state(sim)
 
   def _on_force_offroad(self, state):
     apply_force_offroad_toggle(self._params, bool(state), started=bool(ui_state.started))
