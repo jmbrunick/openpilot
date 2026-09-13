@@ -186,8 +186,8 @@ class Controls:
     # accel PID loop
     pid_accel_limits = self.CI.get_pid_accel_limits(self.CP, CS.vEgo, CS.vCruise * CV.KPH_TO_MS)
     a_target = float(long_plan.aTarget)
-    # Same 1 s post-engage pedal hold as the planner. Catches a stale
-    # negative aTarget on the first longActive frame after gas lift.
+    # Same post-engage climb-to-MAX handoff as the planner. Catches a
+    # stale 0 / negative aTarget on the first longActive frame after lift.
     if self._post_engage_coast is not None:
       gas = bool(CS.gasPressed)
       self._post_engage_coast.update(
