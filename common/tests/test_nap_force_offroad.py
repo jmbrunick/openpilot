@@ -68,27 +68,33 @@ def test_hardwared_hooks_param_before_ign_edge():
 def test_settings_and_docs_cover_warning_and_reset():
   nap = (ROOT / "selfdrive" / "ui" / "layouts" / "settings" / "nap.py").read_text(encoding="utf-8")
   mici = (ROOT / "selfdrive" / "ui" / "mici" / "layouts" / "settings" / "nap.py").read_text(encoding="utf-8")
+  popup = (ROOT / "selfdrive" / "ui" / "layouts" / "settings" / "hidden_toggles.py").read_text(encoding="utf-8")
+  overlay = (ROOT / "selfdrive" / "ui" / "mici" / "layouts" / "settings" / "hidden_toggles.py").read_text(encoding="utf-8")
   content = (ROOT / "selfdrive" / "ui" / "layouts" / "settings" / "nap_content.py").read_text(encoding="utf-8")
   docs = (ROOT / "docs-nap" / "force-offroad.md").read_text(encoding="utf-8")
   readme = (ROOT / "docs-nap" / "README.md").read_text(encoding="utf-8")
   ui_state = (ROOT / "selfdrive" / "ui" / "ui_state.py").read_text(encoding="utf-8")
 
-  assert "Force Offroad" in nap
   assert "NAP_FORCE_OFFROAD" in nap
   assert "put_bool(NAP_FORCE_OFFROAD, False)" in nap
-  toggle_block = nap.split('self._add_toggle(\n      NAP_FORCE_OFFROAD')[1].split("NAPParamKeys.PEDAL_ENABLED")[0]
-  assert "is_offroad" not in toggle_block
+  assert 'self._add_toggle(\n      NAP_FORCE_OFFROAD' not in nap
 
-  assert "force offroad" in mici
-  assert "NAP_FORCE_OFFROAD" in mici
-  assert "drive manually" in mici
-  assert "set_enabled(ui_state.is_offroad)" not in mici.split("force_offroad")[1].split("pedal_enabled")[0]
+  assert "Force Offroad" in popup
+  assert "NAP_FORCE_OFFROAD" in popup
+  assert "is_offroad" not in popup
+
+  assert "NAP_FORCE_OFFROAD" not in mici
+  assert "force offroad" in overlay
+  assert "NAP_FORCE_OFFROAD" in overlay
+  assert "drive manually" in overlay
+  assert "set_enabled(ui_state.is_offroad)" not in overlay
 
   assert "WARNING" in content
   assert "Drive manually" in content
   assert "NAPForceOffroad" in docs
   assert "CLEAR_ON_IGNITION_ON" in docs
   assert "deviceState.started" in docs
+  assert "triple-tap" in docs
   assert "force-offroad.md" in readme
   assert "NAP Force Offroad" in ui_state
 

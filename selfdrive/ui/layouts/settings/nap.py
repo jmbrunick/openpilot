@@ -20,9 +20,9 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   BACKUP_EPAS_INSTRUCTIONS, BRAKE_FACTOR_PRESETS,
   CALIBRATE_PEDAL_INSTRUCTIONS,
   DOWNLOAD_US_MAPS_INSTRUCTIONS,
-  FORCE_OFFROAD_DESCRIPTION,
   FLASH_EPAS_INSTRUCTIONS, PEDAL_CAN_BUS_VALUES,
   MAP_SPEED_ACCEL_DEFAULT,
+  NAP_DM_SIMULATE_LOOKING,
   NAP_DRIVER_LAT_HANDOFF,
   NAP_FORCE_OFFROAD,
   RADAR_OFFSET_MAX, RADAR_OFFSET_MIN,
@@ -114,14 +114,7 @@ class NAPLayout(Widget):
     self._radar_items = []
     self._toggle_map = {}  # param_key -> ListItem (for refresh)
 
-    # ── Section 0: Go Offline (must stay enabled onroad) ──
-    self._main_items.append(section_header_item("Go Offline"))
-
-    self._add_toggle(
-      NAP_FORCE_OFFROAD,
-      "Force Offroad",
-      FORCE_OFFROAD_DESCRIPTION,
-    )
+    # Force Offroad / Simulate Look live in the NAP triple-tap popup.
 
     # ── Section 1: Longitudinal Control ──
     self._main_items.append(section_header_item("Longitudinal Control"))
@@ -678,6 +671,7 @@ class NAPLayout(Widget):
     self._params.put("NAPMapSpeedAccel", MAP_SPEED_ACCEL_DEFAULT)
     self._params.remove("NAPMapSpeedDbPath")
     self._params.put_bool(NAP_DRIVER_LAT_HANDOFF, True)
+    self._params.put_bool(NAP_DM_SIMULATE_LOOKING, False)
     self._params.put_bool(NAP_FORCE_OFFROAD, False)
     self._page = "main"
     # Force Pre-AP is locked on in the panel but DEFAULTS keeps it off

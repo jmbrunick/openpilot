@@ -1,6 +1,6 @@
 # Force Offroad (Go Offline)
 
-Settings → NAP toggle so the comma can enter the same **started=false / offroad** path used for map download, Refresh maps, software install, and other offroad-only NAP actions **while the car is still moving**.
+Hidden Settings → NAP toggle (triple-tap the **NAP** sidebar / **nap** button) so the comma can enter the same **started=false / offroad** path used for map download, Refresh maps, software install, and other offroad-only NAP actions **while the car is still moving**. Not on the normal NAP list.
 
 ## Why
 
@@ -40,7 +40,7 @@ Do **not** flag this param `CLEAR_ON_OFFROAD_TRANSITION` — going offroad is wh
 
 ## How to use (on the road)
 
-1. Settings → **NAP** → **Force Offroad** (3X) or **force offroad** (mici / comma 4). Leave it available while onroad — that is the point.
+1. Settings → triple-tap **NAP** (3 taps within 1.0 s, sliding window) → **Force Offroad** on the side popup (3X) or the nap-button overlay (mici / comma 4). Tap outside the card to dismiss. Leave it available while onroad — that is the point. Not on the normal NAP list or Driving Mannerisms.
 2. openpilot disengages and the onroad stack stops. **Drive manually.** Do not expect steering or accel assist.
 3. Settings → NAP → Map Speed Limit → **Download US Maps** / **Refresh maps** (or Software install) should be tappable, same as when parked.
 4. Toggle Off when done, or park and cycle ignition.
@@ -54,4 +54,4 @@ Forces offroad and disengages openpilot. Drive manually. Do not expect assist wh
 This feature is optional on `nap-release`. To take it out:
 
 - revert the Force Offroad PR, or
-- delete `system/hardware/nap_force_offroad.py`, `common/tests/test_nap_force_offroad.py`, `docs-nap/force-offroad.md`, the `NAPForceOffroad` param, the `hardwared` hook (`not_force_offroad` / `should_start_now`), and the Settings → NAP Force Offroad toggle (3X + mici). Drop the `docs-nap/README.md` / `map-speed.md` / `RELEASES.md` / `ui_state.py` markers.
+- delete `system/hardware/nap_force_offroad.py`, `common/tests/test_nap_force_offroad.py`, `docs-nap/force-offroad.md`, the `NAPForceOffroad` param, the `hardwared` hook (`not_force_offroad` / `should_start_now`), and the hidden triple-tap Force Offroad toggle (3X + mici). Drop the `docs-nap/README.md` / `map-speed.md` / `RELEASES.md` / `ui_state.py` markers.

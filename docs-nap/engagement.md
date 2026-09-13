@@ -173,6 +173,14 @@ Do these at a quiet road / parking lot first, then a known pothole stretch. Peda
 11. **Hard yank / hands-on 2**, stalk cancel, door: full disengage, unchanged.
 12. **Reverse while engaged:** session ends (not a pause). HUD reverse / take-control, then after Drive a normal double SET must engage without Controls Mismatch and without a prior on-device disable. Soft-lat / blinker / sticky MAX must not stay wedged.
 
+## Driver monitoring simulate looking
+
+Stock DM stays on while engaged. Vision timeouts stay **3 / 5 / 11 s** (`DRIVER_MONITOR_SETTINGS` in `selfdrive/monitoring/policy.py`).
+
+`NAPDmSimulateLooking` (**default Off** on nap-release; Settings → triple-tap **NAP** within 1.0 s → side popup; not under Driving Mannerisms) does **not** mute banners. Stock DM until Justin turns it on via that hidden toggle. After awareness has started counting down and has gone **past 1.0 s**, it fires at a **random time in the next 2.0 s** — fire time is uniform in **(1.0 s, 3.0 s]** of that countdown — and injects a simulated glance on the **stock vision looking-path** — `face_detected` and `pose.low_std` and `driver_distraction_filter.x < 0.37` — the same predicates that clear the green prompt when he actually looks. That looking state is **held** (minimum 0.5 s, until awareness is 1.0) so stock gradual recovery can finish — not a one-frame pulse and not `driver_interacting` full reset. After a successful full reset a new countdown can start and the same rule applies again.
+
+Always-on DM when not engaged does **not** simulate. Toggle **Off** = stock DM with no pulses. Hands-on ≥ 2 / steer disengage, door, reverse, and stalk cancel are unchanged.
+
 ## Where to look
 
 - `opendbc_repo/opendbc/car/tesla/preap/engagement.py` — stalk FSM
@@ -183,3 +191,5 @@ Do these at a quiet road / parking lot first, then a known pothole stretch. Peda
 - `selfdrive/car/tesla/tests/test_preap_blinker_lat_pause.py` — blinker lat pause, latched turn keeps long, brake still drops long
 - `selfdrive/car/tesla/tests/test_preap_sticky_max.py` — sticky MAX / silent long pause / one SET / double SET
 - `selfdrive/mapd/tests/test_map_speed_policy.py` — maps rebase only on posted-value change
+- `selfdrive/monitoring/policy.py` — stock DM + optional Simulate Look (`NAPDmSimulateLooking`, default Off)
+- `selfdrive/ui/layouts/settings/hidden_toggles.py` — triple-tap NAP popup (Force Offroad, Simulate Look)
