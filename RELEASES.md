@@ -1,3 +1,7 @@
+NAP Follow Distance (2026-09-13)
+========================
+* Unified stock **Follow Distance 1–7** (`NAPFollowDistance`) for stalk adjustments — same whether Hypermile is On or Off. Behind a radar lead, stalk up/down writes that param so the Driving Mannerisms slider updates live, and that frame’s MAX / `pedal_speed` step is undone. No lead: stalk still steps MAX. Full stock seven including closest **1**. Removed the Hypermile-only 1–5 band, the “never stock 1” floor, the ≤50 mph forced far-gap (stock 7) override, and `NAPHypermileFollowLevel`. Follow Distance stays visible while Hypermile is On. HUD shows **Follow Distance: N**. Eco / Step Down / Adaptive Accel / Early / Accel 1 snaps stay; they no longer force follow. Grade-hold behavior is unchanged. Intentional product change: Hypermile no longer owns follow levels. Not a nap-release change.
+
 NAP Hypermile Hill Climb gate (2026-09-13)
 ========================
 * Hill Climb no longer treats `TRACK_TAPER` (~4.5 mph under MAX) as “near MAX”. Crest / downhill ease only when ego is **at or above MAX** (cruise − deadband). Grade hold (`+g·sin`) only when clearly under MAX — deadband / at-MAX leave the map hold (0) so we do not punch past MAX and hunt with Accel-5. Fixes Hypermile hunting ~4 mph under MAX (47–51 under a 54 MAX) with regen pulses instead of settling. **Maps-elevation lookahead is NOT included.** Never raises MAX. Lead / MPC still win. Not a nap-release change.

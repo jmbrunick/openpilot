@@ -20,11 +20,7 @@ MAP_SPEED_ACCEL_DEFAULT = 5
 FOLLOW_DISTANCE_VALUES = list(range(1, 8))
 FOLLOW_DISTANCE_LABELS = [str(i) for i in FOLLOW_DISTANCE_VALUES]
 FOLLOW_DISTANCE_DEFAULT = 4
-HYPERMILE_FOLLOW_VALUES = list(range(1, 6))
-HYPERMILE_FOLLOW_LABELS = [str(i) for i in HYPERMILE_FOLLOW_VALUES]
-HYPERMILE_FOLLOW_DEFAULT = 3
 NAP_HYPERMILE = "NAPHypermile"
-NAP_HYPERMILE_FOLLOW_LEVEL = "NAPHypermileFollowLevel"
 NAP_HYPERMILE_STEP_DOWN = "NAPHypermileStepDown"
 NAP_HYPERMILE_HILL_CLIMB = "NAPHypermileHillClimb"
 HYPERMILE_DESCRIPTION = (
@@ -34,17 +30,15 @@ HYPERMILE_DESCRIPTION = (
   + "Eco offset is posted-scaled (0 under 50 mph, −8 at 80+, linear "
   + "between) so town 30 stays 30 — not a flat −5. Only with a known "
   + "map posted limit; maps off / unknown posted does not drop MAX. "
-  + "Soft-lat, DM, and "
-  + "blinker stay as you set them. Below ~50 mph follow sits far back; "
-  + "above 50 mph uses a stalk 1–5 draft band (1=closest safe, "
-  + "5=furthest). With a lead, stalk up=closer and down=farther. No "
-  + "lead: stalk still adjusts MAX. Never bumper-drafts; lead braking "
-  + "stays on."
+  + "Soft-lat, DM, and blinker stay as you set them. Follow Distance "
+  + "1–7 stays the stock slider — stalk behind a lead steps that same "
+  + "param whether Hypermile is On or Off. Lead braking stays on."
 )
-HYPERMILE_FOLLOW_DESCRIPTION = (
-  "Hypermile follow (1=closest draft, 3=standard, 5=furthest). "
-  + "Used above ~50 mph. At or below 50 mph NAP holds a far gap to "
-  + "cut stop-and-go. Stalk up/down steps this while a lead is present."
+FOLLOW_DISTANCE_DESCRIPTION = (
+  "Follow distance (1=closest, 7=farthest). A slower car ahead starts a "
+  + "gradual ease-off farther back (more distance, not a harder brake). "
+  + "Behind a radar lead, stalk up/down steps this instead of MAX. "
+  + "No lead: stalk still adjusts MAX. Same param with Hypermile On or Off."
 )
 HYPERMILE_STEP_DOWN_DESCRIPTION = (
   "Default Off. Defer Speed for Range — only while Hypermile is On. "

@@ -6,13 +6,12 @@ from openpilot.system.ui.widgets.scroller_tici import Scroller
 from openpilot.selfdrive.controls.lib.hypermile import apply_hypermile_toggle
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   DRIVER_LAT_HANDOFF_DESCRIPTION,
+  FOLLOW_DISTANCE_DESCRIPTION,
   HYPERMILE_DESCRIPTION,
-  HYPERMILE_FOLLOW_DESCRIPTION,
   HYPERMILE_HILL_CLIMB_DESCRIPTION,
   HYPERMILE_STEP_DOWN_DESCRIPTION,
   NAP_DRIVER_LAT_HANDOFF,
   NAP_HYPERMILE,
-  NAP_HYPERMILE_FOLLOW_LEVEL,
   NAP_HYPERMILE_HILL_CLIMB,
   NAP_HYPERMILE_STEP_DOWN,
 )
@@ -73,26 +72,13 @@ class DrivingMannerismsLayout(Widget):
     follow_dist = self._params.get(NAPParamKeys.FOLLOW_DISTANCE, return_default=True)
     self._follow_buttons = multiple_button_item(
       "Follow Distance",
-      "Follow distance (1=closest, 7=farthest). A slower car ahead starts a " +
-      "gradual ease-off farther back (more distance, not a harder brake). " +
-      "Overridden by cruise stalk if present. Hidden while Hypermile is On.",
+      FOLLOW_DISTANCE_DESCRIPTION,
       buttons=["1", "2", "3", "4", "5", "6", "7"],
       button_width=80,
       selected_index=max(0, min(6, follow_dist - 1)),
       callback=self._on_follow_distance,
     )
     self._all_items.append(self._follow_buttons)
-
-    hm_level = int(self._params.get(NAP_HYPERMILE_FOLLOW_LEVEL, return_default=True) or 3)
-    self._hypermile_follow = multiple_button_item(
-      "Hypermile Follow",
-      HYPERMILE_FOLLOW_DESCRIPTION,
-      buttons=["1", "2", "3", "4", "5"],
-      button_width=80,
-      selected_index=max(0, min(4, hm_level - 1)),
-      callback=self._on_hypermile_follow,
-    )
-    self._all_items.append(self._hypermile_follow)
 
     self._lat_handoff = toggle_item(
       "Soft Lateral Handoff",
@@ -118,9 +104,6 @@ class DrivingMannerismsLayout(Widget):
   def _on_follow_distance(self, index: int):
     self._params.put(NAPParamKeys.FOLLOW_DISTANCE, index + 1)
 
-  def _on_hypermile_follow(self, index: int):
-    self._params.put(NAP_HYPERMILE_FOLLOW_LEVEL, index + 1)
-
   def _on_lat_handoff(self, state):
     self._params.put_bool(NAP_DRIVER_LAT_HANDOFF, state)
 
@@ -134,10 +117,7 @@ class DrivingMannerismsLayout(Widget):
     self._adaptive_accel.action_item.set_state(self._params.get_bool(NAPParamKeys.ADAPTIVE_ACCEL))
     follow_dist = self._params.get(NAPParamKeys.FOLLOW_DISTANCE, return_default=True)
     self._follow_buttons.action_item.set_selected_button(max(0, min(6, follow_dist - 1)))
-    hm_level = int(self._params.get(NAP_HYPERMILE_FOLLOW_LEVEL, return_default=True) or 3)
-    self._hypermile_follow.action_item.set_selected_button(max(0, min(4, hm_level - 1)))
-    self._follow_buttons.set_visible(not hypermile_on)
-    self._hypermile_follow.set_visible(hypermile_on)
+    self._follow_buttons.set_visible(True)
     self._lat_handoff.action_item.set_state(self._params.get_bool(NAP_DRIVER_LAT_HANDOFF))
 
   def show_event(self):
