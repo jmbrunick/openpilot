@@ -407,10 +407,9 @@ def personality_changed_alert(CP: car.CarParams, CS: car.CarState, sm: messaging
 
 
 def hypermile_follow_changed_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
-  from openpilot.selfdrive.controls.lib.hypermile import follow_level_hud_text, read_hypermile_params
+  from openpilot.selfdrive.controls.lib.hypermile import follow_distance_hud_text, read_follow_distance
   from openpilot.common.params import Params
-  _on, level = read_hypermile_params(Params())
-  return NormalPermanentAlert(follow_level_hud_text(level), duration=1.5)
+  return NormalPermanentAlert(follow_distance_hud_text(read_follow_distance(Params())), duration=1.5)
 
 
 def invalid_lkas_setting_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:

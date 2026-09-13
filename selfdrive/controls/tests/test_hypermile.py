@@ -1,4 +1,4 @@
-"""Hypermile phase 1+2: eco snap/restore, posted-scaled offset, speed-split follow."""
+"""Hypermile: eco snap/restore, posted-scaled offset, stock 1–7 stalk follow."""
 from types import SimpleNamespace
 
 from openpilot.common.constants import CV
@@ -10,34 +10,33 @@ from openpilot.selfdrive.controls.lib.hypermile import (
   ECO_MAP_OFFSET_MPH,
   ECO_OFFSET_FULL_MPH,
   ECO_OFFSET_START_MPH,
-  FOLLOW_LEVEL_DEFAULT,
-  LOW_SPEED_STOCK,
-  PARAM_FOLLOW_LEVEL,
+  FOLLOW_DISTANCE_DEFAULT,
+  FOLLOW_DISTANCE_MAX,
+  FOLLOW_DISTANCE_MIN,
+  PARAM_FOLLOW_DISTANCE,
   PARAM_HYPERMILE,
   PARAM_SAVED,
   PARAM_STEP_DOWN,
   STEP_DOWN_MPH,
-  SAFE_FLOOR_STOCK,
-  SPLIT_MS,
   apply_hypermile_toggle,
   button_event_closer,
-  consume_hypermile_stalk,
-  detect_hypermile_stalk,
+  consume_follow_stalk,
+  detect_follow_stalk,
   eco_map_offset_mph,
   eco_preset_from,
   effective_nap_follow_dist,
-  follow_level_hud_text,
-  hypermile_level_to_stock,
+  follow_distance_hud_text,
   map_target_offset_kph,
   maps_posted_known,
-  persist_follow_level,
+  persist_follow_distance,
+  read_follow_distance,
   read_hypermile_params,
   read_hypermile_step_down,
   step_down_applies,
   step_down_offset_mph,
   stepped_map_target_kph,
   stalk_adjusts_follow,
-  step_hypermile_level,
+  step_follow_distance,
 )
 from openpilot.selfdrive.controls.lib.lead_approach import NAP_T_FOLLOW
 
@@ -63,10 +62,9 @@ class FakeParams:
     self.ints.pop(key, None)
 
 
-def test_default_off_and_level_three():
-  on, level = read_hypermile_params(FakeParams())
-  assert on is False
-  assert level == FOLLOW_LEVEL_DEFAULT
+def test_default_off_and_stock_follow_four():
+  assert read_hypermile_params(FakeParams()) is False
+  assert read_follow_distance(FakeParams()) == FOLLOW_DISTANCE_DEFAULT
 
 
 def test_on_snaps_eco_and_off_restores_prior():
@@ -324,71 +322,68 @@ def test_hypermile_offsets_maps_only_no_invent_without_posted():
   ), user_minus_five)
 
 
-def test_le_50_uses_far_gap_gt_50_uses_stalk_level():
-  v_low = 50.0 * CV.MPH_TO_MS
-  v_high = 50.0 * CV.MPH_TO_MS + 0.1
-  assert abs(v_low - SPLIT_MS) < 1e-9
-  for level in range(1, 6):
-    assert effective_nap_follow_dist(True, 4, True, level, v_low) == LOW_SPEED_STOCK
-    assert effective_nap_follow_dist(True, 4, True, level, 0.0) == LOW_SPEED_STOCK
-    assert effective_nap_follow_dist(True, 4, True, level, v_high) == hypermile_level_to_stock(level)
-  # Off uses the stock 1–7 slider.
-  assert effective_nap_follow_dist(True, 4, False, 1, v_high) == 4
-  assert effective_nap_follow_dist(False, 4, True, 1, v_high) is None
+def test_effective_follow_is_stock_slider_hypermile_or_not():
+  """Hypermile no longer remaps follow — planner uses NAPFollowDistance 1–7."""
+  for dist in range(FOLLOW_DISTANCE_MIN, FOLLOW_DISTANCE_MAX + 1):
+    assert effective_nap_follow_dist(True, dist) == dist
+  # Invalid / missing slider → personality fallback.
+  assert effective_nap_follow_dist(True, 0) is None
+  assert effective_nap_follow_dist(True, 8) is None
+  assert effective_nap_follow_dist(True, None) is None
+  assert effective_nap_follow_dist(False, 4) is None
+  # Closest stock 1 is allowed (old Hypermile floor of 2 is gone).
+  assert effective_nap_follow_dist(True, 1) == 1
+  assert NAP_T_FOLLOW[0] < NAP_T_FOLLOW[1]
 
 
-def test_stalk_up_down_steps_one_to_five_and_persists():
-  params = FakeParams(bools={PARAM_HYPERMILE: True}, ints={PARAM_FOLLOW_LEVEL: 3})
-  assert step_hypermile_level(3, closer=True) == 2
-  assert step_hypermile_level(1, closer=True) == 1
-  assert step_hypermile_level(5, closer=False) == 5
-  assert persist_follow_level(params, closer=True) == 2
-  assert params.get(PARAM_FOLLOW_LEVEL) == 2
-  persist_follow_level(params, closer=True)
-  persist_follow_level(params, closer=True)
-  persist_follow_level(params, closer=True)
-  assert params.get(PARAM_FOLLOW_LEVEL) == 1
-  persist_follow_level(params, closer=False)
-  assert params.get(PARAM_FOLLOW_LEVEL) == 2
+def test_stalk_with_lead_writes_nap_follow_distance_on_and_off():
+  """Stalk + radar lead writes NAPFollowDistance whether Hypermile is On or Off."""
+  assert step_follow_distance(4, closer=True) == 3
+  assert step_follow_distance(1, closer=True) == 1
+  assert step_follow_distance(7, closer=False) == 7
+  assert stalk_adjusts_follow(has_lead=True) is True
+  assert stalk_adjusts_follow(has_lead=False) is False
 
-  level, undo = consume_hypermile_stalk(
-    params, has_lead=True, button_closer=False, raw_kph=100.0, prev_raw_kph=105.0,
-  )
-  assert level == 3
-  assert undo == 105.0
-  assert params.get(PARAM_FOLLOW_LEVEL) == 3
+  for hm_on in (False, True):
+    params = FakeParams(bools={PARAM_HYPERMILE: hm_on}, ints={PARAM_FOLLOW_DISTANCE: 4})
+    assert persist_follow_distance(params, closer=True) == 3
+    assert params.get(PARAM_FOLLOW_DISTANCE) == 3
+    persist_follow_distance(params, closer=True)
+    persist_follow_distance(params, closer=True)
+    persist_follow_distance(params, closer=True)
+    assert params.get(PARAM_FOLLOW_DISTANCE) == 1
+    persist_follow_distance(params, closer=False)
+    assert params.get(PARAM_FOLLOW_DISTANCE) == 2
 
-  # A Follow/posted MAX jump is not a 1/5 mph stalk step.
-  jump_level, jump_undo = consume_hypermile_stalk(
-    params, has_lead=True, button_closer=None, raw_kph=120.0, prev_raw_kph=100.0,
-  )
-  assert jump_level is None and jump_undo is None
+    level, undo = consume_follow_stalk(
+      params, has_lead=True, button_closer=False, raw_kph=100.0, prev_raw_kph=105.0,
+    )
+    assert level == 3
+    assert undo == 105.0
+    assert params.get(PARAM_FOLLOW_DISTANCE) == 3
 
-  # No lead: leave stalk as MAX (no write).
-  before = params.get(PARAM_FOLLOW_LEVEL)
-  none_level, none_undo = consume_hypermile_stalk(
-    params, has_lead=False, button_closer=True, raw_kph=110.0, prev_raw_kph=105.0,
-  )
-  assert none_level is None and none_undo is None
-  assert params.get(PARAM_FOLLOW_LEVEL) == before
-  assert stalk_adjusts_follow(hypermile_on=True, has_lead=False) is False
+    # A Follow/posted MAX jump is not a 1/5 mph stalk step.
+    jump_level, jump_undo = consume_follow_stalk(
+      params, has_lead=True, button_closer=None, raw_kph=120.0, prev_raw_kph=100.0,
+    )
+    assert jump_level is None and jump_undo is None
+    assert params.get(PARAM_FOLLOW_DISTANCE) == 3
 
 
-def test_safe_floor_never_uses_stock_one():
-  assert SAFE_FLOOR_STOCK == 2
-  assert hypermile_level_to_stock(1) >= SAFE_FLOOR_STOCK
-  for level in range(1, 6):
-    stock = hypermile_level_to_stock(level)
-    assert stock >= SAFE_FLOOR_STOCK
-    assert stock <= 6
-    t_follow = NAP_T_FOLLOW[stock - 1]
-    assert t_follow >= NAP_T_FOLLOW[SAFE_FLOOR_STOCK - 1]
-  far = NAP_T_FOLLOW[LOW_SPEED_STOCK - 1]
-  draft = NAP_T_FOLLOW[hypermile_level_to_stock(1) - 1]
-  assert far > draft
-  # High-speed band is tighter than the low-speed far gap.
-  v = 60.0 * CV.MPH_TO_MS
-  assert effective_nap_follow_dist(True, 4, True, 5, v) < LOW_SPEED_STOCK
+def test_stalk_no_lead_leaves_max_and_does_not_write_follow():
+  """No radar lead: stalk stays MAX / RES+/−. Follow Distance is not written."""
+  for hm_on in (False, True):
+    params = FakeParams(bools={PARAM_HYPERMILE: hm_on}, ints={PARAM_FOLLOW_DISTANCE: 4})
+    before = params.get(PARAM_FOLLOW_DISTANCE)
+    none_level, none_undo = consume_follow_stalk(
+      params, has_lead=False, button_closer=True, raw_kph=110.0, prev_raw_kph=105.0,
+    )
+    assert none_level is None and none_undo is None
+    assert params.get(PARAM_FOLLOW_DISTANCE) == before
+    is_stalk, closer, undo = detect_follow_stalk(
+      has_lead=False, button_closer=True, raw_kph=110.0, prev_raw_kph=105.0,
+    )
+    assert is_stalk is False and closer is None and undo is None
 
 
 def test_button_events_and_hud_text():
@@ -398,9 +393,9 @@ def test_button_events_and_hud_text():
   assert button_event_closer([up]) is True
   assert button_event_closer([down]) is False
   assert button_event_closer([release]) is None
-  assert follow_level_hud_text(3) == "Hypermile: Follow 3"
-  is_stalk, closer, undo = detect_hypermile_stalk(
-    FakeParams(bools={PARAM_HYPERMILE: True}, ints={PARAM_FOLLOW_LEVEL: 3}),
+  assert follow_distance_hud_text(3) == "Follow Distance: 3"
+  assert follow_distance_hud_text(1) == "Follow Distance: 1"
+  is_stalk, closer, undo = detect_follow_stalk(
     has_lead=True, button_closer=True, raw_kph=None, prev_raw_kph=None,
   )
   assert is_stalk is True and closer is True and undo is None
@@ -446,24 +441,39 @@ def test_settings_and_docs_wire_hypermile():
   assert "ECO_OFFSET_START_MPH" in hm_src
   assert '"NAPMapSpeedOffsetMph": ECO_MAP_OFFSET_MPH' not in hm_src
   assert "NAPHypermile" in keys
-  assert "NAPHypermileFollowLevel" in keys
+  assert "NAPHypermileFollowLevel" not in keys
+  assert "NAPHypermileFollowLevel" not in tici
+  assert "NAPHypermileFollowLevel" not in mici
+  assert "NAPHypermileFollowLevel" not in nap
+  assert "NAPHypermileFollowLevel" not in content
+  assert "Hypermile Follow" not in tici
+  assert "hypermile follow" not in mici
+  assert "set_visible(not hypermile_on)" not in tici
+  assert "FOLLOW_DISTANCE" in tici
+  assert "FOLLOW_DISTANCE" in mici
   assert "NAPHypermileStepDown" in keys
   assert "NAPHypermileHillClimb" in keys
   assert 'BOOL, "0"' in next(ln for ln in keys.splitlines() if '"NAPHypermileStepDown"' in ln)
   assert 'BOOL, "1"' in next(ln for ln in keys.splitlines() if '"NAPHypermileHillClimb"' in ln)
   assert 'BOOL, "0"' in next(ln for ln in keys.splitlines() if '"NAPHypermile"' in ln)
-  assert 'INT, "3"' in next(ln for ln in keys.splitlines() if '"NAPHypermileFollowLevel"' in ln)
+  assert "NAPFollowDistance" in keys
+  assert 'INT, "4"' in next(ln for ln in keys.splitlines() if '"NAPFollowDistance"' in ln)
   assert "effective_nap_follow_dist" in planner
-  assert "Stalk 1–5 must land on the next plan" in planner
-  assert "detect_hypermile_stalk" in card
+  assert "Stalk Follow Distance 1–7 must land on the next plan" in planner
+  assert "detect_follow_stalk" in card
+  assert "persist_follow_distance" in card
   assert "radarState" in card
   assert "hypermileFollowChanged" in events
-  assert "follow_level_hud_text" in events
+  assert "follow_distance_hud_text" in events
   assert "NAPHypermile" in content
   assert "comfort-biased" in content.lower()
   assert "not max" in content.lower()
+  assert "stock slider" in content.lower()
   assert "hypermile.md" in readme
   assert "Hypermile" in docs
+  assert "NAPHypermileFollowLevel" not in docs
+  assert "Follow Distance: N" in docs
+  assert "NAPFollowDistance" in docs
   assert "Step Down Speed" in docs
   assert "Hill Climb" in docs
   assert "15 mph under" in docs or "−15 at 80" in docs

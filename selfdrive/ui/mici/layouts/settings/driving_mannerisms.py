@@ -9,12 +9,8 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   FOLLOW_DISTANCE_DEFAULT,
   FOLLOW_DISTANCE_LABELS,
   FOLLOW_DISTANCE_VALUES,
-  HYPERMILE_FOLLOW_DEFAULT,
-  HYPERMILE_FOLLOW_LABELS,
-  HYPERMILE_FOLLOW_VALUES,
   NAP_DRIVER_LAT_HANDOFF,
   NAP_HYPERMILE,
-  NAP_HYPERMILE_FOLLOW_LEVEL,
   NAP_HYPERMILE_HILL_CLIMB,
   NAP_HYPERMILE_STEP_DOWN,
 )
@@ -49,16 +45,6 @@ class DrivingMannerismsLayoutMici(NavScroller):
       labels=FOLLOW_DISTANCE_LABELS,
       default_value=FOLLOW_DISTANCE_DEFAULT,
     )
-    follow_distance.set_visible(lambda: not self._params.get_bool(NAP_HYPERMILE))
-
-    hypermile_follow = BigMultiValueParamToggle(
-      "hypermile follow",
-      NAP_HYPERMILE_FOLLOW_LEVEL,
-      values=HYPERMILE_FOLLOW_VALUES,
-      labels=HYPERMILE_FOLLOW_LABELS,
-      default_value=HYPERMILE_FOLLOW_DEFAULT,
-    )
-    hypermile_follow.set_visible(lambda: self._params.get_bool(NAP_HYPERMILE))
 
     lat_handoff = BigParamControl("soft lateral handoff", NAP_DRIVER_LAT_HANDOFF)
     lat_handoff.set_value("On — free-wheel yield; Off if false-yield")
@@ -69,7 +55,6 @@ class DrivingMannerismsLayoutMici(NavScroller):
       hill_climb,
       adaptive_accel,
       follow_distance,
-      hypermile_follow,
       lat_handoff,
     ])
 

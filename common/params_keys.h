@@ -133,14 +133,15 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
 
     // NAP (NotAutopilot) Pre-AP Tesla params
     {"NAPBrakeFactor", {PERSISTENT, FLOAT, "1.0"}},
+    // Stock Follow Distance 1–7. Stalk behind a radar lead writes this
+    // (Hypermile On or Off). Driving Mannerisms slider stays visible.
     {"NAPFollowDistance", {PERSISTENT, INT, "4"}},
     // Settings → NAP → Driving Mannerisms → Hypermile. Default Off.
-    // On: comfort-biased eco-snap (Adaptive Accel, Cap/Follow, −5 mph,
+    // On: comfort-biased eco-snap (Adaptive Accel, Cap/Follow,
     // Early lookahead, Accel 1 lazy climb) — early light ease, not max
-    // regen bite. Restore those knobs on Off. Soft-lat / DM / blinker unchanged.
-    // FollowLevel is the stalk 1–5 draft band (persists across the drive).
+    // regen bite. Restore those knobs on Off. Soft-lat / DM / blinker /
+    // stock 1–7 Follow Distance unchanged (Hypermile does not own follow).
     {"NAPHypermile", {PERSISTENT, BOOL, "0"}},
-    {"NAPHypermileFollowLevel", {PERSISTENT, INT, "3"}},
     {"NAPHypermileSaved", {PERSISTENT, STRING}},
     // Opt-in mileage defer. Default Off. Inert unless Hypermile is On.
     // Lowers the Cap/Follow posted target by a fixed 15 mph (75→60).

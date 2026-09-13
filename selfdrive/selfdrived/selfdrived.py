@@ -126,7 +126,7 @@ class SelfdriveD:
     self.not_running_prev = None
     self.experimental_mode = False
     self.personality = self.params.get("LongitudinalPersonality", return_default=True)
-    self._hypermile_hud_level = None
+    self._follow_hud_dist = None
     self.recalibrating_seen = False
     self.dm_lockout_set = False
     self.dm_uncertain_alerted = False
@@ -499,20 +499,18 @@ class SelfdriveD:
         self.params.put('LongitudinalPersonality', self.personality)
         self.events.add(EventName.personalityChanged)
 
-    # Hypermile 1–5 HUD, same affordance as personalityChanged.
+    # Stock Follow Distance 1–7 HUD, same affordance as personalityChanged.
     try:
-      from openpilot.selfdrive.controls.lib.hypermile import read_hypermile_params
-      hm_on, hm_level = read_hypermile_params(self.params)
+      from openpilot.selfdrive.controls.lib.hypermile import read_follow_distance
+      follow_dist = read_follow_distance(self.params)
     except Exception:
-      hm_on, hm_level = False, None
-    if hm_on:
-      if self._hypermile_hud_level is not None and hm_level != self._hypermile_hud_level:
-        hm_evt = getattr(EventName, "hypermileFollowChanged", None)
-        if hm_evt is not None:
-          self.events.add(hm_evt)
-      self._hypermile_hud_level = hm_level
-    else:
-      self._hypermile_hud_level = None
+      follow_dist = None
+    if follow_dist is not None:
+      if self._follow_hud_dist is not None and follow_dist != self._follow_hud_dist:
+        follow_evt = getattr(EventName, "hypermileFollowChanged", None)
+        if follow_evt is not None:
+          self.events.add(follow_evt)
+      self._follow_hud_dist = follow_dist
 
   def data_sample(self):
     _car_state = messaging.recv_one(self.car_state_sock)
