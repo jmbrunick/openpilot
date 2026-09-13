@@ -1,3 +1,7 @@
+NAP Follow Distance stalk tip vs hold (2026-09-13)
+========================
+* Behind a radar lead, a Tesla stalk **tip / bump** (1 mph / 1 kph cruise step) adjusts stock Follow Distance 1–7 only and undoes that frame’s MAX / `pedal_speed` step (HUD **Follow Distance: N**). A **full press** (5 mph / 5 kph) keeps MAX +5/−5 and does not remap Follow Distance. No lead: tip and hold both still step MAX as stock. Pedal delta magnitude is the source of truth; a button-only edge without a clear 5 mph delta still counts as a tip. Hypermile does not own follow.
+
 NAP map climb vs lead + Follow HUD (2026-09-13)
 ========================
 * Under HUD MAX, map climb (`a_up` Accel 1–10) no longer **replaces** a non-negative MPC `aTarget` when a radar lead is valid. That overwrite pulled ego toward MAX through a slower/matched lead (hard punch while closing, then drop to ~48 and refuse to rematch 53–55). `map_track_decel` above MAX still mins in. Grade-hold `+g·sin` extras are also skipped while a lead constrains. Follow Distance HUD toast restored: stalk/settings 1–7 change shows **Follow Distance: N** for 1.5 s (`hypermileFollowChanged`, same WARNING+permanent affordance as personality). Grade-hold itself stays. Not a nap-release change.

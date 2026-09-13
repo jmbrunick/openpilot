@@ -11,7 +11,10 @@ from __future__ import annotations
 import json
 
 from openpilot.common.constants import CV
-from openpilot.selfdrive.mapd.map_speed_policy import is_cruise_stalk_step
+from openpilot.selfdrive.mapd.map_speed_policy import (
+  is_cruise_stalk_hold_step,
+  is_cruise_stalk_tip_step,
+)
 
 # Params
 PARAM_HYPERMILE = "NAPHypermile"
@@ -326,10 +329,10 @@ def apply_hypermile_toggle(params, want_on: bool) -> bool:
 
 
 def stalk_adjusts_follow(*, has_lead: bool) -> bool:
-  """Stalk +/- remaps stock Follow Distance 1–7 when a radar lead is present.
+  """Stalk tip remaps stock Follow Distance 1–7 when a radar lead is present.
 
-  Same whether Hypermile is On or Off. No lead: leave Pre-AP stalk as
-  MAX / cruise-speed adjust.
+  Same whether Hypermile is On or Off. Full press (5 mph) still steps MAX.
+  No lead: leave Pre-AP stalk as MAX / cruise-speed adjust.
   """
   return bool(has_lead)
 
@@ -360,11 +363,23 @@ def detect_follow_stalk(
   raw_kph: float | None,
   prev_raw_kph: float | None,
 ) -> tuple[bool, bool | None, float | None]:
-  """(is_follow_stalk, closer, undo_raw_kph). Does not write params."""
+  """(is_follow_stalk, closer, undo_raw_kph). Does not write params.
+
+  Lead + tip (~1 mph / ~1 kph / MPH_TO_KPH): remap Follow Distance and
+  undo that frame's MAX. Lead + full press (~5 mph / 5 kph / 5×kph):
+  leave MAX; not a follow stalk. Pedal delta magnitude is the source of
+  truth when present. Button-event-only edges (no clear 5 mph hold
+  delta) still count as a tip / bump — Pre-AP buttonEvents do not
+  distinguish tip vs hold.
+  """
   if not stalk_adjusts_follow(has_lead=has_lead):
     return False, None, None
+  have_raw = raw_kph is not None and prev_raw_kph is not None
+  # Full press: keep MAX +5/−5. Do not remap Follow Distance.
+  if have_raw and is_cruise_stalk_hold_step(prev_raw_kph, raw_kph):
+    return False, None, None
   delta = None
-  if raw_kph is not None and prev_raw_kph is not None and is_cruise_stalk_step(prev_raw_kph, raw_kph):
+  if have_raw and is_cruise_stalk_tip_step(prev_raw_kph, raw_kph):
     delta = float(raw_kph) - float(prev_raw_kph)
   closer = stalk_is_closer(button_closer, delta)
   if closer is None:
@@ -391,12 +406,13 @@ def consume_follow_stalk(
   prev_raw_kph: float | None,
   apply: bool = True,
 ) -> tuple[int | None, float | None]:
-  """If this stalk edge is a Follow Distance step, persist it and undo MAX.
+  """If this stalk edge is a Follow Distance tip, persist it and undo MAX.
 
   Returns (new_or_same_level, undo_raw_kph). undo_raw_kph is the previous
   MAX so card can write pedal_speed back. (None, None) means leave stalk
-  as MAX adjust. apply=False detects and returns the current level
-  without writing (card uses this during the 0.25 s stalk cooldown).
+  as MAX adjust (no lead, or a 5 mph full press). apply=False detects
+  and returns the current level without writing (card uses this during
+  the 0.25 s stalk cooldown).
   """
   is_stalk, closer, undo = detect_follow_stalk(
     has_lead=has_lead,
