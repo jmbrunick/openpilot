@@ -13,10 +13,7 @@ from openpilot.selfdrive.controls.lib.post_engage_coast import (
   PEDAL_DROP_DI,
   PEDAL_PRESSED_DI,
   POST_ENGAGE_COAST_S,
-  REPRESS_DI,
   PostEngageCoast,
-  cs_driver_pedal_di,
-  cs_lift_pedal_di,
   cs_pedal_di,
 )
 
@@ -47,7 +44,6 @@ def test_window_and_deadband_constants():
   assert PEDAL_PRESSED_DI == pytest.approx(2.0)
   # First detectable drop — not the 0.40 deadband that left early lift unprotected.
   assert 0.0 < PEDAL_DROP_DI <= 0.10
-  assert REPRESS_DI > PEDAL_DROP_DI
   assert CLIMB_FLOOR_MS2 > 0.0
 
 
@@ -112,21 +108,16 @@ def test_brake_still_decelerates_inside_window():
   assert not coast.should_hold_pedal(-0.55, brake_pressed=True)
 
 
-def test_after_1s_from_lift_still_climbs_until_max():
-  """#144 expired at 1 s and the car coasted 38→28. Climb stays until MAX."""
+def test_after_1s_from_lift_normal_regen_allowed():
   coast = _coast()
   _engage_with_gas(coast)
   _lift(coast)
-  steps = int(3.0 / DT_MDL)
-  accels = []
+  steps = int(POST_ENGAGE_COAST_S / DT_MDL) + 2
   for _ in range(steps):
     coast.update(long_engaged=True, gas_pressed=False, pedal_pos=0.0, a_ego=-0.20)
-    accels.append(coast.apply(-0.40, v_ego=17.0, v_cruise=25.0))
 
-  assert coast.active
-  assert all(a > 0.3 for a in accels)
-  # At MAX: drop the floor so normal long can cap / regen.
-  assert coast.apply(-0.40, v_ego=25.0, v_cruise=25.0) == pytest.approx(-0.40)
+  assert not coast.active
+  assert coast.apply(-0.40) == pytest.approx(-0.40)
 
 
 def test_engage_without_prior_gas_does_not_hold():
@@ -213,7 +204,7 @@ def test_long_drop_clears_window():
   assert not coast.active
 
 
-def test_controlsd_dt_stays_latched_past_one_second():
+def test_controlsd_dt_covers_full_second_from_lift():
   coast = PostEngageCoast(dt=DT_CTRL)
   coast.update(long_engaged=True, gas_pressed=True, pedal_pos=12.0, a_ego=0.80)
   for _ in range(int(0.99 / DT_CTRL)):
@@ -221,10 +212,9 @@ def test_controlsd_dt_stays_latched_past_one_second():
   assert coast.active
   assert coast.apply(-0.20) == pytest.approx(0.80)
 
-  for _ in range(int(2.0 / DT_CTRL)):
-    coast.update(long_engaged=True, gas_pressed=False, pedal_pos=0.0, a_ego=-0.20)
-  assert coast.active
-  assert coast.apply(-0.20) == pytest.approx(0.80)
+  coast.update(long_engaged=True, gas_pressed=False, pedal_pos=0.0)
+  coast.update(long_engaged=True, gas_pressed=False, pedal_pos=0.0)
+  assert not coast.active
 
 
 def test_zero_aego_while_pressed_still_climbs_on_lift():
@@ -244,16 +234,6 @@ def test_cs_pedal_di_prefers_interceptor_then_command():
   assert cs_pedal_di(SimpleNamespace(gasPressed=False)) == pytest.approx(0.0)
 
 
-def test_cs_driver_pedal_ignores_command_echo():
-  """ENABLE=1 command must not look like the driver is still on the gas."""
-  cs = SimpleNamespace(pedal_interceptor_value=0.0, pedal_command_di=14.0, gasPressed=False)
-  assert cs_driver_pedal_di(cs) == pytest.approx(0.0)
-  assert cs_lift_pedal_di(cs) == pytest.approx(0.0)
-  assert cs_pedal_di(cs) == pytest.approx(14.0)
-  cs_pressed = SimpleNamespace(pedal_interceptor_value=12.0, pedal_command_di=14.0, gasPressed=True)
-  assert cs_lift_pedal_di(cs_pressed) == pytest.approx(12.0)
-
-
 class _FakeTeslaCan:
   def __init__(self, replacement=None):
     self.calls = []
@@ -268,7 +248,6 @@ class _FakeTeslaCan:
 class _FakeVdas:
   def __init__(self):
     self.resets = []
-    self.updates = []
     self.prev_pedal_di = 0.0
 
   def reset(self, measured_accel=0.0, commanded_accel=0.0, pedal_di_init=0.0,
@@ -280,18 +259,6 @@ class _FakeVdas:
       "preserve_grade": preserve_grade,
     })
     self.prev_pedal_di = pedal_di_init
-
-  def update(self, a_cmd, v_ego, prev_pedal_di, a_ego=0.0, freeze_integrator=False,
-             orientation_ned=None):
-    # Modest climb step from the live seed — never a last-pressed stab.
-    out = max(float(prev_pedal_di), 3.0) + min(max(float(a_cmd), 0.0), 1.0) * 0.5
-    self.updates.append({
-      "a_cmd": a_cmd,
-      "prev_pedal_di": prev_pedal_di,
-      "out": out,
-    })
-    self.prev_pedal_di = out
-    return out
 
 
 def test_apply_held_pedal_rewrites_enabled_gas_command():
@@ -362,8 +329,7 @@ def test_climb_handoff_expires_grace_and_seeds_vdas_without_enable():
   assert controller.preap_long_handoff_slew_active is False
   assert vdas.resets
   assert vdas.resets[-1]["commanded_accel"] == pytest.approx(1.10)
-  # Seed from live command / interceptor, not last-pressed peak.
-  assert vdas.resets[-1]["pedal_di_init"] < 14.0 - REPRESS_DI
+  assert vdas.resets[-1]["pedal_di_init"] == pytest.approx(14.0)
 
 
 def test_climb_handoff_rewrites_grace_enable_then_lets_op_long_climb():
@@ -375,28 +341,21 @@ def test_climb_handoff_rewrites_grace_enable_then_lets_op_long_climb():
   tesla_can = _FakeTeslaCan()
   vdas = _FakeVdas()
   controller = SimpleNamespace(
-    prev_pedal_di=2.5,
+    prev_pedal_di=0.0,
     preap_long_engage_frame=50,
     preap_long_handoff_slew_active=True,
     vdas=vdas,
     _nap_climb_seeded=False,
   )
-  cs = SimpleNamespace(aEgo=-0.40, vEgo=17.0, pedal_command_di=0.0, pedal_command_counter=0,
-                       pedal_interceptor_value=0.0)
+  cs = SimpleNamespace(aEgo=-0.40, pedal_command_di=0.0, pedal_command_counter=0)
   sends = [(0x551, bytes([1, 2, 3, 4, 0x80, 5]), 2)]
 
-  # ACQUIRE frame (elapsed=0) is still in grace — rewrite the a=0 command
-  # with a climb DI, not last-pressed 14.
+  # ACQUIRE frame (elapsed=0) is still in grace — rewrite the a=0 command.
   assert hold_mod.apply_climb_handoff(
     controller, cs, tesla_can, sends, coast, frame=50,
     di_to_pedal=lambda di: di)
-  assert tesla_can.calls
-  written_di, enable = tesla_can.calls[0]
-  assert enable == 1
-  assert written_di < 14.0 - REPRESS_DI
-  assert written_di > 0.0
+  assert tesla_can.calls == [(14.0, 1)]
   assert vdas.resets[-1]["commanded_accel"] == pytest.approx(1.10)
-  assert vdas.resets[-1]["pedal_di_init"] == pytest.approx(2.5)
 
   tesla_can.calls.clear()
   vdas.resets.clear()
@@ -407,153 +366,6 @@ def test_climb_handoff_rewrites_grace_enable_then_lets_op_long_climb():
     di_to_pedal=lambda di: di)
   assert tesla_can.calls == []
   assert sends[0][1][0] == 9
-
-  tesla_can.calls.clear()
-  # Still-in-grace but not the ACQUIRE frame — do not rewrite (fight).
-  controller.preap_long_engage_frame = 50
-  sends = [(0x551, bytes([7, 7, 7, 7, 0x80, 5]), 2)]
-  assert hold_mod.apply_climb_handoff(
-    controller, cs, tesla_can, sends, coast, frame=60,
-    di_to_pedal=lambda di: di)
-  assert tesla_can.calls == []
-  assert sends[0][1][0] == 7
-
-
-def test_interceptor_chatter_does_not_unlatch_or_pulse():
-  """0.05 re-press on command echo / DI noise was the #144 pulse."""
-  coast = _coast()
-  _engage_with_gas(coast, pedal=14.0, a_ego=1.10)
-  _lift(coast, pedal=13.90, a_ego=-0.40)
-  assert coast.active
-
-  accels = []
-  # Interceptor echo of last-pressed, chatter around the peak, then command DI.
-  for di, gas in (
-    (14.02, False), (13.88, False), (14.05, False), (0.0, False),
-    (14.0, False), (3.5, False), (3.6, False), (3.4, False),
-    (14.1, False), (0.2, False),
-  ):
-    coast.update(long_engaged=True, gas_pressed=gas, pedal_pos=di, a_ego=-0.50)
-    a = coast.apply(-0.35, v_ego=17.0, v_cruise=25.0)
-    accels.append(a)
-    assert coast.active
-    assert a > 0.3, (di, a)
-
-  assert all(a == pytest.approx(1.10) for a in accels)
-
-
-def test_gas_override_then_lift_stays_smooth_climb():
-  """Every gasPressed falling edge while long is on must stay +a, not pulse.
-
-  Justin: not only first engage-on-gas. Manual accel, then OP long
-  handoff again, still pulse/pulse and speed wanders down.
-  """
-  coast = _coast()
-  _engage_with_gas(coast, pedal=14.0, a_ego=1.10)
-  _lift(coast, pedal=12.0, a_ego=-0.40)
-  assert coast.active
-
-  # Hard manual accel — must not unlatch / re-arm on the next lift.
-  for _ in range(10):
-    coast.update(long_engaged=True, gas_pressed=True, pedal_pos=16.0, a_ego=1.40)
-    assert coast.active
-    assert coast.apply(-0.25, v_ego=17.0, v_cruise=25.0) > 0.3
-
-  accels = []
-  for di in (12.5, 10.0, 3.0, 0.0, 3.4, 3.2, 0.0, 0.0):
-    coast.update(long_engaged=True, gas_pressed=False, pedal_pos=di, a_ego=-0.70)
-    a = coast.apply(-0.35, v_ego=17.0, v_cruise=25.0)
-    accels.append(a)
-    assert coast.active
-    assert a > 0.3, (di, a)
-  assert min(accels) > 0.3
-  assert all(a == pytest.approx(1.10) for a in accels)
-
-
-def test_gas_falling_edge_latches_without_analog_drop():
-  """Override → OP long: gasPressed falling edge is the handoff."""
-  coast = _coast()
-  coast.update(long_engaged=True, gas_pressed=True, pedal_pos=12.0, a_ego=1.00)
-  assert not coast.active
-  coast.update(long_engaged=True, gas_pressed=False, pedal_pos=12.0, a_ego=0.80)
-  assert coast.active
-  assert coast.apply(-0.30) == pytest.approx(1.00)
-
-
-def test_repeated_override_cycles_never_rear_m_or_flip_sign():
-  """Six manual-accel / lift cycles while long stays on — no pulse."""
-  coast = _coast()
-  _engage_with_gas(coast, pedal=14.0, a_ego=1.20)
-  _lift(coast, pedal=12.0, a_ego=-0.40)
-  accels = []
-  for _ in range(6):
-    for _ in range(5):
-      coast.update(long_engaged=True, gas_pressed=True, pedal_pos=18.0, a_ego=1.50)
-      accels.append(coast.apply(-0.40, v_ego=17.0, v_cruise=25.0))
-    for _ in range(8):
-      coast.update(long_engaged=True, gas_pressed=False, pedal_pos=0.0, a_ego=-0.90)
-      accels.append(coast.apply(-0.40, v_ego=17.0, v_cruise=25.0))
-    assert coast.active
-  assert all(a == pytest.approx(1.20) for a in accels)
-  assert min(accels) > 0.3
-
-
-def test_repeated_acquire_rewrites_climb_di_not_peak():
-  """ACQUIRE every other frame (gas chatter) must not restab last-pressed DI."""
-  from openpilot.selfdrive.car.tesla import preap_post_engage_hold as hold_mod
-
-  coast = _coast()
-  _engage_with_gas(coast, pedal=16.0, a_ego=1.30)
-  _lift(coast, pedal=15.0, a_ego=-0.60)
-  tesla_can = _FakeTeslaCan()
-  vdas = _FakeVdas()
-  controller = SimpleNamespace(
-    prev_pedal_di=2.0,
-    preap_long_engage_frame=10,
-    preap_long_handoff_slew_active=True,
-    vdas=vdas,
-    _nap_climb_seeded=False,
-  )
-  cs = SimpleNamespace(aEgo=-0.50, vEgo=17.0, pedal_command_di=0.0, pedal_command_counter=0,
-                       pedal_interceptor_value=0.0)
-  written = []
-  for frame in (10, 12, 14, 16):
-    controller.preap_long_engage_frame = frame
-    tesla_can.calls.clear()
-    sends = [(0x551, bytes([0, 0, 0, 0, 0x80, 0]), 2)]
-    assert hold_mod.apply_climb_handoff(
-      controller, cs, tesla_can, sends, coast, frame=frame,
-      di_to_pedal=lambda di: di)
-    assert tesla_can.calls, frame
-    written.append(tesla_can.calls[0][0])
-
-  assert len(written) == 4
-  assert all(di < 16.0 - REPRESS_DI for di in written)
-  assert all(di > 0.0 for di in written)
-  # No peak-stab / drop oscillation on the wire.
-  assert max(written) - min(written) < REPRESS_DI
-
-
-def test_safety_flicker_does_not_clear_climb_seed():
-  """One-frame MAX/lead flicker must not reset _nap_climb_seeded (re-seed pulse)."""
-  from openpilot.selfdrive.car.tesla import preap_post_engage_hold as hold_mod
-
-  controller = SimpleNamespace(_nap_climb_seeded=True)
-  coast = _coast()
-  _engage_with_gas(coast)
-  _lift(coast)
-  # Active + at MAX → should_hold false, but seed stays.
-  assert coast.active
-  assert not coast.should_hold_pedal(0.20, v_ego=25.0, v_cruise=25.0)
-  if not coast.active:
-    controller._nap_climb_seeded = False
-  assert controller._nap_climb_seeded is True
-  # Long drop clears.
-  coast.update(long_engaged=False)
-  if not coast.active:
-    controller._nap_climb_seeded = False
-  assert controller._nap_climb_seeded is False
-  assert hold_mod.ENGAGE_GRACE_FRAMES == 50
 
 
 def test_expire_engage_grace_clears_half_second_floor():
@@ -669,31 +481,6 @@ def test_planner_gas_release_after_engage_climbs_no_coast():
     v_ego += max(a, -1.1) * DT_MDL
 
 
-def test_planner_keeps_climbing_past_one_second_no_pulse():
-  """#144 dropped the overlay at 1 s; this must stay +a and not flip sign."""
-  v_ego = 17.0  # ~38 mph
-  v_cruise = 25.0
-  planner = _new_planner(v_ego, 1.0)
-
-  for _ in range(6):
-    _run(planner, v_ego=v_ego, v_cruise=v_cruise, a_ego=1.0, gas=True, long_on=True, pedal_di=14.0)
-    v_ego += 1.0 * DT_MDL
-
-  accels = []
-  frames = int(2.5 / DT_MDL)
-  for _ in range(frames):
-    a = _run(planner, v_ego=v_ego, v_cruise=v_cruise, a_ego=-0.8, gas=False, long_on=True, pedal_di=0.0)
-    accels.append(a)
-    assert planner._post_engage_coast.active
-    assert a > 0.3, a
-    v_ego += max(a, 0.0) * DT_MDL
-
-  assert all(a > 0.3 for a in accels)
-  # No coast/accel pulse: commanded a stays positive the whole window.
-  assert min(accels) > 0.3
-  assert v_ego > 17.0
-
-
 def test_planner_brake_inside_window_may_decelerate():
   planner = _new_planner(22.0, 0.8)
   for _ in range(4):
@@ -746,11 +533,11 @@ def test_planner_and_controlsd_wire_the_overlay():
   clip_at = planner.find("self.output_a_target = np.clip(output_a_target")
   assert 0 <= lead_at < coast_at < clip_at
   assert "hold_accel" in planner
-  assert "cs_lift_pedal_di" in planner
+  assert "cs_pedal_di" in planner
   assert "enableLongControl" in planner
   assert "PostEngageCoast" in controlsd
   assert "a_target = self._post_engage_coast.apply(" in controlsd
-  assert "cs_lift_pedal_di" in controlsd
+  assert "cs_pedal_di" in controlsd
   assert "1.0 s" in docs or "1 s" in docs
   assert "pedal" in docs.lower()
   assert "install_post_engage_hold" in card
@@ -758,5 +545,4 @@ def test_planner_and_controlsd_wire_the_overlay():
   assert "expire_engage_grace" in hold
   assert "seed_vdas_climb" in hold
   assert "apply_climb_handoff" in hold
-  assert "climb_command_di" in hold
   assert "commanded_accel=0" in hold
