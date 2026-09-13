@@ -1,6 +1,10 @@
+NAP Simulate Look / False Alert Ignore exclusive (2026-09-13)
+========================
+* Triple-tap **Simulate Look** and **False Alert Ignore** are **mutually exclusive** — only one may be On (both Off is allowed). Enabling one in the 3X / mici popup clears the other live. Turning FAI On aborts an in-flight glance hold; turning Simulate Look On stops the phone soft-clear path. DM/policy also resolve a stale both-On (old installs) on first read: **Simulate Look On / FAI Off**. nap-dev defaults: Simulate Look **On**, FAI **Off**. nap-release: both **Off**. Pose/eye timers and yaw thresholds unchanged.
+
 NAP False Alert Ignore (2026-09-13)
 ========================
-* Triple-tap NAP popup is now **Force Offroad**, **Simulate Look**, **False Alert Ignore** (third item). New `NAPDmFalseAlertIgnore` (default **On** on nap-dev; persistent like Simulate Look). While engaged, false **phone/device** distraction (`phoneProb` / phone bit) soft-clears on the same random **(1.0 s, 3.0 s]** cadence so a false “Driver Distracted” can recover without a real glance. **Pose** and **eye** still drain and alert — no hold / no awareness reset while those are alarming. Simulate Look no longer full-wipes `driver_distracted` (that was masking pose/eye); it only injects a no-face / uncertain glance. Simulate Look On + False Alert Ignore Off = stock phone detection. Hands-on ≥ 2 / stalk / door / reverse unchanged. Not a nap-release default-On change.
+* Triple-tap NAP popup is now **Force Offroad**, **Simulate Look**, **False Alert Ignore** (third item). New `NAPDmFalseAlertIgnore` (default **Off** on nap-dev so it is not On with Simulate Look; persistent like Simulate Look). While engaged, false **phone/device** distraction (`phoneProb` / phone bit) soft-clears on the same random **(1.0 s, 3.0 s]** cadence so a false “Driver Distracted” can recover without a real glance. **Pose** and **eye** still drain and alert — no hold / no awareness reset while those are alarming. Simulate Look no longer full-wipes `driver_distracted` (that was masking pose/eye); it only injects a no-face / uncertain glance. Simulate Look On + False Alert Ignore Off = stock phone detection. Hands-on ≥ 2 / stalk / door / reverse unchanged. Not a nap-release default-On change.
 
 NAP Force Offroad stock-CC handoff (2026-09-13)
 ========================

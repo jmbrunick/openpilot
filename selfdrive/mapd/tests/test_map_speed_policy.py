@@ -1345,7 +1345,7 @@ def test_driving_mannerisms_submenu_wires_params():
   assert "NAP_DM_SIMULATE_LOOKING" in nap
   assert "put_bool(NAP_DM_SIMULATE_LOOKING, True)" in nap
   assert "NAP_DM_FALSE_ALERT_IGNORE" in nap
-  assert "put_bool(NAP_DM_FALSE_ALERT_IGNORE, True)" in nap
+  assert "put_bool(NAP_DM_FALSE_ALERT_IGNORE, False)" in nap
   keys = (root / "common/params_keys.h").read_text()
   assert "NAPDmSimulateLooking" in keys
   assert "NAPDmFalseAlertIgnore" in keys

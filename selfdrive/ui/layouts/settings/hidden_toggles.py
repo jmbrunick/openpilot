@@ -2,13 +2,19 @@
 
 Opened by a NAP sidebar triple-tap. Not a full settings page and not part
 of Driving Mannerisms. Tap outside the card (primary), the X, Escape, or
-the NAP sidebar item again to dismiss.
+the NAP sidebar item again to dismiss. Simulate Look and False Alert
+Ignore are mutually exclusive — enabling one clears the other.
 """
 from collections.abc import Callable
 
 import pyray as rl
 
 from openpilot.common.params import Params
+from openpilot.selfdrive.monitoring.dm_toggles import (
+  apply_dm_false_alert_ignore,
+  apply_dm_simulate_looking,
+  read_exclusive_dm_toggles,
+)
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   DM_FALSE_ALERT_IGNORE_DESCRIPTION,
   DM_SIMULATE_LOOKING_DESCRIPTION,
@@ -78,15 +84,18 @@ class HiddenTogglesPopup(Widget):
     )
 
   def _on_dm_sim_looking(self, state):
-    self._params.put_bool(NAP_DM_SIMULATE_LOOKING, state)
+    apply_dm_simulate_looking(self._params, bool(state))
+    self._fai_item.action_item.set_state(self._params.get_bool(NAP_DM_FALSE_ALERT_IGNORE))
 
   def _on_false_alert_ignore(self, state):
-    self._params.put_bool(NAP_DM_FALSE_ALERT_IGNORE, state)
+    apply_dm_false_alert_ignore(self._params, bool(state))
+    self._dm_item.action_item.set_state(self._params.get_bool(NAP_DM_SIMULATE_LOOKING))
 
   def _on_force_offroad(self, state):
     apply_force_offroad_toggle(self._params, bool(state), started=bool(ui_state.started))
 
   def refresh(self):
+    read_exclusive_dm_toggles(self._params)
     self._dm_item.action_item.set_state(self._params.get_bool(NAP_DM_SIMULATE_LOOKING))
     self._fai_item.action_item.set_state(self._params.get_bool(NAP_DM_FALSE_ALERT_IGNORE))
     self._offroad_item.action_item.set_state(self._params.get_bool(NAP_FORCE_OFFROAD))

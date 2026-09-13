@@ -747,7 +747,7 @@ class NAPLayout(Widget):
     self._params.put_bool(NAP_SPEED_SIGN_LOG, False)
     self._params.put_bool(NAP_DRIVER_LAT_HANDOFF, True)
     self._params.put_bool(NAP_DM_SIMULATE_LOOKING, True)
-    self._params.put_bool(NAP_DM_FALSE_ALERT_IGNORE, True)
+    self._params.put_bool(NAP_DM_FALSE_ALERT_IGNORE, False)
     self._params.put_bool(NAP_HYPERMILE, False)
     self._params.put_bool(NAP_HYPERMILE_STEP_DOWN, False)
     self._params.put_bool(NAP_HYPERMILE_HILL_CLIMB, True)
