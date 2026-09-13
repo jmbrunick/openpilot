@@ -190,16 +190,36 @@ def is_manual_set_change(prev_kph: float, cur_kph: float) -> bool:
   return abs(float(cur_kph) - float(prev_kph)) > MANUAL_SET_EPS_KPH
 
 
+# Tesla stalk: tip/bump = 1 mph or 1 kph; full press/hold = 5 mph or 5 kph.
+# Metric 1 kph and imperial 1 mph are both single-step (~1.0 / MPH_TO_KPH).
+STALK_STEP_EPS_KPH = 0.55
+CRUISE_STALK_TIP_STEPS_KPH = (1.0, CV.MPH_TO_KPH)
+CRUISE_STALK_HOLD_STEPS_KPH = (5.0, 5.0 * CV.MPH_TO_KPH)
+
+
+def _matches_cruise_stalk_steps(prev_kph: float, cur_kph: float, steps: tuple[float, ...]) -> bool:
+  if not is_manual_set_change(prev_kph, cur_kph):
+    return False
+  delta = abs(float(cur_kph) - float(prev_kph))
+  return any(abs(delta - step) < STALK_STEP_EPS_KPH for step in steps)
+
+
+def is_cruise_stalk_tip_step(prev_kph: float, cur_kph: float) -> bool:
+  """True if delta matches a Tesla stalk tip / bump (1 mph or 1 kph)."""
+  return _matches_cruise_stalk_steps(prev_kph, cur_kph, CRUISE_STALK_TIP_STEPS_KPH)
+
+
+def is_cruise_stalk_hold_step(prev_kph: float, cur_kph: float) -> bool:
+  """True if delta matches a Tesla full press (5 mph or 5 kph)."""
+  return _matches_cruise_stalk_steps(prev_kph, cur_kph, CRUISE_STALK_HOLD_STEPS_KPH)
+
+
 def is_cruise_stalk_step(prev_kph: float, cur_kph: float) -> bool:
   """True if delta matches Tesla pedal stalk +/- (1 or 5 mph / kph).
 
   An ego / DI_digitalSpeed jump is not a stalk step and must not arm sticky.
   """
-  if not is_manual_set_change(prev_kph, cur_kph):
-    return False
-  delta = abs(float(cur_kph) - float(prev_kph))
-  steps = (1.0, 5.0, CV.MPH_TO_KPH, 5.0 * CV.MPH_TO_KPH)
-  return any(abs(delta - step) < 0.55 for step in steps)
+  return is_cruise_stalk_tip_step(prev_kph, cur_kph) or is_cruise_stalk_hold_step(prev_kph, cur_kph)
 
 
 def _ref_posted_kph(hold: MapCruiseHold, posted_kph: float | None) -> float | None:
