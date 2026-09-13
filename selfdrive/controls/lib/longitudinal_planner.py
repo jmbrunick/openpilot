@@ -31,7 +31,7 @@ from openpilot.selfdrive.mapd.map_speed_policy import (
 )
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
-from openpilot.selfdrive.controls.lib.post_engage_coast import PostEngageCoast, cs_pedal_di
+from openpilot.selfdrive.controls.lib.post_engage_coast import PostEngageCoast
 from openpilot.selfdrive.controls.lib.driver_lateral_handoff import cs_real_brake_pressed
 
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
@@ -159,15 +159,11 @@ class LongitudinalPlanner:
     v_ego = sm['carState'].vEgo
     if self._post_engage_coast is not None:
       # Software long (enableLongControl), not interceptor / longActive.
-      # Watch analog pedal (or gasPressed fallback). First decrease inside
-      # 1 s freezes last pressed DI / last +aEgo — not a speed/coast clamp.
-      cs = sm['carState']
-      gas = bool(cs.gasPressed)
+      # Gas override keeps enableLongControl true; the window starts at
+      # engage so a lift inside 1 s is a coast/hold, not a regen dip.
       self._post_engage_coast.update(
-        long_engaged=bool(getattr(cs, 'enableLongControl', False)),
-        gas_pressed=gas,
-        pedal_pos=cs_pedal_di(cs, gas_pressed=gas),
-        a_ego=float(cs.aEgo),
+        long_engaged=bool(getattr(sm['carState'], 'enableLongControl', False)),
+        gas_pressed=bool(sm['carState'].gasPressed),
       )
     v_cruise_kph = min(sm['carState'].vCruise, V_CRUISE_MAX)
     v_cruise = v_cruise_kph * CV.KPH_TO_MS
@@ -194,11 +190,11 @@ class LongitudinalPlanner:
       self.v_desired_filter.x = v_ego
       # Clip aEgo to cruise limits to prevent large accelerations when becoming active
       self.a_desired = np.clip(sm['carState'].aEgo, accel_clip[0], accel_clip[1])
-      # Gas-override reset seeds a_desired from live aEgo (often already
-      # the regen hole). Hold the last pressed +a so the first active
-      # plan does not invert or drop the interceptor to coast DI.
+      # Gas-override reset seeds a_desired from +aEgo. get_accel_from_plan
+      # then inverts that to a soft regen on lift. Hold 0 so the first
+      # active plan coasts or climbs to MAX instead of dipping.
       if self._post_engage_coast is not None and self._post_engage_coast.active:
-        self.a_desired = self._post_engage_coast.hold_accel
+        self.a_desired = 0.0
       self._lead_approach_active = False
       self._lead_approach_a = None
 
@@ -319,7 +315,7 @@ class LongitudinalPlanner:
       self._lead_approach_active = False
       self._lead_approach_a = None
 
-    # After lead / map: freeze last pressed accel, not a=0 coast.
+    # After lead / map: zero the soft "lift-off regen" only.
     # Lead-driven −a, FCW, should-stop, brake, and hard MPC stay as-is.
     if self._post_engage_coast is not None:
       output_a_target = self._post_engage_coast.apply(
@@ -328,8 +324,6 @@ class LongitudinalPlanner:
         fcw=bool(self.fcw),
         should_stop=bool(self.output_should_stop),
         has_lead=bool(sm['radarState'].leadOne.status),
-        v_ego=v_ego,
-        v_cruise=v_cruise,
       )
 
     for idx in range(2):

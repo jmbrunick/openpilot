@@ -24,7 +24,7 @@ from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, STEER_ANGLE_SATURATION_THRESHOLD
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl
-from openpilot.selfdrive.controls.lib.post_engage_coast import PostEngageCoast, cs_pedal_di
+from openpilot.selfdrive.controls.lib.post_engage_coast import PostEngageCoast
 from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 
@@ -186,15 +186,12 @@ class Controls:
     # accel PID loop
     pid_accel_limits = self.CI.get_pid_accel_limits(self.CP, CS.vEgo, CS.vCruise * CV.KPH_TO_MS)
     a_target = float(long_plan.aTarget)
-    # Same 1 s post-engage pedal hold as the planner. Catches a stale
+    # Same 1 s post-engage coast as the planner. Catches a stale
     # negative aTarget on the first longActive frame after gas lift.
     if self._post_engage_coast is not None:
-      gas = bool(CS.gasPressed)
       self._post_engage_coast.update(
         long_engaged=bool(getattr(CS, 'enableLongControl', False)),
-        gas_pressed=gas,
-        pedal_pos=cs_pedal_di(CS, gas_pressed=gas),
-        a_ego=float(CS.aEgo),
+        gas_pressed=bool(CS.gasPressed),
       )
       a_target = self._post_engage_coast.apply(
         a_target,
@@ -202,8 +199,6 @@ class Controls:
         fcw=bool(long_plan.fcw),
         should_stop=bool(long_plan.shouldStop),
         has_lead=bool(long_plan.hasLead),
-        v_ego=float(CS.vEgo),
-        v_cruise=float(CS.vCruise) * CV.KPH_TO_MS,
       )
     actuators.accel = float(self.LoC.update(CC.longActive, CS, a_target, long_plan.shouldStop, pid_accel_limits))
 
