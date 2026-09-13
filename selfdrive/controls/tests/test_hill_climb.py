@@ -25,6 +25,8 @@ from openpilot.selfdrive.controls.tests.test_hypermile import FakeParams
 from openpilot.selfdrive.mapd.constants import (
   LOOKAHEAD_EARLY,
   MODE_FOLLOW,
+  TRACK_DEADBAND_MS,
+  TRACK_TAPER_MS,
   map_accel_a_ms2,
 )
 from openpilot.selfdrive.mapd.map_speed_policy import map_track_accel_ms2
@@ -231,7 +233,7 @@ def test_crest_and_downhill_ease_direction():
 
 def test_never_raises_max_or_fights_lead_brake():
   v_cruise = 31.29
-  # At MAX: hold against gravity only — no Accel-1 leftover past MAX.
+  # At MAX / deadband: leave map hold (0). Do not invent +g·sin past MAX.
   hold = apply_hill_climb(
     pitch_rad=UPHILL_RAD,
     prev_pitch_rad=UPHILL_RAD,
@@ -243,7 +245,8 @@ def test_never_raises_max_or_fights_lead_brake():
     hill_climb_on=True,
   )
   extra = min(CLIMB_EXTRA_MAX_MS2, grade_load_ms2(UPHILL_RAD))
-  assert hold == pytest.approx(extra)
+  assert hold == pytest.approx(0.0)
+  assert hold < extra
   assert hold < climb_authority_ms2(FLAT_ACCEL_1, UPHILL_RAD)
 
   # Lead / MPC already braking: hill climb must not cancel it.
@@ -271,6 +274,117 @@ def test_never_raises_max_or_fights_lead_brake():
     hypermile_on=True,
     hill_climb_on=True,
   ) == hard
+
+
+def test_under_max_downhill_does_not_regen():
+  """~50 mph under a 54 MAX used to be TRACK_TAPER 'near MAX' and regen'd."""
+  v_cruise = 24.14  # ~54 mph (posted 55, Hypermile eco)
+  v_ego = 22.35     # ~50 mph — several mph under, inside old 2.0 m/s taper
+  assert TRACK_DEADBAND_MS < (v_cruise - v_ego) < TRACK_TAPER_MS
+
+  kwargs = dict(
+    pitch_rad=DOWNHILL_RAD,
+    prev_pitch_rad=0.0,
+    v_ego_ms=v_ego,
+    v_cruise_ms=v_cruise,
+    in_deadband=False,
+    hypermile_on=True,
+    hill_climb_on=True,
+  )
+  # MPC / tapered hold: leave 0. Do not invent crest/downhill regen.
+  assert apply_hill_climb(a_cmd=0.0, **kwargs) == pytest.approx(0.0)
+  # Positive climb leftover: reduce +a only (gravity already pulls to MAX).
+  eased_up = apply_hill_climb(a_cmd=0.30, **kwargs)
+  assert 0.0 <= eased_up < 0.30
+  # Flattening crest under MAX: still no regen.
+  crest = apply_hill_climb(
+    a_cmd=0.0,
+    pitch_rad=PITCH_CREST_RAD - 0.005,
+    prev_pitch_rad=UPHILL_RAD,
+    v_ego_ms=v_ego,
+    v_cruise_ms=v_cruise,
+    in_deadband=False,
+    hypermile_on=True,
+    hill_climb_on=True,
+  )
+  assert crest == pytest.approx(0.0)
+
+
+def test_deadband_uphill_does_not_overshoot():
+  """Deadband +g·sin used to fight hold 0, punch past MAX, Accel-5 hunt."""
+  v_cruise = 24.14
+  hold = apply_hill_climb(
+    pitch_rad=UPHILL_RAD,
+    prev_pitch_rad=UPHILL_RAD,
+    v_ego_ms=v_cruise,
+    v_cruise_ms=v_cruise,
+    a_cmd=0.0,
+    in_deadband=True,
+    hypermile_on=True,
+    hill_climb_on=True,
+  )
+  assert hold == pytest.approx(0.0)
+  assert hold < grade_load_ms2(UPHILL_RAD)
+
+
+def test_at_or_above_max_downhill_still_eases():
+  v_cruise = 24.14
+  down = apply_hill_climb(
+    pitch_rad=DOWNHILL_RAD,
+    prev_pitch_rad=0.0,
+    v_ego_ms=v_cruise,
+    v_cruise_ms=v_cruise,
+    a_cmd=0.0,
+    in_deadband=True,
+    hypermile_on=True,
+    hill_climb_on=True,
+  )
+  assert down < 0.0
+  assert down >= -DOWNHILL_EASE_MS2 - 1e-9
+  assert abs(down) < 0.55
+
+  # Slightly above MAX, outside deadband: light ease still allowed.
+  above = apply_hill_climb(
+    pitch_rad=DOWNHILL_RAD,
+    prev_pitch_rad=0.0,
+    v_ego_ms=v_cruise + TRACK_DEADBAND_MS + 0.05,
+    v_cruise_ms=v_cruise,
+    a_cmd=0.0,
+    in_deadband=False,
+    hypermile_on=True,
+    hill_climb_on=True,
+  )
+  assert above < 0.0
+  assert above >= -DOWNHILL_EASE_MS2 - 1e-9
+
+
+def test_under_max_uphill_still_has_climb_authority():
+  v_cruise = 24.14
+  v_ego = 20.0
+  extra = min(CLIMB_EXTRA_MAX_MS2, grade_load_ms2(UPHILL_RAD))
+  climb = apply_hill_climb(
+    pitch_rad=UPHILL_RAD,
+    prev_pitch_rad=UPHILL_RAD,
+    v_ego_ms=v_ego,
+    v_cruise_ms=v_cruise,
+    a_cmd=FLAT_ACCEL_1,
+    in_deadband=False,
+    hypermile_on=True,
+    hill_climb_on=True,
+  )
+  assert climb == pytest.approx(FLAT_ACCEL_1 + extra)
+  # From a hold, still add grade so Accel 1 leftover can walk toward MAX.
+  from_hold = apply_hill_climb(
+    pitch_rad=UPHILL_RAD,
+    prev_pitch_rad=UPHILL_RAD,
+    v_ego_ms=v_ego,
+    v_cruise_ms=v_cruise,
+    a_cmd=0.0,
+    in_deadband=False,
+    hypermile_on=True,
+    hill_climb_on=True,
+  )
+  assert from_hold == pytest.approx(extra)
 
 
 def test_planner_gates_and_uphill_authority():
@@ -359,6 +473,9 @@ def test_settings_and_docs_wire_hill_climb():
   assert "apply_hill_climb" in planner
   assert "maps-elevation lookahead" in planner
   assert "orientationNED" in planner
+  hill = (root / "selfdrive/controls/lib/hill_climb.py").read_text()
+  assert "TRACK_TAPER_MS" not in hill
+  assert "_at_or_above_max" in hill
   assert "NAPHypermileHillClimb" in content
   assert "Hill Climb" in docs
   assert "maps-elevation lookahead" in docs.lower() or "not included" in docs.lower()

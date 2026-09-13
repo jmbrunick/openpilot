@@ -281,8 +281,9 @@ class LongitudinalPlanner:
     # past MAX and map_track_decel below it. Brake is locked Accel 5.
     # Lead (negative aTarget) still wins.
     # Hypermile Hill Climb (IMU pitch only — no maps-elevation lookahead)
-    # then raises +a on a real uphill under MAX, or eases on crest/downhill.
-    # It never writes vCruise / MAX.
+    # then raises +a on a real uphill *under* MAX. Crest / downhill ease
+    # only at or above MAX (not TRACK_TAPER). Deadband leaves hold 0 —
+    # no +g·sin past MAX. It never writes vCruise / MAX.
     if len(sm['carControl'].orientationNED) == 3:
       hill_pitch = float(sm['carControl'].orientationNED[1])
     else:
