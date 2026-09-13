@@ -1,12 +1,10 @@
-<<<<<<< HEAD
-NAP Follow stalk tip vs full press (2026-09-13)
-========================
-* Behind a radar lead, a Pre-AP full stalk press (through 1st detent to 2nd / **5 mph**) no longer also steps Follow Distance. Follow commits only when the lever returns to **IDLE** after a first-detent **tip** (1 mph) that never hit 2nd detent; that tip frame’s MAX is still undone. Raw `SpdCtrlLvr_Stat` / CruiseButtons distinguish UP_1ST vs UP_2ND (and DN). `buttonEvents` alone are not a tip. No lead: stalk is still MAX only. Same tip/hold Follow rule as nap-dev. Not Hypermile. HUD still **Follow Distance: N**.
-=======
 NAP lead-follow comfort (2026-09-13)
 ========================
 * Pre-AP lead-approach hysteresis is a bit wider so occasional **bump-pull** (regen bite → rematch → bite) at the follow gap is less chatty. Enter `v_rel` **0.55** m/s (~1.2 mph), exit **0.12** m/s (~0.27 mph); was 0.50 / 0.20. Comfort peak **0.55**, onset slew **0.05**/frame, slack gates, and immediate release stay. Still closes onto Follow Distance 1–7. MPC / FCW / danger braking unchanged. Same tune as nap-dev; Hypermile is not ported.
->>>>>>> e37dd6611 (NAP: slightly wider lead-approach hysteresis (less rematch chatter))
+
+NAP Follow stalk tip vs full press (2026-09-13)
+========================
+* Behind a radar lead, a Pre-AP full stalk press (through 1st detent to 2nd / **5 mph**) no longer also steps Follow Distance. Follow commits only when the lever returns to **IDLE** after a first-detent **tip** (1 mph) that never hit 2nd detent; that tip frame’s MAX is still undone. Raw `SpdCtrlLvr_Stat` / CruiseButtons distinguish UP_1ST vs UP_2ND (and DN). `buttonEvents` alone are not a tip. No lead: stalk is still MAX only. Same tip/hold Follow rule as nap-dev. Not Hypermile. HUD still **Follow Distance: N**.
 
 NAP lead-approach earlier ease (2026-09-13)
 ========================
