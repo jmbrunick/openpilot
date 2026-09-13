@@ -37,8 +37,6 @@ from openpilot.selfdrive.controls.lib.hill_climb import (
 from openpilot.selfdrive.controls.lib.hypermile import (
   effective_nap_follow_dist, read_hypermile_params,
 )
-from openpilot.selfdrive.controls.lib.post_engage_coast import PostEngageCoast, cs_lift_pedal_di
-from openpilot.selfdrive.controls.lib.driver_lateral_handoff import cs_real_brake_pressed
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 
@@ -124,7 +122,6 @@ class LongitudinalPlanner:
     self._frame = 0
     self._lead_approach_active = False
     self._lead_approach_a = None
-    self._post_engage_coast = PostEngageCoast(dt=dt) if self._is_preap else None
 
     self.a_desired = init_a
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
@@ -175,18 +172,6 @@ class LongitudinalPlanner:
       accel_coast = ACCEL_MAX
 
     v_ego = sm['carState'].vEgo
-    if self._post_engage_coast is not None:
-      # Software long (enableLongControl), not interceptor / longActive.
-      # First pedal decrease after engage starts a climb-to-MAX handoff
-      # that stays until MAX (no a=0 coast / no last-pedal freeze / no 1 s drop).
-      cs = sm['carState']
-      gas = bool(cs.gasPressed)
-      self._post_engage_coast.update(
-        long_engaged=bool(getattr(cs, 'enableLongControl', False)),
-        gas_pressed=gas,
-        pedal_pos=cs_lift_pedal_di(cs, gas_pressed=gas),
-        a_ego=float(cs.aEgo),
-      )
     v_cruise_kph = min(sm['carState'].vCruise, V_CRUISE_MAX)
     v_cruise = v_cruise_kph * CV.KPH_TO_MS
     # HUD MAX after card's map overlay (seed / sticky / Follow override).
@@ -212,11 +197,6 @@ class LongitudinalPlanner:
       self.v_desired_filter.x = v_ego
       # Clip aEgo to cruise limits to prevent large accelerations when becoming active
       self.a_desired = np.clip(sm['carState'].aEgo, accel_clip[0], accel_clip[1])
-      # Gas-override reset seeds a_desired from live aEgo (often already
-      # the regen hole). Floor at the climb so the first active plan does
-      # not invert or sit at 0; planner +a may still go higher toward MAX.
-      if self._post_engage_coast is not None and self._post_engage_coast.active:
-        self.a_desired = max(float(self.a_desired), self._post_engage_coast.hold_accel)
       self._lead_approach_active = False
       self._lead_approach_a = None
 
@@ -383,19 +363,6 @@ class LongitudinalPlanner:
     else:
       self._lead_approach_active = False
       self._lead_approach_a = None
-
-    # After lead / map / hill: first lift climbs toward MAX, not a=0 coast.
-    # Lead-driven −a, FCW, should-stop, brake, and hard MPC stay as-is.
-    if self._post_engage_coast is not None:
-      output_a_target = self._post_engage_coast.apply(
-        output_a_target,
-        brake_pressed=cs_real_brake_pressed(sm['carState']),
-        fcw=bool(self.fcw),
-        should_stop=bool(self.output_should_stop),
-        has_lead=has_valid_lead,
-        v_ego=v_ego,
-        v_cruise=v_cruise,
-      )
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
