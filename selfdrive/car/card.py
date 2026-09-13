@@ -21,7 +21,8 @@ from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET, VCruiseHelper
 from openpilot.selfdrive.controls.lib.follow_stalk import (
-  STALK_COOLDOWN_S, button_event_closer, detect_follow_stalk, persist_follow_distance,
+  STALK_COOLDOWN_S, FollowStalkGesture, button_event_closer, button_event_released,
+  persist_follow_distance,
 )
 from openpilot.selfdrive.mapd.map_speed_policy import (
   MapCruiseHold, apply_map_speed_kph, decide_map_cruise, effective_map_limit_ms,
@@ -161,6 +162,7 @@ class Car:
     self._map_slew_ms: float | None = None
     self._last_pedal_kph: float | None = None
     self._follow_stalk_mono: float = 0.0
+    self._follow_gesture = FollowStalkGesture()
     self._map_speed_mode, self._map_speed_offset_kph, self._map_speed_lookahead, self._map_speed_accel = (
       read_map_speed_params(self.params)
     )
@@ -389,14 +391,34 @@ class Car:
     if eng is not None:
       eng._nap_held_max_kph = float(self._map_hold.held_max_kph)
 
+  def _preap_cruise_detent(self) -> int | None:
+    """Raw SpdCtrlLvr_Stat / CruiseButtons. Distinguishes tip vs 2nd detent."""
+    inner = getattr(self.CI, "CS", None)
+    if inner is None:
+      return None
+    if hasattr(inner, "cruise_buttons"):
+      try:
+        return int(inner.cruise_buttons)
+      except (TypeError, ValueError):
+        pass
+    msg = getattr(inner, "msg_stw_actn_req", None)
+    if isinstance(msg, dict):
+      try:
+        return int(msg.get("SpdCtrlLvr_Stat") or 0)
+      except (TypeError, ValueError):
+        return None
+    return None
+
   def _maybe_follow_stalk(self, CS, raw_kph: float) -> tuple[float, bool]:
     """Route Pre-AP stalk tip to stock Follow Distance 1–7 when a lead is present.
 
-    A 1 mph / 1 kph tip writes NAPFollowDistance and undoes that frame's
-    MAX / pedal_speed step. A 5 mph / 5 kph full press keeps MAX +5/−5.
-    No lead: leave stalk as MAX adjust. During a long pause,
-    cruiseState.speed is ego — only button edges remap follow (treated
-    as a tip unless a 5 mph delta is present).
+    A first-detent tip undoes that frame's 1 mph MAX and writes
+    NAPFollowDistance only after the lever returns to IDLE without a
+    2nd detent. A full press (2nd detent / 5 mph) keeps MAX +5/−5 and
+    does not remap Follow, even if the lever passed through first
+    detent. No lead: leave stalk as MAX adjust. During a long pause,
+    cruiseState.speed is ego — detent still distinguishes tip vs hold;
+    buttonEvents alone do not.
     """
     has_lead = bool(
       self.sm.valid.get("radarState", False)
@@ -408,24 +430,24 @@ class Car:
       prev_raw = float(self.CS_prev.cruiseState.speed) * CV.MS_TO_KPH
     except Exception:
       prev_raw = None
-    is_stalk, closer, undo = detect_follow_stalk(
-      self.params,
+    events = getattr(CS, "buttonEvents", None)
+    commit, closer, undo = self._follow_gesture.update(
       has_lead=has_lead,
-      button_closer=button_event_closer(getattr(CS, "buttonEvents", None)),
+      detent=self._preap_cruise_detent(),
+      button_closer=button_event_closer(events),
+      button_released=button_event_released(events),
       raw_kph=raw_kph if soft_long else None,
       prev_raw_kph=prev_raw if soft_long else None,
     )
-    if not is_stalk:
-      return raw_kph, False
-    now = time.monotonic()
-    if closer is not None and (now - self._follow_stalk_mono) >= STALK_COOLDOWN_S:
+    routed = commit or self._follow_gesture.is_pending or undo is not None
+    if commit and closer is not None and (time.monotonic() - self._follow_stalk_mono) >= STALK_COOLDOWN_S:
       persist_follow_distance(self.params, bool(closer))
-      self._follow_stalk_mono = now
+      self._follow_stalk_mono = time.monotonic()
     if undo is not None and soft_long:
       self._write_preap_pedal_speed(CS, undo)
       self._last_pedal_kph = float(undo)
       return float(undo), True
-    return raw_kph, True
+    return raw_kph, routed
 
   @staticmethod
   def _preap_stalk_set_pressed(CS) -> bool:
