@@ -437,13 +437,14 @@ class Car:
       eng._nap_held_max_kph = float(self._map_hold.held_max_kph)
 
   def _maybe_follow_stalk(self, CS, raw_kph: float) -> tuple[float, bool]:
-    """Route Pre-AP stalk +/- to stock Follow Distance 1–7 when a lead is present.
+    """Route Pre-AP stalk tip to stock Follow Distance 1–7 when a lead is present.
 
-    Same whether Hypermile is On or Off. Writes NAPFollowDistance so the
-    Driving Mannerisms slider updates live. Undoes that frame's MAX /
-    pedal_speed step so sticky / Follow overlay does not arm.
-    No lead: leave stalk as MAX adjust. During a long pause, cruiseState.speed
-    is ego — only button edges remap follow.
+    Same whether Hypermile is On or Off. A 1 mph / 1 kph tip writes
+    NAPFollowDistance and undoes that frame's MAX / pedal_speed step.
+    A 5 mph / 5 kph full press keeps MAX +5/−5. No lead: leave stalk as
+    MAX adjust. During a long pause, cruiseState.speed is ego — only
+    button edges remap follow (treated as a tip unless a 5 mph delta is
+    present).
     """
     has_lead = bool(
       self.sm.valid.get("radarState", False)

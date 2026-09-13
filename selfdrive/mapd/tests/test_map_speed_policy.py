@@ -8,7 +8,8 @@ from openpilot.selfdrive.mapd.constants import (
 from openpilot.selfdrive.mapd.map_speed_policy import (
   SOURCE_CRUISE, SOURCE_LEAD0, V_CRUISE_UNSET,
   MapCruiseHold, anticipatory_limit_ms, apply_map_speed_kph, cap_planner_v_cruise_ms,
-  decide_map_cruise, effective_map_limit_ms, is_cruise_stalk_step,
+  decide_map_cruise, effective_map_limit_ms, is_cruise_stalk_hold_step,
+  is_cruise_stalk_step, is_cruise_stalk_tip_step,
   longitudinal_obstacle_source, map_climb_replaces_mpc, map_in_track_deadband, map_slew_a_ms2,
   map_track_accel_ms2, map_track_decel_ms2, should_write_preap_pedal, slew_map_speed_ms,
 )
@@ -951,6 +952,15 @@ def test_cruise_stalk_step_is_1_or_5_not_ego_jump():
   assert is_cruise_stalk_step(a, a + 5.0)
   assert not is_cruise_stalk_step(a, 70 * CV.MPH_TO_KPH)
   assert not is_cruise_stalk_step(a, a)
+  # Tip vs hold: 1 mph / 1 kph / MPH_TO_KPH are tips; 5 mph / 5 kph are holds.
+  assert is_cruise_stalk_tip_step(a, a + 1 * CV.MPH_TO_KPH)
+  assert is_cruise_stalk_tip_step(a, a - 1.0)
+  assert not is_cruise_stalk_tip_step(a, a + 5 * CV.MPH_TO_KPH)
+  assert not is_cruise_stalk_tip_step(a, a + 5.0)
+  assert is_cruise_stalk_hold_step(a, a + 5 * CV.MPH_TO_KPH)
+  assert is_cruise_stalk_hold_step(a, a - 5.0)
+  assert not is_cruise_stalk_hold_step(a, a + 1 * CV.MPH_TO_KPH)
+  assert not is_cruise_stalk_hold_step(a, a - 1.0)
 
 
 def test_stalk_plus_minus_changes_set_without_button_events():

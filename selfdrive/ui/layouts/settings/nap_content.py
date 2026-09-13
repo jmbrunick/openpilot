@@ -37,8 +37,9 @@ HYPERMILE_DESCRIPTION = (
 FOLLOW_DISTANCE_DESCRIPTION = (
   "Follow distance (1=closest, 7=farthest). A slower car ahead starts a "
   + "gradual ease-off farther back (more distance, not a harder brake). "
-  + "Behind a radar lead, stalk up/down steps this instead of MAX. "
-  + "No lead: stalk still adjusts MAX. Same param with Hypermile On or Off."
+  + "Behind a radar lead, a stalk tip (1 mph) steps this instead of MAX; "
+  + "a full press (5 mph) still steps MAX. No lead: both still adjust MAX. "
+  + "Same param with Hypermile On or Off."
 )
 HYPERMILE_STEP_DOWN_DESCRIPTION = (
   "Default Off. Defer Speed for Range — only while Hypermile is On. "
