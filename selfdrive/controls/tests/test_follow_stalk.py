@@ -38,31 +38,75 @@ class FakeParams:
 
 def test_lead_present_stalk_writes_nap_follow_distance_and_undoes_max():
   params = FakeParams(follow=4)
+  # 1 kph tip + button: Follow Distance, undo MAX.
   level, undo = consume_follow_stalk(
-    params, has_lead=True, button_closer=True, raw_kph=105.0, prev_raw_kph=100.0,
+    params, has_lead=True, button_closer=True, raw_kph=101.0, prev_raw_kph=100.0,
   )
   assert level == 3
   assert params.get(PARAM_FOLLOW) == 3
   assert undo == 100.0
 
   level, undo = consume_follow_stalk(
-    params, has_lead=True, button_closer=False, raw_kph=100.0, prev_raw_kph=105.0,
+    params, has_lead=True, button_closer=False, raw_kph=99.0, prev_raw_kph=100.0,
   )
   assert level == 4
   assert params.get(PARAM_FOLLOW) == 4
-  assert undo == 105.0
+  assert undo == 100.0
 
 
 def test_no_lead_leaves_max_step_untouched():
   params = FakeParams(follow=4)
   before = params.get(PARAM_FOLLOW)
+  tip_prev = 65.0 * CV.MPH_TO_KPH
+  tip_cur = tip_prev + 1.0 * CV.MPH_TO_KPH
+  hold_cur = tip_prev + 5.0 * CV.MPH_TO_KPH
   level, undo = consume_follow_stalk(
-    params, has_lead=False, button_closer=True, raw_kph=105.0, prev_raw_kph=100.0,
+    params, has_lead=False, button_closer=True, raw_kph=tip_cur, prev_raw_kph=tip_prev,
   )
   assert level is None and undo is None
   assert params.get(PARAM_FOLLOW) == before
+  hold_level, hold_undo = consume_follow_stalk(
+    params, has_lead=False, button_closer=True, raw_kph=hold_cur, prev_raw_kph=tip_prev,
+  )
+  assert hold_level is None and hold_undo is None
+  assert params.get(PARAM_FOLLOW) == before
   assert stalk_adjusts_follow(has_lead=False) is False
   assert stalk_adjusts_follow(has_lead=True) is True
+
+
+def test_lead_tip_remaps_follow_hold_keeps_max():
+  """Lead + 1 mph tip → Follow Distance; lead + 5 mph hold → MAX kept."""
+  tip_prev = 65.0 * CV.MPH_TO_KPH
+  tip_cur = tip_prev + 1.0 * CV.MPH_TO_KPH
+  hold_cur = tip_prev + 5.0 * CV.MPH_TO_KPH
+
+  params = FakeParams(follow=4)
+  level, undo = consume_follow_stalk(
+    params, has_lead=True, button_closer=None, raw_kph=tip_cur, prev_raw_kph=tip_prev,
+  )
+  assert level == 3
+  assert undo == tip_prev
+  assert params.get(PARAM_FOLLOW) == 3
+
+  before = params.get(PARAM_FOLLOW)
+  hold_level, hold_undo = consume_follow_stalk(
+    params, has_lead=True, button_closer=None, raw_kph=hold_cur, prev_raw_kph=tip_prev,
+  )
+  assert hold_level is None and hold_undo is None
+  assert params.get(PARAM_FOLLOW) == before
+
+  # 5 mph + button edge: delta is source of truth — still MAX, not follow.
+  hold_level, hold_undo = consume_follow_stalk(
+    params, has_lead=True, button_closer=True, raw_kph=hold_cur, prev_raw_kph=tip_prev,
+  )
+  assert hold_level is None and hold_undo is None
+  assert params.get(PARAM_FOLLOW) == before
+
+  is_stalk, closer, undo = detect_follow_stalk(
+    FakeParams(follow=4),
+    has_lead=True, button_closer=True, raw_kph=hold_cur, prev_raw_kph=tip_prev,
+  )
+  assert is_stalk is False and closer is None and undo is None
 
 
 def test_full_stock_one_to_seven_including_closest():
@@ -98,10 +142,10 @@ def test_no_50_mph_forced_far_gap():
     _ = v_ego_mph * CV.MPH_TO_MS
     params = FakeParams(follow=1)
     level, undo = consume_follow_stalk(
-      params, has_lead=True, button_closer=False, raw_kph=100.0, prev_raw_kph=105.0,
+      params, has_lead=True, button_closer=False, raw_kph=99.0, prev_raw_kph=100.0,
     )
     assert level == 2
-    assert undo == 105.0
+    assert undo == 100.0
     assert params.get(PARAM_FOLLOW) == 2
 
 
@@ -133,7 +177,7 @@ def test_button_events_and_hud_text():
 def test_cooldown_detects_without_writing():
   params = FakeParams(follow=4)
   level, undo = consume_follow_stalk(
-    params, has_lead=True, button_closer=True, raw_kph=105.0, prev_raw_kph=100.0,
+    params, has_lead=True, button_closer=True, raw_kph=101.0, prev_raw_kph=100.0,
     apply=False,
   )
   assert level == 4
@@ -180,8 +224,11 @@ def test_card_and_hud_wire_stock_follow_only():
   assert "NAPFollowDistance" in helper or "PARAM_FOLLOW" in helper
   assert "NAPHypermile" not in helper
   assert "PARAM_HYPERMILE" not in helper
-  assert "stalk up/down steps this 1–7" in manner
-  assert "No lead: stalk still adjusts MAX" in manner
+  assert "steps this 1–7" in manner
+  assert "No lead:" in manner and "MAX" in manner
+  assert "1 mph" in helper or "tip" in helper
+  assert "5 mph" in helper or "hold" in helper
+  assert "1 mph" in docs and "5 mph" in docs
   assert "self.refresh()" in manner
   assert "self._follow_distance._load_value()" in manner_mici
   assert "def show_event" in manner_mici
