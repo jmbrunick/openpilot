@@ -100,7 +100,7 @@ def _places_from_pyosmium(pbf: str) -> PlaceIndex:
 
   class H(osmium.SimpleHandler):
     def area(self, a):
-      tags = {k: v for k, v in a.tags}
+      tags = dict(a.tags)
       if not is_urban_place_tags(tags):
         return
       rings = _area_outer_rings(a)
@@ -131,7 +131,7 @@ def _ways_from_pyosmium(
 
   class H(osmium.SimpleHandler):
     def way(self, w):
-      tags = {k: v for k, v in w.tags}
+      tags = dict(w.tags)
       highway = tags.get("highway") or ""
       if not highway:
         return
