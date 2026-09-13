@@ -80,8 +80,8 @@ def test_hidden_toggles_removed_from_normal_lists():
 
   assert 'self._add_toggle(\n      NAP_FORCE_OFFROAD' not in nap
   assert "Go Offline" not in nap
-  assert "simulate look" not in nap
-  assert "Simulate Look" not in nap
+  assert 'self._add_toggle(\n      NAP_DM_SIMULATE_LOOKING' not in nap
+  assert 'toggle_item(\n      "Simulate Look"' not in nap
   assert 'put_bool(NAP_FORCE_OFFROAD, False)' in nap
   # Reset-All on nap-release restores Simulate Look to Off (not nap-dev On).
   assert 'put_bool(NAP_DM_SIMULATE_LOOKING, False)' in nap
