@@ -7,6 +7,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   FOLLOW_DISTANCE_DEFAULT,
   FOLLOW_DISTANCE_LABELS,
   FOLLOW_DISTANCE_VALUES,
+  MAP_SPEED_ACCEL, MAP_SPEED_ACCEL_DEFAULT, MAP_SPEED_ACCEL_LABELS,
   NAP_DRIVER_LAT_HANDOFF,
 )
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys
@@ -16,6 +17,14 @@ class DrivingMannerismsLayoutMici(NavScroller):
   def __init__(self):
     super().__init__()
     adaptive_accel = BigParamControl("adaptive accel limits", NAPParamKeys.ADAPTIVE_ACCEL)
+
+    self._accel = BigMultiValueParamToggle(
+      "acceleration",
+      "NAPMapSpeedAccel",
+      values=list(MAP_SPEED_ACCEL),
+      labels=MAP_SPEED_ACCEL_LABELS,
+      default_value=MAP_SPEED_ACCEL_DEFAULT,
+    )
 
     self._follow_distance = BigMultiValueParamToggle(
       "follow distance",
@@ -30,12 +39,14 @@ class DrivingMannerismsLayoutMici(NavScroller):
 
     self._scroller.add_widgets([
       adaptive_accel,
+      self._accel,
       self._follow_distance,
       lat_handoff,
     ])
 
   def show_event(self):
     super().show_event()
+    self._accel._load_value()
     self._follow_distance._load_value()
 
 

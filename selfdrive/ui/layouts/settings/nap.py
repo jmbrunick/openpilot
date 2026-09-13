@@ -134,7 +134,7 @@ class NAPLayout(Widget):
     self._driving_mannerisms_btn = button_item(
       "Driving Mannerisms",
       "Open",
-      description="Adaptive accel limits, follow distance, and soft lateral handoff.",
+      description="Adaptive accel limits, acceleration, follow distance, and soft lateral handoff.",
       callback=self._open_driving_mannerisms,
     )
     self._main_items.append(self._driving_mannerisms_btn)
@@ -148,7 +148,7 @@ class NAPLayout(Widget):
     self._map_speed_btn = button_item(
       "Map Speed Limit",
       "Open",
-      description="OSM posted limits for HUD MAX — mode, offset, lookahead, acceleration, US download, and Refresh maps.",
+      description="OSM posted limits for HUD MAX — mode, offset, lookahead, US download, and Refresh maps.",
       callback=self._open_map_speed,
     )
     self._main_items.append(self._map_speed_btn)

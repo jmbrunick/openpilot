@@ -17,6 +17,13 @@ MAP_SPEED_LOOKAHEAD_LABELS = ["Off", "Late", "Normal", "Early"]
 MAP_SPEED_ACCEL = list(range(1, 11))
 MAP_SPEED_ACCEL_LABELS = [str(i) for i in MAP_SPEED_ACCEL]
 MAP_SPEED_ACCEL_DEFAULT = 5
+MAP_SPEED_ACCEL_DESCRIPTION = (
+  "Scales MAX climb and open-road accel feel (1 lazy → 10 quicker). "
+  + "Follow climb only — map climb does not punch through a lead. "
+  + "1=gentlest (0.36 m/s² at Normal), 5=0.80, 10=quickest (1.60, clamped). "
+  + "Brake to a lower MAX is locked at Accel 5 (0.80 m/s² at Normal). "
+  + "Lead still owns follow. A slower lead can still brake harder."
+)
 FOLLOW_DISTANCE_VALUES = list(range(1, 8))
 FOLLOW_DISTANCE_LABELS = [str(i) for i in FOLLOW_DISTANCE_VALUES]
 FOLLOW_DISTANCE_DEFAULT = 4
