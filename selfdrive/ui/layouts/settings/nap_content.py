@@ -43,11 +43,11 @@ DM_SIMULATE_LOOKING_DESCRIPTION = (
   + "as a real look — and hold until stock gradual recovery returns "
   + "awareness to full (not a one-frame pulse). Fire time is random in "
   + "the first 3 s of countdown (after 1 s, then within the next 2 s). "
-  + "Does not clear head-pose, eye, or phone alerts. Use False Alert "
-  + "Ignore for false device detection. Not a mute: stock DM still "
-  + "runs. Hands-on ≥ 2, stalk cancel, door, and reverse still "
-  + "hard-cancel. Always-on DM when not engaged is unchanged. Leave Off "
-  + "for no simulated glance."
+  + "Does not clear head-pose, eye, or phone alerts. Mutually exclusive "
+  + "with False Alert Ignore: turning this On turns that Off. Not a "
+  + "mute: stock DM still runs. Hands-on ≥ 2, stalk cancel, door, and "
+  + "reverse still hard-cancel. Always-on DM when not engaged is "
+  + "unchanged. Leave Off for no simulated glance."
 )
 DM_FALSE_ALERT_IGNORE_DESCRIPTION = (
   "Default Off on nap-release. While engaged, ignore false phone/device "
@@ -55,9 +55,10 @@ DM_FALSE_ALERT_IGNORE_DESCRIPTION = (
   + "Simulate Look. Soft-clears only the phone bit so a false device "
   + "“Driver Distracted” can recover without a real glance. Head-pose "
   + "looking-away and eye tracking still drain and alert — this does "
-  + "nothing while pose or eye are alarming. Hands-on ≥ 2, stalk, "
-  + "door, and reverse still hard-cancel. Leave Off for stock phone "
-  + "detection."
+  + "nothing while pose or eye are alarming. Mutually exclusive with "
+  + "Simulate Look: turning this On turns that Off (and aborts an "
+  + "in-flight glance). Hands-on ≥ 2, stalk, door, and reverse still "
+  + "hard-cancel. Leave Off for stock phone detection."
 )
 FORCE_OFFROAD_DESCRIPTION = (
   "WARNING: Forces the device offroad and disengages openpilot even while "
