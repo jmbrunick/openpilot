@@ -1,3 +1,7 @@
+NAP Follow Distance stalk (2026-09-13)
+========================
+* With a radar lead, stalk up/down steps stock Follow Distance **1–7** (`NAPFollowDistance`) — the same control as Settings → NAP → Driving Mannerisms. HUD shows **Follow Distance: N**. That frame's MAX / `pedal_speed` step is undone so sticky MAX does not arm. No lead: stalk still adjusts MAX / RES+/−. Full stock 1–7 including closest. Not Hypermile (no 1–5, Step Down, Hill Climb, eco offsets, or ≤50 far-gap).
+
 NAP hidden settings (2026-09-13)
 ========================
 * **Force Offroad / Go Offline** is no longer on the normal NAP list (3X + mici). Triple-tap **NAP** in Settings (3 taps in a 1.0 s sliding window) opens a side popup with **Force Offroad** then **Simulate Look**. Tap outside the card to dismiss (X / Escape / tap NAP again also work). Same `NAPForceOffroad` behavior.
