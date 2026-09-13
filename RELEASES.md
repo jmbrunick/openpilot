@@ -1,3 +1,7 @@
+NAP post-engage coast (2026-09-13)
+========================
+* Pre-AP pedal long: for **1.0 s** after `enableLongControl` rises, lifting the accelerator must not command soft regen / a speed dip before OP long climbs toward a higher MAX. Coast/hold (clamp soft −a to 0). Brake pedal, FCW / should-stop, and lead-driven decel (`|a| >= 0.55`) still apply. After 1 s, or engage with no gas in the window, behavior is unchanged. Does not write MAX / sticky / Follow. Planner + controlsd; pedal-layer 0.5 s engage grace is unchanged. Same as nap-dev.
+
 NAP Simulate Look / False Alert Ignore exclusive (2026-09-13)
 ========================
 * Triple-tap **Simulate Look** and **False Alert Ignore** are **mutually exclusive** — only one may be On (both Off is allowed). Enabling one in the 3X / mici popup clears the other live. Turning FAI On aborts an in-flight glance hold; turning Simulate Look On stops the phone soft-clear path. DM/policy also resolve a stale both-On (old installs) on first read: **Simulate Look On / FAI Off**. nap-dev defaults: Simulate Look **On**, FAI **Off**. nap-release: both **Off**. Pose/eye timers and yaw thresholds unchanged.
