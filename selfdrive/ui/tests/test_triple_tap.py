@@ -80,6 +80,7 @@ def test_hidden_toggles_removed_from_normal_lists():
   assert "Go Offline" not in nap
   assert "simulate look" not in nap
   assert 'put_bool(NAP_FORCE_OFFROAD, False)' in nap
+  assert "NAPForceOffroadConfirmed" in nap
   assert 'put_bool(NAP_DM_SIMULATE_LOOKING, True)' in nap
 
   assert 'BigParamControl("force offroad"' not in nap_mici
@@ -90,7 +91,8 @@ def test_hidden_toggles_removed_from_normal_lists():
   assert "[self._offroad_item, self._dm_item]" in popup
   assert "NAP_DM_SIMULATE_LOOKING" in popup
   assert "NAP_FORCE_OFFROAD" in popup
-  assert "is_offroad" not in popup
+  assert "apply_force_offroad_toggle" in popup
+  assert "set_enabled(ui_state.is_offroad)" not in popup
 
   assert "simulate look" in overlay
   assert "force offroad" in overlay

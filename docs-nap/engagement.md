@@ -24,6 +24,10 @@ Pre-AP has two modes depending on whether a Comma Pedal is installed. Mode is se
 
 Interface flags for this mode: `openpilotLongitudinalControl=True`, `pcmCruise=False`. Long planner runs; accel goes to pedal.
 
+**Stock CC vs pedal long:** on the rising edge of `enableLongControl` (and while DI stays **ENABLED** or **STANDBY**), card keeps `preap_cc_cancel_needed` until `di_cruise_state` is neither. One CANCEL from ENABLED typically lands in STANDBY; a second CANCEL takes it OFF. That closes the gap where stock CC stayed armed and could fight the pedal. `PreAPLongController` already one-shots CANCEL on long rising / falling / a stalk press — the persist-until-off path is in `preap_force_offroad_handoff.py`.
+
+**Force Offroad while software long is on:** on-road, a big **Yes / No** (**Ready to resume steering control?**) comes first. **No** clears the toggle and leaves long as it was. **Yes**, then do **not** drop `started` until stock CC is ENABLED at current speed (CANCEL → STANDBY → drop OP long → SET_ACCEL). See [force-offroad.md](force-offroad.md). The handoff suppresses the engage-kill so it can park DI in STANDBY and SET.
+
 **Follow Distance + Hypermile (nap-dev):** Settings → NAP → Driving Mannerisms. Behind a radar lead, a stalk **tip** (first detent, 1 mph / 1 kph) undoes that frame’s MAX and steps stock Follow Distance 1–7 (`NAPFollowDistance`) on return to IDLE; a **full press** (2nd detent, 5 mph / 5 kph) still steps MAX +5/−5 and does not remap Follow, even though the lever passes through first detent. Same whether Hypermile is On or Off. The Driving Mannerisms slider stays visible and updates live. No lead: tip and hold both still adjust MAX. Hypermile (default Off) is eco snap / Step Down / Hill Climb only; it does not own follow levels. Opt-in **Step Down Speed** (default Off) uses the same posted-scale as eco, larger drop (−15 at 80; town 30 stays 30); Follow stalk SET can still hold above that until posted changes. **Hill Climb** (default On, inert unless Hypermile is On) uses IMU pitch to hold Accel 1 on grades and ease over a crest — no maps-elevation lookahead. See [hypermile.md](hypermile.md). Soft-lat / DM / blinker / sticky MAX / one-SET / standstill gas-gate / reverse hard-cancel unchanged.
 
 ## No-pedal mode
@@ -189,7 +193,9 @@ Always-on DM when not engaged does **not** simulate. Toggle **Off** = stock DM w
 - `selfdrive/car/tesla/preap_blinker_lat_pause.py` — blinker lat pause / soft-lat gate (does not drop long on driver turn)
 - `opendbc_repo/opendbc/car/tesla/preap/carstate.py:120+` — button event pump + cruise state publish
 - `opendbc_repo/opendbc/car/tesla/preap/carcontroller.py:40+` — pedal TX + stalk spoof scheduling
+- `selfdrive/car/tesla/preap_force_offroad_handoff.py` — Force Offroad cancel→STANDBY→drop long→SET; kill stock CC on OP long engage
 - `opendbc_repo/opendbc/car/tesla/preap/tests/test_preap_engagement.py` — FSM tests (brake drop, steering disengage, double-pull)
+- `selfdrive/car/tesla/tests/test_preap_force_offroad_handoff.py` — handoff ordering + kill-on-long
 - `selfdrive/car/tesla/tests/test_preap_blinker_lat_pause.py` — blinker lat pause, latched turn keeps long, brake still drops long
 - `selfdrive/car/tesla/tests/test_preap_sticky_max.py` — sticky MAX across brake pause, one vs double SET, cancel
 - `selfdrive/monitoring/policy.py` — simulate looking (`NAPDmSimulateLooking`) on the stock vision looking-path
