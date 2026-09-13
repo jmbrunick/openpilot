@@ -24,6 +24,7 @@ from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, STEER_ANGLE_SATURATION_THRESHOLD
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl
+from openpilot.selfdrive.controls.lib.post_engage_coast import PostEngageCoast
 from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 
@@ -65,6 +66,10 @@ class Controls:
     self.calibrated_pose: Pose | None = None
 
     self.LoC = LongControl(self.CP)
+    self._post_engage_coast = None
+    if (self.CP.brand == "tesla" and self.CP.carFingerprint == "TESLA_MODEL_S_PREAP"
+        and self.CP.openpilotLongitudinalControl and not self.CP.pcmCruise):
+      self._post_engage_coast = PostEngageCoast(dt=DT_CTRL)
     self.VM = VehicleModel(self.CP)
     self.LaC: LatControl
     if self.CP.steerControlType == car.CarParams.SteerControlType.angle:
@@ -180,7 +185,22 @@ class Controls:
 
     # accel PID loop
     pid_accel_limits = self.CI.get_pid_accel_limits(self.CP, CS.vEgo, CS.vCruise * CV.KPH_TO_MS)
-    actuators.accel = float(self.LoC.update(CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop, pid_accel_limits))
+    a_target = float(long_plan.aTarget)
+    # Same 1 s post-engage coast as the planner. Catches a stale
+    # negative aTarget on the first longActive frame after gas lift.
+    if self._post_engage_coast is not None:
+      self._post_engage_coast.update(
+        long_engaged=bool(getattr(CS, 'enableLongControl', False)),
+        gas_pressed=bool(CS.gasPressed),
+      )
+      a_target = self._post_engage_coast.apply(
+        a_target,
+        brake_pressed=cs_real_brake_pressed(CS),
+        fcw=bool(long_plan.fcw),
+        should_stop=bool(long_plan.shouldStop),
+        has_lead=bool(long_plan.hasLead),
+      )
+    actuators.accel = float(self.LoC.update(CC.longActive, CS, a_target, long_plan.shouldStop, pid_accel_limits))
 
     # Steering PID loop and lateral MPC
     # Reset desired curvature to current to avoid violating the limits on engage.
