@@ -1,3 +1,7 @@
+NAP post-engage overlay stack revert (2026-09-13)
+========================
+* Removed the whole post-engage overlay stack for driveability: climb-to-MAX / climb-sustain (#144, #146), last-pressed pedal hold (#142), and the 1 s speed-coast (#136). Those paths added delay and an intrusive climb/pedal/`ENABLE` rewrite that surged / pulsed. Handoff is stock OP long again (no `post_engage_coast.py` / `preap_post_engage_hold.py`). Will revisit later with a lighter approach. Locationd safety unchanged.
+
 NAP Follow Distance HUD hold (2026-09-13)
 ========================
 * Stalk Follow Distance toast is held **1.5 s** (WARNING + PERMANENT) and a tip already at **1 or 7** still shows **Follow Distance: N** (`NAPFollowHudPending`). Fixes intermittent missing HUD when the one-frame param poll lost to another alert or a no-op write.
