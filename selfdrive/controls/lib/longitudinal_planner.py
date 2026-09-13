@@ -159,8 +159,8 @@ class LongitudinalPlanner:
     v_ego = sm['carState'].vEgo
     if self._post_engage_coast is not None:
       # Software long (enableLongControl), not interceptor / longActive.
-      # Watch analog pedal (or gasPressed fallback). First decrease inside
-      # 1 s freezes last pressed DI / last +aEgo — not a speed/coast clamp.
+      # First pedal decrease after engage starts a climb-to-MAX handoff
+      # (no a=0 coast / no last-pedal freeze).
       cs = sm['carState']
       gas = bool(cs.gasPressed)
       self._post_engage_coast.update(
@@ -195,10 +195,10 @@ class LongitudinalPlanner:
       # Clip aEgo to cruise limits to prevent large accelerations when becoming active
       self.a_desired = np.clip(sm['carState'].aEgo, accel_clip[0], accel_clip[1])
       # Gas-override reset seeds a_desired from live aEgo (often already
-      # the regen hole). Hold the last pressed +a so the first active
-      # plan does not invert or drop the interceptor to coast DI.
+      # the regen hole). Floor at the climb so the first active plan does
+      # not invert or sit at 0; planner +a may still go higher toward MAX.
       if self._post_engage_coast is not None and self._post_engage_coast.active:
-        self.a_desired = self._post_engage_coast.hold_accel
+        self.a_desired = max(float(self.a_desired), self._post_engage_coast.hold_accel)
       self._lead_approach_active = False
       self._lead_approach_a = None
 
@@ -319,7 +319,7 @@ class LongitudinalPlanner:
       self._lead_approach_active = False
       self._lead_approach_a = None
 
-    # After lead / map: freeze last pressed accel, not a=0 coast.
+    # After lead / map: first lift climbs toward MAX, not a=0 coast.
     # Lead-driven −a, FCW, should-stop, brake, and hard MPC stay as-is.
     if self._post_engage_coast is not None:
       output_a_target = self._post_engage_coast.apply(
