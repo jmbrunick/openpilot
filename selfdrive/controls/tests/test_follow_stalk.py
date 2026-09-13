@@ -6,12 +6,18 @@ from types import SimpleNamespace
 
 from openpilot.common.constants import CV
 from openpilot.selfdrive.controls.lib.follow_stalk import (
+  CRUISE_STALK_DN_1ST,
+  CRUISE_STALK_IDLE,
+  CRUISE_STALK_UP_1ST,
+  CRUISE_STALK_UP_2ND,
   FOLLOW_DEFAULT,
   FOLLOW_MAX,
   FOLLOW_MIN,
+  FollowStalkGesture,
   PARAM_FOLLOW,
   STALK_COOLDOWN_S,
   button_event_closer,
+  button_event_released,
   clamp_follow_distance,
   consume_follow_stalk,
   detect_follow_stalk,
@@ -36,22 +42,39 @@ class FakeParams:
     self._ints[key] = int(value)
 
 
+def _tip_then_idle(params, *, closer, raw_kph, prev_raw_kph, apply=True):
+  detent = CRUISE_STALK_UP_1ST if closer else CRUISE_STALK_DN_1ST
+  g = FollowStalkGesture()
+  press_level, press_undo = consume_follow_stalk(
+    params, has_lead=True, button_closer=closer, raw_kph=raw_kph, prev_raw_kph=prev_raw_kph,
+    detent=detent, gesture=g, apply=apply,
+  )
+  idle_level, idle_undo = consume_follow_stalk(
+    params, has_lead=True, button_closer=None, raw_kph=prev_raw_kph, prev_raw_kph=prev_raw_kph,
+    detent=CRUISE_STALK_IDLE, gesture=g, apply=apply,
+  )
+  return press_level, press_undo, idle_level, idle_undo
+
+
 def test_lead_present_stalk_writes_nap_follow_distance_and_undoes_max():
   params = FakeParams(follow=4)
-  # 1 kph tip + button: Follow Distance, undo MAX.
-  level, undo = consume_follow_stalk(
-    params, has_lead=True, button_closer=True, raw_kph=101.0, prev_raw_kph=100.0,
+  # 1 kph tip: undo MAX on press; Follow commits on return to IDLE.
+  press_level, press_undo, level, idle_undo = _tip_then_idle(
+    params, closer=True, raw_kph=101.0, prev_raw_kph=100.0,
   )
+  assert press_level is None
+  assert press_undo == 100.0
   assert level == 3
+  assert idle_undo is None
   assert params.get(PARAM_FOLLOW) == 3
-  assert undo == 100.0
 
-  level, undo = consume_follow_stalk(
-    params, has_lead=True, button_closer=False, raw_kph=99.0, prev_raw_kph=100.0,
+  press_level, press_undo, level, idle_undo = _tip_then_idle(
+    params, closer=False, raw_kph=99.0, prev_raw_kph=100.0,
   )
+  assert press_level is None
+  assert press_undo == 100.0
   assert level == 4
   assert params.get(PARAM_FOLLOW) == 4
-  assert undo == 100.0
 
 
 def test_no_lead_leaves_max_step_untouched():
@@ -81,11 +104,13 @@ def test_lead_tip_remaps_follow_hold_keeps_max():
   hold_cur = tip_prev + 5.0 * CV.MPH_TO_KPH
 
   params = FakeParams(follow=4)
-  level, undo = consume_follow_stalk(
-    params, has_lead=True, button_closer=None, raw_kph=tip_cur, prev_raw_kph=tip_prev,
+  press_level, press_undo, level, idle_undo = _tip_then_idle(
+    params, closer=True, raw_kph=tip_cur, prev_raw_kph=tip_prev,
   )
+  assert press_level is None
+  assert press_undo == tip_prev
   assert level == 3
-  assert undo == tip_prev
+  assert idle_undo is None
   assert params.get(PARAM_FOLLOW) == 3
 
   before = params.get(PARAM_FOLLOW)
@@ -141,11 +166,12 @@ def test_no_50_mph_forced_far_gap():
   for v_ego_mph in (30.0, 50.0, 65.0):
     _ = v_ego_mph * CV.MPH_TO_MS
     params = FakeParams(follow=1)
-    level, undo = consume_follow_stalk(
-      params, has_lead=True, button_closer=False, raw_kph=99.0, prev_raw_kph=100.0,
+    press_level, press_undo, level, idle_undo = _tip_then_idle(
+      params, closer=False, raw_kph=99.0, prev_raw_kph=100.0,
     )
+    assert press_level is None
+    assert press_undo == 100.0
     assert level == 2
-    assert undo == 100.0
     assert params.get(PARAM_FOLLOW) == 2
 
 
@@ -165,25 +191,94 @@ def test_button_events_and_hud_text():
   assert button_event_closer([up]) is True
   assert button_event_closer([down]) is False
   assert button_event_closer([release]) is None
+  assert button_event_released([release]) is True
+  assert button_event_released([up]) is False
   assert follow_distance_hud_text(3) == "Follow Distance: 3"
   assert follow_distance_hud_text(7) == "Follow Distance: 7"
   is_stalk, closer, undo = detect_follow_stalk(
     FakeParams(follow=4),
     has_lead=True, button_closer=True, raw_kph=None, prev_raw_kph=None,
   )
-  assert is_stalk is True and closer is True and undo is None
+  assert is_stalk is False and closer is None and undo is None
 
 
 def test_cooldown_detects_without_writing():
   params = FakeParams(follow=4)
-  level, undo = consume_follow_stalk(
-    params, has_lead=True, button_closer=True, raw_kph=101.0, prev_raw_kph=100.0,
-    apply=False,
+  press_level, press_undo, level, idle_undo = _tip_then_idle(
+    params, closer=True, raw_kph=101.0, prev_raw_kph=100.0, apply=False,
   )
+  assert press_level is None
+  assert press_undo == 100.0
   assert level == 4
-  assert undo == 100.0
   assert params.get(PARAM_FOLLOW) == 4
   assert STALK_COOLDOWN_S == 0.25
+
+
+def test_lead_tip_then_2nd_detent_keeps_max_and_does_not_remap_follow():
+  """Full press walks through first detent; Follow must not change."""
+  tip_prev = 65.0 * CV.MPH_TO_KPH
+  tip_cur = tip_prev + 1.0 * CV.MPH_TO_KPH
+  hold_cur = tip_prev + 5.0 * CV.MPH_TO_KPH
+  params = FakeParams(follow=4)
+  g = FollowStalkGesture()
+
+  level, undo = consume_follow_stalk(
+    params, has_lead=True, button_closer=True, raw_kph=tip_cur, prev_raw_kph=tip_prev,
+    detent=CRUISE_STALK_UP_1ST, gesture=g,
+  )
+  assert level is None
+  assert undo == tip_prev
+  assert params.get(PARAM_FOLLOW) == 4
+  assert g.is_pending is True
+
+  level, undo = consume_follow_stalk(
+    params, has_lead=True, button_closer=True, raw_kph=hold_cur, prev_raw_kph=tip_prev,
+    detent=CRUISE_STALK_UP_2ND, gesture=g,
+  )
+  assert level is None and undo is None
+  assert params.get(PARAM_FOLLOW) == 4
+
+  level, undo = consume_follow_stalk(
+    params, has_lead=True, button_closer=None, raw_kph=hold_cur, prev_raw_kph=hold_cur,
+    detent=CRUISE_STALK_IDLE, button_released=True, gesture=g,
+  )
+  assert level is None and undo is None
+  assert params.get(PARAM_FOLLOW) == 4
+
+
+def test_button_only_press_is_not_a_completed_tip():
+  """Pre-AP buttonEvents collapse tip and 2nd detent — press is not a tip."""
+  params = FakeParams(follow=4)
+  g = FollowStalkGesture()
+  is_stalk, closer, undo = detect_follow_stalk(
+    params, has_lead=True, button_closer=True, raw_kph=None, prev_raw_kph=None, gesture=g,
+  )
+  assert is_stalk is False and closer is None and undo is None
+  assert g.is_pending is True
+
+  level, undo = consume_follow_stalk(
+    params, has_lead=True, button_closer=None, raw_kph=None, prev_raw_kph=None,
+    button_released=True, gesture=g,
+  )
+  assert level == 3
+  assert params.get(PARAM_FOLLOW) == 3
+
+  g = FollowStalkGesture()
+  consume_follow_stalk(
+    params, has_lead=True, button_closer=True, raw_kph=None, prev_raw_kph=None, gesture=g,
+  )
+  before = params.get(PARAM_FOLLOW)
+  level, undo = consume_follow_stalk(
+    params, has_lead=True, button_closer=True, raw_kph=None, prev_raw_kph=None, gesture=g,
+  )
+  assert level is None
+  assert params.get(PARAM_FOLLOW) == before
+  level, undo = consume_follow_stalk(
+    params, has_lead=True, button_closer=None, raw_kph=None, prev_raw_kph=None,
+    button_released=True, gesture=g,
+  )
+  assert level is None
+  assert params.get(PARAM_FOLLOW) == before
 
 
 def test_card_and_hud_wire_stock_follow_only():
@@ -203,6 +298,8 @@ def test_card_and_hud_wire_stock_follow_only():
   assert "radarState" in card
   assert "stalk_pressed = (not follow_stalk) and self._preap_stalk_set_pressed(CS)" in card
   assert "STALK_COOLDOWN_S" in card
+  assert "FollowStalkGesture" in card
+  assert "_preap_cruise_detent" in card
   assert "persist_follow_distance" in card
   assert "_write_preap_pedal_speed(CS, undo)" in card
   assert "hypermile" not in card.lower()
