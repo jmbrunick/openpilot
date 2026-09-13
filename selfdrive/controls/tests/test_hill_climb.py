@@ -475,7 +475,8 @@ def test_planner_lead_still_wins_on_uphill():
   lead.status = True
   lead.dRel = d_rel
   lead.vLead = v_lead
-  planner.update(inputs)
+  for _ in range(16):
+    planner.update(inputs)
   assert planner.output_a_target < 0.0
   assert planner.output_a_target == pytest.approx(-LEAD_APPROACH_A_MS2, abs=0.08)
 

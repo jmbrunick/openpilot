@@ -1,3 +1,7 @@
+NAP lead-follow comfort (2026-09-13)
+========================
+* Pre-AP lead-approach overlay is smoother on a slight grade: enter/exit **hysteresis** on radar `v_rel` / slack so regen does not chatter on/off around the follow gap, comfort peak |a| is **0.55** (Early map, was Normal 0.80), and more-negative overlay `a` slews at **0.05**/frame. Off / milder `a` is immediate. MPC danger / hard brake / FCW unchanged. Map climb still does not replace MPC when a lead is present (#118). Grade-hold for no-lead uphills is unchanged. Not a nap-release change.
+
 NAP Follow Distance stalk tip vs hold (2026-09-13)
 ========================
 * Behind a radar lead, a Tesla stalk **tip / bump** (1 mph / 1 kph cruise step) adjusts stock Follow Distance 1–7 only and undoes that frame’s MAX / `pedal_speed` step (HUD **Follow Distance: N**). A **full press** (5 mph / 5 kph) keeps MAX +5/−5 and does not remap Follow Distance. No lead: tip and hold both still step MAX as stock. Pedal delta magnitude is the source of truth; a button-only edge without a clear 5 mph delta still counts as a tip. Hypermile does not own follow.
