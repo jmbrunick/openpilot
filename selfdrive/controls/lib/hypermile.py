@@ -19,6 +19,7 @@ from openpilot.selfdrive.mapd.map_speed_policy import (
 # Params
 PARAM_HYPERMILE = "NAPHypermile"
 PARAM_FOLLOW_DISTANCE = "NAPFollowDistance"
+PARAM_FOLLOW_HUD_PENDING = "NAPFollowHudPending"
 PARAM_SAVED = "NAPHypermileSaved"
 PARAM_STEP_DOWN = "NAPHypermileStepDown"
 
@@ -509,11 +510,19 @@ def detect_follow_stalk(
 
 
 def persist_follow_distance(params, closer: bool) -> int:
-  """Step and write `NAPFollowDistance` so Driving Mannerisms updates live."""
+  """Step and write `NAPFollowDistance` so Driving Mannerisms updates live.
+
+  Always sets NAPFollowHudPending so a tip at 1 or 7 still toasts the
+  current level (value-only poll would miss a no-op write).
+  """
   level = read_follow_distance(params)
   new_level = step_follow_distance(level, closer)
   if new_level != level:
     params.put(PARAM_FOLLOW_DISTANCE, int(new_level))
+  try:
+    params.put_bool(PARAM_FOLLOW_HUD_PENDING, True)
+  except Exception:
+    pass
   return new_level
 
 

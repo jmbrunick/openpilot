@@ -112,7 +112,7 @@ card.py writes `NAPFollowDistance` on tip-release so the Driving Mannerisms indi
 
 ### HUD
 
-When stock Follow Distance changes onroad, selfdrived fires `EventName.hypermileFollowChanged` — same 1.5 s `NormalPermanentAlert` affordance as Driving Personality: **Follow Distance: N**. First read seeds the HUD baseline (no toast at process start); every later stalk/settings 1–7 change shows the toast.
+When stock Follow Distance changes onroad, selfdrived fires `EventName.hypermileFollowChanged` — same 1.5 s `NormalPermanentAlert` affordance as Driving Personality: **Follow Distance: N**. First read seeds the HUD baseline (no toast at process start); every later stalk/settings 1–7 change shows the toast. A stalk tip already at 1 or 7 still requests the HUD (`NAPFollowHudPending`). The event is held ~1.5 s (WARNING + PERMANENT) so a one-frame poll does not miss the 3X.
 
 ## Safety
 

@@ -570,6 +570,33 @@ def test_follow_hud_announces_every_param_change_after_seed():
   assert prev is None and announce is False
 
 
+def test_persist_follow_marks_hud_pending_even_at_limit():
+  """Tip already at 1 or 7 still requests the Follow Distance HUD."""
+  from openpilot.selfdrive.controls.lib.hypermile import (
+    PARAM_FOLLOW_DISTANCE, PARAM_FOLLOW_HUD_PENDING, persist_follow_distance,
+  )
+
+  class P:
+    def __init__(self, level):
+      self.d = {PARAM_FOLLOW_DISTANCE: level, PARAM_FOLLOW_HUD_PENDING: False}
+    def get(self, key, return_default=True):
+      return self.d.get(key)
+    def put(self, key, value):
+      self.d[key] = value
+    def put_bool(self, key, value):
+      self.d[key] = bool(value)
+    def get_bool(self, key):
+      return bool(self.d.get(key))
+
+  p = P(1)
+  assert persist_follow_distance(p, closer=True) == 1
+  assert p.get(PARAM_FOLLOW_DISTANCE) == 1
+  assert p.get_bool(PARAM_FOLLOW_HUD_PENDING) is True
+  p = P(7)
+  assert persist_follow_distance(p, closer=False) == 7
+  assert p.get_bool(PARAM_FOLLOW_HUD_PENDING) is True
+
+
 def test_button_events_and_hud_text():
   up = SimpleNamespace(type=SimpleNamespace(name="accelCruise"), pressed=True)
   down = SimpleNamespace(type=SimpleNamespace(name="decelCruise"), pressed=True)
@@ -655,6 +682,9 @@ def test_settings_and_docs_wire_hypermile():
   assert "follow_distance_hud_text" in events
   assert "poll_follow_distance_hud" in selfdrived
   assert "NAPFollowDistance" in selfdrived
+  assert "NAPFollowHudPending" in selfdrived
+  assert "_follow_hud_until" in selfdrived
+  assert "NAPFollowHudPending" in keys
   assert "ET.PERMANENT: hypermile_follow_changed_alert" in events
   assert "NAPHypermile" in content
   assert "comfort-biased" in content.lower()

@@ -1,3 +1,7 @@
+NAP Follow Distance HUD hold (2026-09-13)
+========================
+* Stalk Follow Distance toast is held **1.5 s** (WARNING + PERMANENT) and a tip already at **1 or 7** still shows **Follow Distance: N** (`NAPFollowHudPending`). Fixes intermittent missing HUD when the one-frame param poll lost to another alert or a no-op write.
+
 NAP Simulate Look full wipe restore (2026-09-13)
 ========================
 * **Simulate Look On** is again the pre–False Alert Ignore full looking-path wipe on the existing **1–3 s** cadence (no-face / uncertain / phone / pose / eye). The FAI split had narrowed it to a no-face glance that still let phone/pose/eye nag. **False Alert Ignore On** (Sim Look Off) stays phone-only soft-clear; pose/eye still drain. Mutex unchanged. Hard cancels (hands-on ≥ 2 / stalk / door / reverse) unchanged. nap-dev defaults stay Simulate Look **On** / FAI **Off**. Same behavior as nap-release (defaults differ).

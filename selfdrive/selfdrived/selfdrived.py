@@ -127,6 +127,7 @@ class SelfdriveD:
     self.experimental_mode = False
     self.personality = self.params.get("LongitudinalPersonality", return_default=True)
     self._follow_hud_dist = None
+    self._follow_hud_until = 0.0
     self.recalibrating_seen = False
     self.dm_lockout_set = False
     self.dm_uncertain_alerted = False
@@ -527,7 +528,15 @@ class SelfdriveD:
       )
       if follow_dist is not None:
         self._follow_hud_dist = int(follow_dist)
+    try:
+      if self.params.get_bool("NAPFollowHudPending"):
+        announce = True
+        self.params.put_bool("NAPFollowHudPending", False)
+    except Exception:
+      pass
     if announce:
+      self._follow_hud_until = time.monotonic() + 1.5
+    if time.monotonic() < self._follow_hud_until:
       follow_evt = getattr(EventName, "hypermileFollowChanged", None) or getattr(EventName, "followDistanceChanged", None)
       if follow_evt is not None:
         self.events.add(follow_evt)
