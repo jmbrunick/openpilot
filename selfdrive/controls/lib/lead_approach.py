@@ -16,7 +16,8 @@ Justin: start that planned comfort ease / speed-match as soon as radar has
 reasonable feedback on a closing lead (`leadOne` valid and closing) — do not
 wait until late in the gap. Farther ceiling + longer head-start + a clear-
 close path (large slack is OK) so later brakes are not as hard. Still soft
-only; MPC / FCW win via min().
+only; MPC / FCW win via min(), except a far/gentle nibble must not
+steal lead-close catch-up +a.
 
 On a slight grade, radar `v_rel` / slack chatter around the follow gap used
 to snap this overlay on/off (regen bite → Accel-1 crawl → bite). Enter/exit
@@ -57,9 +58,9 @@ LEAD_APPROACH_MAX_HOLD_M = 8.0
 LEAD_APPROACH_RELIABLE_M = 140.0
 LEAD_APPROACH_MODEL_PROB_MIN = 0.50  # radard association gate
 # Clearly closing: skip the need window and ease from first reliable track.
-# Just above 1.0 so Accel-1 catch-up at v_rel=1.0 / large slack stays +a
-# (need window already off). ~2.3 mph. 10 mph closes still skip need.
-LEAD_APPROACH_CLEAR_DV_MS = 1.05
+# 2.5 m/s (~5.6 mph). 1.0 stole Accel-1 catch-up / Follow Distance close
+# (overlay min() beat +a while slack was still large). 10 mph still skips need.
+LEAD_APPROACH_CLEAR_DV_MS = 2.5
 
 # Enter / exit (hysteresis). A single v_rel / slack gate chatters around
 # the follow gap on a slight incline (regen ↔ Accel-1). First pass was
@@ -74,6 +75,9 @@ LEAD_APPROACH_NEED_HOLD_M = 4.0    # extra slack (m) before dropping after open
 # Gradual regen onset (planner frame). Same step as accel_clip slew.
 # At DT_MDL=0.05 s → 1.0 m/s²/s. Release / milder a is immediate.
 LEAD_APPROACH_SLEW_MS2 = 0.05
+# Softer than this is a nibble (matching-traffic / far slack, |a| ~0.06–0.13).
+# Catch-up +a may ignore it; real ease and MPC 0/−a still use min().
+LEAD_APPROACH_NIBBLE_MS2 = 0.15
 
 NAP_T_FOLLOW = (0.7, 0.9, 1.1, 1.3, 1.5, 1.7, 1.9)
 
@@ -166,6 +170,22 @@ def slew_lead_approach_a(target, prev, slew=LEAD_APPROACH_SLEW_MS2):
   if t < p:
     return max(t, p - float(slew))
   return t
+
+
+def apply_lead_approach_overlay(output_a, a_lead, nibble=LEAD_APPROACH_NIBBLE_MS2):
+  """Soft overlay via min(), except a nibble must not steal catch-up +a.
+
+  Matching-traffic / far-slack overlay sits at |a| ~0.06–0.13. That must
+  not beat lead-close +a (Follow Distance close / rematch). Real ease and
+  MPC 0 / −a still use min().
+  """
+  if a_lead is None:
+    return float(output_a)
+  out = float(output_a)
+  a = float(a_lead)
+  if out <= 0.0 or a <= -float(nibble):
+    return min(out, a)
+  return out
 
 
 def lead_approach_decel_ms2(v_ego, v_lead, d_rel, t_follow, a_comfort=LEAD_APPROACH_A_MS2,
