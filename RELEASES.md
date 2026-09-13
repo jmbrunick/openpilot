@@ -1,3 +1,7 @@
+NAP False Alert Ignore (2026-09-13)
+========================
+* Triple-tap NAP popup is now **Force Offroad**, **Simulate Look**, **False Alert Ignore** (third item). New `NAPDmFalseAlertIgnore` (default **Off** on nap-release; persistent like Simulate Look). While engaged and the toggle is On, false **phone/device** distraction (`phoneProb` / phone bit) soft-clears on the same random **(1.0 s, 3.0 s]** cadence. **Pose** and **eye** still drain and alert. Simulate Look no longer full-wipes `driver_distracted` (that was masking pose/eye); it only injects a no-face / uncertain glance. Both toggles stay Off until Justin enables them. Hands-on ≥ 2 / stalk / door / reverse unchanged.
+
 NAP lead-follow comfort (2026-09-13)
 ========================
 * Pre-AP lead-approach enter is a bit higher so occasional **bump-pull** (regen bite → rematch → bite) at the follow gap is less chatty. Enter `v_rel` **0.55** m/s (~1.2 mph); exit stays **0.20** (a 0.12 exit parked far back of Follow Distance). Clear-close skip is **1.05** m/s so Accel-1 catch-up at 1.0 m/s / large slack stays +a. Comfort peak **0.55**, onset slew **0.05**/frame, slack gates, and immediate release stay. Still closes onto Follow Distance 1–7. MPC / FCW / danger braking unchanged. Same tune as nap-dev; Hypermile is not ported.

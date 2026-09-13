@@ -169,13 +169,18 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // handsOnLevel >= 1; blend after ~80 ms hands-off. Hard brake
     // during yield fully cancels. Settings can turn Off.
     {"NAPDriverLatHandoff", {PERSISTENT, BOOL, "1"}},
-    // Pre-AP DM: while engaged, simulate looking on the stock vision
-    // attentive path. After drain past 1.0 s, fire at random in the
-    // next 2.0 s (fire in (1.0, 3.0] of that countdown). Hold until
-    // awareness recovers. Toggle Off = stock DM.
-    // Hidden: Settings → triple-tap NAP. Default Off on nap-release
-    // (stock DM until Justin enables it via the hidden toggle).
+    // Pre-AP DM: while engaged, no-face / uncertain glance on the stock
+    // vision path. After drain past 1.0 s, fire at random in the next
+    // 2.0 s (fire in (1.0, 3.0] of that countdown). Hold until
+    // awareness recovers. Does not wipe pose, eye, or phone.
+    // Hidden: Settings → triple-tap NAP. Default Off on nap-release.
     {"NAPDmSimulateLooking", {PERSISTENT, BOOL, "0"}},
+    // Pre-AP DM: soft-clear false phone/device distraction only
+    // (phoneProb / distracted_types phone). Same 1–3 s cadence as
+    // Simulate Look. Pose and eye still drain / alert. Triple-tap
+    // Settings → NAP (third item). Default Off on nap-release.
+    // PERSISTENT like Simulate Look (preference, not a session flag).
+    {"NAPDmFalseAlertIgnore", {PERSISTENT, BOOL, "0"}},
     // Settings → triple-tap NAP → Force Offroad. Default off. Not persistent: reboot
     // (manager start) and the next ignition ON clear it. Toggle Off and
     // Reset to Defaults also clear. When on, hardwared keeps started=false.

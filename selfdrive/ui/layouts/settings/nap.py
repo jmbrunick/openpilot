@@ -22,6 +22,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   DOWNLOAD_US_MAPS_INSTRUCTIONS,
   FLASH_EPAS_INSTRUCTIONS, PEDAL_CAN_BUS_VALUES,
   MAP_SPEED_ACCEL_DEFAULT,
+  NAP_DM_FALSE_ALERT_IGNORE,
   NAP_DM_SIMULATE_LOOKING,
   NAP_DRIVER_LAT_HANDOFF,
   NAP_FORCE_OFFROAD,
@@ -114,7 +115,7 @@ class NAPLayout(Widget):
     self._radar_items = []
     self._toggle_map = {}  # param_key -> ListItem (for refresh)
 
-    # Force Offroad / Simulate Look live in the NAP triple-tap popup.
+    # Force Offroad / Simulate Look / False Alert Ignore live in the NAP triple-tap popup.
 
     # ── Section 1: Longitudinal Control ──
     self._main_items.append(section_header_item("Longitudinal Control"))
@@ -672,6 +673,7 @@ class NAPLayout(Widget):
     self._params.remove("NAPMapSpeedDbPath")
     self._params.put_bool(NAP_DRIVER_LAT_HANDOFF, True)
     self._params.put_bool(NAP_DM_SIMULATE_LOOKING, False)
+    self._params.put_bool(NAP_DM_FALSE_ALERT_IGNORE, False)
     self._params.put_bool(NAP_FORCE_OFFROAD, False)
     self._page = "main"
     # Force Pre-AP is locked on in the panel but DEFAULTS keeps it off

@@ -192,7 +192,7 @@ class NAPLayoutMici(NavScroller):
     # always truthy — and silently leaves destructive actions clickable
     # while onroad.
 
-    # Force Offroad / simulate look live in the nap triple-tap overlay.
+    # Force Offroad / simulate look / false alert ignore live in the nap triple-tap overlay.
 
     # ── Longitudinal control ─────────────────────────
     pedal_enabled = BigParamControl("pedal interceptor", NAPParamKeys.PEDAL_ENABLED,

@@ -73,36 +73,49 @@ def test_hidden_toggles_removed_from_normal_lists():
   keys = (ROOT / "common/params_keys.h").read_text()
 
   assert "Simulate Look" not in tici_dm
+  assert "False Alert Ignore" not in tici_dm
   assert "Simulate Look-at-Road" not in tici_dm
   assert "NAP_DM_SIMULATE_LOOKING" not in tici_dm
+  assert "NAP_DM_FALSE_ALERT_IGNORE" not in tici_dm
   assert "simulate look" not in mici_dm
+  assert "false alert ignore" not in mici_dm
   assert "NAP_DM_SIMULATE_LOOKING" not in mici_dm
+  assert "NAP_DM_FALSE_ALERT_IGNORE" not in mici_dm
 
   assert 'self._add_toggle(\n      NAP_FORCE_OFFROAD' not in nap
   assert "Go Offline" not in nap
   assert 'self._add_toggle(\n      NAP_DM_SIMULATE_LOOKING' not in nap
   assert 'toggle_item(\n      "Simulate Look"' not in nap
   assert 'put_bool(NAP_FORCE_OFFROAD, False)' in nap
-  # Reset-All on nap-release restores Simulate Look to Off (not nap-dev On).
+  # Reset-All on nap-release restores hidden DM toggles to Off (not nap-dev On).
   assert 'put_bool(NAP_DM_SIMULATE_LOOKING, False)' in nap
   assert 'put_bool(NAP_DM_SIMULATE_LOOKING, True)' not in nap
+  assert 'put_bool(NAP_DM_FALSE_ALERT_IGNORE, False)' in nap
+  assert 'put_bool(NAP_DM_FALSE_ALERT_IGNORE, True)' not in nap
 
   assert 'BigParamControl("force offroad"' not in nap_mici
   assert "NAP_FORCE_OFFROAD" not in nap_mici
 
   assert '"Simulate Look"' in popup
+  assert '"False Alert Ignore"' in popup
   assert "Simulate Look-at-Road" not in popup
   assert "Force Offroad" in popup
-  assert "[self._offroad_item, self._dm_item]" in popup
+  assert "[self._offroad_item, self._dm_item, self._fai_item]" in popup
   assert "NAP_DM_SIMULATE_LOOKING" in popup
+  assert "NAP_DM_FALSE_ALERT_IGNORE" in popup
   assert "NAP_FORCE_OFFROAD" in popup
   assert "is_offroad" not in popup
+  assert popup.index('"Force Offroad"') < popup.index('"Simulate Look"')
+  assert popup.index('"Simulate Look"') < popup.index('"False Alert Ignore"')
 
   assert 'BigParamControl("simulate look"' in overlay
+  assert 'BigParamControl("false alert ignore"' in overlay
   assert "simulate look-at-road" not in overlay
   assert "force offroad" in overlay
   assert overlay.index('BigParamControl("force offroad"') < overlay.index('BigParamControl("simulate look"')
+  assert overlay.index('BigParamControl("simulate look"') < overlay.index('BigParamControl("false alert ignore"')
   assert "NAP_DM_SIMULATE_LOOKING" in overlay
+  assert "NAP_DM_FALSE_ALERT_IGNORE" in overlay
   assert "NAP_FORCE_OFFROAD" in overlay
   assert "set_enabled(ui_state.is_offroad)" not in overlay
 
@@ -120,6 +133,7 @@ def test_hidden_toggles_removed_from_normal_lists():
   assert "soft lateral handoff" in mici_dm
   assert "hypermile" not in mici_dm
 
-  line = next(ln for ln in keys.splitlines() if '"NAPDmSimulateLooking"' in ln)
-  assert 'BOOL, "0"' in line
-  assert "PERSISTENT" in line
+  for name in ('"NAPDmSimulateLooking"', '"NAPDmFalseAlertIgnore"'):
+    line = next(ln for ln in keys.splitlines() if name in ln)
+    assert 'BOOL, "0"' in line
+    assert "PERSISTENT" in line

@@ -86,7 +86,7 @@ Pre-AP `TurnIndLvr_Stat` is only IDLE / LEFT / RIGHT / SNA — no tip vs latch b
 
 ## Driver monitoring (simulate looking)
 
-Stock DM timers stay **3 / 5 / 11 s**. On nap-release while engaged, `NAPDmSimulateLooking` (**default Off**; Settings → triple-tap **NAP** within 1.0 s — not under Driving Mannerisms) waits until awareness has drained **past 1.0 s**, then fires a **held** simulated glance at a random time in the **next 2.0 s** (fire uniform in **(1.0 s, 3.0 s]** of that countdown) on the **same vision looking-path** a real look uses (`face_detected`, low pose std, distraction filter below 0.37) until stock gradual recovery returns awareness to **1.0**. After a full reset the same rule applies again. Leave Off = stock DM, no simulation (Justin wants stock until he enables it on this driving branch). Hard cancels (hands-on ≥ 2, stalk, door, reverse) are unchanged. See [engagement.md](engagement.md#driver-monitoring-simulate-looking).
+Stock DM timers stay **3 / 5 / 11 s**. Triple-tap **NAP** (1.0 s window; not under Driving Mannerisms) has three hidden toggles: **Force Offroad**, **Simulate Look**, **False Alert Ignore**. Both DM toggles default **Off** on nap-release (stock until Justin enables them) and share a cadence: drain **past 1.0 s**, then fire uniform in **(1.0 s, 3.0 s]**. `NAPDmSimulateLooking` injects a held glance only for **no-face / uncertain** — it does **not** wipe pose, eye, or phone. `NAPDmFalseAlertIgnore` soft-clears **phone/device** false positives only, and only when pose and eye are not alarming. Pose and eye still drain and alert. Hard cancels (hands-on ≥ 2, stalk, door, reverse) are unchanged. See [engagement.md](engagement.md#driver-monitoring-simulate-looking).
 
 ## OSM map speed (MAX)
 
