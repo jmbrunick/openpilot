@@ -136,6 +136,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Stock Follow Distance 1–7. Stalk behind a radar lead writes this
     // (Hypermile On or Off). Driving Mannerisms slider stays visible.
     {"NAPFollowDistance", {PERSISTENT, INT, "4"}},
+    // One-shot Follow Distance HUD. card sets on every stalk persist
+    // (including a tip already at 1 or 7). selfdrived consumes and
+    // holds the toast ~1.5 s. Not a preference.
+    {"NAPFollowHudPending", {CLEAR_ON_MANAGER_START, BOOL, "0"}},
     // Settings → NAP → Driving Mannerisms → Hypermile. Default Off.
     // On: comfort-biased eco-snap (Adaptive Accel, Cap/Follow,
     // Early lookahead, Accel 1 lazy climb) — early light ease, not max
