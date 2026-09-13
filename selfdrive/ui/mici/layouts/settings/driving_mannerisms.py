@@ -17,7 +17,7 @@ class DrivingMannerismsLayoutMici(NavScroller):
     super().__init__()
     adaptive_accel = BigParamControl("adaptive accel limits", NAPParamKeys.ADAPTIVE_ACCEL)
 
-    follow_distance = BigMultiValueParamToggle(
+    self._follow_distance = BigMultiValueParamToggle(
       "follow distance",
       NAPParamKeys.FOLLOW_DISTANCE,
       values=FOLLOW_DISTANCE_VALUES,
@@ -30,9 +30,13 @@ class DrivingMannerismsLayoutMici(NavScroller):
 
     self._scroller.add_widgets([
       adaptive_accel,
-      follow_distance,
+      self._follow_distance,
       lat_handoff,
     ])
+
+  def show_event(self):
+    super().show_event()
+    self._follow_distance._load_value()
 
 
 def open_driving_mannerisms_menu(page: DrivingMannerismsLayoutMici | None = None) -> DrivingMannerismsLayoutMici:

@@ -133,6 +133,7 @@ class SelfdriveD:
     self.rk = Ratekeeper(100, print_delay_threshold=None)
     self.prev_preap_chimes = PreAPChimeState()
     self.preap_regen_demand = RegenDemandCheck()
+    self._follow_hud_dist = None
 
     # Determine startup event
     self.startup_event = EventName.startup if build_metadata.openpilot.comma_remote and build_metadata.tested_channel else EventName.startupMaster
@@ -497,6 +498,18 @@ class SelfdriveD:
         self.personality = (self.personality - 1) % 3
         self.params.put('LongitudinalPersonality', self.personality)
         self.events.add(EventName.personalityChanged)
+
+    # Stock Follow Distance 1–7 HUD, same affordance as personalityChanged.
+    try:
+      follow = int(self.params.get("NAPFollowDistance", return_default=True) or 0)
+    except (TypeError, ValueError):
+      follow = None
+    if self._follow_hud_dist is not None and follow is not None and follow != self._follow_hud_dist:
+      follow_evt = getattr(EventName, "followDistanceChanged", None)
+      if follow_evt is not None:
+        self.events.add(follow_evt)
+    if follow is not None:
+      self._follow_hud_dist = follow
 
   def data_sample(self):
     _car_state = messaging.recv_one(self.car_state_sock)

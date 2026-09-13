@@ -68,11 +68,15 @@ HUD MAX is `CS.vCruise` / `pedal_speed_kph`. Policy lives in `MapCruiseHold` (`s
 | `last_posted_kph` | Last *known* OSM posted (+ offset). GPS/match drop does not clear it or invent a posted. |
 
 - **Maps on / posted known:** MAX rebases **only** when the posted value itself changes (e.g. 65→45 or 65→70), including while long-paused. Driver can hold 55 in a 65. Do not overwrite sticky toward posted every frame.
-- **Maps off / posted unknown:** MAX never auto-rebases. Never invent a posted value. GPS glitch → keep held MAX. Do not latch pause ego (`cruiseState.speed`) into held. Stalk +/- while long is active updates the MAX one SET will resume.
+- **Maps off / posted unknown:** MAX never auto-rebases. Never invent a posted value. GPS glitch → keep held MAX. Do not latch pause ego (`cruiseState.speed`) into held. Stalk +/- while long is active updates the MAX one SET will resume — **except** when a radar lead is present (see Follow Distance stalk below).
 - **One SET** (session already up, typical after long pause): resume long only; write `held_max_kph` (already rebased if posted changed). `resume_held` is a one-shot; `engage_rising` can arrive a frame later (`pedalLongActive` lags `enableLongControl`). That delayed rising edge must not take-now and overwrite a held MAX with current traveled speed. **At a stop** (`vEgo <= 0.3 m/s` / standstill — same floor as controlsd lat): one SET does **not** take long or creep from 0. It still means “I want resume” (held MAX is kept). A **light throttle / gas** touch then resumes at that held MAX. Rolling (not at stop): one-SET resume is unchanged. Double SET / forget-sticky / full engage unchanged unless a hard cancel already cleared them.
 - **Double SET:** forget sticky; maps+posted known → write current posted; else write current traveled speed. Same gesture from fully disengaged is initial engage.
 
 No-pedal / stock CC does not own software MAX. Brake does not pause NAP long (stock CC handles brake). Double-pull still engages lat; set speed stays with Tesla CC.
+
+### Follow Distance stalk (radar lead)
+
+When `radarState.leadOne` is present, Pre-AP stalk up/down steps stock Follow Distance **1–7** (`NAPFollowDistance`) — the same param as Settings → NAP → Driving Mannerisms → Follow Distance. Stalk up = closer (toward 1). Stalk down = farther (toward 7). Closest (1) is allowed. That frame’s MAX / `pedal_speed` step is written back so sticky MAX does not arm. HUD shows **Follow Distance: N** (`EventName.followDistanceChanged`). No lead: stalk stays MAX / RES+/−. This is not Hypermile (no 1–5, no ≤50 forced far gap). Helper: `selfdrive/controls/lib/follow_stalk.py`; remap lives in `card.py` (`_maybe_follow_stalk`).
 
 ## Steering disengage
 

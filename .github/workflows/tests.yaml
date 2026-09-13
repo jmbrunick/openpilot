@@ -47,6 +47,7 @@ jobs:
       run: |
         pytest -q -n 0 \
           selfdrive/controls/tests/test_following_distance.py \
+          selfdrive/controls/tests/test_follow_stalk.py \
           selfdrive/controls/tests/test_tesla_preap_following.py \
           selfdrive/controls/tests/test_tesla_preap_longcontrol.py \
           opendbc_repo/opendbc/car/tesla/preap/tests/test_longitudinal_tuning.py \

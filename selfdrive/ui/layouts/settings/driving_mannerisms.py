@@ -42,7 +42,8 @@ class DrivingMannerismsLayout(Widget):
       "Follow Distance",
       "Follow distance (1=closest, 7=farthest). A slower car ahead starts a " +
       "gradual ease-off farther back (more distance, not a harder brake). " +
-      "Overridden by cruise stalk if present.",
+      "With a radar lead, stalk up/down steps this 1–7 (up=closer). " +
+      "No lead: stalk still adjusts MAX.",
       buttons=["1", "2", "3", "4", "5", "6", "7"],
       button_width=80,
       selected_index=max(0, min(6, follow_dist - 1)),
@@ -78,4 +79,5 @@ class DrivingMannerismsLayout(Widget):
     self.refresh()
 
   def _render(self, rect):
+    self.refresh()
     self._scroller.render(rect)

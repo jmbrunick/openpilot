@@ -406,6 +406,13 @@ def personality_changed_alert(CP: car.CarParams, CS: car.CarState, sm: messaging
   return NormalPermanentAlert(f"Driving Personality: {personality}", duration=1.5)
 
 
+def follow_distance_changed_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
+  from openpilot.common.params import Params
+  from openpilot.selfdrive.controls.lib.follow_stalk import follow_distance_hud_text, read_follow_distance
+  level = read_follow_distance(Params())
+  return NormalPermanentAlert(follow_distance_hud_text(level), duration=1.5)
+
+
 def invalid_lkas_setting_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
   text = "Toggle stock LKAS on or off to engage"
   if CP.brand == "tesla":
@@ -1051,6 +1058,10 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
 
   EventName.personalityChanged: {
     ET.WARNING: personality_changed_alert,
+  },
+
+  EventName.followDistanceChanged: {
+    ET.WARNING: follow_distance_changed_alert,
   },
 
   EventName.pedalCruiseEnabled: {
