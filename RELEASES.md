@@ -1,3 +1,8 @@
+NAP hidden settings (2026-09-13)
+========================
+* **Force Offroad / Go Offline** is no longer on the normal NAP list (3X + mici). Triple-tap **NAP** in Settings (3 taps in a 1.0 s sliding window) opens a side popup with **Force Offroad** then **Simulate Look**. Tap outside the card to dismiss (X / Escape / tap NAP again also work). Same `NAPForceOffroad` behavior.
+* **Simulate Look** (`NAPDmSimulateLooking`) is new on nap-release and **defaults Off** (stock DM until Justin enables it via the hidden toggle — unlike nap-dev default On). Label is **Simulate Look**, not "Simulate Look-at-Road". While engaged, after drain past **1.0 s**, fire a held glance at a random time in the next **2.0 s** (**(1.0 s, 3.0 s]** of that countdown) on the stock vision looking-path until awareness recovers to 1.0. Orange / red stay stock **5 / 11 s** if the toggle is Off. Hands-on ≥ 2 / stalk / door / reverse hard cancels unchanged. Soft-lat / Driving Mannerisms unchanged. Hypermile is not ported.
+
 NAP blinker (2026-09-12)
 ========================
 * A latched driver-turn blinker no longer drops / pauses longitudinal. `enableLongControl` stays true through a held stalk / flash-latched turn; lead/map braking and accel still apply. Soft-lat On/Off lat behavior, brake silent long pause + sticky MAX + one SET / double SET, ALC tip/keep-alive, reverse hard-cancel, and standstill one-SET gas gate unchanged. Port of the nap-dev blinker long-keep.
@@ -45,7 +50,7 @@ NAP blinker (2026-09-10)
 
 NAP Force Offroad (2026-09-10)
 ========================
-* Settings → NAP → Force Offroad / Go Offline. Temporarily drops the device into offroad (started=false) while the car is still moving so Download US Maps, Refresh maps, and software install unlock. Stops openpilot — drive manually. Default Off. Clears on toggle Off, Reset to Defaults, reboot, or the next ignition ON. Optional / reversible: revert this PR, or delete the Force Offroad files + `NAPForceOffroad` param + hardwared hook + NAP UI toggle.
+* Settings → triple-tap NAP → Force Offroad / Go Offline. Temporarily drops the device into offroad (started=false) while the car is still moving so Download US Maps, Refresh maps, and software install unlock. Stops openpilot — drive manually. Default Off. Clears on toggle Off, Reset to Defaults, reboot, or the next ignition ON. Optional / reversible: revert this PR, or delete the Force Offroad files + `NAPForceOffroad` param + hardwared hook + hidden NAP UI toggle.
 
 NAP blinker (2026-09-09)
 ========================

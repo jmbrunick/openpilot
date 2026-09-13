@@ -22,6 +22,7 @@ FOLLOW_DISTANCE_LABELS = [str(i) for i in FOLLOW_DISTANCE_VALUES]
 FOLLOW_DISTANCE_DEFAULT = 4
 
 NAP_DRIVER_LAT_HANDOFF = "NAPDriverLatHandoff"
+NAP_DM_SIMULATE_LOOKING = "NAPDmSimulateLooking"
 NAP_FORCE_OFFROAD = "NAPForceOffroad"
 DRIVER_LAT_HANDOFF_DESCRIPTION = (
   "Default On. A light purposeful push with a hand on the rim frees "
@@ -32,6 +33,19 @@ DRIVER_LAT_HANDOFF_DESCRIPTION = (
   + "that yield fully cancels openpilot (chime); a light brake is still "
   + "the silent long pause + one SET. Gray chrome means lat yielded — "
   + "turn Off if rumble still false-yields. Off = stock lat, no yield."
+)
+DM_SIMULATE_LOOKING_DESCRIPTION = (
+  "Default Off on nap-release. Stock DM until you enable this via the "
+  + "hidden Settings → triple-tap NAP popup. While engaged, after the "
+  + "look-at-road timer has counted down about 1 s, simulate looking at "
+  + "the road — the same attentive path as a real glance — and hold that "
+  + "looking state until stock gradual recovery returns awareness to "
+  + "full (not a one-frame pulse). Fire time is random in the first 3 s "
+  + "of countdown (after 1 s, then within the next 2 s). After a full "
+  + "reset the same rule applies again. Not a mute: stock DM still "
+  + "runs. Hands-on ≥ 2, stalk cancel, door, and reverse still "
+  + "hard-cancel. Always-on DM when not engaged is unchanged. Leave Off "
+  + "for stock DM with no simulation."
 )
 FORCE_OFFROAD_DESCRIPTION = (
   "WARNING: Forces the device offroad and disengages openpilot even while "

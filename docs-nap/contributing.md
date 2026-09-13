@@ -15,6 +15,8 @@ Do not push sunnypilot-specific code (MADS, `CP_SP`, etc.) to `nap-dev` or `nap-
 
 Soft Lateral Handoff (`NAPDriverLatHandoff`) defaults **On** (Settings → NAP → Driving Mannerisms). Yield is a light purposeful push (torsion ≥ ~0.55 Nm / ~90 ms + hands) that **frees the EPS** (`latActive` false), not follow-measured angle hold. Rate is not an entry gate. Gravel spikes and low-torsion wind must not yield. Parking-lot blinker 1 s re-entry stays. Emergency/hard brake during yield fully cancels; light brake must keep the silent long-pause / one-SET path. Turn the toggle **Off** if false-yields remain.
 
+Simulate Look (`NAPDmSimulateLooking`) defaults **Off** on nap-release (stock DM until Justin enables it). Reveal it with Force Offroad via a **triple-tap on Settings → NAP** (3 taps within 1.0 s). While engaged, after drain is past **1.0 s**, fire a held glance at a random time in the next **2.0 s** (**(1.0 s, 3.0 s]** of that countdown) until awareness recovers to 1.0. Same rule after each full reset. Not a mute. Leave **Off** for stock DM. Hypermile stays nap-dev-only.
+
 ## Submodules
 
 `panda` and `opendbc_repo` use NotAutopilot forks. After checkout:

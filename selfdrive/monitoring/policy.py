@@ -1,14 +1,19 @@
 from collections import defaultdict
 from math import atan2, radians
+import math
+import random
 import numpy as np
 
 from cereal import car, log
-import cereal.messaging as messaging
 from openpilot.common.realtime import DT_DMON
 from openpilot.common.filter_simple import FirstOrderFilter
-from openpilot.common.params import Params
 from openpilot.common.stat_live import RunningStatFilter
 from openpilot.common.transformations.camera import DEVICE_CAMERAS
+
+try:
+  from openpilot.common.params import Params
+except Exception:  # params_pyx not built in some unit-test hosts
+  Params = None
 
 AlertLevel = log.DriverMonitoringState.AlertLevel
 MonitoringPolicy = log.DriverMonitoringState.MonitoringPolicy
@@ -21,6 +26,57 @@ def to_percent(v):
 #  Disabling or nerfing safety features will get you and your users banned from our servers.
 #  We recommend that you do not change these numbers from the defaults.
 # ******************************************************************************************
+
+# NAP: simulate looking at the road so stock awareness recovers on the
+# same vision path as a real glance. Hidden: Settings → triple-tap NAP.
+# Default Off on nap-release (stock DM until Justin enables it).
+# After drain starts: wait past 1.0 s, then fire at a random time in
+# the next 2.0 s — fire time uniform in (1.0 s, 3.0 s]. Hold looking
+# until gradual recovery returns awareness to 1.0. After a full reset
+# the same rule applies to the next countdown. Toggle Off = stock DM.
+# Hands-on ≥ 2 / stalk / door / reverse hard cancels are unchanged.
+PARAM_DM_SIMULATE_LOOKING = "NAPDmSimulateLooking"
+LOOK_SIM_COUNTDOWN_MIN_S = 1.0
+LOOK_SIM_RANDOM_WINDOW_S = 2.0
+LOOK_SIM_FIRE_MAX_S = LOOK_SIM_COUNTDOWN_MIN_S + LOOK_SIM_RANDOM_WINDOW_S  # 3.0
+# Always hold at least this long so recovery is not a single tick.
+LOOK_SIM_HOLD_MIN_S = 0.5
+# Covers wheeltouch recovery from empty awareness (~11 s) plus margin.
+LOOK_SIM_HOLD_MAX_S = 12.0
+# Stock looking-path: filter.x below this + face + low pose std.
+VISION_LOOKING_FILTER_X = 0.37
+VISION_RECOVERY_FACTOR_MAX = 5.0
+VISION_RECOVERY_FACTOR_MIN = 1.25
+
+
+def _param_bool(name: str, default: bool) -> bool:
+  if Params is None:
+    return default
+  try:
+    return bool(Params().get_bool(name))
+  except Exception:
+    return default
+
+
+def vision_looking_path(face_detected, low_std, distraction_filter_x) -> bool:
+  """True when stock DM treats the driver as looking / attentive."""
+  return bool(face_detected and low_std and distraction_filter_x < VISION_LOOKING_FILTER_X)
+
+
+def looking_recovery_time_s(awareness, alert_3_timeout,
+                            rmax=VISION_RECOVERY_FACTOR_MAX,
+                            rmin=VISION_RECOVERY_FACTOR_MIN) -> float:
+  """Seconds of stock looking-path recovery to return awareness to 1.0.
+
+  Integrates da/dt = ((Rmax-Rmin)*(1-a)+Rmin)/T3 until a=1.
+  """
+  u0 = max(0.0, 1.0 - float(awareness))
+  if u0 <= 1e-12 or alert_3_timeout <= 0:
+    return 0.0
+  k = (rmax - rmin) / alert_3_timeout
+  c = rmin / alert_3_timeout
+  return math.log((k * u0 + c) / c) / k
+
 
 class DRIVER_MONITOR_SETTINGS:
   def __init__(self):
@@ -153,15 +209,84 @@ class DriverMonitoring:
     self.threshold_alert_2 = 0.
     self.dcam_uncertain_cnt = 0
     self.dcam_reset_cnt = 0
-    self.too_distracted = Params().get_bool("DriverTooDistracted")
+    self.too_distracted = _param_bool("DriverTooDistracted", False)
+    # Default Off on nap-release. Hidden triple-tap NAP popup can turn On.
+    self.nap_dm_simulate_looking = _param_bool(PARAM_DM_SIMULATE_LOOKING, False)
+    self._rng = random.Random()
+    self._look_sim_countdown_s = 0.0
+    self._look_sim_holding = False
+    self._look_sim_hold_s = 0.0
+    self._look_sim_hold_start_awareness = 1.0
+    self._redraw_look_sim_interval()
 
     self._reset_awareness()
     self._set_policy(MonitoringPolicy.vision)
+
+  def _redraw_look_sim_interval(self):
+    """Fire time in (1.0 s, 3.0 s] after drain start: 1 s + uniform (0, 2 s]."""
+    # random() is [0, 1); (1-u)*window is (0, 2].
+    delay = (1.0 - self._rng.random()) * LOOK_SIM_RANDOM_WINDOW_S
+    self._look_sim_fire_s = LOOK_SIM_COUNTDOWN_MIN_S + delay
+
+  def _apply_simulated_looking(self):
+    """Force the same predicates a real glance uses on the vision path."""
+    self.face_detected = True
+    self.pose.low_std = True
+    self.is_model_uncertain = False
+    self.driver_distracted = False
+    self.driver_distraction_filter.x = 0.0
+
+  def _end_look_sim_hold(self, redraw=True):
+    self._look_sim_holding = False
+    self._look_sim_hold_s = 0.0
+    self._look_sim_countdown_s = 0.0
+    if redraw:
+      self._redraw_look_sim_interval()
+
+  def _look_sim_hold_done(self) -> bool:
+    if not self._look_sim_holding:
+      return False
+    if self._look_sim_hold_s + 1e-9 >= LOOK_SIM_HOLD_MAX_S:
+      return True
+    return (self.awareness >= 1.0 - 1e-9 and
+            self._look_sim_hold_s + 1e-9 >= LOOK_SIM_HOLD_MIN_S)
+
+  def _maybe_simulate_looking(self, op_engaged, allow_look_sim):
+    """After ~1 s of countdown, hold looking until awareness recovers to 1.0."""
+    if not (allow_look_sim and self.nap_dm_simulate_looking and op_engaged):
+      if not op_engaged:
+        self._end_look_sim_hold(redraw=False)
+      return
+
+    if self._look_sim_holding:
+      self._apply_simulated_looking()
+      self._look_sim_hold_s += DT_DMON
+      self._look_sim_countdown_s = 0.0
+      # Stock looking recovery requires awareness > 0 (red does not climb).
+      if self.awareness <= 0. and self._look_sim_hold_s + 1e-9 >= LOOK_SIM_HOLD_MIN_S:
+        self._reset_awareness()
+      if self._look_sim_hold_done():
+        self._end_look_sim_hold(redraw=True)
+      return
+
+    if self.awareness < 1.0:
+      self._look_sim_countdown_s += DT_DMON
+    else:
+      self._look_sim_countdown_s = 0.0
+      return
+    # Past 1.0 s of drain, then the drawn time in (1.0, 3.0].
+    if (self._look_sim_countdown_s > LOOK_SIM_COUNTDOWN_MIN_S and
+        self._look_sim_countdown_s + 1e-9 >= self._look_sim_fire_s):
+      self._look_sim_holding = True
+      self._look_sim_hold_s = DT_DMON
+      self._look_sim_hold_start_awareness = self.awareness
+      self._apply_simulated_looking()
 
   def _reset_awareness(self):
     self.awareness = 1.
     self.last_vision_awareness = 1.
     self.last_wheeltouch_awareness = 1.
+    self._look_sim_countdown_s = 0.0
 
   def _set_policy(self, target_policy):
     if self.active_policy == MonitoringPolicy.vision and self.awareness <= self.threshold_alert_2:
@@ -295,9 +420,10 @@ class DriverMonitoring:
     elif self.face_detected and self.pose.low_std:
       self.hi_stds = 0
 
-  def _update_events(self, driver_engaged, op_engaged, standstill, wrong_gear):
+  def _update_events(self, driver_engaged, op_engaged, standstill, wrong_gear, allow_look_sim=True):
     self.alert_level = AlertLevel.none
     self.driver_interacting = driver_engaged
+    self._maybe_simulate_looking(op_engaged, allow_look_sim)
 
     if self.terminal_alert_cnt >= self.settings._MAX_TERMINAL_ALERTS or \
        self.terminal_time >= self.settings._MAX_TERMINAL_DURATION:
@@ -317,8 +443,9 @@ class DriverMonitoring:
     standstill_exemption = standstill and _reaching_alert_1
     always_on_exemption = always_on_valid and not op_engaged and _reaching_alert_3
 
-    if self.awareness > 0 and \
-       ((self.driver_distraction_filter.x < 0.37 and self.face_detected and self.pose.low_std) or standstill_exemption):
+    looking = vision_looking_path(self.face_detected, self.pose.low_std,
+                                  self.driver_distraction_filter.x)
+    if self.awareness > 0 and (looking or standstill_exemption):
       if self.driver_interacting:
         self._reset_awareness()
         return
@@ -353,6 +480,7 @@ class DriverMonitoring:
 
   def get_state_packet(self, valid=True):
     # build driverMonitoringState packet
+    import cereal.messaging as messaging
     dat = messaging.new_message('driverMonitoringState', valid=valid)
     dm = dat.driverMonitoringState
 
@@ -426,10 +554,10 @@ class DriverMonitoring:
       steering_angle_deg=steering_angle_deg,
     )
 
-    # Update distraction events
     self._update_events(
       driver_engaged=driver_engaged,
       op_engaged=enabled,
       standstill=standstill,
       wrong_gear=wrong_gear,
+      allow_look_sim=not demo,
     )
