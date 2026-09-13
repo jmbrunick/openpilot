@@ -159,8 +159,12 @@ def test_hidden_toggles_removed_from_normal_lists():
   assert "_on_nap_clicked" in settings_mici
   assert "HiddenTogglesOverlayMici" in settings_mici
 
-  # Soft-lat / Hypermile / Hill Climb stay on the normal mannerisms list.
+  # Soft-lat / Hypermile / Hill Climb / Acceleration stay on the normal mannerisms list.
   assert "Soft Lateral Handoff" in tici_dm
   assert "Hill Climb" in tici_dm
   assert "Hypermile" in tici_dm
+  assert "Acceleration" in tici_dm
+  assert "NAPMapSpeedAccel" in tici_dm
   assert "hill climb" in mici_dm
+  assert '"acceleration"' in mici_dm
+  assert "NAPMapSpeedAccel" in mici_dm

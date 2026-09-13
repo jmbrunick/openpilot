@@ -5,9 +5,9 @@ from openpilot.system.ui.widgets.list_view import multiple_button_item, button_i
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   DOWNLOAD_US_MAPS_INSTRUCTIONS,
-  MAP_SPEED_ACCEL, MAP_SPEED_ACCEL_DEFAULT, MAP_SPEED_ACCEL_LABELS,
-  MAP_SPEED_LOOKAHEAD, MAP_SPEED_LOOKAHEAD_LABELS,
-  MAP_SPEED_MODES, MAP_SPEED_MODE_LABELS, MAP_SPEED_OFFSETS_MPH,
+  MAP_SPEED_LOOKAHEAD, MAP_SPEED_LOOKAHEAD_DESCRIPTION, MAP_SPEED_LOOKAHEAD_LABELS,
+  MAP_SPEED_MODE_DESCRIPTION, MAP_SPEED_MODES, MAP_SPEED_MODE_LABELS,
+  MAP_SPEED_OFFSET_DESCRIPTION, MAP_SPEED_OFFSETS_MPH,
   REFRESH_MAPS_INSTRUCTIONS,
 )
 from openpilot.selfdrive.mapd.fetch_maps import installed_db_summary, installed_revision_summary
@@ -15,7 +15,7 @@ from openpilot.selfdrive.ui.ui_state import ui_state
 
 
 class MapSpeedLimitLayout(Widget):
-  """Nested NAP page for OSM map-speed mode, offset, lookahead, and accel."""
+  """Nested NAP page for OSM map-speed mode, offset, and lookahead."""
 
   def __init__(self, on_back, on_download, on_refresh):
     super().__init__()
@@ -38,10 +38,7 @@ class MapSpeedLimitLayout(Widget):
     map_mode = int(self._params.get("NAPMapSpeedMode", return_default=True) or 0)
     self._mode_buttons = multiple_button_item(
       "Map Speed (MAX)",
-      "OpenStreetMap posted limit for HUD MAX. " +
-      "Off: no change. Display: LIMIT sign only. Cap: never exceed the limit. " +
-      "Follow (preferred): track the limit. A stalk set (above or below) holds until the posted limit changes. " +
-      "Cap/Follow need the pedal interceptor; stock CC stays display-only.",
+      MAP_SPEED_MODE_DESCRIPTION,
       buttons=MAP_SPEED_MODE_LABELS,
       button_width=150,
       selected_index=max(0, min(3, map_mode)),
@@ -52,7 +49,7 @@ class MapSpeedLimitLayout(Widget):
     offset_mph = int(self._params.get("NAPMapSpeedOffsetMph", return_default=True) or 0)
     self._offset_buttons = multiple_button_item(
       "Map Speed Offset",
-      "Added to the OSM limit for Cap/Follow (mph). A Follow stalk set holds until the posted limit changes.",
+      MAP_SPEED_OFFSET_DESCRIPTION,
       buttons=["-5 mph", "0", "+5 mph"],
       button_width=150,
       selected_index=self._offset_index(offset_mph),
@@ -63,48 +60,13 @@ class MapSpeedLimitLayout(Widget):
     lookahead = int(self._params.get("NAPMapSpeedLookahead", return_default=True) or 2)
     self._lookahead_buttons = multiple_button_item(
       "Lookahead",
-      "Cap/Follow: ease MAX down for a lower limit ahead. " +
-      "Off: wait until GPS is on that way. Late / Normal / Early: farther preview. " +
-      "A stalk set holds until posted changes; lookahead pauses while that set is active. " +
-      "A higher limit far ahead never raises MAX. 1.5 s GPS lag raises posted at the " +
-      "offset position; every decrease eases with kin+110 m (not a snap). Radar lead still outranks map.",
+      MAP_SPEED_LOOKAHEAD_DESCRIPTION,
       buttons=MAP_SPEED_LOOKAHEAD_LABELS,
       button_width=150,
       selected_index=self._lookahead_index(lookahead),
       callback=self._on_lookahead,
     )
     self._all_items.append(self._lookahead_buttons)
-
-    accel = int(self._params.get("NAPMapSpeedAccel", return_default=True) or MAP_SPEED_ACCEL_DEFAULT)
-    self._accel_buttons = multiple_button_item(
-      "Acceleration",
-      "How quickly the car climbs when MAX rises, and how hard it " +
-      "comes up behind a lead (close-the-gap +a). " +
-      "1=gentlest (MAX climb 0.36 / lead-close 0.20 m/s²), " +
-      "5=0.80 / 0.30, 10=quickest climb 1.60 (lead-close still 0.50). " +
-      "Brake to a lower MAX is locked at Accel 5 (0.80 m/s² at Normal). " +
-      "A slower lead can still brake harder.",
-      buttons=MAP_SPEED_ACCEL_LABELS,
-      button_width=72,
-      selected_index=self._accel_index(accel),
-      callback=self._on_accel,
-    )
-    self._all_items.append(self._accel_buttons)
-
-    self._db_status = text_item(
-      "OSM Map Data",
-      installed_db_summary,
-      description="US OpenStreetMap maxspeed ways (ODbL, © OpenStreetMap contributors). " +
-      "Not in git — tap Download US Maps over Wi-Fi after flash. Refresh maps then overlays live OSM within 100 miles.",
-    )
-    self._all_items.append(self._db_status)
-
-    self._revision_status = text_item(
-      "Map revision",
-      installed_revision_summary,
-      description="Published US pack revision after Download US Maps. Refresh maps overlays live OSM within 100 miles and does not bump this number.",
-    )
-    self._all_items.append(self._revision_status)
 
     self._refresh_btn = button_item(
       "Refresh maps",
@@ -124,6 +86,20 @@ class MapSpeedLimitLayout(Widget):
     self._download_btn.action_item.set_enabled(ui_state.is_offroad)
     self._all_items.append(self._download_btn)
 
+    self._db_status = text_item(
+      "OSM Map Data",
+      installed_db_summary,
+      description="US OpenStreetMap maxspeed ways (ODbL). Download after flash; Refresh overlays live OSM within 100 miles.",
+    )
+    self._all_items.append(self._db_status)
+
+    self._revision_status = text_item(
+      "Map revision",
+      installed_revision_summary,
+      description="Published US pack revision. Refresh maps does not bump this number.",
+    )
+    self._all_items.append(self._revision_status)
+
   def _offset_index(self, offset_mph: int) -> int:
     if offset_mph in MAP_SPEED_OFFSETS_MPH:
       return MAP_SPEED_OFFSETS_MPH.index(offset_mph)
@@ -134,11 +110,6 @@ class MapSpeedLimitLayout(Widget):
       return MAP_SPEED_LOOKAHEAD.index(value)
     return 2
 
-  def _accel_index(self, value: int) -> int:
-    if value in MAP_SPEED_ACCEL:
-      return MAP_SPEED_ACCEL.index(value)
-    return MAP_SPEED_ACCEL.index(MAP_SPEED_ACCEL_DEFAULT)
-
   def _on_mode(self, index: int):
     self._params.put("NAPMapSpeedMode", MAP_SPEED_MODES[index])
 
@@ -148,9 +119,6 @@ class MapSpeedLimitLayout(Widget):
   def _on_lookahead(self, index: int):
     self._params.put("NAPMapSpeedLookahead", MAP_SPEED_LOOKAHEAD[index])
 
-  def _on_accel(self, index: int):
-    self._params.put("NAPMapSpeedAccel", MAP_SPEED_ACCEL[index])
-
   def refresh(self):
     map_mode = int(self._params.get("NAPMapSpeedMode", return_default=True) or 0)
     self._mode_buttons.action_item.set_selected_button(max(0, min(3, map_mode)))
@@ -158,8 +126,6 @@ class MapSpeedLimitLayout(Widget):
     self._offset_buttons.action_item.set_selected_button(self._offset_index(offset_mph))
     lookahead = int(self._params.get("NAPMapSpeedLookahead", return_default=True) or 2)
     self._lookahead_buttons.action_item.set_selected_button(self._lookahead_index(lookahead))
-    accel = int(self._params.get("NAPMapSpeedAccel", return_default=True) or MAP_SPEED_ACCEL_DEFAULT)
-    self._accel_buttons.action_item.set_selected_button(self._accel_index(accel))
     self._refresh_btn.action_item.set_enabled(ui_state.is_offroad)
     self._download_btn.action_item.set_enabled(ui_state.is_offroad)
 
