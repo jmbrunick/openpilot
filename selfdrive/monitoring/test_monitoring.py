@@ -690,7 +690,7 @@ class TestMonitoring:
     assert holding
 
   def test_simulate_looking_keeps_hold_when_pose_starts(self):
-    """Mid-hold pose must not abort Simulate Look; the full wipe continues."""
+    """Mid-hold pose must not abort Simulate Look the way FAI aborts."""
     DM = self._dm(simulate_looking=True, fire_s=1.2)
     holding = False
     for _ in range(int(6.0 / DT_DMON)):
@@ -700,13 +700,18 @@ class TestMonitoring:
         a_at_hold = DM.awareness
         break
     assert holding
-    for _ in range(int(2.0 / DT_DMON)):
-      self._step(DM, msg_POSE_ONLY)
+    self._step(DM, msg_POSE_ONLY)
+    # FAI would abort here and resume drain. Simulate Look keeps the wipe.
     assert DM._look_sim_holding
     assert DM._look_sim_mode == LOOK_SIM_MODE_GLANCE
     assert DM.distracted_types['pose'] is False
     assert not DM.driver_distracted
     assert DM.awareness >= a_at_hold - 1e-6
+    # Over a stock orange window, cadence must keep him below orange.
+    for _ in range(int((dm_settings._VISION_POLICY_ALERT_2_TIMEOUT + 1.0) / DT_DMON)):
+      self._step(DM, msg_POSE_ONLY)
+    assert DM.alert_level < 2
+    assert DM.awareness > DM.threshold_alert_2
 
   def test_simulate_looking_hold_recovers_phone_pose_eye(self):
     """One cadence hold recovers awareness for phone, pose, and eye inputs."""
