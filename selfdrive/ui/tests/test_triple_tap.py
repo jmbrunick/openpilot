@@ -87,7 +87,7 @@ def test_hidden_toggles_removed_from_normal_lists():
   assert 'put_bool(NAP_FORCE_OFFROAD, False)' in nap
   assert "NAPForceOffroadConfirmed" in nap
   assert 'put_bool(NAP_DM_SIMULATE_LOOKING, True)' in nap
-  assert 'put_bool(NAP_DM_FALSE_ALERT_IGNORE, True)' in nap
+  assert 'put_bool(NAP_DM_FALSE_ALERT_IGNORE, False)' in nap
 
   assert 'BigParamControl("force offroad"' not in nap_mici
   assert "NAP_FORCE_OFFROAD" not in nap_mici
@@ -100,6 +100,11 @@ def test_hidden_toggles_removed_from_normal_lists():
   assert "NAP_DM_FALSE_ALERT_IGNORE" in popup
   assert "NAP_FORCE_OFFROAD" in popup
   assert "apply_force_offroad_toggle" in popup
+  assert "apply_dm_simulate_looking" in popup
+  assert "apply_dm_false_alert_ignore" in popup
+  assert "read_exclusive_dm_toggles" in popup
+  assert "set_state(self._params.get_bool(NAP_DM_FALSE_ALERT_IGNORE))" in popup
+  assert "set_state(self._params.get_bool(NAP_DM_SIMULATE_LOOKING))" in popup
   assert "set_enabled(ui_state.is_offroad)" not in popup
   assert popup.index('"Force Offroad"') < popup.index('"Simulate Look"')
   assert popup.index('"Simulate Look"') < popup.index('"False Alert Ignore"')
@@ -112,6 +117,11 @@ def test_hidden_toggles_removed_from_normal_lists():
   assert "NAP_DM_SIMULATE_LOOKING" in overlay
   assert "NAP_DM_FALSE_ALERT_IGNORE" in overlay
   assert "NAP_FORCE_OFFROAD" in overlay
+  assert "apply_dm_simulate_looking" in overlay
+  assert "apply_dm_false_alert_ignore" in overlay
+  assert "read_exclusive_dm_toggles" in overlay
+  assert "self._fai.refresh()" in overlay
+  assert "self._dm.refresh()" in overlay
   assert "set_enabled(ui_state.is_offroad)" not in overlay
 
   assert "TripleTapDetector" in settings

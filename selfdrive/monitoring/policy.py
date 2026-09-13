@@ -9,6 +9,11 @@ from openpilot.common.realtime import DT_DMON
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.stat_live import RunningStatFilter
 from openpilot.common.transformations.camera import DEVICE_CAMERAS
+from openpilot.selfdrive.monitoring.dm_toggles import (
+  DEFAULT_FALSE_ALERT_IGNORE, DEFAULT_SIMULATE_LOOKING,
+  PARAM_DM_FALSE_ALERT_IGNORE, PARAM_DM_SIMULATE_LOOKING,
+  exclusive_dm_toggle_states, read_exclusive_dm_toggles,
+)
 
 try:
   from openpilot.common.params import Params
@@ -33,10 +38,10 @@ def to_percent(v):
 # reset the same rule applies to the next countdown.
 # Simulate Look: no-face / uncertain glance only. Never wipes pose, eye,
 # or phone. False Alert Ignore: soft-clear phone/device false positives
-# only. Pose and eye always drain / alert. Either toggle Off = that
-# path is stock. Hands-on ≥ 2 / stalk / door / reverse unchanged.
-PARAM_DM_SIMULATE_LOOKING = "NAPDmSimulateLooking"
-PARAM_DM_FALSE_ALERT_IGNORE = "NAPDmFalseAlertIgnore"
+# only. Pose and eye always drain / alert. Mutually exclusive — only one
+# may be On (both Off is allowed). Stale both-On → Simulate Look On /
+# FAI Off. Either toggle Off = that path is stock. Hands-on ≥ 2 / stalk
+# / door / reverse unchanged.
 LOOK_SIM_COUNTDOWN_MIN_S = 1.0
 LOOK_SIM_RANDOM_WINDOW_S = 2.0
 LOOK_SIM_FIRE_MAX_S = LOOK_SIM_COUNTDOWN_MIN_S + LOOK_SIM_RANDOM_WINDOW_S  # 3.0
@@ -213,9 +218,16 @@ class DriverMonitoring:
     self.dcam_uncertain_cnt = 0
     self.dcam_reset_cnt = 0
     self.too_distracted = _param_bool("DriverTooDistracted", False)
-    # Default On (nap-dev). Triple-tap Settings → NAP; Reset-All matches.
-    self.nap_dm_simulate_looking = _param_bool(PARAM_DM_SIMULATE_LOOKING, True)
-    self.nap_dm_false_alert_ignore = _param_bool(PARAM_DM_FALSE_ALERT_IGNORE, True)
+    # nap-dev: Simulate Look On / FAI Off. Both-On resolves to Sim On.
+    if Params is not None:
+      try:
+        sim, fai = read_exclusive_dm_toggles(Params())
+      except Exception:
+        sim, fai = DEFAULT_SIMULATE_LOOKING, DEFAULT_FALSE_ALERT_IGNORE
+    else:
+      sim, fai = DEFAULT_SIMULATE_LOOKING, DEFAULT_FALSE_ALERT_IGNORE
+    self.nap_dm_simulate_looking = sim
+    self.nap_dm_false_alert_ignore = fai
     self._rng = random.Random()
     self._look_sim_countdown_s = 0.0
     self._look_sim_holding = False
@@ -235,6 +247,45 @@ class DriverMonitoring:
 
   def _look_sim_active(self) -> bool:
     return bool(self.nap_dm_simulate_looking or self.nap_dm_false_alert_ignore)
+
+  def _enforce_exclusive_dm_toggles(self):
+    """Runtime guard: both-On → Simulate Look wins; stop the other path."""
+    sim, fai = exclusive_dm_toggle_states(
+      self.nap_dm_simulate_looking, self.nap_dm_false_alert_ignore)
+    self.nap_dm_simulate_looking = sim
+    self.nap_dm_false_alert_ignore = fai
+    self._stop_inactive_dm_path()
+
+  def _stop_inactive_dm_path(self):
+    """Abort glance hold if Sim Off; end phone soft-clear if FAI Off."""
+    if not self._look_sim_holding:
+      return
+    if self._look_sim_mode == LOOK_SIM_MODE_GLANCE and not self.nap_dm_simulate_looking:
+      self._abort_look_sim_hold()
+    elif self._look_sim_mode == LOOK_SIM_MODE_PHONE and not self.nap_dm_false_alert_ignore:
+      self._end_look_sim_hold(redraw=True)
+
+  def set_nap_dm_toggles(self, *, simulate_looking=None, false_alert_ignore=None):
+    """Apply a live toggle flip (or a resolved pair) and stop the other path.
+
+    Turning Simulate Look On clears FAI and ends a phone hold. Turning FAI
+    On clears Simulate Look and aborts an in-flight glance hold. Passing
+    both True still resolves to Simulate Look On / FAI Off.
+    """
+    if simulate_looking is not None and false_alert_ignore is not None:
+      self.nap_dm_simulate_looking, self.nap_dm_false_alert_ignore = (
+        exclusive_dm_toggle_states(simulate_looking, false_alert_ignore))
+      self._stop_inactive_dm_path()
+      return
+    if simulate_looking is not None:
+      self.nap_dm_simulate_looking = bool(simulate_looking)
+      if self.nap_dm_simulate_looking:
+        self.nap_dm_false_alert_ignore = False
+    if false_alert_ignore is not None:
+      self.nap_dm_false_alert_ignore = bool(false_alert_ignore)
+      if self.nap_dm_false_alert_ignore:
+        self.nap_dm_simulate_looking = False
+    self._enforce_exclusive_dm_toggles()
 
   def _pose_or_eye_alarming(self) -> bool:
     return bool(self.distracted_types['pose'] or self.distracted_types['eye'])
@@ -303,6 +354,7 @@ class DriverMonitoring:
 
   def _maybe_simulate_looking(self, op_engaged, allow_look_sim):
     """Shared 1–3 s cadence for False Alert Ignore and Simulate Look."""
+    self._enforce_exclusive_dm_toggles()
     if not (allow_look_sim and self._look_sim_active() and op_engaged):
       if not op_engaged:
         self._end_look_sim_hold(redraw=False)
