@@ -11,7 +11,7 @@ from opendbc.car.tesla.pedal.controller import PEDAL_RAMP_RATE_DOWN, PEDAL_RAMP_
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl
 from openpilot.selfdrive.controls.lib import longitudinal_planner
-from openpilot.selfdrive.controls.lib.lead_approach import LEAD_APPROACH_A_MS2, lead_approach_need_m
+from openpilot.selfdrive.controls.lib.lead_approach import LEAD_APPROACH_A_MS2, LEAD_APPROACH_MAX_START_M
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   LongitudinalPlanSource,
   T_IDXS,
@@ -576,7 +576,6 @@ def test_planner_eases_for_slower_lead_before_mpc_and_lead_can_brake_harder():
   v_lead = 22.4
   t_follow = get_T_FOLLOW(nap_follow_dist=4)
   d_follow = t_follow * v_lead + STOP_DISTANCE_M
-  need = lead_approach_need_m(v_ego, v_lead, t_follow=t_follow)
   v_rel = v_ego - v_lead
   rel_need = (v_rel * v_rel) / (2.0 * LEAD_APPROACH_A_MS2)
   d_rel = d_follow + rel_need
@@ -597,15 +596,20 @@ def test_planner_eases_for_slower_lead_before_mpc_and_lead_can_brake_harder():
   planner.update(inputs)
   assert planner.output_a_target == pytest.approx(-2.0, abs=0.08)
 
-  # Farther than the relative window (radar-range hang): no extra crawl.
+  # Farther closing lead (old 140 m / short need stayed off): now eases.
   lead.dRel = 160.0
-  assert 160.0 > d_follow + need
+  lead.modelProb = 1.0
+  lead.radar = True
+  assert 160.0 > d_follow + (v_rel * v_rel) / (2.0 * LEAD_APPROACH_A_MS2) + v_rel * 12.0
+  planner._lead_approach_active = False
+  planner._lead_approach_a = None
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=0.0)
   planner.update(inputs)
-  assert planner.output_a_target == pytest.approx(0.0, abs=0.08)
+  assert planner.output_a_target < 0.0
+  assert planner.output_a_target >= -LEAD_APPROACH_A_MS2 - 0.08
 
-  # Outside the window: no extra crawl.
-  lead.dRel = d_follow + need + 20.0
+  # Past usable Bosch: no extra crawl.
+  lead.dRel = LEAD_APPROACH_MAX_START_M + 15.0
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=0.0)
   planner.update(inputs)
   assert planner.output_a_target == pytest.approx(0.0, abs=0.08)

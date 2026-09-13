@@ -272,8 +272,10 @@ class LongitudinalPlanner:
             # toward MAX; a slower lead (negative aTarget) still outranks map.
             output_a_target = a_up
 
-    # Slower radar lead: Early 0.55 ease, 12 s closing-speed head-start,
-    # enter/exit hysteresis, slew on more-negative a (no regen chatter).
+    # Slower radar lead: Early 0.55 ease as soon as radar feedback is
+    # reasonable (200 m Bosch ceiling, 24 s head-start, clear-close skips
+    # the late-gap need). Far tracks need radar + modelProb; LeadData has
+    # no track age. Hysteresis + slew keep regen from chattering.
     # Map's +110 m is road distance to a sign and must not be used here.
     # Overlay never harder than 0.55; MPC close-in / FCW may still brake
     # harder. Map MAX overlay cannot cancel this.
@@ -281,6 +283,7 @@ class LongitudinalPlanner:
       lead = sm['radarState'].leadOne
       a_lead = lead_approach_decel_ms2(
         v_ego, lead.vLead, lead.dRel, self.t_follow, active=self._lead_approach_active,
+        model_prob=lead.modelProb, radar=lead.radar,
       )
       a_lead = slew_lead_approach_a(a_lead, self._lead_approach_a)
       self._lead_approach_active = a_lead is not None
