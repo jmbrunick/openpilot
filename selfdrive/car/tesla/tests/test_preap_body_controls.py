@@ -639,11 +639,127 @@ def test_auto_gear_aliases_and_enum_name(monkeypatch):
     line = body._auto_status_line(3, True, True, True, True)
     assert "setting=3" in line
     assert "gear=" in line
+    assert "gear_src=" in line
     assert "wipe=1" in line
     assert "installed=" in line
+    assert line.startswith("nap wiper auto")
   finally:
     set_rain_wiper_needed(None)
     reset_auto_gates()
+
+
+def test_auto_reads_preap_inner_cs_out_gear(monkeypatch):
+  """StockCCSpoofer CS is the inner Tesla parser. Drive is on CS.out, not CS.gearShifter."""
+  from types import SimpleNamespace
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
+    WIPER_SETTING_AUTO if key == NAP_WIPER_SPEED else default
+  ))
+  set_rain_wiper_needed(True)
+  reset_auto_gates()
+  try:
+    inner = SimpleNamespace(
+      msg_stw_actn_req={"SpdCtrlLvr_Stat": 0},
+      out=SimpleNamespace(gearShifter="drive"),
+    )
+    assert not hasattr(inner, "gearShifter")
+    body.update_live_car_state(inner)
+    assert body.vehicle_is_on()
+    assert body.in_drive_gear()
+    assert body.requested_wiper_test()
+    line = body._auto_status_line(3, True, True, True, True)
+    assert "gear=drive" in line
+    assert "gear_src=out" in line
+    assert "wipe=1" in line
+    rest = _rest()
+    held = apply_stw_wiper_beam_nibbles(rest, True, False)
+    assert _byte(held) == STW_WIPER_ON
+
+    inner.out.gearShifter = "park"
+    assert not body.in_drive_gear()
+    assert not body.requested_wiper_test()
+  finally:
+    set_rain_wiper_needed(None)
+    reset_auto_gates()
+
+
+def test_auto_gear_int_enum_and_di_gear_tokens(monkeypatch):
+  """Live Drive may be GearShifter int 2, Tesla DI_gear 4, or DI_GEAR_D."""
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
+    WIPER_SETTING_AUTO if key == NAP_WIPER_SPEED else default
+  ))
+  set_rain_wiper_needed(True)
+  try:
+    for gear in (2, 4, "DI_GEAR_D", "DI_GEAR_R"):
+      set_auto_gates(True, gear)
+      assert body.in_drive_gear(), gear
+      assert body.requested_wiper_test(), gear
+    set_auto_gates(True, 1)
+    assert not body.in_drive_gear()
+    assert not body.requested_wiper_test()
+    set_auto_gates(True, 3)
+    assert not body.in_drive_gear()
+    assert not body.requested_wiper_test()
+  finally:
+    set_rain_wiper_needed(None)
+    reset_auto_gates()
+
+
+def test_auto_status_param_is_full_gate_line_not_short_rain(monkeypatch):
+  """Justin cat'd hold= ema= because rain _debug overwrote the Auto gates."""
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+  from openpilot.selfdrive.car.tesla import preap_windshield_rain as rain
+
+  captured = {}
+  monkeypatch.setattr(body, "_put_wiper_status", lambda line: captured.__setitem__("NAPWiperRainStatus", line))
+  monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
+    WIPER_SETTING_AUTO if key == NAP_WIPER_SPEED else default
+  ))
+  det = WindshieldRain()
+  det.hold = True
+  det.ema = 4.83
+  det.last_score = 5.03
+  det.last_bokeh = 4.48
+  det.last_sparse = 5.4
+  det.connected = True
+  det._failed = False
+  det.n_frames = 8865
+  det.stream = "ROAD"
+  rain._detector = det
+  set_rain_wiper_needed(True)
+  try:
+    set_auto_gates(True, "drive")
+    body._last_auto_log_t = 0.0
+    assert body.requested_wiper_test()
+    line = captured["NAPWiperRainStatus"]
+    assert line.startswith("nap wiper auto")
+    assert "setting=3" in line
+    assert "on=1" in line
+    assert "gear=drive" in line
+    assert "drive=1" in line
+    assert "rain=1" in line
+    assert "wipe=1" in line
+    assert "installed=" in line
+    assert "hold=1" in line
+    assert "frames=8865" in line
+    assert not line.startswith("hold=")
+  finally:
+    set_rain_wiper_needed(None)
+    reset_auto_gates()
+    rain._detector = None
+
+
+def test_rain_debug_does_not_put_status_param():
+  """Short hold= line must not overwrite NAPWiperRainStatus."""
+  import inspect
+  from openpilot.selfdrive.car.tesla.preap_windshield_rain import WindshieldRain
+  src = inspect.getsource(WindshieldRain._debug)
+  assert "Params" not in src
+  assert ".put(" not in src
 
 
 def test_int_on_ignore_gear_and_camera(monkeypatch):
@@ -1087,6 +1203,38 @@ def test_auto_stock_cc_forwards_on_rain_and_stops_when_dry(monkeypatch):
   out = body.stock_cc_update_with_overlay(fake, cs, 20, None, 0)
   assert out == []
   assert fake.sent == []
+
+
+def test_auto_stock_cc_forwards_when_gear_only_on_cs_out(monkeypatch):
+  """Live miss: inner CS has no gearShifter, Drive is on CS.out. Still TX nibble 1."""
+  from types import SimpleNamespace
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  fake = _FakeSpoofer()
+  cs = SimpleNamespace(
+    msg_stw_actn_req={"SpdCtrlLvr_Stat": 0},
+    out=SimpleNamespace(gearShifter="drive"),
+  )
+  monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
+    WIPER_SETTING_AUTO if key == NAP_WIPER_SPEED else default
+  ))
+  monkeypatch.setattr(body, "rain_wiper_needed", lambda: True)
+  monkeypatch.setattr(body, "requested_high_beam_test", lambda: False)
+  monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: [])
+  reset_auto_gates()
+  try:
+    out = body.stock_cc_update_with_overlay(fake, cs, 10, None, 0)
+    assert len(out) == 1
+    assert out[0][0] == STW_ACTN_RQ_ADDR
+    assert extra_stw_forward_needed([], 10, True, False) is True
+    cs.out.gearShifter = "park"
+    fake.sent.clear()
+    out = body.stock_cc_update_with_overlay(fake, cs, 20, None, 0)
+    assert out == []
+    assert fake.sent == []
+  finally:
+    reset_auto_gates()
 
 
 def test_auto_stock_cc_releases_when_shifted_to_park(monkeypatch):
