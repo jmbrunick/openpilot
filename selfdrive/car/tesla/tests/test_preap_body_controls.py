@@ -1476,9 +1476,12 @@ def test_after_wipe_dry_score_exits_loop_and_stays_idle():
   _expire_wait(det)
   assert not det._update_score(0.0)
   assert not det.hold
-  for s in (0.0, 0.8, HOLD_ON, ACQUIRE_ON, REWIPE_ON - 0.05):
+  for s in (0.0, 0.8, HOLD_ON, ACQUIRE_ON - 0.05):
     assert not det._update_score(s), s
     assert not det.hold
+  # Back on idle: one wet look is not a wipe (need two consecutive).
+  assert not det._update_score(REWIPE_ON)
+  assert not det.hold
 
 
 def test_clearly_wet_still_wipes_and_rewipes():
