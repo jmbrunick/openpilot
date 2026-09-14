@@ -18,13 +18,12 @@ raise sharp-residual "structure"; that is still rain if bokeh is
 rain-like. Foliage/brick is sharp structure *without* rain-scale bokeh.
 Headlamp plates are isolated saturated hotspots, not distributed
 droplet highlights. Dry overcast / scene texture stays under the
-wetness floor. A real wipe may look clear for ~0.5 s; HOLD can ride
-that dip, then drops quickly once scores stay below rain-level so
-clear glass cannot keep the 30 s intermittent forever. Acquire needs
-a short run of rain-level scores so a one-frame bokeh flicker cannot
-nibble-1 the body into latched Int. Stale ROAD still drops HOLD. Off
-still leaves the real stalk (escape). Auto dry extra-forwards rest to
-cancel that latch.
+wetness floor. A real wipe may look clear for one score tick (~2.5 s);
+HOLD can ride that dip, then drops after ~2 clear scores (~5 s) so
+dry glass cannot keep Pre-AP intermittent. Auto then rest-cancels the
+~32 s Int latch. Acquire needs two rain-level scores (~5 s) so one
+bokeh flicker cannot nibble-1 the body into latched Int. Stale ROAD
+still drops HOLD. Off still leaves the real stalk (escape).
 
 Bokeh energy is an 8-bit residual (~0 dry, ~2–5 wet). A live clear-glass
 log showed bokeh=49165 — wrong Y scale or a bandpass blowup. Impossible
@@ -40,7 +39,8 @@ plus 20 Hz multi-blur starved card's GIL (age_ms ~30 s, Selfdrive
 Process Lagging). Recv downsamples immediately; one feature pass per
 scored frame; ice contrast uses the tiny grid. After each score the
 ROAD client is dropped so camerad is not an extra always-on subscriber.
-HOLD release uses the same 2–3 s ticks (Pre-AP already latches ~32 s).
+HOLD release is two clear ticks (~5 s), then Auto rest-cancels Int.
+(Old CLEAR_RELEASE_N=12 at 2.5 s/score held blades ~30 s on dry glass.)
 card is CTRL_HIGH: stock_cc.update / poll() only reads the latch, never
 recvs, never joins the helper. NAPWiperRainStatus and cloudlog are 1 Hz
 or on gate changes — not every 10 ms Params.put. Numpy is imported on a
@@ -105,14 +105,13 @@ HOLD_OFF = 0.70
 EMA_ALPHA = 0.35
 # Same as acquire. A slow hold-EMA was trapping residual scores.
 EMA_HOLD_ALPHA = 0.35
-# ROAD ~20 Hz. Helper numpy is SCORE_PERIOD_S, not per frame. Frame
-# counts below are for tests that inject Y directly. Live acquire/release
-# is those counts times ~2.5 s. Pre-AP already latches ~32 s Int.
-CLEAR_RELEASE_N = 12
-# Blade-start flash only.
-MIN_HOLD_N = 4
-# Brief wipe-clear that must keep HOLD (tests inject dry frames).
-WIPE_CLEAR_N = 8
+# Score ticks at SCORE_PERIOD_S (~2.5 s), not old 20 Hz frame counts.
+# 12×2.5 s ≈ 30 s of HOLD after the glass was dry (Justin’s 20–22 s wipes).
+CLEAR_RELEASE_N = 2  # ~5 s dry to drop HOLD; Auto rest-cancel follows
+# Two wet scores (~5 s). One flicker cannot nibble-1 a 32 s Int latch.
+MIN_HOLD_N = 2
+# One dry tick (~2.5 s) can be a blade pass; two consecutive dry release.
+WIPE_CLEAR_N = 1
 # Must exceed SCORE_PERIOD_S so poll does not drop HOLD between ticks.
 STALE_S = 8.0
 CONNECT_RETRY_S = 0.5
