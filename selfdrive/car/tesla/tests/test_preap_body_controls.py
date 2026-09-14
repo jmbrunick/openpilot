@@ -72,6 +72,7 @@ from openpilot.selfdrive.car.tesla.preap_windshield_rain import (
   windshield_frost_score,
   windshield_ice_score,
   windshield_looks_rainy,
+  windshield_mist_score,
   windshield_obstruction_score,
   windshield_rain_score,
   y_plane_from_nv12,
@@ -474,6 +475,33 @@ def _heavy_bokeh_windshield(h=240, w=320, seed=6) -> np.ndarray:
     patch = y[cy - rad:cy + rad + 1, cx - rad:cx + rad + 1]
     patch[mask] += bump[mask]
     y[cy - rad:cy + rad + 1, cx - rad:cx + rad + 1] = patch
+  return np.clip(y, 0, 255).astype(np.uint8)
+
+
+def _mist_windshield(h=240, w=320, seed=17) -> np.ndarray:
+  """Highway light mist: veil + small streaks on near-glass; far road stays sharp."""
+  y = _dry_windshield(h, w, seed=0).astype(np.float32)
+  rng = np.random.RandomState(seed)
+  r0, r1 = int(h * 0.56), int(h * 0.90)
+  c0, c1 = int(w * 0.06), int(w * 0.50)
+  patch = y[r0:r1, c0:c1]
+  m = float(patch.mean())
+  y[r0:r1, c0:c1] = (patch - m) * 0.32 + m + 10.0
+  yy, xx = np.mgrid[0:h, 0:w]
+  for _ in range(14):
+    cy = rng.uniform(h * 0.58, h * 0.88)
+    cx = rng.uniform(w * 0.08, w * 0.46)
+    sigy = rng.uniform(h * 0.012, h * 0.04)
+    sigx = rng.uniform(w * 0.006, w * 0.016)
+    amp = rng.uniform(18.0, 36.0)
+    y += amp * np.exp(-((yy - cy) ** 2) / (2.0 * sigy * sigy) - ((xx - cx) ** 2) / (2.0 * sigx * sigx))
+  return np.clip(y, 0, 255).astype(np.uint8)
+
+
+def _atmos_fog_windshield(h=240, w=320, seed=18) -> np.ndarray:
+  """Distant atmospheric fog: whole-frame wash, no near-glass streaks."""
+  y = _dry_windshield(h, w, seed=0).astype(np.float32)
+  y = (y - y.mean()) * 0.22 + 145.0
   return np.clip(y, 0, 255).astype(np.uint8)
 
 
@@ -1303,6 +1331,45 @@ def test_blade_spike_during_clear_wait_does_not_acquire():
   _expire_wait(det)
   assert not det._update_score(0.0)
   assert not det.hold
+
+
+def test_mist_on_glass_acquires_and_fog_does_not():
+  """Highway mist/streaks should wipe. Distant fog and dry garage must not."""
+  mist = _mist_windshield()
+  fog = _atmos_fog_windshield()
+  dry = _dry_windshield()
+  assert windshield_mist_score(mist) >= ACQUIRE_ON
+  assert windshield_obstruction_score(mist) >= ACQUIRE_ON
+  assert windshield_looks_rainy(mist)
+  assert windshield_mist_score(fog) < HOLD_ON
+  assert windshield_obstruction_score(fog) < HOLD_ON
+  assert not windshield_looks_rainy(fog)
+  assert windshield_mist_score(dry) < HOLD_ON
+  assert windshield_obstruction_score(dry) < HOLD_ON
+
+  tiny = y_plane_from_nv12(_nv12_buf(mist), max_side=Y_COPY_SIDE)
+  assert tiny is not None
+  assert windshield_obstruction_score(tiny) >= ACQUIRE_ON
+
+  det = WindshieldRain()
+  _skip_warmup(det)
+  saw = False
+  for _ in range(MIN_HOLD_N + 2):
+    if det.update_from_y(mist):
+      saw = True
+      break
+  assert saw
+  assert det.hold
+  _expire_wipe(det)
+  _expire_wait(det)
+  assert det.update_from_y(mist)
+  assert det.hold
+
+  fog_det = WindshieldRain()
+  _skip_warmup(fog_det)
+  for _ in range(MIN_HOLD_N + 8):
+    assert not fog_det.update_from_y(fog)
+  assert not fog_det.hold
 
 
 def test_light_bokeh_and_wet_drop_fixtures_do_not_acquire():
