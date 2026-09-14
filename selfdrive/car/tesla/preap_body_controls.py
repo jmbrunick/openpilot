@@ -554,24 +554,19 @@ def _auto_status_line(setting: int, on: bool, drive: bool, rain: bool, wipe: boo
       now = time.monotonic()
       age_ms = (now - d._last_frame_t) * 1000.0 if d._last_frame_t else -1.0
       rain_bits = (
-        "hold=%d ema=%.2f score=%.2f bokeh=%.2f sparse=%.1f clear=%d/%d "
-        "connected=%d failed=%d frames=%d stream=%s helper=%d age_ms=%.0f err=%s" % (
-          int(d.hold), d.ema, d.last_score, d.last_bokeh, d.last_sparse,
-          int(getattr(d, "_clear_n", 0)), int(getattr(rainmod, "CLEAR_RELEASE_N", 0)),
-          int(d.connected), int(d._failed), d.n_frames, d.stream,
-          int(d.helper_alive), age_ms, d.last_err or "-",
-        )
+        f"hold={int(d.hold)} ema={d.ema:.2f} score={d.last_score:.2f} bokeh={d.last_bokeh:.2f} sparse={d.last_sparse:.1f} "
+        + f"clear={int(getattr(d, '_clear_n', 0))}/{int(getattr(rainmod, 'CLEAR_RELEASE_N', 0))} "
+        + f"connected={int(d.connected)} failed={int(d._failed)} frames={d.n_frames} stream={d.stream} "
+        + f"helper={int(d.helper_alive)} age_ms={age_ms:.0f} err={d.last_err or '-'}"
       )
   except Exception:
     rain_bits = "rain=err"
   gi = _gear_int(gear)
   raw = "-" if gi is None else str(gi)
   return (
-    "nap wiper auto setting=%d on=%d gear=%s gear_src=%s gear_type=%s raw=%s "
-    "drive=%d rain=%d wipe=%d installed=%d %s" % (
-      int(setting), int(on), _gear_name(gear) or "-", src, _gear_type_name(gear), raw,
-      int(drive), int(rain), int(wipe), int(_installed), rain_bits,
-    )
+    f"nap wiper auto setting={int(setting)} on={int(on)} gear={_gear_name(gear) or '-'} gear_src={src} "
+    + f"gear_type={_gear_type_name(gear)} raw={raw} drive={int(drive)} rain={int(rain)} wipe={int(wipe)} "
+    + f"installed={int(_installed)} {rain_bits}"
   )
 
 

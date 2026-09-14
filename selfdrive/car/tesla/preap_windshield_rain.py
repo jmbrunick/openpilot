@@ -479,20 +479,16 @@ class WindshieldRain:
     err = f" err={self.last_err}" if self.last_err else ""
     why = f" {reason}" if reason else ""
     line = (
-      "nap wiper rain hold=%d ema=%.2f score=%.2f bokeh=%.2f blob=%.2f "
-      "speckle=%.3f sparse=%.1f sat=%.3f struct=%.3f clear=%d/%d "
-      "connected=%d failed=%d frames=%d stream=%s helper=%d age_ms=%.0f%s%s"
-    )
-    args = (
-      int(self.hold), self.ema, self.last_score, self.last_bokeh, self.last_blob,
-      self.last_speckle, self.last_sparse, self.last_sat, self.last_structure,
-      int(self._clear_n), int(CLEAR_RELEASE_N),
-      int(self.connected), int(self._failed), self.n_frames, self.stream,
-      int(self.helper_alive), age_ms, err, why,
+      f"nap wiper rain hold={int(self.hold)} ema={self.ema:.2f} score={self.last_score:.2f} "
+      + f"bokeh={self.last_bokeh:.2f} blob={self.last_blob:.2f} speckle={self.last_speckle:.3f} "
+      + f"sparse={self.last_sparse:.1f} sat={self.last_sat:.3f} struct={self.last_structure:.3f} "
+      + f"clear={int(self._clear_n)}/{int(CLEAR_RELEASE_N)} connected={int(self.connected)} "
+      + f"failed={int(self._failed)} frames={self.n_frames} stream={self.stream} "
+      + f"helper={int(self.helper_alive)} age_ms={age_ms:.0f}{err}{why}"
     )
     try:
       from openpilot.common.swaglog import cloudlog
-      cloudlog.info(line, *args)
+      cloudlog.info("%s", line)
     except Exception:
       pass
     # Never put a short hold= line. Refresh the full Auto gate string instead.
