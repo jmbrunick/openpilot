@@ -1,10 +1,10 @@
-"""Tip-brake soft-glide: speed target after a short cancel, stock on hold.
+"""Tip-brake comfort ramp: gentle start, stronger later, stock on hold.
 
 A light tap that knocks software long off keeps interceptor ENABLE and
-commands a decelerating profile toward ~12 mph over ~2.5 s — not stock
-bite on frame 1, and not the reverted 0.75 s 0→REGEN_MAX fade. Held /
-firm aEgo RELEASEs immediately. FCW / hard lead / full cancel unchanged.
-Gas-lift A+B / A3 is untouched.
+ramps regen gentle → strong over ~2.5 s — not stock bite on frame 1,
+not a constant-a step, and not the reverted 0.75 s 0→REGEN_MAX fade.
+Held / firm aEgo RELEASEs immediately. FCW / hard lead / full cancel
+unchanged. Gas-lift A+B / A3 is untouched.
 """
 from types import SimpleNamespace
 
@@ -13,9 +13,9 @@ import pytest
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.tesla.preap.brake_tip_glide import (
   BRAKE_GLIDE_A_MIN,
+  BRAKE_GLIDE_A_START,
   BRAKE_GLIDE_DURATION_S,
   BRAKE_TIP_HOLD_S,
-  glide_target_accel,
 )
 from opendbc.car.tesla.preap.carcontroller import (
   ENGAGE_GRACE_FRAMES,
@@ -103,14 +103,19 @@ def test_short_tip_keeps_interceptor_and_glides(monkeypatch):
   assert cs.pedal_authority_action == int(PedalCommandAction.ENABLE)
   assert cs.pedal_brake_tip_glide
   assert hasattr(controller, "brake_cancel")
-  assert controller.brake_cancel.commanded_accel() == pytest.approx(0.0)
+  # Tip cancel has started: noticeable but gentle. Not coast, not full.
+  assert controller.brake_cancel.commanded_accel() == pytest.approx(
+    BRAKE_GLIDE_A_START, abs=0.05,
+  )
+  assert controller.brake_cancel.commanded_accel() > -0.5
+  assert controller.brake_cancel.commanded_accel() < -0.1
 
   cs.real_brake_pressed = False
   cs.out.aEgo = 0.05
   cc.actuators.accel = -1.2
   accels = []
   # Every card frame (100 Hz). Odd frames do not TX but the FSM still advances.
-  for frame in range(3, 90):
+  for frame in range(3, 220):
     sent = controller.update(cc, cs, frame=frame, tesla_can=tesla_can, can_bus_party=0)
     if frame % 2:
       continue
@@ -118,11 +123,10 @@ def test_short_tip_keeps_interceptor_and_glides(monkeypatch):
     assert cs.pedal_brake_tip_glide
     accels.append(controller.brake_cancel.commanded_accel())
 
-  expected_a = glide_target_accel(V_GLIDE)
-  assert accels[0] == pytest.approx(expected_a)
-  assert accels[-1] == pytest.approx(expected_a)
+  assert accels[0] > -0.5
+  assert accels[-1] < accels[0]
   assert accels[-1] < -0.5
-  assert accels[-1] > BRAKE_GLIDE_A_MIN + 0.02
+  assert accels[-1] > BRAKE_GLIDE_A_MIN
   assert BRAKE_GLIDE_DURATION_S == pytest.approx(2.5)
   assert controller.brake_cancel.glide_s > 0.75
 
