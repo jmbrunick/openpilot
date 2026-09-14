@@ -32,12 +32,13 @@ magnitudes are invalid/dry (they must not latch HOLD or look like rain
 returning after a wipe). Real heavy-rain scores above ~12 are still wet.
 
 VisionIpc is drained on a SCHED_OTHER helper thread (blocking recv,
-conflate ROAD then WIDE). Scoring is capped at SCORE_HZ (~4 Hz): a
-full-res Y copy plus 20 Hz multi-blur was starving card's GIL
-(age_ms ~30 s, Selfdrive Process Lagging). Recv downsamples immediately;
-one feature pass per scored frame; ice contrast uses the tiny grid.
-card is CTRL_HIGH: stock_cc.update / poll() only reads the latch.
-Failures retry; they do not permanently dry Auto.
+conflate ROAD then WIDE). Numpy scoring runs once per SCORE_PERIOD_S
+(~2.5 s), not every ROAD frame: a full-res Y copy plus 20 Hz multi-blur
+starved card's GIL (age_ms ~30 s, Selfdrive Process Lagging). Recv
+downsamples immediately; one feature pass per scored frame; ice contrast
+uses the tiny grid. HOLD release uses the same 2–3 s ticks (Pre-AP
+already latches ~32 s). card is CTRL_HIGH: stock_cc.update / poll()
+only reads the latch. Failures retry; they do not permanently dry Auto.
 """
 from __future__ import annotations
 
@@ -96,20 +97,21 @@ HOLD_OFF = 0.70
 EMA_ALPHA = 0.35
 # Same as acquire. A slow hold-EMA was trapping residual scores.
 EMA_HOLD_ALPHA = 0.35
-# ROAD ~20 Hz. 12 frames ≈ 0.6 s at camera rate; helper scores at SCORE_HZ.
-# Bias dry-release: stuck 30 s intermittent on clear glass is worse than
-# dropping HOLD on a long wipe (rain re-acquires). 48/20 never finished
-# on false bokeh.
+# ROAD ~20 Hz. Helper numpy is SCORE_PERIOD_S, not per frame. Frame
+# counts below are for tests that inject Y directly. Live acquire/release
+# is those counts times ~2.5 s. Pre-AP already latches ~32 s Int.
 CLEAR_RELEASE_N = 12
 # Blade-start flash only.
 MIN_HOLD_N = 4
-# Brief wipe-clear that must keep HOLD (~0.4 s at 20 Hz).
+# Brief wipe-clear that must keep HOLD (tests inject dry frames).
 WIPE_CLEAR_N = 8
-STALE_S = 2.0
+# Must exceed SCORE_PERIOD_S so poll does not drop HOLD between ticks.
+STALE_S = 8.0
 CONNECT_RETRY_S = 0.5
 DEBUG_LOG_S = 1.0
-# Live helper target. 20 Hz numpy on card's GIL lagged selfdrive.
-SCORE_HZ = 4.0
+# Live helper: score windshield clarity once every 2–3 s, not 20 Hz / 1 Hz.
+SCORE_PERIOD_S = 2.5
+SCORE_HZ = 1.0 / SCORE_PERIOD_S
 HELPER_RECV_MS = 50
 HELPER_NICE = 10
 # Copy at most this many pixels on the short side from VisionIpc (not full ROAD).
@@ -580,7 +582,7 @@ class WindshieldRain:
       + f"sparse={self.last_sparse:.1f} sat={self.last_sat:.3f} struct={self.last_structure:.3f} "
       + f"clear={int(self._clear_n)}/{int(CLEAR_RELEASE_N)} connected={int(self.connected)} "
       + f"failed={int(self._failed)} frames={self.n_frames} stream={self.stream} "
-      + f"helper={int(self.helper_alive)} hz={SCORE_HZ:.0f} age_ms={age_ms:.0f}{err}{why}"
+      + f"helper={int(self.helper_alive)} period_s={SCORE_PERIOD_S:.1f} age_ms={age_ms:.0f}{err}{why}"
     )
     try:
       from openpilot.common.swaglog import cloudlog
@@ -632,10 +634,11 @@ class WindshieldRain:
     self._helper_started = False
 
   def _helper_loop(self) -> None:
+    """Conflate ROAD cheaply; numpy score at SCORE_PERIOD_S (~2.5 s), including HOLD."""
     _drop_realtime()
-    period = 1.0 / float(SCORE_HZ)
+    last_score_t = 0.0
     while not self._stop.is_set():
-      t0 = time.monotonic()
+      period = float(SCORE_PERIOD_S)
       try:
         y = self._recv_y(timeout_ms=HELPER_RECV_MS, max_side=Y_COPY_SIDE)
       except Exception as e:
@@ -644,15 +647,24 @@ class WindshieldRain:
         y = None
       if self._stop.is_set():
         break
-      if y is not None:
+      now = time.monotonic()
+      due = last_score_t <= 0.0 or (now - last_score_t) >= period
+      if y is not None and due:
+        # Expensive path. _last_frame_t / age_ms follow this scored frame.
         self.update_from_y(y)
+        last_score_t = time.monotonic()
         y = None
-      else:
+      elif y is None:
         self._apply_stale()
         if not self.connected or self._failed:
           self._stop.wait(CONNECT_RETRY_S)
           continue
-      wait = period - (time.monotonic() - t0)
+      else:
+        # Latest Y already downsampled; drop it. Do not score every ROAD frame.
+        y = None
+      wait = period - (time.monotonic() - last_score_t)
+      if last_score_t <= 0.0:
+        wait = 0.0
       if wait > 0.0:
         self._stop.wait(wait)
 
