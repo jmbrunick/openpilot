@@ -42,8 +42,11 @@ scored frame; ice contrast uses the tiny grid. After each score the
 ROAD client is dropped so camerad is not an extra always-on subscriber.
 HOLD release uses the same 2–3 s ticks (Pre-AP already latches ~32 s).
 card is CTRL_HIGH: stock_cc.update / poll() only reads the latch, never
-recvs, never joins the helper. Failures retry; they do not permanently
-dry Auto.
+recvs, never joins the helper. NAPWiperRainStatus and cloudlog are 1 Hz
+or on gate changes — not every 10 ms Params.put. Numpy is imported on a
+background thread, not on card's RT path. Helper start waits
+RAIN_HELPER_START_DELAY_S after Auto is selected so engage is not
+fighting ROAD subscribe. Failures retry; they do not permanently dry Auto.
 """
 from __future__ import annotations
 
@@ -578,6 +581,7 @@ class WindshieldRain:
       return None
 
   def _debug(self, reason: str = "") -> None:
+    """cloudlog at DEBUG_LOG_S. Do not write NAPWiperRainStatus from this thread."""
     now = time.monotonic()
     if now - self._last_log_t < DEBUG_LOG_S:
       return
@@ -596,16 +600,6 @@ class WindshieldRain:
     try:
       from openpilot.common.swaglog import cloudlog
       cloudlog.info("%s", line)
-    except Exception:
-      pass
-    # Never put a short hold= line. Refresh the full Auto gate string instead.
-    try:
-      from openpilot.selfdrive.car.tesla import preap_body_controls as body
-      if int(body._param_int(body.NAP_WIPER_SPEED, 0)) == body.WIPER_SETTING_AUTO:
-        on = body.vehicle_is_on()
-        drive = body.in_drive_gear()
-        rain = bool(self.hold)
-        body._log_auto_status(body.WIPER_SETTING_AUTO, on, drive, rain, bool(on and drive and rain))
     except Exception:
       pass
 
@@ -650,6 +644,11 @@ class WindshieldRain:
 
   def stop_helper(self, join: bool = True) -> None:
     """Stop ROAD drain and drop HOLD. join=False from card (do not block RT)."""
+    t = self._helper
+    if not self._helper_started and not self.hold and (t is None or not t.is_alive()):
+      if join:
+        self._helper = None
+      return
     self._stop.set()
     self._helper_started = False
     self._clear_hold()
@@ -704,10 +703,11 @@ class WindshieldRain:
       self._debug("noframe")
 
   def poll(self) -> bool:
-    """Latch only. Never recv or numpy on the card RT thread."""
+    """Latch only. Never recv, numpy, Params, or stale-debug on the card RT thread."""
     if not self._helper_started:
       return False
-    self._apply_stale()
+    if self.hold:
+      self._apply_stale()
     return self.hold
 
 
@@ -730,7 +730,10 @@ def stop_windshield_rain_helper() -> None:
 
 
 def windshield_rain_needed() -> bool:
-  det = ensure_windshield_rain_helper()
+  """Latch only. stock_cc starts the helper while Auto; do not start from poll."""
+  det = _detector
+  if det is None:
+    return False
   return det.poll()
 
 

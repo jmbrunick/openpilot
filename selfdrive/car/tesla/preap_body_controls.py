@@ -61,6 +61,7 @@ wins when held, so Auto uses that same hold, not a pulse.
 """
 
 # Params / UI. 0 is off (today's forwarded stalk). Indexes, not raw DBC.
+import threading
 import time
 
 NAP_WIPER_SPEED = "NAPWiperSpeed"
@@ -114,10 +115,19 @@ _GEAR_ATTRS = (
   "DI_gear", "di_gear",
 )
 _AUTO_DEBUG_S = 1.0
+# First Auto stock_cc must not connect ROAD during engage (modeld + GIL).
+RAIN_HELPER_START_DELAY_S = 2.5
 _last_auto_log_t = 0.0
+_last_status_put_t = 0.0
+_last_status_gate = None
 _last_gear_src = "none"
 _last_wiper_req = False
 _wiper_cancel_burst = 0
+_params = None
+_rain_mod = None
+_rain_import_started = False
+_auto_since_t = 0.0
+_GEAR_SHIFTER_ENUMS = None
 
 
 def _tesla_can():
@@ -252,10 +262,18 @@ def send_replaced_live_stw(spoofer, CS, tesla_can, bus):
   return tesla_can.create_action_request(button, bus, live_stw_counter(msg_stw), msg_stw)
 
 
+def _get_params():
+  """Reuse one Params handle. Constructing Params() every 10 ms lagged card."""
+  global _params
+  if _params is None:
+    from openpilot.common.params import Params
+    _params = Params()
+  return _params
+
+
 def _param_int(key: str, default: int = 0) -> int:
   try:
-    from openpilot.common.params import Params
-    val = Params().get(key, return_default=True)
+    val = _get_params().get(key, return_default=True)
     if val is None:
       return default
     if isinstance(val, (bytes, bytearray)):
@@ -294,6 +312,7 @@ def set_cereal_gear(gear) -> None:
 def reset_auto_gates() -> None:
   global _live_cs, _vehicle_on_override, _gear_override, _last_gear_src, _last_wiper_req
   global _cereal_gear_override, _cereal_gear_forced, _wiper_cancel_burst
+  global _last_auto_log_t, _last_status_put_t, _last_status_gate, _auto_since_t
   _live_cs = None
   _vehicle_on_override = None
   _gear_override = None
@@ -302,6 +321,10 @@ def reset_auto_gates() -> None:
   _last_gear_src = "none"
   _last_wiper_req = False
   _wiper_cancel_burst = 0
+  _last_auto_log_t = 0.0
+  _last_status_put_t = 0.0
+  _last_status_gate = None
+  _auto_since_t = 0.0
 
 
 def _gear_name(gear) -> str:
@@ -420,6 +443,10 @@ def _gear_known(gear) -> bool:
 
 
 def _gear_shifter_enums():
+  """Import once. Re-importing opendbc/cereal on the 10 ms path hit the GIL."""
+  global _GEAR_SHIFTER_ENUMS
+  if _GEAR_SHIFTER_ENUMS is not None:
+    return _GEAR_SHIFTER_ENUMS
   found = []
   try:
     from opendbc.car import structs
@@ -433,7 +460,8 @@ def _gear_shifter_enums():
       found.append(gs)
   except Exception:
     pass
-  return found
+  _GEAR_SHIFTER_ENUMS = tuple(found)
+  return _GEAR_SHIFTER_ENUMS
 
 
 def _attr_gear(obj, attr: str):
@@ -552,25 +580,69 @@ def rain_wiper_needed() -> bool:
   if _rain_needed_override is not None:
     return bool(_rain_needed_override)
   try:
-    from openpilot.selfdrive.car.tesla.preap_windshield_rain import windshield_rain_needed
-    return bool(windshield_rain_needed())
+    rain = _rain_module()
+    if rain is None:
+      return False
+    return bool(rain.windshield_rain_needed())
   except Exception:
     return False
 
 
+def _rain_module():
+  """Already-imported rain module only. Never import numpy on the card RT thread."""
+  global _rain_mod
+  if _rain_mod is not None:
+    return _rain_mod
+  import sys
+  m = sys.modules.get("openpilot.selfdrive.car.tesla.preap_windshield_rain")
+  if m is not None:
+    _rain_mod = m
+  return _rain_mod
+
+
+def _preimport_rain_module() -> None:
+  """Background numpy import. stock_cc.update must not pay this on CTRL_HIGH."""
+  global _rain_mod
+  try:
+    from openpilot.selfdrive.car.tesla import preap_windshield_rain as rain
+    _rain_mod = rain
+  except Exception:
+    pass
+
+
+def _kick_rain_import() -> None:
+  global _rain_import_started
+  if _rain_import_started:
+    return
+  _rain_import_started = True
+  threading.Thread(target=_preimport_rain_module, name="nap-wiper-import", daemon=True).start()
+
+
 def _sync_rain_helper() -> None:
   """VisionIpc + numpy only while Wipers = Auto. Off/Int/On must not recv ROAD."""
+  global _auto_since_t
   if _rain_needed_override is not None:
     return
+  setting = _param_int(NAP_WIPER_SPEED, WIPER_SETTING_OFF)
+  rain = _rain_module()
+  if int(setting) != WIPER_SETTING_AUTO:
+    _auto_since_t = 0.0
+    if rain is not None:
+      try:
+        rain.stop_windshield_rain_helper()
+      except Exception:
+        pass
+    return
+  now = time.monotonic()
+  if _auto_since_t <= 0.0:
+    _auto_since_t = now
+  if rain is None:
+    _kick_rain_import()
+    return
+  if now - _auto_since_t < float(RAIN_HELPER_START_DELAY_S):
+    return
   try:
-    from openpilot.selfdrive.car.tesla.preap_windshield_rain import (
-      ensure_windshield_rain_helper,
-      stop_windshield_rain_helper,
-    )
-    if _param_int(NAP_WIPER_SPEED, WIPER_SETTING_OFF) == WIPER_SETTING_AUTO:
-      ensure_windshield_rain_helper()
-    else:
-      stop_windshield_rain_helper()
+    rain.ensure_windshield_rain_helper()
   except Exception:
     pass
 
@@ -606,14 +678,12 @@ def _auto_status_line(setting: int, on: bool, drive: bool, rain: bool, wipe: boo
 
 
 def _put_wiper_status(line: str) -> None:
-  """Write NAPWiperRainStatus so `cat` always has Auto gates, never a bare hold= line."""
+  """Write NAPWiperRainStatus. Callers must rate-limit — this is the expensive put."""
   try:
-    from openpilot.common.params import Params
-    Params().put("NAPWiperRainStatus", line, block=False)
+    _get_params().put("NAPWiperRainStatus", line, block=False)
   except TypeError:
     try:
-      from openpilot.common.params import Params
-      Params().put("NAPWiperRainStatus", line)
+      _get_params().put("NAPWiperRainStatus", line)
     except Exception:
       pass
   except Exception:
@@ -621,10 +691,15 @@ def _put_wiper_status(line: str) -> None:
 
 
 def _log_auto_status(setting: int, on: bool, drive: bool, rain: bool, wipe: bool) -> None:
-  """Always put the full Auto line. Rate-limit only swaglog."""
-  global _last_auto_log_t
-  line = _auto_status_line(setting, on, drive, rain, wipe)
+  """Params.put / cloudlog at 1 Hz, or immediately on Auto gate changes. Not every 10 ms."""
+  global _last_auto_log_t, _last_status_put_t, _last_status_gate
+  gate = (int(setting), bool(on), bool(drive), bool(rain), bool(wipe))
   now = time.monotonic()
+  if gate == _last_status_gate and now - _last_status_put_t < _AUTO_DEBUG_S:
+    return
+  _last_status_gate = gate
+  _last_status_put_t = now
+  line = _auto_status_line(setting, on, drive, rain, wipe)
   if now - _last_auto_log_t >= _AUTO_DEBUG_S:
     _last_auto_log_t = now
     try:
@@ -662,6 +737,7 @@ def _note_wiper_cancel_frame() -> None:
 def requested_wiper_test() -> bool:
   global _last_wiper_req
   setting = _param_int(NAP_WIPER_SPEED, WIPER_SETTING_OFF)
+  _sync_rain_helper()
   if int(setting) == WIPER_SETTING_AUTO:
     on = vehicle_is_on()
     drive = in_drive_gear()
@@ -674,7 +750,6 @@ def requested_wiper_test() -> bool:
     _last_wiper_req = wipe
     _log_auto_status(setting, on, drive, rain, wipe)
     return wipe
-  _sync_rain_helper()
   wipe = wiper_test_requested(setting)
   _last_wiper_req = wipe
   return wipe
