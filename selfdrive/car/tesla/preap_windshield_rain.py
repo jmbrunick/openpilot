@@ -22,11 +22,13 @@ wetness floor. A real wipe may look clear for one idle score tick (~4 s).
 Duty cycle (Justin): idle watching assesses every SCORE_PERIOD_S (~4 s)
 and does not wipe first on Auto select / helper start. The first
 WARMUP_N helper looks are ignored (VisionIpc / first ROAD). First wipe
-needs two consecutive clearly-wet idle looks (ACQUIRE_ON) after warmup.
-Dry driveway/highway texture (live blob~7.4 sparse~4.7) is not a wet
-sheet. Then: one blade sweep → wipe=0 + Auto rest-cancel → wait
-CLEAR_WAIT_S → assess. Re-wipe only if still clearly wet (REWIPE_ON).
-One dry / marginal assess exits to idle. Off still leaves the real stalk.
+needs two consecutive *meaningful* wet idle looks (ACQUIRE_ON) after
+warmup — light sprinkle / residual beads stay idle (watch every ~4 s).
+Dry driveway/highway texture and Justin's live sprinkle (blob~7.4
+score~4.42) must not enter the wipe loop. Then: one blade sweep →
+wipe=0 + Auto rest-cancel → wait CLEAR_WAIT_S → assess. Re-wipe only if
+still clearly wet (REWIPE_ON). One dry / sprinkle / marginal assess
+exits to idle. Off still leaves the real stalk.
 
 Bokeh energy is an 8-bit residual (~0 dry, ~2–5 wet). A live clear-glass
 log showed bokeh=49165 — wrong Y scale or a bandpass blowup. Impossible
@@ -82,16 +84,16 @@ SCORE_OFF = 1.0
 # Justin's heavier-rain ROAD UI: mid-band detrended bokeh ~1.85–3.3.
 # Dry sky/road wash is ~0.2. Live clear/overcast texture was latching at
 # 1.5 — raise the bar so that is not rain. Real wet is still ~3+.
-# Bone-dry 5f32c450b: bokeh=3.01 blob=7.40 — not rain; scene-texture veto.
+# Light sprinkle 5f32c450b: bokeh=3.01 blob=7.40 — not a wet sheet.
 # At-or-above: bokeh >= this is rain. Do not also require a ratio vs blob.
 BOKEH_ON = 2.2
 # Old sweet-spot veto: bokeh/(blob+0.2) >= 0.22 dropped heavy rain to 0
 # when blob rose. Kept so tests prove we no longer use it as a reject.
 _BOKEH_RATIO = 0.22
-# Dry/overcast fine residual on *smooth* fixtures is ~2. Live dry driveway
-# was blob=7.40. Overlapping milky wet is ~12. Sheet bar sits above live dry.
+# Dry/overcast fine residual on *smooth* fixtures is ~2. Live light sprinkle
+# was blob=7.40. Overlapping milky wet is ~12. Sheet bar sits above sprinkle.
 BLOB_WET = 8.0
-# Live bone-dry (Justin 5f32c450b): blob=7.40 sparse=4.7 struct=0.013.
+# Live light sprinkle (Justin 5f32c450b): blob=7.40 sparse=4.7 struct=0.013.
 # Heavy wet sheet is blob~12 sparse~2. Sparse beads are sparse~8+.
 _SCENE_BLOB_MIN = 4.0
 _SCENE_SPARSE = (3.0, 7.5)
@@ -113,10 +115,13 @@ ICE_LUM = (45.0, 210.0)
 # Combined obstruction: 1.0 is looks_rainy / wetness floor (rain/frost/ice).
 HOLD_ON = 1.0
 # First wipe: two consecutive idle scores at/above this *after* warmup.
-ACQUIRE_ON = 1.6
-# Light-wet fixtures sit ~1.7; heavy/driveway ~7+. Post-wipe re-enter bar.
-HEAVY_ON = 2.2
-REWIPE_ON = HEAVY_ON
+# Light sprinkle / residual beads (live 5f32c450b score=4.42, light
+# fixtures ~1.7, 48px light bokeh ~3.2) must stay idle. Meaningful wet
+# (heavy milky / dense beads ~7+) enters the wipe loop.
+ACQUIRE_ON = 4.5
+# Status "heavy" and post-wipe re-enter: same bar as first wipe.
+HEAVY_ON = ACQUIRE_ON
+REWIPE_ON = ACQUIRE_ON
 HOLD_OFF = 0.70
 EMA_ALPHA = 0.35
 EMA_HOLD_ALPHA = 0.35
@@ -323,8 +328,9 @@ def _mid_stats(y: np.ndarray) -> tuple[float, float]:
 def _scene_texture(blob: float, sparse: float, structure: float) -> bool:
   """Dry driveway/highway grain. Not a milky wet sheet and not sparse beads.
 
-  Live bone-dry Auto (5f32c450b) scored blob=7.40 sparse=4.7 struct=0.013
-  and wiped. Heavy overlapping rain is blob~12 sparse~2. Beads are sparse~8+.
+  Live light-sprinkle Auto (5f32c450b) scored blob=7.40 sparse=4.7
+  struct=0.013 and wiped. Heavy overlapping rain is blob~12 sparse~2.
+  Residual beads can hit sparse~8 with the same mid blob — still not a sheet.
   """
   if structure > _STRUCTURE_RAIN:
     return False
