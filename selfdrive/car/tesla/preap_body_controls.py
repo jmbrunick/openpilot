@@ -408,6 +408,17 @@ def rain_wiper_needed() -> bool:
     return False
 
 
+def _prime_rain_helper() -> None:
+  """stock_cc.update starts ROAD drain off the CTRL_HIGH card thread."""
+  if _rain_needed_override is not None:
+    return
+  try:
+    from openpilot.selfdrive.car.tesla.preap_windshield_rain import ensure_windshield_rain_helper
+    ensure_windshield_rain_helper()
+  except Exception:
+    pass
+
+
 def _auto_status_line(setting: int, on: bool, drive: bool, rain: bool, wipe: bool) -> str:
   if _gear_override is not None:
     gear, src = _gear_override, "override"
@@ -418,11 +429,14 @@ def _auto_status_line(setting: int, on: bool, drive: bool, rain: bool, wipe: boo
     from openpilot.selfdrive.car.tesla import preap_windshield_rain as rainmod
     d = rainmod._detector
     if d is not None:
+      now = time.monotonic()
+      age_ms = (now - d._last_frame_t) * 1000.0 if d._last_frame_t else -1.0
       rain_bits = (
         "hold=%d ema=%.2f score=%.2f bokeh=%.2f sparse=%.1f connected=%d failed=%d "
-        "frames=%d stream=%s err=%s" % (
+        "frames=%d stream=%s helper=%d age_ms=%.0f err=%s" % (
           int(d.hold), d.ema, d.last_score, d.last_bokeh, d.last_sparse,
-          int(d.connected), int(d._failed), d.n_frames, d.stream, d.last_err or "-",
+          int(d.connected), int(d._failed), d.n_frames, d.stream,
+          int(d.helper_alive), age_ms, d.last_err or "-",
         )
       )
   except Exception:
@@ -509,12 +523,15 @@ def stock_cc_update_with_overlay(self, CS, frame, tesla_can, can_bus_party):
   Does not read cruiseEnabled, latActive, or CC.enabled. High extra-forwards
   every 10 ms with held nibble 4 on the live-counter frame; wipers keep
   forwarding on the 10 Hz slot. Auto reads gear from this CS: Park/Neutral
-  release the stalk even if the glass still looks wet.
+  release the stalk even if the glass still looks wet. Primes the ROAD
+  VisionIpc helper so poll() does not recv on this CTRL_HIGH thread.
   """
   orig = _ORIG_STOCK_CC_UPDATE
   if orig is None:
     orig = _stock_cc().update
   update_live_car_state(CS)
+  if _param_int(NAP_WIPER_SPEED, WIPER_SETTING_OFF) == WIPER_SETTING_AUTO:
+    _prime_rain_helper()
   wiper = requested_wiper_test()
   high_setting = requested_high_beam_test()
   can_sends = orig(self, CS, frame, tesla_can, can_bus_party)
@@ -553,6 +570,11 @@ def install_body_controls_test():
   try:
     from openpilot.common.swaglog import cloudlog
     cloudlog.info("nap body controls overlay installed (0x45 wiper/beam)")
+  except Exception:
+    pass
+  try:
+    from openpilot.selfdrive.car.tesla.preap_windshield_rain import ensure_windshield_rain_helper
+    ensure_windshield_rain_helper()
   except Exception:
     pass
   _put_wiper_status("nap wiper auto setting=- on=0 gear=- gear_src=none raw=- drive=0 rain=0 wipe=0 installed=1 waiting")

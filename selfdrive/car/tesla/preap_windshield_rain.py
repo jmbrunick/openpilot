@@ -13,10 +13,14 @@ Dense in-focus texture (foliage, brick) and large saturated headlamp
 plates are rejected. Hysteresis holds while the glass looks obstructed
 and releases when it looks clear.
 
-VisionIpc failures retry; they do not permanently dry Auto.
+VisionIpc is drained on a SCHED_OTHER helper thread (blocking recv,
+conflate ROAD then WIDE). card is CTRL_HIGH: stock_cc.update / poll()
+only reads the latch. Failures retry; they do not permanently dry Auto.
 """
 from __future__ import annotations
 
+import os
+import threading
 import time
 
 import numpy as np
@@ -55,6 +59,7 @@ EMA_ALPHA = 0.35
 STALE_S = 2.0
 CONNECT_RETRY_S = 0.5
 DEBUG_LOG_S = 1.0
+HELPER_RECV_MS = 100
 _SAT_MAX = 0.08
 _SPARSE_MIN = 8.0
 # Dense bead rain on glass is ~6.5–8.5. Justin's upper droplet crop was
@@ -227,6 +232,18 @@ def windshield_looks_rainy(y: np.ndarray, prev_hold: bool = False) -> bool:
 windshield_looks_obstructed = windshield_looks_rainy
 
 
+def _drop_realtime() -> None:
+  """card is CTRL_HIGH. VisionIpc + numpy must not run on that policy."""
+  try:
+    os.sched_setscheduler(0, os.SCHED_OTHER, os.sched_param(0))
+  except Exception:
+    pass
+  try:
+    os.nice(5)
+  except Exception:
+    pass
+
+
 class WindshieldRain:
   """Live 3X ROAD-camera wet/icy-glass latch for Wiper Auto."""
 
@@ -251,6 +268,11 @@ class WindshieldRain:
     self._last_log_t = 0.0
     self._stream_idx = 0
     self._stream_t0 = 0.0
+    self._lock = threading.Lock()
+    self._stop = threading.Event()
+    self._helper: threading.Thread | None = None
+    self._helper_started = False
+    self._poll_recv = 0
 
   def _record_band(self, y: np.ndarray) -> None:
     best = (-1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -269,16 +291,18 @@ class WindshieldRain:
   def update_from_y(self, y: np.ndarray) -> bool:
     self._record_band(y)
     score = windshield_obstruction_score(y)
-    self.last_score = score
-    self.ema = EMA_ALPHA * score + (1.0 - EMA_ALPHA) * self.ema
-    if self.hold:
-      self.hold = self.ema >= HOLD_OFF
-    else:
-      self.hold = self.ema >= HOLD_ON
-    self._last_frame_t = time.monotonic()
-    self.n_frames += 1
+    with self._lock:
+      self.last_score = score
+      self.ema = EMA_ALPHA * score + (1.0 - EMA_ALPHA) * self.ema
+      if self.hold:
+        self.hold = self.ema >= HOLD_OFF
+      else:
+        self.hold = self.ema >= HOLD_ON
+      self._last_frame_t = time.monotonic()
+      self.n_frames += 1
+      hold = self.hold
     self._debug()
-    return self.hold
+    return hold
 
   def _stream_names(self) -> tuple[str, ...]:
     return ("VISION_STREAM_ROAD", "VISION_STREAM_WIDE_ROAD")
@@ -302,7 +326,7 @@ class WindshieldRain:
     self._stream_t0 = now
     self.last_err = f"fallback_{self.stream}"
 
-  def _recv_y(self) -> np.ndarray | None:
+  def _recv_y(self, timeout_ms: int = 0) -> np.ndarray | None:
     now = time.monotonic()
     if self._failed and (now - self._last_connect_t) < CONNECT_RETRY_S:
       return None
@@ -329,9 +353,10 @@ class WindshieldRain:
           return None
         self.connected = True
         self.last_err = ""
-      buf = self._client.recv(timeout_ms=0)
+      buf = self._client.recv(timeout_ms=int(timeout_ms))
       if buf is None:
-        if not self.last_err:
+        # Helper blocking timeout is normal. Do not stamp nobuf over a live connect.
+        if int(timeout_ms) <= 0 and not self.last_err:
           self.last_err = "nobuf"
         return None
       y = y_plane_from_nv12(buf)
@@ -359,12 +384,13 @@ class WindshieldRain:
     line = (
       "nap wiper rain hold=%d ema=%.2f score=%.2f bokeh=%.2f blob=%.2f "
       "speckle=%.3f sparse=%.1f sat=%.3f struct=%.3f connected=%d failed=%d "
-      "frames=%d stream=%s age_ms=%.0f%s%s"
+      "frames=%d stream=%s helper=%d age_ms=%.0f%s%s"
     )
     args = (
       int(self.hold), self.ema, self.last_score, self.last_bokeh, self.last_blob,
       self.last_speckle, self.last_sparse, self.last_sat, self.last_structure,
-      int(self.connected), int(self._failed), self.n_frames, self.stream, age_ms, err, why,
+      int(self.connected), int(self._failed), self.n_frames, self.stream,
+      int(self.helper_alive), age_ms, err, why,
     )
     try:
       from openpilot.common.swaglog import cloudlog
@@ -382,33 +408,102 @@ class WindshieldRain:
     except Exception:
       pass
 
-  def poll(self) -> bool:
-    """Non-blocking. Clear until a frame says the glass is not; stale → clear."""
-    y = self._recv_y()
-    if y is not None:
-      return self.update_from_y(y)
+  @property
+  def helper_alive(self) -> bool:
+    t = self._helper
+    return bool(t is not None and t.is_alive())
+
+  def start_helper(self) -> None:
+    """Drain ROAD off the card thread. Idempotent."""
+    t = self._helper
+    if t is not None and t.is_alive():
+      self._helper_started = True
+      return
+    if t is not None and t is not threading.current_thread():
+      self._stop.set()
+      t.join(timeout=0.6)
+    # New Event so a stuck previous loop cannot resume after we restart.
+    self._stop = threading.Event()
+    self._helper_started = True
+    try:
+      self._helper = threading.Thread(target=self._helper_loop, name="nap-wiper-rain", daemon=True)
+      self._helper.start()
+    except Exception as e:
+      self._helper = None
+      self._helper_started = False
+      self.last_err = type(e).__name__
+
+  def stop_helper(self) -> None:
+    self._stop.set()
+    t = self._helper
+    if t is not None and t.is_alive() and t is not threading.current_thread():
+      t.join(timeout=0.6)
+    self._helper = None
+    self._helper_started = False
+
+  def _helper_loop(self) -> None:
+    _drop_realtime()
+    while not self._stop.is_set():
+      try:
+        y = self._recv_y(timeout_ms=HELPER_RECV_MS)
+      except Exception as e:
+        self._failed = True
+        self.last_err = type(e).__name__
+        y = None
+      if self._stop.is_set():
+        break
+      if y is not None:
+        self.update_from_y(y)
+        continue
+      self._apply_stale()
+      if not self.connected or self._failed:
+        self._stop.wait(CONNECT_RETRY_S)
+
+  def _apply_stale(self) -> None:
+    """Clear HOLD if ROAD frames stop. Do not wipe dry glass."""
     if self.hold and self._last_frame_t > 0:
       if time.monotonic() - self._last_frame_t > STALE_S:
-        self.hold = False
-        self.ema = 0.0
-        self.last_score = 0.0
+        with self._lock:
+          self.hold = False
+          self.ema = 0.0
+          self.last_score = 0.0
         self._debug("stale")
     elif not self.hold:
       self._debug("noframe")
+
+  def poll(self) -> bool:
+    """Latch only when the helper is running. Never recv on the card RT thread."""
+    if self._helper_started:
+      self._apply_stale()
+      return self.hold
+    self._poll_recv += 1
+    y = self._recv_y(timeout_ms=0)
+    if y is not None:
+      return self.update_from_y(y)
+    self._apply_stale()
     return self.hold
 
 
 _detector: WindshieldRain | None = None
 
 
-def windshield_rain_needed() -> bool:
+def ensure_windshield_rain_helper() -> WindshieldRain:
+  """Start the ROAD drain thread. Called from stock_cc.update / install."""
   global _detector
   if _detector is None:
     _detector = WindshieldRain()
-  return _detector.poll()
+  _detector.start_helper()
+  return _detector
+
+
+def windshield_rain_needed() -> bool:
+  det = ensure_windshield_rain_helper()
+  return det.poll()
 
 
 def reset_windshield_rain() -> None:
   """Tests reset the singleton."""
   global _detector
+  if _detector is not None:
+    _detector.stop_helper()
   _detector = None
