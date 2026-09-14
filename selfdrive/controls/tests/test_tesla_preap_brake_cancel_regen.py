@@ -109,8 +109,11 @@ def test_short_tip_keeps_interceptor_and_glides(monkeypatch):
   cs.out.aEgo = 0.05
   cc.actuators.accel = -1.2
   accels = []
-  for frame in range(4, 40, 2):
+  # Every card frame (100 Hz). Odd frames do not TX but the FSM still advances.
+  for frame in range(3, 90):
     sent = controller.update(cc, cs, frame=frame, tesla_can=tesla_can, can_bus_party=0)
+    if frame % 2:
+      continue
     assert _decode_pedal_command(sent[0]).enabled
     assert cs.pedal_brake_tip_glide
     accels.append(controller.brake_cancel.commanded_accel())
