@@ -78,13 +78,26 @@ _rain_needed_override = None
 _live_cs = None
 _vehicle_on_override = None
 _gear_override = None
+_cereal_gear_override = None
+_cereal_gear_forced = False
+_cereal_sm = None
 # Names for Drive/Reverse. Pre-AP DI_torque2 is DI_GEAR_D / DI_GEAR_R.
 _DRIVE_GEARS = (
   "drive", "reverse", "d", "r",
   "di_gear_d", "di_gear_r", "di_gear_drive", "di_gear_reverse",
 )
+_PARK_NEUTRAL_GEARS = (
+  "park", "neutral", "p", "n",
+  "di_gear_p", "di_gear_n", "di_gear_park", "di_gear_neutral",
+)
 # cereal/opendbc GearShifter.drive=2 reverse=4. Tesla DI_gear R=2 D=4 — both allowed.
 _DRIVE_INTS = frozenset({2, 4})
+# GearShifter.park=1 neutral=3. Not 0 — unknown must fall through to cereal.
+_PARK_NEUTRAL_INTS = frozenset({1, 3})
+_GEAR_ATTRS = (
+  "gearShifter", "gear_shifter", "gear", "shifter",
+  "DI_gear", "di_gear",
+)
 _AUTO_DEBUG_S = 1.0
 _last_auto_log_t = 0.0
 _last_gear_src = "none"
@@ -245,11 +258,21 @@ def set_auto_gates(vehicle_on: bool | None = None, gear=None) -> None:
   _gear_override = gear
 
 
+def set_cereal_gear(gear) -> None:
+  """Tests inject cereal carState.gearShifter. None means cereal is empty."""
+  global _cereal_gear_override, _cereal_gear_forced
+  _cereal_gear_forced = True
+  _cereal_gear_override = gear
+
+
 def reset_auto_gates() -> None:
   global _live_cs, _vehicle_on_override, _gear_override, _last_gear_src, _last_wiper_req
+  global _cereal_gear_override, _cereal_gear_forced
   _live_cs = None
   _vehicle_on_override = None
   _gear_override = None
+  _cereal_gear_override = None
+  _cereal_gear_forced = False
   _last_gear_src = "none"
   _last_wiper_req = False
 
@@ -334,6 +357,41 @@ def _is_drive_or_reverse(gear) -> bool:
   return False
 
 
+def _is_park_or_neutral(gear) -> bool:
+  """Known Park/Neutral. Unknown 0 is missing, not Park."""
+  if not _gear_present(gear):
+    return False
+  name = _gear_name(gear)
+  if name in _PARK_NEUTRAL_GEARS:
+    return True
+  if name in ("unknown", "invalid", "di_gear_invalid", "sna"):
+    return False
+  gi = _gear_int(gear)
+  if gi in _PARK_NEUTRAL_INTS and name not in _DRIVE_GEARS:
+    return True
+  for gs in _gear_shifter_enums():
+    for side_name in ("park", "neutral"):
+      side = getattr(gs, side_name, None)
+      if side is None:
+        continue
+      try:
+        if gear == side:
+          return True
+      except Exception:
+        pass
+      try:
+        if _gear_name(gear) == _gear_name(side):
+          return True
+      except Exception:
+        pass
+  return False
+
+
+def _gear_known(gear) -> bool:
+  """Drive/Reverse/Park/Neutral. unknown 0 is not known — fall through to cereal."""
+  return _is_drive_or_reverse(gear) or _is_park_or_neutral(gear)
+
+
 def _gear_shifter_enums():
   found = []
   try:
@@ -351,29 +409,97 @@ def _gear_shifter_enums():
   return found
 
 
+def _attr_gear(obj, attr: str):
+  if obj is None:
+    return None
+  try:
+    if isinstance(obj, dict):
+      return obj.get(attr)
+    return getattr(obj, attr, None)
+  except Exception:
+    return None
+
+
+def _host_gears(host, src: str) -> list[tuple[object, str]]:
+  found = []
+  if host is None:
+    return found
+  for attr in _GEAR_ATTRS:
+    gear = _attr_gear(host, attr)
+    if _gear_present(gear):
+      found.append((gear, src if attr == "gearShifter" else f"{src}.{attr}"))
+  if isinstance(host, dict):
+    for key in ("DI_gear", "gearShifter"):
+      if key in host and _gear_present(host[key]):
+        found.append((host[key], src))
+  return found
+
+
 def _cs_gear(cs) -> tuple[object, str]:
-  """Live stock-cc CS is the inner parser. Drive is on CS.out.gearShifter.
+  """Live stock-cc CS is the inner parser. Drive is on CS.out / cereal carState.
 
   Prefer a candidate that already looks like Drive/Reverse so an inner
   unknown default cannot hide CS.out (cereal _DynamicEnum, str='drive').
+  Unknown 0 is not a gear — caller may fall through to cereal.
   """
   if cs is None:
     return None, "none"
   candidates = []
-  gear = getattr(cs, "gearShifter", None)
-  if _gear_present(gear):
-    candidates.append((gear, "cs"))
-  out = getattr(cs, "out", None)
+  candidates.extend(_host_gears(cs, "cs"))
+  out = _attr_gear(cs, "out")
   if out is not None:
-    gear = getattr(out, "gearShifter", None)
-    if _gear_present(gear):
-      candidates.append((gear, "out"))
+    candidates.extend(_host_gears(out, "out"))
+  for key in ("msg_di_torque2", "DI_torque2"):
+    msg = _attr_gear(cs, key)
+    if isinstance(msg, dict):
+      g = msg.get("DI_gear")
+      if _gear_present(g):
+        candidates.append((g, "di_torque2"))
   for gear, src in candidates:
     if _is_drive_or_reverse(gear):
       return gear, src
-  if candidates:
-    return candidates[0]
+  for gear, src in candidates:
+    if _is_park_or_neutral(gear):
+      return gear, src
   return None, "none"
+
+
+def _read_cereal_gear() -> tuple[object, str]:
+  """Published carState.gearShifter. Justin's probe: drive _DynamicEnum."""
+  if _cereal_gear_forced:
+    if _gear_present(_cereal_gear_override):
+      return _cereal_gear_override, "cereal"
+    return None, "none"
+  global _cereal_sm
+  try:
+    if _cereal_sm is None:
+      import cereal.messaging as messaging
+      _cereal_sm = messaging.SubMaster(["carState"])
+    _cereal_sm.update(0)
+    cs = _cereal_sm["carState"]
+    gear = _attr_gear(cs, "gearShifter")
+    if not _gear_present(gear):
+      gear = _attr_gear(cs, "gear")
+    if _gear_known(gear):
+      return gear, "cereal"
+  except Exception:
+    pass
+  return None, "none"
+
+
+def _resolved_gear() -> tuple[object, str]:
+  """CS aliases first. Cereal carState when inner CS has no known gear."""
+  if _gear_override is not None:
+    return _gear_override, "override"
+  gear, src = _cs_gear(_live_cs)
+  if _gear_known(gear):
+    return gear, src
+  cg, csrc = _read_cereal_gear()
+  if _gear_known(cg):
+    return cg, csrc
+  if _gear_present(gear):
+    return gear, src
+  return cg, csrc
 
 
 def vehicle_is_on() -> bool:
@@ -386,10 +512,7 @@ def vehicle_is_on() -> bool:
 def in_drive_gear() -> bool:
   """Drive or Reverse. Park, Neutral, and unknown do not Auto-wipe."""
   global _last_gear_src
-  if _gear_override is not None:
-    gear, src = _gear_override, "override"
-  else:
-    gear, src = _cs_gear(_live_cs)
+  gear, src = _resolved_gear()
   _last_gear_src = src
   return _is_drive_or_reverse(gear)
 
@@ -420,10 +543,7 @@ def _prime_rain_helper() -> None:
 
 
 def _auto_status_line(setting: int, on: bool, drive: bool, rain: bool, wipe: bool) -> str:
-  if _gear_override is not None:
-    gear, src = _gear_override, "override"
-  else:
-    gear, src = _cs_gear(_live_cs)
+  gear, src = _resolved_gear()
   rain_bits = "rain=0"
   try:
     from openpilot.selfdrive.car.tesla import preap_windshield_rain as rainmod

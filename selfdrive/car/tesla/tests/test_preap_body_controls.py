@@ -33,6 +33,7 @@ from openpilot.selfdrive.car.tesla.preap_body_controls import (
   reset_auto_gates,
   send_replaced_live_stw,
   set_auto_gates,
+  set_cereal_gear,
   set_rain_wiper_needed,
   stalk_test_active,
   wiper_test_requested,
@@ -875,6 +876,118 @@ def test_auto_gear_dynamic_enum_name_none_str_drive(monkeypatch):
     out = body.stock_cc_update_with_overlay(fake, inner, 10, None, 0)
     assert len(out) == 1
     assert out[0][0] == STW_ACTN_RQ_ADDR
+  finally:
+    set_rain_wiper_needed(None)
+    reset_auto_gates()
+
+
+def test_auto_gear_alias_without_gearShifter(monkeypatch):
+  """Inner CS may expose Drive as gear / gear_shifter, not gearShifter."""
+  from types import SimpleNamespace
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
+    WIPER_SETTING_AUTO if key == NAP_WIPER_SPEED else default
+  ))
+  set_rain_wiper_needed(True)
+  reset_auto_gates()
+  try:
+    inner = SimpleNamespace(msg_stw_actn_req={"SpdCtrlLvr_Stat": 0}, gear="drive")
+    assert not hasattr(inner, "gearShifter")
+    body.update_live_car_state(inner)
+    assert body.in_drive_gear()
+    assert body.requested_wiper_test()
+    line = body._auto_status_line(3, True, True, True, True)
+    assert "gear=drive" in line
+    assert "wipe=1" in line
+    inner.gear = "park"
+    assert not body.in_drive_gear()
+    assert not body.requested_wiper_test()
+  finally:
+    set_rain_wiper_needed(None)
+    reset_auto_gates()
+
+
+def test_auto_cereal_fallback_when_cs_gearshifter_missing(monkeypatch):
+  """Live miss: stock-cc CS has no gearShifter; cereal carState is drive _DynamicEnum."""
+  from types import SimpleNamespace
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
+    WIPER_SETTING_AUTO if key == NAP_WIPER_SPEED else default
+  ))
+  set_rain_wiper_needed(True)
+  reset_auto_gates()
+  gear = _DynamicEnum()
+  try:
+    inner = SimpleNamespace(msg_stw_actn_req={"SpdCtrlLvr_Stat": 0})
+    assert not hasattr(inner, "gearShifter")
+    assert not hasattr(inner, "out")
+    body.update_live_car_state(inner)
+    set_cereal_gear(gear)
+    assert body.vehicle_is_on()
+    assert body.in_drive_gear()
+    assert body.requested_wiper_test()
+    line = body._auto_status_line(3, True, True, True, True)
+    assert line.startswith("nap wiper auto")
+    assert "gear=drive" in line
+    assert "gear_src=cereal" in line
+    assert "gear_type=_DynamicEnum" in line
+    assert "drive=1" in line
+    assert "wipe=1" in line
+    rest = _rest()
+    held = apply_stw_wiper_beam_nibbles(rest, True, False)
+    assert _byte(held) == STW_WIPER_ON
+
+    class _Fake:
+      def __init__(self):
+        self.sent = []
+
+      def _send(self, CS, tesla_can, bus, button):
+        msg = (STW_ACTN_RQ_ADDR, bytes([button]), bus)
+        self.sent.append(msg)
+        return msg
+
+    monkeypatch.setattr(body, "requested_high_beam_test", lambda: False)
+    monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: [])
+    out = body.stock_cc_update_with_overlay(_Fake(), inner, 10, None, 0)
+    assert len(out) == 1
+    assert out[0][0] == STW_ACTN_RQ_ADDR
+
+    set_cereal_gear("park")
+    assert not body.in_drive_gear()
+    assert not body.requested_wiper_test()
+    park_line = body._auto_status_line(3, True, False, True, False)
+    assert "gear=park" in park_line
+    assert "wipe=0" in park_line
+  finally:
+    set_rain_wiper_needed(None)
+    reset_auto_gates()
+
+
+def test_auto_cs_park_wins_over_cereal_drive(monkeypatch):
+  """Once CS gear is known Park, stale cereal Drive must not Auto-wipe."""
+  from types import SimpleNamespace
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
+    WIPER_SETTING_AUTO if key == NAP_WIPER_SPEED else default
+  ))
+  set_rain_wiper_needed(True)
+  reset_auto_gates()
+  try:
+    inner = SimpleNamespace(gearShifter="park", msg_stw_actn_req={"SpdCtrlLvr_Stat": 0})
+    body.update_live_car_state(inner)
+    set_cereal_gear(_DynamicEnum())
+    assert not body.in_drive_gear()
+    assert not body.requested_wiper_test()
+    line = body._auto_status_line(3, True, False, True, False)
+    assert "gear=park" in line
+    assert "gear_src=cs" in line
+    assert "wipe=0" in line
   finally:
     set_rain_wiper_needed(None)
     reset_auto_gates()
