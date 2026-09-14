@@ -46,6 +46,7 @@ from openpilot.selfdrive.car.tesla.preap_windshield_rain import (
   BOKEH_ABSURD,
   BOKEH_ON,
   BURST_MAX_N,
+  BURST_MAX_S,
   CLEAR_RELEASE_N,
   CONNECT_RETRY_S,
   FROST_ON,
@@ -826,6 +827,7 @@ def test_helper_holds_soft_bokeh_and_poll_does_not_recv(monkeypatch):
 
   monkeypatch.setattr(rain, "SCORE_PERIOD_S", 0.05)
   monkeypatch.setattr(rain, "BURST_MAX_N", 50)
+  monkeypatch.setattr(rain, "BURST_MAX_S", 60.0)
   bokeh = _heavy_bokeh_windshield()
   client = _CountingVisionClient(_nv12_buf(bokeh))
   det = WindshieldRain()
@@ -1032,33 +1034,16 @@ def test_windshield_latch_holds_then_releases():
 
 
 def test_hold_rides_brief_wipe_clear_then_releases_on_sustained_dry():
-  """Wet latches. A swipe-clear (few dry frames) must keep HOLD. Long dry releases."""
+  """Two-wipe burst: next score tick drops HOLD (dry or wet), then rest-cancel."""
   det = WindshieldRain()
   wet = _heavy_bokeh_windshield()
   dry = _dry_windshield()
-  saw = False
-  for _ in range(16):
-    if det.update_from_y(wet):
-      saw = True
-      break
-  assert saw
+  _acquire_y(det, wet)
   assert det.hold
-
-  assert WIPE_CLEAR_N < CLEAR_RELEASE_N
-  for _ in range(WIPE_CLEAR_N):
-    assert det.update_from_y(dry)
-    assert det.hold
-  assert 0 < det._clear_n < CLEAR_RELEASE_N
-
-  released_at = None
-  for n in range(1, CLEAR_RELEASE_N + MIN_HOLD_N + 1):
-    if not det.update_from_y(dry):
-      released_at = n
-      break
-  assert released_at is not None
-  assert released_at <= CLEAR_RELEASE_N
+  assert det._burst_n == 1
+  assert not det.update_from_y(dry)
   assert not det.hold
-  assert det._clear_n == 0
+  assert apply_stw_wiper_beam_nibbles(_rest(), False, False) == _rest()
 
 
 def test_sustained_dry_releases_within_bounded_frames():
@@ -1075,7 +1060,7 @@ def test_sustained_dry_releases_within_bounded_frames():
     if not det.update_from_y(dry):
       released_at = n
       break
-  assert released_at == CLEAR_RELEASE_N
+  assert released_at == 1
   assert not det.hold
   assert windshield_obstruction_score(dry) < HOLD_OFF
   rest = _rest()
@@ -1177,65 +1162,23 @@ def test_absurd_bokeh_scale_is_invalid_dry_and_releases():
     assert not det2._update_score(49165.0)
   det3 = WindshieldRain()
   _acquire_score(det3, HEAVY_ON + 0.8)
-  for _ in range(WIPE_CLEAR_N):
-    assert det3._update_score(0.0)
-    assert det3.hold
-  released = False
-  for _ in range(CLEAR_RELEASE_N):
-    if not det3._update_score(49165.0):
-      released = True
-      break
-  assert released
+  assert not det3._update_score(0.0)
+  assert not det3.hold
+  assert not det3._update_score(49165.0)
   assert not det3.hold
 
 
 def test_elevated_residual_below_hold_on_releases_and_does_not_stick():
-  """Scores below rain-level HOLD_ON must finish CLEAR_RELEASE_N and drop HOLD."""
+  """Two-wipe burst: next score drops HOLD. Residual/light must not re-pin Int."""
   assert WIPE_CLEAR_N < CLEAR_RELEASE_N
   assert HOLD_OFF < HOLD_ON
   assert HOLD_ON < HEAVY_ON
 
-  def _latch(det):
-    _acquire_score(det, HEAVY_ON + 0.8)
-    assert det._hold_n >= MIN_HOLD_N
-
-  # Residual that sat forever above the old 0.38 HOLD_OFF, including just-shy of rain.
-  for residual in (0.0, 0.45, 0.70, 0.95):
+  for residual in (0.0, 0.45, 0.70, 0.95, 1.05):
     det = WindshieldRain()
-    _latch(det)
-    for _ in range(WIPE_CLEAR_N):
-      assert det._update_score(residual)
-      assert det.hold
-    released_at = None
-    for n in range(1, CLEAR_RELEASE_N + 1):
-      if not det._update_score(residual):
-        released_at = n
-        break
-    assert released_at is not None, residual
-    assert released_at <= CLEAR_RELEASE_N - WIPE_CLEAR_N
+    _acquire_score(det, HEAVY_ON + 0.8)
+    assert not det._update_score(residual), residual
     assert not det.hold
-
-  # Light rain at/above HOLD_ON must drop HOLD (ea4c pinned Int on residual beads).
-  det = WindshieldRain()
-  _latch(det)
-  released_at = None
-  for n in range(1, CLEAR_RELEASE_N + 1):
-    still = det._update_score(1.05)
-    if not still:
-      released_at = n
-      break
-  assert released_at is not None
-  assert released_at <= CLEAR_RELEASE_N
-  assert not det.hold
-
-  # Brief wipe-clear of zeros, then one more dry/light finishes CLEAR_RELEASE_N.
-  det = WindshieldRain()
-  _latch(det)
-  for _ in range(WIPE_CLEAR_N):
-    assert det._update_score(0.0)
-    assert det.hold
-  assert not det._update_score(1.05)
-  assert not det.hold
 
 
 def test_light_rain_releases_then_rests_without_thrash():
@@ -1335,8 +1278,33 @@ def test_heavy_burst_end_auto_rest_cancels(monkeypatch):
     reset_windshield_rain()
 
 
-def test_blade_spike_does_not_reset_clear():
-  """One/two heavy ticks during HOLD are blade FOV, not rain returning."""
+def test_burst_wall_clock_drops_hold_between_score_ticks(monkeypatch):
+  """If ROAD lags, poll() must still end the two-wipe burst at BURST_MAX_S."""
+  import time as time_mod
+
+  from openpilot.selfdrive.car.tesla import preap_windshield_rain as rain
+
+  now = {"t": 1000.0}
+  monkeypatch.setattr(time_mod, "monotonic", lambda: now["t"])
+  monkeypatch.setattr(rain, "BURST_MAX_N", 8)
+  det = WindshieldRain()
+  _acquire_score(det, HEAVY_ON + 0.8)
+  det._helper_started = True
+  assert det.poll() is True
+  now["t"] += BURST_MAX_S - 0.05
+  assert det.poll() is True
+  now["t"] += 0.10
+  assert det.poll() is False
+  assert not det.hold
+  assert det._light_rest_n == LIGHT_REST_N
+
+
+def test_blade_spike_does_not_reset_clear(monkeypatch):
+  """With a long burst window, one/two heavy ticks are blade FOV, not rain returning."""
+  from openpilot.selfdrive.car.tesla import preap_windshield_rain as rain
+
+  monkeypatch.setattr(rain, "BURST_MAX_N", 4)
+  monkeypatch.setattr(rain, "BURST_MAX_S", 60.0)
   det = WindshieldRain()
   _acquire_score(det, HEAVY_ON + 0.8)
 
@@ -1430,9 +1398,6 @@ def test_clear_glass_releases_in_two_score_ticks_then_auto_cancels(monkeypatch):
     assert body.rain_wiper_needed()
     assert body.requested_wiper_test()
     assert not wiper_rest_tx_needed(True)
-    assert det.update_from_y(dry)
-    assert det.hold
-    assert det._clear_n == 1
     assert not det.update_from_y(dry)
     assert not det.hold
     assert not body.rain_wiper_needed()
@@ -1471,8 +1436,9 @@ def test_helper_score_period_is_every_few_seconds():
   assert HOLD_ON < HEAVY_ON
   assert BLADE_BLIND_N * SCORE_PERIOD_S <= 6.0
   assert 10.0 <= LIGHT_REST_N * SCORE_PERIOD_S <= 20.0
-  assert 5.0 <= BURST_MAX_N * SCORE_PERIOD_S <= 8.0
-  assert BURST_MAX_N > WIPE_CLEAR_N
+  assert BURST_MAX_N == 1
+  assert 2.5 <= BURST_MAX_S <= 3.5
+  assert BURST_MAX_N * SCORE_PERIOD_S <= BURST_MAX_S + 0.1
 
 
 def test_helper_numpy_scores_on_period_not_every_road_frame(monkeypatch):

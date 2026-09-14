@@ -20,13 +20,13 @@ Headlamp plates are isolated saturated hotspots, not distributed
 droplet highlights. Dry overcast / scene texture stays under the
 wetness floor. A real wipe may look clear for one score tick (~2.5 s);
 HOLD rides that dip. Light rain / residual beads sit above HOLD_ON
-forever — that must not pin Int nibble 1. Every acquire is a short
-burst of nibble 1 (BURST_MAX_N ticks, ~7.5 s), then wipe=0 so Auto
-rest-cancels Int and reassesses. Heavy rain may re-acquire after
-LIGHT_REST_N (~15 s); it must not sit on continuous HOLD. Light/clear
-can still drop earlier via CLEAR_RELEASE_N. After we assert wipe,
-1–2 score periods of blade-FOV spikes are ridden so they do not reset
-the clear counter. Dry Auto still rest-cancels the ~32 s Int latch.
+forever — that must not pin Int nibble 1. Every acquire is two blade
+sweeps of nibble 1 (BURST_MAX_N=1 score tick / BURST_MAX_S≈3 s), then
+wipe=0 so Auto rest-cancels Int and reassesses. Heavy rain may re-acquire
+after LIGHT_REST_N (~15 s); it must not sit on continuous HOLD.
+Light/clear can still drop earlier via CLEAR_RELEASE_N. After we assert
+wipe, 1–2 score periods of blade-FOV spikes are ridden so they do not
+reset the clear counter. Dry Auto still rest-cancels the ~32 s Int latch.
 Acquire needs two rain-level scores (~5 s) so one bokeh flicker cannot
 nibble-1 the body into latched Int. Stale ROAD still drops HOLD. Off
 still leaves the real stalk (escape).
@@ -45,12 +45,13 @@ plus 20 Hz multi-blur starved card's GIL (age_ms ~30 s, Selfdrive
 Process Lagging). Recv downsamples immediately; one feature pass per
 scored frame; ice contrast uses the tiny grid. After each score the
 ROAD client is dropped so camerad is not an extra always-on subscriber.
-HOLD release is two light/clear ticks (~5 s) or BURST_MAX_N (~7.5 s),
-whichever first; then Auto rest-cancels Int and rests LIGHT_REST_N
+HOLD release is BURST_MAX_N=1 (~2.5 s, two slow sweeps) or two light/clear
+ticks, whichever first; then Auto rest-cancels Int and rests LIGHT_REST_N
 (~15 s) before re-acquire — heavy included. (Old CLEAR_RELEASE_N=12 at
 2.5 s/score held blades ~30 s on dry glass. ea4c still over-wiped
 because light rain never went below HOLD_ON. d22eb still over-wiped
-on driveway/heavy: HOLD had no burst cap.)
+on driveway/heavy: HOLD had no burst cap. 2ec66 BURST_MAX_N=3 was ~7.5 s
+/ more than two sweeps.)
 card is CTRL_HIGH: stock_cc.update / poll() only reads the latch, never
 recvs, never joins the helper. NAPWiperRainStatus and cloudlog are 1 Hz
 or on gate changes — not every 10 ms Params.put. Numpy is imported on a
@@ -129,9 +130,17 @@ WIPE_CLEAR_N = 1
 # reset clear_n). A later swipe's 1-tick spike is also ridden: light/dry
 # re-arms the window. Two-plus consecutive heavy is real rain, not a blade.
 BLADE_BLIND_N = 2
-# Max ticks of nibble 1 per acquire (~7.5 s). Then force wipe=0 + rest-cancel
-# and reassess. Do not sit on continuous HOLD in heavy/driveway rain.
-BURST_MAX_N = 3
+# Two physical sweeps, then rest-cancel. Pre-AP nibble 1 while *held* is the
+# same Int/On request: BCM Wiper Low (constant slow power), not a delay
+# between sweeps. The ~32 s figure is the Int *latch after* nibble 1 drops
+# without rest-cancel. Slow park-to-park is ~1.2–1.5 s (two-speed motor,
+# Wiper Low; Tesla slow is on the sluggish side of 40–50 wipes/min). Two
+# sweeps ≈ 2.4–3.0 s. BURST_MAX_N=1 drops on the next SCORE_PERIOD_S tick
+# (~2.5 s of nibble 1). BURST_MAX_S is a poll() wall-clock backstop if ROAD
+# scoring lags (do not wait STALE_S=8). Justin: 2ec66 BURST_MAX_N=3 (~7.5 s)
+# was more than two wipes.
+BURST_MAX_N = 1
+BURST_MAX_S = 3.0
 # After any wet HOLD drop (burst cap or light/clear), skip re-acquire this
 # many ticks (~15 s). Dry drop sets rest to 0 (cancel stays snappy).
 LIGHT_REST_N = 6
@@ -479,6 +488,7 @@ class WindshieldRain:
     self._blade_blind_n = 0
     self._light_rest_n = 0
     self._burst_n = 0
+    self._burst_t0 = 0.0
     self._owns_client = False
 
   def _store_feats(self, feats: tuple[float, float, float, float, float, float]) -> None:
@@ -502,6 +512,7 @@ class WindshieldRain:
     self._hold_n = 0
     self._blade_blind_n = 0
     self._burst_n = 0
+    self._burst_t0 = 0.0
     self._light_rest_n = LIGHT_REST_N if rest else 0
 
   def _update_score(self, score: float) -> bool:
@@ -526,6 +537,8 @@ class WindshieldRain:
         else:
           self._clear_n = 0
         burst_done = self._burst_n > BURST_MAX_N
+        if self._burst_t0 > 0.0 and (time.monotonic() - self._burst_t0) >= BURST_MAX_S:
+          burst_done = True
         clear_done = self._hold_n >= MIN_HOLD_N and self._clear_n >= CLEAR_RELEASE_N
         if burst_done or clear_done:
           # Burst cap and light/clear both rest if still wet (heavy included).
@@ -544,6 +557,7 @@ class WindshieldRain:
             self._light_rest_n = 0
             self._blade_blind_n = BLADE_BLIND_N
             self._burst_n = 1
+            self._burst_t0 = time.monotonic()
         elif self._hold_n > 0:
           self._hold_n -= 1
         if self._light_rest_n > 0:
@@ -668,6 +682,7 @@ class WindshieldRain:
       self._blade_blind_n = 0
       self._light_rest_n = 0
       self._burst_n = 0
+      self._burst_t0 = 0.0
 
   def _release_vision(self) -> None:
     """Drop the live ROAD client between score ticks. Tests inject _client."""
@@ -755,12 +770,21 @@ class WindshieldRain:
     elif not self.hold:
       self._debug("noframe")
 
+  def _apply_burst_timeout(self) -> None:
+    """Drop HOLD after BURST_MAX_S even if the next score tick is late. Latch only."""
+    if not self.hold or self._burst_t0 <= 0.0:
+      return
+    if time.monotonic() - self._burst_t0 < BURST_MAX_S:
+      return
+    self._end_hold(rest=self.last_score >= HOLD_ON)
+
   def poll(self) -> bool:
     """Latch only. Never recv, numpy, Params, or stale-debug on the card RT thread."""
     if not self._helper_started:
       return False
     if self.hold:
       self._apply_stale()
+      self._apply_burst_timeout()
     return self.hold
 
 
