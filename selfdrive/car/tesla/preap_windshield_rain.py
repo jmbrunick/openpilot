@@ -24,8 +24,9 @@ and does not wipe first on Auto select / helper start. The first
 WARMUP_N helper looks are ignored (VisionIpc / first ROAD). First wipe
 needs two consecutive *meaningful* wet idle looks (ACQUIRE_ON) after
 warmup — light sprinkle / residual beads stay idle (watch every ~4 s).
-Dry driveway/highway texture and Justin's live sprinkle (blob~7.4
-score~4.42) must not enter the wipe loop. Then: one blade sweep →
+Dry indoor/garage ROAD and light sprinkle look the same to the old
+wet-sheet path (blob≈7–9, live dry score=6.29). That must score well
+below acquire. Then: one blade sweep →
 wipe=0 + Auto rest-cancel → wait CLEAR_WAIT_S → assess. Re-wipe only if
 still clearly wet (REWIPE_ON). One dry / sprinkle / marginal assess
 exits to idle. Off still leaves the real stalk.
@@ -42,9 +43,10 @@ ROAD then WIDE. Numpy scoring while idle runs once per SCORE_PERIOD_S
 (~4 s, SCORE_HZ ≈ 0.25), not every ROAD frame and not 4 Hz / 1 Hz. A
 full-res Y copy plus 20 Hz multi-blur starved card's GIL (age_ms ~30 s,
 Selfdrive Process Lagging). Recv downsamples immediately; one feature
-pass per scored frame; ice contrast uses the tiny grid. After each score
-the ROAD client is dropped so camerad is not an extra always-on
-subscriber. One wipe is WIPE_PULSE_S (~1.5 s of nibble 1, one slow
+pass per scored frame; ice contrast uses the tiny grid. Keep the ROAD client while Auto so we do not
+resubscribe every 4 s (Justin: frames stuck at 1–2, age_ms thousands,
+stale first Y after reconnect). Recv+numpy still once per period, not
+20 Hz. One wipe is WIPE_PULSE_S (~1.5 s of nibble 1, one slow
 park-to-park), then CLEAR_WAIT_S with HOLD off (cancel + blades out of
 FOV), then the helper assesses — it does not wait another idle 4 s.
 2 s settle left blades in ROAD FOV on bone-dry Auto (wipe loop). Do not
@@ -66,15 +68,14 @@ import time
 
 import numpy as np
 
-# Unwarped ROAD. Far-focus windshield drops sit as large bokeh across the
-# driving view, not only in a thin top strip. Ice-sheet haze uses mid.
-_NEAR_ROWS = (0.06, 0.34)
-# Mid of the unwarped ROAD view — Justin's live UI shows the soft
-# circles of confusion over the scene here. Start below the usual
-# headlamp row so saturated plates do not leak into this band.
-_BOKEH_ROWS = (0.22, 0.56)
-_MID_ROWS = (0.40, 0.70)
-_COLS = (0.12, 0.88)
+# Unwarped ROAD. Distant road/sky in the upper-mid view is what made dry
+# indoor/garage blob≈7.5 look like a wet sheet (Justin 5f32c450b). Score
+# near-bottom glass, US LHD driver side (left). Skip the last rows so
+# parked blades / hood edge stay out. Ice haze uses the same near glass.
+_NEAR_ROWS = (0.58, 0.90)
+_BOKEH_ROWS = (0.48, 0.82)
+_MID_ROWS = (0.52, 0.84)
+_COLS = (0.06, 0.50)
 _RAIN_BANDS = (_NEAR_ROWS, _BOKEH_ROWS)
 
 # Rain. Detrended bokeh ~4 on wet ROAD, ~0 on dry sky gradients.
@@ -90,13 +91,17 @@ BOKEH_ON = 2.2
 # Old sweet-spot veto: bokeh/(blob+0.2) >= 0.22 dropped heavy rain to 0
 # when blob rose. Kept so tests prove we no longer use it as a reject.
 _BOKEH_RATIO = 0.22
-# Dry/overcast fine residual on *smooth* fixtures is ~2. Live light sprinkle
-# was blob=7.40. Overlapping milky wet is ~12. Sheet bar sits above sprinkle.
-BLOB_WET = 8.0
-# Live light sprinkle (Justin 5f32c450b): blob=7.40 sparse=4.7 struct=0.013.
-# Heavy wet sheet is blob~12 sparse~2. Sparse beads are sparse~8+.
-_SCENE_BLOB_MIN = 4.0
-_SCENE_SPARSE = (3.0, 7.5)
+# Dry/overcast fine residual on *smooth* fixtures is ~2. Live dry garage
+# and light sprinkle both sat blob≈7.0–8.8. Overlapping milky wet is ~12.
+# Sheet bar must sit above that dry/sprinkle blob, not at 8.
+BLOB_WET = 10.5
+# Live 5f32c450b dry + sprinkle (same scorer look):
+#   dry last:     blob=7.55 sparse=6.7  struct=0.022 bokeh=3.85 score=6.29
+#   sprinkle:     blob=7.40–8.83 sparse=4.7–9.7
+# Heavy wet sheet is blob~12 sparse~2. Residual beads can hit sparse~8–10
+# with the same mid blob — still not a sheet.
+_SCENE_BLOB_MIN = 3.5
+_SCENE_SPARSE = (2.5, 12.0)
 # 8-bit ROAD: wet bokeh ~2–5. Justin's clear-glass log was bokeh=49165.
 # Anything this high is a unit/scale bug, not rain.
 BOKEH_ABSURD = 24.0
@@ -106,18 +111,20 @@ SCORE_ABSURD = 12.0
 # 8-bit obstruction never reaches this. 49165 is garbage → dry, not a cap.
 SCORE_INVALID = 80.0
 _SPECKLE_MIN = 0.012
-# Frost crystals: moderate uniform residual. Live dry blob=7.4 must not be frost.
-FROST_ON = 1.2
+# Frost crystals: moderate uniform residual. Calm near-glass (blob~1.2)
+# is not frost. Live dry blob=7.4 must not be frost either.
+FROST_ON = 1.8
 FROST_BLOB_MAX = 4.0
 ICE_ON = 1.5
 ICE_CONTRAST = 0.085
 ICE_LUM = (45.0, 210.0)
+ICE_BLOB_MIN = 1.8
 # Combined obstruction: 1.0 is looks_rainy / wetness floor (rain/frost/ice).
 HOLD_ON = 1.0
 # First wipe: two consecutive idle scores at/above this *after* warmup.
-# Light sprinkle / residual beads (live 5f32c450b score=4.42, light
-# fixtures ~1.7, 48px light bokeh ~3.2) must stay idle. Meaningful wet
-# (heavy milky / dense beads ~7+) enters the wipe loop.
+# Do not "fix" dry garage by raising this past live dry 6.29 — that
+# kills real rain. Feature scoring must put dry/sprinkle well below here.
+# Heavy milky / dense beads (~7+) still enter the wipe loop.
 ACQUIRE_ON = 4.5
 # Status "heavy" and post-wipe re-enter: same bar as first wipe.
 HEAVY_ON = ACQUIRE_ON
@@ -326,15 +333,15 @@ def _mid_stats(y: np.ndarray) -> tuple[float, float]:
 
 
 def _scene_texture(blob: float, sparse: float, structure: float) -> bool:
-  """Dry driveway/highway grain. Not a milky wet sheet and not sparse beads.
+  """Dry indoor/garage + driveway grain. Not a milky wet sheet.
 
-  Live light-sprinkle Auto (5f32c450b) scored blob=7.40 sparse=4.7
-  struct=0.013 and wiped. Heavy overlapping rain is blob~12 sparse~2.
-  Residual beads can hit sparse~8 with the same mid blob — still not a sheet.
+  Justin 5f32c450b: bone-dry garage blob=7.55 sparse=6.7 score=6.29.
+  Same session light sprinkle was blob=7.4–8.83 sparse=4.7–9.7. Those
+  are the same look. Heavy overlapping rain is blob~12 sparse~2.
   """
   if structure > _STRUCTURE_RAIN:
     return False
-  if blob < _SCENE_BLOB_MIN:
+  if blob < _SCENE_BLOB_MIN or blob >= BLOB_WET:
     return False
   return _SCENE_SPARSE[0] <= sparse <= _SCENE_SPARSE[1]
 
@@ -354,8 +361,9 @@ def _rain_from_feats(blob: float, speckle: float, sparse: float, sat: float,
     score = max(score, blob)
   if speckle >= _SPECKLE_MIN:
     drop = 12.0 * speckle
-    # Do not add scene-texture blob. Beads (high sparse) or a real sheet may.
-    if blob >= BLOB_WET or sparse >= _SPARSE_MIN:
+    # Only a real wet sheet adds blob. Dry garage / residual beads sit
+    # blob≈7–9 with sparse~5–10 — that is not a milky sheet.
+    if blob >= BLOB_WET:
       drop += blob
     score = max(score, drop)
   return score
@@ -380,7 +388,7 @@ def _ice_from_feats(blob: float, _speckle: float, _sparse: float, sat: float,
   if not (ICE_LUM[0] < mean < ICE_LUM[1]):
     return 0.0
   haze = ICE_CONTRAST - contrast
-  if haze <= 0.0 or blob < 0.5:
+  if haze <= 0.0 or blob < ICE_BLOB_MIN:
     return 0.0
   return 15.0 * haze + blob
 
@@ -510,6 +518,7 @@ class WindshieldRain:
     self._post_wipe = False
     self._warm_n = 0
     self._owns_client = False
+    self._need_flush = False
 
   def _store_feats(self, feats: tuple[float, float, float, float, float, float]) -> None:
     blob, speckle, sparse, sat, structure, bokeh = feats
@@ -603,6 +612,7 @@ class WindshieldRain:
     self.stream = "WIDE" if "WIDE" in names[nxt] else "ROAD"
     self._client = None
     self._owns_client = False
+    self._need_flush = False
     self.connected = False
     self._stream_t0 = now
     self.last_err = f"fallback_{self.stream}"
@@ -622,6 +632,7 @@ class WindshieldRain:
         st = getattr(VisionStreamType, self._stream_names()[self._stream_idx])
         self._client = VisionIpcClient("camerad", st, True)
         self._owns_client = True
+        self._need_flush = True
         self.stream = "WIDE" if "WIDE" in self._stream_names()[self._stream_idx] else "ROAD"
       self.connected = bool(self._client.is_connected())
       if not self.connected:
@@ -647,12 +658,22 @@ class WindshieldRain:
         self.last_err = "noyplane"
         return None
       self.last_err = ""
+      if self._need_flush:
+        # First buffer after subscribe is often stale/wrong (blob≈7 dry).
+        self._need_flush = False
+        flushed = self._client.recv(timeout_ms=int(timeout_ms))
+        if flushed is not None:
+          y2 = y_plane_from_nv12(flushed, max_side=max_side)
+          flushed = None
+          if y2 is not None:
+            y = y2
       return y
     except Exception as e:
       self._failed = True
       self.connected = False
       self._client = None
       self._owns_client = False
+      self._need_flush = False
       self._last_connect_t = now
       self.last_err = type(e).__name__
       return None
@@ -707,11 +728,12 @@ class WindshieldRain:
       self._warm_n = 0
 
   def _release_vision(self) -> None:
-    """Drop the live ROAD client between score ticks. Tests inject _client."""
+    """Drop the live ROAD client (helper stop / thread exit). Tests inject _client."""
     if not self._owns_client:
       return
     self._client = None
     self._owns_client = False
+    self._need_flush = False
     self.connected = False
 
   def start_helper(self) -> None:
@@ -767,7 +789,7 @@ class WindshieldRain:
     return last_score_t + float(SCORE_PERIOD_S)
 
   def _helper_loop(self) -> None:
-    """Recv+score on the idle/wipe-loop cadence; unsubscribe ROAD between ticks."""
+    """Recv+score on the idle/wipe-loop cadence. Keep ROAD subscribed while Auto."""
     _drop_realtime()
     last_score_t = 0.0
     try:
@@ -790,7 +812,6 @@ class WindshieldRain:
           self.update_from_y(y)
           last_score_t = time.monotonic()
           y = None
-          self._release_vision()
         else:
           self._apply_stale()
           if not self.connected or self._failed:

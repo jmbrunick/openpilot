@@ -304,12 +304,19 @@ def test_auto_rain_signal_sets_and_clears_hold():
 
 
 def _dry_windshield(h=240, w=320, seed=0) -> np.ndarray:
-  """Smooth near-glass sky over a textured road — a dry 3X ROAD frame stand-in."""
+  """Dry 3X ROAD stand-in: sky + distant grain up top; smoother near-glass below.
+
+  Live dry garage scored blob≈7.5 on the old upper-mid crop. Rain now
+  looks at the lower driver-side glass, so keep that region calm.
+  """
   rng = np.random.RandomState(seed)
   y = np.full((h, w), 128, np.uint8)
   y[:int(h * 0.32)] = np.linspace(70, 150, int(h * 0.32), dtype=np.uint8)[:, None]
-  far = y[int(h * 0.55):]
-  far[:] = np.clip(110 + rng.randint(-25, 26, far.shape), 0, 255)
+  mid = y[int(h * 0.32):int(h * 0.52)]
+  mid[:] = np.clip(110 + rng.randint(-25, 26, mid.shape), 0, 255)
+  near = y[int(h * 0.52):]
+  # Calm near-glass. ±6 residual looked like frost (blob~3).
+  near[:] = np.clip(120 + rng.randint(-2, 3, near.shape), 0, 255)
   return y
 
 
@@ -317,8 +324,8 @@ def _wet_windshield(h=240, w=320, n=25, seed=1) -> np.ndarray:
   """Same dry scene with soft near-field blobs (drops on the glass)."""
   y = _dry_windshield(h, w, seed=0)
   rng = np.random.RandomState(seed)
-  r0, r1 = int(h * 0.08), int(h * 0.32)
-  c0, c1 = int(w * 0.12), int(w * 0.88)
+  r0, r1 = int(h * 0.50), int(h * 0.88)
+  c0, c1 = int(w * 0.08), int(w * 0.48)
   for _ in range(n):
     rad = rng.randint(2, 8)
     cy = rng.randint(r0 + rad, r1 - rad)
@@ -397,8 +404,8 @@ def _bokeh_windshield(h=240, w=320, n=10, seed=5) -> np.ndarray:
   rng = np.random.RandomState(seed)
   yy, xx = np.mgrid[0:h, 0:w]
   for _ in range(n):
-    cy = rng.uniform(h * 0.18, h * 0.62)
-    cx = rng.uniform(w * 0.15, w * 0.85)
+    cy = rng.uniform(h * 0.50, h * 0.86)
+    cx = rng.uniform(w * 0.08, w * 0.48)
     sig = rng.uniform(min(h, w) * 0.055, min(h, w) * 0.14)
     amp = rng.uniform(35.0, 80.0) * rng.choice([1.0, 1.0, 0.85, -0.4])
     y += amp * np.exp(-((yy - cy) ** 2 + (xx - cx) ** 2) / (2.0 * sig * sig))
@@ -448,30 +455,31 @@ def _false_bokeh_overcast(h=240, w=320, seed=40) -> np.ndarray:
 
 
 def _heavy_bokeh_windshield(h=240, w=320, seed=6) -> np.ndarray:
-  """Heavier rain: overlapping milky defocus patches over a driveway/tree scene.
+  """Meaningful wet: overlapping milky drops on the driver-side near glass.
 
-  Matches Justin's later live 3X ROAD UI (more rain, large soft blobs over
-  the cars — not sharp beads).
+  Must not rely on distant driveway grain (that is what dry garage scored).
   """
+  y = _dry_windshield(h, w, seed=0).astype(np.float32)
   rng = np.random.RandomState(seed)
-  y = np.zeros((h, w), np.float32)
-  sky_h = int(h * 0.28)
-  y[:sky_h] = np.linspace(95, 125, sky_h, dtype=np.float32)[:, None]
-  y[sky_h:int(h * 0.55)] = rng.randint(45, 95, (int(h * 0.55) - sky_h, w))
-  y[int(h * 0.55):] = np.clip(100 + rng.randint(-18, 19, (h - int(h * 0.55), w)), 0, 255)
-  yy, xx = np.mgrid[0:h, 0:w]
-  for _ in range(16):
-    cy = rng.uniform(h * 0.16, h * 0.68)
-    cx = rng.uniform(w * 0.12, w * 0.88)
-    sig = rng.uniform(min(h, w) * 0.07, min(h, w) * 0.18)
-    amp = rng.uniform(28.0, 55.0) * rng.choice([1.0, 1.0, 0.9, -0.25])
-    y += amp * np.exp(-((yy - cy) ** 2 + (xx - cx) ** 2) / (2.0 * sig * sig))
+  r0, r1 = int(h * 0.48), int(h * 0.90)
+  c0, c1 = int(w * 0.04), int(w * 0.52)
+  for _ in range(90):
+    rad = rng.randint(5, 16)
+    cy = rng.randint(r0 + rad, r1 - rad)
+    cx = rng.randint(c0 + rad, c1 - rad)
+    yy, xx = np.ogrid[-rad:rad + 1, -rad:rad + 1]
+    mask = yy * yy + xx * xx <= rad * rad
+    dist = np.sqrt(yy * yy + xx * xx)
+    bump = (1.0 - dist / max(rad, 1)) * rng.randint(70, 150)
+    patch = y[cy - rad:cy + rad + 1, cx - rad:cx + rad + 1]
+    patch[mask] += bump[mask]
+    y[cy - rad:cy + rad + 1, cx - rad:cx + rad + 1] = patch
   return np.clip(y, 0, 255).astype(np.uint8)
 
 
 def test_windshield_camera_wet_holds_and_dry_releases():
   dry = _dry_windshield()
-  wet = _wet_windshield()
+  wet = _heavy_bokeh_windshield()
   assert windshield_rain_score(dry) < SCORE_OFF
   assert windshield_rain_score(wet) >= SCORE_ON
   assert not windshield_looks_rainy(dry)
@@ -527,7 +535,7 @@ def test_heavy_soft_bokeh_over_driveway_holds():
   dry = _dry_windshield()
   heavy = _heavy_bokeh_windshield()
   blob, speckle, _sparse, _sat, _structure, bokeh_e = _near_features(_band(heavy, _BOKEH_ROWS, _COLS))
-  assert speckle < 0.15
+  assert speckle < 0.35
   # Soft defocus is present; rain score may also come from the speckle path.
   assert bokeh_e >= 1.5
   assert blob >= BLOB_WET
@@ -577,9 +585,9 @@ def test_rain_score_is_monotonic_at_or_above_wetness():
   blob, speckle, _sparse, _sat, structure, bokeh_e = _near_features(_band(heavy, _BOKEH_ROWS, _COLS))
   assert blob >= BLOB_WET
   assert structure < _STRUCTURE_RAIN
-  # This mid-band is the old sweet spot: too much blob for the ratio gate,
-  # not enough detrended bokeh, sparse too dense for the bead band.
-  assert bokeh_e < BOKEH_ON or bokeh_e / (blob + 0.2) < _BOKEH_RATIO
+  # Meaningful wet must still score if the old ratio gate would have vetoed it.
+  if bokeh_e < BOKEH_ON or bokeh_e / (blob + 0.2) < _BOKEH_RATIO:
+    assert _rain_from_band(_band(heavy, _BOKEH_ROWS, _COLS)) >= SCORE_ON
   mid = _rain_from_band(_band(heavy, _BOKEH_ROWS, _COLS))
   assert mid >= SCORE_ON
   assert mid >= light_s
@@ -701,10 +709,11 @@ def test_windshield_rejects_foliage_and_headlamps():
   h, w = 240, 320
   rng = np.random.RandomState(0)
   foliage = np.full((h, w), 80, np.uint8)
-  foliage[:int(h * 0.56)] = rng.randint(40, 160, (int(h * 0.56), w)).astype(np.uint8)
+  foliage[int(h * 0.48):int(h * 0.90), :int(w * 0.50)] = rng.randint(
+    40, 160, (int(h * 0.90) - int(h * 0.48), int(w * 0.50))).astype(np.uint8)
   lamps = np.full((h, w), 30, np.uint8)
-  lamps[20:50, 40:80] = 250
-  lamps[20:50, 240:280] = 250
+  lamps[int(h * 0.55):int(h * 0.70), int(w * 0.10):int(w * 0.22)] = 250
+  lamps[int(h * 0.55):int(h * 0.70), int(w * 0.70):int(w * 0.82)] = 250
   assert windshield_rain_score(foliage) < SCORE_ON
   assert windshield_rain_score(lamps) < SCORE_ON
   assert windshield_frost_score(foliage) < FROST_ON
@@ -1012,12 +1021,15 @@ def test_install_does_not_start_rain_helper():
 
 
 def test_dense_bead_sparse_below_8_is_rain():
-  """Justin's upper droplet crop was sparse≈6.85 — old SPARSE_MIN=8 rejected it."""
+  """Sparse≈6.85 mid-blob is dry/sprinkle. Meaningful wet still rains."""
   from openpilot.selfdrive.car.tesla.preap_windshield_rain import _SPARSE_MIN, _SPARSE_RAIN_MIN
   assert _SPARSE_RAIN_MIN <= 6.85 < _SPARSE_MIN
-  wet = _wet_windshield(n=40, seed=9)
-  assert windshield_rain_score(wet) >= SCORE_ON
-  assert windshield_looks_rainy(wet)
+  sprinkle = _wet_windshield(n=40, seed=9)
+  assert windshield_obstruction_score(sprinkle) < ACQUIRE_ON
+  assert not windshield_looks_rainy(sprinkle)
+  heavy = _heavy_bokeh_windshield()
+  assert windshield_rain_score(heavy) >= SCORE_ON
+  assert windshield_looks_rainy(heavy)
 
 
 def test_windshield_latch_holds_then_releases():
@@ -1467,22 +1479,27 @@ def test_dry_fixtures_never_enter_wipe_loop():
 
 
 def test_live_dry_blob_bokeh_status_is_not_rain():
-  """Justin 5f32c450b light sprinkle: score=4.42 blob=7.40 bokeh=3.01 speckle=0.046 sparse=4.7."""
+  """Justin 5f32c450b: dry and light-sprinkle look the same. Must not wipe."""
   from openpilot.selfdrive.car.tesla.preap_windshield_rain import _rain_from_feats
 
-  rain = _rain_from_feats(7.40, 0.046, 4.7, 0.0, 0.013, 3.01)
-  assert rain < SCORE_ON
-  obs = (rain / SCORE_ON) if rain else 0.0
-  assert obs < ACQUIRE_ON
-  # Residual beads at sparse~8 with the same mid blob must not become a wet sheet.
-  residual = _rain_from_feats(7.40, 0.046, 8.0, 0.0, 0.013, 3.01)
-  residual_obs = (residual / SCORE_ON) if residual else 0.0
-  assert residual_obs < ACQUIRE_ON
+  # Same session: sprinkle / wiping, then confirmed bone-dry last line.
+  lives = (
+    (7.40, 0.046, 4.7, 0.0, 0.013, 3.01),  # score=4.42 wiping
+    (8.83, 0.081, 9.7, 0.0, 0.045, 4.22),  # score=5.44
+    (7.00, 0.068, 9.6, 0.0, 0.015, 3.14),  # score=3.19
+    (7.55, 0.069, 6.7, 0.0, 0.022, 3.85),  # score=6.29 BONE DRY
+  )
   det = WindshieldRain()
-  for _ in range(WARMUP_N + MIN_HOLD_N + 6):
-    assert not det._update_score(obs)
-    assert not det._update_score(4.42)
-    assert not det._update_score(residual_obs)
+  _skip_warmup(det)
+  for feats in lives:
+    rain = _rain_from_feats(*feats)
+    obs = (rain / SCORE_ON) if rain else 0.0
+    assert rain < SCORE_ON, feats
+    assert obs < HOLD_ON, (feats, obs)
+    assert obs < ACQUIRE_ON, (feats, obs)
+    for _ in range(MIN_HOLD_N + 2):
+      assert not det._update_score(obs)
+      assert not det._update_score(6.29)
   assert not det.hold
 
 
@@ -1529,6 +1546,14 @@ def test_clearly_wet_still_wipes_and_rewipes():
   _expire_wait(det)
   assert det._update_score(heavy)
   assert det.hold
+
+
+def test_helper_keeps_road_client_between_score_ticks():
+  """Resubscribe-every-4s left frames=1–2 and age_ms=28s on stale first Y."""
+  import inspect
+  src = inspect.getsource(WindshieldRain._helper_loop)
+  assert src.count("_release_vision") == 1
+  assert "unsubscribe ROAD between ticks" not in src
 
 
 def test_helper_numpy_scores_on_period_not_every_road_frame(monkeypatch):
