@@ -65,6 +65,7 @@ from openpilot.selfdrive.car.tesla.preap_windshield_rain import (
   STREAM_FALLBACK_S,
   WIPE_CLEAR_N,
   WIPE_PULSE_S,
+  WARMUP_N,
   Y_COPY_SIDE,
   WindshieldRain,
   reset_windshield_rain,
@@ -608,6 +609,7 @@ def test_valid_heavy_obstruction_is_not_forced_dry():
   """Old SCORE_ABSURD=12 zeroed real heavy scores. 15 is wet, 49165 is garbage."""
   assert SCORE_ABSURD < SCORE_INVALID
   latch = WindshieldRain()
+  _skip_warmup(latch)
   for _ in range(MIN_HOLD_N - 1):
     assert not latch._update_score(15.0)
     assert not latch.hold
@@ -668,6 +670,7 @@ def test_dense_beads_covering_glass_hold_at_least_as_light_bokeh():
 def test_one_below_wet_idle_look_resets_consecutive_acquire():
   """Two consecutive clearly-wet idle looks acquire. One dry in between resets."""
   det = WindshieldRain()
+  _skip_warmup(det)
   for _ in range(MIN_HOLD_N - 1):
     assert not det._update_score(3.16)
     assert not det.hold
@@ -786,8 +789,14 @@ class _CountingVisionClient:
     return self.buf
 
 
+def _skip_warmup(det) -> None:
+  from openpilot.selfdrive.car.tesla import preap_windshield_rain as rain
+  det._warm_n = int(rain.WARMUP_N)
+
+
 def _acquire_score(det, score: float) -> None:
-  """Stop on first HOLD. The one-sweep pulse is wall-clock; do not feed more wet."""
+  """Stop on first HOLD. Skip helper warmup; one-sweep pulse is wall-clock."""
+  _skip_warmup(det)
   for _ in range(MIN_HOLD_N + 4):
     det._update_score(score)
     if det.hold:
@@ -797,6 +806,7 @@ def _acquire_score(det, score: float) -> None:
 
 
 def _acquire_y(det, y) -> None:
+  _skip_warmup(det)
   for _ in range(MIN_HOLD_N + 4):
     det.update_from_y(y)
     if det.hold:
@@ -1193,6 +1203,7 @@ def test_light_rain_acquires_then_exits_loop_if_not_clearly_wet():
   light = ACQUIRE_ON + 0.05
   assert ACQUIRE_ON <= light < REWIPE_ON
   det = WindshieldRain()
+  _skip_warmup(det)
   saw = False
   for _ in range(MIN_HOLD_N + 2):
     if det._update_score(light):
@@ -1312,6 +1323,7 @@ def test_light_bokeh_fixture_acquires_then_exits_if_not_clearly_wet():
   assert windshield_obstruction_score(heavy_y) >= REWIPE_ON
 
   det = WindshieldRain()
+  _skip_warmup(det)
   saw = False
   for _ in range(MIN_HOLD_N + 2):
     if det.update_from_y(light_y):
@@ -1347,6 +1359,7 @@ def test_single_frame_bokeh_score_does_not_acquire_hold():
   assert flicker._hold_n == 0
 
   latch = WindshieldRain()
+  _skip_warmup(latch)
   for _ in range(MIN_HOLD_N - 1):
     assert not latch._update_score(3.16)
     assert not latch.hold
@@ -1417,6 +1430,7 @@ def test_helper_score_period_is_every_few_seconds():
   assert abs(SCORE_HZ - 1.0 / SCORE_PERIOD_S) < 1e-6
   assert 16 <= Y_COPY_SIDE <= 64
   assert MIN_HOLD_N == 2
+  assert WARMUP_N == 2
   assert CLEAR_RELEASE_N == 2
   assert WIPE_CLEAR_N == 1
   assert MIN_HOLD_N * SCORE_PERIOD_S <= 8.0
@@ -1468,6 +1482,34 @@ def test_dry_fixtures_never_enter_wipe_loop():
     assert not det._post_wipe
 
 
+def test_live_dry_blob_bokeh_status_is_not_rain():
+  """Justin 5f32c450b bone-dry: score=4.42 blob=7.40 bokeh=3.01 speckle=0.046 sparse=4.7."""
+  from openpilot.selfdrive.car.tesla.preap_windshield_rain import _rain_from_feats
+
+  rain = _rain_from_feats(7.40, 0.046, 4.7, 0.0, 0.013, 3.01)
+  assert rain < SCORE_ON
+  obs = (rain / SCORE_ON) if rain else 0.0
+  assert obs < ACQUIRE_ON
+  det = WindshieldRain()
+  for _ in range(WARMUP_N + MIN_HOLD_N + 6):
+    assert not det._update_score(obs)
+  assert not det.hold
+
+
+def test_warmup_looks_do_not_acquire():
+  """First WARMUP_N helper scores never wipe, even if clearly wet."""
+  det = WindshieldRain()
+  for _ in range(WARMUP_N):
+    assert not det._update_score(REWIPE_ON + 1.0)
+    assert not det.hold
+    assert det._hold_n == 0
+  assert det._warm_n == WARMUP_N
+  assert not det._update_score(REWIPE_ON + 1.0)
+  assert not det.hold
+  assert det._update_score(REWIPE_ON + 1.0)
+  assert det.hold
+
+
 def test_after_wipe_dry_score_exits_loop_and_stays_idle():
   """One dry/marginal post-wipe assess ends the loop. Do not wipe forever."""
   det = WindshieldRain()
@@ -1488,6 +1530,7 @@ def test_clearly_wet_still_wipes_and_rewipes():
   """Real rain still acquires (two idle looks) and re-wipes if still clearly wet."""
   heavy = REWIPE_ON + 0.8
   det = WindshieldRain()
+  _skip_warmup(det)
   assert not det._update_score(heavy)
   assert not det.hold
   assert det._update_score(heavy)
@@ -1524,6 +1567,7 @@ def test_stale_does_not_drop_hold_between_score_periods(monkeypatch):
 
   monkeypatch.setattr(rain, "WIPE_PULSE_S", 60.0)
   det = WindshieldRain()
+  _skip_warmup(det)
   for _ in range(MIN_HOLD_N):
     det._update_score(3.16)
   assert det.hold
@@ -1911,6 +1955,7 @@ def test_auto_status_param_is_full_gate_line_not_short_rain(monkeypatch):
     assert "gear_type=" in line
     assert "hold=1" in line
     assert "holdn=" in line
+    assert "warm=" in line
     assert "struct=" in line
     assert "speckle=" in line
     assert "frames=8865" in line
