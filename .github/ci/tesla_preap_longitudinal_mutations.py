@@ -42,10 +42,34 @@ MUTATIONS = (
   HistoricalMutation(
     name="brake-cancel-keeps-interceptor-after-long-drop",
     source_path="opendbc_repo/opendbc/car/tesla/preap/carcontroller.py",
-    original=b"      authority_requested = pedal_long_allowed and long_active and not brake_pressed and not gas_pressed\n",
+    original=(
+      b"      authority_requested = (\n"
+      b"        pedal_long_allowed\n"
+      b"        and not gas_pressed\n"
+      b"        and ((long_active and not brake_pressed) or keep_enabled)\n"
+      b"      )\n"
+    ),
     replacement=b"      authority_requested = pedal_long_allowed and not gas_pressed\n",
     test_nodes=(
-      f"{BRAKE_CANCEL_TEST_PATH}::test_short_tip_releases_interceptor_immediately",
+      f"{BRAKE_CANCEL_TEST_PATH}::test_held_brake_releases_after_tip_window",
+    ),
+  ),
+  HistoricalMutation(
+    name="tip-brake-drops-interceptor-on-long-drop",
+    source_path="opendbc_repo/opendbc/car/tesla/preap/carcontroller.py",
+    original=b"        and ((long_active and not brake_pressed) or keep_enabled)\n",
+    replacement=b"        and (long_active and not brake_pressed)\n",
+    test_nodes=(
+      f"{BRAKE_CANCEL_TEST_PATH}::test_short_tip_keeps_interceptor_and_glides",
+    ),
+  ),
+  HistoricalMutation(
+    name="tip-brake-glide-coasts-instead-of-speed-target",
+    source_path="opendbc_repo/opendbc/car/tesla/preap/brake_tip_glide.py",
+    original=b"    if self.mode != BrakeTipGlideMode.GLIDE:\n      return 0.0\n    return float(self.a_cmd)\n",
+    replacement=b"    return 0.0\n",
+    test_nodes=(
+      f"{BRAKE_CANCEL_TEST_PATH}::test_short_tip_keeps_interceptor_and_glides",
     ),
   ),
   HistoricalMutation(
