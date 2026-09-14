@@ -11,11 +11,13 @@ Rain: large low-frequency bokeh in the upper/mid ROAD bands, sparse
     streaks/speckles, or a wet sheet (high blob / overlapping milky
     defocus). Ice/frost: a milky sheet or crystal mottle.
 Score is monotonic with obstruction: once the glass is past a wetness
-floor, more water (blob, bokeh, haze, streaks) must score at least as
-rainy — never drop to dry because it is "too wet". Do not require a
-bokeh/blob ratio sweet spot, and do not treat dense wet glass as
-foliage. In-focus texture (foliage, brick) is sharp structure; headlamp
-plates are saturated. Dry overcast / scene texture stays under the
+floor, more water (blob, bokeh, haze, streaks, dense beads) must score
+at least as rainy — never drop to dry because it is "too wet". Do not
+require a bokeh/blob ratio sweet spot. Dense beads covering the pane
+raise sharp-residual "structure"; that is still rain if bokeh is
+rain-like. Foliage/brick is sharp structure *without* rain-scale bokeh.
+Headlamp plates are isolated saturated hotspots, not distributed
+droplet highlights. Dry overcast / scene texture stays under the
 wetness floor. A real wipe may look clear for ~0.5 s; HOLD can ride
 that dip, then drops quickly once scores stay below rain-level so
 clear glass cannot keep the 30 s intermittent forever. Acquire needs
@@ -103,6 +105,8 @@ CONNECT_RETRY_S = 0.5
 DEBUG_LOG_S = 1.0
 HELPER_RECV_MS = 100
 _SAT_MAX = 0.08
+# Isolated headlamp plates are sparse hotspots. Dense bead highlights are not.
+_LAMP_SPARSE = 200.0
 _SPARSE_MIN = 8.0
 # Dense bead rain on glass is ~6.5–8.5. Justin's upper droplet crop was
 # rain-rejected at 6.85. Foliage is still ~1.8.
@@ -110,8 +114,8 @@ _SPARSE_RAIN_MIN = 6.0
 _SPARSE_MAX = 80.0
 STREAM_FALLBACK_S = 3.0
 _STRUCTURE_FRAC = 0.05
-# In-focus foliage/brick: sharp residual fraction. Soft rain stays << this
-# even when blob is high. Do not OR this with a blob cap — that rejects wet.
+# In-focus foliage/brick: sharp residual without rain-scale bokeh.
+# Dense beads covering the glass also raise this — do not fail closed.
 _STRUCTURE_RAIN = 0.12
 _FOLIAGE_BLOB = 18.0
 _FINE_R = 2
@@ -251,25 +255,25 @@ def _mid_stats(y: np.ndarray) -> tuple[float, float]:
 
 
 def _rain_from_band(img: np.ndarray) -> float:
-  """Soft far-focus bokeh, wet-sheet blob, and/or speckle streaks.
+  """Soft far-focus bokeh, wet-sheet blob, and/or speckle beads.
 
   At-or-above: each cue is a floor, not a band. Extra blob/bokeh/speckle
-  raises the score. Never zero a wet frame because blob is "too high"
-  relative to bokeh (that was a heavy-rain miss). Foliage is sharp
-  in-focus structure, not high blob.
+  raises the score. Dense beads covering the pane look "structured";
+  that is still rain when bokeh is rain-like. Foliage is sharp texture
+  without that bokeh. Isolated saturated lamps are not rain.
   """
-  blob, speckle, _sparse, sat, structure, bokeh = _near_features(img)
-  if sat > _SAT_MAX:
+  blob, speckle, sparse, sat, structure, bokeh = _near_features(img)
+  if sat > _SAT_MAX and sparse >= _LAMP_SPARSE:
     return 0.0
-  if structure > _STRUCTURE_RAIN:
+  if structure > _STRUCTURE_RAIN and bokeh < BOKEH_ON:
     return 0.0
   score = 0.0
   if BOKEH_ON <= bokeh <= BOKEH_ABSURD:
     score = max(score, bokeh)
   if blob >= BLOB_WET:
     score = max(score, blob)
-  # Speckle/streaks. Dense wet has low sparse (~2); do not require a
-  # mid-range sparse band (that was another sweet spot).
+  # Speckle/streaks/beads. Dense coverage has low sparse (~2); do not
+  # require a mid-range sparse band (that was another sweet spot).
   if speckle >= _SPECKLE_MIN:
     score = max(score, blob + 12.0 * speckle)
   return score
@@ -422,12 +426,14 @@ class WindshieldRain:
         self._clear_n = 0
         # One frame of bokeh~3 with score noise must not latch HOLD (that
         # nibble-1 pulse leaves Pre-AP intermittent until Auto sends rest).
+        # Sustained wet must not sit wipe=0 because a single flicker reset
+        # the counter — decay, don't zero.
         if self.ema >= HOLD_ON and self.last_score >= HOLD_ON:
           self._hold_n += 1
           if self._hold_n >= MIN_HOLD_N:
             self.hold = True
-        else:
-          self._hold_n = 0
+        elif self._hold_n > 0:
+          self._hold_n -= 1
       self._last_frame_t = time.monotonic()
       self.n_frames += 1
       hold = self.hold
