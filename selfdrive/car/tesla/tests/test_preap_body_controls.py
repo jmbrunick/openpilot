@@ -742,14 +742,13 @@ def test_hold_rides_brief_wipe_clear_then_releases_on_sustained_dry():
   assert det.hold
   assert det._clear_n == 0
 
-  released = False
-  n = 0
+  released_at = None
   for n in range(1, CLEAR_RELEASE_N + MIN_HOLD_N + 1):
     if not det.update_from_y(dry):
-      released = True
+      released_at = n
       break
-  assert released
-  assert n <= CLEAR_RELEASE_N
+  assert released_at is not None
+  assert released_at <= CLEAR_RELEASE_N
   assert not det.hold
   assert det._clear_n == 0
 
@@ -765,14 +764,12 @@ def test_sustained_dry_releases_within_bounded_frames():
   assert det.hold
   assert det._hold_n >= MIN_HOLD_N
 
-  n = 0
-  released = False
+  released_at = None
   for n in range(1, CLEAR_RELEASE_N + 1):
     if not det.update_from_y(dry):
-      released = True
+      released_at = n
       break
-  assert released
-  assert n == CLEAR_RELEASE_N
+  assert released_at == CLEAR_RELEASE_N
   assert not det.hold
   assert windshield_obstruction_score(dry) < HOLD_OFF
   rest = _rest()
@@ -806,14 +803,13 @@ def test_dry_overcast_low_bokeh_does_not_stay_held():
     for _ in range(16):
       det.update_from_y(wet)
     assert det.hold
-    released = False
-    n = 0
+    released_at = None
     for n in range(1, CLEAR_RELEASE_N + 1):
       if not det.update_from_y(residual_y):
-        released = True
+        released_at = n
         break
-    assert released
-    assert n <= CLEAR_RELEASE_N
+    assert released_at is not None
+    assert released_at <= CLEAR_RELEASE_N
     assert not det.hold
 
 
@@ -863,14 +859,13 @@ def test_absurd_bokeh_scale_is_invalid_dry_and_releases():
   for _ in range(16):
     det.update_from_y(wet)
   assert det.hold
-  released = False
-  n = 0
+  released_at = None
   for n in range(1, CLEAR_RELEASE_N + 1):
     if not det.update_from_y(huge):
-      released = True
+      released_at = n
       break
-  assert released
-  assert n <= CLEAR_RELEASE_N
+  assert released_at is not None
+  assert released_at <= CLEAR_RELEASE_N
   assert not det.hold
   assert det.last_bokeh <= BOKEH_ABSURD
 
@@ -912,14 +907,13 @@ def test_elevated_residual_below_hold_on_releases_and_does_not_stick():
     for _ in range(WIPE_CLEAR_N):
       assert det._update_score(residual)
       assert det.hold
-    n = 0
-    released = False
+    released_at = None
     for n in range(1, CLEAR_RELEASE_N + 1):
       if not det._update_score(residual):
-        released = True
+        released_at = n
         break
-    assert released, residual
-    assert n <= CLEAR_RELEASE_N - WIPE_CLEAR_N
+    assert released_at is not None, residual
+    assert released_at <= CLEAR_RELEASE_N - WIPE_CLEAR_N
     assert not det.hold
 
   # Light rain at/above HOLD_ON must keep HOLD (not a false residual release).
