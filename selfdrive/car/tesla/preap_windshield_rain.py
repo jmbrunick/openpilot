@@ -20,15 +20,16 @@ Headlamp plates are isolated saturated hotspots, not distributed
 droplet highlights. Dry overcast / scene texture stays under the
 wetness floor. A real wipe may look clear for one idle score tick (~4 s).
 Duty cycle (Justin): idle watching assesses every SCORE_PERIOD_S (~4 s)
-and does not wipe first on Auto select / helper start. If an idle look
-is wet enough to acquire → one blade sweep (short nibble-1 pulse) →
-wipe=0 + Auto rest-cancel → wait CLEAR_WAIT_S (~2 s) for glass to settle
-and blades to leave ROAD FOV → assess. Still wet → wipe again. Clear →
-exit the wipe loop back to idle assess-every-4s. No long ~15 s rest. No
-multi-tick BURST_MAX sitting on continuous Wiper Low. First acquire still
-needs two rain-level idle scores so one bokeh flicker cannot nibble-1
-the body into latched Int. Stale ROAD still drops HOLD. Off still leaves
-the real stalk (escape).
+and does not wipe first on Auto select / helper start. First wipe needs
+two consecutive clearly-wet idle looks (ACQUIRE_ON), not a marginal /
+overcast / blade-streak score. Then: one blade sweep (short nibble-1
+pulse) → wipe=0 + Auto rest-cancel → wait CLEAR_WAIT_S for glass to
+settle and blades to leave ROAD FOV → assess. Re-wipe only if that look
+is still clearly wet (REWIPE_ON, higher than acquire). One dry / marginal
+/ below-wet assess exits the wipe loop back to idle 4 s watching — never
+an infinite wipe→wait→wipe loop. No long ~15 s rest. No multi-tick
+BURST_MAX sitting on continuous Wiper Low. Stale ROAD still drops HOLD.
+Off still leaves the real stalk (escape).
 
 Bokeh energy is an 8-bit residual (~0 dry, ~2–5 wet). A live clear-glass
 log showed bokeh=49165 — wrong Y scale or a bandpass blowup. Impossible
@@ -45,10 +46,12 @@ Selfdrive Process Lagging). Recv downsamples immediately; one feature
 pass per scored frame; ice contrast uses the tiny grid. After each score
 the ROAD client is dropped so camerad is not an extra always-on
 subscriber. One wipe is WIPE_PULSE_S (~1.5 s of nibble 1, one slow
-park-to-park), then CLEAR_WAIT_S=2 s with HOLD off (cancel + blades out
-of FOV), then the helper assesses — it does not wait another idle 4 s.
-(Old LIGHT_REST_N=6 left wet glass ~15 s. BURST_MAX_N=3 sat on Low for
-~7.5 s / several sweeps. Idle used to score every 2.5 s.)
+park-to-park), then CLEAR_WAIT_S with HOLD off (cancel + blades out of
+FOV), then the helper assesses — it does not wait another idle 4 s.
+2 s settle left blades in ROAD FOV on bone-dry Auto (wipe loop). Do not
+prime hold_n after a wipe: a marginal post-wipe score must not nibble-1
+again. (Old LIGHT_REST_N=6 left wet glass ~15 s. BURST_MAX_N=3 sat on
+Low for ~7.5 s / several sweeps. Idle used to score every 2.5 s.)
 card is CTRL_HIGH: stock_cc.update / poll() only reads the latch, never
 recvs, never joins the helper. NAPWiperRainStatus and cloudlog are 1 Hz
 or on gate changes — not every 10 ms Params.put. Numpy is imported on a
@@ -106,10 +109,15 @@ FROST_BLOB_MAX = 10.0
 ICE_ON = 1.5
 ICE_CONTRAST = 0.085
 ICE_LUM = (45.0, 210.0)
-# Combined obstruction: 1.0 is the acquire / wetness floor (rain/frost/ice).
+# Combined obstruction: 1.0 is looks_rainy / wetness floor (rain/frost/ice).
 HOLD_ON = 1.0
-# Light-wet fixtures sit ~1.7; heavy/driveway ~7+. Status / looks_rainy only.
+# First wipe: two consecutive idle scores at/above this. Live dry/overcast
+# texture sat near 1.0–1.5 and must not acquire. Light-wet fixtures ~1.7.
+ACQUIRE_ON = 1.6
+# Light-wet fixtures sit ~1.7; heavy/driveway ~7+. Status / looks_rainy only
+# for "heavy". Post-wipe re-enter needs this clearly-wet bar (not HOLD_ON).
 HEAVY_ON = 2.2
+REWIPE_ON = HEAVY_ON
 # Instant looks_rainy hysteresis only.
 HOLD_OFF = 0.70
 EMA_ALPHA = 0.35
@@ -123,9 +131,9 @@ WIPE_CLEAR_N = 1
 # do not sit on continuous Low. poll() ends the pulse on wall-clock so
 # we do not wait for the next idle ROAD score.
 WIPE_PULSE_S = 1.5
-# After wipe=0 + rest-cancel: wait for glass to settle and blades to leave
-# the ROAD FOV, then assess. Wipe-loop pause only (not the idle 4 s period).
-CLEAR_WAIT_S = 2.0
+# After wipe=0 + rest-cancel: ignore ROAD until blades park and streaks
+# settle, then assess. 2.0 s still caught blades on bone-dry Auto.
+CLEAR_WAIT_S = 3.0
 # Compat aliases (old burst/rest names). Duty cycle uses WIPE_PULSE_S / CLEAR_WAIT_S.
 BURST_MAX_N = 1
 BURST_MAX_S = WIPE_PULSE_S
@@ -475,6 +483,7 @@ class WindshieldRain:
     self._hold_n = 0
     self._wipe_t0 = 0.0
     self._wait_t0 = 0.0
+    self._post_wipe = False
     self._owns_client = False
 
   def _store_feats(self, feats: tuple[float, float, float, float, float, float]) -> None:
@@ -491,15 +500,23 @@ class WindshieldRain:
     self._store_feats(feats)
     return self._update_score(obs)
 
+  def _start_wipe(self, now: float) -> None:
+    self.hold = True
+    self._wipe_t0 = now
+    self._wait_t0 = 0.0
+    self._post_wipe = False
+    self._hold_n = MIN_HOLD_N
+    self._clear_n = 0
+
   def _finish_wipe(self) -> None:
     """End the one-sweep pulse. Auto rest-cancels; wait CLEAR_WAIT_S then assess."""
     self.hold = False
     self._clear_n = 0
     self._wipe_t0 = 0.0
     self._wait_t0 = time.monotonic()
-    # After the 2 s wait, one wet score may wipe again (do not wait MIN_HOLD_N).
-    # Dry assess drops hold_n and returns to idle ~4 s watching.
-    self._hold_n = max(0, MIN_HOLD_N - 1)
+    # Do not prime hold_n. One dry/marginal post-wipe look must exit to idle.
+    self._hold_n = 0
+    self._post_wipe = True
 
   def _update_score(self, score: float) -> bool:
     """Latch from an obstruction score. Tests inject residual/dry scores here."""
@@ -508,7 +525,6 @@ class WindshieldRain:
       self.last_score = _finite_score(score)
       alpha = EMA_HOLD_ALPHA if self.hold else EMA_ALPHA
       self.ema = alpha * self.last_score + (1.0 - alpha) * self.ema
-      wet = self.last_score >= HOLD_ON
       waiting = self._wait_t0 > 0.0 and (now - self._wait_t0) < CLEAR_WAIT_S
       if self.hold:
         if self._wipe_t0 > 0.0 and (now - self._wipe_t0) >= WIPE_PULSE_S:
@@ -519,14 +535,20 @@ class WindshieldRain:
       else:
         self._wait_t0 = 0.0
         self._clear_n = 0
-        if wet and self.ema >= HOLD_ON:
+        if self._post_wipe:
+          self._post_wipe = False
+          if self.last_score >= REWIPE_ON:
+            self._start_wipe(now)
+          else:
+            # Dry, overcast, streak, or blade residual → idle 4 s watching.
+            self._hold_n = 0
+        elif self.last_score >= ACQUIRE_ON:
           self._hold_n += 1
           if self._hold_n >= MIN_HOLD_N:
-            self.hold = True
-            self._wipe_t0 = now
-            self._wait_t0 = 0.0
-        elif self._hold_n > 0:
-          self._hold_n -= 1
+            self._start_wipe(now)
+        else:
+          # Consecutive idle wet looks only. One below-wet resets.
+          self._hold_n = 0
       self._last_frame_t = now
       self.n_frames += 1
       hold = self.hold
@@ -651,6 +673,7 @@ class WindshieldRain:
       self._hold_n = 0
       self._wipe_t0 = 0.0
       self._wait_t0 = 0.0
+      self._post_wipe = False
 
   def _release_vision(self) -> None:
     """Drop the live ROAD client between score ticks. Tests inject _client."""
