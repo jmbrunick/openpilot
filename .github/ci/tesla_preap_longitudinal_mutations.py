@@ -12,7 +12,7 @@ LONGCONTROL_TEST_PATH = "selfdrive/controls/tests/test_tesla_preap_longcontrol.p
 FOLLOWING_TEST_PATH = "selfdrive/controls/tests/test_tesla_preap_following.py"
 GAS_LIFT_TEST_PATH = "selfdrive/controls/tests/test_tesla_preap_gas_lift_handoff.py"
 BRAKE_CANCEL_TEST_PATH = (
-  "opendbc_repo/opendbc/car/tesla/preap/tests/test_brake_cancel_regen.py"
+  "selfdrive/controls/tests/test_tesla_preap_brake_cancel_regen.py"
 )
 NOISE_GATE_TEST_NODE = (
   "opendbc_repo/opendbc/car/tesla/preap/tests/test_virtual_das.py::TestInnerPID::" +
@@ -40,21 +40,12 @@ MUTATIONS = (
     ),
   ),
   HistoricalMutation(
-    name="brake-cancel-tip-drops-interceptor",
+    name="brake-cancel-keeps-interceptor-after-long-drop",
     source_path="opendbc_repo/opendbc/car/tesla/preap/carcontroller.py",
-    original=b"        and ((long_active and not brake_pressed) or keep_enabled)\n",
-    replacement=b"        and (long_active and not brake_pressed)\n",
+    original=b"      authority_requested = pedal_long_allowed and long_active and not brake_pressed and not gas_pressed\n",
+    replacement=b"      authority_requested = pedal_long_allowed and not gas_pressed\n",
     test_nodes=(
-      f"{BRAKE_CANCEL_TEST_PATH}::test_controller_short_cancel_ramps_regen",
-    ),
-  ),
-  HistoricalMutation(
-    name="brake-cancel-tip-holds-coast-instead-of-ramp",
-    source_path="opendbc_repo/opendbc/car/tesla/preap/carcontroller.py",
-    original=b"            accel_request = self.brake_cancel.commanded_accel()\n            in_engage_grace = False\n            accel_effort_limits = self.brake_cancel.accel_effort_limits()\n",
-    replacement=b"            accel_request = 0.0\n            in_engage_grace = False\n            accel_effort_limits = (0.0, 0.0)\n",
-    test_nodes=(
-      f"{BRAKE_CANCEL_TEST_PATH}::test_controller_short_cancel_ramps_regen",
+      f"{BRAKE_CANCEL_TEST_PATH}::test_short_tip_releases_interceptor_immediately",
     ),
   ),
   HistoricalMutation(
