@@ -43,11 +43,14 @@ from openpilot.selfdrive.car.tesla.preap_windshield_rain import (
   CLEAR_RELEASE_N,
   CONNECT_RETRY_S,
   FROST_ON,
+  HOLD_OFF,
   HOLD_ON,
   ICE_ON,
+  MIN_HOLD_N,
   SCORE_OFF,
   SCORE_ON,
   STREAM_FALLBACK_S,
+  WIPE_CLEAR_N,
   WindshieldRain,
   reset_windshield_rain,
   windshield_frost_score,
@@ -338,6 +341,34 @@ def _bokeh_windshield(h=240, w=320, n=10, seed=5) -> np.ndarray:
     cx = rng.uniform(w * 0.15, w * 0.85)
     sig = rng.uniform(min(h, w) * 0.055, min(h, w) * 0.14)
     amp = rng.uniform(35.0, 80.0) * rng.choice([1.0, 1.0, 0.85, -0.4])
+    y += amp * np.exp(-((yy - cy) ** 2 + (xx - cx) ** 2) / (2.0 * sig * sig))
+  return np.clip(y, 0, 255).astype(np.uint8)
+
+
+def _overcast_windshield(h=240, w=320, seed=21) -> np.ndarray:
+  """Dry overcast: sky wash + huge soft clouds. Low bokeh, not rain blobs."""
+  y = _dry_windshield(h, w, seed=0).astype(np.float32)
+  rng = np.random.RandomState(seed)
+  yy, xx = np.mgrid[0:h, 0:w]
+  for _ in range(3):
+    cy = rng.uniform(h * 0.05, h * 0.35)
+    cx = rng.uniform(w * 0.2, w * 0.8)
+    sig = rng.uniform(70.0, 120.0)
+    amp = rng.uniform(8.0, 16.0)
+    y += amp * np.exp(-((yy - cy) ** 2 + (xx - cx) ** 2) / (2.0 * sig * sig))
+  return np.clip(y, 0, 255).astype(np.uint8)
+
+
+def _low_bokeh_overcast(h=240, w=320, seed=13) -> np.ndarray:
+  """Weak false bokeh under BOKEH_ON — dry/overcast texture, not rain."""
+  y = _dry_windshield(h, w, seed=0).astype(np.float32)
+  rng = np.random.RandomState(seed)
+  yy, xx = np.mgrid[0:h, 0:w]
+  for _ in range(8):
+    cy = rng.uniform(h * 0.18, h * 0.56)
+    cx = rng.uniform(w * 0.15, w * 0.85)
+    sig = rng.uniform(min(h, w) * 0.04, min(h, w) * 0.10)
+    amp = rng.uniform(10.0, 22.0)
     y += amp * np.exp(-((yy - cy) ** 2 + (xx - cx) ** 2) / (2.0 * sig * sig))
   return np.clip(y, 0, 255).astype(np.uint8)
 
@@ -683,10 +714,8 @@ def test_hold_rides_brief_wipe_clear_then_releases_on_sustained_dry():
   assert saw
   assert det.hold
 
-  # A wipe-clear is many dry frames, not two, and still well under release.
-  brief = CLEAR_RELEASE_N // 2
-  assert brief < CLEAR_RELEASE_N
-  for _ in range(brief):
+  assert WIPE_CLEAR_N < CLEAR_RELEASE_N
+  for _ in range(WIPE_CLEAR_N):
     assert det.update_from_y(dry)
     assert det.hold
   assert 0 < det._clear_n < CLEAR_RELEASE_N
@@ -697,12 +726,135 @@ def test_hold_rides_brief_wipe_clear_then_releases_on_sustained_dry():
   assert det._clear_n == 0
 
   released = False
-  for _ in range(CLEAR_RELEASE_N + 40):
+  n = 0
+  for n in range(1, CLEAR_RELEASE_N + MIN_HOLD_N + 1):
     if not det.update_from_y(dry):
       released = True
       break
   assert released
+  assert n <= CLEAR_RELEASE_N
   assert not det.hold
+  assert det._clear_n == 0
+
+
+def test_sustained_dry_releases_within_bounded_frames():
+  """Already-held + truly dry scores must drop HOLD within CLEAR_RELEASE_N frames."""
+  assert MIN_HOLD_N <= CLEAR_RELEASE_N
+  det = WindshieldRain()
+  wet = _bokeh_windshield()
+  dry = _dry_windshield()
+  for _ in range(16):
+    det.update_from_y(wet)
+  assert det.hold
+  assert det._hold_n >= MIN_HOLD_N
+
+  n = 0
+  released = False
+  for n in range(1, CLEAR_RELEASE_N + 1):
+    if not det.update_from_y(dry):
+      released = True
+      break
+  assert released
+  assert n == CLEAR_RELEASE_N
+  assert not det.hold
+  assert windshield_obstruction_score(dry) < HOLD_OFF
+  rest = _rest()
+  assert apply_stw_wiper_beam_nibbles(rest, False, False) == rest
+
+
+def test_dry_overcast_low_bokeh_does_not_stay_held():
+  """Dry overcast / weak false bokeh must not acquire, and must release if held."""
+  from openpilot.selfdrive.car.tesla.preap_windshield_rain import (
+    _BOKEH_ROWS, _COLS, _band, _near_features,
+  )
+
+  overcast = _overcast_windshield()
+  low = _low_bokeh_overcast()
+  dry = _dry_windshield()
+  wet = _bokeh_windshield()
+  for y in (overcast, low, dry):
+    obs = windshield_obstruction_score(y)
+    _blob, _speckle, _sparse, _sat, _structure, bokeh_e = _near_features(_band(y, _BOKEH_ROWS, _COLS))
+    assert obs < HOLD_ON
+    assert obs < HOLD_OFF or bokeh_e < BOKEH_ON
+    assert not windshield_looks_rainy(y)
+    det_dry = WindshieldRain()
+    for _ in range(CLEAR_RELEASE_N + MIN_HOLD_N + 8):
+      assert not det_dry.update_from_y(y)
+
+  # After real rain, overcast residual must release — not stick forever.
+  det = WindshieldRain()
+  for _ in range(16):
+    det.update_from_y(wet)
+  assert det.hold
+  released = False
+  n = 0
+  for n in range(1, CLEAR_RELEASE_N + 1):
+    if not det.update_from_y(overcast):
+      released = True
+      break
+  assert released
+  assert n <= CLEAR_RELEASE_N
+  assert not det.hold
+
+  det2 = WindshieldRain()
+  for _ in range(16):
+    det2.update_from_y(wet)
+  assert det2.hold
+  released = False
+  for n in range(1, CLEAR_RELEASE_N + 1):
+    if not det2.update_from_y(low):
+      released = True
+      break
+  assert released
+  assert n <= CLEAR_RELEASE_N
+  assert not det2.hold
+
+
+def test_elevated_residual_below_hold_off_releases_and_does_not_stick():
+  """HOLD_OFF 0.38 + EMA gate never cleared residual ~0.45/0.83. Instant score must."""
+  assert HOLD_OFF > BOKEH_ON / SCORE_ON
+  assert HOLD_OFF < HOLD_ON
+  assert WIPE_CLEAR_N < CLEAR_RELEASE_N
+
+  def _latch(det):
+    for _ in range(12):
+      det._update_score(HOLD_ON + 0.7)
+    assert det.hold
+    assert det._hold_n >= MIN_HOLD_N
+
+  # Residual that sat forever above the old 0.38 HOLD_OFF.
+  for residual in (0.45, 0.70, BOKEH_ON / SCORE_ON):
+    det = WindshieldRain()
+    _latch(det)
+    for _ in range(WIPE_CLEAR_N):
+      assert det._update_score(residual)
+      assert det.hold
+    n = 0
+    released = False
+    for n in range(1, CLEAR_RELEASE_N + 1):
+      if not det._update_score(residual):
+        released = True
+        break
+    assert released, residual
+    assert n <= CLEAR_RELEASE_N - WIPE_CLEAR_N
+    assert not det.hold
+
+  # Light rain at/above HOLD_ON must keep HOLD (not a false residual release).
+  det = WindshieldRain()
+  _latch(det)
+  for _ in range(CLEAR_RELEASE_N + MIN_HOLD_N + 8):
+    assert det._update_score(1.05)
+    assert det.hold
+
+  # Brief wipe-clear of zeros, then rain returns: still HOLD.
+  det = WindshieldRain()
+  _latch(det)
+  for _ in range(WIPE_CLEAR_N):
+    assert det._update_score(0.0)
+    assert det.hold
+  assert det._update_score(1.7)
+  assert det.hold
   assert det._clear_n == 0
 
 
