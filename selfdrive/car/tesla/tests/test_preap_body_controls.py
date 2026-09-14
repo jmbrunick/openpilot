@@ -510,14 +510,11 @@ def test_windshield_soft_bokeh_holds_and_dry_releases():
   assert _byte(held) != STW_WASHER_SPRAY
   assert apply_stw_wiper_beam_nibbles(rest, windshield_looks_rainy(dry), False) == rest
 
+  # Light sprinkle-level bokeh looks rainy but must not acquire.
   det = WindshieldRain()
-  saw = False
-  for _ in range(16):
-    if det.update_from_y(bokeh):
-      saw = True
-      break
-  assert saw
-  _expire_wipe(det)
+  _skip_warmup(det)
+  for _ in range(MIN_HOLD_N + 8):
+    assert not det.update_from_y(bokeh)
   assert not det.hold
 
 
@@ -669,18 +666,19 @@ def test_dense_beads_covering_glass_hold_at_least_as_light_bokeh():
 
 def test_one_below_wet_idle_look_resets_consecutive_acquire():
   """Two consecutive clearly-wet idle looks acquire. One dry in between resets."""
+  wet = HEAVY_ON + 0.8
   det = WindshieldRain()
   _skip_warmup(det)
   for _ in range(MIN_HOLD_N - 1):
-    assert not det._update_score(3.16)
+    assert not det._update_score(wet)
     assert not det.hold
   assert det._hold_n == MIN_HOLD_N - 1
   assert not det._update_score(0.0)
   assert not det.hold
   assert det._hold_n == 0
-  assert not det._update_score(3.16)
+  assert not det._update_score(wet)
   assert not det.hold
-  assert det._update_score(3.16)
+  assert det._update_score(wet)
   assert det.hold
 
 
@@ -1024,7 +1022,7 @@ def test_dense_bead_sparse_below_8_is_rain():
 
 def test_windshield_latch_holds_then_releases():
   det = WindshieldRain()
-  wet = _wet_windshield()
+  wet = _heavy_bokeh_windshield()
   dry = _dry_windshield()
   saw_wet = False
   for _ in range(16):
@@ -1042,13 +1040,12 @@ def test_windshield_latch_holds_then_releases():
   frost_det = WindshieldRain()
   for _ in range(MIN_HOLD_N + 8):
     assert not frost_det.update_from_y(frost)
+  ice = _ice_sheet()
+  assert windshield_looks_rainy(ice)
+  assert windshield_obstruction_score(ice) < ACQUIRE_ON
   ice_det = WindshieldRain()
-  saw_ice = False
-  for _ in range(16):
-    if ice_det.update_from_y(_ice_sheet()):
-      saw_ice = True
-      break
-  assert saw_ice
+  for _ in range(MIN_HOLD_N + 8):
+    assert not ice_det.update_from_y(ice)
 
 
 def test_hold_rides_brief_wipe_clear_then_releases_on_sustained_dry():
@@ -1188,7 +1185,7 @@ def test_elevated_residual_below_rewipe_exits_loop():
   assert HOLD_ON < ACQUIRE_ON <= REWIPE_ON
   assert REWIPE_ON == HEAVY_ON
 
-  for residual in (0.0, 0.45, 0.70, 0.95, 1.05, HOLD_ON, ACQUIRE_ON):
+  for residual in (0.0, 0.45, 0.70, 0.95, 1.05, HOLD_ON, 1.7, 3.16, 4.42):
     det = WindshieldRain()
     _acquire_score(det, HEAVY_ON + 0.8)
     _expire_wipe(det)
@@ -1198,33 +1195,16 @@ def test_elevated_residual_below_rewipe_exits_loop():
     assert not det._post_wipe
 
 
-def test_light_rain_acquires_then_exits_loop_if_not_clearly_wet():
-  """Light rain: two idle looks wipe; post-wipe light/marginal exits to idle."""
-  light = ACQUIRE_ON + 0.05
-  assert ACQUIRE_ON <= light < REWIPE_ON
-  det = WindshieldRain()
-  _skip_warmup(det)
-  saw = False
-  for _ in range(MIN_HOLD_N + 2):
-    if det._update_score(light):
-      saw = True
-      break
-  assert saw
-  assert det.hold
-  assert det._update_score(light)
-  assert det.hold
-  _expire_wipe(det)
-  assert not det.hold
-  assert not det._update_score(light)
-  assert not det.hold
-  _expire_wait(det)
-  # Still light, not clearly wet → idle, not another wipe.
-  assert not det._update_score(light)
-  assert not det.hold
-  # Back on idle consecutive acquire.
-  assert not det._update_score(light)
-  assert det._update_score(light)
-  assert det.hold
+def test_light_sprinkle_never_enters_wipe_loop():
+  """Very little sprinkles / residual beads: idle 4 s watch, no nibble-1."""
+  for s in (HOLD_ON, 1.7, 3.16, 4.42, ACQUIRE_ON - 0.05):
+    assert s < ACQUIRE_ON
+    det = WindshieldRain()
+    _skip_warmup(det)
+    for _ in range(MIN_HOLD_N + 8):
+      assert not det._update_score(s), s
+    assert not det.hold
+    assert det._wipe_t0 == 0.0
 
 
 def test_heavy_rain_one_wipe_then_wait_then_reacquires():
@@ -1313,38 +1293,35 @@ def test_blade_spike_during_clear_wait_does_not_acquire():
   assert not det.hold
 
 
-def test_light_bokeh_fixture_acquires_then_exits_if_not_clearly_wet():
-  """Measured light-wet ROAD fixtures wipe once, then exit unless still heavy."""
+def test_light_bokeh_and_wet_drop_fixtures_do_not_acquire():
+  """Light sprinkle / residual-drop fixtures stay below acquire. Heavy still wipes."""
   light_y = _bokeh_windshield()
   wet_y = _wet_windshield()
   heavy_y = _heavy_bokeh_windshield()
-  assert ACQUIRE_ON <= windshield_obstruction_score(light_y) < REWIPE_ON
-  assert ACQUIRE_ON <= windshield_obstruction_score(wet_y) < REWIPE_ON
-  assert windshield_obstruction_score(heavy_y) >= REWIPE_ON
+  assert windshield_obstruction_score(light_y) < ACQUIRE_ON
+  assert windshield_obstruction_score(wet_y) < ACQUIRE_ON
+  assert windshield_obstruction_score(heavy_y) >= ACQUIRE_ON
+
+  for y in (light_y, wet_y):
+    det = WindshieldRain()
+    _skip_warmup(det)
+    for _ in range(MIN_HOLD_N + 8):
+      assert not det.update_from_y(y)
+    assert not det.hold
 
   det = WindshieldRain()
   _skip_warmup(det)
   saw = False
   for _ in range(MIN_HOLD_N + 2):
-    if det.update_from_y(light_y):
+    if det.update_from_y(heavy_y):
       saw = True
       break
   assert saw
   assert det.hold
-  _expire_wipe(det)
-  assert not det.hold
-  assert not det.update_from_y(light_y)
-  assert not det.hold
-  _expire_wait(det)
-  assert not det.update_from_y(light_y)
-  assert not det.hold
-  assert not det.update_from_y(light_y)
-  assert det.update_from_y(light_y)
-  assert det.hold
 
 
 def test_single_frame_bokeh_score_does_not_acquire_hold():
-  """Live clear glass was bokeh~3.16 score=0. A one-frame 3.16 must not HOLD."""
+  """Sprinkle / residual 3.16–4.42 must not HOLD. First 1–2 frames never acquire."""
   det = WindshieldRain()
   for _ in range(20):
     assert not det._update_score(0.0)
@@ -1358,12 +1335,19 @@ def test_single_frame_bokeh_score_does_not_acquire_hold():
   assert not flicker.hold
   assert flicker._hold_n == 0
 
+  sprinkle = WindshieldRain()
+  _skip_warmup(sprinkle)
+  for _ in range(MIN_HOLD_N + 8):
+    assert not sprinkle._update_score(4.42)
+    assert not sprinkle.hold
+
   latch = WindshieldRain()
   _skip_warmup(latch)
+  wet = HEAVY_ON + 0.8
   for _ in range(MIN_HOLD_N - 1):
-    assert not latch._update_score(3.16)
+    assert not latch._update_score(wet)
     assert not latch.hold
-  assert latch._update_score(3.16)
+  assert latch._update_score(wet)
   assert latch.hold
 
 
@@ -1379,7 +1363,7 @@ def test_clear_glass_after_wipe_stays_off_and_auto_cancels(monkeypatch):
   reset_windshield_rain()
   reset_auto_gates()
   det = WindshieldRain()
-  wet = _bokeh_windshield()
+  wet = _heavy_bokeh_windshield()
   dry = _dry_windshield()
   saw = False
   for _ in range(16):
@@ -1443,7 +1427,7 @@ def test_helper_score_period_is_every_few_seconds():
 
 
 def test_idle_watch_then_wipe_loop_cadence():
-  """First look is assess-now (not wipe-first). Idle is ~4 s. Post-wipe is ~2 s."""
+  """First look is assess-now (not wipe-first). Idle is ~4 s. Post-wipe is ~3 s."""
   det = WindshieldRain()
   t0 = time.monotonic()
   assert det._next_score_at(0.0, t0) == t0
@@ -1483,16 +1467,22 @@ def test_dry_fixtures_never_enter_wipe_loop():
 
 
 def test_live_dry_blob_bokeh_status_is_not_rain():
-  """Justin 5f32c450b bone-dry: score=4.42 blob=7.40 bokeh=3.01 speckle=0.046 sparse=4.7."""
+  """Justin 5f32c450b light sprinkle: score=4.42 blob=7.40 bokeh=3.01 speckle=0.046 sparse=4.7."""
   from openpilot.selfdrive.car.tesla.preap_windshield_rain import _rain_from_feats
 
   rain = _rain_from_feats(7.40, 0.046, 4.7, 0.0, 0.013, 3.01)
   assert rain < SCORE_ON
   obs = (rain / SCORE_ON) if rain else 0.0
   assert obs < ACQUIRE_ON
+  # Residual beads at sparse~8 with the same mid blob must not become a wet sheet.
+  residual = _rain_from_feats(7.40, 0.046, 8.0, 0.0, 0.013, 3.01)
+  residual_obs = (residual / SCORE_ON) if residual else 0.0
+  assert residual_obs < ACQUIRE_ON
   det = WindshieldRain()
   for _ in range(WARMUP_N + MIN_HOLD_N + 6):
     assert not det._update_score(obs)
+    assert not det._update_score(4.42)
+    assert not det._update_score(residual_obs)
   assert not det.hold
 
 
@@ -1569,7 +1559,7 @@ def test_stale_does_not_drop_hold_between_score_periods(monkeypatch):
   det = WindshieldRain()
   _skip_warmup(det)
   for _ in range(MIN_HOLD_N):
-    det._update_score(3.16)
+    det._update_score(HEAVY_ON + 0.8)
   assert det.hold
   det._helper_started = True
   det._last_frame_t = time.monotonic() - SCORE_PERIOD_S
@@ -1581,21 +1571,33 @@ def test_stale_does_not_drop_hold_between_score_periods(monkeypatch):
 
 
 def test_y_plane_live_copy_is_tiny_and_still_rainy():
-  """Helper must not memcpy full ROAD. Downsampled bokeh must still HOLD."""
-  wet = _bokeh_windshield()
-  buf = _nv12_buf(wet)
-  full = y_plane_from_nv12(buf)
-  tiny = y_plane_from_nv12(buf, max_side=Y_COPY_SIDE)
-  assert full is not None and tiny is not None
-  assert full.shape == wet.shape
-  assert min(tiny.shape) <= Y_COPY_SIDE + 8
-  assert tiny.size < full.size
+  """Helper must not memcpy full ROAD. Tiny light sprinkle stays idle; tiny heavy wipes."""
+  light = _bokeh_windshield()
+  light_buf = _nv12_buf(light)
+  full = y_plane_from_nv12(light_buf)
+  tiny_light = y_plane_from_nv12(light_buf, max_side=Y_COPY_SIDE)
+  assert full is not None and tiny_light is not None
+  assert full.shape == light.shape
+  assert min(tiny_light.shape) <= Y_COPY_SIDE + 8
+  assert tiny_light.size < full.size
   assert windshield_looks_rainy(full)
-  assert windshield_rain_score(tiny) >= SCORE_ON
+  assert windshield_obstruction_score(tiny_light) < ACQUIRE_ON
+  det_light = WindshieldRain()
+  _skip_warmup(det_light)
+  for _ in range(MIN_HOLD_N + 8):
+    assert not det_light.update_from_y(tiny_light)
+  assert not det_light.hold
+
+  heavy = _heavy_bokeh_windshield()
+  tiny_heavy = y_plane_from_nv12(_nv12_buf(heavy), max_side=Y_COPY_SIDE)
+  assert tiny_heavy is not None
+  assert windshield_rain_score(tiny_heavy) >= SCORE_ON
+  assert windshield_obstruction_score(tiny_heavy) >= ACQUIRE_ON
   det = WindshieldRain()
+  _skip_warmup(det)
   saw = False
   for _ in range(MIN_HOLD_N + 4):
-    if det.update_from_y(tiny):
+    if det.update_from_y(tiny_heavy):
       saw = True
       break
   assert saw
