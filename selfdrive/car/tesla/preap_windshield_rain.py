@@ -137,11 +137,14 @@ MIST_NEAR_OVER_FAR = 0.90
 MIST_LUM = (40.0, 220.0)
 # Live 2db9e6c30 highway mist that should wipe (lower-left FOV):
 #   score=2.15 bokeh=1.42 blob=3.93 sparse=3.2 speckle=0 struct=0
-# That was frost leftover (3.93/1.8), under ACQUIRE 4.5. Soft film band
-# sits below old-FOV garage/sprinkle (blob~7–9 bokeh~3+ sparse~5+).
-MIST_FILM_BLOB = (2.4, 5.6)
-MIST_FILM_BOKEH = (0.90, 2.15)
-MIST_FILM_SPARSE = (2.2, 4.6)
+# 48f458dd9 still missed dense fine drizzle (uniform film, ROAD looks
+# through it). Status blob/bokeh are the *max-bokeh* band; scoring only
+# NEAR dropped the film. Band sits below old-FOV garage (blob~7–9).
+# Blob floor is above dry/overcast mid-left (~2.5) and calm glass (~1.2).
+MIST_FILM_BLOB = (2.75, 6.2)
+MIST_FILM_BOKEH = (0.55, 2.40)
+MIST_FILM_SPARSE = (1.8, 5.25)
+MIST_FILM_SPECKLE = 0.008
 # Combined obstruction: 1.0 is looks_rainy / wetness floor (rain/frost/ice).
 HOLD_ON = 1.0
 # First wipe: two consecutive idle scores at/above this *after* warmup.
@@ -422,21 +425,30 @@ def _ice_from_feats(blob: float, _speckle: float, _sparse: float, sat: float,
 
 def _mist_film_from_feats(blob: float, speckle: float, sparse: float, sat: float,
                          structure: float, bokeh: float) -> float:
-  """Soft near-glass mist film from live feats. No Y / contrast needed.
+  """Soft / uniform fine-droplet film. No Y / contrast needed.
 
   Live highway mist (2db9e6c30): blob=3.93 bokeh=1.42 sparse=3.2 → 2.15
-  and holdn=0. Must land at/above ACQUIRE. Old-FOV dry garage blob~7.5
-  / bokeh~3.8 / sparse~6.7 must stay 0.
+  and holdn=0. Dense drizzle can pile blob toward 8 with *low* bokeh.
+  Old-FOV dry garage blob~7.5 / bokeh~3.8 / sparse~6.7 must stay 0.
+  Dry overcast mid-left is blob~2.5 — below the blob floor.
   """
   if sat > _SAT_MAX or structure > _STRUCTURE_FRAC:
     return 0.0
-  if not (MIST_FILM_BLOB[0] <= blob <= MIST_FILM_BLOB[1]):
+  if blob < MIST_FILM_BLOB[0]:
     return 0.0
-  if not (MIST_FILM_BOKEH[0] <= bokeh <= MIST_FILM_BOKEH[1]):
+  if sparse < MIST_FILM_SPARSE[0] or sparse > MIST_FILM_SPARSE[1]:
     return 0.0
-  if not (MIST_FILM_SPARSE[0] <= sparse <= MIST_FILM_SPARSE[1]):
+  # Garage/old-FOV wet-sheet grain: high blob *and* high bokeh/sparse.
+  if blob > MIST_FILM_BLOB[1] and (bokeh >= BOKEH_ON or sparse >= 5.5):
     return 0.0
-  return 5.2 + 0.4 * (blob - MIST_FILM_BLOB[0]) + 0.5 * (bokeh - MIST_FILM_BOKEH[0]) + 8.0 * speckle
+  if blob >= BLOB_ABSURD:
+    return 0.0
+  has_bokeh = MIST_FILM_BOKEH[0] <= bokeh <= MIST_FILM_BOKEH[1]
+  has_speckle = speckle >= MIST_FILM_SPECKLE and blob >= 3.2
+  has_film = blob >= 3.2 and bokeh < BOKEH_ON
+  if not (has_bokeh or has_speckle or has_film):
+    return 0.0
+  return 5.3 + 0.25 * min(blob, 8.0) + 0.4 * max(0.0, bokeh - 0.4) + 8.0 * speckle
 
 
 def _mist_from_feats(blob: float, speckle: float, sparse: float, sat: float,
@@ -508,14 +520,33 @@ def windshield_mist_score(y: np.ndarray) -> float:
   """Light mist / film on near-glass. Distant atmospheric fog scores 0."""
   if y is None or y.ndim != 2 or y.shape[0] < 32 or y.shape[1] < 32:
     return 0.0
-  feats = _near_features(_band(y, _NEAR_ROWS, _COLS))
-  return _mist_from_feats(*feats, y)
+  mist = 0.0
+  near = None
+  best = None
+  for rows in _RAIN_BANDS:
+    feats = _near_features(_band(y, rows, _COLS))
+    mist = max(mist, _mist_film_from_feats(*feats))
+    if rows == _NEAR_ROWS:
+      near = feats
+    if best is None or feats[5] >= best[5]:
+      best = feats
+  if near is not None:
+    mist = max(mist, _mist_from_feats(*near, y))
+  if best is not None:
+    mist = max(mist, _mist_film_from_feats(*best))
+  return mist
 
 
 def _score_frame(y: np.ndarray) -> tuple[float, tuple[float, float, float, float, float, float]]:
-  """One pass: rain bands + frost/ice from NEAR. Used by the live helper."""
+  """One pass: rain + mist film on both lower-left bands; veil/frost/ice on NEAR.
+
+  Status blob/bokeh follow the max-bokeh band. Film must use those same
+  bands — scoring only NEAR missed live film that showed up in status.
+  Contrast veil stays on NEAR so dry overcast mid-left does not acquire.
+  """
   z = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
   rain = 0.0
+  mist = 0.0
   best = z
   near = z
   for rows in _RAIN_BANDS:
@@ -523,11 +554,12 @@ def _score_frame(y: np.ndarray) -> tuple[float, tuple[float, float, float, float
     if rows == _NEAR_ROWS:
       near = feats
     rain = max(rain, _rain_from_feats(*feats))
+    mist = max(mist, _mist_film_from_feats(*feats))
     if feats[5] >= best[5]:
       best = feats
   frost = _frost_from_feats(*near)
   ice = _ice_from_feats(*near, y)
-  mist = _mist_from_feats(*near, y)
+  mist = max(mist, _mist_from_feats(*near, y), _mist_film_from_feats(*best))
   obs = _finite_score(max(rain / SCORE_ON, frost / FROST_ON, ice / ICE_ON, mist / MIST_ON))
   return obs, best
 
