@@ -1,4 +1,6 @@
 """0x45 stalk wiper / high-beam test. Off matches today's forwarded stalk."""
+import time
+
 import numpy as np
 
 from openpilot.selfdrive.car.tesla.preap_body_controls import (
@@ -45,6 +47,7 @@ from openpilot.selfdrive.car.tesla.preap_windshield_rain import (
   SCORE_ON,
   STREAM_FALLBACK_S,
   WindshieldRain,
+  reset_windshield_rain,
   windshield_frost_score,
   windshield_ice_score,
   windshield_looks_rainy,
@@ -528,6 +531,109 @@ def test_visionipc_falls_back_to_wide_without_frames():
   assert det._client is None
 
 
+def _nv12_buf(y):
+  h, w = y.shape
+  class _Buf:
+    width = int(w)
+    height = int(h)
+    stride = int(w)
+    uv_offset = int(w * h)
+    data = np.concatenate([y.reshape(-1), np.full((w * h) // 2, 128, np.uint8)])
+  return _Buf()
+
+
+class _CountingVisionClient:
+  def __init__(self, buf):
+    self.buf = buf
+    self.n_recv = 0
+
+  def is_connected(self):
+    return True
+
+  def recv(self, timeout_ms=0):
+    self.n_recv += 1
+    wait = (timeout_ms or 0) / 1000.0
+    time.sleep(0.02 if wait <= 0 else min(0.03, wait))
+    return self.buf
+
+
+def test_helper_holds_soft_bokeh_and_poll_does_not_recv():
+  """stock_cc / card is CTRL_HIGH: poll must not drain VisionIpc. Soft bokeh HOLD."""
+  import time as time_mod
+
+  bokeh = _bokeh_windshield()
+  client = _CountingVisionClient(_nv12_buf(bokeh))
+  det = WindshieldRain()
+  det._client = client
+  det.start_helper()
+  try:
+    deadline = time_mod.monotonic() + 2.0
+    while time_mod.monotonic() < deadline and not det.hold:
+      time_mod.sleep(0.02)
+    assert det.helper_alive
+    assert det.hold
+    assert det.n_frames >= 1
+    assert det.last_bokeh >= BOKEH_ON
+    n_poll = det._poll_recv
+    for _ in range(25):
+      assert det.poll() is True
+    assert det._poll_recv == n_poll
+  finally:
+    det.stop_helper()
+
+
+def test_helper_dry_road_does_not_hold():
+  import time as time_mod
+
+  dry = _dry_windshield()
+  client = _CountingVisionClient(_nv12_buf(dry))
+  det = WindshieldRain()
+  det._client = client
+  det.start_helper()
+  try:
+    deadline = time_mod.monotonic() + 1.0
+    while time_mod.monotonic() < deadline and det.n_frames < 4:
+      time_mod.sleep(0.02)
+    assert det.n_frames >= 1
+    assert not det.hold
+    assert det.poll() is False
+    assert det._poll_recv == 0
+  finally:
+    det.stop_helper()
+
+
+def test_stock_cc_update_primes_visionipc_helper(monkeypatch):
+  """Auto stock_cc.update starts ROAD drain; poll does not recv on that thread."""
+  from types import SimpleNamespace
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+  from openpilot.selfdrive.car.tesla import preap_windshield_rain as rain
+
+  reset_windshield_rain()
+  monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
+    WIPER_SETTING_AUTO if key == NAP_WIPER_SPEED else default
+  ))
+  monkeypatch.setattr(body, "requested_wiper_test", lambda: False)
+  monkeypatch.setattr(body, "requested_high_beam_test", lambda: False)
+  monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: [])
+  class _Fake:
+    def _send(self, CS, tesla_can, bus, button):
+      return (STW_ACTN_RQ_ADDR, b"\x00", bus)
+
+  fake = _Fake()
+  cs = SimpleNamespace(msg_stw_actn_req={"SpdCtrlLvr_Stat": 0})
+  try:
+    out = body.stock_cc_update_with_overlay(fake, cs, 10, None, 0)
+    assert out == []
+    assert rain._detector is not None
+    assert rain._detector._helper_started
+    assert rain._detector.poll() is False
+    assert rain._detector._poll_recv == 0
+  finally:
+    reset_windshield_rain()
+    reset_auto_gates()
+
+
 def test_dense_bead_sparse_below_8_is_rain():
   """Justin's upper droplet crop was sparse≈6.85 — old SPARSE_MIN=8 rejected it."""
   from openpilot.selfdrive.car.tesla.preap_windshield_rain import _SPARSE_MIN, _SPARSE_RAIN_MIN
@@ -812,11 +918,12 @@ def test_auto_status_param_is_full_gate_line_not_short_rain(monkeypatch):
     assert "gear_type=" in line
     assert "hold=1" in line
     assert "frames=8865" in line
+    assert "helper=" in line
     assert not line.startswith("hold=")
   finally:
     set_rain_wiper_needed(None)
     reset_auto_gates()
-    rain._detector = None
+    reset_windshield_rain()
 
 
 def test_rain_debug_does_not_put_status_param():
@@ -1301,6 +1408,7 @@ def test_auto_stock_cc_forwards_when_gear_only_on_cs_out(monkeypatch):
     assert fake.sent == []
   finally:
     reset_auto_gates()
+    reset_windshield_rain()
 
 
 def test_auto_stock_cc_releases_when_shifted_to_park(monkeypatch):
@@ -1331,6 +1439,7 @@ def test_auto_stock_cc_releases_when_shifted_to_park(monkeypatch):
     assert fake.sent == []
   finally:
     reset_auto_gates()
+    reset_windshield_rain()
 
 
 def test_auto_does_not_change_high_beam_hold_path(monkeypatch):
