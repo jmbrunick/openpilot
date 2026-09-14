@@ -24,15 +24,26 @@ live-counter in-place replacement of 0x45 so the body keeps seeing
 high-beam pressed and bus-0 IDLE cannot last-win as a cancel. Off/Low
 return the real stalk. Do not pulse 4 then drop to SNA or rest.
 
-Off leaves the driver’s real stalk nibble alone (do not force 0). Wiper
-On/Int holds high nibble 1. Auto holds that same nibble 1 only when all
-of: setting is Auto, the vehicle is on, gear is Drive or Reverse, and
+Off leaves the driver’s real stalk nibble alone (do not force 0) unless
+Int/On just dropped to Off — then extra-forward rest so the body cancels.
+Wiper On/Int holds high nibble 1. Auto holds that same nibble 1 only when
+all of: setting is Auto, the vehicle is on, gear is Drive or Reverse, and
 the 3X road camera sees a rainy or icy/frosted windshield (unwarped
-ROAD Y). Park and Neutral never Auto-wipe, even with the car on. Release
-the real stalk after a short run of below-rain scores (not a brief
-wipe-clear) or when gear leaves Drive/Reverse. Dry overcast must not
-acquire or keep HOLD. Off is the escape (real stalk, no Auto nibble 1).
-Default Off — Auto is opt-in. No spray. No auto high-beam. Do not flash.
+ROAD Y). Park and Neutral never Auto-wipe, even with the car on.
+
+Pre-AP latches ~32 s intermittent from nibble 1. Bus-0 rest does not
+cancel that. Stopping the extra-forward when rain/hold drops leaves the
+body wiping forever (status wipe=0 is honest — we are not commanding
+wipe, but we also are not canceling). While Auto is selected and wipe is
+False, still extra-forward 0x45 at the 10 Hz slot with the high nibble
+cleared (real stalk rest) so the body gets an explicit cancel. On the
+falling edge of wipe, send several rest frames immediately (do not wait
+for the next 10 Hz slot). Park/Neutral stay wipe=0 and use that same
+cancel if we had been wiping. Do not force wipe on dry glass. Off that
+never Auto-wiped still leaves the stalk alone.
+
+Dry overcast must not acquire or keep HOLD. Off is the escape. Default
+Off — Auto is opt-in. No spray. No auto high-beam. Do not flash.
 Do not inject a second 0x45 — overlay the existing forwarded frame and
 recompute CRC the same way create_action_request already does.
 
@@ -72,6 +83,8 @@ STW_HIBM_MASK = 0x0C  # HiBmLvr_Stat bits 2-3 of the captured byte.
 STW_HIGH_BEAM = 0x04  # HIBM_ON_PSD — held while High is selected
 STW_HIGH_BEAM_FLASH = 0x08  # HIBM_FLSH_ON_PSD — never send
 STW_FORWARD_SLOT = 10
+# Falling-edge rest: several 10 ms frames so Pre-AP drops latched Int now.
+STW_CANCEL_BURST_N = 8
 
 _ORIG_CREATE_ACTION_REQUEST = None
 _ORIG_STOCK_CC_UPDATE = None
@@ -104,6 +117,7 @@ _AUTO_DEBUG_S = 1.0
 _last_auto_log_t = 0.0
 _last_gear_src = "none"
 _last_wiper_req = False
+_wiper_cancel_burst = 0
 
 
 def _tesla_can():
@@ -150,11 +164,14 @@ def hibm_nibble(dat: bytes) -> int:
   return dat[STW_WIPER_BEAM_BYTE] & STW_HIBM_MASK
 
 
-def apply_stw_wiper_beam_nibbles(dat: bytes, wiper_on: bool, high_beam_on: bool) -> bytes:
+def apply_stw_wiper_beam_nibbles(dat: bytes, wiper_on: bool, high_beam_on: bool,
+                                clear_wiper: bool = False) -> bytes:
   """Set captured stalk nibbles. Off leaves that nibble. Never writes spray.
 
   High holds HIBM_ON_PSD (4) for as long as the setting is High. Only HiBm
   bits are touched — turn-indicator bits stay for blinker lat-pause.
+  Auto dry / wipe-release cancel sets clear_wiper so the high nibble is
+  rest 0, not a leftover 1 that would keep Pre-AP intermittent.
   """
   if len(dat) <= STW_WIPER_BEAM_BYTE:
     return bytes(dat)
@@ -162,6 +179,8 @@ def apply_stw_wiper_beam_nibbles(dat: bytes, wiper_on: bool, high_beam_on: bool)
   b = out[STW_WIPER_BEAM_BYTE]
   if wiper_on:
     b = (b & 0x0F) | STW_WIPER_ON
+  elif clear_wiper:
+    b = b & 0x0F
   if high_beam_on:
     b = (b & ~STW_HIBM_MASK) | STW_HIGH_BEAM
   out[STW_WIPER_BEAM_BYTE] = b
@@ -177,18 +196,21 @@ def stalk_test_active(wiper_on: bool | None = None, high_beam_on: bool | None = 
   return bool(wiper_on or high_beam_on)
 
 
-def extra_stw_forward_needed(can_sends, frame: int, wiper_on: bool, high_beam_on: bool) -> bool:
-  """One 0x45 when the test is on. Never a second frame.
+def extra_stw_forward_needed(can_sends, frame: int, wiper_on: bool, high_beam_on: bool,
+                             wiper_cancel: bool = False, cancel_now: bool = False) -> bool:
+  """One 0x45 when holding a nibble or sending rest-cancel. Never a second frame.
 
   Parked / not-engaged: stock-cc only TXes 0x45 on engage/cancel. Wiper
   On/Int extra-forwards on the 10 Hz slot so nibble 1 stays held. Auto
-  uses that same 10 Hz hold while the glass looks rainy or icy. High
-  extra-forwards every 10 ms so held nibble 4 can last-win against
-  repeating bus-0 IDLE.
+  uses that same 10 Hz hold while the glass looks rainy or icy, and the
+  same 10 Hz slot with nibble NOT held while Auto is selected and dry so
+  Pre-AP drops latched intermittent. Falling-edge cancel_now does not
+  wait for the slot. High extra-forwards every 10 ms so held nibble 4
+  can last-win against repeating bus-0 IDLE.
   """
-  if not stalk_test_active(wiper_on, high_beam_on):
+  if not (stalk_test_active(wiper_on, high_beam_on) or wiper_cancel):
     return False
-  if not high_beam_on and int(frame) % STW_FORWARD_SLOT != 0:
+  if not high_beam_on and not cancel_now and int(frame) % STW_FORWARD_SLOT != 0:
     return False
   return not any(msg[0] == STW_ACTN_RQ_ADDR for msg in can_sends)
 
@@ -200,9 +222,10 @@ def live_stw_counter(msg_stw) -> int:
   return int(msg_stw.get("MC_STW_ACTN_RQ", 0) or 0)
 
 
-def overlay_stw_wiper_beam(dat: bytes, wiper_on: bool, high_beam_on: bool, crc_fn=None) -> bytes:
+def overlay_stw_wiper_beam(dat: bytes, wiper_on: bool, high_beam_on: bool, crc_fn=None,
+                           clear_wiper: bool = False) -> bytes:
   """Apply nibbles and resign CRC only when the payload changed."""
-  new_dat = apply_stw_wiper_beam_nibbles(dat, wiper_on, high_beam_on)
+  new_dat = apply_stw_wiper_beam_nibbles(dat, wiper_on, high_beam_on, clear_wiper=clear_wiper)
   if new_dat == dat:
     return dat
   if crc_fn is None or len(new_dat) < 8:
@@ -212,9 +235,10 @@ def overlay_stw_wiper_beam(dat: bytes, wiper_on: bool, high_beam_on: bool, crc_f
   return bytes(out)
 
 
-def replace_relayed_stw(dat: bytes, wiper_on: bool, high_beam_on: bool, crc_fn=None) -> bytes:
+def replace_relayed_stw(dat: bytes, wiper_on: bool, high_beam_on: bool, crc_fn=None,
+                        clear_wiper: bool = False) -> bytes:
   """Edit the live/relayed 0x45 payload. Do not invent a second frame."""
-  return overlay_stw_wiper_beam(dat, wiper_on, high_beam_on, crc_fn=crc_fn)
+  return overlay_stw_wiper_beam(dat, wiper_on, high_beam_on, crc_fn=crc_fn, clear_wiper=clear_wiper)
 
 
 def send_replaced_live_stw(spoofer, CS, tesla_can, bus):
@@ -269,7 +293,7 @@ def set_cereal_gear(gear) -> None:
 
 def reset_auto_gates() -> None:
   global _live_cs, _vehicle_on_override, _gear_override, _last_gear_src, _last_wiper_req
-  global _cereal_gear_override, _cereal_gear_forced
+  global _cereal_gear_override, _cereal_gear_forced, _wiper_cancel_burst
   _live_cs = None
   _vehicle_on_override = None
   _gear_override = None
@@ -277,6 +301,7 @@ def reset_auto_gates() -> None:
   _cereal_gear_forced = False
   _last_gear_src = "none"
   _last_wiper_req = False
+  _wiper_cancel_burst = 0
 
 
 def _gear_name(gear) -> str:
@@ -566,6 +591,7 @@ def _auto_status_line(setting: int, on: bool, drive: bool, rain: bool, wipe: boo
   return (
     f"nap wiper auto setting={int(setting)} on={int(on)} gear={_gear_name(gear) or '-'} gear_src={src} "
     + f"gear_type={_gear_type_name(gear)} raw={raw} drive={int(drive)} rain={int(rain)} wipe={int(wipe)} "
+    + f"cancel={int(wiper_rest_tx_needed(wipe))} "
     + f"installed={int(_installed)} {rain_bits}"
   )
 
@@ -600,6 +626,30 @@ def _log_auto_status(setting: int, on: bool, drive: bool, rain: bool, wipe: bool
   _put_wiper_status(line)
 
 
+def wiper_rest_tx_needed(wiper_on: bool | None = None) -> bool:
+  """Auto dry, or a wipe 1→0 burst, still extra-forwards rest. Off-never-wiped does not."""
+  if wiper_on is None:
+    wiper_on = _last_wiper_req
+  if wiper_on:
+    return False
+  if _wiper_cancel_burst > 0:
+    return True
+  return _param_int(NAP_WIPER_SPEED, WIPER_SETTING_OFF) == WIPER_SETTING_AUTO
+
+
+def _arm_wiper_cancel(prev_wiper: bool, wiper_on: bool) -> None:
+  global _last_wiper_req, _wiper_cancel_burst
+  if prev_wiper and not wiper_on:
+    _wiper_cancel_burst = STW_CANCEL_BURST_N
+  _last_wiper_req = bool(wiper_on)
+
+
+def _note_wiper_cancel_frame() -> None:
+  global _wiper_cancel_burst
+  if _wiper_cancel_burst > 0:
+    _wiper_cancel_burst -= 1
+
+
 def requested_wiper_test() -> bool:
   global _last_wiper_req
   setting = _param_int(NAP_WIPER_SPEED, WIPER_SETTING_OFF)
@@ -630,8 +680,9 @@ def create_action_request_with_overlay(self, button_to_press, bus, counter, msg_
   if orig is None:
     orig = _tesla_can().create_action_request
   addr, dat, out_bus = orig(self, button_to_press, bus, counter, msg_stw)
-  dat = replace_relayed_stw(dat, requested_wiper_test(), requested_high_beam_test(),
-                            crc_fn=self.stw_crc)
+  wiper = requested_wiper_test()
+  dat = replace_relayed_stw(dat, wiper, requested_high_beam_test(),
+                            crc_fn=self.stw_crc, clear_wiper=wiper_rest_tx_needed(wiper))
   return addr, dat, out_bus
 
 
@@ -640,9 +691,12 @@ def stock_cc_update_with_overlay(self, CS, frame, tesla_can, can_bus_party):
 
   Does not read cruiseEnabled, latActive, or CC.enabled. High extra-forwards
   every 10 ms with held nibble 4 on the live-counter frame; wipers keep
-  forwarding on the 10 Hz slot. Auto reads gear from this CS: Park/Neutral
-  release the stalk even if the glass still looks wet. Primes the ROAD
-  VisionIpc helper so poll() does not recv on this CTRL_HIGH thread.
+  forwarding on the 10 Hz slot. Auto dry / wipe-release extra-forwards
+  rest (cleared high nibble) on that same slot so Pre-AP drops latched
+  intermittent; a wipe 1→0 burst does not wait for the slot. Auto reads
+  gear from this CS: Park/Neutral stay wipe=0 and still cancel if we had
+  been wiping. Primes the ROAD VisionIpc helper so poll() does not recv
+  on this CTRL_HIGH thread.
   """
   orig = _ORIG_STOCK_CC_UPDATE
   if orig is None:
@@ -650,10 +704,16 @@ def stock_cc_update_with_overlay(self, CS, frame, tesla_can, can_bus_party):
   update_live_car_state(CS)
   if _param_int(NAP_WIPER_SPEED, WIPER_SETTING_OFF) == WIPER_SETTING_AUTO:
     _prime_rain_helper()
+  prev_wiper = _last_wiper_req
   wiper = requested_wiper_test()
+  _arm_wiper_cancel(prev_wiper, wiper)
   high_setting = requested_high_beam_test()
+  cancel = wiper_rest_tx_needed(wiper)
+  cancel_now = bool(cancel and _wiper_cancel_burst > 0)
   can_sends = orig(self, CS, frame, tesla_can, can_bus_party)
-  if extra_stw_forward_needed(can_sends, frame, wiper, high_setting):
+  had_stw = any(msg[0] == STW_ACTN_RQ_ADDR for msg in can_sends)
+  if extra_stw_forward_needed(can_sends, frame, wiper, high_setting,
+                              wiper_cancel=cancel, cancel_now=cancel_now):
     msg_stw = getattr(CS, "msg_stw_actn_req", None)
     if msg_stw is not None:
       if high_setting:
@@ -664,6 +724,9 @@ def stock_cc_update_with_overlay(self, CS, frame, tesla_can, can_bus_party):
                           int(msg_stw.get("SpdCtrlLvr_Stat", 0) or 0))
       if sent is not None:
         can_sends.append(sent)
+        had_stw = True
+  if cancel and had_stw:
+    _note_wiper_cancel_frame()
   return can_sends
 
 
