@@ -10,6 +10,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LONGCONTROL_TEST_PATH = "selfdrive/controls/tests/test_tesla_preap_longcontrol.py"
 FOLLOWING_TEST_PATH = "selfdrive/controls/tests/test_tesla_preap_following.py"
+GAS_LIFT_TEST_PATH = "selfdrive/controls/tests/test_tesla_preap_gas_lift_handoff.py"
+BRAKE_CANCEL_TEST_PATH = (
+  "selfdrive/controls/tests/test_tesla_preap_brake_cancel_regen.py"
+)
 NOISE_GATE_TEST_NODE = (
   "opendbc_repo/opendbc/car/tesla/preap/tests/test_virtual_das.py::TestInnerPID::" +
   "test_sub_deadband_sign_changing_noise_does_not_accumulate_residual_authority"
@@ -26,6 +30,82 @@ class HistoricalMutation:
 
 
 MUTATIONS = (
+  HistoricalMutation(
+    name="gas-lift-keeps-full-engage-grace",
+    source_path="opendbc_repo/opendbc/car/tesla/preap/carcontroller.py",
+    original=b"        if gas_handoff:\n",
+    replacement=b"        if False:\n",
+    test_nodes=(
+      f"{GAS_LIFT_TEST_PATH}::test_gas_lift_after_long_engage_does_not_floor_a_for_half_second",
+    ),
+  ),
+  HistoricalMutation(
+    name="brake-cancel-keeps-interceptor-after-long-drop",
+    source_path="opendbc_repo/opendbc/car/tesla/preap/carcontroller.py",
+    original=(
+      b"      authority_requested = (\n"
+      b"        pedal_long_allowed\n"
+      b"        and not gas_pressed\n"
+      b"        and ((long_active and not brake_pressed) or keep_enabled)\n"
+      b"      )\n"
+    ),
+    replacement=b"      authority_requested = pedal_long_allowed and not gas_pressed\n",
+    test_nodes=(
+      f"{BRAKE_CANCEL_TEST_PATH}::test_held_brake_releases_after_tip_window",
+    ),
+  ),
+  HistoricalMutation(
+    name="tip-brake-drops-interceptor-on-long-drop",
+    source_path="opendbc_repo/opendbc/car/tesla/preap/carcontroller.py",
+    original=b"        and ((long_active and not brake_pressed) or keep_enabled)\n",
+    replacement=b"        and (long_active and not brake_pressed)\n",
+    test_nodes=(
+      f"{BRAKE_CANCEL_TEST_PATH}::test_short_tip_keeps_interceptor_and_glides",
+    ),
+  ),
+  HistoricalMutation(
+    name="tip-brake-glide-coasts-instead-of-speed-target",
+    source_path="opendbc_repo/opendbc/car/tesla/preap/brake_tip_glide.py",
+    original=b"    return comfort_ramp_accel(self.glide_s, self.a_end)\n",
+    replacement=b"    return 0.0\n",
+    test_nodes=(
+      f"{BRAKE_CANCEL_TEST_PATH}::test_short_tip_keeps_interceptor_and_glides",
+    ),
+  ),
+  HistoricalMutation(
+    name="tip-brake-glide-steps-to-full-regen",
+    source_path="opendbc_repo/opendbc/car/tesla/preap/brake_tip_glide.py",
+    original=b"    return comfort_ramp_accel(self.glide_s, self.a_end)\n",
+    replacement=b"    return float(self.a_end)\n",
+    test_nodes=(
+      f"{BRAKE_CANCEL_TEST_PATH}::test_short_tip_keeps_interceptor_and_glides",
+    ),
+  ),
+  HistoricalMutation(
+    name="gas-lift-seed-ignores-planner-climb",
+    source_path="opendbc_repo/opendbc/car/tesla/preap/carcontroller.py",
+    original=b"  for candidate in (last_nonneg_a_ego, measured_accel, planner_accel):\n",
+    replacement=b"  for candidate in (last_nonneg_a_ego, measured_accel):\n",
+    test_nodes=(
+      f"{GAS_LIFT_TEST_PATH}::test_gas_lift_open_road_seed_uses_mannerisms_accel_not_only_aego",
+    ),
+  ),
+  HistoricalMutation(
+    name="gas-lift-zero-command-seed",
+    source_path="opendbc_repo/opendbc/car/tesla/preap/carcontroller.py",
+    original=(
+      b"          commanded_accel = gas_lift_handoff_seed_accel(\n" +
+      b"            self.last_nonneg_a_ego,\n" +
+      b"            CS.out.aEgo,\n" +
+      b"            self.engage_a_max,\n" +
+      b"            float(actuators.accel),\n" +
+      b"          )\n"
+    ),
+    replacement=b"          commanded_accel = 0.0\n",
+    test_nodes=(
+      f"{GAS_LIFT_TEST_PATH}::test_gas_lift_after_long_engage_does_not_floor_a_for_half_second",
+    ),
+  ),
   HistoricalMutation(
     name="historical-outer-ki",
     source_path="opendbc_repo/opendbc/car/tesla/preap/constants.py",
