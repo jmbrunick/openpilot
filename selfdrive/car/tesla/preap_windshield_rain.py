@@ -11,9 +11,10 @@ Rain: large low-frequency bokeh in the upper/mid ROAD bands, or sparse
     streaks/speckles. Ice/frost: a milky sheet or crystal mottle.
 Dense in-focus texture (foliage, brick) and large saturated headlamp
 plates are rejected. Hysteresis holds while the glass looks obstructed.
-A wipe makes the ROAD view look briefly clear; Auto keeps HOLD until
-clearer, longer dry evidence so one swipe does not one-and-done. Fully
-dry glass still releases. Stale ROAD still drops HOLD.
+A wipe makes the ROAD view look briefly clear; Auto keeps HOLD through
+that sub-second dip. Sustained truly dry scores (about a second) release
+so clear glass cannot keep the 30 s intermittent forever. Dry overcast /
+low-bokeh residual must not stick. Stale ROAD still drops HOLD.
 
 VisionIpc is drained on a SCHED_OTHER helper thread (blocking recv,
 conflate ROAD then WIDE). card is CTRL_HIGH: stock_cc.update / poll()
@@ -56,18 +57,23 @@ ICE_CONTRAST = 0.085
 ICE_LUM = (45.0, 210.0)
 # Combined obstruction: 1.0 is the hold line (rain/frost/ice each scaled).
 HOLD_ON = 1.0
-# Release needs a drier EMA than the old 0.55 so leftover beads after a
-# swipe do not count as clear. Acquire is unchanged (HOLD_ON).
-HOLD_OFF = 0.38
+# Instant-score release line. Must sit above dry/overcast residual and the
+# minimum bokeh-path obstruction (BOKEH_ON/SCORE_ON ≈ 0.83) so those frames
+# count as clear. Light rain is ~1.03+ (bokeh ~1.85) and stays held.
+# Consecutive CLEAR_RELEASE_N is what rides through a wipe, not a low HOLD_OFF.
+HOLD_OFF = 0.88
 EMA_ALPHA = 0.35
-# While HOLD is already true, decay slower so a wipe-clear does not dump
-# the EMA in two frames (0.35 * 0 → below 0.55 immediately).
-EMA_HOLD_ALPHA = 0.12
-# ROAD is ~20 Hz. 48 dry frames ≈ 2.4 s of consecutive clear; 10 Hz helper
-# ≈ 4.8 s. Brief wipe-clear passes are much shorter than this.
-CLEAR_RELEASE_N = 48
-# Secondary: ignore an instant dry flash right as the blade starts.
-MIN_HOLD_N = 12
+# Slightly slower than acquire so the status EMA does not slam to 0 on a
+# two-frame wipe. Not used as a release gate — that trapped residual scores.
+EMA_HOLD_ALPHA = 0.25
+# ROAD is ~20 Hz. 20 dry frames ≈ 1.0 s; 10 Hz helper ≈ 2.0 s. A swipe-clear
+# is a handful of frames, well under this. 48 was too long to ever finish
+# when residual scores kept resetting the counter.
+CLEAR_RELEASE_N = 20
+# Ignore an instant dry flash right as the blade starts (~0.4 s at 20 Hz).
+MIN_HOLD_N = 8
+# Test/docs: sub-second wipe-clear that must keep HOLD ( < CLEAR_RELEASE_N ).
+WIPE_CLEAR_N = 8
 STALE_S = 2.0
 CONNECT_RETRY_S = 0.5
 DEBUG_LOG_S = 1.0
@@ -304,17 +310,20 @@ class WindshieldRain:
 
   def update_from_y(self, y: np.ndarray) -> bool:
     self._record_band(y)
-    score = windshield_obstruction_score(y)
+    return self._update_score(windshield_obstruction_score(y))
+
+  def _update_score(self, score: float) -> bool:
+    """Latch from an obstruction score. Tests inject residual/dry scores here."""
     with self._lock:
-      self.last_score = score
+      self.last_score = float(score)
       alpha = EMA_HOLD_ALPHA if self.hold else EMA_ALPHA
-      self.ema = alpha * score + (1.0 - alpha) * self.ema
+      self.ema = alpha * self.last_score + (1.0 - alpha) * self.ema
       if self.hold:
         self._hold_n += 1
-        # Instant score and EMA both have to look dry. A swipe-clear is
-        # a handful of near-zero frames, not CLEAR_RELEASE_N in a row.
-        looks_clear = score < HOLD_OFF and self.ema < HOLD_OFF
-        if looks_clear:
+        # Instant score only. Requiring EMA < HOLD_OFF too never started the
+        # clear streak when dry/overcast residual sat above a low HOLD_OFF.
+        # A swipe-clear is WIPE_CLEAR_N frames, not CLEAR_RELEASE_N in a row.
+        if self.last_score < HOLD_OFF:
           self._clear_n += 1
         else:
           self._clear_n = 0
