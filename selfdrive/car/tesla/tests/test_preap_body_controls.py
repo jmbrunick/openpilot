@@ -1204,13 +1204,10 @@ def test_light_rain_releases_then_rests_without_thrash():
   assert not det.hold
   assert det._light_rest_n == LIGHT_REST_N
 
-  for i in range(LIGHT_REST_N):
-    assert not det._update_score(light), i
-    assert not det.hold
-  assert det._light_rest_n == 0
-
-  # Rest expired: two light ticks may acquire again (duty cycle, not every-tick thrash).
+  # One score tick of rest (cancel + fresh ROAD). Then still-wet re-acquires.
   assert not det._update_score(light)
+  assert not det.hold
+  assert det._light_rest_n == 0
   assert det._update_score(light)
   assert det.hold
 
@@ -1238,12 +1235,9 @@ def test_heavy_rain_burst_then_rests_then_reacquires():
   assert det._burst_n == 0
   assert det._light_rest_n == LIGHT_REST_N
 
-  for i in range(LIGHT_REST_N):
-    assert not det._update_score(heavy), i
-    assert not det.hold
-  assert det._light_rest_n == 0
-
   assert not det._update_score(heavy)
+  assert not det.hold
+  assert det._light_rest_n == 0
   assert det._update_score(heavy)
   assert det.hold
   assert det._burst_n == 1
@@ -1343,8 +1337,10 @@ def test_light_bokeh_fixture_is_below_heavy_bar():
       break
   assert released
   assert not det.hold
-  for _ in range(LIGHT_REST_N):
-    assert not det.update_from_y(light_y)
+  assert not det.update_from_y(light_y)
+  assert not det.hold
+  assert det.update_from_y(light_y)
+  assert det.hold
 
 
 def test_single_frame_bokeh_score_does_not_acquire_hold():
@@ -1435,7 +1431,8 @@ def test_helper_score_period_is_every_few_seconds():
   assert CLEAR_RELEASE_N * SCORE_PERIOD_S <= 6.0
   assert HOLD_ON < HEAVY_ON
   assert BLADE_BLIND_N * SCORE_PERIOD_S <= 6.0
-  assert 10.0 <= LIGHT_REST_N * SCORE_PERIOD_S <= 20.0
+  assert LIGHT_REST_N == 1
+  assert LIGHT_REST_N * SCORE_PERIOD_S == SCORE_PERIOD_S
   assert BURST_MAX_N == 1
   assert 2.5 <= BURST_MAX_S <= 3.5
   assert BURST_MAX_N * SCORE_PERIOD_S <= BURST_MAX_S + 0.1
