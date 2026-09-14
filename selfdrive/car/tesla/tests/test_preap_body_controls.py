@@ -1401,22 +1401,45 @@ def test_y_plane_from_nv12_crops_stride():
 
 
 def test_helper_score_period_is_every_few_seconds():
-  """Justin: score clarity ~once per 2–3 s, not every ROAD frame / not 1 Hz."""
-  assert 2.0 <= SCORE_PERIOD_S <= 3.0
-  assert 0.3 <= SCORE_HZ <= 0.5
+  """Justin: idle assess ~once per 4 s; post-wipe settle ~2 s then assess."""
+  assert 3.5 <= SCORE_PERIOD_S <= 4.5
+  assert 0.20 <= SCORE_HZ <= 0.30
   assert STALE_S > SCORE_PERIOD_S
   assert abs(SCORE_HZ - 1.0 / SCORE_PERIOD_S) < 1e-6
   assert 16 <= Y_COPY_SIDE <= 64
-  # Wall-clock hysteresis: a few seconds, not 12×period ≈ 30 s of dry wipe.
+  # Two idle looks to acquire (~8 s), not 12×period of dry wipe.
   assert MIN_HOLD_N == 2
   assert CLEAR_RELEASE_N == 2
   assert WIPE_CLEAR_N == 1
-  assert MIN_HOLD_N * SCORE_PERIOD_S <= 6.0
-  assert CLEAR_RELEASE_N * SCORE_PERIOD_S <= 6.0
+  assert MIN_HOLD_N * SCORE_PERIOD_S <= 8.0
+  assert CLEAR_RELEASE_N * SCORE_PERIOD_S <= 8.0
   assert HOLD_ON < HEAVY_ON
   assert 1.0 <= WIPE_PULSE_S <= 2.0
   assert CLEAR_WAIT_S == 2.0
-  assert WIPE_PULSE_S + CLEAR_WAIT_S <= 4.0
+  assert CLEAR_WAIT_S < SCORE_PERIOD_S
+  assert WIPE_PULSE_S + CLEAR_WAIT_S <= SCORE_PERIOD_S + 0.1
+
+
+def test_idle_watch_then_wipe_loop_cadence():
+  """First look is assess-now (not wipe-first). Idle is ~4 s. Post-wipe is ~2 s."""
+  det = WindshieldRain()
+  t0 = time.monotonic()
+  assert det._next_score_at(0.0, t0) == t0
+  assert abs(det._next_score_at(t0, t0) - (t0 + SCORE_PERIOD_S)) < 1e-6
+  _acquire_score(det, HEAVY_ON + 0.8)
+  t_wipe = det._wipe_t0
+  assert t_wipe > 0.0
+  assert abs(det._next_score_at(t_wipe, t_wipe) - (t_wipe + WIPE_PULSE_S + CLEAR_WAIT_S)) < 1e-6
+  _expire_wipe(det)
+  assert not det.hold
+  assert abs(det._next_score_at(t_wipe, det._wait_t0) - (det._wait_t0 + CLEAR_WAIT_S)) < 1e-6
+  _expire_wait(det)
+  now = time.monotonic()
+  # Dry assess exits the wipe loop: next look is idle SCORE_PERIOD_S, not 2 s.
+  assert not det._update_score(0.0)
+  assert not det.hold
+  assert det._wait_t0 == 0.0
+  assert abs(det._next_score_at(now, now) - (now + SCORE_PERIOD_S)) < 1e-6
 
 
 def test_helper_numpy_scores_on_period_not_every_road_frame(monkeypatch):
@@ -1440,7 +1463,7 @@ def test_helper_numpy_scores_on_period_not_every_road_frame(monkeypatch):
 
 
 def test_stale_does_not_drop_hold_between_score_periods(monkeypatch):
-  """poll() between 2–3 s ticks must not fail-closed; STALE_S is longer than the period."""
+  """poll() between idle ~4 s ticks must not fail-closed; STALE_S is longer than the period."""
   from openpilot.selfdrive.car.tesla import preap_windshield_rain as rain
 
   monkeypatch.setattr(rain, "WIPE_PULSE_S", 60.0)
