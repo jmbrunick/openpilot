@@ -656,15 +656,19 @@ def _auto_status_line(setting: int, on: bool, drive: bool, rain: bool, wipe: boo
     if d is not None:
       now = time.monotonic()
       age_ms = (now - d._last_frame_t) * 1000.0 if d._last_frame_t else -1.0
+      pulse_s = float(getattr(rainmod, "WIPE_PULSE_S", 0.0))
+      wait_s = float(getattr(rainmod, "CLEAR_WAIT_S", 0.0))
+      wipe_t0 = float(getattr(d, "_wipe_t0", 0.0) or 0.0)
+      wait_t0 = float(getattr(d, "_wait_t0", 0.0) or 0.0)
+      pulse_left = max(0.0, pulse_s - (now - wipe_t0)) if d.hold and wipe_t0 else 0.0
+      wait_left = max(0.0, wait_s - (now - wait_t0)) if wait_t0 else 0.0
       rain_bits = (
         f"hold={int(d.hold)} holdn={int(getattr(d, '_hold_n', 0))}/{int(getattr(rainmod, 'MIN_HOLD_N', 0))} "
         + f"ema={d.ema:.2f} score={d.last_score:.2f} bokeh={d.last_bokeh:.2f} blob={d.last_blob:.2f} "
         + f"speckle={d.last_speckle:.3f} sparse={d.last_sparse:.1f} struct={d.last_structure:.3f} sat={d.last_sat:.3f} "
         + f"clear={int(getattr(d, '_clear_n', 0))}/{int(getattr(rainmod, 'CLEAR_RELEASE_N', 0))} "
         + f"heavy={int(d.last_score >= float(getattr(rainmod, 'HEAVY_ON', 2.2)))} "
-        + f"burstn={int(getattr(d, '_burst_n', 0))}/{int(getattr(rainmod, 'BURST_MAX_N', 0))} "
-        + f"restn={int(getattr(d, '_light_rest_n', 0))}/{int(getattr(rainmod, 'LIGHT_REST_N', 0))} "
-        + f"blind={int(getattr(d, '_blade_blind_n', 0))}/{int(getattr(rainmod, 'BLADE_BLIND_N', 0))} "
+        + f"pulse={pulse_left:.1f}/{pulse_s:.1f} wait={wait_left:.1f}/{wait_s:.1f} "
         + f"connected={int(d.connected)} failed={int(d._failed)} frames={d.n_frames} stream={d.stream} "
         + f"helper={int(d.helper_alive)} period_s={float(getattr(rainmod, 'SCORE_PERIOD_S', 0)):.1f} "
         + f"hz={float(getattr(rainmod, 'SCORE_HZ', 0)):.1f} age_ms={age_ms:.0f} err={d.last_err or '-'}"
