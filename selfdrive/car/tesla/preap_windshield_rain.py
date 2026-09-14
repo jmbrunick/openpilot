@@ -7,14 +7,18 @@ far scene, so drops on the glass are large soft defocused bokeh — not
 sharp beads. The model warp crops that near field away, so this does not
 use modelV2.
 
-Rain: large low-frequency bokeh in the upper/mid ROAD bands, or sparse
-    streaks/speckles. Ice/frost: a milky sheet or crystal mottle.
-Dense in-focus texture (foliage, brick) and large saturated headlamp
-plates are rejected. Hysteresis holds while the glass looks obstructed.
-Dry overcast / scene texture must not count as rain (bokeh bar is above
-that false-positive band). A real wipe may look clear for ~0.5 s; HOLD
-can ride that dip, then drops quickly once scores stay below rain-level
-so clear glass cannot keep the 30 s intermittent forever. Acquire needs
+Rain: large low-frequency bokeh in the upper/mid ROAD bands, sparse
+    streaks/speckles, or a wet sheet (high blob / overlapping milky
+    defocus). Ice/frost: a milky sheet or crystal mottle.
+Score is monotonic with obstruction: once the glass is past a wetness
+floor, more water (blob, bokeh, haze, streaks) must score at least as
+rainy — never drop to dry because it is "too wet". Do not require a
+bokeh/blob ratio sweet spot, and do not treat dense wet glass as
+foliage. In-focus texture (foliage, brick) is sharp structure; headlamp
+plates are saturated. Dry overcast / scene texture stays under the
+wetness floor. A real wipe may look clear for ~0.5 s; HOLD can ride
+that dip, then drops quickly once scores stay below rain-level so
+clear glass cannot keep the 30 s intermittent forever. Acquire needs
 a short run of rain-level scores so a one-frame bokeh flicker cannot
 nibble-1 the body into latched Int. Stale ROAD still drops HOLD. Off
 still leaves the real stalk (escape). Auto dry extra-forwards rest to
@@ -23,7 +27,7 @@ cancel that latch.
 Bokeh energy is an 8-bit residual (~0 dry, ~2–5 wet). A live clear-glass
 log showed bokeh=49165 — wrong Y scale or a bandpass blowup. Impossible
 magnitudes are invalid/dry (they must not latch HOLD or look like rain
-returning after a wipe).
+returning after a wipe). Real heavy-rain scores above ~12 are still wet.
 
 VisionIpc is drained on a SCHED_OTHER helper thread (blocking recv,
 conflate ROAD then WIDE). card is CTRL_HIGH: stock_cc.update / poll()
@@ -55,13 +59,22 @@ SCORE_OFF = 1.0
 # Justin's heavier-rain ROAD UI: mid-band detrended bokeh ~1.85–3.3.
 # Dry sky/road wash is ~0.2. Live clear/overcast texture was latching at
 # 1.5 — raise the bar so that is not rain. Real wet is still ~3+.
+# At-or-above: bokeh >= this is rain. Do not also require a ratio vs blob.
 BOKEH_ON = 2.2
+# Old sweet-spot veto: bokeh/(blob+0.2) >= 0.22 dropped heavy rain to 0
+# when blob rose. Kept so tests prove we no longer use it as a reject.
 _BOKEH_RATIO = 0.22
+# Dry/overcast fine residual is ~2.0–2.2. Light soft-bokeh ~2.5. Overlapping
+# milky wet / driveway-through-rain is ~12. At-or-above this is a wet sheet.
+BLOB_WET = 3.2
 # 8-bit ROAD: wet bokeh ~2–5. Justin's clear-glass log was bokeh=49165.
 # Anything this high is a unit/scale bug, not rain.
 BOKEH_ABSURD = 24.0
 BLOB_ABSURD = 40.0
+# Typical wet rain score is ~2–12. Heavy blob can exceed this and is still wet.
 SCORE_ABSURD = 12.0
+# 8-bit obstruction never reaches this. 49165 is garbage → dry, not a cap.
+SCORE_INVALID = 80.0
 _SPECKLE_MIN = 0.012
 # Frost crystals: moderate residual that is not sparse-drop rain and not
 # in-focus clutter. Ice sheet: daytime scene contrast collapsed + mottle.
@@ -97,6 +110,8 @@ _SPARSE_RAIN_MIN = 6.0
 _SPARSE_MAX = 80.0
 STREAM_FALLBACK_S = 3.0
 _STRUCTURE_FRAC = 0.05
+# In-focus foliage/brick: sharp residual fraction. Soft rain stays << this
+# even when blob is high. Do not OR this with a blob cap — that rejects wet.
 _STRUCTURE_RAIN = 0.12
 _FOLIAGE_BLOB = 18.0
 _FINE_R = 2
@@ -160,7 +175,7 @@ def _finite_score(score: float) -> float:
     s = float(score)
   except (TypeError, ValueError):
     return 0.0
-  if not np.isfinite(s) or s < 0.0 or s > SCORE_ABSURD:
+  if not np.isfinite(s) or s < 0.0 or s > SCORE_INVALID:
     return 0.0
   return s
 
@@ -236,16 +251,26 @@ def _mid_stats(y: np.ndarray) -> tuple[float, float]:
 
 
 def _rain_from_band(img: np.ndarray) -> float:
-  """Soft far-focus bokeh and/or sparse speckle drops. Not foliage or lamps."""
-  blob, speckle, sparse, sat, structure, bokeh = _near_features(img)
+  """Soft far-focus bokeh, wet-sheet blob, and/or speckle streaks.
+
+  At-or-above: each cue is a floor, not a band. Extra blob/bokeh/speckle
+  raises the score. Never zero a wet frame because blob is "too high"
+  relative to bokeh (that was a heavy-rain miss). Foliage is sharp
+  in-focus structure, not high blob.
+  """
+  blob, speckle, _sparse, sat, structure, bokeh = _near_features(img)
   if sat > _SAT_MAX:
     return 0.0
-  if structure > _STRUCTURE_RAIN or blob > _FOLIAGE_BLOB:
+  if structure > _STRUCTURE_RAIN:
     return 0.0
   score = 0.0
-  if bokeh >= BOKEH_ON and bokeh <= BOKEH_ABSURD and bokeh / (blob + 0.2) >= _BOKEH_RATIO:
+  if BOKEH_ON <= bokeh <= BOKEH_ABSURD:
     score = max(score, bokeh)
-  if speckle >= _SPECKLE_MIN and _SPARSE_RAIN_MIN <= sparse <= _SPARSE_MAX:
+  if blob >= BLOB_WET:
+    score = max(score, blob)
+  # Speckle/streaks. Dense wet has low sparse (~2); do not require a
+  # mid-range sparse band (that was another sweet spot).
+  if speckle >= _SPECKLE_MIN:
     score = max(score, blob + 12.0 * speckle)
   return score
 
@@ -254,8 +279,9 @@ def windshield_rain_score(y: np.ndarray) -> float:
   """Higher = rainier glass (far-focus bokeh, streaks, speckles).
 
   3X ROAD is focused on the scene, so windshield drops are large soft
-  circles of confusion. Dense in-focus texture (foliage, brick) and large
-  saturated headlamp plates are not treated as rain.
+  circles of confusion. Heavier water must not score drier. Dense
+  in-focus texture (foliage, brick) and large saturated headlamp plates
+  are not treated as rain.
   """
   if y is None or y.ndim != 2 or y.shape[0] < 32 or y.shape[1] < 32:
     return 0.0

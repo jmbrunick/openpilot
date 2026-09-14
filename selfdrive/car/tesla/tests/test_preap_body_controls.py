@@ -41,6 +41,7 @@ from openpilot.selfdrive.car.tesla.preap_body_controls import (
   wiper_test_requested,
 )
 from openpilot.selfdrive.car.tesla.preap_windshield_rain import (
+  BLOB_WET,
   BOKEH_ABSURD,
   BOKEH_ON,
   CLEAR_RELEASE_N,
@@ -51,6 +52,7 @@ from openpilot.selfdrive.car.tesla.preap_windshield_rain import (
   ICE_ON,
   MIN_HOLD_N,
   SCORE_ABSURD,
+  SCORE_INVALID,
   SCORE_OFF,
   SCORE_ON,
   STREAM_FALLBACK_S,
@@ -496,10 +498,11 @@ def test_heavy_soft_bokeh_over_driveway_holds():
 
   dry = _dry_windshield()
   heavy = _heavy_bokeh_windshield()
-  _blob, speckle, _sparse, _sat, _structure, bokeh_e = _near_features(_band(heavy, _BOKEH_ROWS, _COLS))
+  blob, speckle, _sparse, _sat, _structure, bokeh_e = _near_features(_band(heavy, _BOKEH_ROWS, _COLS))
   assert speckle < 0.15
   # Soft defocus is present; rain score may also come from the speckle path.
   assert bokeh_e >= 1.5
+  assert blob >= BLOB_WET
   assert windshield_rain_score(dry) < SCORE_OFF
   assert windshield_rain_score(heavy) >= SCORE_ON
   assert windshield_looks_rainy(heavy)
@@ -521,6 +524,80 @@ def test_heavy_soft_bokeh_over_driveway_holds():
       released = True
       break
   assert released
+
+
+def test_rain_score_is_monotonic_at_or_above_wetness():
+  """Anything at or above the wetness floor wipes. More water must not score drier.
+
+  Live miss: light soft-bokeh fired; heavy overlapping milky (high blob, bokeh
+  under BOKEH_ON, ratio under the old 0.22 veto) scored 0 on the mid band.
+  """
+  from openpilot.selfdrive.car.tesla.preap_windshield_rain import (
+    _BOKEH_RATIO, _BOKEH_ROWS, _COLS, _STRUCTURE_RAIN,
+    _band, _near_features, _rain_from_band,
+  )
+
+  dry = _dry_windshield()
+  light = _bokeh_windshield()
+  heavy = _heavy_bokeh_windshield()
+  light_s = windshield_rain_score(light)
+  heavy_s = windshield_rain_score(heavy)
+  assert light_s >= SCORE_ON
+  assert heavy_s >= SCORE_ON
+  assert heavy_s >= light_s
+  assert windshield_obstruction_score(heavy) >= windshield_obstruction_score(light)
+  assert windshield_looks_rainy(light)
+  assert windshield_looks_rainy(heavy)
+  assert not windshield_looks_rainy(dry)
+
+  blob, speckle, _sparse, _sat, structure, bokeh_e = _near_features(_band(heavy, _BOKEH_ROWS, _COLS))
+  assert blob >= BLOB_WET
+  assert structure < _STRUCTURE_RAIN
+  # This mid-band is the old sweet spot: too much blob for the ratio gate,
+  # not enough detrended bokeh, sparse too dense for the bead band.
+  assert bokeh_e < BOKEH_ON or bokeh_e / (blob + 0.2) < _BOKEH_RATIO
+  mid = _rain_from_band(_band(heavy, _BOKEH_ROWS, _COLS))
+  assert mid >= SCORE_ON
+  assert mid >= light_s
+  # Dense wet blob must not be classified as foliage (structure stays low).
+  assert blob > 8.0
+
+  det = WindshieldRain()
+  saw = False
+  for _ in range(MIN_HOLD_N + 4):
+    if det.update_from_y(heavy):
+      saw = True
+      break
+  assert saw
+  assert det.hold
+
+  rest = _rest()
+  assert _byte(apply_stw_wiper_beam_nibbles(rest, True, False)) == STW_WIPER_ON
+  released = False
+  for _ in range(CLEAR_RELEASE_N + 8):
+    if not det.update_from_y(dry):
+      released = True
+      break
+  assert released
+  assert apply_stw_wiper_beam_nibbles(rest, False, False) == rest
+
+
+def test_valid_heavy_obstruction_is_not_forced_dry():
+  """Old SCORE_ABSURD=12 zeroed real heavy scores. 15 is wet, 49165 is garbage."""
+  assert SCORE_ABSURD < SCORE_INVALID
+  latch = WindshieldRain()
+  for _ in range(MIN_HOLD_N - 1):
+    assert not latch._update_score(15.0)
+    assert not latch.hold
+  assert latch._update_score(15.0)
+  assert latch.hold
+  assert latch.last_score == 15.0
+
+  garbage = WindshieldRain()
+  for _ in range(MIN_HOLD_N + 8):
+    assert not garbage._update_score(49165.0)
+    assert not garbage.hold
+    assert garbage.last_score == 0.0
 
 
 def test_windshield_ice_and_frost_hold_like_rain():
@@ -1959,6 +2036,46 @@ def test_auto_dry_extra_forwards_rest_without_forcing_wipe(monkeypatch):
     assert out[0][0] == STW_ACTN_RQ_ADDR
     assert extra_stw_forward_needed([], 10, False, False, wiper_cancel=True) is True
     assert extra_stw_forward_needed([], 11, False, False, wiper_cancel=True) is False
+  finally:
+    reset_auto_gates()
+
+
+def test_auto_rain_rising_edge_stops_rest_cancel(monkeypatch):
+  """Cancel while wipe=0 must not keep rest-TX after HOLD/wipe becomes true."""
+  from types import SimpleNamespace
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  rain = {"on": False}
+  monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
+    WIPER_SETTING_AUTO if key == NAP_WIPER_SPEED else default
+  ))
+  monkeypatch.setattr(body, "rain_wiper_needed", lambda: rain["on"])
+  monkeypatch.setattr(body, "requested_high_beam_test", lambda: False)
+  monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: [])
+  fake = _FakeSpoofer()
+  cs = SimpleNamespace(msg_stw_actn_req={"SpdCtrlLvr_Stat": 0})
+  reset_auto_gates()
+  set_auto_gates(True, "drive")
+  try:
+    assert not body.requested_wiper_test()
+    assert wiper_rest_tx_needed(False) is True
+    rest = _rest()
+    dry = apply_stw_wiper_beam_nibbles(rest, False, False, clear_wiper=True)
+    assert _byte(dry) != STW_WIPER_ON
+    assert extra_stw_forward_needed([], 10, False, False, wiper_cancel=True) is True
+
+    rain["on"] = True
+    assert body.requested_wiper_test() is True
+    assert wiper_rest_tx_needed(True) is False
+    wet = apply_stw_wiper_beam_nibbles(rest, True, False, clear_wiper=wiper_rest_tx_needed(True))
+    assert _byte(wet) == STW_WIPER_ON
+    assert _byte(wet) != STW_WASHER_SPRAY
+    assert extra_stw_forward_needed([], 10, True, False, wiper_cancel=False) is True
+    fake.sent.clear()
+    out = body.stock_cc_update_with_overlay(fake, cs, 10, None, 0)
+    assert len(out) == 1
+    assert out[0][0] == STW_ACTN_RQ_ADDR
   finally:
     reset_auto_gates()
 
