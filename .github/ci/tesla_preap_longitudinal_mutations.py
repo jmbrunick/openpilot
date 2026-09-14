@@ -42,10 +42,19 @@ MUTATIONS = (
   HistoricalMutation(
     name="brake-cancel-tip-drops-interceptor",
     source_path="opendbc_repo/opendbc/car/tesla/preap/carcontroller.py",
-    original=b"        and ((long_active and not brake_pressed) or keep_coast)\n",
+    original=b"        and ((long_active and not brake_pressed) or keep_enabled)\n",
     replacement=b"        and (long_active and not brake_pressed)\n",
     test_nodes=(
-      f"{BRAKE_CANCEL_TEST_PATH}::test_controller_short_cancel_stays_enabled_at_coast",
+      f"{BRAKE_CANCEL_TEST_PATH}::test_controller_short_cancel_ramps_regen",
+    ),
+  ),
+  HistoricalMutation(
+    name="brake-cancel-tip-holds-coast-instead-of-ramp",
+    source_path="opendbc_repo/opendbc/car/tesla/preap/carcontroller.py",
+    original=b"            accel_request = self.brake_cancel.commanded_accel()\n            in_engage_grace = False\n            accel_effort_limits = self.brake_cancel.accel_effort_limits()\n",
+    replacement=b"            accel_request = 0.0\n            in_engage_grace = False\n            accel_effort_limits = (0.0, 0.0)\n",
+    test_nodes=(
+      f"{BRAKE_CANCEL_TEST_PATH}::test_controller_short_cancel_ramps_regen",
     ),
   ),
   HistoricalMutation(
