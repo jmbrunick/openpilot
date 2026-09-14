@@ -584,7 +584,7 @@ def _auto_status_line(setting: int, on: bool, drive: bool, rain: bool, wipe: boo
         + f"speckle={d.last_speckle:.3f} sparse={d.last_sparse:.1f} struct={d.last_structure:.3f} sat={d.last_sat:.3f} "
         + f"clear={int(getattr(d, '_clear_n', 0))}/{int(getattr(rainmod, 'CLEAR_RELEASE_N', 0))} "
         + f"connected={int(d.connected)} failed={int(d._failed)} frames={d.n_frames} stream={d.stream} "
-        + f"helper={int(d.helper_alive)} age_ms={age_ms:.0f} err={d.last_err or '-'}"
+        + f"helper={int(d.helper_alive)} hz={float(getattr(rainmod, 'SCORE_HZ', 0)):.0f} age_ms={age_ms:.0f} err={d.last_err or '-'}"
       )
   except Exception:
     rain_bits = "rain=err"
