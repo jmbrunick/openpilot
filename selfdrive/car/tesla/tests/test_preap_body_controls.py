@@ -337,6 +337,28 @@ def _bokeh_windshield(h=240, w=320, n=10, seed=5) -> np.ndarray:
   return np.clip(y, 0, 255).astype(np.uint8)
 
 
+def _heavy_bokeh_windshield(h=240, w=320, seed=6) -> np.ndarray:
+  """Heavier rain: overlapping milky defocus patches over a driveway/tree scene.
+
+  Matches Justin's later live 3X ROAD UI (more rain, large soft blobs over
+  the cars — not sharp beads).
+  """
+  rng = np.random.RandomState(seed)
+  y = np.zeros((h, w), np.float32)
+  sky_h = int(h * 0.28)
+  y[:sky_h] = np.linspace(95, 125, sky_h, dtype=np.float32)[:, None]
+  y[sky_h:int(h * 0.55)] = rng.randint(45, 95, (int(h * 0.55) - sky_h, w))
+  y[int(h * 0.55):] = np.clip(100 + rng.randint(-18, 19, (h - int(h * 0.55), w)), 0, 255)
+  yy, xx = np.mgrid[0:h, 0:w]
+  for _ in range(16):
+    cy = rng.uniform(h * 0.16, h * 0.68)
+    cx = rng.uniform(w * 0.12, w * 0.88)
+    sig = rng.uniform(min(h, w) * 0.07, min(h, w) * 0.18)
+    amp = rng.uniform(28.0, 55.0) * rng.choice([1.0, 1.0, 0.9, -0.25])
+    y += amp * np.exp(-((yy - cy) ** 2 + (xx - cx) ** 2) / (2.0 * sig * sig))
+  return np.clip(y, 0, 255).astype(np.uint8)
+
+
 def test_windshield_camera_wet_holds_and_dry_releases():
   dry = _dry_windshield()
   wet = _wet_windshield()
@@ -382,6 +404,40 @@ def test_windshield_soft_bokeh_holds_and_dry_releases():
   saw = False
   for _ in range(12):
     if det.update_from_y(bokeh):
+      saw = True
+      break
+  assert saw
+  released = False
+  for _ in range(16):
+    if not det.update_from_y(dry):
+      released = True
+      break
+  assert released
+
+
+def test_heavy_soft_bokeh_over_driveway_holds():
+  """Later live 3X ROAD UI: more rain, large overlapping milky blobs over cars."""
+  from openpilot.selfdrive.car.tesla.preap_windshield_rain import (
+    _BOKEH_ROWS, _COLS, _band, _near_features,
+  )
+
+  dry = _dry_windshield()
+  heavy = _heavy_bokeh_windshield()
+  _blob, speckle, _sparse, _sat, _structure, bokeh_e = _near_features(_band(heavy, _BOKEH_ROWS, _COLS))
+  assert speckle < 0.15
+  assert bokeh_e >= BOKEH_ON
+  assert windshield_rain_score(dry) < SCORE_OFF
+  assert windshield_rain_score(heavy) >= SCORE_ON
+  assert windshield_looks_rainy(heavy)
+  assert not windshield_looks_rainy(dry)
+  rest = _rest()
+  held = apply_stw_wiper_beam_nibbles(rest, windshield_looks_rainy(heavy), False)
+  assert _byte(held) == STW_WIPER_ON
+  assert _byte(held) != STW_WASHER_SPRAY
+  det = WindshieldRain()
+  saw = False
+  for _ in range(12):
+    if det.update_from_y(heavy):
       saw = True
       break
   assert saw

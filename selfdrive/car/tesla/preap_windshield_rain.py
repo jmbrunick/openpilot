@@ -36,7 +36,9 @@ _RAIN_BANDS = (_NEAR_ROWS, _BOKEH_ROWS)
 # Speckle-drop path stays ~2–4.
 SCORE_ON = 1.8
 SCORE_OFF = 1.0
-BOKEH_ON = 1.8
+# Justin's heavier-rain ROAD UI: mid-band detrended bokeh ~1.85–3.3.
+# Dry sky/road wash is ~0.2 after row-detrend.
+BOKEH_ON = 1.5
 _BOKEH_RATIO = 0.22
 _SPECKLE_MIN = 0.012
 # Frost crystals: moderate residual that is not sparse-drop rain and not
