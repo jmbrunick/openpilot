@@ -29,9 +29,9 @@ On/Int holds high nibble 1. Auto holds that same nibble 1 only when all
 of: setting is Auto, the vehicle is on, gear is Drive or Reverse, and
 the 3X road camera sees a rainy or icy/frosted windshield (unwarped
 ROAD Y). Park and Neutral never Auto-wipe, even with the car on. Release
-the real stalk after about a second of truly dry glass (not a brief
+the real stalk after a short run of below-rain scores (not a brief
 wipe-clear) or when gear leaves Drive/Reverse. Dry overcast must not
-keep HOLD.
+acquire or keep HOLD. Off is the escape (real stalk, no Auto nibble 1).
 Default Off — Auto is opt-in. No spray. No auto high-beam. Do not flash.
 Do not inject a second 0x45 — overlay the existing forwarded frame and
 recompute CRC the same way create_action_request already does.
