@@ -264,8 +264,11 @@ def rain_wiper_needed() -> bool:
   """
   if _rain_needed_override is not None:
     return bool(_rain_needed_override)
-  from openpilot.selfdrive.car.tesla.preap_windshield_rain import windshield_rain_needed
-  return windshield_rain_needed()
+  try:
+    from openpilot.selfdrive.car.tesla.preap_windshield_rain import windshield_rain_needed
+    return bool(windshield_rain_needed())
+  except Exception:
+    return False
 
 
 def requested_wiper_test() -> bool:
