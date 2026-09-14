@@ -133,7 +133,7 @@ class DesireHelper:
         elif self._tip_turn.is_driver_turn(alc_latched=True,
                                            alc_direction=alc_stalk_dir):
           # Same-direction stalk held >1s during ALC: driver turn, not
-          # another lane change. Opposite already cancelled above.
+          # another lane change. Opposite already canceled above.
           self._reset()
           just_cancelled = True
         elif same_direction_tip:

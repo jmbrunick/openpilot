@@ -154,7 +154,7 @@ NAP driver lat handoff (2026-09-11)
 
 NAP driver lat handoff (2026-09-11)
 ========================
-* Light wheel input (about half the usual override effort) now yields steering without cancelling openpilot. Speed control stays on. After 0.25 s of quiet the wheel blends back over 1 s. Gray HUD until ~70% lateral is back; no disengage chime. A hard yank / cancel still fully disengages. No panda flash.
+* Light wheel input (about half the usual override effort) now yields steering without canceling openpilot. Speed control stays on. After 0.25 s of quiet the wheel blends back over 1 s. Gray HUD until ~70% lateral is back; no disengage chime. A hard yank / cancel still fully disengages. No panda flash.
 
 NAP sticky MAX (2026-09-11)
 ========================
