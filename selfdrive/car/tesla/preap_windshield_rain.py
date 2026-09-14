@@ -17,6 +17,11 @@ can ride that dip, then drops quickly once scores stay below rain-level
 so clear glass cannot keep the 30 s intermittent forever. Stale ROAD
 still drops HOLD. Off still leaves the real stalk (escape).
 
+Bokeh energy is an 8-bit residual (~0 dry, ~2–5 wet). A live clear-glass
+log showed bokeh=49165 — wrong Y scale or a bandpass blowup. Impossible
+magnitudes are invalid/dry (they must not latch HOLD or look like rain
+returning after a wipe).
+
 VisionIpc is drained on a SCHED_OTHER helper thread (blocking recv,
 conflate ROAD then WIDE). card is CTRL_HIGH: stock_cc.update / poll()
 only reads the latch. Failures retry; they do not permanently dry Auto.
@@ -49,6 +54,11 @@ SCORE_OFF = 1.0
 # 1.5 — raise the bar so that is not rain. Real wet is still ~3+.
 BOKEH_ON = 2.2
 _BOKEH_RATIO = 0.22
+# 8-bit ROAD: wet bokeh ~2–5. Justin's clear-glass log was bokeh=49165.
+# Anything this high is a unit/scale bug, not rain.
+BOKEH_ABSURD = 24.0
+BLOB_ABSURD = 40.0
+SCORE_ABSURD = 12.0
 _SPECKLE_MIN = 0.012
 # Frost crystals: moderate residual that is not sparse-drop rain and not
 # in-focus clutter. Ice sheet: daytime scene contrast collapsed + mottle.
@@ -102,17 +112,54 @@ def y_plane_from_nv12(buf) -> np.ndarray | None:
     data = buf.data
     if data is None:
       return None
-    n = stride * height
-    uv_off = int(getattr(buf, "uv_offset", 0) or 0)
-    if uv_off >= n:
-      n = uv_off
-    raw = np.asarray(memoryview(data) if not isinstance(data, np.ndarray) else data.reshape(-1), dtype=np.uint8)
+    # NV12 Y is bytes. np.asarray(..., dtype=uint8) on a uint16/float view
+    # wraps or reinterprets and the bokeh residual explodes (49165 vs ~4).
+    if isinstance(data, np.ndarray) and data.dtype == np.uint8:
+      raw = data.reshape(-1)
+    else:
+      raw = np.frombuffer(memoryview(data).cast("B"), dtype=np.uint8)
     if raw.size < stride * height:
       return None
     y = raw[:stride * height].reshape(height, stride)
     return np.ascontiguousarray(y[:, :width])
   except Exception:
     return None
+
+
+def _to_y8(img: np.ndarray) -> np.ndarray | None:
+  """8-bit Y, 0–255. 10/16-bit planes are scaled. Garbage dtype/range is None."""
+  if img is None or getattr(img, "ndim", 0) != 2 or img.size < 25:
+    return None
+  a = np.asarray(img)
+  if a.dtype == np.uint8:
+    return a
+  af = a.astype(np.float32, copy=False)
+  if not np.isfinite(af).all():
+    return None
+  mx = float(af.max()) if af.size else 0.0
+  mn = float(af.min()) if af.size else 0.0
+  if mx > 65535.5 or mn < -1.0:
+    return None
+  if mx > 255.5:
+    if mx <= 1023.5:
+      af = af * (255.0 / 1023.0)
+    elif mx <= 4095.5:
+      af = af * (255.0 / 4095.0)
+    else:
+      af = af * (255.0 / 65535.0)
+  elif mx <= 1.5 and mn >= -0.05:
+    af = af * 255.0
+  return np.clip(af, 0.0, 255.0).astype(np.uint8)
+
+
+def _finite_score(score: float) -> float:
+  try:
+    s = float(score)
+  except (TypeError, ValueError):
+    return 0.0
+  if not np.isfinite(s) or s < 0.0 or s > SCORE_ABSURD:
+    return 0.0
+  return s
 
 
 def _band(y: np.ndarray, rows: tuple[float, float], cols: tuple[float, float]) -> np.ndarray:
@@ -125,15 +172,16 @@ def _band(y: np.ndarray, rows: tuple[float, float], cols: tuple[float, float]) -
 
 
 def _box_blur(x: np.ndarray, radius: int) -> np.ndarray:
+  x = np.asarray(x, dtype=np.float32)
   if radius < 1:
     return x
   k = np.ones(2 * radius + 1, dtype=np.float32) / float(2 * radius + 1)
   p = np.pad(x, ((0, 0), (radius, radius)), mode="edge")
-  acc = np.zeros_like(x)
+  acc = np.zeros(x.shape, dtype=np.float32)
   for i, w in enumerate(k):
     acc += w * p[:, i:i + x.shape[1]]
   p2 = np.pad(acc, ((radius, radius), (0, 0)), mode="edge")
-  out = np.zeros_like(x)
+  out = np.zeros(x.shape, dtype=np.float32)
   for i, w in enumerate(k):
     out += w * p2[i:i + x.shape[0], :]
   return out
@@ -141,12 +189,14 @@ def _box_blur(x: np.ndarray, radius: int) -> np.ndarray:
 
 def _near_features(img: np.ndarray) -> tuple[float, float, float, float, float, float]:
   """Fine blob, speckle, sparsity, sat, strong-edge frac, coarse bokeh energy."""
-  if img.size < 25:
-    return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
-  step = max(1, min(img.shape) // 24)
-  x = img[::step, ::step].astype(np.float32)
+  z = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+  y8 = _to_y8(img)
+  if y8 is None or y8.size < 25:
+    return z
+  step = max(1, min(y8.shape) // 24)
+  x = y8[::step, ::step].astype(np.float32, copy=False)
   if x.shape[0] < 5 or x.shape[1] < 5:
-    return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    return z
   fine = _box_blur(x, _FINE_R)
   med = _box_blur(x, _MED_R)
   coarse = _box_blur(x, _COARSE_R)
@@ -159,14 +209,24 @@ def _near_features(img: np.ndarray) -> tuple[float, float, float, float, float, 
   sat = float((x > 240.0).mean())
   structure = float((resid > 40.0).mean())
   # Row-detrend so a vertical sky/road wash is not counted as rain blobs.
-  bp = np.abs(med - coarse)
-  bp = bp - bp.mean(axis=1, keepdims=True)
+  bp = np.clip(np.abs(med - coarse), 0.0, 255.0)
+  row_mean = bp.mean(axis=1, keepdims=True)
+  if not np.isfinite(blob + speckle + sparse + sat + structure + float(row_mean.mean())):
+    return z
+  bp = bp - row_mean
   bokeh = float(np.mean(np.abs(bp)))
+  # Impossible magnitudes: wrong Y scale or bandpass blowup. Not rain.
+  if (not np.isfinite(bokeh) or bokeh > BOKEH_ABSURD or blob > BLOB_ABSURD
+      or sparse < 0.0 or sparse > 1.0e4):
+    return z
   return blob, speckle, sparse, sat, structure, bokeh
 
 
 def _mid_stats(y: np.ndarray) -> tuple[float, float]:
-  mid = _band(y, _MID_ROWS, _COLS).astype(np.float32)
+  y8 = _to_y8(y)
+  if y8 is None:
+    return 0.0, 0.0
+  mid = _band(y8, _MID_ROWS, _COLS).astype(np.float32)
   mean = float(mid.mean())
   contrast = float(mid.std() / (mean + 1.0))
   return mean, contrast
@@ -180,7 +240,7 @@ def _rain_from_band(img: np.ndarray) -> float:
   if structure > _STRUCTURE_RAIN or blob > _FOLIAGE_BLOB:
     return 0.0
   score = 0.0
-  if bokeh >= BOKEH_ON and bokeh / (blob + 0.2) >= _BOKEH_RATIO:
+  if bokeh >= BOKEH_ON and bokeh <= BOKEH_ABSURD and bokeh / (blob + 0.2) >= _BOKEH_RATIO:
     score = max(score, bokeh)
   if speckle >= _SPECKLE_MIN and _SPARSE_RAIN_MIN <= sparse <= _SPARSE_MAX:
     score = max(score, blob + 12.0 * speckle)
@@ -234,7 +294,7 @@ def windshield_obstruction_score(y: np.ndarray) -> float:
   rain = windshield_rain_score(y) / SCORE_ON
   frost = windshield_frost_score(y) / FROST_ON
   ice = windshield_ice_score(y) / ICE_ON
-  return max(rain, frost, ice)
+  return _finite_score(max(rain, frost, ice))
 
 
 def windshield_looks_rainy(y: np.ndarray, prev_hold: bool = False) -> bool:
@@ -313,7 +373,7 @@ class WindshieldRain:
   def _update_score(self, score: float) -> bool:
     """Latch from an obstruction score. Tests inject residual/dry scores here."""
     with self._lock:
-      self.last_score = float(score)
+      self.last_score = _finite_score(score)
       alpha = EMA_HOLD_ALPHA if self.hold else EMA_ALPHA
       self.ema = alpha * self.last_score + (1.0 - alpha) * self.ema
       if self.hold:

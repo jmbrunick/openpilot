@@ -39,6 +39,7 @@ from openpilot.selfdrive.car.tesla.preap_body_controls import (
   wiper_test_requested,
 )
 from openpilot.selfdrive.car.tesla.preap_windshield_rain import (
+  BOKEH_ABSURD,
   BOKEH_ON,
   CLEAR_RELEASE_N,
   CONNECT_RETRY_S,
@@ -47,6 +48,7 @@ from openpilot.selfdrive.car.tesla.preap_windshield_rain import (
   HOLD_ON,
   ICE_ON,
   MIN_HOLD_N,
+  SCORE_ABSURD,
   SCORE_OFF,
   SCORE_ON,
   STREAM_FALLBACK_S,
@@ -831,6 +833,65 @@ def test_false_bokeh_below_bar_is_not_rain():
   assert not windshield_looks_rainy(y)
   rest = _rest()
   assert apply_stw_wiper_beam_nibbles(rest, False, False) == rest
+
+
+def test_absurd_bokeh_scale_is_invalid_dry_and_releases():
+  """Live clear glass logged bokeh=49165. Garbage scale must not HOLD."""
+  from openpilot.selfdrive.car.tesla.preap_windshield_rain import _near_features, _band, _BOKEH_ROWS, _COLS
+
+  dry = _dry_windshield()
+  wet = _bokeh_windshield()
+  # 16-bit-ish / exploded float plane (Justin ~49165).
+  huge = dry.astype(np.float32) * 200.0
+  u16 = (dry.astype(np.float32) * 256.0)
+  assert float(huge.max()) > 20000.0
+  for y in (huge, u16):
+    _blob, _speckle, _sparse, _sat, _structure, bokeh_e = _near_features(_band(y, _BOKEH_ROWS, _COLS))
+    assert bokeh_e <= BOKEH_ABSURD
+    assert windshield_rain_score(y) < SCORE_ON
+    assert windshield_obstruction_score(y) < HOLD_ON
+    assert windshield_obstruction_score(y) < SCORE_ABSURD
+    assert not windshield_looks_rainy(y)
+    det_dry = WindshieldRain()
+    for _ in range(CLEAR_RELEASE_N + MIN_HOLD_N + 8):
+      assert not det_dry.update_from_y(y)
+      assert det_dry.last_bokeh <= BOKEH_ABSURD
+      assert det_dry.last_score < HOLD_ON
+
+  # Already held from real rain: exploded frames are dry, not "rain returned".
+  det = WindshieldRain()
+  for _ in range(16):
+    det.update_from_y(wet)
+  assert det.hold
+  released = False
+  n = 0
+  for n in range(1, CLEAR_RELEASE_N + 1):
+    if not det.update_from_y(huge):
+      released = True
+      break
+  assert released
+  assert n <= CLEAR_RELEASE_N
+  assert not det.hold
+  assert det.last_bokeh <= BOKEH_ABSURD
+
+  # Direct garbage obstruction must not latch or keep HOLD.
+  det2 = WindshieldRain()
+  for _ in range(CLEAR_RELEASE_N + 8):
+    assert not det2._update_score(49165.0)
+  det3 = WindshieldRain()
+  for _ in range(12):
+    det3._update_score(HOLD_ON + 0.7)
+  assert det3.hold
+  for _ in range(WIPE_CLEAR_N):
+    assert det3._update_score(0.0)
+    assert det3.hold
+  released = False
+  for _ in range(CLEAR_RELEASE_N):
+    if not det3._update_score(49165.0):
+      released = True
+      break
+  assert released
+  assert not det3.hold
 
 
 def test_elevated_residual_below_hold_on_releases_and_does_not_stick():
