@@ -30,8 +30,8 @@ below acquire. Light mist / film on the glass (highway streaks; ROAD
 UI looks through it) must still wipe via the near-glass haze path —
 not distant atmospheric fog alone. Then: one blade sweep →
 wipe=0 + Auto rest-cancel → wait CLEAR_WAIT_S → assess. Re-wipe only if
-still clearly wet (REWIPE_ON). One dry / sprinkle / marginal assess
-exits to idle. Off still leaves the real stalk.
+still *clearly heavy* (REWIPE_ON, above light-mist film). Light mist
+returns to idle 4 s and must full-reacquire. Off still leaves the real stalk.
 
 Bokeh energy is an 8-bit residual (~0 dry, ~2–5 wet). A live clear-glass
 log showed bokeh=49165 — wrong Y scale or a bandpass blowup. Impossible
@@ -148,13 +148,14 @@ MIST_FILM_SPECKLE = 0.008
 # Combined obstruction: 1.0 is looks_rainy / wetness floor (rain/frost/ice).
 HOLD_ON = 1.0
 # First wipe: two consecutive idle scores at/above this *after* warmup.
-# Do not "fix" dry garage by raising this past live dry 6.29 — that
-# kills real rain. Feature scoring must put dry/sprinkle well below here.
-# Heavy milky / dense beads (~7+) still enter the wipe loop.
+# Mist film live/offline sits ~6–8. Do not "fix" dry garage by raising
+# this past old 6.29. Heavy milky / dense beads (~10+) still enter.
 ACQUIRE_ON = 4.5
-# Status "heavy" and post-wipe re-enter: same bar as first wipe.
-HEAVY_ON = ACQUIRE_ON
-REWIPE_ON = ACQUIRE_ON
+# Post-wipe re-enter and status "heavy": above light-mist film (~6–8.4).
+# Justin 48f458dd9: first mist wipe worked, then wipe→3s→rewipe over-fired.
+# Light mist exits to idle 4 s (full re-acquire). Heavy can rewipe after settle.
+HEAVY_ON = 9.0
+REWIPE_ON = HEAVY_ON
 HOLD_OFF = 0.70
 EMA_ALPHA = 0.35
 EMA_HOLD_ALPHA = 0.35
@@ -687,7 +688,7 @@ class WindshieldRain:
           if self.last_score >= REWIPE_ON:
             self._start_wipe(now)
           else:
-            # Dry, overcast, streak, or blade residual → idle 4 s watching.
+            # Dry / light mist / marginal → idle 4 s. Full re-acquire.
             self._hold_n = 0
         elif self._warm_n < WARMUP_N:
           # First ROAD looks after helper start. Do not acquire.

@@ -1247,7 +1247,7 @@ def test_elevated_residual_below_rewipe_exits_loop():
   assert HOLD_ON < ACQUIRE_ON <= REWIPE_ON
   assert REWIPE_ON == HEAVY_ON
 
-  for residual in (0.0, 0.45, 0.70, 0.95, 1.05, HOLD_ON, 1.7, 3.16, 4.42):
+  for residual in (0.0, 0.45, 0.70, 0.95, 1.05, HOLD_ON, 1.7, 3.16, 4.42, 6.1, 6.77, 8.27):
     det = WindshieldRain()
     _acquire_score(det, HEAVY_ON + 0.8)
     _expire_wipe(det)
@@ -1391,6 +1391,10 @@ def test_mist_on_glass_acquires_and_fog_does_not():
   assert det.hold
   _expire_wipe(det)
   _expire_wait(det)
+  # Light mist must not easy-rewipe every 3 s — back to idle 4 s assess.
+  assert not det.update_from_y(mist)
+  assert not det.hold
+  assert not det.update_from_y(mist)
   assert det.update_from_y(mist)
   assert det.hold
 
@@ -1649,6 +1653,24 @@ def test_after_wipe_dry_score_exits_loop_and_stays_idle():
   # Back on idle: one wet look is not a wipe (need two consecutive).
   assert not det._update_score(REWIPE_ON)
   assert not det.hold
+
+
+def test_light_mist_score_after_wipe_needs_full_reacquire():
+  """Justin: light misty rain acquired, then wipe→3s→rewipe over-fired."""
+  mist = 6.7
+  assert ACQUIRE_ON <= mist < REWIPE_ON
+  det = WindshieldRain()
+  _skip_warmup(det)
+  assert not det._update_score(mist)
+  assert det._update_score(mist)
+  assert det.hold
+  _expire_wipe(det)
+  _expire_wait(det)
+  assert not det._update_score(mist)
+  assert not det.hold
+  assert not det._update_score(mist)
+  assert det._update_score(mist)
+  assert det.hold
 
 
 def test_clearly_wet_still_wipes_and_rewipes():
