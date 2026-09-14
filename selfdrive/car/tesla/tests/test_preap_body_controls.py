@@ -323,6 +323,31 @@ def _wet_windshield(h=240, w=320, n=25, seed=1) -> np.ndarray:
   return y
 
 
+def _dense_bead_windshield(h=240, w=320, n=1200, seed=12) -> np.ndarray:
+  """Human-obvious: beads covering the whole pane (Justin's rest-in-rain photo).
+
+  Packed droplets raise sharp-residual structure and can sat-highlight.
+  That used to score 0 as foliage/lamps. Must HOLD at least as strongly
+  as light soft-bokeh.
+  """
+  y = _dry_windshield(h, w, seed=0)
+  rng = np.random.RandomState(seed)
+  r0, r1 = int(h * 0.05), int(h * 0.90)
+  c0, c1 = int(w * 0.05), int(w * 0.95)
+  for _ in range(n):
+    rad = rng.randint(2, 7)
+    cy = rng.randint(r0 + rad, r1 - rad)
+    cx = rng.randint(c0 + rad, c1 - rad)
+    yy, xx = np.ogrid[-rad:rad + 1, -rad:rad + 1]
+    mask = yy * yy + xx * xx <= rad * rad
+    dist = np.sqrt(yy * yy + xx * xx)
+    bump = (1.0 - dist / max(rad, 1)) * rng.randint(60, 160)
+    patch = y[cy - rad:cy + rad + 1, cx - rad:cx + rad + 1].astype(np.float32)
+    patch[mask] += bump[mask]
+    y[cy - rad:cy + rad + 1, cx - rad:cx + rad + 1] = np.clip(patch, 0, 255).astype(np.uint8)
+  return y
+
+
 def _frost_windshield(h=240, w=320, seed=3) -> np.ndarray:
   """Dry scene with near-field crystal mottle on the glass."""
   y = _dry_windshield(h, w, seed=0).astype(np.float32)
@@ -598,6 +623,68 @@ def test_valid_heavy_obstruction_is_not_forced_dry():
     assert not garbage._update_score(49165.0)
     assert not garbage.hold
     assert garbage.last_score == 0.0
+
+
+def test_dense_beads_covering_glass_hold_at_least_as_light_bokeh():
+  """Packed full-pane beads must wipe. Structure/sat must not fail closed as foliage."""
+  from openpilot.selfdrive.car.tesla.preap_windshield_rain import (
+    _BOKEH_ROWS, _NEAR_ROWS, _COLS, _STRUCTURE_RAIN, _SAT_MAX, _band, _near_features, _rain_from_band,
+  )
+
+  dry = _dry_windshield()
+  light = _bokeh_windshield()
+  dense = _dense_bead_windshield()
+  light_s = windshield_rain_score(light)
+  dense_s = windshield_rain_score(dense)
+  assert light_s >= SCORE_ON
+  assert dense_s >= SCORE_ON
+  assert dense_s >= light_s
+  assert windshield_looks_rainy(dense)
+  assert not windshield_looks_rainy(dry)
+
+  # This scene is why wipe sat at rest: both bands can exceed the old
+  # structure/sat vetoes while bokeh is still rain-like.
+  struct_hi = False
+  for rows in (_NEAR_ROWS, _BOKEH_ROWS):
+    blob, speckle, sparse, sat, structure, bokeh_e = _near_features(_band(dense, rows, _COLS))
+    band = _rain_from_band(_band(dense, rows, _COLS))
+    if structure > _STRUCTURE_RAIN or sat > _SAT_MAX:
+      struct_hi = True
+      assert bokeh_e >= BOKEH_ON or blob >= BLOB_WET or speckle >= 0.012
+      assert band >= SCORE_ON
+  assert struct_hi or dense_s >= light_s
+
+  det = WindshieldRain()
+  saw = False
+  for _ in range(MIN_HOLD_N + 4):
+    if det.update_from_y(dense):
+      saw = True
+      break
+  assert saw
+  assert det.hold
+  rest = _rest()
+  assert _byte(apply_stw_wiper_beam_nibbles(rest, True, False)) == STW_WIPER_ON
+  released = False
+  for _ in range(CLEAR_RELEASE_N + 8):
+    if not det.update_from_y(dry):
+      released = True
+      break
+  assert released
+
+
+def test_acquire_survives_one_flicker_then_latches():
+  """A single dry frame must not zero rain progress (that left wipe=0 in rain)."""
+  det = WindshieldRain()
+  for _ in range(MIN_HOLD_N - 1):
+    assert not det._update_score(3.16)
+    assert not det.hold
+  assert det._hold_n == MIN_HOLD_N - 1
+  assert not det._update_score(0.0)
+  assert not det.hold
+  assert det._hold_n == MIN_HOLD_N - 2
+  for _ in range(2):
+    det._update_score(3.16)
+  assert det.hold
 
 
 def test_windshield_ice_and_frost_hold_like_rain():
@@ -1420,6 +1507,9 @@ def test_auto_status_param_is_full_gate_line_not_short_rain(monkeypatch):
     assert "installed=" in line
     assert "gear_type=" in line
     assert "hold=1" in line
+    assert "holdn=" in line
+    assert "struct=" in line
+    assert "speckle=" in line
     assert "frames=8865" in line
     assert "helper=" in line
     assert "clear=" in line

@@ -579,7 +579,9 @@ def _auto_status_line(setting: int, on: bool, drive: bool, rain: bool, wipe: boo
       now = time.monotonic()
       age_ms = (now - d._last_frame_t) * 1000.0 if d._last_frame_t else -1.0
       rain_bits = (
-        f"hold={int(d.hold)} ema={d.ema:.2f} score={d.last_score:.2f} bokeh={d.last_bokeh:.2f} sparse={d.last_sparse:.1f} "
+        f"hold={int(d.hold)} holdn={int(getattr(d, '_hold_n', 0))}/{int(getattr(rainmod, 'MIN_HOLD_N', 0))} "
+        + f"ema={d.ema:.2f} score={d.last_score:.2f} bokeh={d.last_bokeh:.2f} blob={d.last_blob:.2f} "
+        + f"speckle={d.last_speckle:.3f} sparse={d.last_sparse:.1f} struct={d.last_structure:.3f} sat={d.last_sat:.3f} "
         + f"clear={int(getattr(d, '_clear_n', 0))}/{int(getattr(rainmod, 'CLEAR_RELEASE_N', 0))} "
         + f"connected={int(d.connected)} failed={int(d._failed)} frames={d.n_frames} stream={d.stream} "
         + f"helper={int(d.helper_alive)} age_ms={age_ms:.0f} err={d.last_err or '-'}"
