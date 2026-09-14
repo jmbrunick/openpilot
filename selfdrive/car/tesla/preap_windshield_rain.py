@@ -26,7 +26,9 @@ needs two consecutive *meaningful* wet idle looks (ACQUIRE_ON) after
 warmup — light sprinkle / residual beads stay idle (watch every ~4 s).
 Dry indoor/garage ROAD and light sprinkle look the same to the old
 wet-sheet path (blob≈7–9, live dry score=6.29). That must score well
-below acquire. Then: one blade sweep →
+below acquire. Light mist / film on the glass (highway streaks; ROAD
+UI looks through it) must still wipe via the near-glass haze path —
+not distant atmospheric fog alone. Then: one blade sweep →
 wipe=0 + Auto rest-cancel → wait CLEAR_WAIT_S → assess. Re-wipe only if
 still clearly wet (REWIPE_ON). One dry / sprinkle / marginal assess
 exits to idle. Off still leaves the real stalk.
@@ -77,6 +79,10 @@ _BOKEH_ROWS = (0.48, 0.82)
 _MID_ROWS = (0.52, 0.84)
 _COLS = (0.06, 0.50)
 _RAIN_BANDS = (_NEAR_ROWS, _BOKEH_ROWS)
+# Farther driving view (not near-glass). Atmospheric fog collapses this;
+# mist-on-glass leaves it relatively sharp (Justin's 59 mph ROAD UI).
+_FAR_ROWS = (0.18, 0.42)
+_FAR_COLS = (0.22, 0.78)
 
 # Rain. Detrended bokeh ~4 on wet ROAD, ~0 on dry sky gradients.
 # Speckle-drop path stays ~2–4.
@@ -119,6 +125,16 @@ ICE_ON = 1.5
 ICE_CONTRAST = 0.085
 ICE_LUM = (45.0, 210.0)
 ICE_BLOB_MIN = 1.8
+# Light mist / film on the glass: low near-glass contrast + mild bokeh or
+# streaks, while the distant ROAD view stays relatively sharp. Not dry
+# calm glass (bokeh~0.1), not garage grain, not distant fog alone.
+MIST_ON = 1.0
+MIST_BOKEH_MIN = 0.70
+MIST_SPECKLE_MIN = 0.010
+MIST_NEAR_C = 0.085
+MIST_FAR_C = 0.055
+MIST_NEAR_OVER_FAR = 0.90
+MIST_LUM = (40.0, 220.0)
 # Combined obstruction: 1.0 is looks_rainy / wetness floor (rain/frost/ice).
 HOLD_ON = 1.0
 # First wipe: two consecutive idle scores at/above this *after* warmup.
@@ -320,16 +336,20 @@ def _near_features(img: np.ndarray) -> tuple[float, float, float, float, float, 
   return blob, speckle, sparse, sat, structure, bokeh
 
 
-def _mid_stats(y: np.ndarray) -> tuple[float, float]:
+def _band_stats(y: np.ndarray, rows: tuple[float, float], cols: tuple[float, float]) -> tuple[float, float]:
   y8 = _to_y8(y)
   if y8 is None:
     return 0.0, 0.0
-  mid = _band(y8, _MID_ROWS, _COLS)
+  mid = _band(y8, rows, cols)
   step = max(1, min(mid.shape) // _FEATURE_SIDE)
   x = mid[::step, ::step].astype(np.float32, copy=False)
   mean = float(x.mean())
   contrast = float(x.std() / (mean + 1.0))
   return mean, contrast
+
+
+def _mid_stats(y: np.ndarray) -> tuple[float, float]:
+  return _band_stats(y, _MID_ROWS, _COLS)
 
 
 def _scene_texture(blob: float, sparse: float, structure: float) -> bool:
@@ -393,6 +413,30 @@ def _ice_from_feats(blob: float, _speckle: float, _sparse: float, sat: float,
   return 15.0 * haze + blob
 
 
+def _mist_from_feats(_blob: float, speckle: float, _sparse: float, sat: float,
+                    structure: float, bokeh: float, y: np.ndarray) -> float:
+  """Near-glass mist film. Distant fog alone must not score.
+
+  Justin 2db9e6c30 highway ~59 mph: small drops/streaks should wipe, but
+  ROAD looks through the mist (far scene still sharp). Dry garage grain
+  and calm dry glass must stay off.
+  """
+  if sat > _SAT_MAX or structure > _STRUCTURE_RAIN:
+    return 0.0
+  if bokeh < MIST_BOKEH_MIN and speckle < MIST_SPECKLE_MIN:
+    return 0.0
+  near_mean, near_c = _band_stats(y, _NEAR_ROWS, _COLS)
+  _far_mean, far_c = _band_stats(y, _FAR_ROWS, _FAR_COLS)
+  if not (MIST_LUM[0] < near_mean < MIST_LUM[1]):
+    return 0.0
+  if near_c > MIST_NEAR_C or far_c < MIST_FAR_C:
+    return 0.0
+  if far_c <= 0.0 or near_c > far_c * MIST_NEAR_OVER_FAR:
+    return 0.0
+  haze = MIST_NEAR_C - near_c
+  return 4.6 + 15.0 * haze + 0.8 * max(0.0, bokeh - MIST_BOKEH_MIN) + 20.0 * speckle
+
+
 def _rain_from_band(img: np.ndarray) -> float:
   """Soft far-focus bokeh, wet-sheet blob, and/or speckle beads.
 
@@ -426,10 +470,18 @@ def windshield_frost_score(y: np.ndarray) -> float:
 
 def windshield_ice_score(y: np.ndarray) -> float:
   """Ice sheet: daytime view through the glass is milky (contrast collapsed)."""
-  if y is None or y.ndim != 2 or y.shape[0] < 32 or y.shape[1] < 32:
+  if y is None or y.ndim != 2 or y.shape[1] < 32 or y.shape[0] < 32:
     return 0.0
   feats = _near_features(_band(y, _NEAR_ROWS, _COLS))
   return _ice_from_feats(*feats, y)
+
+
+def windshield_mist_score(y: np.ndarray) -> float:
+  """Light mist / film on near-glass. Distant atmospheric fog scores 0."""
+  if y is None or y.ndim != 2 or y.shape[0] < 32 or y.shape[1] < 32:
+    return 0.0
+  feats = _near_features(_band(y, _NEAR_ROWS, _COLS))
+  return _mist_from_feats(*feats, y)
 
 
 def _score_frame(y: np.ndarray) -> tuple[float, tuple[float, float, float, float, float, float]]:
@@ -447,7 +499,8 @@ def _score_frame(y: np.ndarray) -> tuple[float, tuple[float, float, float, float
       best = feats
   frost = _frost_from_feats(*near)
   ice = _ice_from_feats(*near, y)
-  obs = _finite_score(max(rain / SCORE_ON, frost / FROST_ON, ice / ICE_ON))
+  mist = _mist_from_feats(*near, y)
+  obs = _finite_score(max(rain / SCORE_ON, frost / FROST_ON, ice / ICE_ON, mist / MIST_ON))
   return obs, best
 
 
