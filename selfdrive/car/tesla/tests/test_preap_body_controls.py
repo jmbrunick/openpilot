@@ -852,6 +852,7 @@ def test_stock_cc_update_primes_visionipc_helper(monkeypatch):
   from openpilot.selfdrive.car.tesla import preap_windshield_rain as rain
 
   reset_windshield_rain()
+  monkeypatch.setattr(body, "RAIN_HELPER_START_DELAY_S", 0.0)
   monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
     WIPER_SETTING_AUTO if key == NAP_WIPER_SPEED else default
   ))
@@ -874,6 +875,34 @@ def test_stock_cc_update_primes_visionipc_helper(monkeypatch):
     assert rain._detector._helper_started
     assert rain._detector.poll() is False
     assert rain._detector._poll_recv == 0
+  finally:
+    reset_windshield_rain()
+    reset_auto_gates()
+
+
+def test_auto_helper_does_not_start_during_engage_delay(monkeypatch):
+  """Do not subscribe ROAD in the first RAIN_HELPER_START_DELAY_S of Auto."""
+  from types import SimpleNamespace
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+  from openpilot.selfdrive.car.tesla import preap_windshield_rain as rain
+
+  reset_windshield_rain()
+  monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
+    WIPER_SETTING_AUTO if key == NAP_WIPER_SPEED else default
+  ))
+  monkeypatch.setattr(body, "requested_high_beam_test", lambda: False)
+  monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: [])
+
+  class _Fake:
+    def _send(self, CS, tesla_can, bus, button):
+      return (STW_ACTN_RQ_ADDR, b"\x00", bus)
+
+  reset_auto_gates()
+  try:
+    assert body.RAIN_HELPER_START_DELAY_S >= 2.0
+    body.stock_cc_update_with_overlay(_Fake(), SimpleNamespace(msg_stw_actn_req={"SpdCtrlLvr_Stat": 0}), 10, None, 0)
+    assert rain._detector is None or not rain._detector._helper_started
   finally:
     reset_windshield_rain()
     reset_auto_gates()
@@ -942,6 +971,7 @@ def test_install_does_not_start_rain_helper():
   from openpilot.selfdrive.car.tesla.preap_body_controls import install_body_controls_test
   src = inspect.getsource(install_body_controls_test)
   assert "ensure_windshield_rain_helper" not in src
+  assert "start_helper" not in src
 
 
 def test_dense_bead_sparse_below_8_is_rain():
@@ -1631,6 +1661,8 @@ def test_auto_status_param_is_full_gate_line_not_short_rain(monkeypatch):
   try:
     set_auto_gates(True, "drive")
     body._last_auto_log_t = 0.0
+    body._last_status_put_t = 0.0
+    body._last_status_gate = None
     assert body.requested_wiper_test()
     line = captured["NAPWiperRainStatus"]
     assert line.startswith("nap wiper auto")
@@ -1659,6 +1691,38 @@ def test_auto_status_param_is_full_gate_line_not_short_rain(monkeypatch):
     reset_windshield_rain()
 
 
+def test_auto_status_put_is_rate_limited_not_every_10ms(monkeypatch):
+  """100 Hz Params.put on stock_cc.update lagged engage. 1 Hz or gate change only."""
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  puts = []
+  monkeypatch.setattr(body, "_put_wiper_status", lambda line: puts.append(line))
+  monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
+    WIPER_SETTING_AUTO if key == NAP_WIPER_SPEED else default
+  ))
+  reset_auto_gates()
+  set_rain_wiper_needed(True)
+  try:
+    set_auto_gates(True, "drive")
+    for _ in range(20):
+      assert body.requested_wiper_test()
+    assert 1 <= len(puts) <= 2
+    set_rain_wiper_needed(False)
+    assert not body.requested_wiper_test()
+    assert len(puts) >= 2
+  finally:
+    set_rain_wiper_needed(None)
+    reset_auto_gates()
+
+
+def test_windshield_rain_needed_does_not_start_helper():
+  """poll/needed must not subscribe ROAD. stock_cc starts the helper while Auto."""
+  from openpilot.selfdrive.car.tesla import preap_windshield_rain as rain
+  reset_windshield_rain()
+  assert not rain.windshield_rain_needed()
+  assert rain._detector is None
+
+
 def test_rain_debug_does_not_put_status_param():
   """Short hold= line must not overwrite NAPWiperRainStatus."""
   import inspect
@@ -1666,6 +1730,8 @@ def test_rain_debug_does_not_put_status_param():
   src = inspect.getsource(WindshieldRain._debug)
   assert "Params" not in src
   assert ".put(" not in src
+  assert "_log_auto_status" not in src
+  assert "preap_body_controls" not in src
 
 
 def test_int_on_ignore_gear_and_camera(monkeypatch):
