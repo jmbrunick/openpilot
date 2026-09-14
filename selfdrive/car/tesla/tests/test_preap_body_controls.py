@@ -56,6 +56,8 @@ from openpilot.selfdrive.car.tesla.preap_windshield_rain import (
   SCORE_INVALID,
   SCORE_OFF,
   SCORE_ON,
+  SCORE_PERIOD_S,
+  STALE_S,
   STREAM_FALLBACK_S,
   WIPE_CLEAR_N,
   Y_COPY_SIDE,
@@ -794,10 +796,13 @@ class _CountingVisionClient:
     return self.buf
 
 
-def test_helper_holds_soft_bokeh_and_poll_does_not_recv():
+def test_helper_holds_soft_bokeh_and_poll_does_not_recv(monkeypatch):
   """stock_cc / card is CTRL_HIGH: poll must not drain VisionIpc. Soft bokeh HOLD."""
   import time as time_mod
 
+  from openpilot.selfdrive.car.tesla import preap_windshield_rain as rain
+
+  monkeypatch.setattr(rain, "SCORE_PERIOD_S", 0.05)
   bokeh = _bokeh_windshield()
   client = _CountingVisionClient(_nv12_buf(bokeh))
   det = WindshieldRain()
@@ -1158,10 +1163,47 @@ def test_y_plane_from_nv12_crops_stride():
   assert y[1, 0] == 24
 
 
-def test_helper_score_hz_is_capped_for_card_gil():
-  """Live numpy at camera rate lagged selfdrive. Helper must stay ~2–5 Hz."""
-  assert 2.0 <= SCORE_HZ <= 5.0
+def test_helper_score_period_is_every_few_seconds():
+  """Justin: score clarity ~once per 2–3 s, not every ROAD frame / not 1 Hz."""
+  assert 2.0 <= SCORE_PERIOD_S <= 3.0
+  assert STALE_S > SCORE_PERIOD_S
+  assert abs(SCORE_HZ - 1.0 / SCORE_PERIOD_S) < 1e-6
   assert 16 <= Y_COPY_SIDE <= 64
+
+
+def test_helper_numpy_scores_on_period_not_every_road_frame(monkeypatch):
+  """Fake ROAD can deliver ~50 Hz. Numpy HOLD ticks must follow SCORE_PERIOD_S."""
+  import time as time_mod
+
+  from openpilot.selfdrive.car.tesla import preap_windshield_rain as rain
+
+  monkeypatch.setattr(rain, "SCORE_PERIOD_S", 0.30)
+  dry = _dry_windshield()
+  client = _CountingVisionClient(_nv12_buf(dry))
+  det = WindshieldRain()
+  det._client = client
+  det.start_helper()
+  try:
+    time_mod.sleep(0.75)
+    # Scoring every 20 ms recv would be ~35 frames. Period 0.30 s → ~3.
+    assert 1 <= det.n_frames <= 4
+  finally:
+    det.stop_helper()
+
+
+def test_stale_does_not_drop_hold_between_score_periods():
+  """poll() between 2–3 s ticks must not fail-closed; STALE_S is longer than the period."""
+  det = WindshieldRain()
+  for _ in range(MIN_HOLD_N):
+    det._update_score(3.16)
+  assert det.hold
+  det._helper_started = True
+  det._last_frame_t = time.monotonic() - SCORE_PERIOD_S
+  assert det.poll() is True
+  assert det.hold
+  det._last_frame_t = time.monotonic() - (STALE_S + 0.05)
+  assert det.poll() is False
+  assert not det.hold
 
 
 def test_y_plane_live_copy_is_tiny_and_still_rainy():
@@ -1541,7 +1583,7 @@ def test_auto_status_param_is_full_gate_line_not_short_rain(monkeypatch):
     assert "speckle=" in line
     assert "frames=8865" in line
     assert "helper=" in line
-    assert "hz=" in line
+    assert "period_s=" in line
     assert "clear=" in line
     assert not line.startswith("hold=")
   finally:
