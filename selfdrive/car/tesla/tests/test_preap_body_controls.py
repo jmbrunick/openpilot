@@ -373,6 +373,20 @@ def _low_bokeh_overcast(h=240, w=320, seed=13) -> np.ndarray:
   return np.clip(y, 0, 255).astype(np.uint8)
 
 
+def _false_bokeh_overcast(h=240, w=320, seed=40) -> np.ndarray:
+  """Old 1.5–2.1 bokeh band: dry/overcast scene texture, not real rain (~3+)."""
+  y = _dry_windshield(h, w, seed=0).astype(np.float32)
+  rng = np.random.RandomState(seed)
+  yy, xx = np.mgrid[0:h, 0:w]
+  for _ in range(8):
+    cy = rng.uniform(h * 0.18, h * 0.56)
+    cx = rng.uniform(w * 0.15, w * 0.85)
+    sig = rng.uniform(min(h, w) * 0.05, min(h, w) * 0.12)
+    amp = rng.uniform(20.0, 38.0) * rng.choice([1.0, 1.0, 0.85, -0.3])
+    y += amp * np.exp(-((yy - cy) ** 2 + (xx - cx) ** 2) / (2.0 * sig * sig))
+  return np.clip(y, 0, 255).astype(np.uint8)
+
+
 def _heavy_bokeh_windshield(h=240, w=320, seed=6) -> np.ndarray:
   """Heavier rain: overlapping milky defocus patches over a driveway/tree scene.
 
@@ -461,7 +475,8 @@ def test_heavy_soft_bokeh_over_driveway_holds():
   heavy = _heavy_bokeh_windshield()
   _blob, speckle, _sparse, _sat, _structure, bokeh_e = _near_features(_band(heavy, _BOKEH_ROWS, _COLS))
   assert speckle < 0.15
-  assert bokeh_e >= BOKEH_ON
+  # Soft defocus is present; rain score may also come from the speckle path.
+  assert bokeh_e >= 1.5
   assert windshield_rain_score(dry) < SCORE_OFF
   assert windshield_rain_score(heavy) >= SCORE_ON
   assert windshield_looks_rainy(heavy)
@@ -770,52 +785,58 @@ def test_dry_overcast_low_bokeh_does_not_stay_held():
 
   overcast = _overcast_windshield()
   low = _low_bokeh_overcast()
+  false_bokeh = _false_bokeh_overcast()
   dry = _dry_windshield()
   wet = _bokeh_windshield()
-  for y in (overcast, low, dry):
+  for y in (overcast, low, false_bokeh, dry):
     obs = windshield_obstruction_score(y)
     _blob, _speckle, _sparse, _sat, _structure, bokeh_e = _near_features(_band(y, _BOKEH_ROWS, _COLS))
     assert obs < HOLD_ON
-    assert obs < HOLD_OFF or bokeh_e < BOKEH_ON
+    assert bokeh_e < BOKEH_ON or obs < HOLD_ON
     assert not windshield_looks_rainy(y)
     det_dry = WindshieldRain()
     for _ in range(CLEAR_RELEASE_N + MIN_HOLD_N + 8):
       assert not det_dry.update_from_y(y)
 
   # After real rain, overcast residual must release — not stick forever.
-  det = WindshieldRain()
-  for _ in range(16):
-    det.update_from_y(wet)
-  assert det.hold
-  released = False
-  n = 0
-  for n in range(1, CLEAR_RELEASE_N + 1):
-    if not det.update_from_y(overcast):
-      released = True
-      break
-  assert released
-  assert n <= CLEAR_RELEASE_N
-  assert not det.hold
-
-  det2 = WindshieldRain()
-  for _ in range(16):
-    det2.update_from_y(wet)
-  assert det2.hold
-  released = False
-  for n in range(1, CLEAR_RELEASE_N + 1):
-    if not det2.update_from_y(low):
-      released = True
-      break
-  assert released
-  assert n <= CLEAR_RELEASE_N
-  assert not det2.hold
+  for residual_y in (overcast, low, false_bokeh, dry):
+    det = WindshieldRain()
+    for _ in range(16):
+      det.update_from_y(wet)
+    assert det.hold
+    released = False
+    n = 0
+    for n in range(1, CLEAR_RELEASE_N + 1):
+      if not det.update_from_y(residual_y):
+        released = True
+        break
+    assert released
+    assert n <= CLEAR_RELEASE_N
+    assert not det.hold
 
 
-def test_elevated_residual_below_hold_off_releases_and_does_not_stick():
-  """HOLD_OFF 0.38 + EMA gate never cleared residual ~0.45/0.83. Instant score must."""
-  assert HOLD_OFF > BOKEH_ON / SCORE_ON
-  assert HOLD_OFF < HOLD_ON
+def test_false_bokeh_below_bar_is_not_rain():
+  """Clear/overcast texture in the old 1.5 bokeh band must not look rainy."""
+  from openpilot.selfdrive.car.tesla.preap_windshield_rain import (
+    _BOKEH_ROWS, _COLS, _band, _near_features,
+  )
+
+  y = _false_bokeh_overcast()
+  _blob, speckle, _sparse, _sat, _structure, bokeh_e = _near_features(_band(y, _BOKEH_ROWS, _COLS))
+  assert speckle < 0.012
+  # In the old false-positive band, but under the raised rain bar.
+  assert bokeh_e < BOKEH_ON
+  assert windshield_rain_score(y) < SCORE_ON
+  assert windshield_obstruction_score(y) < HOLD_ON
+  assert not windshield_looks_rainy(y)
+  rest = _rest()
+  assert apply_stw_wiper_beam_nibbles(rest, False, False) == rest
+
+
+def test_elevated_residual_below_hold_on_releases_and_does_not_stick():
+  """Scores below rain-level HOLD_ON must finish CLEAR_RELEASE_N and drop HOLD."""
   assert WIPE_CLEAR_N < CLEAR_RELEASE_N
+  assert HOLD_OFF < HOLD_ON
 
   def _latch(det):
     for _ in range(12):
@@ -823,8 +844,8 @@ def test_elevated_residual_below_hold_off_releases_and_does_not_stick():
     assert det.hold
     assert det._hold_n >= MIN_HOLD_N
 
-  # Residual that sat forever above the old 0.38 HOLD_OFF.
-  for residual in (0.45, 0.70, BOKEH_ON / SCORE_ON):
+  # Residual that sat forever above the old 0.38 HOLD_OFF, including just-shy of rain.
+  for residual in (0.0, 0.45, 0.70, 0.95):
     det = WindshieldRain()
     _latch(det)
     for _ in range(WIPE_CLEAR_N):

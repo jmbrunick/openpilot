@@ -11,10 +11,11 @@ Rain: large low-frequency bokeh in the upper/mid ROAD bands, or sparse
     streaks/speckles. Ice/frost: a milky sheet or crystal mottle.
 Dense in-focus texture (foliage, brick) and large saturated headlamp
 plates are rejected. Hysteresis holds while the glass looks obstructed.
-A wipe makes the ROAD view look briefly clear; Auto keeps HOLD through
-that sub-second dip. Sustained truly dry scores (about a second) release
-so clear glass cannot keep the 30 s intermittent forever. Dry overcast /
-low-bokeh residual must not stick. Stale ROAD still drops HOLD.
+Dry overcast / scene texture must not count as rain (bokeh bar is above
+that false-positive band). A real wipe may look clear for ~0.5 s; HOLD
+can ride that dip, then drops quickly once scores stay below rain-level
+so clear glass cannot keep the 30 s intermittent forever. Stale ROAD
+still drops HOLD. Off still leaves the real stalk (escape).
 
 VisionIpc is drained on a SCHED_OTHER helper thread (blocking recv,
 conflate ROAD then WIDE). card is CTRL_HIGH: stock_cc.update / poll()
@@ -44,8 +45,9 @@ _RAIN_BANDS = (_NEAR_ROWS, _BOKEH_ROWS)
 SCORE_ON = 1.8
 SCORE_OFF = 1.0
 # Justin's heavier-rain ROAD UI: mid-band detrended bokeh ~1.85–3.3.
-# Dry sky/road wash is ~0.2 after row-detrend.
-BOKEH_ON = 1.5
+# Dry sky/road wash is ~0.2. Live clear/overcast texture was latching at
+# 1.5 — raise the bar so that is not rain. Real wet is still ~3+.
+BOKEH_ON = 2.2
 _BOKEH_RATIO = 0.22
 _SPECKLE_MIN = 0.012
 # Frost crystals: moderate residual that is not sparse-drop rain and not
@@ -57,22 +59,18 @@ ICE_CONTRAST = 0.085
 ICE_LUM = (45.0, 210.0)
 # Combined obstruction: 1.0 is the hold line (rain/frost/ice each scaled).
 HOLD_ON = 1.0
-# Instant-score release line. Must sit above dry/overcast residual and the
-# minimum bokeh-path obstruction (BOKEH_ON/SCORE_ON ≈ 0.83) so those frames
-# count as clear. Light rain is ~1.03+ (bokeh ~1.85) and stays held.
-# Consecutive CLEAR_RELEASE_N is what rides through a wipe, not a low HOLD_OFF.
-HOLD_OFF = 0.88
+# Instant looks_rainy hysteresis only. Latch release uses HOLD_ON (below).
+HOLD_OFF = 0.70
 EMA_ALPHA = 0.35
-# Slightly slower than acquire so the status EMA does not slam to 0 on a
-# two-frame wipe. Not used as a release gate — that trapped residual scores.
-EMA_HOLD_ALPHA = 0.25
-# ROAD is ~20 Hz. 20 dry frames ≈ 1.0 s; 10 Hz helper ≈ 2.0 s. A swipe-clear
-# is a handful of frames, well under this. 48 was too long to ever finish
-# when residual scores kept resetting the counter.
-CLEAR_RELEASE_N = 20
-# Ignore an instant dry flash right as the blade starts (~0.4 s at 20 Hz).
-MIN_HOLD_N = 8
-# Test/docs: sub-second wipe-clear that must keep HOLD ( < CLEAR_RELEASE_N ).
+# Same as acquire. A slow hold-EMA was trapping residual scores.
+EMA_HOLD_ALPHA = 0.35
+# ROAD ~20 Hz. 12 frames ≈ 0.6 s (≈ 1.2 s at 10 Hz). Bias dry-release:
+# stuck 30 s intermittent on clear glass is worse than dropping HOLD on a
+# long wipe (rain re-acquires). 48/20 never finished on false bokeh.
+CLEAR_RELEASE_N = 12
+# Blade-start flash only.
+MIN_HOLD_N = 4
+# Brief wipe-clear that must keep HOLD (~0.4 s at 20 Hz).
 WIPE_CLEAR_N = 8
 STALE_S = 2.0
 CONNECT_RETRY_S = 0.5
@@ -320,10 +318,10 @@ class WindshieldRain:
       self.ema = alpha * self.last_score + (1.0 - alpha) * self.ema
       if self.hold:
         self._hold_n += 1
-        # Instant score only. Requiring EMA < HOLD_OFF too never started the
-        # clear streak when dry/overcast residual sat above a low HOLD_OFF.
+        # Bias dry-release: any score below rain-level HOLD_ON counts as
+        # clear. False overcast residual must not reset this counter.
         # A swipe-clear is WIPE_CLEAR_N frames, not CLEAR_RELEASE_N in a row.
-        if self.last_score < HOLD_OFF:
+        if self.last_score < HOLD_ON:
           self._clear_n += 1
         else:
           self._clear_n = 0
