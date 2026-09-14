@@ -48,6 +48,8 @@ wins when held, so Auto uses that same hold, not a pulse.
 """
 
 # Params / UI. 0 is off (today's forwarded stalk). Indexes, not raw DBC.
+import time
+
 NAP_WIPER_SPEED = "NAPWiperSpeed"
 NAP_HIGH_LOW_BEAM = "NAPHighLowBeam"
 
@@ -76,7 +78,9 @@ _rain_needed_override = None
 _live_cs = None
 _vehicle_on_override = None
 _gear_override = None
-_DRIVE_GEARS = ("drive", "reverse")
+_DRIVE_GEARS = ("drive", "reverse", "d", "r")
+_AUTO_DEBUG_S = 1.0
+_last_auto_log_t = 0.0
 
 
 def _tesla_can():
@@ -205,7 +209,11 @@ def _param_int(key: str, default: int = 0) -> int:
   try:
     from openpilot.common.params import Params
     val = Params().get(key, return_default=True)
-    return int(val) if val is not None else default
+    if val is None:
+      return default
+    if isinstance(val, (bytes, bytearray)):
+      val = val.decode("utf-8", errors="ignore").strip()
+    return int(val)
   except Exception:
     return default
 
@@ -239,7 +247,13 @@ def reset_auto_gates() -> None:
 def _gear_name(gear) -> str:
   if gear is None:
     return ""
-  return str(gear).rsplit(".", 1)[-1].lower()
+  name = getattr(gear, "name", None)
+  if isinstance(name, str) and name:
+    return name.rsplit(".", 1)[-1].lower()
+  token = str(gear).rsplit(".", 1)[-1].lower().strip()
+  if token:
+    return token
+  return ""
 
 
 def vehicle_is_on() -> bool:
@@ -254,6 +268,13 @@ def in_drive_gear() -> bool:
   gear = _gear_override
   if gear is None:
     gear = getattr(_live_cs, "gearShifter", None) if _live_cs is not None else None
+  try:
+    from opendbc.car import structs
+    gs = structs.CarState.GearShifter
+    if gear in (gs.drive, gs.reverse):
+      return True
+  except Exception:
+    pass
   return _gear_name(gear) in _DRIVE_GEARS
 
 
@@ -271,10 +292,60 @@ def rain_wiper_needed() -> bool:
     return False
 
 
+def _auto_status_line(setting: int, on: bool, drive: bool, rain: bool, wipe: bool) -> str:
+  gear = _gear_override
+  if gear is None:
+    gear = getattr(_live_cs, "gearShifter", None) if _live_cs is not None else None
+  rain_bits = "rain=0"
+  try:
+    from openpilot.selfdrive.car.tesla import preap_windshield_rain as rainmod
+    d = rainmod._detector
+    if d is not None:
+      rain_bits = (
+        "hold=%d ema=%.2f score=%.2f bokeh=%.2f sparse=%.1f connected=%d failed=%d "
+        "frames=%d stream=%s err=%s" % (
+          int(d.hold), d.ema, d.last_score, d.last_bokeh, d.last_sparse,
+          int(d.connected), int(d._failed), d.n_frames, d.stream, d.last_err or "-",
+        )
+      )
+  except Exception:
+    rain_bits = "rain=err"
+  return (
+    "nap wiper auto setting=%d on=%d gear=%s drive=%d rain=%d wipe=%d installed=%d %s" % (
+      int(setting), int(on), _gear_name(gear) or "-", int(drive), int(rain),
+      int(wipe), int(_installed), rain_bits,
+    )
+  )
+
+
+def _log_auto_status(setting: int, on: bool, drive: bool, rain: bool, wipe: bool) -> None:
+  global _last_auto_log_t
+  now = time.monotonic()
+  if now - _last_auto_log_t < _AUTO_DEBUG_S:
+    return
+  _last_auto_log_t = now
+  line = _auto_status_line(setting, on, drive, rain, wipe)
+  try:
+    from openpilot.common.swaglog import cloudlog
+    cloudlog.info("%s", line)
+  except Exception:
+    pass
+  try:
+    from openpilot.common.params import Params
+    Params().put("NAPWiperRainStatus", line, block=False)
+  except Exception:
+    pass
+
+
 def requested_wiper_test() -> bool:
   setting = _param_int(NAP_WIPER_SPEED, WIPER_SETTING_OFF)
   if int(setting) == WIPER_SETTING_AUTO:
-    return vehicle_is_on() and in_drive_gear() and rain_wiper_needed()
+    on = vehicle_is_on()
+    drive = in_drive_gear()
+    rain = rain_wiper_needed()
+    wipe = bool(on and drive and rain)
+    _log_auto_status(setting, on, drive, rain, wipe)
+    return wipe
   return wiper_test_requested(setting)
 
 
@@ -340,3 +411,8 @@ def install_body_controls_test():
   tesla_can.create_action_request = create_action_request_with_overlay
   stock_cc.update = stock_cc_update_with_overlay
   _installed = True
+  try:
+    from openpilot.common.swaglog import cloudlog
+    cloudlog.info("nap body controls overlay installed (0x45 wiper/beam)")
+  except Exception:
+    pass

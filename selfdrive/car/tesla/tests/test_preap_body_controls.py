@@ -43,6 +43,7 @@ from openpilot.selfdrive.car.tesla.preap_windshield_rain import (
   ICE_ON,
   SCORE_OFF,
   SCORE_ON,
+  STREAM_FALLBACK_S,
   WindshieldRain,
   windshield_frost_score,
   windshield_ice_score,
@@ -462,6 +463,24 @@ def test_visionipc_retries_after_failure(monkeypatch):
   assert det.poll() is False
 
 
+def test_visionipc_falls_back_to_wide_without_frames():
+  det = WindshieldRain()
+  det._stream_t0 = 5000.0
+  assert det.stream == "ROAD"
+  det._maybe_fallback_stream(5000.0 + STREAM_FALLBACK_S + 0.05)
+  assert det.stream == "WIDE"
+  assert det._client is None
+
+
+def test_dense_bead_sparse_below_8_is_rain():
+  """Justin's upper droplet crop was sparse≈6.85 — old SPARSE_MIN=8 rejected it."""
+  from openpilot.selfdrive.car.tesla.preap_windshield_rain import _SPARSE_MIN, _SPARSE_RAIN_MIN
+  assert _SPARSE_RAIN_MIN <= 6.85 < _SPARSE_MIN
+  wet = _wet_windshield(n=40, seed=9)
+  assert windshield_rain_score(wet) >= SCORE_ON
+  assert windshield_looks_rainy(wet)
+
+
 def test_windshield_latch_holds_then_releases():
   det = WindshieldRain()
   wet = _wet_windshield()
@@ -529,6 +548,43 @@ def test_auto_only_in_drive_or_reverse(monkeypatch):
     assert not body.requested_wiper_test()
     set_auto_gates(False, "drive")
     assert not body.requested_wiper_test()
+  finally:
+    set_rain_wiper_needed(None)
+    reset_auto_gates()
+
+
+def test_auto_gear_aliases_and_enum_name(monkeypatch):
+  """Live CS may stringify as GearShifter.drive or D — still Auto-wipe."""
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
+    WIPER_SETTING_AUTO if key == NAP_WIPER_SPEED else default
+  ))
+  set_rain_wiper_needed(True)
+
+  class _Enumish:
+    name = "drive"
+
+    def __str__(self):
+      return "CarState.GearShifter.drive"
+
+  try:
+    for gear in ("drive", "DRIVE", "D", "reverse", "R", _Enumish()):
+      set_auto_gates(True, gear)
+      assert body.in_drive_gear(), gear
+      assert body.requested_wiper_test(), gear
+      rest = _rest()
+      held = apply_stw_wiper_beam_nibbles(rest, True, False)
+      assert _byte(held) == STW_WIPER_ON
+    set_auto_gates(True, "park")
+    assert not body.requested_wiper_test()
+    set_auto_gates(True, "unknown")
+    assert not body.requested_wiper_test()
+    line = body._auto_status_line(3, True, True, True, True)
+    assert "setting=3" in line
+    assert "gear=" in line
+    assert "wipe=1" in line
+    assert "installed=" in line
   finally:
     set_rain_wiper_needed(None)
     reset_auto_gates()

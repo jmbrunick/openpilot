@@ -55,7 +55,11 @@ CONNECT_RETRY_S = 0.5
 DEBUG_LOG_S = 1.0
 _SAT_MAX = 0.08
 _SPARSE_MIN = 8.0
+# Dense bead rain on glass is ~6.5–8.5. Justin's upper droplet crop was
+# rain-rejected at 6.85. Foliage is still ~1.8.
+_SPARSE_RAIN_MIN = 6.0
 _SPARSE_MAX = 80.0
+STREAM_FALLBACK_S = 3.0
 _STRUCTURE_FRAC = 0.05
 _STRUCTURE_RAIN = 0.12
 _FOLIAGE_BLOB = 18.0
@@ -69,15 +73,21 @@ def y_plane_from_nv12(buf) -> np.ndarray | None:
   try:
     width = int(buf.width)
     height = int(buf.height)
-    stride = int(buf.stride) if getattr(buf, "stride", 0) else width
+    stride = int(getattr(buf, "stride", 0) or width)
     if width < 16 or height < 16 or stride < width:
       return None
     data = buf.data
-    n = stride * height
-    if data is None or len(data) < n:
+    if data is None:
       return None
-    y = np.frombuffer(data, dtype=np.uint8, count=n).reshape(height, stride)
-    return y[:, :width]
+    n = stride * height
+    uv_off = int(getattr(buf, "uv_offset", 0) or 0)
+    if uv_off >= n:
+      n = uv_off
+    raw = np.asarray(memoryview(data) if not isinstance(data, np.ndarray) else data.reshape(-1), dtype=np.uint8)
+    if raw.size < stride * height:
+      return None
+    y = raw[:stride * height].reshape(height, stride)
+    return np.ascontiguousarray(y[:, :width])
   except Exception:
     return None
 
@@ -149,7 +159,7 @@ def _rain_from_band(img: np.ndarray) -> float:
   score = 0.0
   if bokeh >= BOKEH_ON and bokeh / (blob + 0.2) >= _BOKEH_RATIO:
     score = max(score, bokeh)
-  if speckle >= _SPECKLE_MIN and _SPARSE_MIN <= sparse <= _SPARSE_MAX:
+  if speckle >= _SPECKLE_MIN and _SPARSE_RAIN_MIN <= sparse <= _SPARSE_MAX:
     score = max(score, blob + 12.0 * speckle)
   return score
 
@@ -231,11 +241,14 @@ class WindshieldRain:
     self.n_frames = 0
     self.connected = False
     self.last_err = ""
+    self.stream = "ROAD"
     self._client = None
     self._failed = False
     self._last_frame_t = 0.0
     self._last_connect_t = 0.0
     self._last_log_t = 0.0
+    self._stream_idx = 0
+    self._stream_t0 = 0.0
 
   def _record_band(self, y: np.ndarray) -> None:
     best = (-1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -265,32 +278,66 @@ class WindshieldRain:
     self._debug()
     return self.hold
 
+  def _stream_names(self) -> tuple[str, ...]:
+    return ("VISION_STREAM_ROAD", "VISION_STREAM_WIDE_ROAD")
+
+  def _maybe_fallback_stream(self, now: float) -> None:
+    if self.n_frames > 0:
+      return
+    if self._stream_t0 <= 0:
+      self._stream_t0 = now
+      return
+    if now - self._stream_t0 < STREAM_FALLBACK_S:
+      return
+    names = self._stream_names()
+    nxt = (self._stream_idx + 1) % len(names)
+    if nxt == self._stream_idx:
+      return
+    self._stream_idx = nxt
+    self.stream = "WIDE" if "WIDE" in names[nxt] else "ROAD"
+    self._client = None
+    self.connected = False
+    self._stream_t0 = now
+    self.last_err = f"fallback_{self.stream}"
+
   def _recv_y(self) -> np.ndarray | None:
     now = time.monotonic()
     if self._failed and (now - self._last_connect_t) < CONNECT_RETRY_S:
       return None
     self._failed = False
+    self._maybe_fallback_stream(now)
     try:
       if self._client is None:
         if now - self._last_connect_t < CONNECT_RETRY_S and self._last_connect_t > 0:
           return None
         self._last_connect_t = now
         from msgq.visionipc import VisionIpcClient, VisionStreamType
-        self._client = VisionIpcClient("camerad", VisionStreamType.VISION_STREAM_ROAD, True)
+        st = getattr(VisionStreamType, self._stream_names()[self._stream_idx])
+        self._client = VisionIpcClient("camerad", st, True)
+        self.stream = "WIDE" if "WIDE" in self._stream_names()[self._stream_idx] else "ROAD"
       self.connected = bool(self._client.is_connected())
       if not self.connected:
         if now - self._last_connect_t < CONNECT_RETRY_S:
+          self.last_err = self.last_err or "noconnect"
           return None
         self._last_connect_t = now
         if not self._client.connect(False):
           self.connected = False
+          self.last_err = "noconnect"
           return None
         self.connected = True
         self.last_err = ""
       buf = self._client.recv(timeout_ms=0)
       if buf is None:
+        if not self.last_err:
+          self.last_err = "nobuf"
         return None
-      return y_plane_from_nv12(buf)
+      y = y_plane_from_nv12(buf)
+      if y is None:
+        self.last_err = "noyplane"
+        return None
+      self.last_err = ""
+      return y
     except Exception as e:
       self._failed = True
       self.connected = False
@@ -310,12 +357,12 @@ class WindshieldRain:
     line = (
       "nap wiper rain hold=%d ema=%.2f score=%.2f bokeh=%.2f blob=%.2f "
       "speckle=%.3f sparse=%.1f sat=%.3f struct=%.3f connected=%d failed=%d "
-      "frames=%d age_ms=%.0f%s%s"
+      "frames=%d stream=%s age_ms=%.0f%s%s"
     )
     args = (
       int(self.hold), self.ema, self.last_score, self.last_bokeh, self.last_blob,
       self.last_speckle, self.last_sparse, self.last_sat, self.last_structure,
-      int(self.connected), int(self._failed), self.n_frames, age_ms, err, why,
+      int(self.connected), int(self._failed), self.n_frames, self.stream, age_ms, err, why,
     )
     try:
       from openpilot.common.swaglog import cloudlog
@@ -326,9 +373,9 @@ class WindshieldRain:
       from openpilot.common.params import Params
       Params().put(
         "NAPWiperRainStatus",
-        "hold=%d ema=%.2f score=%.2f bokeh=%.2f connected=%d failed=%d frames=%d%s%s" % (
-          int(self.hold), self.ema, self.last_score, self.last_bokeh,
-          int(self.connected), int(self._failed), self.n_frames, err, why,
+        "hold=%d ema=%.2f score=%.2f bokeh=%.2f sparse=%.1f connected=%d failed=%d frames=%d stream=%s%s%s" % (
+          int(self.hold), self.ema, self.last_score, self.last_bokeh, self.last_sparse,
+          int(self.connected), int(self._failed), self.n_frames, self.stream, err, why,
         ),
         block=False,
       )
