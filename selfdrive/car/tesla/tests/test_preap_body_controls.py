@@ -709,6 +709,71 @@ def test_auto_gear_int_enum_and_di_gear_tokens(monkeypatch):
     reset_auto_gates()
 
 
+class _DynamicEnum:
+  """cereal / opendbc capnp gear: str is 'drive', .name is None, != structs enum."""
+  name = None
+
+  def __str__(self):
+    return "drive"
+
+  def __repr__(self):
+    return "_DynamicEnum"
+
+  def __eq__(self, other):
+    return False
+
+
+def test_auto_gear_dynamic_enum_name_none_str_drive(monkeypatch):
+  """Justin: cereal gearShifter is drive _DynamicEnum None — Auto must still wipe."""
+  from types import SimpleNamespace
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
+    WIPER_SETTING_AUTO if key == NAP_WIPER_SPEED else default
+  ))
+  set_rain_wiper_needed(True)
+  gear = _DynamicEnum()
+  assert gear.name is None
+  assert str(gear) == "drive"
+  try:
+    set_auto_gates(True, gear)
+    assert body._gear_name(gear) == "drive"
+    assert body.in_drive_gear()
+    assert body.requested_wiper_test()
+    line = body._auto_status_line(3, True, True, True, True)
+    assert "gear=drive" in line
+    assert "gear_type=_DynamicEnum" in line
+    assert "wipe=1" in line
+    rest = _rest()
+    held = apply_stw_wiper_beam_nibbles(rest, True, False)
+    assert _byte(held) == STW_WIPER_ON
+
+    inner = SimpleNamespace(
+      gearShifter=0,
+      msg_stw_actn_req={"SpdCtrlLvr_Stat": 0},
+      out=SimpleNamespace(gearShifter=gear),
+    )
+    reset_auto_gates()
+    set_rain_wiper_needed(True)
+    body.update_live_car_state(inner)
+    assert body.vehicle_is_on()
+    assert body.in_drive_gear()
+    assert body.requested_wiper_test()
+    line = body._auto_status_line(3, True, True, True, True)
+    assert "gear_src=out" in line
+    assert "gear=drive" in line
+    monkeypatch.setattr(body, "requested_high_beam_test", lambda: False)
+    monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: [])
+    fake = _FakeSpoofer()
+    out = body.stock_cc_update_with_overlay(fake, inner, 10, None, 0)
+    assert len(out) == 1
+    assert out[0][0] == STW_ACTN_RQ_ADDR
+  finally:
+    set_rain_wiper_needed(None)
+    reset_auto_gates()
+
+
 def test_auto_status_param_is_full_gate_line_not_short_rain(monkeypatch):
   """Justin cat'd hold= ema= because rain _debug overwrote the Auto gates."""
   from openpilot.selfdrive.car.tesla import preap_body_controls as body
@@ -744,6 +809,7 @@ def test_auto_status_param_is_full_gate_line_not_short_rain(monkeypatch):
     assert "rain=1" in line
     assert "wipe=1" in line
     assert "installed=" in line
+    assert "gear_type=" in line
     assert "hold=1" in line
     assert "frames=8865" in line
     assert not line.startswith("hold=")

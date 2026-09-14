@@ -371,9 +371,16 @@ class WindshieldRain:
       cloudlog.info(line, *args)
     except Exception:
       pass
-    # Do not write the live Auto status param here. The short hold/ema line
-    # was clobbering the Auto gate string (setting/on/gear/drive/wipe)
-    # Justin cats on device. body_controls owns that param.
+    # Never put a short hold= line. Refresh the full Auto gate string instead.
+    try:
+      from openpilot.selfdrive.car.tesla import preap_body_controls as body
+      if int(body._param_int(body.NAP_WIPER_SPEED, 0)) == body.WIPER_SETTING_AUTO:
+        on = body.vehicle_is_on()
+        drive = body.in_drive_gear()
+        rain = bool(self.hold)
+        body._log_auto_status(body.WIPER_SETTING_AUTO, on, drive, rain, bool(on and drive and rain))
+    except Exception:
+      pass
 
   def poll(self) -> bool:
     """Non-blocking. Clear until a frame says the glass is not; stale → clear."""
