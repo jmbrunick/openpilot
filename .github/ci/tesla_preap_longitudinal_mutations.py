@@ -10,6 +10,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LONGCONTROL_TEST_PATH = "selfdrive/controls/tests/test_tesla_preap_longcontrol.py"
 FOLLOWING_TEST_PATH = "selfdrive/controls/tests/test_tesla_preap_following.py"
+GAS_LIFT_TEST_PATH = "selfdrive/controls/tests/test_tesla_preap_gas_lift_handoff.py"
 NOISE_GATE_TEST_NODE = (
   "opendbc_repo/opendbc/car/tesla/preap/tests/test_virtual_das.py::TestInnerPID::" +
   "test_sub_deadband_sign_changing_noise_does_not_accumulate_residual_authority"
@@ -26,6 +27,31 @@ class HistoricalMutation:
 
 
 MUTATIONS = (
+  HistoricalMutation(
+    name="gas-lift-keeps-full-engage-grace",
+    source_path="opendbc_repo/opendbc/car/tesla/preap/carcontroller.py",
+    original=b"        if gas_handoff:\n",
+    replacement=b"        if False:\n",
+    test_nodes=(
+      f"{GAS_LIFT_TEST_PATH}::test_gas_lift_after_long_engage_does_not_floor_a_for_half_second",
+    ),
+  ),
+  HistoricalMutation(
+    name="gas-lift-zero-command-seed",
+    source_path="opendbc_repo/opendbc/car/tesla/preap/carcontroller.py",
+    original=(
+      b"          commanded_accel = gas_lift_handoff_seed_accel(\n" +
+      b"            self.last_nonneg_a_ego,\n" +
+      b"            CS.out.aEgo,\n" +
+      b"            self.engage_a_max,\n" +
+      b"            float(actuators.accel),\n" +
+      b"          )\n"
+    ),
+    replacement=b"          commanded_accel = 0.0\n",
+    test_nodes=(
+      f"{GAS_LIFT_TEST_PATH}::test_gas_lift_after_long_engage_does_not_floor_a_for_half_second",
+    ),
+  ),
   HistoricalMutation(
     name="historical-outer-ki",
     source_path="opendbc_repo/opendbc/car/tesla/preap/constants.py",
