@@ -1,3 +1,7 @@
+NAP soft regen on short brake cancel (2026-09-14)
+========================
+* Pre-AP silent long pause: a **short/light** brake tap that knocks software long off now eases toward **coast** for **0.50 s** (tunable 0.3–0.8) before the interceptor RELEASEs to stock Tesla regen. Distinguishes tip vs hold like the stalk: Applied shorter than **0.30 s** without firm `aEgo` is a tip; a **held** pedal or **deeper** decel (`aEgo <= −1.5`) RELEASEs immediately so friction + stock regen stay firm. Full session cancel / FCW / AEB / hard lead braking unchanged. No `GAS_COMMAND` DI rewrite, no PostEngageCoast / climb latch, gas-lift A+B (#152) untouched. **nap-dev only — no nap-release twin until Justin signs off.**
+
 NAP gas-lift long handoff (2026-09-13)
 ========================
 * After engage-on-gas then lift (or a gas override while software long is already on), Pre-AP no longer restarts the 0.5 s `ENGAGE_GRACE` a=0 floor, and VDAS is seeded from the last non-negative `aEgo` (MAX-capped) instead of `commanded_accel=0`. Lead hard decel / FCW / should-stop and brake still win. First engage without gas is unchanged (grace still ramps from 0). No `GAS_COMMAND` rewrite, no PostEngageCoast / climb-to-MAX / pedal-hold overlay, no panda or locationd change. **nap-dev only — no nap-release twin until Justin signs off.**
