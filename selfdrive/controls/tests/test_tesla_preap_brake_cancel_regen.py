@@ -1,19 +1,11 @@
-"""R1: ramp interceptor regen on a short/light Pre-AP brake cancel.
+"""Brake cancel is firm/stock: interceptor RELEASEs as soon as long drops.
 
-Short cancel keeps interceptor ENABLE and interpolates commanded
-regen 0 → stock. Held / deeper brake RELEASEs immediately. FCW /
-hard lead / full cancel unchanged. No GAS_COMMAND DI rewrite /
-PostEngageCoast. Gas-lift A3 is untouched.
+No tip/hold regen ramp, no coast-then-bite. A light tap that knocks
+software long off must RELEASE immediately to Tesla regen. FCW / hard
+lead / full cancel unchanged. Gas-lift A+B / A3 is untouched.
 """
 from types import SimpleNamespace
 
-import pytest
-
-from opendbc.car.tesla.preap.brake_cancel_regen import (
-  BRAKE_CANCEL_RAMP_S,
-  BRAKE_CANCEL_STOCK_REGEN_A,
-  BRAKE_TIP_HOLD_S,
-)
 from opendbc.car.tesla.preap.carcontroller import (
   ENGAGE_GRACE_FRAMES,
   PedalCommandAction,
@@ -45,7 +37,6 @@ def _zero_torque():
   )
 
 
-@pytest.fixture
 def controller_env(monkeypatch):
   zero_torque = _zero_torque()
   monkeypatch.setattr('opendbc.car.tesla.preap.carcontroller.nap_conf', _pedal_conf())
@@ -87,77 +78,38 @@ def _drop_long_on_brake(cc, cs, *, a_ego=0.0):
   cs.out.aEgo = a_ego
 
 
-def test_short_cancel_ramps_regen_before_stock(controller_env):
-  controller, cc, cs, tesla_can = controller_env
+def test_short_tip_releases_interceptor_immediately(monkeypatch):
+  controller, cc, cs, tesla_can = controller_env(monkeypatch)
   _activate_longitudinal(cc, cs)
   controller.update(cc, cs, frame=0, tesla_can=tesla_can, can_bus_party=0)
 
   _drop_long_on_brake(cc, cs, a_ego=-0.25)
-  tip = controller.update(cc, cs, frame=2, tesla_can=tesla_can, can_bus_party=0)
-  assert _decode_pedal_command(tip[0]).enabled
-  assert cs.pedal_brake_cancel_ramp
+  release = controller.update(cc, cs, frame=2, tesla_can=tesla_can, can_bus_party=0)
+  assert not _decode_pedal_command(release[0]).enabled
+  assert _decode_pedal_command(release[0]).raw_command == 0
+  assert cs.pedal_authority_action == int(PedalCommandAction.RELEASE)
+  assert not getattr(cs, "pedal_brake_cancel_ramp", False)
+  assert not hasattr(controller, "brake_cancel")
 
   cs.real_brake_pressed = False
   cs.out.aEgo = 0.05
-  cc.actuators.accel = -1.4
-  enabled_frames = 0
-  released = False
-  commanded = []
-  pedal_di = []
-  for frame in range(4, 200, 2):
-    sent = controller.update(cc, cs, frame=frame, tesla_can=tesla_can, can_bus_party=0)
-    if not sent:
-      released = True
-      break
-    decoded = _decode_pedal_command(sent[0])
-    if not decoded.enabled:
-      released = True
-      assert decoded.raw_command == 0
-      break
-    enabled_frames += 1
-    commanded.append(controller.brake_cancel.commanded_accel())
-    pedal_di.append(controller.prev_pedal_di)
-
-  assert released
-  assert enabled_frames * 0.01 >= BRAKE_CANCEL_RAMP_S - 0.08
-  assert commanded[0] == pytest.approx(0.0, abs=0.05)
-  assert commanded[-1] < commanded[len(commanded) // 2] < commanded[0]
-  assert commanded[-1] <= BRAKE_CANCEL_STOCK_REGEN_A * 0.80
-  # Progressive regen, not a coast plateau then a step.
-  assert sum(1 for a in commanded if a < -0.05) >= 3 * len(commanded) // 4
-  assert pedal_di[-1] < pedal_di[0]
+  assert controller.update(cc, cs, frame=4, tesla_can=tesla_can, can_bus_party=0) == []
 
 
-def test_held_brake_is_firm_stock_regen(controller_env):
-  controller, cc, cs, tesla_can = controller_env
+def test_held_brake_also_releases_immediately(monkeypatch):
+  controller, cc, cs, tesla_can = controller_env(monkeypatch)
   _activate_longitudinal(cc, cs)
   controller.update(cc, cs, frame=0, tesla_can=tesla_can, can_bus_party=0)
   _drop_long_on_brake(cc, cs, a_ego=0.0)
 
-  released_at = None
-  for frame in range(2, 100, 2):
-    sent = controller.update(cc, cs, frame=frame, tesla_can=tesla_can, can_bus_party=0)
-    if sent and not _decode_pedal_command(sent[0]).enabled:
-      released_at = frame
-      break
-    assert sent and _decode_pedal_command(sent[0]).enabled
-  assert released_at is not None
-  # Classifier dt=0.01 per update(); tests skip odd frames.
-  assert released_at >= int(BRAKE_TIP_HOLD_S / 0.01) - 2
-
-
-def test_firm_brake_releases_immediately(controller_env):
-  controller, cc, cs, tesla_can = controller_env
-  _activate_longitudinal(cc, cs)
-  controller.update(cc, cs, frame=0, tesla_can=tesla_can, can_bus_party=0)
-  _drop_long_on_brake(cc, cs, a_ego=-2.0)
   release = controller.update(cc, cs, frame=2, tesla_can=tesla_can, can_bus_party=0)
   assert not _decode_pedal_command(release[0]).enabled
   assert cs.pedal_authority_action == int(PedalCommandAction.RELEASE)
+  assert controller.update(cc, cs, frame=4, tesla_can=tesla_can, can_bus_party=0) == []
 
 
-def test_hard_lead_fcw_path_unchanged(controller_env):
-  controller, cc, cs, tesla_can = controller_env
+def test_hard_lead_fcw_path_unchanged(monkeypatch):
+  controller, cc, cs, tesla_can = controller_env(monkeypatch)
   _activate_longitudinal(cc, cs)
   cc.actuators.accel = 0.0
   for frame in range(0, ENGAGE_GRACE_FRAMES + 2, 2):
@@ -173,8 +125,8 @@ def test_hard_lead_fcw_path_unchanged(controller_env):
   assert min(limited) < 0.0
 
 
-def test_full_cancel_does_not_soft_regen(controller_env):
-  controller, cc, cs, tesla_can = controller_env
+def test_full_cancel_releases(monkeypatch):
+  controller, cc, cs, tesla_can = controller_env(monkeypatch)
   _activate_longitudinal(cc, cs)
   controller.update(cc, cs, frame=0, tesla_can=tesla_can, can_bus_party=0)
   cs.cruiseEnabled = False
