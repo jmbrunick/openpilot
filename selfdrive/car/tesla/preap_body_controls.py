@@ -558,13 +558,19 @@ def rain_wiper_needed() -> bool:
     return False
 
 
-def _prime_rain_helper() -> None:
-  """stock_cc.update starts ROAD drain off the CTRL_HIGH card thread."""
+def _sync_rain_helper() -> None:
+  """VisionIpc + numpy only while Wipers = Auto. Off/Int/On must not recv ROAD."""
   if _rain_needed_override is not None:
     return
   try:
-    from openpilot.selfdrive.car.tesla.preap_windshield_rain import ensure_windshield_rain_helper
-    ensure_windshield_rain_helper()
+    from openpilot.selfdrive.car.tesla.preap_windshield_rain import (
+      ensure_windshield_rain_helper,
+      stop_windshield_rain_helper,
+    )
+    if _param_int(NAP_WIPER_SPEED, WIPER_SETTING_OFF) == WIPER_SETTING_AUTO:
+      ensure_windshield_rain_helper()
+    else:
+      stop_windshield_rain_helper()
   except Exception:
     pass
 
@@ -584,7 +590,8 @@ def _auto_status_line(setting: int, on: bool, drive: bool, rain: bool, wipe: boo
         + f"speckle={d.last_speckle:.3f} sparse={d.last_sparse:.1f} struct={d.last_structure:.3f} sat={d.last_sat:.3f} "
         + f"clear={int(getattr(d, '_clear_n', 0))}/{int(getattr(rainmod, 'CLEAR_RELEASE_N', 0))} "
         + f"connected={int(d.connected)} failed={int(d._failed)} frames={d.n_frames} stream={d.stream} "
-        + f"helper={int(d.helper_alive)} period_s={float(getattr(rainmod, 'SCORE_PERIOD_S', 0)):.1f} age_ms={age_ms:.0f} err={d.last_err or '-'}"
+        + f"helper={int(d.helper_alive)} period_s={float(getattr(rainmod, 'SCORE_PERIOD_S', 0)):.1f} "
+        + f"hz={float(getattr(rainmod, 'SCORE_HZ', 0)):.1f} age_ms={age_ms:.0f} err={d.last_err or '-'}"
       )
   except Exception:
     rain_bits = "rain=err"
@@ -667,6 +674,7 @@ def requested_wiper_test() -> bool:
     _last_wiper_req = wipe
     _log_auto_status(setting, on, drive, rain, wipe)
     return wipe
+  _sync_rain_helper()
   wipe = wiper_test_requested(setting)
   _last_wiper_req = wipe
   return wipe
@@ -697,15 +705,14 @@ def stock_cc_update_with_overlay(self, CS, frame, tesla_can, can_bus_party):
   rest (cleared high nibble) on that same slot so Pre-AP drops latched
   intermittent; a wipe 1→0 burst does not wait for the slot. Auto reads
   gear from this CS: Park/Neutral stay wipe=0 and still cancel if we had
-  been wiping. Primes the ROAD VisionIpc helper so poll() does not recv
-  on this CTRL_HIGH thread.
+  been wiping. Primes the ROAD VisionIpc helper only while Auto so poll()
+  does not recv on this CTRL_HIGH thread. Off/Int/On stop the helper.
   """
   orig = _ORIG_STOCK_CC_UPDATE
   if orig is None:
     orig = _stock_cc().update
   update_live_car_state(CS)
-  if _param_int(NAP_WIPER_SPEED, WIPER_SETTING_OFF) == WIPER_SETTING_AUTO:
-    _prime_rain_helper()
+  _sync_rain_helper()
   prev_wiper = _last_wiper_req
   wiper = requested_wiper_test()
   _arm_wiper_cancel(prev_wiper, wiper)
@@ -753,11 +760,6 @@ def install_body_controls_test():
   try:
     from openpilot.common.swaglog import cloudlog
     cloudlog.info("nap body controls overlay installed (0x45 wiper/beam)")
-  except Exception:
-    pass
-  try:
-    from openpilot.selfdrive.car.tesla.preap_windshield_rain import ensure_windshield_rain_helper
-    ensure_windshield_rain_helper()
   except Exception:
     pass
   _put_wiper_status("nap wiper auto setting=- on=0 gear=- gear_src=none raw=- drive=0 rain=0 wipe=0 installed=1 waiting")

@@ -31,14 +31,19 @@ log showed bokeh=49165 — wrong Y scale or a bandpass blowup. Impossible
 magnitudes are invalid/dry (they must not latch HOLD or look like rain
 returning after a wipe). Real heavy-rain scores above ~12 are still wet.
 
-VisionIpc is drained on a SCHED_OTHER helper thread (blocking recv,
-conflate ROAD then WIDE). Numpy scoring runs once per SCORE_PERIOD_S
-(~2.5 s), not every ROAD frame: a full-res Y copy plus 20 Hz multi-blur
-starved card's GIL (age_ms ~30 s, Selfdrive Process Lagging). Recv
-downsamples immediately; one feature pass per scored frame; ice contrast
-uses the tiny grid. HOLD release uses the same 2–3 s ticks (Pre-AP
-already latches ~32 s). card is CTRL_HIGH: stock_cc.update / poll()
-only reads the latch. Failures retry; they do not permanently dry Auto.
+VisionIpc runs only while NAPWiperSpeed is Auto. Off/Int/On stop the
+helper, drop HOLD, and do not recv ROAD — Int/On keep working without
+the camera. The helper is SCHED_OTHER (nice 10): blocking recv, conflate
+ROAD then WIDE. Numpy scoring runs once per SCORE_PERIOD_S (~2.5 s,
+SCORE_HZ ≈ 0.4), not every ROAD frame and not 4 Hz. A full-res Y copy
+plus 20 Hz multi-blur starved card's GIL (age_ms ~30 s, Selfdrive
+Process Lagging). Recv downsamples immediately; one feature pass per
+scored frame; ice contrast uses the tiny grid. After each score the
+ROAD client is dropped so camerad is not an extra always-on subscriber.
+HOLD release uses the same 2–3 s ticks (Pre-AP already latches ~32 s).
+card is CTRL_HIGH: stock_cc.update / poll() only reads the latch, never
+recvs, never joins the helper. Failures retry; they do not permanently
+dry Auto.
 """
 from __future__ import annotations
 
@@ -109,9 +114,9 @@ WIPE_CLEAR_N = 8
 STALE_S = 8.0
 CONNECT_RETRY_S = 0.5
 DEBUG_LOG_S = 1.0
-# Live helper: score windshield clarity once every 2–3 s, not 20 Hz / 1 Hz.
+# Live helper: score windshield clarity once every 2–3 s, not 20 Hz / 4 Hz / 1 Hz.
 SCORE_PERIOD_S = 2.5
-SCORE_HZ = 1.0 / SCORE_PERIOD_S
+SCORE_HZ = 1.0 / SCORE_PERIOD_S  # ≈ 0.4 Hz
 HELPER_RECV_MS = 50
 HELPER_NICE = 10
 # Copy at most this many pixels on the short side from VisionIpc (not full ROAD).
@@ -446,6 +451,7 @@ class WindshieldRain:
     self._poll_recv = 0
     self._clear_n = 0
     self._hold_n = 0
+    self._owns_client = False
 
   def _store_feats(self, feats: tuple[float, float, float, float, float, float]) -> None:
     blob, speckle, sparse, sat, structure, bokeh = feats
@@ -516,6 +522,7 @@ class WindshieldRain:
     self._stream_idx = nxt
     self.stream = "WIDE" if "WIDE" in names[nxt] else "ROAD"
     self._client = None
+    self._owns_client = False
     self.connected = False
     self._stream_t0 = now
     self.last_err = f"fallback_{self.stream}"
@@ -534,6 +541,7 @@ class WindshieldRain:
         from msgq.visionipc import VisionIpcClient, VisionStreamType
         st = getattr(VisionStreamType, self._stream_names()[self._stream_idx])
         self._client = VisionIpcClient("camerad", st, True)
+        self._owns_client = True
         self.stream = "WIDE" if "WIDE" in self._stream_names()[self._stream_idx] else "ROAD"
       self.connected = bool(self._client.is_connected())
       if not self.connected:
@@ -564,6 +572,7 @@ class WindshieldRain:
       self._failed = True
       self.connected = False
       self._client = None
+      self._owns_client = False
       self._last_connect_t = now
       self.last_err = type(e).__name__
       return None
@@ -582,7 +591,7 @@ class WindshieldRain:
       + f"sparse={self.last_sparse:.1f} sat={self.last_sat:.3f} struct={self.last_structure:.3f} "
       + f"clear={int(self._clear_n)}/{int(CLEAR_RELEASE_N)} connected={int(self.connected)} "
       + f"failed={int(self._failed)} frames={self.n_frames} stream={self.stream} "
-      + f"helper={int(self.helper_alive)} period_s={SCORE_PERIOD_S:.1f} age_ms={age_ms:.0f}{err}{why}"
+      + f"helper={int(self.helper_alive)} period_s={SCORE_PERIOD_S:.1f} hz={SCORE_HZ:.1f} age_ms={age_ms:.0f}{err}{why}"
     )
     try:
       from openpilot.common.swaglog import cloudlog
@@ -605,16 +614,30 @@ class WindshieldRain:
     t = self._helper
     return bool(t is not None and t.is_alive())
 
+  def _clear_hold(self) -> None:
+    with self._lock:
+      self.hold = False
+      self.ema = 0.0
+      self.last_score = 0.0
+      self._clear_n = 0
+      self._hold_n = 0
+
+  def _release_vision(self) -> None:
+    """Drop the live ROAD client between score ticks. Tests inject _client."""
+    if not self._owns_client:
+      return
+    self._client = None
+    self._owns_client = False
+    self.connected = False
+
   def start_helper(self) -> None:
-    """Drain ROAD off the card thread. Idempotent."""
+    """Drain ROAD off the card thread. Idempotent. Never join (CTRL_HIGH)."""
     t = self._helper
     if t is not None and t.is_alive():
-      self._helper_started = True
+      # Still winding down after stop — next stock_cc.update retries.
+      if not self._stop.is_set():
+        self._helper_started = True
       return
-    if t is not None and t is not threading.current_thread():
-      self._stop.set()
-      t.join(timeout=0.6)
-    # New Event so a stuck previous loop cannot resume after we restart.
     self._stop = threading.Event()
     self._helper_started = True
     try:
@@ -625,72 +648,65 @@ class WindshieldRain:
       self._helper_started = False
       self.last_err = type(e).__name__
 
-  def stop_helper(self) -> None:
+  def stop_helper(self, join: bool = True) -> None:
+    """Stop ROAD drain and drop HOLD. join=False from card (do not block RT)."""
     self._stop.set()
-    t = self._helper
-    if t is not None and t.is_alive() and t is not threading.current_thread():
-      t.join(timeout=0.6)
-    self._helper = None
     self._helper_started = False
+    self._clear_hold()
+    t = self._helper
+    if join and t is not None and t.is_alive() and t is not threading.current_thread():
+      t.join(timeout=0.6)
+    if join:
+      self._helper = None
+      self._release_vision()
 
   def _helper_loop(self) -> None:
-    """Conflate ROAD cheaply; numpy score at SCORE_PERIOD_S (~2.5 s), including HOLD."""
+    """Recv+score at SCORE_PERIOD_S (~2.5 s); unsubscribe ROAD between ticks."""
     _drop_realtime()
     last_score_t = 0.0
-    while not self._stop.is_set():
-      period = float(SCORE_PERIOD_S)
-      try:
-        y = self._recv_y(timeout_ms=HELPER_RECV_MS, max_side=Y_COPY_SIDE)
-      except Exception as e:
-        self._failed = True
-        self.last_err = type(e).__name__
-        y = None
-      if self._stop.is_set():
-        break
-      now = time.monotonic()
-      due = last_score_t <= 0.0 or (now - last_score_t) >= period
-      if y is not None and due:
-        # Expensive path. _last_frame_t / age_ms follow this scored frame.
-        self.update_from_y(y)
-        last_score_t = time.monotonic()
-        y = None
-      elif y is None:
-        self._apply_stale()
-        if not self.connected or self._failed:
-          self._stop.wait(CONNECT_RETRY_S)
-          continue
-      else:
-        # Latest Y already downsampled; drop it. Do not score every ROAD frame.
-        y = None
-      wait = period - (time.monotonic() - last_score_t)
-      if last_score_t <= 0.0:
-        wait = 0.0
-      if wait > 0.0:
-        self._stop.wait(wait)
+    try:
+      while not self._stop.is_set():
+        period = float(SCORE_PERIOD_S)
+        now = time.monotonic()
+        if last_score_t > 0.0:
+          wait = period - (now - last_score_t)
+          if wait > 0.0:
+            self._stop.wait(wait)
+            if self._stop.is_set():
+              break
+        try:
+          y = self._recv_y(timeout_ms=HELPER_RECV_MS, max_side=Y_COPY_SIDE)
+        except Exception as e:
+          self._failed = True
+          self.last_err = type(e).__name__
+          y = None
+        if self._stop.is_set():
+          break
+        if y is not None:
+          self.update_from_y(y)
+          last_score_t = time.monotonic()
+          y = None
+          self._release_vision()
+        else:
+          self._apply_stale()
+          if not self.connected or self._failed:
+            self._stop.wait(CONNECT_RETRY_S)
+    finally:
+      self._release_vision()
 
   def _apply_stale(self) -> None:
     """Clear HOLD if ROAD frames stop. Do not wipe dry glass."""
     if self.hold and self._last_frame_t > 0:
       if time.monotonic() - self._last_frame_t > STALE_S:
-        with self._lock:
-          self.hold = False
-          self.ema = 0.0
-          self.last_score = 0.0
-          self._clear_n = 0
-          self._hold_n = 0
+        self._clear_hold()
         self._debug("stale")
     elif not self.hold:
       self._debug("noframe")
 
   def poll(self) -> bool:
-    """Latch only when the helper is running. Never recv on the card RT thread."""
-    if self._helper_started:
-      self._apply_stale()
-      return self.hold
-    self._poll_recv += 1
-    y = self._recv_y(timeout_ms=0)
-    if y is not None:
-      return self.update_from_y(y)
+    """Latch only. Never recv or numpy on the card RT thread."""
+    if not self._helper_started:
+      return False
     self._apply_stale()
     return self.hold
 
@@ -699,12 +715,18 @@ _detector: WindshieldRain | None = None
 
 
 def ensure_windshield_rain_helper() -> WindshieldRain:
-  """Start the ROAD drain thread. Called from stock_cc.update / install."""
+  """Start the ROAD drain thread. Called from stock_cc.update while Auto."""
   global _detector
   if _detector is None:
     _detector = WindshieldRain()
   _detector.start_helper()
   return _detector
+
+
+def stop_windshield_rain_helper() -> None:
+  """Off/Int/On: no ROAD recv. Does not join (card is CTRL_HIGH)."""
+  if _detector is not None:
+    _detector.stop_helper(join=False)
 
 
 def windshield_rain_needed() -> bool:

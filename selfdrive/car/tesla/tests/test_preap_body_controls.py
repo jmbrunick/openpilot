@@ -879,6 +879,71 @@ def test_stock_cc_update_primes_visionipc_helper(monkeypatch):
     reset_auto_gates()
 
 
+def test_poll_never_recvs_on_card_thread():
+  """Helper down used to recv+numpy on poll() — that lagged selfdrive on engage."""
+  import inspect
+
+  class _Boom:
+    def is_connected(self):
+      return True
+
+    def recv(self, timeout_ms=0):
+      raise RuntimeError("poll must not recv")
+
+  det = WindshieldRain()
+  det._client = _Boom()
+  det.hold = True
+  assert det.poll() is False
+  assert det._poll_recv == 0
+  src = inspect.getsource(WindshieldRain.poll)
+  assert "_recv_y" not in src
+  assert "update_from_y" not in src
+
+
+def test_stock_cc_int_stops_rain_helper_and_drops_hold(monkeypatch):
+  """Int/On/Off keep nibble 1 / stalk without ROAD. Switching off Auto must drop HOLD."""
+  from types import SimpleNamespace
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+  from openpilot.selfdrive.car.tesla import preap_windshield_rain as rain
+
+  reset_windshield_rain()
+  monkeypatch.setattr(body, "requested_high_beam_test", lambda: False)
+  monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: [])
+
+  class _Fake:
+    def _send(self, CS, tesla_can, bus, button):
+      return (STW_ACTN_RQ_ADDR, b"\x00", bus)
+
+  fake = _Fake()
+  cs = SimpleNamespace(msg_stw_actn_req={"SpdCtrlLvr_Stat": 0})
+  reset_auto_gates()
+  try:
+    det = rain.ensure_windshield_rain_helper()
+    det.hold = True
+    assert det._helper_started
+    monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
+      WIPER_SETTING_INTERMITTENT if key == NAP_WIPER_SPEED else default
+    ))
+    out = body.stock_cc_update_with_overlay(fake, cs, 10, None, 0)
+    assert not det._helper_started
+    assert not det.hold
+    assert det.poll() is False
+    assert det._poll_recv == 0
+    assert any(msg[0] == STW_ACTN_RQ_ADDR for msg in out)
+  finally:
+    reset_windshield_rain()
+    reset_auto_gates()
+
+
+def test_install_does_not_start_rain_helper():
+  """card.__init__ must not subscribe ROAD — that hit camerad at engage."""
+  import inspect
+  from openpilot.selfdrive.car.tesla.preap_body_controls import install_body_controls_test
+  src = inspect.getsource(install_body_controls_test)
+  assert "ensure_windshield_rain_helper" not in src
+
+
 def test_dense_bead_sparse_below_8_is_rain():
   """Justin's upper droplet crop was sparse≈6.85 — old SPARSE_MIN=8 rejected it."""
   from openpilot.selfdrive.car.tesla.preap_windshield_rain import _SPARSE_MIN, _SPARSE_RAIN_MIN
@@ -1166,6 +1231,7 @@ def test_y_plane_from_nv12_crops_stride():
 def test_helper_score_period_is_every_few_seconds():
   """Justin: score clarity ~once per 2–3 s, not every ROAD frame / not 1 Hz."""
   assert 2.0 <= SCORE_PERIOD_S <= 3.0
+  assert 0.3 <= SCORE_HZ <= 0.5
   assert STALE_S > SCORE_PERIOD_S
   assert abs(SCORE_HZ - 1.0 / SCORE_PERIOD_S) < 1e-6
   assert 16 <= Y_COPY_SIDE <= 64
@@ -1584,6 +1650,7 @@ def test_auto_status_param_is_full_gate_line_not_short_rain(monkeypatch):
     assert "frames=8865" in line
     assert "helper=" in line
     assert "period_s=" in line
+    assert "hz=" in line
     assert "clear=" in line
     assert not line.startswith("hold=")
   finally:
