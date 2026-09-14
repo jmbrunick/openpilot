@@ -498,6 +498,28 @@ def _mist_windshield(h=240, w=320, seed=17) -> np.ndarray:
   return np.clip(y, 0, 255).astype(np.uint8)
 
 
+def _fine_mist_windshield(h=240, w=320, seed=19) -> np.ndarray:
+  """Dense fine drizzle film on near-glass (Justin 13 mph photo). Far road stays."""
+  y = _dry_windshield(h, w, seed=0).astype(np.float32)
+  rng = np.random.RandomState(seed)
+  r0, r1 = int(h * 0.48), int(h * 0.90)
+  c0, c1 = int(w * 0.06), int(w * 0.50)
+  patch = y[r0:r1, c0:c1]
+  m = float(patch.mean())
+  y[r0:r1, c0:c1] = (patch - m) * 0.40 + m + 6.0
+  for _ in range(280):
+    rad = rng.randint(1, 3)
+    cy = rng.randint(r0 + rad, r1 - rad)
+    cx = rng.randint(c0 + rad, c1 - rad)
+    yy, xx = np.ogrid[-rad:rad + 1, -rad:rad + 1]
+    mask = yy * yy + xx * xx <= rad * rad
+    bump = rng.uniform(16.0, 40.0)
+    sl = y[cy - rad:cy + rad + 1, cx - rad:cx + rad + 1]
+    sl[mask] += bump
+    y[cy - rad:cy + rad + 1, cx - rad:cx + rad + 1] = sl
+  return np.clip(y, 0, 255).astype(np.uint8)
+
+
 def _atmos_fog_windshield(h=240, w=320, seed=18) -> np.ndarray:
   """Distant atmospheric fog: whole-frame wash, no near-glass streaks."""
   y = _dry_windshield(h, w, seed=0).astype(np.float32)
@@ -1049,15 +1071,15 @@ def test_install_does_not_start_rain_helper():
 
 
 def test_dense_bead_sparse_below_8_is_rain():
-  """Sparse≈6.85 mid-blob is dry/sprinkle. Meaningful wet still rains."""
+  """Sparse≈6.85 mid-blob used to be a reject. Meaningful wet still rains."""
   from openpilot.selfdrive.car.tesla.preap_windshield_rain import _SPARSE_MIN, _SPARSE_RAIN_MIN
   assert _SPARSE_RAIN_MIN <= 6.85 < _SPARSE_MIN
-  sprinkle = _wet_windshield(n=40, seed=9)
-  assert windshield_obstruction_score(sprinkle) < ACQUIRE_ON
-  assert not windshield_looks_rainy(sprinkle)
   heavy = _heavy_bokeh_windshield()
   assert windshield_rain_score(heavy) >= SCORE_ON
   assert windshield_looks_rainy(heavy)
+  dense = _dense_bead_windshield()
+  assert windshield_rain_score(dense) >= SCORE_ON
+  assert windshield_looks_rainy(dense)
 
 
 def test_windshield_latch_holds_then_releases():
@@ -1336,11 +1358,15 @@ def test_blade_spike_during_clear_wait_does_not_acquire():
 def test_mist_on_glass_acquires_and_fog_does_not():
   """Highway mist/streaks should wipe. Distant fog and dry garage must not."""
   mist = _mist_windshield()
+  fine = _fine_mist_windshield()
   fog = _atmos_fog_windshield()
   dry = _dry_windshield()
   assert windshield_mist_score(mist) >= ACQUIRE_ON
   assert windshield_obstruction_score(mist) >= ACQUIRE_ON
   assert windshield_looks_rainy(mist)
+  assert windshield_mist_score(fine) >= ACQUIRE_ON
+  assert windshield_obstruction_score(fine) >= ACQUIRE_ON
+  assert windshield_looks_rainy(fine)
   assert windshield_mist_score(fog) < HOLD_ON
   assert windshield_obstruction_score(fog) < HOLD_ON
   assert not windshield_looks_rainy(fog)
@@ -1350,6 +1376,9 @@ def test_mist_on_glass_acquires_and_fog_does_not():
   tiny = y_plane_from_nv12(_nv12_buf(mist), max_side=Y_COPY_SIDE)
   assert tiny is not None
   assert windshield_obstruction_score(tiny) >= ACQUIRE_ON
+  tiny_fine = y_plane_from_nv12(_nv12_buf(fine), max_side=Y_COPY_SIDE)
+  assert tiny_fine is not None
+  assert windshield_obstruction_score(tiny_fine) >= ACQUIRE_ON
 
   det = WindshieldRain()
   _skip_warmup(det)
@@ -1579,6 +1608,11 @@ def test_live_highway_mist_status_acquires():
 
   mist = _mist_film_from_feats(3.93, 0.0, 3.2, 0.0, 0.0, 1.42)
   assert mist >= ACQUIRE_ON
+  # Uniform fine film: same blob/sparse, weaker bokeh (ROAD looks through drizzle).
+  fine = _mist_film_from_feats(3.93, 0.0, 3.2, 0.0, 0.0, 0.55)
+  assert fine >= ACQUIRE_ON
+  piled = _mist_film_from_feats(7.90, 0.11, 3.6, 0.0, 0.0, 0.71)
+  assert piled >= ACQUIRE_ON
   det = WindshieldRain()
   _skip_warmup(det)
   assert not det._update_score(mist)
