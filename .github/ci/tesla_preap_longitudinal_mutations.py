@@ -49,6 +49,15 @@ MUTATIONS = (
     ),
   ),
   HistoricalMutation(
+    name="gas-lift-seed-ignores-planner-climb",
+    source_path="opendbc_repo/opendbc/car/tesla/preap/carcontroller.py",
+    original=b"  for candidate in (last_nonneg_a_ego, measured_accel, planner_accel):\n",
+    replacement=b"  for candidate in (last_nonneg_a_ego, measured_accel):\n",
+    test_nodes=(
+      f"{GAS_LIFT_TEST_PATH}::test_gas_lift_open_road_seed_uses_mannerisms_accel_not_only_aego",
+    ),
+  ),
+  HistoricalMutation(
     name="gas-lift-zero-command-seed",
     source_path="opendbc_repo/opendbc/car/tesla/preap/carcontroller.py",
     original=(
