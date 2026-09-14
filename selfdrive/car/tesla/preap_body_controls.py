@@ -88,6 +88,7 @@ _DRIVE_INTS = frozenset({2, 4})
 _AUTO_DEBUG_S = 1.0
 _last_auto_log_t = 0.0
 _last_gear_src = "none"
+_last_wiper_req = False
 
 
 def _tesla_can():
@@ -245,22 +246,30 @@ def set_auto_gates(vehicle_on: bool | None = None, gear=None) -> None:
 
 
 def reset_auto_gates() -> None:
-  global _live_cs, _vehicle_on_override, _gear_override, _last_gear_src
+  global _live_cs, _vehicle_on_override, _gear_override, _last_gear_src, _last_wiper_req
   _live_cs = None
   _vehicle_on_override = None
   _gear_override = None
   _last_gear_src = "none"
+  _last_wiper_req = False
 
 
 def _gear_name(gear) -> str:
+  """Token for Drive/Reverse. capnp _DynamicEnum has .name=None and str()=='drive'."""
   if gear is None:
     return ""
+  tokens = []
+  try:
+    tokens.append(str(gear))
+  except Exception:
+    pass
   name = getattr(gear, "name", None)
   if isinstance(name, str) and name:
-    return name.rsplit(".", 1)[-1].lower()
-  token = str(gear).rsplit(".", 1)[-1].lower().strip()
-  if token:
-    return token
+    tokens.append(name)
+  for raw in tokens:
+    token = str(raw).rsplit(".", 1)[-1].lower().strip()
+    if token and token not in ("none", "null"):
+      return token
   return ""
 
 
@@ -269,11 +278,13 @@ def _gear_int(gear):
     return None
   if isinstance(gear, int):
     return int(gear)
-  try:
-    if hasattr(gear, "value") and not isinstance(gear, str):
-      return int(gear.value)
-  except Exception:
-    pass
+  for attr in ("raw",):
+    try:
+      v = getattr(gear, attr, None)
+      if isinstance(v, int) and not isinstance(v, bool):
+        return int(v)
+    except Exception:
+      pass
   try:
     return int(gear)
   except Exception:
@@ -285,23 +296,83 @@ def _gear_present(gear) -> bool:
   return gear is not None and gear != ""
 
 
-def _cs_gear(cs) -> tuple[object, str]:
-  """Live Pre-AP stock-cc CS is the inner parser: Drive lives on CS.out.gearShifter.
+def _gear_type_name(gear) -> str:
+  if gear is None:
+    return "none"
+  try:
+    return type(gear).__name__
+  except Exception:
+    return "?"
 
-  structs.CarState.gearShifter is published on CS.out, not on the Tesla
-  CarState object StockCCSpoofer.update receives. Reading only
-  CS.gearShifter was None in Drive, so Auto never wiped.
+
+def _is_drive_or_reverse(gear) -> bool:
+  """Drive/Reverse. Token first: cereal _DynamicEnum != structs.GearShifter.drive."""
+  if not _gear_present(gear):
+    return False
+  if _gear_name(gear) in _DRIVE_GEARS:
+    return True
+  gi = _gear_int(gear)
+  if gi in _DRIVE_INTS:
+    return True
+  for gs in _gear_shifter_enums():
+    try:
+      if gear == gs.drive or gear == gs.reverse:
+        return True
+    except Exception:
+      pass
+    try:
+      if gi is not None and gi in (int(gs.drive), int(gs.reverse)):
+        return True
+    except Exception:
+      pass
+    for side in (gs.drive, gs.reverse):
+      try:
+        if _gear_name(gear) == _gear_name(side):
+          return True
+      except Exception:
+        pass
+  return False
+
+
+def _gear_shifter_enums():
+  found = []
+  try:
+    from opendbc.car import structs
+    found.append(structs.CarState.GearShifter)
+  except Exception:
+    pass
+  try:
+    from cereal import car
+    gs = car.CarState.GearShifter
+    if gs not in found:
+      found.append(gs)
+  except Exception:
+    pass
+  return found
+
+
+def _cs_gear(cs) -> tuple[object, str]:
+  """Live stock-cc CS is the inner parser. Drive is on CS.out.gearShifter.
+
+  Prefer a candidate that already looks like Drive/Reverse so an inner
+  unknown default cannot hide CS.out (cereal _DynamicEnum, str='drive').
   """
   if cs is None:
     return None, "none"
+  candidates = []
   gear = getattr(cs, "gearShifter", None)
   if _gear_present(gear):
-    return gear, "cs"
+    candidates.append((gear, "cs"))
   out = getattr(cs, "out", None)
   if out is not None:
     gear = getattr(out, "gearShifter", None)
     if _gear_present(gear):
-      return gear, "out"
+      candidates.append((gear, "out"))
+  for gear, src in candidates:
+    if _is_drive_or_reverse(gear):
+      return gear, src
+  if candidates:
+    return candidates[0]
   return None, "none"
 
 
@@ -320,29 +391,7 @@ def in_drive_gear() -> bool:
   else:
     gear, src = _cs_gear(_live_cs)
   _last_gear_src = src
-  if not _gear_present(gear):
-    return False
-  try:
-    from opendbc.car import structs
-    gs = structs.CarState.GearShifter
-    if gear in (gs.drive, gs.reverse):
-      return True
-    gi = _gear_int(gear)
-    if gi is not None and gi in (int(gs.drive), int(gs.reverse)):
-      return True
-  except Exception:
-    pass
-  try:
-    from cereal import car
-    gs = car.CarState.GearShifter
-    if gear in (gs.drive, gs.reverse):
-      return True
-  except Exception:
-    pass
-  if _gear_name(gear) in _DRIVE_GEARS:
-    return True
-  gi = _gear_int(gear)
-  return gi in _DRIVE_INTS if gi is not None else False
+  return _is_drive_or_reverse(gear)
 
 
 def rain_wiper_needed() -> bool:
@@ -381,20 +430,16 @@ def _auto_status_line(setting: int, on: bool, drive: bool, rain: bool, wipe: boo
   gi = _gear_int(gear)
   raw = "-" if gi is None else str(gi)
   return (
-    "nap wiper auto setting=%d on=%d gear=%s gear_src=%s raw=%s drive=%d rain=%d "
-    "wipe=%d installed=%d %s" % (
-      int(setting), int(on), _gear_name(gear) or "-", src, raw, int(drive), int(rain),
-      int(wipe), int(_installed), rain_bits,
+    "nap wiper auto setting=%d on=%d gear=%s gear_src=%s gear_type=%s raw=%s "
+    "drive=%d rain=%d wipe=%d installed=%d %s" % (
+      int(setting), int(on), _gear_name(gear) or "-", src, _gear_type_name(gear), raw,
+      int(drive), int(rain), int(wipe), int(_installed), rain_bits,
     )
   )
 
 
 def _put_wiper_status(line: str) -> None:
-  """Write NAPWiperRainStatus so `cat /data/params/d/NAPWiperRainStatus` always has gates.
-
-  Rain _debug no longer writes this key. Non-blocking so the 100 Hz car
-  thread does not hitch; this is the only writer.
-  """
+  """Write NAPWiperRainStatus so `cat` always has Auto gates, never a bare hold= line."""
   try:
     from openpilot.common.params import Params
     Params().put("NAPWiperRainStatus", line, block=False)
@@ -409,21 +454,22 @@ def _put_wiper_status(line: str) -> None:
 
 
 def _log_auto_status(setting: int, on: bool, drive: bool, rain: bool, wipe: bool) -> None:
+  """Always put the full Auto line. Rate-limit only swaglog."""
   global _last_auto_log_t
-  now = time.monotonic()
-  if now - _last_auto_log_t < _AUTO_DEBUG_S:
-    return
-  _last_auto_log_t = now
   line = _auto_status_line(setting, on, drive, rain, wipe)
-  try:
-    from openpilot.common.swaglog import cloudlog
-    cloudlog.info("%s", line)
-  except Exception:
-    pass
+  now = time.monotonic()
+  if now - _last_auto_log_t >= _AUTO_DEBUG_S:
+    _last_auto_log_t = now
+    try:
+      from openpilot.common.swaglog import cloudlog
+      cloudlog.info("%s", line)
+    except Exception:
+      pass
   _put_wiper_status(line)
 
 
 def requested_wiper_test() -> bool:
+  global _last_wiper_req
   setting = _param_int(NAP_WIPER_SPEED, WIPER_SETTING_OFF)
   if int(setting) == WIPER_SETTING_AUTO:
     on = vehicle_is_on()
@@ -434,9 +480,12 @@ def requested_wiper_test() -> bool:
     except Exception:
       rain = False
     wipe = bool(on and drive and rain)
+    _last_wiper_req = wipe
     _log_auto_status(setting, on, drive, rain, wipe)
     return wipe
-  return wiper_test_requested(setting)
+  wipe = wiper_test_requested(setting)
+  _last_wiper_req = wipe
+  return wipe
 
 
 def requested_high_beam_test() -> bool:
