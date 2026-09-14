@@ -66,8 +66,17 @@ MUTATIONS = (
   HistoricalMutation(
     name="tip-brake-glide-coasts-instead-of-speed-target",
     source_path="opendbc_repo/opendbc/car/tesla/preap/brake_tip_glide.py",
-    original=b"    if self.mode != BrakeTipGlideMode.GLIDE:\n      return 0.0\n    return float(self.a_cmd)\n",
+    original=b"    return comfort_ramp_accel(self.glide_s, self.a_end)\n",
     replacement=b"    return 0.0\n",
+    test_nodes=(
+      f"{BRAKE_CANCEL_TEST_PATH}::test_short_tip_keeps_interceptor_and_glides",
+    ),
+  ),
+  HistoricalMutation(
+    name="tip-brake-glide-steps-to-full-regen",
+    source_path="opendbc_repo/opendbc/car/tesla/preap/brake_tip_glide.py",
+    original=b"    return comfort_ramp_accel(self.glide_s, self.a_end)\n",
+    replacement=b"    return float(self.a_end)\n",
     test_nodes=(
       f"{BRAKE_CANCEL_TEST_PATH}::test_short_tip_keeps_interceptor_and_glides",
     ),
