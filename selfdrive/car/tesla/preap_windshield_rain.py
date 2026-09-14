@@ -18,14 +18,17 @@ raise sharp-residual "structure"; that is still rain if bokeh is
 rain-like. Foliage/brick is sharp structure *without* rain-scale bokeh.
 Headlamp plates are isolated saturated hotspots, not distributed
 droplet highlights. Dry overcast / scene texture stays under the
-wetness floor. A real wipe may look clear for one score tick (~2.5 s).
-Duty cycle (Justin): wet enough to acquire → one blade sweep (short
-nibble-1 pulse) → wipe=0 + Auto rest-cancel → wait CLEAR_WAIT_S (~2 s)
-for glass to settle and blades to leave ROAD FOV → assess. Still wet →
-wipe again. Clear/dry → stay off. No long ~15 s rest. No multi-tick
-BURST_MAX sitting on continuous Wiper Low. Acquire needs two rain-level
-scores (~5 s) so one bokeh flicker cannot nibble-1 the body into latched
-Int. Stale ROAD still drops HOLD. Off still leaves the real stalk (escape).
+wetness floor. A real wipe may look clear for one idle score tick (~4 s).
+Duty cycle (Justin): idle watching assesses every SCORE_PERIOD_S (~4 s)
+and does not wipe first on Auto select / helper start. If an idle look
+is wet enough to acquire → one blade sweep (short nibble-1 pulse) →
+wipe=0 + Auto rest-cancel → wait CLEAR_WAIT_S (~2 s) for glass to settle
+and blades to leave ROAD FOV → assess. Still wet → wipe again. Clear →
+exit the wipe loop back to idle assess-every-4s. No long ~15 s rest. No
+multi-tick BURST_MAX sitting on continuous Wiper Low. First acquire still
+needs two rain-level idle scores so one bokeh flicker cannot nibble-1
+the body into latched Int. Stale ROAD still drops HOLD. Off still leaves
+the real stalk (escape).
 
 Bokeh energy is an 8-bit residual (~0 dry, ~2–5 wet). A live clear-glass
 log showed bokeh=49165 — wrong Y scale or a bandpass blowup. Impossible
@@ -35,16 +38,17 @@ returning after a wipe). Real heavy-rain scores above ~12 are still wet.
 VisionIpc runs only while NAPWiperSpeed is Auto. Off/Int/On stop the
 helper, drop HOLD, and do not recv ROAD — Int/On keep working without
 the camera. The helper is SCHED_OTHER (nice 10): blocking recv, conflate
-ROAD then WIDE. Numpy scoring runs once per SCORE_PERIOD_S (~2.5 s,
-SCORE_HZ ≈ 0.4), not every ROAD frame and not 4 Hz. A full-res Y copy
-plus 20 Hz multi-blur starved card's GIL (age_ms ~30 s, Selfdrive
-Process Lagging). Recv downsamples immediately; one feature pass per
-scored frame; ice contrast uses the tiny grid. After each score the
-ROAD client is dropped so camerad is not an extra always-on subscriber.
-One wipe is WIPE_PULSE_S (~1.5 s of nibble 1, one slow park-to-park), then
-CLEAR_WAIT_S=2 s with HOLD off (cancel + blades out of FOV), then the next
-score assesses. (Old LIGHT_REST_N=6 left wet glass ~15 s. BURST_MAX_N=3
-sat on Low for ~7.5 s / several sweeps.)
+ROAD then WIDE. Numpy scoring while idle runs once per SCORE_PERIOD_S
+(~4 s, SCORE_HZ ≈ 0.25), not every ROAD frame and not 4 Hz / 1 Hz. A
+full-res Y copy plus 20 Hz multi-blur starved card's GIL (age_ms ~30 s,
+Selfdrive Process Lagging). Recv downsamples immediately; one feature
+pass per scored frame; ice contrast uses the tiny grid. After each score
+the ROAD client is dropped so camerad is not an extra always-on
+subscriber. One wipe is WIPE_PULSE_S (~1.5 s of nibble 1, one slow
+park-to-park), then CLEAR_WAIT_S=2 s with HOLD off (cancel + blades out
+of FOV), then the helper assesses — it does not wait another idle 4 s.
+(Old LIGHT_REST_N=6 left wet glass ~15 s. BURST_MAX_N=3 sat on Low for
+~7.5 s / several sweeps. Idle used to score every 2.5 s.)
 card is CTRL_HIGH: stock_cc.update / poll() only reads the latch, never
 recvs, never joins the helper. NAPWiperRainStatus and cloudlog are 1 Hz
 or on gate changes — not every 10 ms Params.put. Numpy is imported on a
@@ -110,17 +114,17 @@ HEAVY_ON = 2.2
 HOLD_OFF = 0.70
 EMA_ALPHA = 0.35
 EMA_HOLD_ALPHA = 0.35
-# Score ticks at SCORE_PERIOD_S (~2.5 s), not old 20 Hz frame counts.
+# Idle score ticks at SCORE_PERIOD_S (~4 s), not old 20 Hz frame counts.
 CLEAR_RELEASE_N = 2
 MIN_HOLD_N = 2
 WIPE_CLEAR_N = 1
 # One slow park-to-park sweep. Pre-AP nibble 1 *held* is BCM Wiper Low
 # (constant slow power). Slow cycle is ~1.2–1.5 s. Pulse then cancel —
 # do not sit on continuous Low. poll() ends the pulse on wall-clock so
-# we do not wait for the next 2.5 s ROAD score.
+# we do not wait for the next idle ROAD score.
 WIPE_PULSE_S = 1.5
 # After wipe=0 + rest-cancel: wait for glass to settle and blades to leave
-# the ROAD FOV, then assess. This is the only mandatory pause (not ~15 s).
+# the ROAD FOV, then assess. Wipe-loop pause only (not the idle 4 s period).
 CLEAR_WAIT_S = 2.0
 # Compat aliases (old burst/rest names). Duty cycle uses WIPE_PULSE_S / CLEAR_WAIT_S.
 BURST_MAX_N = 1
@@ -128,12 +132,13 @@ BURST_MAX_S = WIPE_PULSE_S
 LIGHT_REST_N = 0
 BLADE_BLIND_N = 0
 # Must exceed SCORE_PERIOD_S so poll does not drop HOLD between ticks.
-STALE_S = 8.0
+STALE_S = 10.0
 CONNECT_RETRY_S = 0.5
 DEBUG_LOG_S = 1.0
-# Live helper: score windshield clarity once every 2–3 s, not 20 Hz / 4 Hz / 1 Hz.
-SCORE_PERIOD_S = 2.5
-SCORE_HZ = 1.0 / SCORE_PERIOD_S  # ≈ 0.4 Hz
+# Live helper while idle: score windshield clarity once every ~4 s, not
+# every ROAD frame / not 4 Hz / 1 Hz. Post-wipe assess uses CLEAR_WAIT_S.
+SCORE_PERIOD_S = 4.0
+SCORE_HZ = 1.0 / SCORE_PERIOD_S  # ≈ 0.25 Hz
 HELPER_RECV_MS = 50
 HELPER_NICE = 10
 # Copy at most this many pixels on the short side from VisionIpc (not full ROAD).
@@ -493,6 +498,7 @@ class WindshieldRain:
     self._wipe_t0 = 0.0
     self._wait_t0 = time.monotonic()
     # After the 2 s wait, one wet score may wipe again (do not wait MIN_HOLD_N).
+    # Dry assess drops hold_n and returns to idle ~4 s watching.
     self._hold_n = max(0, MIN_HOLD_N - 1)
 
   def _update_score(self, score: float) -> bool:
@@ -689,20 +695,34 @@ class WindshieldRain:
       self._helper = None
       self._release_vision()
 
+  def _next_score_at(self, last_score_t: float, now: float) -> float:
+    """When the helper should next look at ROAD.
+
+    Idle watching: SCORE_PERIOD_S (~4 s) after the last look. First look
+    is immediate (assess, do not wipe-first). After a wipe, assess when
+    CLEAR_WAIT_S elapses — not another idle 4 s.
+    """
+    with self._lock:
+      if self.hold and self._wipe_t0 > 0.0:
+        return self._wipe_t0 + WIPE_PULSE_S + CLEAR_WAIT_S
+      if self._wait_t0 > 0.0:
+        return self._wait_t0 + CLEAR_WAIT_S
+    if last_score_t <= 0.0:
+      return now
+    return last_score_t + float(SCORE_PERIOD_S)
+
   def _helper_loop(self) -> None:
-    """Recv+score at SCORE_PERIOD_S (~2.5 s); unsubscribe ROAD between ticks."""
+    """Recv+score on the idle/wipe-loop cadence; unsubscribe ROAD between ticks."""
     _drop_realtime()
     last_score_t = 0.0
     try:
       while not self._stop.is_set():
-        period = float(SCORE_PERIOD_S)
         now = time.monotonic()
-        if last_score_t > 0.0:
-          wait = period - (now - last_score_t)
-          if wait > 0.0:
-            self._stop.wait(wait)
-            if self._stop.is_set():
-              break
+        wait = self._next_score_at(last_score_t, now) - now
+        if wait > 0.0:
+          # Short chunks so poll() ending a pulse can switch to CLEAR_WAIT_S.
+          self._stop.wait(min(wait, 0.25))
+          continue
         try:
           y = self._recv_y(timeout_ms=HELPER_RECV_MS, max_side=Y_COPY_SIDE)
         except Exception as e:
