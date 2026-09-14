@@ -662,6 +662,7 @@ def _auto_status_line(setting: int, on: bool, drive: bool, rain: bool, wipe: boo
         + f"speckle={d.last_speckle:.3f} sparse={d.last_sparse:.1f} struct={d.last_structure:.3f} sat={d.last_sat:.3f} "
         + f"clear={int(getattr(d, '_clear_n', 0))}/{int(getattr(rainmod, 'CLEAR_RELEASE_N', 0))} "
         + f"heavy={int(d.last_score >= float(getattr(rainmod, 'HEAVY_ON', 2.2)))} "
+        + f"burstn={int(getattr(d, '_burst_n', 0))}/{int(getattr(rainmod, 'BURST_MAX_N', 0))} "
         + f"restn={int(getattr(d, '_light_rest_n', 0))}/{int(getattr(rainmod, 'LIGHT_REST_N', 0))} "
         + f"blind={int(getattr(d, '_blade_blind_n', 0))}/{int(getattr(rainmod, 'BLADE_BLIND_N', 0))} "
         + f"connected={int(d.connected)} failed={int(d._failed)} frames={d.n_frames} stream={d.stream} "
