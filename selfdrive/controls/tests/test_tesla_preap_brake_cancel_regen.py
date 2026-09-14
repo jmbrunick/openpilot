@@ -1,15 +1,17 @@
-"""R1: softer regen on a short/light Pre-AP brake cancel.
+"""R1: ramp interceptor regen on a short/light Pre-AP brake cancel.
 
-Short cancel keeps interceptor ENABLE at coast first. Held / deeper
-brake RELEASEs immediately. FCW / hard lead / full cancel unchanged.
-No GAS_COMMAND DI rewrite / PostEngageCoast. Gas-lift A+B is untouched.
+Short cancel keeps interceptor ENABLE and interpolates commanded
+regen 0 → stock. Held / deeper brake RELEASEs immediately. FCW /
+hard lead / full cancel unchanged. No GAS_COMMAND DI rewrite /
+PostEngageCoast. Gas-lift A3 is untouched.
 """
 from types import SimpleNamespace
 
 import pytest
 
 from opendbc.car.tesla.preap.brake_cancel_regen import (
-  BRAKE_CANCEL_COAST_S,
+  BRAKE_CANCEL_RAMP_S,
+  BRAKE_CANCEL_STOCK_REGEN_A,
   BRAKE_TIP_HOLD_S,
 )
 from opendbc.car.tesla.preap.carcontroller import (
@@ -85,7 +87,7 @@ def _drop_long_on_brake(cc, cs, *, a_ego=0.0):
   cs.out.aEgo = a_ego
 
 
-def test_short_cancel_coasts_before_stock_regen(controller_env):
+def test_short_cancel_ramps_regen_before_stock(controller_env):
   controller, cc, cs, tesla_can = controller_env
   _activate_longitudinal(cc, cs)
   controller.update(cc, cs, frame=0, tesla_can=tesla_can, can_bus_party=0)
@@ -93,13 +95,15 @@ def test_short_cancel_coasts_before_stock_regen(controller_env):
   _drop_long_on_brake(cc, cs, a_ego=-0.25)
   tip = controller.update(cc, cs, frame=2, tesla_can=tesla_can, can_bus_party=0)
   assert _decode_pedal_command(tip[0]).enabled
-  assert cs.pedal_brake_cancel_coast
+  assert cs.pedal_brake_cancel_ramp
 
   cs.real_brake_pressed = False
   cs.out.aEgo = 0.05
   cc.actuators.accel = -1.4
   enabled_frames = 0
   released = False
+  commanded = []
+  pedal_di = []
   for frame in range(4, 200, 2):
     sent = controller.update(cc, cs, frame=frame, tesla_can=tesla_can, can_bus_party=0)
     if not sent:
@@ -111,10 +115,17 @@ def test_short_cancel_coasts_before_stock_regen(controller_env):
       assert decoded.raw_command == 0
       break
     enabled_frames += 1
-    assert controller.vdas.jerk_limiter.a_limited == pytest.approx(0.0)
+    commanded.append(controller.brake_cancel.commanded_accel())
+    pedal_di.append(controller.prev_pedal_di)
 
   assert released
-  assert enabled_frames * 0.02 >= BRAKE_CANCEL_COAST_S - 0.08
+  assert enabled_frames * 0.01 >= BRAKE_CANCEL_RAMP_S - 0.08
+  assert commanded[0] == pytest.approx(0.0, abs=0.05)
+  assert commanded[-1] < commanded[len(commanded) // 2] < commanded[0]
+  assert commanded[-1] <= BRAKE_CANCEL_STOCK_REGEN_A * 0.80
+  # Progressive regen, not a coast plateau then a step.
+  assert sum(1 for a in commanded if a < -0.05) >= 3 * len(commanded) // 4
+  assert pedal_di[-1] < pedal_di[0]
 
 
 def test_held_brake_is_firm_stock_regen(controller_env):
@@ -157,7 +168,7 @@ def test_hard_lead_fcw_path_unchanged(controller_env):
   for frame in range(ENGAGE_GRACE_FRAMES + 2, ENGAGE_GRACE_FRAMES + 24, 2):
     sent = controller.update(cc, cs, frame=frame, tesla_can=tesla_can, can_bus_party=0)
     assert _decode_pedal_command(sent[0]).enabled
-    assert not getattr(cs, "pedal_brake_cancel_coast", False)
+    assert not getattr(cs, "pedal_brake_cancel_ramp", False)
     limited.append(controller.vdas.jerk_limiter.a_limited)
   assert min(limited) < 0.0
 
