@@ -135,6 +135,13 @@ MIST_NEAR_C = 0.085
 MIST_FAR_C = 0.055
 MIST_NEAR_OVER_FAR = 0.90
 MIST_LUM = (40.0, 220.0)
+# Live 2db9e6c30 highway mist that should wipe (lower-left FOV):
+#   score=2.15 bokeh=1.42 blob=3.93 sparse=3.2 speckle=0 struct=0
+# That was frost leftover (3.93/1.8), under ACQUIRE 4.5. Soft film band
+# sits below old-FOV garage/sprinkle (blob~7–9 bokeh~3+ sparse~5+).
+MIST_FILM_BLOB = (2.4, 5.6)
+MIST_FILM_BOKEH = (0.90, 2.15)
+MIST_FILM_SPARSE = (2.2, 4.6)
 # Combined obstruction: 1.0 is looks_rainy / wetness floor (rain/frost/ice).
 HOLD_ON = 1.0
 # First wipe: two consecutive idle scores at/above this *after* warmup.
@@ -413,7 +420,26 @@ def _ice_from_feats(blob: float, _speckle: float, _sparse: float, sat: float,
   return 15.0 * haze + blob
 
 
-def _mist_from_feats(_blob: float, speckle: float, _sparse: float, sat: float,
+def _mist_film_from_feats(blob: float, speckle: float, sparse: float, sat: float,
+                         structure: float, bokeh: float) -> float:
+  """Soft near-glass mist film from live feats. No Y / contrast needed.
+
+  Live highway mist (2db9e6c30): blob=3.93 bokeh=1.42 sparse=3.2 → 2.15
+  and holdn=0. Must land at/above ACQUIRE. Old-FOV dry garage blob~7.5
+  / bokeh~3.8 / sparse~6.7 must stay 0.
+  """
+  if sat > _SAT_MAX or structure > _STRUCTURE_FRAC:
+    return 0.0
+  if not (MIST_FILM_BLOB[0] <= blob <= MIST_FILM_BLOB[1]):
+    return 0.0
+  if not (MIST_FILM_BOKEH[0] <= bokeh <= MIST_FILM_BOKEH[1]):
+    return 0.0
+  if not (MIST_FILM_SPARSE[0] <= sparse <= MIST_FILM_SPARSE[1]):
+    return 0.0
+  return 5.2 + 0.4 * (blob - MIST_FILM_BLOB[0]) + 0.5 * (bokeh - MIST_FILM_BOKEH[0]) + 8.0 * speckle
+
+
+def _mist_from_feats(blob: float, speckle: float, sparse: float, sat: float,
                     structure: float, bokeh: float, y: np.ndarray) -> float:
   """Near-glass mist film. Distant fog alone must not score.
 
@@ -421,20 +447,22 @@ def _mist_from_feats(_blob: float, speckle: float, _sparse: float, sat: float,
   ROAD looks through the mist (far scene still sharp). Dry garage grain
   and calm dry glass must stay off.
   """
+  film = _mist_film_from_feats(blob, speckle, sparse, sat, structure, bokeh)
   if sat > _SAT_MAX or structure > _STRUCTURE_RAIN:
-    return 0.0
+    return film
   if bokeh < MIST_BOKEH_MIN and speckle < MIST_SPECKLE_MIN:
-    return 0.0
+    return film
   near_mean, near_c = _band_stats(y, _NEAR_ROWS, _COLS)
   _far_mean, far_c = _band_stats(y, _FAR_ROWS, _FAR_COLS)
   if not (MIST_LUM[0] < near_mean < MIST_LUM[1]):
-    return 0.0
+    return film
   if near_c > MIST_NEAR_C or far_c < MIST_FAR_C:
-    return 0.0
+    return film
   if far_c <= 0.0 or near_c > far_c * MIST_NEAR_OVER_FAR:
-    return 0.0
+    return film
   haze = MIST_NEAR_C - near_c
-  return 4.6 + 15.0 * haze + 0.8 * max(0.0, bokeh - MIST_BOKEH_MIN) + 20.0 * speckle
+  veil = 4.6 + 15.0 * haze + 0.8 * max(0.0, bokeh - MIST_BOKEH_MIN) + 20.0 * speckle
+  return max(film, veil)
 
 
 def _rain_from_band(img: np.ndarray) -> float:

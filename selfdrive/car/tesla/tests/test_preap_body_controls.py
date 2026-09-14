@@ -1547,7 +1547,9 @@ def test_dry_fixtures_never_enter_wipe_loop():
 
 def test_live_dry_blob_bokeh_status_is_not_rain():
   """Justin 5f32c450b: dry and light-sprinkle look the same. Must not wipe."""
-  from openpilot.selfdrive.car.tesla.preap_windshield_rain import _rain_from_feats
+  from openpilot.selfdrive.car.tesla.preap_windshield_rain import (
+    _mist_film_from_feats, _rain_from_feats,
+  )
 
   # Same session: sprinkle / wiping, then confirmed bone-dry last line.
   lives = (
@@ -1560,14 +1562,29 @@ def test_live_dry_blob_bokeh_status_is_not_rain():
   _skip_warmup(det)
   for feats in lives:
     rain = _rain_from_feats(*feats)
-    obs = (rain / SCORE_ON) if rain else 0.0
+    mist = _mist_film_from_feats(*feats)
+    obs = max((rain / SCORE_ON) if rain else 0.0, mist)
     assert rain < SCORE_ON, feats
-    assert obs < HOLD_ON, (feats, obs)
+    assert mist < HOLD_ON, (feats, mist)
     assert obs < ACQUIRE_ON, (feats, obs)
     for _ in range(MIN_HOLD_N + 2):
       assert not det._update_score(obs)
       assert not det._update_score(6.29)
   assert not det.hold
+
+
+def test_live_highway_mist_status_acquires():
+  """Justin 2db9e6c30 highway mist: score=2.15 bokeh=1.42 blob=3.93 sparse=3.2."""
+  from openpilot.selfdrive.car.tesla.preap_windshield_rain import _mist_film_from_feats
+
+  mist = _mist_film_from_feats(3.93, 0.0, 3.2, 0.0, 0.0, 1.42)
+  assert mist >= ACQUIRE_ON
+  det = WindshieldRain()
+  _skip_warmup(det)
+  assert not det._update_score(mist)
+  assert not det.hold
+  assert det._update_score(mist)
+  assert det.hold
 
 
 def test_warmup_looks_do_not_acquire():
