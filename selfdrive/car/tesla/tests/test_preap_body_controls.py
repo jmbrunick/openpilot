@@ -36,6 +36,8 @@ from openpilot.selfdrive.car.tesla.preap_body_controls import (
   wiper_test_requested,
 )
 from openpilot.selfdrive.car.tesla.preap_windshield_rain import (
+  BOKEH_ON,
+  CONNECT_RETRY_S,
   FROST_ON,
   HOLD_ON,
   ICE_ON,
@@ -317,6 +319,23 @@ def _ice_sheet(h=240, w=320, seed=4) -> np.ndarray:
   return np.clip(y + acc * 8.0, 0, 255).astype(np.uint8)
 
 
+def _bokeh_windshield(h=240, w=320, n=10, seed=5) -> np.ndarray:
+  """Far-focus 3X ROAD: large soft circles of confusion on the glass.
+
+  Matches Justin's live ROAD UI in rain — not sharp phone-bead close-ups.
+  """
+  y = _dry_windshield(h, w, seed=0).astype(np.float32)
+  rng = np.random.RandomState(seed)
+  yy, xx = np.mgrid[0:h, 0:w]
+  for _ in range(n):
+    cy = rng.uniform(h * 0.18, h * 0.62)
+    cx = rng.uniform(w * 0.15, w * 0.85)
+    sig = rng.uniform(min(h, w) * 0.055, min(h, w) * 0.14)
+    amp = rng.uniform(35.0, 80.0) * rng.choice([1.0, 1.0, 0.85, -0.4])
+    y += amp * np.exp(-((yy - cy) ** 2 + (xx - cx) ** 2) / (2.0 * sig * sig))
+  return np.clip(y, 0, 255).astype(np.uint8)
+
+
 def test_windshield_camera_wet_holds_and_dry_releases():
   dry = _dry_windshield()
   wet = _wet_windshield()
@@ -332,6 +351,45 @@ def test_windshield_camera_wet_holds_and_dry_releases():
   assert _byte(held) != STW_WASHER_SPRAY
   released = apply_stw_wiper_beam_nibbles(rest, windshield_looks_rainy(dry), False)
   assert released == rest
+
+
+def test_windshield_soft_bokeh_holds_and_dry_releases():
+  """3X ROAD is far-focused: rain is large soft bokeh, not sharp beads."""
+  from openpilot.selfdrive.car.tesla.preap_windshield_rain import (
+    _BOKEH_ROWS, _COLS, _band, _near_features,
+  )
+
+  dry = _dry_windshield()
+  bokeh = _bokeh_windshield()
+  _blob, speckle, _sparse, _sat, _structure, bokeh_e = _near_features(_band(bokeh, _BOKEH_ROWS, _COLS))
+  # Soft circles of confusion: not the old sparse-speckle drop gate.
+  assert speckle < 0.012
+  assert bokeh_e >= BOKEH_ON
+  assert windshield_rain_score(dry) < SCORE_OFF
+  assert windshield_rain_score(bokeh) >= SCORE_ON
+  assert not windshield_looks_rainy(dry)
+  assert windshield_looks_rainy(bokeh)
+  assert not wiper_test_requested(WIPER_SETTING_AUTO, windshield_looks_rainy(dry))
+  assert wiper_test_requested(WIPER_SETTING_AUTO, windshield_looks_rainy(bokeh))
+  rest = _rest()
+  held = apply_stw_wiper_beam_nibbles(rest, windshield_looks_rainy(bokeh), False)
+  assert _byte(held) == STW_WIPER_ON
+  assert _byte(held) != STW_WASHER_SPRAY
+  assert apply_stw_wiper_beam_nibbles(rest, windshield_looks_rainy(dry), False) == rest
+
+  det = WindshieldRain()
+  saw = False
+  for _ in range(12):
+    if det.update_from_y(bokeh):
+      saw = True
+      break
+  assert saw
+  released = False
+  for _ in range(16):
+    if not det.update_from_y(dry):
+      released = True
+      break
+  assert released
 
 
 def test_windshield_ice_and_frost_hold_like_rain():
@@ -353,7 +411,7 @@ def test_windshield_rejects_foliage_and_headlamps():
   h, w = 240, 320
   rng = np.random.RandomState(0)
   foliage = np.full((h, w), 80, np.uint8)
-  foliage[:int(h * 0.32)] = rng.randint(40, 160, (int(h * 0.32), w)).astype(np.uint8)
+  foliage[:int(h * 0.56)] = rng.randint(40, 160, (int(h * 0.56), w)).astype(np.uint8)
   lamps = np.full((h, w), 30, np.uint8)
   lamps[20:50, 40:80] = 250
   lamps[20:50, 240:280] = 250
@@ -365,6 +423,43 @@ def test_windshield_rejects_foliage_and_headlamps():
   assert windshield_ice_score(lamps) < ICE_ON
   assert not windshield_looks_rainy(foliage)
   assert not windshield_looks_rainy(lamps)
+
+
+def test_visionipc_retries_after_failure(monkeypatch):
+  """One VisionIpc exception must not permanently dry Auto."""
+  import time as time_mod
+
+  now = {"t": 1000.0}
+  monkeypatch.setattr(time_mod, "monotonic", lambda: now["t"])
+
+  class _Boom:
+    def is_connected(self):
+      return True
+
+    def recv(self, timeout_ms=0):
+      raise RuntimeError("vipc down")
+
+  class _Quiet:
+    def is_connected(self):
+      return True
+
+    def recv(self, timeout_ms=0):
+      return None
+
+  det = WindshieldRain()
+  det._client = _Boom()
+  assert det._recv_y() is None
+  assert det._failed
+  assert det._client is None
+  assert det.last_err == "RuntimeError"
+  assert det._recv_y() is None
+  assert det._failed
+
+  now["t"] += CONNECT_RETRY_S + 0.05
+  det._client = _Quiet()
+  assert det._recv_y() is None
+  assert not det._failed
+  assert det.poll() is False
 
 
 def test_windshield_latch_holds_then_releases():

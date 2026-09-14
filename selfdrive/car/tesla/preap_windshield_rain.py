@@ -2,18 +2,18 @@
 
 There is no rain sensor, and this driving model does not publish rainProb.
 Auto looks at the unwarped ROAD camera Y plane (camerad VisionIpc
-VISION_STREAM_ROAD). The 3X looks through the windshield; drops, streaks,
-frost, and ice sit in the near field of that raw frame — the model warp
-crops them away, so this does not use modelV2.
+VISION_STREAM_ROAD). The 3X looks through the windshield, focused on the
+far scene, so drops on the glass are large soft defocused bokeh — not
+sharp beads. The model warp crops that near field away, so this does not
+use modelV2.
 
-Rain: streaks, speckles, or soft defocused blobs in the near-glass band.
-Ice/frost: a milky sheet (collapsed contrast of the scene behind the glass)
-or crystals (moderate uniform residual on the glass). Either means the
-glass is not clear.
+Rain: large low-frequency bokeh in the upper/mid ROAD bands, or sparse
+    streaks/speckles. Ice/frost: a milky sheet or crystal mottle.
+Dense in-focus texture (foliage, brick) and large saturated headlamp
+plates are rejected. Hysteresis holds while the glass looks obstructed
+and releases when it looks clear.
 
-Dense in-focus texture (foliage, brick) and large saturated headlamp plates
-are rejected. Hysteresis holds while the glass looks obstructed and releases
-when it looks clear.
+VisionIpc failures retry; they do not permanently dry Auto.
 """
 from __future__ import annotations
 
@@ -21,15 +21,24 @@ import time
 
 import numpy as np
 
-# Unwarped ROAD frame. Top band is windshield / near glass; mid is the scene
-# behind the glass (used for ice-sheet haze).
-_NEAR_ROWS = (0.08, 0.32)
+# Unwarped ROAD. Far-focus windshield drops sit as large bokeh across the
+# driving view, not only in a thin top strip. Ice-sheet haze uses mid.
+_NEAR_ROWS = (0.06, 0.34)
+# Mid of the unwarped ROAD view — Justin's live UI shows the soft
+# circles of confusion over the scene here. Start below the usual
+# headlamp row so saturated plates do not leak into this band.
+_BOKEH_ROWS = (0.22, 0.56)
 _MID_ROWS = (0.40, 0.70)
 _COLS = (0.12, 0.88)
+_RAIN_BANDS = (_NEAR_ROWS, _BOKEH_ROWS)
 
-# Rain (sparse near-glass blobs / speckles / streaks). Wet ~2–4, dry ~0.
+# Rain. Detrended bokeh ~4 on wet ROAD, ~0 on dry sky gradients.
+# Speckle-drop path stays ~2–4.
 SCORE_ON = 1.8
 SCORE_OFF = 1.0
+BOKEH_ON = 1.8
+_BOKEH_RATIO = 0.22
+_SPECKLE_MIN = 0.012
 # Frost crystals: moderate residual that is not sparse-drop rain and not
 # in-focus clutter. Ice sheet: daytime scene contrast collapsed + mottle.
 FROST_ON = 1.2
@@ -43,9 +52,16 @@ HOLD_OFF = 0.55
 EMA_ALPHA = 0.35
 STALE_S = 2.0
 CONNECT_RETRY_S = 0.5
+DEBUG_LOG_S = 1.0
 _SAT_MAX = 0.08
 _SPARSE_MIN = 8.0
+_SPARSE_MAX = 80.0
 _STRUCTURE_FRAC = 0.05
+_STRUCTURE_RAIN = 0.12
+_FOLIAGE_BLOB = 18.0
+_FINE_R = 2
+_MED_R = 4
+_COARSE_R = 8
 
 
 def y_plane_from_nv12(buf) -> np.ndarray | None:
@@ -75,32 +91,45 @@ def _band(y: np.ndarray, rows: tuple[float, float], cols: tuple[float, float]) -
   return y[r0:r1, c0:c1]
 
 
-def _near_features(img: np.ndarray) -> tuple[float, float, float, float, float]:
-  """Blob energy, speckle fraction, residual sparsity (p90/p50), sat, strong-edge frac."""
+def _box_blur(x: np.ndarray, radius: int) -> np.ndarray:
+  if radius < 1:
+    return x
+  k = np.ones(2 * radius + 1, dtype=np.float32) / float(2 * radius + 1)
+  p = np.pad(x, ((0, 0), (radius, radius)), mode="edge")
+  acc = np.zeros_like(x)
+  for i, w in enumerate(k):
+    acc += w * p[:, i:i + x.shape[1]]
+  p2 = np.pad(acc, ((radius, radius), (0, 0)), mode="edge")
+  out = np.zeros_like(x)
+  for i, w in enumerate(k):
+    out += w * p2[i:i + x.shape[0], :]
+  return out
+
+
+def _near_features(img: np.ndarray) -> tuple[float, float, float, float, float, float]:
+  """Fine blob, speckle, sparsity, sat, strong-edge frac, coarse bokeh energy."""
   if img.size < 25:
-    return 0.0, 0.0, 0.0, 0.0, 0.0
+    return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
   step = max(1, min(img.shape) // 24)
   x = img[::step, ::step].astype(np.float32)
   if x.shape[0] < 5 or x.shape[1] < 5:
-    return 0.0, 0.0, 0.0, 0.0, 0.0
-  k = np.array([1.0, 1.0, 1.0, 1.0, 1.0], dtype=np.float32) / 5.0
-  p = np.pad(x, 2, mode="edge")
-  acc = np.zeros_like(x)
-  for i, w in enumerate(k):
-    acc += w * p[2:-2, i:i + x.shape[1]]
-  p2 = np.pad(acc, ((2, 2), (0, 0)), mode="edge")
-  blur = np.zeros_like(x)
-  for i, w in enumerate(k):
-    blur += w * p2[i:i + x.shape[0], :]
-  resid = np.abs(x - blur)
+    return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+  fine = _box_blur(x, _FINE_R)
+  med = _box_blur(x, _MED_R)
+  coarse = _box_blur(x, _COARSE_R)
+  resid = np.abs(x - fine)
   blob = float(resid.mean())
-  speckle = float(np.mean((x > blur + 18.0) & (resid > 18.0)))
+  speckle = float(np.mean((x > fine + 18.0) & (resid > 18.0)))
   p90 = float(np.percentile(resid, 90))
   p50 = float(np.median(resid))
   sparse = p90 / (p50 + 0.05)
   sat = float((x > 240.0).mean())
   structure = float((resid > 40.0).mean())
-  return blob, speckle, sparse, sat, structure
+  # Row-detrend so a vertical sky/road wash is not counted as rain blobs.
+  bp = np.abs(med - coarse)
+  bp = bp - bp.mean(axis=1, keepdims=True)
+  bokeh = float(np.mean(np.abs(bp)))
+  return blob, speckle, sparse, sat, structure, bokeh
 
 
 def _mid_stats(y: np.ndarray) -> tuple[float, float]:
@@ -110,28 +139,38 @@ def _mid_stats(y: np.ndarray) -> tuple[float, float]:
   return mean, contrast
 
 
-def windshield_rain_score(y: np.ndarray) -> float:
-  """Higher = rainier near glass (streaks, speckles, soft blobs).
+def _rain_from_band(img: np.ndarray) -> float:
+  """Soft far-focus bokeh and/or sparse speckle drops. Not foliage or lamps."""
+  blob, speckle, sparse, sat, structure, bokeh = _near_features(img)
+  if sat > _SAT_MAX:
+    return 0.0
+  if structure > _STRUCTURE_RAIN or blob > _FOLIAGE_BLOB:
+    return 0.0
+  score = 0.0
+  if bokeh >= BOKEH_ON and bokeh / (blob + 0.2) >= _BOKEH_RATIO:
+    score = max(score, bokeh)
+  if speckle >= _SPECKLE_MIN and _SPARSE_MIN <= sparse <= _SPARSE_MAX:
+    score = max(score, blob + 12.0 * speckle)
+  return score
 
-  Drops on the windshield are sparse, slightly defocused blobs in the top of
-  the unwarped ROAD frame. Dense in-focus texture (foliage, brick) and large
+
+def windshield_rain_score(y: np.ndarray) -> float:
+  """Higher = rainier glass (far-focus bokeh, streaks, speckles).
+
+  3X ROAD is focused on the scene, so windshield drops are large soft
+  circles of confusion. Dense in-focus texture (foliage, brick) and large
   saturated headlamp plates are not treated as rain.
   """
   if y is None or y.ndim != 2 or y.shape[0] < 32 or y.shape[1] < 32:
     return 0.0
-  blob, speckle, sparse, sat, _structure = _near_features(_band(y, _NEAR_ROWS, _COLS))
-  if sat > _SAT_MAX:
-    return 0.0
-  if sparse < _SPARSE_MIN:
-    return 0.0
-  return blob + 12.0 * speckle
+  return max(_rain_from_band(_band(y, rows, _COLS)) for rows in _RAIN_BANDS)
 
 
 def windshield_frost_score(y: np.ndarray) -> float:
   """Crystals on the glass: moderate uniform residual, not foliage, not rain drops."""
   if y is None or y.ndim != 2 or y.shape[0] < 32 or y.shape[1] < 32:
     return 0.0
-  blob, _speckle, sparse, sat, structure = _near_features(_band(y, _NEAR_ROWS, _COLS))
+  blob, _speckle, sparse, sat, structure, _bokeh = _near_features(_band(y, _NEAR_ROWS, _COLS))
   if sat > _SAT_MAX or structure > _STRUCTURE_FRAC:
     return 0.0
   if blob > FROST_BLOB_MAX:
@@ -145,7 +184,7 @@ def windshield_ice_score(y: np.ndarray) -> float:
   """Ice sheet: daytime view through the glass is milky (contrast collapsed)."""
   if y is None or y.ndim != 2 or y.shape[0] < 32 or y.shape[1] < 32:
     return 0.0
-  blob, _speckle, _sparse, sat, structure = _near_features(_band(y, _NEAR_ROWS, _COLS))
+  blob, _speckle, _sparse, sat, structure, _bokeh = _near_features(_band(y, _NEAR_ROWS, _COLS))
   if sat > _SAT_MAX or structure > _STRUCTURE_FRAC or blob > FROST_BLOB_MAX:
     return 0.0
   mean, contrast = _mid_stats(y)
@@ -183,12 +222,37 @@ class WindshieldRain:
     self.hold = False
     self.ema = 0.0
     self.last_score = 0.0
+    self.last_bokeh = 0.0
+    self.last_blob = 0.0
+    self.last_speckle = 0.0
+    self.last_sparse = 0.0
+    self.last_sat = 0.0
+    self.last_structure = 0.0
+    self.n_frames = 0
+    self.connected = False
+    self.last_err = ""
     self._client = None
     self._failed = False
     self._last_frame_t = 0.0
     self._last_connect_t = 0.0
+    self._last_log_t = 0.0
+
+  def _record_band(self, y: np.ndarray) -> None:
+    best = (-1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    for rows in _RAIN_BANDS:
+      blob, speckle, sparse, sat, structure, bokeh = _near_features(_band(y, rows, _COLS))
+      if bokeh > best[0]:
+        best = (bokeh, blob, speckle, sparse, sat, structure, bokeh)
+    _bokeh, blob, speckle, sparse, sat, structure, bokeh = best
+    self.last_blob = blob
+    self.last_speckle = speckle
+    self.last_sparse = sparse
+    self.last_sat = sat
+    self.last_structure = structure
+    self.last_bokeh = bokeh
 
   def update_from_y(self, y: np.ndarray) -> bool:
+    self._record_band(y)
     score = windshield_obstruction_score(y)
     self.last_score = score
     self.ema = EMA_ALPHA * score + (1.0 - EMA_ALPHA) * self.ema
@@ -197,33 +261,79 @@ class WindshieldRain:
     else:
       self.hold = self.ema >= HOLD_ON
     self._last_frame_t = time.monotonic()
+    self.n_frames += 1
+    self._debug()
     return self.hold
 
   def _recv_y(self) -> np.ndarray | None:
-    if self._failed:
-      return None
     now = time.monotonic()
+    if self._failed and (now - self._last_connect_t) < CONNECT_RETRY_S:
+      return None
+    self._failed = False
     try:
       if self._client is None:
-        if now - self._last_connect_t < CONNECT_RETRY_S:
+        if now - self._last_connect_t < CONNECT_RETRY_S and self._last_connect_t > 0:
           return None
         self._last_connect_t = now
         from msgq.visionipc import VisionIpcClient, VisionStreamType
         self._client = VisionIpcClient("camerad", VisionStreamType.VISION_STREAM_ROAD, True)
-      if not self._client.is_connected():
+      self.connected = bool(self._client.is_connected())
+      if not self.connected:
         if now - self._last_connect_t < CONNECT_RETRY_S:
           return None
         self._last_connect_t = now
         if not self._client.connect(False):
+          self.connected = False
           return None
+        self.connected = True
+        self.last_err = ""
       buf = self._client.recv(timeout_ms=0)
       if buf is None:
         return None
       return y_plane_from_nv12(buf)
-    except Exception:
+    except Exception as e:
       self._failed = True
+      self.connected = False
       self._client = None
+      self._last_connect_t = now
+      self.last_err = type(e).__name__
       return None
+
+  def _debug(self, reason: str = "") -> None:
+    now = time.monotonic()
+    if now - self._last_log_t < DEBUG_LOG_S:
+      return
+    self._last_log_t = now
+    age_ms = (now - self._last_frame_t) * 1000.0 if self._last_frame_t else -1.0
+    err = f" err={self.last_err}" if self.last_err else ""
+    why = f" {reason}" if reason else ""
+    line = (
+      "nap wiper rain hold=%d ema=%.2f score=%.2f bokeh=%.2f blob=%.2f "
+      "speckle=%.3f sparse=%.1f sat=%.3f struct=%.3f connected=%d failed=%d "
+      "frames=%d age_ms=%.0f%s%s"
+    )
+    args = (
+      int(self.hold), self.ema, self.last_score, self.last_bokeh, self.last_blob,
+      self.last_speckle, self.last_sparse, self.last_sat, self.last_structure,
+      int(self.connected), int(self._failed), self.n_frames, age_ms, err, why,
+    )
+    try:
+      from openpilot.common.swaglog import cloudlog
+      cloudlog.info(line, *args)
+    except Exception:
+      pass
+    try:
+      from openpilot.common.params import Params
+      Params().put(
+        "NAPWiperRainStatus",
+        "hold=%d ema=%.2f score=%.2f bokeh=%.2f connected=%d failed=%d frames=%d%s%s" % (
+          int(self.hold), self.ema, self.last_score, self.last_bokeh,
+          int(self.connected), int(self._failed), self.n_frames, err, why,
+        ),
+        block=False,
+      )
+    except Exception:
+      pass
 
   def poll(self) -> bool:
     """Non-blocking. Clear until a frame says the glass is not; stale → clear."""
@@ -235,6 +345,9 @@ class WindshieldRain:
         self.hold = False
         self.ema = 0.0
         self.last_score = 0.0
+        self._debug("stale")
+    elif not self.hold:
+      self._debug("noframe")
     return self.hold
 
 
