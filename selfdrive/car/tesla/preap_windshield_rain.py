@@ -371,18 +371,9 @@ class WindshieldRain:
       cloudlog.info(line, *args)
     except Exception:
       pass
-    try:
-      from openpilot.common.params import Params
-      Params().put(
-        "NAPWiperRainStatus",
-        "hold=%d ema=%.2f score=%.2f bokeh=%.2f sparse=%.1f connected=%d failed=%d frames=%d stream=%s%s%s" % (
-          int(self.hold), self.ema, self.last_score, self.last_bokeh, self.last_sparse,
-          int(self.connected), int(self._failed), self.n_frames, self.stream, err, why,
-        ),
-        block=False,
-      )
-    except Exception:
-      pass
+    # Do not write the live Auto status param here. The short hold/ema line
+    # was clobbering the Auto gate string (setting/on/gear/drive/wipe)
+    # Justin cats on device. body_controls owns that param.
 
   def poll(self) -> bool:
     """Non-blocking. Clear until a frame says the glass is not; stale → clear."""

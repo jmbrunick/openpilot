@@ -78,9 +78,16 @@ _rain_needed_override = None
 _live_cs = None
 _vehicle_on_override = None
 _gear_override = None
-_DRIVE_GEARS = ("drive", "reverse", "d", "r")
+# Names for Drive/Reverse. Pre-AP DI_torque2 is DI_GEAR_D / DI_GEAR_R.
+_DRIVE_GEARS = (
+  "drive", "reverse", "d", "r",
+  "di_gear_d", "di_gear_r", "di_gear_drive", "di_gear_reverse",
+)
+# cereal/opendbc GearShifter.drive=2 reverse=4. Tesla DI_gear R=2 D=4 — both allowed.
+_DRIVE_INTS = frozenset({2, 4})
 _AUTO_DEBUG_S = 1.0
 _last_auto_log_t = 0.0
+_last_gear_src = "none"
 
 
 def _tesla_can():
@@ -238,10 +245,11 @@ def set_auto_gates(vehicle_on: bool | None = None, gear=None) -> None:
 
 
 def reset_auto_gates() -> None:
-  global _live_cs, _vehicle_on_override, _gear_override
+  global _live_cs, _vehicle_on_override, _gear_override, _last_gear_src
   _live_cs = None
   _vehicle_on_override = None
   _gear_override = None
+  _last_gear_src = "none"
 
 
 def _gear_name(gear) -> str:
@@ -256,6 +264,47 @@ def _gear_name(gear) -> str:
   return ""
 
 
+def _gear_int(gear):
+  if isinstance(gear, bool):
+    return None
+  if isinstance(gear, int):
+    return int(gear)
+  try:
+    if hasattr(gear, "value") and not isinstance(gear, str):
+      return int(gear.value)
+  except Exception:
+    pass
+  try:
+    return int(gear)
+  except Exception:
+    return None
+
+
+def _gear_present(gear) -> bool:
+  """True if a gear value was found. GearShifter.unknown is 0 — still present."""
+  return gear is not None and gear != ""
+
+
+def _cs_gear(cs) -> tuple[object, str]:
+  """Live Pre-AP stock-cc CS is the inner parser: Drive lives on CS.out.gearShifter.
+
+  structs.CarState.gearShifter is published on CS.out, not on the Tesla
+  CarState object StockCCSpoofer.update receives. Reading only
+  CS.gearShifter was None in Drive, so Auto never wiped.
+  """
+  if cs is None:
+    return None, "none"
+  gear = getattr(cs, "gearShifter", None)
+  if _gear_present(gear):
+    return gear, "cs"
+  out = getattr(cs, "out", None)
+  if out is not None:
+    gear = getattr(out, "gearShifter", None)
+    if _gear_present(gear):
+      return gear, "out"
+  return None, "none"
+
+
 def vehicle_is_on() -> bool:
   """Onroad CarState is only published while the vehicle is on."""
   if _vehicle_on_override is not None:
@@ -265,17 +314,35 @@ def vehicle_is_on() -> bool:
 
 def in_drive_gear() -> bool:
   """Drive or Reverse. Park, Neutral, and unknown do not Auto-wipe."""
-  gear = _gear_override
-  if gear is None:
-    gear = getattr(_live_cs, "gearShifter", None) if _live_cs is not None else None
+  global _last_gear_src
+  if _gear_override is not None:
+    gear, src = _gear_override, "override"
+  else:
+    gear, src = _cs_gear(_live_cs)
+  _last_gear_src = src
+  if not _gear_present(gear):
+    return False
   try:
     from opendbc.car import structs
     gs = structs.CarState.GearShifter
     if gear in (gs.drive, gs.reverse):
       return True
+    gi = _gear_int(gear)
+    if gi is not None and gi in (int(gs.drive), int(gs.reverse)):
+      return True
   except Exception:
     pass
-  return _gear_name(gear) in _DRIVE_GEARS
+  try:
+    from cereal import car
+    gs = car.CarState.GearShifter
+    if gear in (gs.drive, gs.reverse):
+      return True
+  except Exception:
+    pass
+  if _gear_name(gear) in _DRIVE_GEARS:
+    return True
+  gi = _gear_int(gear)
+  return gi in _DRIVE_INTS if gi is not None else False
 
 
 def rain_wiper_needed() -> bool:
@@ -293,9 +360,10 @@ def rain_wiper_needed() -> bool:
 
 
 def _auto_status_line(setting: int, on: bool, drive: bool, rain: bool, wipe: bool) -> str:
-  gear = _gear_override
-  if gear is None:
-    gear = getattr(_live_cs, "gearShifter", None) if _live_cs is not None else None
+  if _gear_override is not None:
+    gear, src = _gear_override, "override"
+  else:
+    gear, src = _cs_gear(_live_cs)
   rain_bits = "rain=0"
   try:
     from openpilot.selfdrive.car.tesla import preap_windshield_rain as rainmod
@@ -310,12 +378,34 @@ def _auto_status_line(setting: int, on: bool, drive: bool, rain: bool, wipe: boo
       )
   except Exception:
     rain_bits = "rain=err"
+  gi = _gear_int(gear)
+  raw = "-" if gi is None else str(gi)
   return (
-    "nap wiper auto setting=%d on=%d gear=%s drive=%d rain=%d wipe=%d installed=%d %s" % (
-      int(setting), int(on), _gear_name(gear) or "-", int(drive), int(rain),
+    "nap wiper auto setting=%d on=%d gear=%s gear_src=%s raw=%s drive=%d rain=%d "
+    "wipe=%d installed=%d %s" % (
+      int(setting), int(on), _gear_name(gear) or "-", src, raw, int(drive), int(rain),
       int(wipe), int(_installed), rain_bits,
     )
   )
+
+
+def _put_wiper_status(line: str) -> None:
+  """Write NAPWiperRainStatus so `cat /data/params/d/NAPWiperRainStatus` always has gates.
+
+  Rain _debug no longer writes this key. Non-blocking so the 100 Hz car
+  thread does not hitch; this is the only writer.
+  """
+  try:
+    from openpilot.common.params import Params
+    Params().put("NAPWiperRainStatus", line, block=False)
+  except TypeError:
+    try:
+      from openpilot.common.params import Params
+      Params().put("NAPWiperRainStatus", line)
+    except Exception:
+      pass
+  except Exception:
+    pass
 
 
 def _log_auto_status(setting: int, on: bool, drive: bool, rain: bool, wipe: bool) -> None:
@@ -330,11 +420,7 @@ def _log_auto_status(setting: int, on: bool, drive: bool, rain: bool, wipe: bool
     cloudlog.info("%s", line)
   except Exception:
     pass
-  try:
-    from openpilot.common.params import Params
-    Params().put("NAPWiperRainStatus", line, block=False)
-  except Exception:
-    pass
+  _put_wiper_status(line)
 
 
 def requested_wiper_test() -> bool:
@@ -342,7 +428,11 @@ def requested_wiper_test() -> bool:
   if int(setting) == WIPER_SETTING_AUTO:
     on = vehicle_is_on()
     drive = in_drive_gear()
-    rain = rain_wiper_needed()
+    rain = False
+    try:
+      rain = rain_wiper_needed()
+    except Exception:
+      rain = False
     wipe = bool(on and drive and rain)
     _log_auto_status(setting, on, drive, rain, wipe)
     return wipe
@@ -416,3 +506,4 @@ def install_body_controls_test():
     cloudlog.info("nap body controls overlay installed (0x45 wiper/beam)")
   except Exception:
     pass
+  _put_wiper_status("nap wiper auto setting=- on=0 gear=- gear_src=none raw=- drive=0 rain=0 wipe=0 installed=1 waiting")
