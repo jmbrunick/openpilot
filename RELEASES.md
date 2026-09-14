@@ -1,3 +1,7 @@
+NAP gas-lift long handoff (2026-09-13)
+========================
+* After engage-on-gas then lift (or a gas override while software long is already on), Pre-AP no longer restarts the 0.5 s `ENGAGE_GRACE` a=0 floor, and VDAS is seeded from the last non-negative `aEgo` (MAX-capped) instead of `commanded_accel=0`. Lead hard decel / FCW / should-stop and brake still win. First engage without gas is unchanged (grace still ramps from 0). No `GAS_COMMAND` rewrite, no PostEngageCoast / climb-to-MAX / pedal-hold overlay, no panda or locationd change. **nap-dev only — no nap-release twin until Justin signs off.**
+
 NAP Acceleration settings placement (2026-09-13)
 ========================
 * Settings → NAP → **Driving Mannerisms** now has **Acceleration** 1–10 (`NAPMapSpeedAccel`, default 5). Same temperament as before: scales MAX climb / open-road accel feel (1 lazy → 10 quicker); map brake to a lower MAX stays Accel 5; lead still owns follow. Removed from Map Speed Limit so it sits with Adaptive Accel. Mannerisms order is accel feel → follow → soft lat → Hypermile; Map Speed is mode/offset/lookahead → refresh/download → status. Shorter settings copy. Hypermile still snaps/restores Accel 1. No longitudinal math change.
