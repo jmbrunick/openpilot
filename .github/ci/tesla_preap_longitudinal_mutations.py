@@ -43,10 +43,10 @@ MUTATIONS = (
     name="brake-cancel-keeps-interceptor-after-long-drop",
     source_path="opendbc_repo/opendbc/car/tesla/preap/carcontroller.py",
     original=(
-      b"      authority_requested = (\n"
-      b"        pedal_long_allowed\n"
-      b"        and not gas_pressed\n"
-      b"        and ((long_active and not brake_pressed) or keep_enabled)\n"
+      b"      authority_requested = (\n" +
+      b"        pedal_long_allowed\n" +
+      b"        and not gas_pressed\n" +
+      b"        and ((long_active and not brake_pressed) or keep_enabled)\n" +
       b"      )\n"
     ),
     replacement=b"      authority_requested = pedal_long_allowed and not gas_pressed\n",
