@@ -14,8 +14,11 @@ plates are rejected. Hysteresis holds while the glass looks obstructed.
 Dry overcast / scene texture must not count as rain (bokeh bar is above
 that false-positive band). A real wipe may look clear for ~0.5 s; HOLD
 can ride that dip, then drops quickly once scores stay below rain-level
-so clear glass cannot keep the 30 s intermittent forever. Stale ROAD
-still drops HOLD. Off still leaves the real stalk (escape).
+so clear glass cannot keep the 30 s intermittent forever. Acquire needs
+a short run of rain-level scores so a one-frame bokeh flicker cannot
+nibble-1 the body into latched Int. Stale ROAD still drops HOLD. Off
+still leaves the real stalk (escape). Auto dry extra-forwards rest to
+cancel that latch.
 
 Bokeh energy is an 8-bit residual (~0 dry, ~2–5 wet). A live clear-glass
 log showed bokeh=49165 — wrong Y scale or a bandpass blowup. Impossible
@@ -391,10 +394,14 @@ class WindshieldRain:
           self._hold_n = 0
       else:
         self._clear_n = 0
-        self._hold_n = 0
-        if self.ema >= HOLD_ON:
-          self.hold = True
-          self._hold_n = 1
+        # One frame of bokeh~3 with score noise must not latch HOLD (that
+        # nibble-1 pulse leaves Pre-AP intermittent until Auto sends rest).
+        if self.ema >= HOLD_ON and self.last_score >= HOLD_ON:
+          self._hold_n += 1
+          if self._hold_n >= MIN_HOLD_N:
+            self.hold = True
+        else:
+          self._hold_n = 0
       self._last_frame_t = time.monotonic()
       self.n_frames += 1
       hold = self.hold

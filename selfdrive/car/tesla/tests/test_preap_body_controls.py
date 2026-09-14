@@ -10,6 +10,7 @@ from openpilot.selfdrive.car.tesla.preap_body_controls import (
   NAP_HIGH_LOW_BEAM,
   NAP_WIPER_SPEED,
   STW_ACTN_RQ_ADDR,
+  STW_CANCEL_BURST_N,
   STW_HIBM_MASK,
   STW_HIGH_BEAM,
   STW_HIGH_BEAM_FLASH,
@@ -36,6 +37,7 @@ from openpilot.selfdrive.car.tesla.preap_body_controls import (
   set_cereal_gear,
   set_rain_wiper_needed,
   stalk_test_active,
+  wiper_rest_tx_needed,
   wiper_test_requested,
 )
 from openpilot.selfdrive.car.tesla.preap_windshield_rain import (
@@ -118,6 +120,10 @@ def test_off_leaves_real_stalk_nibbles_alone():
   assert apply_stw_wiper_beam_nibbles(spray, False, False) == spray
   # On replaces spray with wiper 1 instead of sending 2.
   assert _byte(apply_stw_wiper_beam_nibbles(spray, True, False)) == STW_WIPER_ON
+  # Auto dry / wipe-release cancel does clear nibble 1 to rest.
+  assert apply_stw_wiper_beam_nibbles(held_wiper, False, False, clear_wiper=True) == _rest()
+  assert _byte(apply_stw_wiper_beam_nibbles(held_both, False, True, clear_wiper=True)) == STW_HIGH_BEAM
+  assert _byte(apply_stw_wiper_beam_nibbles(spray, False, False, clear_wiper=True)) != STW_WASHER_SPRAY
 
 
 def test_overlay_off_is_identity_including_crc():
@@ -134,6 +140,12 @@ def test_overlay_resigns_crc_only_when_changed():
   held = overlay_stw_wiper_beam(rest, False, True, crc_fn=lambda payload: sum(payload) & 0xFF)
   assert hibm_nibble(held) == STW_HIGH_BEAM
   assert held[7] == (sum(held[:7]) & 0xFF)
+  cleared = overlay_stw_wiper_beam(
+    bytes.fromhex("00ff100000000000"), False, False, crc_fn=lambda payload: sum(payload) & 0xFF,
+    clear_wiper=True)
+  assert _byte(cleared) == 0
+  assert cleared[7] == (sum(cleared[:7]) & 0xFF)
+  assert overlay_stw_wiper_beam(rest, False, False, crc_fn=lambda _: 0xAA, clear_wiper=True) == rest
 
 
 def test_high_keeps_sending_captured_00ff04_not_sna_or_rest():
@@ -207,6 +219,13 @@ def test_extra_forward_only_when_on_and_no_existing_0x45():
   assert extra_stw_forward_needed([], 11, auto_rain, False) is False
   assert extra_stw_forward_needed([], 10, auto_dry, False) is False
   assert extra_stw_forward_needed(existing, 10, auto_rain, False) is False
+  # Auto dry still extra-forwards rest (cancel). Falling-edge cancel_now
+  # does not wait for the 10 Hz slot. Off with no cancel leaves the stalk.
+  assert extra_stw_forward_needed([], 10, auto_dry, False, wiper_cancel=True) is True
+  assert extra_stw_forward_needed([], 11, auto_dry, False, wiper_cancel=True) is False
+  assert extra_stw_forward_needed([], 11, auto_dry, False, wiper_cancel=True, cancel_now=True) is True
+  assert extra_stw_forward_needed(existing, 10, auto_dry, False, wiper_cancel=True) is False
+  assert extra_stw_forward_needed(existing, 11, auto_dry, False, wiper_cancel=True, cancel_now=True) is False
 
 
 def test_settings_copy_describes_held_4_same_counter_replace():
@@ -246,6 +265,8 @@ def test_settings_copy_describes_auto_rain_hold():
   assert "drive" in text
   assert "reverse" in text
   assert "park" in text
+  assert "rest" in text
+  assert "cancel" in text
   assert "pulse" not in text
   assert "rainprob" not in text
 
@@ -454,7 +475,7 @@ def test_windshield_soft_bokeh_holds_and_dry_releases():
 
   det = WindshieldRain()
   saw = False
-  for _ in range(12):
+  for _ in range(16):
     if det.update_from_y(bokeh):
       saw = True
       break
@@ -489,7 +510,7 @@ def test_heavy_soft_bokeh_over_driveway_holds():
   assert _byte(held) != STW_WASHER_SPRAY
   det = WindshieldRain()
   saw = False
-  for _ in range(12):
+  for _ in range(16):
     if det.update_from_y(heavy):
       saw = True
       break
@@ -672,9 +693,12 @@ def test_stock_cc_update_primes_visionipc_helper(monkeypatch):
 
   fake = _Fake()
   cs = SimpleNamespace(msg_stw_actn_req={"SpdCtrlLvr_Stat": 0})
+  reset_auto_gates()
   try:
     out = body.stock_cc_update_with_overlay(fake, cs, 10, None, 0)
-    assert out == []
+    # Auto dry still extra-forwards rest (cancel latched Int). Helper must start.
+    assert len(out) == 1
+    assert out[0][0] == STW_ACTN_RQ_ADDR
     assert rain._detector is not None
     assert rain._detector._helper_started
     assert rain._detector.poll() is False
@@ -698,7 +722,7 @@ def test_windshield_latch_holds_then_releases():
   wet = _wet_windshield()
   dry = _dry_windshield()
   saw_wet = False
-  for _ in range(12):
+  for _ in range(16):
     if det.update_from_y(wet):
       saw_wet = True
       break
@@ -711,7 +735,7 @@ def test_windshield_latch_holds_then_releases():
   assert released
   frost_det = WindshieldRain()
   saw_frost = False
-  for _ in range(12):
+  for _ in range(16):
     if frost_det.update_from_y(_frost_windshield()):
       saw_frost = True
       break
@@ -724,7 +748,7 @@ def test_hold_rides_brief_wipe_clear_then_releases_on_sustained_dry():
   wet = _bokeh_windshield()
   dry = _dry_windshield()
   saw = False
-  for _ in range(12):
+  for _ in range(16):
     if det.update_from_y(wet):
       saw = True
       break
@@ -874,7 +898,7 @@ def test_absurd_bokeh_scale_is_invalid_dry_and_releases():
   for _ in range(CLEAR_RELEASE_N + 8):
     assert not det2._update_score(49165.0)
   det3 = WindshieldRain()
-  for _ in range(12):
+  for _ in range(16):
     det3._update_score(HOLD_ON + 0.7)
   assert det3.hold
   for _ in range(WIPE_CLEAR_N):
@@ -895,7 +919,7 @@ def test_elevated_residual_below_hold_on_releases_and_does_not_stick():
   assert HOLD_OFF < HOLD_ON
 
   def _latch(det):
-    for _ in range(12):
+    for _ in range(16):
       det._update_score(HOLD_ON + 0.7)
     assert det.hold
     assert det._hold_n >= MIN_HOLD_N
@@ -932,6 +956,29 @@ def test_elevated_residual_below_hold_on_releases_and_does_not_stick():
   assert det._update_score(1.7)
   assert det.hold
   assert det._clear_n == 0
+
+
+def test_single_frame_bokeh_score_does_not_acquire_hold():
+  """Live clear glass was bokeh~3.16 score=0. A one-frame 3.16 must not HOLD."""
+  det = WindshieldRain()
+  for _ in range(20):
+    assert not det._update_score(0.0)
+  assert not det.hold
+  assert det.ema < HOLD_ON
+
+  flicker = WindshieldRain()
+  assert not flicker._update_score(3.16)
+  assert not flicker.hold
+  assert not flicker._update_score(0.0)
+  assert not flicker.hold
+  assert flicker._hold_n == 0
+
+  latch = WindshieldRain()
+  for _ in range(MIN_HOLD_N - 1):
+    assert not latch._update_score(3.16)
+    assert not latch.hold
+  assert latch._update_score(3.16)
+  assert latch.hold
 
 
 def test_y_plane_from_nv12_crops_stride():
@@ -1292,6 +1339,7 @@ def test_auto_status_param_is_full_gate_line_not_short_rain(monkeypatch):
     assert "drive=1" in line
     assert "rain=1" in line
     assert "wipe=1" in line
+    assert "cancel=0" in line
     assert "installed=" in line
     assert "gear_type=" in line
     assert "hold=1" in line
@@ -1638,6 +1686,7 @@ def test_stock_cc_off_does_not_change_forwarding(monkeypatch):
 
   from openpilot.selfdrive.car.tesla import preap_body_controls as body
 
+  reset_auto_gates()
   fake = _FakeSpoofer()
   cs = SimpleNamespace(msg_stw_actn_req={"SpdCtrlLvr_Stat": 0})
   monkeypatch.setattr(body, "requested_wiper_test", lambda: False)
@@ -1645,6 +1694,8 @@ def test_stock_cc_off_does_not_change_forwarding(monkeypatch):
   monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: [])
   assert body.stock_cc_update_with_overlay(fake, cs, 10, None, 0) == []
   assert fake.sent == []
+  assert extra_stw_forward_needed([], 10, False, False) is False
+  reset_auto_gates()
 
 
 def test_create_action_request_off_matches_stock(monkeypatch):
@@ -1728,11 +1779,12 @@ def test_auto_overlay_holds_nibble_1_on_rain_and_releases_when_dry(monkeypatch):
     reset_auto_gates()
 
 
-def test_auto_stock_cc_forwards_on_rain_and_stops_when_dry(monkeypatch):
+def test_auto_stock_cc_forwards_on_rain_and_cancels_when_dry(monkeypatch):
   from types import SimpleNamespace
 
   from openpilot.selfdrive.car.tesla import preap_body_controls as body
 
+  reset_auto_gates()
   fake = _FakeSpoofer()
   cs = SimpleNamespace(
     cruiseEnabled=False,
@@ -1752,9 +1804,13 @@ def test_auto_stock_cc_forwards_on_rain_and_stops_when_dry(monkeypatch):
 
   rain["on"] = False
   fake.sent.clear()
-  out = body.stock_cc_update_with_overlay(fake, cs, 20, None, 0)
-  assert out == []
-  assert fake.sent == []
+  # Falling edge must extra-forward rest immediately, not wait for the 10 Hz slot.
+  out = body.stock_cc_update_with_overlay(fake, cs, 11, None, 0)
+  assert len(out) == 1
+  assert out[0][0] == STW_ACTN_RQ_ADDR
+  assert extra_stw_forward_needed([], 11, False, False, wiper_cancel=True, cancel_now=True) is True
+  assert extra_stw_forward_needed([], 20, False, False) is False
+  reset_auto_gates()
 
 
 def test_auto_stock_cc_forwards_when_gear_only_on_cs_out(monkeypatch):
@@ -1783,8 +1839,9 @@ def test_auto_stock_cc_forwards_when_gear_only_on_cs_out(monkeypatch):
     cs.out.gearShifter = "park"
     fake.sent.clear()
     out = body.stock_cc_update_with_overlay(fake, cs, 20, None, 0)
-    assert out == []
-    assert fake.sent == []
+    assert len(out) == 1
+    assert out[0][0] == STW_ACTN_RQ_ADDR
+    assert extra_stw_forward_needed([], 20, False, False, wiper_cancel=True) is True
   finally:
     reset_auto_gates()
     reset_windshield_rain()
@@ -1814,8 +1871,9 @@ def test_auto_stock_cc_releases_when_shifted_to_park(monkeypatch):
     cs.gearShifter = "park"
     fake.sent.clear()
     out = body.stock_cc_update_with_overlay(fake, cs, 20, None, 0)
-    assert out == []
-    assert fake.sent == []
+    assert len(out) == 1
+    assert out[0][0] == STW_ACTN_RQ_ADDR
+    assert extra_stw_forward_needed([], 20, False, False, wiper_cancel=True) is True
   finally:
     reset_auto_gates()
     reset_windshield_rain()
@@ -1874,3 +1932,106 @@ def test_auto_does_not_touch_das_body_controls():
   assert (dat[0] >> 4) & 0x0F == 0  # DAS_wiperSpeed
   assert (dat[1] >> 2) & 0x03 == 0  # DAS_highLowBeamDecision
   assert dat[0] & 0x03 == 0         # DAS_headlightRequest
+
+
+def test_auto_dry_extra_forwards_rest_without_forcing_wipe(monkeypatch):
+  """Auto selected + wipe=False must still TX rest so Pre-AP drops ~32s Int."""
+  from types import SimpleNamespace
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  reset_auto_gates()
+  fake = _FakeSpoofer()
+  cs = SimpleNamespace(msg_stw_actn_req={"SpdCtrlLvr_Stat": 0})
+  monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
+    WIPER_SETTING_AUTO if key == NAP_WIPER_SPEED else default
+  ))
+  monkeypatch.setattr(body, "rain_wiper_needed", lambda: False)
+  monkeypatch.setattr(body, "requested_high_beam_test", lambda: False)
+  monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: [])
+  set_auto_gates(True, "drive")
+  try:
+    assert not body.requested_wiper_test()
+    assert wiper_rest_tx_needed(False) is True
+    fake.sent.clear()
+    out = body.stock_cc_update_with_overlay(fake, cs, 10, None, 0)
+    assert len(out) == 1
+    assert out[0][0] == STW_ACTN_RQ_ADDR
+    assert extra_stw_forward_needed([], 10, False, False, wiper_cancel=True) is True
+    assert extra_stw_forward_needed([], 11, False, False, wiper_cancel=True) is False
+  finally:
+    reset_auto_gates()
+
+
+def test_int_to_off_sends_rest_cancel_burst_then_leaves_stalk(monkeypatch):
+  from types import SimpleNamespace
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  reset_auto_gates()
+  fake = _FakeSpoofer()
+  cs = SimpleNamespace(msg_stw_actn_req={"SpdCtrlLvr_Stat": 0})
+  on = {"v": True}
+  monkeypatch.setattr(body, "requested_wiper_test", lambda: on["v"])
+  monkeypatch.setattr(body, "requested_high_beam_test", lambda: False)
+  monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: [])
+  try:
+    out = body.stock_cc_update_with_overlay(fake, cs, 10, None, 0)
+    assert len(out) == 1
+    on["v"] = False
+    forwarded = 0
+    for frame in range(11, 11 + STW_CANCEL_BURST_N):
+      fake.sent.clear()
+      out = body.stock_cc_update_with_overlay(fake, cs, frame, None, 0)
+      assert len(out) == 1
+      assert out[0][0] == STW_ACTN_RQ_ADDR
+      forwarded += 1
+    assert forwarded == STW_CANCEL_BURST_N
+    fake.sent.clear()
+    out = body.stock_cc_update_with_overlay(fake, cs, 10 + STW_CANCEL_BURST_N * 10, None, 0)
+    assert out == []
+    assert extra_stw_forward_needed([], 10, False, False) is False
+  finally:
+    reset_auto_gates()
+
+
+def test_auto_overlay_dry_clears_held_nibble_not_identity(monkeypatch):
+  from opendbc.can import CANPacker
+  from opendbc.car.tesla.preap.teslacan import TeslaCANPreAP
+  from opendbc.car.tesla.values import CANBUS, CruiseButtons
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  packer = CANPacker("tesla_preap")
+  tc = TeslaCANPreAP({CANBUS.party: packer, CANBUS.autopilot_party: packer})
+  msg_stw = {
+    "MC_STW_ACTN_RQ": 5,
+    "CRC_STW_ACTN_RQ": 0,
+    "DTR_Dist_Rq": 255,
+    "VSL_Enbl_Rq": 1,
+    "WprSw6Posn": 3,
+    "WprWashSw_Psd": 0,
+    "HiBmLvr_Stat": 0,
+  }
+  stock = tc.create_action_request(CruiseButtons.IDLE, CANBUS.party, 6, msg_stw)
+  monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
+    WIPER_SETTING_AUTO if key == NAP_WIPER_SPEED else default
+  ))
+  monkeypatch.setattr(body, "rain_wiper_needed", lambda: False)
+  monkeypatch.setattr(body, "requested_high_beam_test", lambda: False)
+  monkeypatch.setattr(body, "_ORIG_CREATE_ACTION_REQUEST", TeslaCANPreAP.create_action_request)
+  set_auto_gates(True, "drive")
+  try:
+    addr, dat, bus = body.create_action_request_with_overlay(
+      tc, CruiseButtons.IDLE, CANBUS.party, 6, msg_stw)
+    assert addr == STW_ACTN_RQ_ADDR == stock[0]
+    assert bus == stock[2]
+    assert _byte(dat) != STW_WIPER_ON
+    assert _byte(dat) != STW_WASHER_SPRAY
+    assert dat == stock
+    held = bytes.fromhex("00ff10") + stock[1][3:]
+    cleared = replace_relayed_stw(held, False, False, crc_fn=tc.stw_crc, clear_wiper=True)
+    assert _byte(cleared) == 0
+    assert cleared[7] == tc.stw_crc(cleared[:7])
+  finally:
+    reset_auto_gates()
