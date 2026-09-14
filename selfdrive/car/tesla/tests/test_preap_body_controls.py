@@ -40,6 +40,7 @@ from openpilot.selfdrive.car.tesla.preap_body_controls import (
 )
 from openpilot.selfdrive.car.tesla.preap_windshield_rain import (
   BOKEH_ON,
+  CLEAR_RELEASE_N,
   CONNECT_RETRY_S,
   FROST_ON,
   HOLD_ON,
@@ -412,7 +413,7 @@ def test_windshield_soft_bokeh_holds_and_dry_releases():
       break
   assert saw
   released = False
-  for _ in range(16):
+  for _ in range(CLEAR_RELEASE_N + 40):
     if not det.update_from_y(dry):
       released = True
       break
@@ -446,7 +447,7 @@ def test_heavy_soft_bokeh_over_driveway_holds():
       break
   assert saw
   released = False
-  for _ in range(16):
+  for _ in range(CLEAR_RELEASE_N + 40):
     if not det.update_from_y(dry):
       released = True
       break
@@ -655,7 +656,7 @@ def test_windshield_latch_holds_then_releases():
       break
   assert saw_wet
   released = False
-  for _ in range(16):
+  for _ in range(CLEAR_RELEASE_N + 40):
     if not det.update_from_y(dry):
       released = True
       break
@@ -667,6 +668,42 @@ def test_windshield_latch_holds_then_releases():
       saw_frost = True
       break
   assert saw_frost
+
+
+def test_hold_rides_brief_wipe_clear_then_releases_on_sustained_dry():
+  """Wet latches. A swipe-clear (few dry frames) must keep HOLD. Long dry releases."""
+  det = WindshieldRain()
+  wet = _bokeh_windshield()
+  dry = _dry_windshield()
+  saw = False
+  for _ in range(12):
+    if det.update_from_y(wet):
+      saw = True
+      break
+  assert saw
+  assert det.hold
+
+  # A wipe-clear is many dry frames, not two, and still well under release.
+  brief = CLEAR_RELEASE_N // 2
+  assert brief < CLEAR_RELEASE_N
+  for _ in range(brief):
+    assert det.update_from_y(dry)
+    assert det.hold
+  assert 0 < det._clear_n < CLEAR_RELEASE_N
+
+  # Drops return: clear counter resets, HOLD stays.
+  assert det.update_from_y(wet)
+  assert det.hold
+  assert det._clear_n == 0
+
+  released = False
+  for _ in range(CLEAR_RELEASE_N + 40):
+    if not det.update_from_y(dry):
+      released = True
+      break
+  assert released
+  assert not det.hold
+  assert det._clear_n == 0
 
 
 def test_y_plane_from_nv12_crops_stride():
@@ -1032,6 +1069,7 @@ def test_auto_status_param_is_full_gate_line_not_short_rain(monkeypatch):
     assert "hold=1" in line
     assert "frames=8865" in line
     assert "helper=" in line
+    assert "clear=" in line
     assert not line.startswith("hold=")
   finally:
     set_rain_wiper_needed(None)

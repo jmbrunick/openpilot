@@ -29,7 +29,8 @@ On/Int holds high nibble 1. Auto holds that same nibble 1 only when all
 of: setting is Auto, the vehicle is on, gear is Drive or Reverse, and
 the 3X road camera sees a rainy or icy/frosted windshield (unwarped
 ROAD Y). Park and Neutral never Auto-wipe, even with the car on. Release
-the real stalk when the glass looks clear or gear leaves Drive/Reverse.
+the real stalk after sustained dry glass (not a brief wipe-clear) or
+when gear leaves Drive/Reverse.
 Default Off — Auto is opt-in. No spray. No auto high-beam. Do not flash.
 Do not inject a second 0x45 — overlay the existing forwarded frame and
 recompute CRC the same way create_action_request already does.
@@ -552,9 +553,10 @@ def _auto_status_line(setting: int, on: bool, drive: bool, rain: bool, wipe: boo
       now = time.monotonic()
       age_ms = (now - d._last_frame_t) * 1000.0 if d._last_frame_t else -1.0
       rain_bits = (
-        "hold=%d ema=%.2f score=%.2f bokeh=%.2f sparse=%.1f connected=%d failed=%d "
-        "frames=%d stream=%s helper=%d age_ms=%.0f err=%s" % (
+        "hold=%d ema=%.2f score=%.2f bokeh=%.2f sparse=%.1f clear=%d/%d "
+        "connected=%d failed=%d frames=%d stream=%s helper=%d age_ms=%.0f err=%s" % (
           int(d.hold), d.ema, d.last_score, d.last_bokeh, d.last_sparse,
+          int(getattr(d, "_clear_n", 0)), int(getattr(rainmod, "CLEAR_RELEASE_N", 0)),
           int(d.connected), int(d._failed), d.n_frames, d.stream,
           int(d.helper_alive), age_ms, d.last_err or "-",
         )

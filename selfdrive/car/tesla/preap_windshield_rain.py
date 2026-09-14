@@ -10,8 +10,10 @@ use modelV2.
 Rain: large low-frequency bokeh in the upper/mid ROAD bands, or sparse
     streaks/speckles. Ice/frost: a milky sheet or crystal mottle.
 Dense in-focus texture (foliage, brick) and large saturated headlamp
-plates are rejected. Hysteresis holds while the glass looks obstructed
-and releases when it looks clear.
+plates are rejected. Hysteresis holds while the glass looks obstructed.
+A wipe makes the ROAD view look briefly clear; Auto keeps HOLD until
+clearer, longer dry evidence so one swipe does not one-and-done. Fully
+dry glass still releases. Stale ROAD still drops HOLD.
 
 VisionIpc is drained on a SCHED_OTHER helper thread (blocking recv,
 conflate ROAD then WIDE). card is CTRL_HIGH: stock_cc.update / poll()
@@ -54,8 +56,18 @@ ICE_CONTRAST = 0.085
 ICE_LUM = (45.0, 210.0)
 # Combined obstruction: 1.0 is the hold line (rain/frost/ice each scaled).
 HOLD_ON = 1.0
-HOLD_OFF = 0.55
+# Release needs a drier EMA than the old 0.55 so leftover beads after a
+# swipe do not count as clear. Acquire is unchanged (HOLD_ON).
+HOLD_OFF = 0.38
 EMA_ALPHA = 0.35
+# While HOLD is already true, decay slower so a wipe-clear does not dump
+# the EMA in two frames (0.35 * 0 → below 0.55 immediately).
+EMA_HOLD_ALPHA = 0.12
+# ROAD is ~20 Hz. 48 dry frames ≈ 2.4 s of consecutive clear; 10 Hz helper
+# ≈ 4.8 s. Brief wipe-clear passes are much shorter than this.
+CLEAR_RELEASE_N = 48
+# Secondary: ignore an instant dry flash right as the blade starts.
+MIN_HOLD_N = 12
 STALE_S = 2.0
 CONNECT_RETRY_S = 0.5
 DEBUG_LOG_S = 1.0
@@ -273,6 +285,8 @@ class WindshieldRain:
     self._helper: threading.Thread | None = None
     self._helper_started = False
     self._poll_recv = 0
+    self._clear_n = 0
+    self._hold_n = 0
 
   def _record_band(self, y: np.ndarray) -> None:
     best = (-1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
@@ -293,11 +307,27 @@ class WindshieldRain:
     score = windshield_obstruction_score(y)
     with self._lock:
       self.last_score = score
-      self.ema = EMA_ALPHA * score + (1.0 - EMA_ALPHA) * self.ema
+      alpha = EMA_HOLD_ALPHA if self.hold else EMA_ALPHA
+      self.ema = alpha * score + (1.0 - alpha) * self.ema
       if self.hold:
-        self.hold = self.ema >= HOLD_OFF
+        self._hold_n += 1
+        # Instant score and EMA both have to look dry. A swipe-clear is
+        # a handful of near-zero frames, not CLEAR_RELEASE_N in a row.
+        looks_clear = score < HOLD_OFF and self.ema < HOLD_OFF
+        if looks_clear:
+          self._clear_n += 1
+        else:
+          self._clear_n = 0
+        if self._hold_n >= MIN_HOLD_N and self._clear_n >= CLEAR_RELEASE_N:
+          self.hold = False
+          self._clear_n = 0
+          self._hold_n = 0
       else:
-        self.hold = self.ema >= HOLD_ON
+        self._clear_n = 0
+        self._hold_n = 0
+        if self.ema >= HOLD_ON:
+          self.hold = True
+          self._hold_n = 1
       self._last_frame_t = time.monotonic()
       self.n_frames += 1
       hold = self.hold
@@ -383,12 +413,13 @@ class WindshieldRain:
     why = f" {reason}" if reason else ""
     line = (
       "nap wiper rain hold=%d ema=%.2f score=%.2f bokeh=%.2f blob=%.2f "
-      "speckle=%.3f sparse=%.1f sat=%.3f struct=%.3f connected=%d failed=%d "
-      "frames=%d stream=%s helper=%d age_ms=%.0f%s%s"
+      "speckle=%.3f sparse=%.1f sat=%.3f struct=%.3f clear=%d/%d "
+      "connected=%d failed=%d frames=%d stream=%s helper=%d age_ms=%.0f%s%s"
     )
     args = (
       int(self.hold), self.ema, self.last_score, self.last_bokeh, self.last_blob,
       self.last_speckle, self.last_sparse, self.last_sat, self.last_structure,
+      int(self._clear_n), int(CLEAR_RELEASE_N),
       int(self.connected), int(self._failed), self.n_frames, self.stream,
       int(self.helper_alive), age_ms, err, why,
     )
@@ -467,6 +498,8 @@ class WindshieldRain:
           self.hold = False
           self.ema = 0.0
           self.last_score = 0.0
+          self._clear_n = 0
+          self._hold_n = 0
         self._debug("stale")
     elif not self.hold:
       self._debug("noframe")
