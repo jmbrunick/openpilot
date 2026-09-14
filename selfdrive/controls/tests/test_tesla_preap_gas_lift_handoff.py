@@ -1,6 +1,8 @@
-"""Gas-lift long handoff: expire engage grace and seed last non-negative aEgo.
+"""Gas-lift long handoff: expire engage grace and seed climb + aEgo.
 
-A+B only. No PostEngageCoast / pedal-hold / GAS_COMMAND rewrite.
+A+B expire grace / last non-negative aEgo. A3 also seeds Mannerisms
+Accel 1–10 (planner climb toward MAX). Lead / FCW still win. No
+PostEngageCoast / pedal-hold / GAS_COMMAND rewrite.
 """
 
 from types import SimpleNamespace
@@ -79,8 +81,8 @@ def _activate_longitudinal(cc, cs):
 
 def test_gas_lift_handoff_seed_uses_non_negative_aego():
   assert gas_lift_handoff_seed_accel(0.62, -0.4, 0.8, 0.5) == pytest.approx(0.62)
-  assert gas_lift_handoff_seed_accel(-0.3, 0.41, 0.8, 0.5) == pytest.approx(0.41)
-  assert gas_lift_handoff_seed_accel(-0.3, -0.2, 0.8, 0.5) == pytest.approx(0.0)
+  assert gas_lift_handoff_seed_accel(-0.3, 0.41, 0.8, 0.5) == pytest.approx(0.5)
+  assert gas_lift_handoff_seed_accel(-0.3, -0.2, 0.8, 0.5) == pytest.approx(0.5)
 
 
 def test_gas_lift_handoff_seed_max_brake_and_lead_win():
@@ -129,6 +131,44 @@ def test_gas_lift_after_long_engage_does_not_floor_a_for_half_second(controller_
   assert (20 - controller.preap_long_engage_frame) >= ENGAGE_GRACE_FRAMES
   assert limited[20] == pytest.approx(0.72, abs=0.08)
   assert min(limited.values()) > 0.35
+
+
+def test_gas_lift_open_road_seed_uses_mannerisms_accel_not_only_aego():
+  """A3: Accel 1–10 climb (planner) seeds takeover, not only post-lift aEgo."""
+  from openpilot.selfdrive.mapd.constants import LOOKAHEAD_NORMAL, map_accel_a_ms2
+
+  a1 = map_accel_a_ms2(LOOKAHEAD_NORMAL, 1)
+  a5 = map_accel_a_ms2(LOOKAHEAD_NORMAL, 5)
+  a10 = map_accel_a_ms2(LOOKAHEAD_NORMAL, 10)
+  assert a1 < a5 < a10
+  # Post-lift aEgo is near 0; temperament climb must still seed.
+  assert gas_lift_handoff_seed_accel(0.08, 0.05, 0.8, a1) == pytest.approx(a1)
+  assert gas_lift_handoff_seed_accel(0.08, 0.05, 0.8, a5) == pytest.approx(a5)
+  # MAX / personality envelope still caps Accel 10.
+  assert gas_lift_handoff_seed_accel(0.08, 0.05, 0.8, a10) == pytest.approx(0.8)
+
+
+def test_gas_lift_after_long_engage_climbs_at_planner_accel(controller_env, monkeypatch):
+  controller, cc, cs, tesla_can = controller_env
+  monkeypatch.setattr(
+    'opendbc.car.tesla.preap.carcontroller.get_preap_accel_limits',
+    lambda _v_ego: (-1.5, 0.8),
+  )
+  _activate_longitudinal(cc, cs)
+  controller.update(cc, cs, frame=0, tesla_can=tesla_can, can_bus_party=0)
+
+  cs.out.gasPressed = True
+  cs.out.aEgo = 0.72
+  cc.longActive = False
+  for frame in range(2, 20, 2):
+    controller.update(cc, cs, frame=frame, tesla_can=tesla_can, can_bus_party=0)
+
+  cs.out.gasPressed = False
+  cs.out.aEgo = 0.08
+  cc.longActive = True
+  cc.actuators.accel = 0.80  # Accel 5 open-road climb
+  controller.update(cc, cs, frame=20, tesla_can=tesla_can, can_bus_party=0)
+  assert controller.vdas.jerk_limiter.a_limited == pytest.approx(0.80, abs=0.08)
 
 
 def test_gas_lift_lead_hard_decel_still_wins(controller_env, monkeypatch):
