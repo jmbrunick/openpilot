@@ -52,11 +52,13 @@ from openpilot.selfdrive.car.tesla.preap_windshield_rain import (
   ICE_ON,
   MIN_HOLD_N,
   SCORE_ABSURD,
+  SCORE_HZ,
   SCORE_INVALID,
   SCORE_OFF,
   SCORE_ON,
   STREAM_FALLBACK_S,
   WIPE_CLEAR_N,
+  Y_COPY_SIDE,
   WindshieldRain,
   reset_windshield_rain,
   windshield_frost_score,
@@ -1156,6 +1158,33 @@ def test_y_plane_from_nv12_crops_stride():
   assert y[1, 0] == 24
 
 
+def test_helper_score_hz_is_capped_for_card_gil():
+  """Live numpy at camera rate lagged selfdrive. Helper must stay ~2–5 Hz."""
+  assert 2.0 <= SCORE_HZ <= 5.0
+  assert 16 <= Y_COPY_SIDE <= 64
+
+
+def test_y_plane_live_copy_is_tiny_and_still_rainy():
+  """Helper must not memcpy full ROAD. Downsampled bokeh must still HOLD."""
+  wet = _bokeh_windshield()
+  buf = _nv12_buf(wet)
+  full = y_plane_from_nv12(buf)
+  tiny = y_plane_from_nv12(buf, max_side=Y_COPY_SIDE)
+  assert full is not None and tiny is not None
+  assert full.shape == wet.shape
+  assert min(tiny.shape) <= Y_COPY_SIDE + 8
+  assert tiny.size < full.size
+  assert windshield_looks_rainy(full)
+  assert windshield_rain_score(tiny) >= SCORE_ON
+  det = WindshieldRain()
+  saw = False
+  for _ in range(MIN_HOLD_N + 4):
+    if det.update_from_y(tiny):
+      saw = True
+      break
+  assert saw
+
+
 def test_rain_defaults_dry_without_camera(monkeypatch):
   from openpilot.selfdrive.car.tesla import preap_windshield_rain as rain
 
@@ -1512,6 +1541,7 @@ def test_auto_status_param_is_full_gate_line_not_short_rain(monkeypatch):
     assert "speckle=" in line
     assert "frames=8865" in line
     assert "helper=" in line
+    assert "hz=" in line
     assert "clear=" in line
     assert not line.startswith("hold=")
   finally:

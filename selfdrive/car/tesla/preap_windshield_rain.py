@@ -32,8 +32,12 @@ magnitudes are invalid/dry (they must not latch HOLD or look like rain
 returning after a wipe). Real heavy-rain scores above ~12 are still wet.
 
 VisionIpc is drained on a SCHED_OTHER helper thread (blocking recv,
-conflate ROAD then WIDE). card is CTRL_HIGH: stock_cc.update / poll()
-only reads the latch. Failures retry; they do not permanently dry Auto.
+conflate ROAD then WIDE). Scoring is capped at SCORE_HZ (~4 Hz): a
+full-res Y copy plus 20 Hz multi-blur was starving card's GIL
+(age_ms ~30 s, Selfdrive Process Lagging). Recv downsamples immediately;
+one feature pass per scored frame; ice contrast uses the tiny grid.
+card is CTRL_HIGH: stock_cc.update / poll() only reads the latch.
+Failures retry; they do not permanently dry Auto.
 """
 from __future__ import annotations
 
@@ -92,9 +96,10 @@ HOLD_OFF = 0.70
 EMA_ALPHA = 0.35
 # Same as acquire. A slow hold-EMA was trapping residual scores.
 EMA_HOLD_ALPHA = 0.35
-# ROAD ~20 Hz. 12 frames ≈ 0.6 s (≈ 1.2 s at 10 Hz). Bias dry-release:
-# stuck 30 s intermittent on clear glass is worse than dropping HOLD on a
-# long wipe (rain re-acquires). 48/20 never finished on false bokeh.
+# ROAD ~20 Hz. 12 frames ≈ 0.6 s at camera rate; helper scores at SCORE_HZ.
+# Bias dry-release: stuck 30 s intermittent on clear glass is worse than
+# dropping HOLD on a long wipe (rain re-acquires). 48/20 never finished
+# on false bokeh.
 CLEAR_RELEASE_N = 12
 # Blade-start flash only.
 MIN_HOLD_N = 4
@@ -103,7 +108,13 @@ WIPE_CLEAR_N = 8
 STALE_S = 2.0
 CONNECT_RETRY_S = 0.5
 DEBUG_LOG_S = 1.0
-HELPER_RECV_MS = 100
+# Live helper target. 20 Hz numpy on card's GIL lagged selfdrive.
+SCORE_HZ = 4.0
+HELPER_RECV_MS = 50
+HELPER_NICE = 10
+# Copy at most this many pixels on the short side from VisionIpc (not full ROAD).
+Y_COPY_SIDE = 48
+_FEATURE_SIDE = 24
 _SAT_MAX = 0.08
 # Isolated headlamp plates are sparse hotspots. Dense bead highlights are not.
 _LAMP_SPARSE = 200.0
@@ -123,8 +134,11 @@ _MED_R = 4
 _COARSE_R = 8
 
 
-def y_plane_from_nv12(buf) -> np.ndarray | None:
-  """Y plane of an NV12 VisionBuf, cropped to width x height (no padding)."""
+def y_plane_from_nv12(buf, max_side: int = 0) -> np.ndarray | None:
+  """Y plane of an NV12 VisionBuf, cropped to width x height (no padding).
+
+  Live helper passes max_side so we never copy a full 3X ROAD frame.
+  """
   try:
     width = int(buf.width)
     height = int(buf.height)
@@ -142,8 +156,11 @@ def y_plane_from_nv12(buf) -> np.ndarray | None:
       raw = np.frombuffer(memoryview(data).cast("B"), dtype=np.uint8)
     if raw.size < stride * height:
       return None
-    y = raw[:stride * height].reshape(height, stride)
-    return np.ascontiguousarray(y[:, :width])
+    y = raw[:stride * height].reshape(height, stride)[:, :width]
+    if max_side > 0 and min(height, width) > max_side:
+      step = max(1, min(height, width) // int(max_side))
+      y = y[::step, ::step]
+    return np.ascontiguousarray(y)
   except Exception:
     return None
 
@@ -194,19 +211,28 @@ def _band(y: np.ndarray, rows: tuple[float, float], cols: tuple[float, float]) -
 
 
 def _box_blur(x: np.ndarray, radius: int) -> np.ndarray:
+  """Separable box mean via cumsum. O(HW), no per-tap Python loop."""
   x = np.asarray(x, dtype=np.float32)
   if radius < 1:
     return x
-  k = np.ones(2 * radius + 1, dtype=np.float32) / float(2 * radius + 1)
-  p = np.pad(x, ((0, 0), (radius, radius)), mode="edge")
-  acc = np.zeros(x.shape, dtype=np.float32)
-  for i, w in enumerate(k):
-    acc += w * p[:, i:i + x.shape[1]]
-  p2 = np.pad(acc, ((radius, radius), (0, 0)), mode="edge")
-  out = np.zeros(x.shape, dtype=np.float32)
-  for i, w in enumerate(k):
-    out += w * p2[i:i + x.shape[0], :]
-  return out
+  k = 2 * radius + 1
+  kf = float(k)
+
+  def _mean1d(a: np.ndarray, axis: int) -> np.ndarray:
+    pad_width = [(0, 0), (0, 0)]
+    pad_width[axis] = (radius, radius)
+    p = np.pad(a, pad_width, mode="edge")
+    c = np.cumsum(p, axis=axis)
+    zshape = list(c.shape)
+    zshape[axis] = 1
+    c = np.concatenate((np.zeros(zshape, dtype=c.dtype), c), axis=axis)
+    sl_hi = [slice(None), slice(None)]
+    sl_lo = [slice(None), slice(None)]
+    sl_hi[axis] = slice(k, None)
+    sl_lo[axis] = slice(None, -k)
+    return (c[tuple(sl_hi)] - c[tuple(sl_lo)]) / kf
+
+  return _mean1d(_mean1d(x, 1), 0)
 
 
 def _near_features(img: np.ndarray) -> tuple[float, float, float, float, float, float]:
@@ -215,7 +241,7 @@ def _near_features(img: np.ndarray) -> tuple[float, float, float, float, float, 
   y8 = _to_y8(img)
   if y8 is None or y8.size < 25:
     return z
-  step = max(1, min(y8.shape) // 24)
+  step = max(1, min(y8.shape) // _FEATURE_SIDE)
   x = y8[::step, ::step].astype(np.float32, copy=False)
   if x.shape[0] < 5 or x.shape[1] < 5:
     return z
@@ -225,8 +251,10 @@ def _near_features(img: np.ndarray) -> tuple[float, float, float, float, float, 
   resid = np.abs(x - fine)
   blob = float(resid.mean())
   speckle = float(np.mean((x > fine + 18.0) & (resid > 18.0)))
-  p90 = float(np.percentile(resid, 90))
-  p50 = float(np.median(resid))
+  flat = resid.reshape(-1)
+  p50 = float(np.median(flat))
+  k90 = max(0, min(flat.size - 1, int(0.90 * (flat.size - 1))))
+  p90 = float(np.partition(flat, k90)[k90])
   sparse = p90 / (p50 + 0.05)
   sat = float((x > 240.0).mean())
   structure = float((resid > 40.0).mean())
@@ -248,10 +276,52 @@ def _mid_stats(y: np.ndarray) -> tuple[float, float]:
   y8 = _to_y8(y)
   if y8 is None:
     return 0.0, 0.0
-  mid = _band(y8, _MID_ROWS, _COLS).astype(np.float32)
-  mean = float(mid.mean())
-  contrast = float(mid.std() / (mean + 1.0))
+  mid = _band(y8, _MID_ROWS, _COLS)
+  step = max(1, min(mid.shape) // _FEATURE_SIDE)
+  x = mid[::step, ::step].astype(np.float32, copy=False)
+  mean = float(x.mean())
+  contrast = float(x.std() / (mean + 1.0))
   return mean, contrast
+
+
+def _rain_from_feats(blob: float, speckle: float, sparse: float, sat: float,
+                    structure: float, bokeh: float) -> float:
+  if sat > _SAT_MAX and sparse >= _LAMP_SPARSE:
+    return 0.0
+  if structure > _STRUCTURE_RAIN and bokeh < BOKEH_ON:
+    return 0.0
+  score = 0.0
+  if BOKEH_ON <= bokeh <= BOKEH_ABSURD:
+    score = max(score, bokeh)
+  if blob >= BLOB_WET:
+    score = max(score, blob)
+  if speckle >= _SPECKLE_MIN:
+    score = max(score, blob + 12.0 * speckle)
+  return score
+
+
+def _frost_from_feats(blob: float, _speckle: float, sparse: float, sat: float,
+                     structure: float, _bokeh: float) -> float:
+  if sat > _SAT_MAX or structure > _STRUCTURE_FRAC:
+    return 0.0
+  if blob > FROST_BLOB_MAX:
+    return 0.0
+  if sparse >= _SPARSE_MIN:
+    return 0.0
+  return blob
+
+
+def _ice_from_feats(blob: float, _speckle: float, _sparse: float, sat: float,
+                   structure: float, _bokeh: float, y: np.ndarray) -> float:
+  if sat > _SAT_MAX or structure > _STRUCTURE_FRAC or blob > FROST_BLOB_MAX:
+    return 0.0
+  mean, contrast = _mid_stats(y)
+  if not (ICE_LUM[0] < mean < ICE_LUM[1]):
+    return 0.0
+  haze = ICE_CONTRAST - contrast
+  if haze <= 0.0 or blob < 0.5:
+    return 0.0
+  return 15.0 * haze + blob
 
 
 def _rain_from_band(img: np.ndarray) -> float:
@@ -262,21 +332,7 @@ def _rain_from_band(img: np.ndarray) -> float:
   that is still rain when bokeh is rain-like. Foliage is sharp texture
   without that bokeh. Isolated saturated lamps are not rain.
   """
-  blob, speckle, sparse, sat, structure, bokeh = _near_features(img)
-  if sat > _SAT_MAX and sparse >= _LAMP_SPARSE:
-    return 0.0
-  if structure > _STRUCTURE_RAIN and bokeh < BOKEH_ON:
-    return 0.0
-  score = 0.0
-  if BOKEH_ON <= bokeh <= BOKEH_ABSURD:
-    score = max(score, bokeh)
-  if blob >= BLOB_WET:
-    score = max(score, blob)
-  # Speckle/streaks/beads. Dense coverage has low sparse (~2); do not
-  # require a mid-range sparse band (that was another sweet spot).
-  if speckle >= _SPECKLE_MIN:
-    score = max(score, blob + 12.0 * speckle)
-  return score
+  return _rain_from_feats(*_near_features(img))
 
 
 def windshield_rain_score(y: np.ndarray) -> float:
@@ -296,38 +352,42 @@ def windshield_frost_score(y: np.ndarray) -> float:
   """Crystals on the glass: moderate uniform residual, not foliage, not rain drops."""
   if y is None or y.ndim != 2 or y.shape[0] < 32 or y.shape[1] < 32:
     return 0.0
-  blob, _speckle, sparse, sat, structure, _bokeh = _near_features(_band(y, _NEAR_ROWS, _COLS))
-  if sat > _SAT_MAX or structure > _STRUCTURE_FRAC:
-    return 0.0
-  if blob > FROST_BLOB_MAX:
-    return 0.0
-  if sparse >= _SPARSE_MIN:
-    return 0.0
-  return blob
+  return _frost_from_feats(*_near_features(_band(y, _NEAR_ROWS, _COLS)))
 
 
 def windshield_ice_score(y: np.ndarray) -> float:
   """Ice sheet: daytime view through the glass is milky (contrast collapsed)."""
   if y is None or y.ndim != 2 or y.shape[0] < 32 or y.shape[1] < 32:
     return 0.0
-  blob, _speckle, _sparse, sat, structure, _bokeh = _near_features(_band(y, _NEAR_ROWS, _COLS))
-  if sat > _SAT_MAX or structure > _STRUCTURE_FRAC or blob > FROST_BLOB_MAX:
-    return 0.0
-  mean, contrast = _mid_stats(y)
-  if not (ICE_LUM[0] < mean < ICE_LUM[1]):
-    return 0.0
-  haze = ICE_CONTRAST - contrast
-  if haze <= 0.0 or blob < 0.5:
-    return 0.0
-  return 15.0 * haze + blob
+  feats = _near_features(_band(y, _NEAR_ROWS, _COLS))
+  return _ice_from_feats(*feats, y)
+
+
+def _score_frame(y: np.ndarray) -> tuple[float, tuple[float, float, float, float, float, float]]:
+  """One pass: rain bands + frost/ice from NEAR. Used by the live helper."""
+  z = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+  rain = 0.0
+  best = z
+  near = z
+  for rows in _RAIN_BANDS:
+    feats = _near_features(_band(y, rows, _COLS))
+    if rows == _NEAR_ROWS:
+      near = feats
+    rain = max(rain, _rain_from_feats(*feats))
+    if feats[5] >= best[5]:
+      best = feats
+  frost = _frost_from_feats(*near)
+  ice = _ice_from_feats(*near, y)
+  obs = _finite_score(max(rain / SCORE_ON, frost / FROST_ON, ice / ICE_ON))
+  return obs, best
 
 
 def windshield_obstruction_score(y: np.ndarray) -> float:
   """1.0 is the hold line. Rain, frost crystals, or an ice sheet."""
-  rain = windshield_rain_score(y) / SCORE_ON
-  frost = windshield_frost_score(y) / FROST_ON
-  ice = windshield_ice_score(y) / ICE_ON
-  return _finite_score(max(rain, frost, ice))
+  if y is None or y.ndim != 2 or y.shape[0] < 32 or y.shape[1] < 32:
+    return 0.0
+  obs, _best = _score_frame(y)
+  return obs
 
 
 def windshield_looks_rainy(y: np.ndarray, prev_hold: bool = False) -> bool:
@@ -348,7 +408,7 @@ def _drop_realtime() -> None:
   except Exception:
     pass
   try:
-    os.nice(5)
+    os.nice(HELPER_NICE)
   except Exception:
     pass
 
@@ -385,13 +445,8 @@ class WindshieldRain:
     self._clear_n = 0
     self._hold_n = 0
 
-  def _record_band(self, y: np.ndarray) -> None:
-    best = (-1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    for rows in _RAIN_BANDS:
-      blob, speckle, sparse, sat, structure, bokeh = _near_features(_band(y, rows, _COLS))
-      if bokeh > best[0]:
-        best = (bokeh, blob, speckle, sparse, sat, structure, bokeh)
-    _bokeh, blob, speckle, sparse, sat, structure, bokeh = best
+  def _store_feats(self, feats: tuple[float, float, float, float, float, float]) -> None:
+    blob, speckle, sparse, sat, structure, bokeh = feats
     self.last_blob = blob
     self.last_speckle = speckle
     self.last_sparse = sparse
@@ -400,8 +455,9 @@ class WindshieldRain:
     self.last_bokeh = bokeh
 
   def update_from_y(self, y: np.ndarray) -> bool:
-    self._record_band(y)
-    return self._update_score(windshield_obstruction_score(y))
+    obs, feats = _score_frame(y)
+    self._store_feats(feats)
+    return self._update_score(obs)
 
   def _update_score(self, score: float) -> bool:
     """Latch from an obstruction score. Tests inject residual/dry scores here."""
@@ -462,7 +518,7 @@ class WindshieldRain:
     self._stream_t0 = now
     self.last_err = f"fallback_{self.stream}"
 
-  def _recv_y(self, timeout_ms: int = 0) -> np.ndarray | None:
+  def _recv_y(self, timeout_ms: int = 0, max_side: int = 0) -> np.ndarray | None:
     now = time.monotonic()
     if self._failed and (now - self._last_connect_t) < CONNECT_RETRY_S:
       return None
@@ -495,7 +551,8 @@ class WindshieldRain:
         if int(timeout_ms) <= 0 and not self.last_err:
           self.last_err = "nobuf"
         return None
-      y = y_plane_from_nv12(buf)
+      y = y_plane_from_nv12(buf, max_side=max_side)
+      buf = None
       if y is None:
         self.last_err = "noyplane"
         return None
@@ -523,7 +580,7 @@ class WindshieldRain:
       + f"sparse={self.last_sparse:.1f} sat={self.last_sat:.3f} struct={self.last_structure:.3f} "
       + f"clear={int(self._clear_n)}/{int(CLEAR_RELEASE_N)} connected={int(self.connected)} "
       + f"failed={int(self._failed)} frames={self.n_frames} stream={self.stream} "
-      + f"helper={int(self.helper_alive)} age_ms={age_ms:.0f}{err}{why}"
+      + f"helper={int(self.helper_alive)} hz={SCORE_HZ:.0f} age_ms={age_ms:.0f}{err}{why}"
     )
     try:
       from openpilot.common.swaglog import cloudlog
@@ -576,9 +633,11 @@ class WindshieldRain:
 
   def _helper_loop(self) -> None:
     _drop_realtime()
+    period = 1.0 / float(SCORE_HZ)
     while not self._stop.is_set():
+      t0 = time.monotonic()
       try:
-        y = self._recv_y(timeout_ms=HELPER_RECV_MS)
+        y = self._recv_y(timeout_ms=HELPER_RECV_MS, max_side=Y_COPY_SIDE)
       except Exception as e:
         self._failed = True
         self.last_err = type(e).__name__
@@ -587,10 +646,15 @@ class WindshieldRain:
         break
       if y is not None:
         self.update_from_y(y)
-        continue
-      self._apply_stale()
-      if not self.connected or self._failed:
-        self._stop.wait(CONNECT_RETRY_S)
+        y = None
+      else:
+        self._apply_stale()
+        if not self.connected or self._failed:
+          self._stop.wait(CONNECT_RETRY_S)
+          continue
+      wait = period - (time.monotonic() - t0)
+      if wait > 0.0:
+        self._stop.wait(wait)
 
   def _apply_stale(self) -> None:
     """Clear HOLD if ROAD frames stop. Do not wipe dry glass."""
