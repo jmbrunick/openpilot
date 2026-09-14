@@ -1247,6 +1247,48 @@ def test_single_frame_bokeh_score_does_not_acquire_hold():
   assert latch.hold
 
 
+def test_clear_glass_releases_in_two_score_ticks_then_auto_cancels(monkeypatch):
+  """Live: 12 ticks × 2.5 s kept wiping ~20–30 s after a dry wipe. Two dry scores drop HOLD; Auto rest-cancels Int."""
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+  from openpilot.selfdrive.car.tesla import preap_windshield_rain as rain
+
+  monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
+    WIPER_SETTING_AUTO if key == NAP_WIPER_SPEED else default
+  ))
+  monkeypatch.setattr(body, "RAIN_HELPER_START_DELAY_S", 0.0)
+  reset_windshield_rain()
+  reset_auto_gates()
+  det = WindshieldRain()
+  wet = _bokeh_windshield()
+  dry = _dry_windshield()
+  saw = False
+  for _ in range(16):
+    if det.update_from_y(wet):
+      saw = True
+      break
+  assert saw
+  assert det.hold
+  det._helper_started = True
+  rain._detector = det
+  try:
+    set_auto_gates(True, "drive")
+    assert body.rain_wiper_needed()
+    assert body.requested_wiper_test()
+    assert not wiper_rest_tx_needed(True)
+    assert det.update_from_y(dry)
+    assert det.hold
+    assert det._clear_n == 1
+    assert not det.update_from_y(dry)
+    assert not det.hold
+    assert not body.rain_wiper_needed()
+    assert not body.requested_wiper_test()
+    assert wiper_rest_tx_needed(False)
+  finally:
+    set_rain_wiper_needed(None)
+    reset_auto_gates()
+    reset_windshield_rain()
+
+
 def test_y_plane_from_nv12_crops_stride():
   class _Buf:
     width, height, stride = 16, 32, 24
@@ -1265,6 +1307,12 @@ def test_helper_score_period_is_every_few_seconds():
   assert STALE_S > SCORE_PERIOD_S
   assert abs(SCORE_HZ - 1.0 / SCORE_PERIOD_S) < 1e-6
   assert 16 <= Y_COPY_SIDE <= 64
+  # Wall-clock hysteresis: a few seconds, not 12×period ≈ 30 s of dry wipe.
+  assert MIN_HOLD_N == 2
+  assert CLEAR_RELEASE_N == 2
+  assert WIPE_CLEAR_N == 1
+  assert MIN_HOLD_N * SCORE_PERIOD_S <= 6.0
+  assert CLEAR_RELEASE_N * SCORE_PERIOD_S <= 6.0
 
 
 def test_helper_numpy_scores_on_period_not_every_road_frame(monkeypatch):
