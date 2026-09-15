@@ -24,7 +24,7 @@ If `LgtSens_SNA`/`Flt` stay set with the 3X mounted, the optical block is likely
 
 **Architecturally yes; in the DBC no.** NAP Auto already ignores the physical stalk: `rain_needed()` (camera today) holds `0x45` TIPWIPE nibble 1, then rest-cancels. A bus-0 rain bit that is valid at stalk Off could feed that same latch (replace or AND-gate camera). Light cannot: `LgtSens_*` is day/night, not wet glass. `WprOutsdPkPosn` is blades-in-park after a wipe.
 
-There is no such rain bit to wire up. Spoofing `WprSw6Posn=INTERVAL1` to “arm stock rain” is not this car: Justin’s Int does not rain-arm, and NAP Int/On already use nibble 1 (Low latch ~32 s), not INTERVAL.
+There is no such rain bit to wire up. A different idea — spoof the **stalk INTERVAL position** so the BCM uses LIN rain itself — is below. That is not a CAN wetness field, and it is **not** what NAP Int sends today.
 
 ### 4. Does the sensor only wake with stalk Auto?
 
@@ -34,7 +34,66 @@ There is no such rain bit to wire up. Spoofing `WprSw6Posn=INTERVAL1` to “arm 
 
 **Rain-on-LIN: probably still powered** (same 12V connector as light). NAP cannot tap LIN. **Rain-on-CAN: not in the DBC**, so NAP cannot read it even if LIN is wet.
 
-**Recommendation: keep #159 camera Auto.** Do not wait on a CAN rain signal that is not defined.
+**Recommendation: keep #159 camera Auto** unless a parked INTERVAL1 hold + spray (below) shows the BCM rain-wiping on this VIN. Do not merge a stalk-INTERVAL tip until that is proven.
+
+## Stalk INTERVAL spoof (follow-up)
+
+Hypothesis: SCCM already publishes wiper position on `0x45`; rain is LIN to BCM. If we spoof Tesla’s rain-armed collar value (`INTERVAL1`/`2`), stock rain wipers might run even though the physical stalk has no Auto detent.
+
+**Do not implement yet.** Encoding is clear. Whether *this* BCM rain-arms `INTERVAL1` is not. NAP Int is a different signal.
+
+### 1. Exact `0x45` encodings (`STW_ACTN_RQ`)
+
+Two independent fields. No DBC value named AUTO.
+
+**Collar / 6-position switch — `WprSw6Posn` bits 48–50 (byte 6 bits 0–2).** Overlay must be `(byte6 & ~0x07) | posn` so the live `MC_STW_ACTN_RQ` nibble (byte 6 bits 4–7) stays.
+
+| DBC | Value | Byte 6 low 3 bits | Tesla service / 2014 manual (typical) | Justin Off/Int/On |
+| --- | --- | --- | --- | --- |
+| OFF | 0 | `0x00` | Off | Off |
+| INTERVAL1 | 1 | `0x01` | 1st intermittent / Auto low sensitivity | **candidate rain-arm** |
+| INTERVAL2 | 2 | `0x02` | 2nd intermittent / Auto high sensitivity | **candidate rain-arm** |
+| INTERVAL3 | 3 | `0x03` | unused on 4-click collar | — |
+| INTERVAL4 | 4 | `0x04` | unused on 4-click collar | — |
+| STAGE1 | 5 | `0x05` | 3rd: continuous slow (Low) | likely physical On |
+| STAGE2 | 6 | `0x06` | 4th: continuous fast (High) | — |
+| SNA | 7 | `0x07` | invalid | never send |
+
+**Tip / wash — `WprWashSw_Psd` bits 20–21 (byte 2 bits 4–5), Justin’s `00ffN0` nibble.**
+
+| DBC | Value | Byte 2 | NAP today |
+| --- | --- | --- | --- |
+| NPSD | 0 | `0x00` | rest / Off |
+| TIPWIPE | 1 | `0x10` | **Int, On, and Auto-when-wet** (held) |
+| WASH | 2 | `0x20` | never send |
+| SNA | 3 | `0x30` | never send |
+
+`WprWash_R_Sw_Posn_V2` (byte 2 bits 6–7): `OFF` / `INTERVAL` / `WASH`. Name looks like rear wash; Model S has no rear wiper. Do not spoof this first.
+
+### 2. INTERVAL1/2 vs NAP Int (nibble 1)
+
+**Distinct.** NAP Int/On/Auto-wet set `WprWashSw_Psd=TIPWIPE` (`0x10`) and **preserve** live `WprSw6Posn` (Off stalk → 0). That is why Pre-AP latches ~32 s Low and Auto must rest-cancel. Tesla rain-arm is `WprSw6Posn=1` or `2` with `WprWashSw_Psd=0`. Same ID `0x45`, different bytes. Panda already allows TX of `0x45`; this would not add a TX ID. Still a last-win fight with bus-0 rest (same as today’s Int hold).
+
+### 3. Will BCM rain-arm on a car that never had Auto?
+
+**Unknown — no VIN/config rain flag in the DBC.** `GTW_carConfig` (`0x398`) has `GTW_dasHw`, `GTW_autopilot`, `GTW_bodyControlsType` (1 bit, undocumented) — nothing named rain/RLS/auto-wiper. `MCU_enableAutowipers` is DAS/MCU, not BCM.
+
+Plausible yes: same Light/Rain module (LIN alive if `LgtSens_*` moves), same BCM, INTERVAL1 is just another `WprSw6Posn` the SCCM never reaches on a 3-click stalk. Plausible no: BCM EEPROM “rain wipers” off; physical Int already *is* INTERVAL1 and still timed-only; 3X blinds the optics (`LgtSens_Flt`/`SNA`).
+
+**First measurement (no spoof):** at physical Off / Int / On, log `0x45` byte 6 `& 0x07` and byte 2. If Int is already `WprSw6Posn=1` and spray does not rain-wipe, spoofing INTERVAL1 cannot help.
+
+### 4. Parked test (no merge, no panda-safety change)
+
+Parked, car on, **NAP Wipers Off**, physical stalk **Off**, headlights Auto on the MCU so light path is up.
+
+1. Dump live `0x45` at Off / Int / On / end-button tip. Confirm INTERVAL vs TIPWIPE vs STAGE1.
+2. Cover/uncover sensor: `0x283` `LgtSens_*` must move. SNA/Flt → stop (optics dead).
+3. Only if Off is `WprSw6Posn=0` and Int is not already `1`: overlay **one** live `0x45` with `WprSw6Posn=1`, `WprWashSw_Psd=0`, same MC, resign CRC — hold at ~10 Hz like today’s Int so bus-0 rest does not last-win. **Do not** set `0x10` or `0x20`.
+4. Dry: stock Auto should **not** wipe. If blades cycle on dry glass, BCM treated INTERVAL as timed Int → abandon, rest-cancel (`WprSw6Posn=0` + today’s nibble-0 rest).
+5. Spray glass at the sensor: blades should sweep without camera / without NAP Auto. Then Off overlay (`WprSw6Posn=0`) must cancel.
+6. Keep panda TX whitelist as-is (`0x45` only). No new IDs. Parked first; road only after dry-no-wipe and wet-wipe both work.
+
+If step 5 fails, keep camera Auto.
 
 ## Hardware (stock)
 
