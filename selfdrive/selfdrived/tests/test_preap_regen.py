@@ -4,6 +4,7 @@ from openpilot.selfdrive.selfdrived.preap_regen import (
   REGEN_DEMAND_EVIDENCE_COUNT,
   PreAPChimeState,
   RegenDemandCheck,
+  gas_should_user_disable,
   update_preap_chimes,
 )
 
@@ -243,3 +244,23 @@ def test_lateral_only_does_not_chime_long_on_hold():
   assert not chimes.long_engage
   assert not chimes.long_disengage
   assert not chimes.lat_disengage
+
+
+def test_gas_should_user_disable_skips_when_one_pedal_long():
+  """One-Pedal Long On must never take DisengageOnAccelerator USER_DISABLE."""
+  assert gas_should_user_disable(disengage_on_accelerator=True, one_pedal_long=False)
+  assert not gas_should_user_disable(disengage_on_accelerator=True, one_pedal_long=True)
+  assert not gas_should_user_disable(disengage_on_accelerator=False, one_pedal_long=True)
+  assert not gas_should_user_disable(disengage_on_accelerator=False, one_pedal_long=False)
+
+
+def test_one_pedal_gas_pause_chime_matches_brake():
+  """Gas-from-rest pause is the same silent (T,T)→(T,F) edge as brake."""
+  chimes, state = _chime(PreAPChimeState(), lat=True, long_on=True)
+  assert chimes.long_engage
+  chimes, state = _chime(state, lat=True, long_on=False)
+  assert not chimes.long_disengage
+  assert not chimes.lat_disengage
+  assert state.long_paused
+  chimes, _ = _chime(state, lat=True, long_on=True)
+  assert not chimes.long_engage

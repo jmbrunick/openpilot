@@ -51,7 +51,7 @@ class DrivingMannerismsLayoutMici(NavScroller):
     lat_handoff.set_value("On — free-wheel yield; Off if false-yield")
 
     one_pedal = BigParamControl("one-pedal long", NAP_ONE_PEDAL_LONG)
-    one_pedal.set_value("Off default — gas from rest drops long; lift regen")
+    one_pedal.set_value("Off default — gas from rest pauses long; lift regen")
 
     hypermile = BigParamControl("hypermile", NAP_HYPERMILE, toggle_callback=on_hypermile)
     hypermile.set_value("Off default — early light eco, not max regen")
