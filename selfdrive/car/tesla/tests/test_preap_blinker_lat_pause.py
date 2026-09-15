@@ -652,6 +652,32 @@ def test_reverse_then_drive_allows_fresh_engage_not_sticky_resume():
   _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=5400)
   assert eng.cruiseEnabled
   assert eng.enableLongControl
+  assert not getattr(eng, "_nap_long_resume_pending", False)
+
+
+def test_park_then_drive_allows_fresh_engage_not_sticky_resume():
+  """Park is the same latch as Reverse: Drive + double SET is a new session."""
+  install_blinker_lat_pause()
+  eng = _engaged(double_pull=True)
+  eng._nap_held_max_kph = 72.0
+  assert not eng.check_can_engage(False, GearShifter.park, False)
+  assert not eng.cruiseEnabled
+  assert eng.preap_cc_cancel_needed
+  assert eng.check_can_engage(False, GearShifter.drive, False)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=5000)
+  _buttons(eng, t_ms=5050)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=5400)
+  assert eng.cruiseEnabled
+  assert eng.enableLongControl
+
+
+def test_panda_gear_out_clears_cruise_latch():
+  """Panda must pcm_cruise_check(false) on gear-out, not controls_allowed=false alone."""
+  rx = (Path(__file__).resolve().parents[4] /
+        "opendbc_repo/opendbc/safety/modes/tesla_preap_rx.h").read_text()
+  gear_block = rx.split("if ((preap_gear_prev == 4) && (preap_gear != 4))")[1].split("preap_gear_prev")[0]
+  assert "pcm_cruise_check(false)" in gear_block
+  assert "controls_allowed = false" not in gear_block
 
 
 def test_park_while_engaged_is_also_hard_cancel():
