@@ -679,7 +679,8 @@ def test_panda_gear_out_clears_cruise_latch():
   gear_block = rx.split("if (preap_gear != 4)")[1].split("preap_gear_prev = preap_gear")[0]
   assert "pcm_cruise_check(false)" in gear_block
   assert "controls_allowed = false" not in gear_block
-  assert "preap_gear_prev != 4" in gear_block
+  assert "preap_last_stalk_engage_us = 0U" in gear_block
+  assert "preap_gear_prev != 4" not in gear_block
 
 
 def test_panda_drive_set_matches_stalk_cancel_rearm():
@@ -718,12 +719,12 @@ def test_check_can_engage_wrapper_is_installed():
   assert "hard_cancel_session(self)" in src
 
 
-def test_selfdrived_mismatch_clear_is_on_leave_drive_not_entry():
-  """3X/OP mismatch latch clears when leaving Drive, not on Drive entry."""
+def test_selfdrived_mismatch_clear_is_while_not_in_drive():
+  """3X/OP mismatch latch stays clear while out of Drive, not on Drive entry."""
   src = (Path(__file__).resolve().parents[4] /
          "selfdrive/selfdrived/selfdrived.py").read_text()
-  assert "preap_leave_drive_clears_mismatch" in src
+  assert "preap_not_in_drive_clears_mismatch" in src
   helpers = (Path(__file__).resolve().parents[4] /
              "selfdrive/selfdrived/helpers.py").read_text()
   assert "Do not clear on Drive entry" in helpers
-  assert "preap_leave_drive_clears_mismatch" in helpers
+  assert "preap_not_in_drive_clears_mismatch" in helpers

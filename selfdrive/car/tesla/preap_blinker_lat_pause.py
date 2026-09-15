@@ -138,10 +138,10 @@ def hard_cancel_session(engagement) -> None:
   preap_cc_cancel_needed so the carcontroller spoofs CANCEL (stock CC
   off). That spoof is TX-only — panda does not RX it, so it cannot
   clear cruise_engaged_prev the way a real stalk disable does.
-  tesla_preap therefore pcm_cruise_check(false) on leaving Drive, on
-  returning to Drive, on TX CANCEL while already !controls_allowed,
-  and pulses false→true on a Drive SET while disallowed, so R/P→Drive
-  does not need an extra stalk cancel→engage cycle.
+  tesla_preap therefore pcm_cruise_check(false) on every non-Drive
+  0x118 (latch already gone before Drive return). Drive SET while
+  !allowed is last-resort only. TX CANCEL while already disallowed
+  also clears the latch (spoof path).
   Do not call _drop_longitudinal_keep_lateral.
   """
   was_long = bool(getattr(engagement, "enableLongControl", False))
@@ -170,10 +170,10 @@ def _check_can_engage(self, door_open, gear_shifter, seatbelt_unlatched):
 
   Orig check_can_engage zeros cruiseEnabled / long but leaves sticky MAX,
   soft-lat yield, stalk timers, and preap_cc_cancel_needed unset. Panda
-  tesla_preap pcm_cruise_check(false) on leaving Drive and again on the
-  Drive rising edge so the next SET can re-allow without a stalk disable
-  first. The CANCEL spoof still drops stock CC (TX-only; latch is panda).
-  Without this wrapper, sticky MAX / soft-lat yield would survive Reverse.
+  tesla_preap pcm_cruise_check(false) while not in Drive so the latch
+  is already gone before Drive return. The CANCEL spoof still drops
+  stock CC (TX-only; latch is panda). Without this wrapper, sticky MAX
+  / soft-lat yield would survive Reverse.
   """
   from opendbc.car import structs
 
