@@ -410,6 +410,10 @@ def _clear_session_max_flags(engagement):
   engagement._nap_set_resume_long = False
   engagement._nap_set_take_speed_now = False
   engagement._nap_resume_wait_gas = False
+  if hasattr(engagement, "_clear_one_pedal_pause_latch"):
+    engagement._clear_one_pedal_pause_latch()
+  else:
+    engagement._one_pedal_pause_latched = False
 
 
 def _process_buttons(self, cruise_buttons, prev_cruise_buttons, *args, **kwargs):
@@ -504,6 +508,7 @@ def _process_buttons(self, cruise_buttons, prev_cruise_buttons, *args, **kwargs)
     getattr(self, "_nap_resume_wait_gas", False)
     and not self.enableLongControl
     and gas and not brake
+    and not bool(getattr(self, "_one_pedal_pause_latched", False))
     and not _should_drop_long_for_turn(self)
   ):
     _complete_standstill_resume(
@@ -630,6 +635,7 @@ def _update_preap(cs, can_parsers):
         and gas
         and not real_brake
         and not bool(getattr(engagement, "enableLongControl", False))
+        and not bool(getattr(engagement, "_one_pedal_pause_latched", False))
         and not _should_drop_long_for_turn(engagement)
       ):
         _complete_standstill_resume(engagement, long_allowed=True)
