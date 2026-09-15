@@ -489,16 +489,40 @@ def test_handoff_module_does_not_drop_long():
 
 
 def test_one_pedal_gas_kick_keeps_held_max_and_session():
-  """Gas-from-rest kick is the same silent pause as brake (sticky MAX + one SET)."""
+  """Gas-from-rest is the same silent pause as brake (sticky MAX + one SET)."""
   install_blinker_lat_pause()
   held = 55 * CV.MPH_TO_KPH
   eng = _engaged(pedal_kph=held)
   assert eng.maybe_one_pedal_gas_kick(True, True)
   assert eng.cruiseEnabled
   assert not eng.enableLongControl
+  assert not getattr(eng, "preap_cc_cancel_needed", False)
   assert getattr(eng, "_nap_long_resume_pending", False)
   assert abs(eng.pedal_speed_kph - held) < 1e-6
   assert abs(eng._nap_held_max_kph - held) < 1e-6
+
+
+def test_one_pedal_gas_pause_matches_brake_one_set_resume():
+  """One SET after gas pause restores held MAX the same way brake pause does."""
+  install_blinker_lat_pause()
+  held = 55 * CV.MPH_TO_KPH
+  gas = _engaged(pedal_kph=held)
+  brake = _engaged(pedal_kph=held)
+  gas.maybe_one_pedal_gas_kick(True, True)
+  gas.maybe_one_pedal_gas_kick(False, True)
+  _buttons(brake, brake=True, t_ms=2000)
+  _buttons(brake, brake=False, t_ms=3000)
+  assert gas.cruiseEnabled and brake.cruiseEnabled
+  assert not gas.enableLongControl and not brake.enableLongControl
+  assert getattr(gas, "_nap_long_resume_pending", False)
+  assert getattr(brake, "_nap_long_resume_pending", False)
+  _buttons(gas, cruise_buttons=CruiseButtons.MAIN, t_ms=4000, v_ego=13.4)
+  _buttons(brake, cruise_buttons=CruiseButtons.MAIN, t_ms=4000, v_ego=13.4)
+  assert gas.enableLongControl and brake.enableLongControl
+  assert getattr(gas, "_nap_set_resume_long", False)
+  assert getattr(brake, "_nap_set_resume_long", False)
+  assert abs(gas.pedal_speed_kph - held) < 1e-6
+  assert abs(brake.pedal_speed_kph - held) < 1e-6
 
 
 def test_one_pedal_gas_kick_one_set_resumes_held_max():
