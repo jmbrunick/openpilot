@@ -498,11 +498,8 @@ def test_nibble_overlay_does_not_steal_catchup_plus_a():
   assert apply_lead_approach_overlay(-0.30, -0.05) == pytest.approx(-0.30)
   assert apply_lead_approach_overlay(-0.10, -0.20) == pytest.approx(-0.20)
   assert apply_lead_approach_overlay(0.20, None) == pytest.approx(0.20)
-  # Slow rematch (v_rel below CLEAR) still protects catch-up.
-  assert apply_lead_approach_overlay(0.20, -0.08, v_rel=1.0) == pytest.approx(0.20)
-  # Real close: light kinematic may beat catch-up +a so we do not ride up.
-  assert apply_lead_approach_overlay(0.20, -0.08, v_rel=LEAD_APPROACH_CLEAR_DV_MS) == pytest.approx(-0.08)
-  assert apply_lead_approach_overlay(0.20, -0.08, v_rel=4.5) == pytest.approx(-0.08)
+  # Clear-close nibble must still yield to Accel-1 catch-up (Follow 1 from 100 m).
+  assert apply_lead_approach_overlay(0.20, -0.08) == pytest.approx(0.20)
 
 
 def test_planner_wires_hysteresis_and_slew_after_map_climb():
@@ -513,8 +510,7 @@ def test_planner_wires_hysteresis_and_slew_after_map_climb():
   assert "model_prob=lead.modelProb" in planner
   assert "radar=lead.radar" in planner
   assert "slew_lead_approach_a(a_lead, self._lead_approach_a)" in planner
-  assert "apply_lead_approach_overlay(" in planner
-  assert "v_rel=v_ego - float(lead.vLead)" in planner
+  assert "apply_lead_approach_overlay(output_a_target, a_lead)" in planner
   assert "map_climb_replaces_mpc" in planner
   hill = (Path(__file__).resolve().parents[1] / "lib/hill_climb.py").read_text()
   assert "PITCH_CLIMB_RAD" in hill
@@ -522,11 +518,10 @@ def test_planner_wires_hysteresis_and_slew_after_map_climb():
 
 
 def test_normal_close_ttc_floor_is_earlier_and_stronger_than_kinematic():
-  """10 mph close: far slack stays light; mid TTC is a felt ~0.26, not a 0.55 slam.
+  """10 mph close: far slack stays light; once kinematic |a| passes nibble, floor is 0.26.
 
-  Time-to-follow-gap = slack / v_rel. Floor starts at TTC_START (20 s) so
-  Justin feels regen before the old nibble/0.55 bite, without matching
-  speed at radar range.
+  Time-to-follow-gap = slack / v_rel. Floor starts at TTC_START (20 s) only
+  when a_kin is already past NIBBLE so Follow 1–7 catch-up still finishes.
   """
   v_ego = 60.0 * 0.44704
   v_lead = 50.0 * 0.44704
@@ -545,8 +540,18 @@ def test_normal_close_ttc_floor_is_earlier_and_stronger_than_kinematic():
   assert a_far == pytest.approx(a_kin_far, abs=1e-6)
   assert -0.12 < a_far < -0.05
 
-  # Mid TTC (20 s): felt floor, stronger than kinematic, still << peak.
-  slack_mid = v_rel * LEAD_APPROACH_TTC_START_S
+  # TTC 20 s but kinematic still a nibble: do not boost (Follow 1 catch-up).
+  slack_ttc20 = v_rel * LEAD_APPROACH_TTC_START_S
+  a_kin_20 = -(v_rel * v_rel) / (2.0 * slack_ttc20)
+  assert abs(a_kin_20) < LEAD_APPROACH_NIBBLE_MS2
+  a_20 = lead_approach_decel_ms2(v_ego, v_lead, d_follow + slack_ttc20, t4, model_prob=1.0, radar=True)
+  assert a_20 == pytest.approx(a_kin_20, abs=1e-6)
+
+  # Once kinematic |a| reaches nibble, TTC is still inside the 8–20 s window:
+  # felt floor, stronger than kinematic, still << peak.
+  slack_mid = (v_rel * v_rel) / (2.0 * (LEAD_APPROACH_NIBBLE_MS2 + 0.01))
+  ttc_mid = lead_approach_ttc_s(slack_mid, v_rel)
+  assert LEAD_APPROACH_RAPID_TTC_S < ttc_mid <= LEAD_APPROACH_TTC_START_S
   d_mid = d_follow + slack_mid
   assert 90.0 < d_mid < 140.0
   a_mid = lead_approach_decel_ms2(v_ego, v_lead, d_mid, t4, model_prob=1.0, radar=True)
@@ -569,6 +574,29 @@ def test_normal_close_ttc_floor_is_earlier_and_stronger_than_kinematic():
   assert a_rapid == pytest.approx(max(a_kin_rapid, -LEAD_APPROACH_A_MS2), abs=1e-6)
   peak = lead_approach_decel_ms2(v_ego, v_lead, d_follow + (v_rel * v_rel) / (2.0 * LEAD_APPROACH_A_MS2), t4)
   assert peak == pytest.approx(-LEAD_APPROACH_A_MS2, abs=0.05)
+
+
+def test_ttc_floor_does_not_boost_follow1_catchup_nibble():
+  """Maneuver Follow 1: 100 m same-speed catch-up must not get OPEN while |a_kin| is a nibble."""
+  v_lead = 25.0
+  v_rel = 2.5
+  v_ego = v_lead + v_rel
+  t1 = nap_t_follow(1)
+  d_follow = t1 * v_lead + STOP_DISTANCE
+  assert d_follow == pytest.approx(23.5, abs=1e-6)
+  # TTC 20 s with 2.5 m/s catch-up: slack 50 m, still well above Follow 1.
+  slack = v_rel * LEAD_APPROACH_TTC_START_S
+  d_rel = d_follow + slack
+  a_kin = -(v_rel * v_rel) / (2.0 * slack)
+  assert abs(a_kin) < LEAD_APPROACH_NIBBLE_MS2
+  a = lead_approach_decel_ms2(v_ego, v_lead, d_rel, t1, model_prob=1.0, radar=True)
+  assert a == pytest.approx(a_kin, abs=1e-6)
+  assert apply_lead_approach_overlay(0.20, a) == pytest.approx(0.20)
+  # Maneuver start 100 m: overlay stays a nibble vs Accel-1.
+  a_start = lead_approach_decel_ms2(v_ego, v_lead, 100.0, t1, model_prob=1.0, radar=True)
+  assert a_start is not None
+  assert abs(a_start) < LEAD_APPROACH_NIBBLE_MS2
+  assert apply_lead_approach_overlay(0.20, a_start) == pytest.approx(0.20)
 
 
 def test_rapid_close_still_aggressive_early():

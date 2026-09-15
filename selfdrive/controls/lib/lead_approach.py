@@ -23,8 +23,9 @@ a late 0.55 / MPC bite. A TTC floor (light ~0.26 when time-to-gap is
 under 20 s) eases earlier without a hard early brake. Rapid closes
 (high `v_rel` or short TTC) still use kinematics up to the 0.55 peak.
 Still soft only; MPC / FCW win via min(), except a far/gentle nibble must
-not steal lead-close catch-up +a on a *slow* rematch. A real close
-(`v_rel` ≥ CLEAR_DV) may apply that light overlay so we do not ride up.
+not steal lead-close catch-up +a (Follow 1–7 rematch from a large gap).
+The TTC floor only boosts once kinematic |a| is already past a nibble,
+so Accel-1 catch-up onto the selected gap still finishes.
 
 On a slight grade, radar `v_rel` / slack chatter around the follow gap used
 to snap this overlay on/off (regen bite → Accel-1 crawl → bite). Enter/exit
@@ -70,11 +71,11 @@ LEAD_APPROACH_MODEL_PROB_MIN = 0.50  # radard association gate
 # close now skips need; 10 mph already did at 2.5.
 LEAD_APPROACH_CLEAR_DV_MS = 2.0
 # Normal-close TTC floor. Kinematic a at far slack is a nibble; Justin
-# rides up, then a late bite. When time-to-follow-gap is ≤ TTC_START,
-# command at least OPEN (or v_rel/BLEED if smaller) so regen is felt
-# ~8–12 s earlier than the 0.55 peak. OPEN is Early-light, not 0.55.
-# a_feel = -min(OPEN, v_rel/BLEED) tapers as v_rel drops, so we still
-# close onto Follow Distance instead of matching far back.
+# rides up, then a late bite. When time-to-follow-gap is ≤ TTC_START
+# *and* kinematic |a| is already past NIBBLE, command at least OPEN
+# (or v_rel/BLEED if smaller) so regen is felt before the 0.55 peak.
+# Do not boost a far/catch-up nibble — that parked Follow 1 ~0.6 m long.
+# OPEN is Early-light, not 0.55. a_feel tapers as v_rel drops.
 LEAD_APPROACH_OPEN_MS2 = 0.26
 LEAD_APPROACH_TTC_START_S = 20.0
 LEAD_APPROACH_BLEED_S = 12.0
@@ -202,21 +203,19 @@ def slew_lead_approach_a(target, prev, slew=LEAD_APPROACH_SLEW_MS2):
   return t
 
 
-def apply_lead_approach_overlay(output_a, a_lead, nibble=LEAD_APPROACH_NIBBLE_MS2, v_rel=None):
+def apply_lead_approach_overlay(output_a, a_lead, nibble=LEAD_APPROACH_NIBBLE_MS2):
   """Soft overlay via min(), except a nibble must not steal catch-up +a.
 
   Matching-traffic / far-slack overlay sits at |a| ~0.06–0.13. That must
   not beat lead-close +a (Follow Distance close / rematch). Real ease and
-  MPC 0 / −a still use min(). A *clear* close (v_rel ≥ CLEAR_DV) may
-  apply that light overlay — otherwise catch-up +a rides up until the
-  TTC floor / 0.55 peak, which is the late bite.
+  MPC 0 / −a still use min(). Clear-close nibbles used to skip this and
+  left Follow 1 hanging ~0.6 m long of the selected gap.
   """
   if a_lead is None:
     return float(output_a)
   out = float(output_a)
   a = float(a_lead)
-  clear = v_rel is not None and float(v_rel) >= LEAD_APPROACH_CLEAR_DV_MS
-  if out <= 0.0 or a <= -float(nibble) or clear:
+  if out <= 0.0 or a <= -float(nibble):
     return min(out, a)
   return out
 
@@ -240,10 +239,10 @@ def lead_approach_decel_ms2(v_ego, v_lead, d_rel, t_follow, a_comfort=LEAD_APPRO
 
   Accel shape: kinematic `a = -v_rel² / (2 * slack)` matches at the gap.
   Far slack that is a nibble. If time-to-gap (`slack / v_rel`) is inside
-  TTC_START, a light OPEN floor (tapered by v_rel/BLEED) is felt earlier
-  so the 0.55 peak is not the first brake. Rapid (v_rel ≥ RAPID_DV or
-  TTC ≤ RAPID_TTC) keeps kinematics — already at/above that floor, peak
-  0.55 when the gap is dumping.
+  TTC_START *and* kinematic |a| is already past NIBBLE, a light OPEN
+  floor (tapered by v_rel/BLEED) is felt earlier so the 0.55 peak is not
+  the first brake. Rapid (v_rel ≥ RAPID_DV or TTC ≤ RAPID_TTC) keeps
+  kinematics — already at/above that floor, peak 0.55 when dumping.
   """
   if t_follow is None or float(t_follow) <= 0 or a_comfort <= 0:
     return None
@@ -275,7 +274,10 @@ def lead_approach_decel_ms2(v_ego, v_lead, d_rel, t_follow, a_comfort=LEAD_APPRO
   a_needed = -(v_rel * v_rel) / (2.0 * slack)
   ttc = lead_approach_ttc_s(slack, v_rel)
   rapid = v_rel >= LEAD_APPROACH_RAPID_DV_MS or ttc <= LEAD_APPROACH_RAPID_TTC_S
-  if (not rapid) and ttc <= LEAD_APPROACH_TTC_START_S:
+  # Boost only once kinematic ease is already a real brake. Catch-up from
+  # 100 m onto Follow 1 has TTC ≤ 20 s with |a_kin| still a nibble; boosting
+  # that to OPEN parked ~0.6 m long of the selected gap.
+  if (not rapid) and ttc <= LEAD_APPROACH_TTC_START_S and a_needed <= -LEAD_APPROACH_NIBBLE_MS2:
     a_feel = -min(LEAD_APPROACH_OPEN_MS2, v_rel / LEAD_APPROACH_BLEED_S)
     a_needed = min(a_needed, a_feel)
   return max(float(a_needed), -float(a_comfort))
