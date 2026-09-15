@@ -188,6 +188,8 @@ Triple-tap **NAP** (1.0 s window → side popup; not under Driving Mannerisms) o
 
 `NAPDmFalseAlertIgnore` (only when Simulate Look is Off) owns the **phone-only** path: when `phoneProb` is above `_PHONE_THRESH` (0.5) and pose/eye are **not** alarming, it soft-clears only `distracted_types['phone']` so a false device “Driver Distracted” can recover without a real glance. If pose or eye are actively alarming, it does **not** start or keep a hold — those timers keep draining.
 
+Below **2 mph** (`DM_LOOKAWAY_GATE_MPH`; strictly below, ~0.89 m/s) looking-away / distraction / eyes-off-road alerts do **not** fire, whether Simulate Look / FAI are On or Off. This reuses the stock standstill exemption (pause before the green prompt; recover if already orange) and ORs in ego speed, because Pre-AP `CS.standstill` is only true when fully stopped — creeping at a light still nagged. Toggles stay as set. Above 2 mph, Sim Look / FAI / stock 3 / 5 / 11 s are unchanged. FCW / AEB / hard cancels are not this path.
+
 Always-on DM when not engaged does **not** simulate or ignore. Either toggle **Off** = that path is stock. Mutex: only one On. Hands-on ≥ 2 / steer disengage, door, reverse, and stalk cancel are unchanged.
 
 ## Where to look
@@ -205,6 +207,6 @@ Always-on DM when not engaged does **not** simulate or ignore. Either toggle **O
 - `selfdrive/car/tesla/tests/test_preap_sticky_max.py` — sticky MAX / silent long pause / one SET / double SET
 - `selfdrive/mapd/tests/test_map_speed_policy.py` — maps rebase only on posted-value change
 - `selfdrive/monitoring/dm_toggles.py` — mutually exclusive write/read helpers (Simulate Look wins stale both-On)
-- `selfdrive/monitoring/policy.py` — stock DM + optional Simulate Look (`NAPDmSimulateLooking`, default Off) and False Alert Ignore (`NAPDmFalseAlertIgnore`, default Off)
+- `selfdrive/monitoring/policy.py` — stock DM + optional Simulate Look (`NAPDmSimulateLooking`, default Off) and False Alert Ignore (`NAPDmFalseAlertIgnore`, default Off); `DM_LOOKAWAY_GATE_MPH` (2 mph) look-away pause
 - `selfdrive/ui/layouts/settings/hidden_toggles.py` — triple-tap NAP popup (Force Offroad, Simulate Look, False Alert Ignore)
-- `selfdrive/monitoring/test_monitoring.py` — Simulate Look full-wipe recover; FAI phone-only vs pose/eye; mutual exclusion
+- `selfdrive/monitoring/test_monitoring.py` — Simulate Look full-wipe recover; FAI phone-only vs pose/eye; mutual exclusion; look-away pause below 2 mph
