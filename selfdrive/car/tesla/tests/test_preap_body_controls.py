@@ -253,10 +253,11 @@ def test_extra_forward_only_when_on_and_no_existing_0x45():
   assert extra_stw_forward_needed([], 11, auto_dry, False, wiper_cancel=True, cancel_now=True) is True
   assert extra_stw_forward_needed(existing, 10, auto_dry, False, wiper_cancel=True) is False
   assert extra_stw_forward_needed(existing, 11, auto_dry, False, wiper_cancel=True, cancel_now=True) is False
-  # Collar3/4 uses the same 10 Hz hold as Int. Off without cancel leaves the stalk.
+  # Collar3/4 uses the High 10 ms last-win, not the 10 Hz Int slot.
   assert extra_stw_forward_needed([], 10, False, False, collar_on=True) is True
-  assert extra_stw_forward_needed([], 11, False, False, collar_on=True) is False
+  assert extra_stw_forward_needed([], 11, False, False, collar_on=True) is True
   assert extra_stw_forward_needed(existing, 10, False, False, collar_on=True) is False
+  assert extra_stw_forward_needed(existing, 11, False, False, collar_on=True) is False
   assert extra_stw_forward_needed([], 11, False, False, collar_cancel=True, cancel_now=True) is True
   assert extra_stw_forward_needed([], 11, False, False, collar_cancel=True) is False
   assert extra_stw_forward_needed([], 10, False, False) is False
@@ -317,10 +318,10 @@ def test_settings_copy_describes_collar_experiment():
   assert "collar4" in text
   assert "tipwipe" in text
   assert "spray" in text
-  assert "10 hz" in text
+  assert "10 ms" in text
+  assert "last-win" in text
   assert "live" in text
   assert "crc" in text
-  assert "mc+1" in text
   assert "src 128" in text
   assert "off" in text
   assert "auto" in text
@@ -3144,7 +3145,7 @@ def test_collar_off_matches_stock_live_collar(monkeypatch):
     tc, CruiseButtons.IDLE, CANBUS.party, 6, msg_stw) == stock
 
 
-def test_stock_cc_collar_extra_forwards_10hz_not_a_second_0x45(monkeypatch):
+def test_stock_cc_collar_extra_forwards_every_10ms_not_a_second_0x45(monkeypatch):
   from types import SimpleNamespace
 
   from openpilot.selfdrive.car.tesla import preap_body_controls as body
@@ -3162,7 +3163,8 @@ def test_stock_cc_collar_extra_forwards_10hz_not_a_second_0x45(monkeypatch):
     assert out[0][0] == STW_ACTN_RQ_ADDR
     fake.sent.clear()
     out = body.stock_cc_update_with_overlay(fake, cs, 11, None, 0)
-    assert out == []
+    assert len(out) == 1
+    assert out[0][0] == STW_ACTN_RQ_ADDR
     already = [(STW_ACTN_RQ_ADDR, b"\x00" * 8, 0)]
     monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: already)
     out = body.stock_cc_update_with_overlay(fake, cs, 20, None, 0)
@@ -3205,11 +3207,10 @@ def test_collar_to_off_sends_rest_cancel_burst_then_leaves_stalk(monkeypatch):
     reset_auto_gates()
 
 
-def test_stock_cc_collar_uses_next_mc_like_int_and_valid_crc(monkeypatch):
+def test_stock_cc_collar_uses_live_mc_like_high_and_valid_crc(monkeypatch):
   from types import SimpleNamespace
 
   from opendbc.can import CANPacker
-  from opendbc.car.tesla.preap.stock_cc_spoofer import StockCCSpoofer
   from opendbc.car.tesla.preap.teslacan import TeslaCANPreAP
   from opendbc.car.tesla.values import CANBUS
 
@@ -3226,7 +3227,7 @@ def test_stock_cc_collar_uses_next_mc_like_int_and_valid_crc(monkeypatch):
   monkeypatch.setattr(body, "requested_collar_posn", lambda: 3)
   monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: [])
 
-  spoofer = StockCCSpoofer()
+  fake = _FakeSpoofer()
   cs = SimpleNamespace(msg_stw_actn_req={
     "SpdCtrlLvr_Stat": 0,
     "MC_STW_ACTN_RQ": 9,
@@ -3239,7 +3240,7 @@ def test_stock_cc_collar_uses_next_mc_like_int_and_valid_crc(monkeypatch):
   })
   reset_auto_gates()
   try:
-    out = body.stock_cc_update_with_overlay(spoofer, cs, 10, tc, CANBUS.party)
+    out = body.stock_cc_update_with_overlay(fake, cs, 10, tc, CANBUS.party)
     assert len(out) == 1
     addr, dat, bus = out[0]
     assert addr == STW_ACTN_RQ_ADDR
@@ -3247,8 +3248,9 @@ def test_stock_cc_collar_uses_next_mc_like_int_and_valid_crc(monkeypatch):
     assert stw_collar_posn(dat) == 3
     assert stw_wash(dat) == 0
     assert _byte(dat) != STW_WASHER_SPRAY
-    assert (dat[6] >> 4) & 0x0F == 10  # Int hold is MC+1, not live MC
+    assert (dat[6] >> 4) & 0x0F == 9  # High last-win: live MC, not MC+1
     assert dat[7] == tc.stw_crc(dat[:7])
+    assert fake.sent == []  # Collar uses send_replaced_live_stw, not _send
   finally:
     reset_auto_gates()
 
@@ -3257,7 +3259,8 @@ def test_parked_collar3_tx_posn3_when_create_action_request_is_stock(monkeypatch
   """Stalk Off + Collar3 must TX WprSw6Posn=3 even if overlay isn't installed.
 
   eae5beb extra-forward used send_replaced_live_stw / unpatched packer and
-  TXed live Off (collar=0). Justin's 0x45 monitor did not move.
+  TXed live Off (collar=0). Overlay on the packed TX is required. 10 Hz
+  also loses to repeating bus-0 Off — hold every 10 ms like High.
   """
   from types import SimpleNamespace
 
@@ -3289,22 +3292,20 @@ def test_parked_collar3_tx_posn3_when_create_action_request_is_stock(monkeypatch
   })
   reset_auto_gates()
   try:
-    stock = tc.create_action_request(0, CANBUS.party, 10, cs.msg_stw_actn_req)
+    stock = tc.create_action_request(0, CANBUS.party, 9, cs.msg_stw_actn_req)
     assert stw_collar_posn(stock[1]) == 0
-    out = body.stock_cc_update_with_overlay(spoofer, cs, 10, tc, CANBUS.party)
-    assert len(out) == 1
-    addr, dat, bus = out[0]
-    assert addr == STW_ACTN_RQ_ADDR
-    assert bus == CANBUS.party
-    assert stw_collar_posn(dat) == 3
-    assert stw_wash(dat) == 0
-    assert _byte(dat) != STW_WIPER_ON
-    assert _byte(dat) != STW_WASHER_SPRAY
-    assert (dat[6] >> 4) & 0x0F == 10
-    assert dat[7] == tc.stw_crc(dat[:7])
-    # Next 10 ms slot must not inject a second 0x45.
-    out = body.stock_cc_update_with_overlay(spoofer, cs, 11, tc, CANBUS.party)
-    assert out == []
+    for frame in range(10, 30):
+      out = body.stock_cc_update_with_overlay(spoofer, cs, frame, tc, CANBUS.party)
+      assert len(out) == 1
+      addr, dat, bus = out[0]
+      assert addr == STW_ACTN_RQ_ADDR
+      assert bus == CANBUS.party
+      assert stw_collar_posn(dat) == 3
+      assert stw_wash(dat) == 0
+      assert _byte(dat) != STW_WIPER_ON
+      assert _byte(dat) != STW_WASHER_SPRAY
+      assert (dat[6] >> 4) & 0x0F == 9  # live MC last-win, like High
+      assert dat[7] == tc.stw_crc(dat[:7])
   finally:
     reset_auto_gates()
 
@@ -3344,7 +3345,7 @@ def test_parked_collar4_tx_posn4_when_create_action_request_is_stock(monkeypatch
     _, dat, _ = out[0]
     assert stw_collar_posn(dat) == 4
     assert stw_wash(dat) == 0
-    assert (dat[6] >> 4) & 0x0F == 2
+    assert (dat[6] >> 4) & 0x0F == 1
     assert dat[7] == tc.stw_crc(dat[:7])
   finally:
     reset_auto_gates()

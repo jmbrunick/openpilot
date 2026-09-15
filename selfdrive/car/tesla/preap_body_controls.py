@@ -63,12 +63,13 @@ Collar3/Collar4 is a parked experiment on the same 0x45. Justin's 2014
 4-click collar sends Off=0 Int1=1 Int2=2 Low=5 High=6 and never 3 or 4.
 DBC WprSw6Posn INTERVAL3=3 INTERVAL4=4 is “unused on 4-click collar.”
 Hypothesis: 3/4 are rain Auto. Overlay WprSw6Posn=3 or 4 and force
-WprWashSw_Psd=0 (no TIPWIPE, no WASH). Extra-forward like Int (MC+1,
-resign CRC, ~10 Hz) so bus-0 rest cannot last-win — and patch those
-bits on the packed TX even if create_action_request is unpatched.
-Off extra-forwards live collar so the force drops. Do not weaken panda
-safety — 0x45 is already whitelisted. Camera Auto (#159) is unchanged
-while this setting is Off.
+WprWashSw_Psd=0 (no TIPWIPE, no WASH). Live stalk Off TXes collar=0 on
+bus 0 continuously; 10 Hz Int hold loses that last-win. Collar3/4 uses
+the High path: extra-forward every 10 ms on the live MC, overlay 3/4
+on the packed TX (even if create_action_request is unpatched), resign
+CRC. Never a second 0x45 in the same tick. Off extra-forwards live
+collar so the force drops. Do not weaken panda safety — 0x45 is already
+whitelisted. Camera Auto (#159) is unchanged while this setting is Off.
 """
 
 # Params / UI. 0 is off (today's forwarded stalk). Indexes, not raw DBC.
@@ -242,13 +243,13 @@ def extra_stw_forward_needed(can_sends, frame: int, wiper_on: bool, high_beam_on
   Pre-AP drops latched intermittent. Falling-edge cancel_now does not
   wait for the slot. High extra-forwards every 10 ms so held nibble 4
   can last-win against repeating bus-0 IDLE. Collar3/4 uses that same
-  10 Hz Int hold (MC+1 extra-forward) so bus-0 live Off/Int cannot
-  last-win; Off bursts live collar (no force) then leaves the stalk.
+  10 ms last-win (live-MC extra-forward) so bus-0 live Off cannot
+  overwrite 3/4; Off bursts live collar (no force) then leaves the stalk.
   candump src 0 is the live stalk; our TX echo is src 128 (returned | 0x80).
   """
   if not (stalk_test_active(wiper_on, high_beam_on) or wiper_cancel or collar_on or collar_cancel):
     return False
-  if not high_beam_on and not cancel_now and int(frame) % STW_FORWARD_SLOT != 0:
+  if not high_beam_on and not collar_on and not cancel_now and int(frame) % STW_FORWARD_SLOT != 0:
     return False
   return not any(msg[0] == STW_ACTN_RQ_ADDR for msg in can_sends)
 
@@ -934,10 +935,10 @@ def stock_cc_update_with_overlay(self, CS, frame, tesla_can, can_bus_party):
   gear from this CS: Park/Neutral stay wipe=0 and still cancel if we had
   been wiping. Primes the ROAD VisionIpc helper only while Auto so poll()
   does not recv on this CTRL_HIGH thread. Off/Int/On stop the helper.
-  Collar3/4 extra-forwards on that same 10 Hz Int-hold slot with
-  WprSw6Posn forced, WprWashSw_Psd=0, and MC+1 so bus-0 rest cannot
-  last-win. Off bursts live collar then leaves the stalk. Our TX echo
-  is candump src 128, not src 0 (live stalk).
+  Collar3/4 extra-forwards every 10 ms like High (live MC, in-place
+  replace) with WprSw6Posn forced and WprWashSw_Psd=0 so bus-0 Off
+  cannot last-win. Off bursts live collar then leaves the stalk. Our
+  TX echo is candump src 128, not src 0 (live stalk).
   """
   orig = _ORIG_STOCK_CC_UPDATE
   if orig is None:
@@ -962,17 +963,18 @@ def stock_cc_update_with_overlay(self, CS, frame, tesla_can, can_bus_party):
                               collar_on=collar, collar_cancel=collar_cancel):
     msg_stw = getattr(CS, "msg_stw_actn_req", None)
     if msg_stw is not None:
-      if high_setting:
+      if high_setting or collar:
         # Same MC as the bus-0 RX rest — edit that frame, do not +1 a second 0x45.
+        # Collar must last-win like High: live Off repeats collar=0 on bus 0.
         sent = send_replaced_live_stw(self, CS, tesla_can, can_bus_party)
       else:
-        # Int hold and Collar3/4: MC+1 extra-forward so bus-0 rest cannot last-win.
+        # Int hold (10 Hz) and collar Off-cancel burst.
         sent = self._send(CS, tesla_can, can_bus_party,
                           int(msg_stw.get("SpdCtrlLvr_Stat", 0) or 0))
       if sent is not None:
         # Pack collar on the TX itself. create_action_request overlay is not
-        # enough — if that method is unpatched, Int-style _send would TX live
-        # Off (collar=0) and the 0x45 monitor would not move.
+        # enough — if that method is unpatched, live-MC replace would TX Off
+        # (collar=0) and the 0x45 monitor would not move.
         sent = overlay_collar_on_can_msg(sent, tesla_can, requested_collar_posn())
         can_sends.append(sent)
         had_stw = True
