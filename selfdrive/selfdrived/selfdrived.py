@@ -20,7 +20,7 @@ from openpilot.selfdrive.controls.lib.blinker_lateral_pause import (
 )
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 from openpilot.selfdrive.selfdrived.events import Events, ET
-from openpilot.selfdrive.selfdrived.helpers import ExcessiveActuationCheck, preap_leave_drive_clears_mismatch
+from openpilot.selfdrive.selfdrived.helpers import ExcessiveActuationCheck, preap_not_in_drive_clears_mismatch
 from openpilot.selfdrive.selfdrived.preap_regen import PreAPChimeState, RegenDemandCheck, update_preap_chimes
 from openpilot.selfdrive.selfdrived.state import StateMachine
 from openpilot.selfdrive.selfdrived.alertmanager import AlertManager, set_offroad_alert
@@ -357,13 +357,12 @@ class SelfdriveD:
                                                     LaneChangeState.laneChangeFinishing):
       self.events.add(EventName.laneChange)
 
-    # Leave Drive (R/P/other): clear the 3X/OP mismatch latch, same
-    # cleanup as stalk cancel. Do not clear on Drive entry — in-Drive
-    # engagement uses live panda/selfdrived checks.
-    if preap_leave_drive_clears_mismatch(
+    # While not in Drive (R/P/other): hold the 3X/OP mismatch latch clear
+    # so it is already gone before Drive return. Same cleanup as stalk
+    # cancel. In-Drive checks and engagement are unchanged.
+    if preap_not_in_drive_clears_mismatch(
         fingerprint=self.CP.carFingerprint,
         gear=CS.gearShifter,
-        gear_prev=self.CS_prev.gearShifter,
     ):
       self.mismatch_counter = 0
       self.cruise_mismatch_counter = 0

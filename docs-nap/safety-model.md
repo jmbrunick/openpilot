@@ -29,7 +29,7 @@ All actual safety logic remains active:
 - `controls_allowed` gating on every TX
 - Disengage on hands-on override (level >= 2), except during a blinker-latched driver turn (one lamp or held LEFT/RIGHT, flash-latched ~1s, then hand-on until release)
 - Disengage on EPAS error codes 6–9, except during that same turn pause
-- Disengage on door open, gear out of Drive via `pcm_cruise_check(false)` (same re-arm as steering disengage, including the Drive rising edge). That clears `cruise_engaged_prev`. Python reverse/door `hard_cancel_session` still spoofs CANCEL to drop stock CC, but that spoof is **TX-only** — panda does not RX its own TX, so it cannot clear the latch the way a real stalk disable does. Drive SET while `!controls_allowed` pulses `pcm_cruise_check(false)` then `true`, and TX CANCEL while already disallowed also clears the latch, so R/P→Drive does not need an extra stalk cancel→engage cycle. selfdrived clears the 3X/OP mismatch counters **when leaving Drive**, not on Drive entry. **Flash the panda** after this safety change.
+- Disengage on door open, gear out of Drive via `pcm_cruise_check(false)` **while not in Drive** so `cruise_engaged_prev` is already clear before Drive return. Python reverse/door `hard_cancel_session` still spoofs CANCEL to drop stock CC, but that spoof is **TX-only** — panda does not RX its own TX. Drive SET while `!controls_allowed` is last-resort only. TX CANCEL while already disallowed also clears the latch. selfdrived holds the 3X/OP mismatch counters at 0 for the whole R/P period — not on Drive entry. **Flash the panda** after this safety change.
 - Disengage on stalk cancel (with 600 ms echo filter)
 - AEB events blocked from openpilot
 - EPB `epasControl` mode validation

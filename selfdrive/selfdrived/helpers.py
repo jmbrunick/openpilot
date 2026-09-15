@@ -91,13 +91,14 @@ def _gear_is_drive(gear) -> bool:
   return name == "drive" or gear == "drive"
 
 
-def preap_leave_drive_clears_mismatch(*, fingerprint: str, gear, gear_prev) -> bool:
-  """True on the Drive → R/P/other falling edge (Pre-AP only).
+def preap_not_in_drive_clears_mismatch(*, fingerprint: str, gear) -> bool:
+  """True while Pre-AP gear is not Drive.
 
-  Clear the 3X/OP controls-mismatch counters on leave-Drive, same
-  cleanup spirit as stalk cancel. Do not clear on Drive entry: later
-  engagement in Drive uses the normal live panda/selfdrived checks.
+  Hold the 3X/OP controls-mismatch counters at 0 for the whole R/P
+  (gear-out) period so the latch is already gone before Drive return.
+  Same cleanup spirit as stalk cancel. Do not clear on Drive entry:
+  in-Drive engagement uses the normal live panda/selfdrived checks.
   """
   if fingerprint != PREAP_FINGERPRINT:
     return False
-  return _gear_is_drive(gear_prev) and (not _gear_is_drive(gear))
+  return not _gear_is_drive(gear)
