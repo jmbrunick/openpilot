@@ -157,20 +157,21 @@ WIPER_SPEED_LABELS = ["Off", "Int", "On", "Auto"]
 HIGH_LOW_BEAM_VALUES = [0, 1, 2]
 HIGH_LOW_BEAM_LABELS = ["Off", "Low", "High"]
 WIPER_SPEED_DESCRIPTION = (
-  "Rewrite the wiper nibble on the forwarded stalk (0x45 STW_ACTN_RQ). "
+  "Rewrite the wiper / collar bits on the forwarded stalk (0x45 STW_ACTN_RQ). "
   "Off leaves the driver's real stalk nibble alone unless Int/On just "
   "turned off — then extra-forward rest to cancel latched intermittent. "
-  "Int/On set the high nibble to 1 (wipers) and hold it — they do not "
-  "spray. Auto holds that same nibble 1 only when the car is on, gear is "
+  "Int/On set the high nibble to 1 (TIPWIPE) and hold it — they do not "
+  "spray. Auto does not use TIPWIPE: it overlays WprSw6Posn INTERVAL1 "
+  "(collar=1) and WprWashSw_Psd=0 only when the car is on, gear is "
   "Drive or Reverse, and the 3X road camera sees a rainy or icy/frosted "
-  "windshield. While Auto is selected and dry (or Park/Neutral), still "
-  "extra-forward 0x45 rest with nibble 1 cleared so Pre-AP drops ~32 s "
-  "intermittent; a wipe 1→0 sends rest immediately. Park and Neutral "
-  "never Auto-wipe. Default Off — Auto is opt-in, not every drive. DAS "
-  "wiper fields stay 0 (they were ignored and caused a controls mismatch). "
-  "Do not engage NAP and do not pull the stalk. Pre-AP may still see the "
-  "real stalk rest on bus 0; holding nibble 1 is what already works, and "
-  "Auto dry must extra-forward rest to cancel. No spray. No auto headlights."
+  "windshield. Hold INTERVAL1 at ~100 Hz (same last-win as high-beam) so "
+  "live stalk Off (collar=0) cannot cancel. While Auto is selected and dry "
+  "(or Park/Neutral), still extra-forward 0x45 rest with collar forced 0 "
+  "and nibble 1 cleared so Pre-AP drops intermittent; a wipe 1→0 sends "
+  "rest immediately. Park and Neutral never Auto-wipe. Default Off — Auto "
+  "is opt-in, not every drive. DAS wiper fields stay 0 (they were ignored "
+  "and caused a controls mismatch). Do not engage NAP and do not pull the "
+  "stalk. No stalk Auto required. No spray. No auto headlights."
 )
 HIGH_LOW_BEAM_DESCRIPTION = (
   "Pre-AP Model S only, for on-car testing. Default Off. Low is the same as "
