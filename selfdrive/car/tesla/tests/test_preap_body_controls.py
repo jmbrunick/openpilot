@@ -3441,6 +3441,9 @@ def test_ui_and_params_key_is_nap_wiper_collar():
   card = (repo / "selfdrive" / "car" / "card.py").read_text()
   assert "_publish_collar_hold" in card
   assert "collar_hold_sends" in card
+  assert "TESLA_MODEL_S_PREAP" in card
+  assert "elif getattr(self, \"_tesla_preap\"" not in card
+  assert "write_collar_heartbeat" in card
 
 
 def test_wprsw6posn_is_byte6_low3_justins_dump():
@@ -3480,6 +3483,50 @@ def test_collar_hold_sends_appends_when_idle_and_overlays_existing(monkeypatch):
   out = collar_hold_sends(already, cs, tc, CANBUS.party)
   assert len(out) == 1
   assert out[0][1][6] & 0x07 == 3
+
+
+def test_collar_hold_sends_when_tesla_can_is_none(monkeypatch):
+  """Parked last-mile must pack 0x45 even if CI.CC.tesla_can is missing."""
+  from types import SimpleNamespace
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  monkeypatch.setattr(body, "read_wiper_collar_setting", lambda: STW_COLLAR_POSN_3)
+  cs = SimpleNamespace(msg_stw_actn_req=None)
+  out = collar_hold_sends([], cs, None, 0)
+  assert len(out) == 1
+  assert out[0][0] == STW_ACTN_RQ_ADDR
+  assert out[0][1][6] & 0x07 == 3
+  assert stw_wash(out[0][1]) == 0
+
+
+def test_collar_status_writes_err_when_collar_off(monkeypatch, tmp_path):
+  from types import SimpleNamespace
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  path = tmp_path / "NAPWiperCollar"
+  status = tmp_path / "NAPWiperCollarStatus"
+
+  class _Boom:
+    def get(self, *args, **kwargs):
+      raise RuntimeError("unknown key")
+
+    def put(self, *args, **kwargs):
+      raise RuntimeError("unknown key")
+
+    def get_param_path(self, key=""):
+      return str(tmp_path)
+
+  monkeypatch.setattr(body, "_collar_file_paths", lambda: [str(path)])
+  monkeypatch.setattr(body, "_get_params", lambda: _Boom())
+  monkeypatch.setattr(body, "read_wiper_collar_setting", lambda: 0)
+  body._last_collar_status_t = 0.0
+  collar_hold_sends([], SimpleNamespace(msg_stw_actn_req=None), None, 0)
+  text = status.read_text()
+  assert "collar=0" in text
+  assert "err=collar_off" in text
+  assert "tx=" in text
 
 
 def test_sidecar_file_is_collar3_when_params_unknown(monkeypatch, tmp_path):
