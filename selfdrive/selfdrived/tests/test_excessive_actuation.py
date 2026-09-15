@@ -1,8 +1,5 @@
 from types import SimpleNamespace
 
-import numpy as np
-
-from openpilot.selfdrive.locationd.helpers import Measurement, Pose
 from openpilot.selfdrive.selfdrived.helpers import (
   EXCESSIVE_LAT_ACCEL,
   EXCESSIVE_LONG_ACCEL_NEG,
@@ -30,11 +27,11 @@ EXTREME_DECEL_MPS2 = -12.0
 V_EGO = 25.0  # m/s, ~56 mph
 
 
-def _pose(*, ax=0.0, yaw_rate=0.0) -> Pose:
-  z = np.zeros(3)
-  acc = Measurement(np.array([ax, 0.0, 0.0]), z)
-  ang = Measurement(np.array([0.0, 0.0, yaw_rate]), z)
-  return Pose(Measurement(z, z), Measurement(z, z), acc, ang)
+def _pose(*, ax=0.0, yaw_rate=0.0):
+  return SimpleNamespace(
+    acceleration=SimpleNamespace(x=ax),
+    angular_velocity=SimpleNamespace(yaw=yaw_rate),
+  )
 
 
 def _sm(*, lat_active=True, long_active=False, roll=0.0):
