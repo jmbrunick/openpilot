@@ -1,3 +1,7 @@
+NAP One-Pedal Long (2026-09-15)
+========================
+* Settings → NAP → **Driving Mannerisms** → **One-Pedal Long** (`NAPOnePedalLong`, default **Off**). Pedal-interceptor Pre-AP only. **On + OP long active + accelerator rising from rest** (interceptor `gasPressed`, not `DI_pedalPos`): kick software long off with the same **silent pause** as brake (sticky MAX, one SET resumes, no `pedalCruiseDisabled` chime). After that kick the interceptor **RELEASEs** (`ENABLE=0`, command=0) and **stays RELEASED on lift** so Tesla physical pedal / stock lift-regen is the one-pedal path (same envelope as `REGEN_MAX` ≈ −1.5 m/s²). Limits: do **not** re-ACQUIRE on lift (that is the ENABLE 0↔1 chatter from earlier `GAS_COMMAND` overlays), do **not** rewrite driver pedal DI while ENABLE=1, cannot invent friction beyond interceptor regen. **Off** = stock: gas overrides then A+B/A3 resume climb. Standstill wait-for-gas resume, tip-brake glide (#157), A+B/A3, brake cancel, FCW/AEB / #163–#167 unchanged.
+
 NAP 2026-09-15 test group (2026-09-15)
 ========================
 * **#163 Safety / knockoff:** Pre-AP `ExcessiveActuationCheck` 2× → **3× ISO** (lateral 6.0 → **9.0 m/s²** ~0.92 g, long accel 4.0 → **6.0**, decel −7.0 → **−10.5**). Faster-but-legal ramps stay in; a real panic swerve / panic stop still trips. Other fingerprints stay at 2×. Locationd / camera / panda ISO steer-command limits unchanged.
