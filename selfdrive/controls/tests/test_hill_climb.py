@@ -531,7 +531,7 @@ def test_settings_and_docs_wire_hill_climb():
   assert "maps-elevation lookahead" in docs.lower() or "not included" in docs.lower()
   assert "IMU pitch" in docs or "IMU-pitch" in docs
   assert "hill climb" in readme.lower() or "Hill Climb" in readme
-  hm = next(p for p in releases.split("\n\n") if "Hill Climb" in p)
+  hm = next(p for p in releases.split("\n\n") if p.startswith("NAP Hypermile Hill Climb"))
   assert "not included" in hm.lower() or "NOT included" in hm or "no maps-elevation" in hm.lower()
   assert "nap-release" in hm.lower()
   assert "Hill Climb" in arch or "hill climb" in arch
