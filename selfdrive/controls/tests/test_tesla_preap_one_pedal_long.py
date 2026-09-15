@@ -1,15 +1,16 @@
 """One-Pedal Long: gas-from-rest silent long pause + RELEASE regen.
 
-Toggle On + OP long + accelerator rising from rest pauses software long
-(same function as brake today — lat stays, not USER_DISABLE / full
-session cancel). Interceptor RELEASEs on that press and stays RELEASED
-on lift so Tesla stock lift-regen is the one-pedal path. Resume-long
-after pause is still one SET (sticky MAX), same as brake pause. No
-GAS_COMMAND DI rewrite, no re-ACQUIRE on lift (ENABLE 0↔1 chatter).
-Toggle Off is stock gas override + A+B/A3 resume. Tip-brake glide and
-FCW/AEB are not this path.
+Toggle On + OP long already on + accelerator rising from rest pauses
+software long (same function as brake today — lat stays, not
+USER_DISABLE / full session cancel). Engage-while-gas-pressed (one or
+two SET pulls) then lift still arms / starts long via A+B + A3.
+Interceptor RELEASEs on a from-rest pause and stays RELEASED on lift.
+Resume-long after pause is still one SET (sticky MAX). Toggle Off is
+stock gas override + A+B/A3 resume.
 """
 from types import SimpleNamespace
+
+import pytest
 
 from opendbc.car.tesla.preap.carcontroller import (
   PedalAuthorityState,
@@ -77,6 +78,7 @@ def controller_env(monkeypatch):
 
 
 def _kick_long_on_gas(cc, cs):
+  cs.engagement.maybe_one_pedal_gas_kick(False, True)
   assert cs.engagement.maybe_one_pedal_gas_kick(True, True)
   cs.enableLongControl = cs.engagement.enableLongControl
   cs.enableJustCC = cs.engagement.enableJustCC
@@ -173,6 +175,7 @@ def test_one_pedal_wires_carstate_after_interceptor_gas():
   fn = eng.split("def maybe_one_pedal_gas_kick", 1)[1]
   body = fn.split('"""', 2)[2].split("\n  def ", 1)[0]
   assert "_drop_longitudinal_keep_lateral" in body
+  assert "_preap_one_pedal_long_was_on" in body
   assert "hard_cancel_session(" not in body
   assert "cruiseEnabled = False" not in body
   keys = (root / "common/params_keys.h").read_text()
@@ -213,3 +216,44 @@ def test_one_pedal_gas_pause_keeps_session_for_resume(monkeypatch):
   assert cs.engagement.cruiseEnabled
   assert not cs.engagement.enableLongControl
   assert not getattr(cs.engagement, "preap_cc_cancel_needed", False)
+
+
+def test_engage_while_gas_held_lift_acquires_with_one_pedal_on(monkeypatch):
+  """SET with foot already on gas, then lift: A+B ACQUIRE, not a one-pedal pause."""
+  from opendbc.car.tesla.preap.carcontroller import ENGAGE_GRACE_FRAMES
+
+  controller, cc, cs, tesla_can = controller_env(monkeypatch)
+  monkeypatch.setattr(
+    'opendbc.car.tesla.preap.carcontroller.get_preap_accel_limits',
+    lambda _v_ego: (-1.5, 0.8),
+  )
+  assert not cs.engagement.maybe_one_pedal_gas_kick(True, True)
+  cs.engagement.process_buttons(
+    cruise_buttons=2, prev_cruise_buttons=0,
+    curr_time_ms=1000, v_ego=15.0, speed_units="KPH",
+    use_pedal=True, pedal_long_allowed=True,
+    long_control_allowed=True, real_brake_pressed=False)
+  assert cs.engagement.cruiseEnabled
+  assert cs.engagement.enableLongControl
+  assert not cs.engagement.maybe_one_pedal_gas_kick(True, True)
+  assert cs.engagement.enableLongControl
+  cs.cruiseEnabled = True
+  cs.enableLongControl = True
+  cs.out.gasPressed = True
+  cs.out.aEgo = 0.72
+  cc.longActive = False
+  controller.update(cc, cs, frame=0, tesla_can=tesla_can, can_bus_party=0)
+  assert cs.engagement.enableLongControl
+
+  cs.out.gasPressed = False
+  cs.out.aEgo = 0.08
+  assert not cs.engagement.maybe_one_pedal_gas_kick(False, True)
+  assert cs.engagement.enableLongControl
+  cs.enableLongControl = True
+  cc.longActive = True
+  cc.actuators.accel = 0.55
+  acquire = controller.update(cc, cs, frame=2, tesla_can=tesla_can, can_bus_party=0)
+  assert _decode_pedal_command(acquire[0]).enabled
+  assert cs.pedal_authority_action == int(PedalCommandAction.ACQUIRE)
+  assert (2 - controller.preap_long_engage_frame) >= ENGAGE_GRACE_FRAMES
+  assert controller.vdas.jerk_limiter.a_limited == pytest.approx(0.72, abs=0.08)

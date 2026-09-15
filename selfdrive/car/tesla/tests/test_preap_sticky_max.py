@@ -493,6 +493,7 @@ def test_one_pedal_gas_kick_keeps_held_max_and_session():
   install_blinker_lat_pause()
   held = 55 * CV.MPH_TO_KPH
   eng = _engaged(pedal_kph=held)
+  assert not eng.maybe_one_pedal_gas_kick(False, True)
   assert eng.maybe_one_pedal_gas_kick(True, True)
   assert eng.cruiseEnabled
   assert not eng.enableLongControl
@@ -508,6 +509,7 @@ def test_one_pedal_gas_pause_matches_brake_one_set_resume():
   held = 55 * CV.MPH_TO_KPH
   gas = _engaged(pedal_kph=held)
   brake = _engaged(pedal_kph=held)
+  assert not gas.maybe_one_pedal_gas_kick(False, True)
   gas.maybe_one_pedal_gas_kick(True, True)
   gas.maybe_one_pedal_gas_kick(False, True)
   _buttons(brake, brake=True, t_ms=2000)
@@ -529,6 +531,7 @@ def test_one_pedal_gas_kick_one_set_resumes_held_max():
   install_blinker_lat_pause()
   held = 55 * CV.MPH_TO_KPH
   eng = _engaged(pedal_kph=held)
+  assert not eng.maybe_one_pedal_gas_kick(False, True)
   eng.maybe_one_pedal_gas_kick(True, True)
   eng.maybe_one_pedal_gas_kick(False, True)
   _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=4000, v_ego=13.4)

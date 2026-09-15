@@ -88,6 +88,8 @@ def gas_should_user_disable(*, disengage_on_accelerator: bool,
   That event is USER_DISABLE (full session cancel / take-control).
   One-Pedal Long On must never take it: gas-from-rest is the same
   silent long pause as brake (lat stays, sticky MAX, one SET resumes).
+  This does not touch OVERRIDE_LONGITUDINAL or the A+B / A3 gas-lift
+  handoff. Engage-while-gas-pressed still starts long on lift.
   Toggle Off (default): stock DisengageOnAccelerator still applies.
   """
   return bool(disengage_on_accelerator) and not bool(one_pedal_long)
