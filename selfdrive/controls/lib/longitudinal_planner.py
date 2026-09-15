@@ -342,12 +342,15 @@ class LongitudinalPlanner:
     self._hill_pitch = hill_pitch
 
     # Slower radar lead: Early 0.55 ease as soon as radar feedback is
-    # reasonable (200 m Bosch ceiling, 24 s head-start, clear-close skips
+    # reasonable (200 m Bosch ceiling, 28 s head-start, clear-close skips
     # the late-gap need). Far tracks need radar + modelProb; LeadData has
-    # no track age. Hysteresis (enter 0.55 / exit 0.20) + slew keep regen
-    # from re-biting after rematch; exit stays 0.20 so we still close.
-    # Map's +110 m is road distance to a sign and must not be used here.
-    # Overlay never harder than 0.55; a nibble must not steal catch-up +a.
+    # no track age. TTC floor (~0.26 when time-to-gap ≤ 20 s) so a normal
+    # close is felt earlier than the 0.55 peak; rapid / short TTC still
+    # uses kinematics up to 0.55. Hysteresis (enter 0.55 / exit 0.20) +
+    # slew keep regen from re-biting after rematch; exit stays 0.20 so we
+    # still close. A nibble must not steal rematch +a unless this is a
+    # clear close (else catch-up rides up). Map's +110 m is road distance
+    # to a sign and must not be used here. Overlay never harder than 0.55.
     # MPC close-in / FCW may still brake harder. Map MAX cannot cancel this.
     if self._is_preap and sm['radarState'].leadOne.status:
       lead = sm['radarState'].leadOne
@@ -359,7 +362,9 @@ class LongitudinalPlanner:
       self._lead_approach_active = a_lead is not None
       self._lead_approach_a = a_lead
       if a_lead is not None:
-        output_a_target = apply_lead_approach_overlay(output_a_target, a_lead)
+        output_a_target = apply_lead_approach_overlay(
+          output_a_target, a_lead, v_rel=v_ego - float(lead.vLead),
+        )
     else:
       self._lead_approach_active = False
       self._lead_approach_a = None
