@@ -90,7 +90,7 @@ Stock DM timers stay **3 / 5 / 11 s**. Triple-tap **NAP** (1.0 s window; not und
 
 ## Light/Rain sensor (Auto wipers)
 
-Justin’s 2014 Pre-AP stalk is **Off/Int/On (no Auto)**, so stock never rain-arms the wipers. The Light/Rain module still talks **LIN to the BCM**. Ambient light is expected on chassis `BODY_R1` (`0x283` `LgtSens_*`) with the stalk Off — that proves the sensor is alive, not that rain is on CAN. There is no DBC rain-intensity / auto-wipe-need signal, so NAP Auto should keep #159 camera rain. Details: [preap-rain-sensor.md](preap-rain-sensor.md).
+Justin’s 2014 Pre-AP stalk is **Off/Int/On (no Auto)**, so stock never rain-arms the wipers. Ambient light is expected on chassis `BODY_R1` (`0x283` `LgtSens_*`) with the stalk Off. NAP Int/On/Auto-wet spoof `0x45` **TIPWIPE** (`0x10`), which is **not** Tesla rain-arm `WprSw6Posn` INTERVAL1/2 (`byte6 & 0x07` = 1/2). No DBC rain-intensity field; no VIN rain flag. Keep #159 camera Auto unless a parked INTERVAL1 hold + spray proves BCM rain-wipes. Details: [preap-rain-sensor.md](preap-rain-sensor.md).
 
 ## OSM map speed (MAX)
 
