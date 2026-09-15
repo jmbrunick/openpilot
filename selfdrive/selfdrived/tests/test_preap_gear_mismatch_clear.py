@@ -1,12 +1,13 @@
 from openpilot.selfdrive.selfdrived.helpers import (
   PREAP_FINGERPRINT,
-  PreapGearOutMismatchClear,
   _gear_is_drive,
+  preap_leave_drive_clears_mismatch,
 )
 
 
-def _clear():
-  return PreapGearOutMismatchClear()
+def _leave(*, fingerprint=PREAP_FINGERPRINT, gear, gear_prev):
+  return preap_leave_drive_clears_mismatch(
+    fingerprint=fingerprint, gear=gear, gear_prev=gear_prev)
 
 
 def test_gear_is_drive_accepts_name_and_string():
@@ -17,76 +18,33 @@ def test_gear_is_drive_accepts_name_and_string():
   assert not _gear_is_drive(None)
 
 
-def test_oneshot_on_drive_after_engaged_reverse():
-  c = _clear()
-  assert not c.update(fingerprint=PREAP_FINGERPRINT, session_up=True,
-                      gear="reverse", gear_prev="drive")
-  assert c.update(fingerprint=PREAP_FINGERPRINT, session_up=False,
-                  gear="drive", gear_prev="reverse")
+def test_clears_on_leave_drive_to_reverse():
+  assert _leave(gear="reverse", gear_prev="drive")
 
 
-def test_oneshot_on_drive_after_engaged_park():
-  c = _clear()
-  assert not c.update(fingerprint=PREAP_FINGERPRINT, session_up=True,
-                      gear="park", gear_prev="drive")
-  assert c.update(fingerprint=PREAP_FINGERPRINT, session_up=False,
-                  gear="drive", gear_prev="park")
+def test_clears_on_leave_drive_to_park():
+  assert _leave(gear="park", gear_prev="drive")
 
 
-def test_oneshot_fires_only_once():
-  c = _clear()
-  c.update(fingerprint=PREAP_FINGERPRINT, session_up=True,
-           gear="reverse", gear_prev="drive")
-  assert c.update(fingerprint=PREAP_FINGERPRINT, session_up=False,
-                  gear="drive", gear_prev="reverse")
-  # Later Drive frames, including a new engage, must not keep clearing.
-  assert not c.update(fingerprint=PREAP_FINGERPRINT, session_up=True,
-                      gear="drive", gear_prev="drive")
-  assert not c.update(fingerprint=PREAP_FINGERPRINT, session_up=True,
-                      gear="drive", gear_prev="drive")
+def test_clears_on_leave_drive_to_neutral():
+  assert _leave(gear="neutral", gear_prev="drive")
 
 
-def test_park_to_drive_without_session_does_not_clear():
-  c = _clear()
-  assert not c.update(fingerprint=PREAP_FINGERPRINT, session_up=False,
-                      gear="park", gear_prev="drive")
-  assert not c.update(fingerprint=PREAP_FINGERPRINT, session_up=False,
-                      gear="drive", gear_prev="park")
+def test_does_not_clear_on_drive_entry():
+  assert not _leave(gear="drive", gear_prev="reverse")
+  assert not _leave(gear="drive", gear_prev="park")
+  assert not _leave(gear="drive", gear_prev="unknown")
 
 
-def test_door_in_drive_does_not_arm():
-  c = _clear()
-  assert not c.update(fingerprint=PREAP_FINGERPRINT, session_up=True,
-                      gear="drive", gear_prev="drive")
-  assert not c.update(fingerprint=PREAP_FINGERPRINT, session_up=False,
-                      gear="drive", gear_prev="drive")
+def test_does_not_clear_while_staying_in_drive():
+  assert not _leave(gear="drive", gear_prev="drive")
 
 
-def test_reverse_while_already_down_does_not_arm():
-  c = _clear()
-  assert not c.update(fingerprint=PREAP_FINGERPRINT, session_up=False,
-                      gear="reverse", gear_prev="drive")
-  assert not c.update(fingerprint=PREAP_FINGERPRINT, session_up=False,
-                      gear="drive", gear_prev="reverse")
+def test_does_not_clear_while_staying_out_of_drive():
+  assert not _leave(gear="reverse", gear_prev="reverse")
+  assert not _leave(gear="park", gear_prev="reverse")
 
 
 def test_non_preap_never_clears():
-  c = _clear()
-  assert not c.update(fingerprint="honda", session_up=True,
-                      gear="reverse", gear_prev="drive")
-  assert not c.update(fingerprint="honda", session_up=False,
-                      gear="drive", gear_prev="reverse")
-
-
-def test_startup_unknown_to_drive_does_not_clear():
-  c = _clear()
-  assert not c.update(fingerprint=PREAP_FINGERPRINT, session_up=False,
-                      gear="drive", gear_prev="unknown")
-
-
-def test_stay_in_reverse_is_not_a_clear():
-  c = _clear()
-  c.update(fingerprint=PREAP_FINGERPRINT, session_up=True,
-           gear="reverse", gear_prev="drive")
-  assert not c.update(fingerprint=PREAP_FINGERPRINT, session_up=False,
-                      gear="reverse", gear_prev="reverse")
+  assert not _leave(fingerprint="honda", gear="reverse", gear_prev="drive")
+  assert not _leave(fingerprint="honda", gear="drive", gear_prev="reverse")
