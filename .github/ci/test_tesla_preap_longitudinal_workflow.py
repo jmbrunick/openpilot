@@ -56,7 +56,6 @@ def test_focused_tests_and_mutations_are_pinned():
     "selfdrive/controls/tests/test_tesla_preap_brake_cancel_regen.py",
     "selfdrive/controls/tests/test_tesla_preap_one_pedal_long.py",
     "opendbc_repo/opendbc/car/tesla/preap/tests/test_preap_engagement.py",
-    "opendbc_repo/opendbc/car/tesla/preap/tests/test_brake_tip_glide.py",
     "opendbc_repo/opendbc/car/tesla/preap/tests/test_longitudinal_tuning.py",
     "opendbc_repo/opendbc/car/tesla/preap/tests/test_virtual_das.py",
     "opendbc_repo/opendbc/car/tesla/preap/tests/test_vdas_grade_control.py",

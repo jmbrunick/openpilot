@@ -53,7 +53,8 @@ ONE_PEDAL_LONG_DESCRIPTION = (
   + "foot is already on the pedal still arms long; lift starts it "
   + "(A+B / A3), same as today. After a from-rest pause, lift or "
   + "near-zero accel is Tesla regen through interceptor RELEASE. Off = "
-  + "stock gas override + A+B/A3 resume. Brake cancel stays as today."
+  + "stock gas override + A+B/A3 resume. Brake that pauses long RELEASEs "
+  + "immediately to stock Tesla regen."
 )
 HYPERMILE_DESCRIPTION = (
   "Default Off. Comfort-biased efficiency — early light ease, not max "
