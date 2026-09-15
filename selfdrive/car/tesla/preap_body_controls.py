@@ -435,7 +435,7 @@ def build_collar_hold_msg(CS, tesla_can, bus=0):
     sent = tesla_can.create_action_request(button, bus, live_stw_counter(msg_stw), msg_stw)
     return overlay_collar_on_can_msg(sent, tesla_can, posn)
   except Exception as e:
-    _collar_last_err = "pack:%s" % type(e).__name__
+    _collar_last_err = f"pack:{type(e).__name__}"
     return None
 
 
@@ -644,17 +644,10 @@ def _note_collar_tx(posn, can_sends, appended=False, err: str = "-") -> None:
     return
   _last_collar_status_t = now
   line = (
-    "collar=%d tx=%d last_d6=%s src=128 installed=%d file=%s appended=%d tesla_can=%d err=%s"
-    % (
-      int(posn or 0),
-      int(_collar_tx_count),
-      d6,
-      int(_installed),
-      _collar_file_read() or "-",
-      int(bool(appended)),
-      1 if _live_tesla_can(None) is not None else 0,
-      _collar_last_err,
-    )
+    f"collar={int(posn or 0)} tx={int(_collar_tx_count)} last_d6={d6} "
+    + f"src=128 installed={int(_installed)} file={_collar_file_read() or '-'} "
+    + f"appended={int(bool(appended))} tesla_can={int(_live_tesla_can(None) is not None)} "
+    + f"err={_collar_last_err}"
   )
   try:
     _get_params().put("NAPWiperCollarStatus", line, block=False)

@@ -639,7 +639,7 @@ class Car:
       if sends:
         self.pm.send('sendcan', can_list_to_can_capnp(sends, msgtype='sendcan', valid=True))
     except Exception as e:
-      write_collar_heartbeat("exception:%s" % type(e).__name__)
+      write_collar_heartbeat(f"exception:{type(e).__name__}")
 
   def step(self):
     CS, RD = self.state_update()
