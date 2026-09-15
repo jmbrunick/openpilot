@@ -175,18 +175,20 @@ WIPER_SPEED_DESCRIPTION = (
 WIPER_COLLAR_VALUES = [0, 1, 2]
 WIPER_COLLAR_LABELS = ["Off", "Collar3", "Collar4"]
 WIPER_COLLAR_DESCRIPTION = (
-  "Parked experiment: spoof unused 4-click collar positions on 0x45 "
+  "Parked experiment only: spoof unused 4-click collar positions on 0x45 "
   "STW_ACTN_RQ. Off leaves the live stalk (Off=0 Int1=1 Int2=2 Low=5 "
-  "High=6). Collar3/Collar4 hold WprSw6Posn INTERVAL3=3 or INTERVAL4=4 "
-  "with WprWashSw_Psd=0 — no TIPWIPE 0x10, no wash spray. Same last-win "
-  "as High: extra-forward that 0x45 every 10 ms (live MC, CRC) so bus-0 "
-  "Off cannot overwrite 3/4. Never a second 0x45 in the same tick. Off "
-  "extra-forwards the live collar so the force drops. candump src 0 is "
-  "the live stalk (stays 0 if the physical collar is Off). Our TX echo "
-  "is src 128 (returned | 0x80) — look there for WprSw6Posn=3/4. Default "
-  "Off. Leave Wiper Control Off while testing; camera Auto (#159) is "
-  "unchanged when this is Off. Same panda 0x45 whitelist as Int. No spray. "
-  "Do not flash."
+  "High=6). Collar3/Collar4 brute-force hold WprSw6Posn INTERVAL3=3 or "
+  "INTERVAL4=4 with WprWashSw_Psd=0 — no TIPWIPE 0x10, no wash spray. "
+  "Same last-win as High: extra-forward that 0x45 every card frame "
+  "(~100 Hz, live MC, CRC) so bus-0 Off cannot overwrite 3/4. Flicker "
+  "vs the real stalk is acceptable until the ESP32 column gateway "
+  "(same as headlights) — not in this tip. Never a second 0x45 in the "
+  "same tick. Off extra-forwards the live collar so the force drops. "
+  "candump src 0 is the live stalk (stays 0 if the physical collar is "
+  "Off). Our TX echo is src 128 (returned | 0x80) — look there for "
+  "WprSw6Posn=3/4. Default Off. Leave Wiper Control Off while testing; "
+  "camera Auto (#159) is unchanged when this is Off. Same panda 0x45 "
+  "whitelist as Int. No spray. Do not flash."
 )
 HIGH_LOW_BEAM_DESCRIPTION = (
   "Pre-AP Model S only, for on-car testing. Default Off. Low is the same as "

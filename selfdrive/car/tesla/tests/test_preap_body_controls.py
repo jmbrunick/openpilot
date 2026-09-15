@@ -318,8 +318,11 @@ def test_settings_copy_describes_collar_experiment():
   assert "collar4" in text
   assert "tipwipe" in text
   assert "spray" in text
-  assert "10 ms" in text
+  assert "10 ms" in text or "100 hz" in text
   assert "last-win" in text
+  assert "flicker" in text
+  assert "experiment" in text
+  assert "gateway" in text
   assert "live" in text
   assert "crc" in text
   assert "src 128" in text

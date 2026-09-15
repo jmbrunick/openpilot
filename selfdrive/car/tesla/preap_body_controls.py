@@ -64,12 +64,15 @@ Collar3/Collar4 is a parked experiment on the same 0x45. Justin's 2014
 DBC WprSw6Posn INTERVAL3=3 INTERVAL4=4 is “unused on 4-click collar.”
 Hypothesis: 3/4 are rain Auto. Overlay WprSw6Posn=3 or 4 and force
 WprWashSw_Psd=0 (no TIPWIPE, no WASH). Live stalk Off TXes collar=0 on
-bus 0 continuously; 10 Hz Int hold loses that last-win. Collar3/4 uses
-the High path: extra-forward every 10 ms on the live MC, overlay 3/4
-on the packed TX (even if create_action_request is unpatched), resign
-CRC. Never a second 0x45 in the same tick. Off extra-forwards live
-collar so the force drops. Do not weaken panda safety — 0x45 is already
-whitelisted. Camera Auto (#159) is unchanged while this setting is Off.
+bus 0 continuously; 10 Hz Int hold loses that last-win. Collar3/4 brute-
+force holds like High: extra-forward every card frame (~100 Hz) on the
+live MC, overlay 3/4 on the packed TX (even if create_action_request is
+unpatched), resign CRC. Flicker vs the real stalk is acceptable on this
+parked experiment; longer term Justin will use the ESP32 column gateway
+(same as headlights) — do not build that here. Never a second 0x45 in
+the same tick. Off extra-forwards live collar so the force drops. Do
+not weaken panda safety — 0x45 is already whitelisted. Camera Auto
+(#159) is unchanged while this setting is Off.
 """
 
 # Params / UI. 0 is off (today's forwarded stalk). Indexes, not raw DBC.
@@ -242,10 +245,12 @@ def extra_stw_forward_needed(can_sends, frame: int, wiper_on: bool, high_beam_on
   same 10 Hz slot with nibble NOT held while Auto is selected and dry so
   Pre-AP drops latched intermittent. Falling-edge cancel_now does not
   wait for the slot. High extra-forwards every 10 ms so held nibble 4
-  can last-win against repeating bus-0 IDLE. Collar3/4 uses that same
-  10 ms last-win (live-MC extra-forward) so bus-0 live Off cannot
-  overwrite 3/4; Off bursts live collar (no force) then leaves the stalk.
-  candump src 0 is the live stalk; our TX echo is src 128 (returned | 0x80).
+  can last-win against repeating bus-0 IDLE. Collar3/4 brute-force holds
+  every card frame (~100 Hz, live-MC extra-forward) so bus-0 live Off
+  cannot overwrite 3/4; flicker vs the real stalk is acceptable until
+  the ESP32 column gateway. Off bursts live collar (no force) then
+  leaves the stalk. candump src 0 is the live stalk; our TX echo is
+  src 128 (returned | 0x80).
   """
   if not (stalk_test_active(wiper_on, high_beam_on) or wiper_cancel or collar_on or collar_cancel):
     return False
@@ -935,10 +940,12 @@ def stock_cc_update_with_overlay(self, CS, frame, tesla_can, can_bus_party):
   gear from this CS: Park/Neutral stay wipe=0 and still cancel if we had
   been wiping. Primes the ROAD VisionIpc helper only while Auto so poll()
   does not recv on this CTRL_HIGH thread. Off/Int/On stop the helper.
-  Collar3/4 extra-forwards every 10 ms like High (live MC, in-place
-  replace) with WprSw6Posn forced and WprWashSw_Psd=0 so bus-0 Off
-  cannot last-win. Off bursts live collar then leaves the stalk. Our
-  TX echo is candump src 128, not src 0 (live stalk).
+  Collar3/4 brute-force extra-forwards every card frame (~100 Hz) like
+  High (live MC, in-place replace) with WprSw6Posn forced and
+  WprWashSw_Psd=0 so bus-0 Off cannot last-win. Flicker vs the real
+  stalk is acceptable on this parked experiment; do not build the
+  ESP32 column gateway here. Off bursts live collar then leaves the
+  stalk. Our TX echo is candump src 128, not src 0 (live stalk).
   """
   orig = _ORIG_STOCK_CC_UPDATE
   if orig is None:
