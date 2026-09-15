@@ -22,6 +22,7 @@ from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import (
 from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   EMERGENCY_DECEL_FRAMES,
   EMERGENCY_DECEL_MPS2,
+  LAT_REENABLE_MIN_V_EGO,
   SOFT_YIELD_DEBOUNCE_FRAMES,
 )
 from openpilot.selfdrive.car.tesla import preap_blinker_lat_pause as pause_mod
@@ -585,6 +586,36 @@ def test_card_handoff_keeps_yield_during_driver_turn_blinker():
   assert not eng.cruiseEnabled
 
 
+def test_card_handoff_keeps_yield_below_10_mph():
+  """Same re-enable inhibit as blinker: stay yielded below 10 mph."""
+  install_blinker_lat_pause()
+  eng = _engaged(double_pull=True)
+  for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES):
+    update_card_lat_handoff(
+      eng, engaged=True, lat_would_be_active=True,
+      steering_torque=0.85, steering_rate_deg=20.0, hands_on_level=1,
+      brake_applied=False, a_ego=0.0, v_ego=15.0, param_on=True)
+  assert eng._nap_lat_handoff._yielded
+  slow = LAT_REENABLE_MIN_V_EGO - 0.05
+  for _ in range(20):
+    out = update_card_lat_handoff(
+      eng, engaged=True, lat_would_be_active=True,
+      steering_torque=0.0, steering_rate_deg=0.0, hands_on_level=0,
+      brake_applied=False, a_ego=0.0, v_ego=slow, param_on=True)
+    assert not out
+    assert eng._nap_lat_handoff._yielded
+    assert not eng._nap_lat_handoff._blending
+  # Blinker-on still inhibits at highway speed on the card path.
+  for _ in range(20):
+    out = update_card_lat_handoff(
+      eng, engaged=True, lat_would_be_active=True,
+      steering_torque=0.0, steering_rate_deg=0.0, hands_on_level=0,
+      brake_applied=False, a_ego=0.0, v_ego=15.0, param_on=True,
+      blinker_paused=True)
+    assert not out
+    assert eng._nap_lat_handoff._yielded
+
+
 def test_card_update_preap_does_not_clear_lat_on_blinker_when_soft_lat_on():
   src = (Path(__file__).resolve().parents[4] /
          "selfdrive/car/tesla/preap_blinker_lat_pause.py").read_text()
@@ -652,6 +683,56 @@ def test_reverse_then_drive_allows_fresh_engage_not_sticky_resume():
   _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=5400)
   assert eng.cruiseEnabled
   assert eng.enableLongControl
+  assert not getattr(eng, "_nap_long_resume_pending", False)
+
+
+def test_park_then_drive_allows_fresh_engage_not_sticky_resume():
+  """Park is the same latch as Reverse: Drive + double SET is a new session."""
+  install_blinker_lat_pause()
+  eng = _engaged(double_pull=True)
+  eng._nap_held_max_kph = 72.0
+  assert not eng.check_can_engage(False, GearShifter.park, False)
+  assert not eng.cruiseEnabled
+  assert eng.preap_cc_cancel_needed
+  assert eng.check_can_engage(False, GearShifter.drive, False)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=5000)
+  _buttons(eng, t_ms=5050)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=5400)
+  assert eng.cruiseEnabled
+  assert eng.enableLongControl
+
+
+def test_panda_gear_out_clears_cruise_latch():
+  """Panda must pcm_cruise_check(false) on gear-out, not controls_allowed=false alone."""
+  rx = (Path(__file__).resolve().parents[4] /
+        "opendbc_repo/opendbc/safety/modes/tesla_preap_rx.h").read_text()
+  assert "if (preap_gear != 4)" in rx
+  gear_block = rx.split("if (preap_gear != 4)")[1].split("preap_gear_prev = preap_gear")[0]
+  assert "pcm_cruise_check(false)" in gear_block
+  assert "controls_allowed = false" not in gear_block
+  assert "preap_last_stalk_engage_us = 0U" in gear_block
+  assert "preap_gear_prev != 4" not in gear_block
+
+
+def test_panda_drive_set_matches_stalk_cancel_rearm():
+  """Drive SET while !allowed must pulse pcm_cruise_check(false) then true."""
+  rx = (Path(__file__).resolve().parents[4] /
+        "opendbc_repo/opendbc/safety/modes/tesla_preap_rx.h").read_text()
+  set_block = rx.split("if (lever == 2)")[1].split("else if (lever == 1)")[0]
+  assert "if (!controls_allowed)" in set_block
+  assert "pcm_cruise_check(false)" in set_block
+  assert "pcm_cruise_check(true)" in set_block
+
+
+def test_panda_tx_cancel_clears_latch_when_disallowed():
+  """TX-only CANCEL spoof must re-arm the latch without dropping an engaged session."""
+  tx = (Path(__file__).resolve().parents[4] /
+        "opendbc_repo/opendbc/safety/modes/tesla_preap_tx.h").read_text()
+  assert "msg->addr == 0x45U" in tx
+  cancel_block = tx.split("msg->addr == 0x45U")[1].split("DAS_steeringControl")[0]
+  assert "lever == 1" in cancel_block
+  assert "!controls_allowed" in cancel_block
+  assert "pcm_cruise_check(false)" in cancel_block
 
 
 def test_park_while_engaged_is_also_hard_cancel():
@@ -667,3 +748,14 @@ def test_check_can_engage_wrapper_is_installed():
          "selfdrive/car/tesla/preap_blinker_lat_pause.py").read_text()
   assert "PreAPEngagement.check_can_engage = _check_can_engage" in src
   assert "hard_cancel_session(self)" in src
+
+
+def test_selfdrived_mismatch_clear_is_while_not_in_drive():
+  """3X/OP mismatch latch stays clear while out of Drive, not on Drive entry."""
+  src = (Path(__file__).resolve().parents[4] /
+         "selfdrive/selfdrived/selfdrived.py").read_text()
+  assert "preap_not_in_drive_clears_mismatch" in src
+  helpers = (Path(__file__).resolve().parents[4] /
+             "selfdrive/selfdrived/helpers.py").read_text()
+  assert "Do not clear on Drive entry" in helpers
+  assert "preap_not_in_drive_clears_mismatch" in helpers

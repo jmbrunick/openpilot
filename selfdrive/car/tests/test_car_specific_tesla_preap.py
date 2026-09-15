@@ -18,7 +18,7 @@ from opendbc.car import CanData
 from opendbc.car.car_helpers import interfaces
 
 from openpilot.selfdrive.car.car_specific import CarSpecificEvents
-from openpilot.selfdrive.selfdrived.events import ET, EVENTS, pcm_disable_alert
+from openpilot.selfdrive.selfdrived.events import ET, EVENTS, pcm_disable_alert, reverse_gear_disable_alert
 
 
 EventName = log.OnroadEvent.EventName
@@ -209,9 +209,10 @@ def test_preap_pcm_disable_still_fires_when_cruise_already_off():
 
 
 def test_reverse_user_disables_and_blocks_entry():
-  """HUD reverse / take-control is reverseGear USER_DISABLE + NO_ENTRY."""
+  """Reverse still USER_DISABLE + NO_ENTRY so OP drops and cannot re-enter."""
   assert ET.USER_DISABLE in EVENTS[EventName.reverseGear]
   assert ET.NO_ENTRY in EVENTS[EventName.reverseGear]
+  assert EVENTS[EventName.reverseGear][ET.USER_DISABLE] is reverse_gear_disable_alert
   cse = CarSpecificEvents(_make_cp())
   prev = _make_cs()
   prev.cruiseState.enabled = True
@@ -224,6 +225,8 @@ def test_reverse_user_disables_and_blocks_entry():
   assert EventName.pcmDisable in events.names
   assert EventName.wrongGear in events.names
   assert EventName.controlsMismatch not in events.names
+  assert EventName.stockFcw not in events.names
+  assert EventName.stockAeb not in events.names
 
 
 def test_drive_after_reverse_rising_edge_can_pcm_enable():

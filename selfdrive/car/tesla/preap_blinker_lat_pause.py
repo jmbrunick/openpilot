@@ -135,11 +135,14 @@ def hard_cancel_session(engagement) -> None:
   Same FSM contract as stalk cancel / door / gear-out-of-Drive /
   hands-on >= 2: cruiseEnabled down, held MAX forgotten, disengage
   chime via pcmDisable + long falling while lat is also down. Sets
-  preap_cc_cancel_needed so the carcontroller spoofs CANCEL and panda
-  runs pcm_cruise_check(false). tesla_preap drops controls_allowed on
-  leaving Drive without that latch reset; a later SET would then
-  enable selfdrived while panda stays !controls_allowed →
-  controlsMismatch. Do not call _drop_longitudinal_keep_lateral.
+  preap_cc_cancel_needed so the carcontroller spoofs CANCEL (stock CC
+  off). That spoof is TX-only — panda does not RX it, so it cannot
+  clear cruise_engaged_prev the way a real stalk disable does.
+  tesla_preap therefore pcm_cruise_check(false) on every non-Drive
+  0x118 (latch already gone before Drive return). Drive SET while
+  !allowed is last-resort only. TX CANCEL while already disallowed
+  also clears the latch (spoof path).
+  Do not call _drop_longitudinal_keep_lateral.
   """
   was_long = bool(getattr(engagement, "enableLongControl", False))
   engagement.cruiseEnabled = False
@@ -167,10 +170,10 @@ def _check_can_engage(self, door_open, gear_shifter, seatbelt_unlatched):
 
   Orig check_can_engage zeros cruiseEnabled / long but leaves sticky MAX,
   soft-lat yield, stalk timers, and preap_cc_cancel_needed unset. Panda
-  tesla_preap already set controls_allowed=false on leaving Drive without
-  pcm_cruise_check(false). Without the CANCEL spoof, the next Drive SET
-  raises Python cruise while panda cruise_engaged_prev stays latched —
-  selfdrived enables, panda does not, controlsMismatch after ~2s.
+  tesla_preap pcm_cruise_check(false) while not in Drive so the latch
+  is already gone before Drive return. The CANCEL spoof still drops
+  stock CC (TX-only; latch is panda). Without this wrapper, sticky MAX
+  / soft-lat yield would survive Reverse.
   """
   from opendbc.car import structs
 
@@ -585,9 +588,10 @@ def _update_preap(cs, can_parsers):
     hold = getattr(engagement, "_nap_lat_hold", None)
     # Driver-turn latch only (not ALC, not post-turn hand-on). Soft-lat
     # On must not treat lamp latch as lat-down — that reset the card
-    # handoff and forgot a yield (emergency cancel / inhibit). Soft-lat
-    # Off is identity here; BlinkerLateralHold still frees lat in
-    # controlsd.
+    # handoff and forgot a yield (emergency cancel / inhibit). v_ego
+    # is already passed so the same < 10 mph re-enable inhibit applies.
+    # Soft-lat Off is identity here; BlinkerLateralHold still frees lat
+    # in controlsd.
     driver_turn = bool(hold is not None and hold.turn_active)
     canceled = update_card_lat_handoff(
       engagement,
