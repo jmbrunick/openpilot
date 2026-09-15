@@ -12,7 +12,6 @@ from openpilot.common.stat_live import RunningStatFilter
 from openpilot.common.transformations.camera import DEVICE_CAMERAS
 from openpilot.selfdrive.monitoring.dm_toggles import (
   DEFAULT_FALSE_ALERT_IGNORE, DEFAULT_SIMULATE_LOOKING,
-  PARAM_DM_FALSE_ALERT_IGNORE, PARAM_DM_SIMULATE_LOOKING,
   exclusive_dm_toggle_states, read_exclusive_dm_toggles,
 )
 
