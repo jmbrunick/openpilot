@@ -1,6 +1,7 @@
 import numpy as np
 
 from cereal import log
+from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_DMON
 from openpilot.selfdrive.monitoring.dm_toggles import (
   DEFAULT_FALSE_ALERT_IGNORE, DEFAULT_SIMULATE_LOOKING,
@@ -11,6 +12,7 @@ from openpilot.selfdrive.monitoring.policy import (
   LOOK_SIM_COUNTDOWN_MIN_S, LOOK_SIM_RANDOM_WINDOW_S, LOOK_SIM_FIRE_MAX_S,
   LOOK_SIM_HOLD_MIN_S, LOOK_SIM_HOLD_MAX_S,
   VISION_LOOKING_FILTER_X, VISION_RECOVERY_FACTOR_MAX, VISION_RECOVERY_FACTOR_MIN,
+  DM_LOOKAWAY_GATE_MPH, DM_LOOKAWAY_GATE_MS, lookaway_alerts_paused,
   vision_looking_path, looking_recovery_time_s,
 )
 
@@ -62,6 +64,10 @@ always_attentive = [msg_ATTENTIVE] * int(TEST_TIMESPAN / DT_DMON)
 always_distracted = [msg_DISTRACTED] * int(TEST_TIMESPAN / DT_DMON)
 always_true = [True] * int(TEST_TIMESPAN / DT_DMON)
 always_false = [False] * int(TEST_TIMESPAN / DT_DMON)
+# Above the 2 mph look-away gate, below pose/wheelpos calib mins (13 / 11 m/s).
+TEST_MOVING_MS = 5.0  # ~11 mph
+TEST_CREEP_MS = DM_LOOKAWAY_GATE_MS * 0.5  # 1 mph
+TEST_ABOVE_GATE_MS = DM_LOOKAWAY_GATE_MS + 0.05
 
 class _NS:
   def __init__(self, **kw):
@@ -69,11 +75,11 @@ class _NS:
 
 
 def _fake_sm(*, engaged=True, hands=1, steer_pressed=False, gas_pressed=False,
-             driver_state=None, standstill=False):
+             driver_state=None, standstill=False, v_ego=20.0):
   from cereal import car
   return {
     'carState': _NS(
-      vEgo=20.0,
+      vEgo=v_ego,
       gearShifter=car.CarState.GearShifter.drive,
       standstill=standstill,
       steeringPressed=steer_pressed,
@@ -92,17 +98,22 @@ def _fake_sm(*, engaged=True, hands=1, steer_pressed=False, gas_pressed=False,
 
 class TestMonitoring:
   def _run_seq(self, msgs, interaction, engaged, standstill, simulate_looking=False,
-               false_alert_ignore=False, rng_seed=None):
+               false_alert_ignore=False, rng_seed=None, car_speed=None):
     DM = DriverMonitoring()
     DM.nap_dm_simulate_looking = bool(simulate_looking)
     DM.nap_dm_false_alert_ignore = bool(false_alert_ignore)
     if rng_seed is not None:
       DM._rng.seed(rng_seed)
       DM._redraw_look_sim_interval()
+    if car_speed is None:
+      speeds = [TEST_MOVING_MS] * len(msgs)
+    elif isinstance(car_speed, (int, float)):
+      speeds = [float(car_speed)] * len(msgs)
+    else:
+      speeds = car_speed
     alert_lvls = []
     for idx in range(len(msgs)):
-      DM._update_states(msgs[idx], [0, 0, 0], 0, engaged[idx], standstill[idx])
-      # cal_rpy and car_speed don't matter here
+      DM._update_states(msgs[idx], [0, 0, 0], speeds[idx], engaged[idx], standstill[idx])
 
       # evaluate events at 10Hz for tests
       DM._update_events(interaction[idx], engaged[idx], standstill[idx], 0)
@@ -250,6 +261,91 @@ class TestMonitoring:
     assert alert_lvls[int((_stop_time+0.1)/DT_DMON)] == 2
     assert alert_lvls[int((_stop_time+0.5)/DT_DMON)] == 0
 
+  def test_lookaway_gate_helper(self):
+    """2 mph is the gate: strictly below pauses; standstill still pauses at any vEgo."""
+    assert lookaway_alerts_paused(False, 0.0)
+    assert lookaway_alerts_paused(False, TEST_CREEP_MS)
+    assert lookaway_alerts_paused(False, DM_LOOKAWAY_GATE_MS - 1e-6)
+    assert not lookaway_alerts_paused(False, DM_LOOKAWAY_GATE_MS)
+    assert not lookaway_alerts_paused(False, TEST_ABOVE_GATE_MS)
+    assert not lookaway_alerts_paused(False, TEST_MOVING_MS)
+    assert lookaway_alerts_paused(True, 20.0)
+
+  def test_creeping_below_gate_never_reaches_green(self):
+    """1 mph, CS.standstill false: no looking-away alert, any Sim Look / FAI combo."""
+    for sim, fai in ((False, False), (True, False), (False, True)):
+      alert_lvls, _ = self._run_seq(
+        always_distracted, always_false, always_true, always_false,
+        simulate_looking=sim, false_alert_ignore=fai, car_speed=TEST_CREEP_MS,
+        rng_seed=1,
+      )
+      assert all(a == 0 for a in alert_lvls), (sim, fai)
+
+  def test_creeping_no_face_never_reaches_green(self):
+    """Eyes-off / no-face at a creep also stays quiet below the gate."""
+    alert_lvls, _ = self._run_seq(
+      always_no_face, always_false, always_true, always_false,
+      simulate_looking=False, car_speed=TEST_CREEP_MS,
+    )
+    assert all(a == 0 for a in alert_lvls)
+
+  def test_creeping_fai_pose_does_not_alert(self):
+    """FAI On still lets pose drain when moving; below 2 mph it must not nag."""
+    n = int(TEST_TIMESPAN / DT_DMON)
+    alert_lvls, _ = self._run_seq(
+      [msg_POSE_ONLY] * n, always_false, always_true, always_false,
+      simulate_looking=False, false_alert_ignore=True,
+      car_speed=TEST_CREEP_MS, rng_seed=3,
+    )
+    assert all(a == 0 for a in alert_lvls)
+
+  def test_above_gate_stock_still_reaches_green(self):
+    """Just above 2 mph: stock first prompt still fires (toggles Off)."""
+    alert_lvls, d_status = self._run_seq(
+      always_distracted, always_false, always_true, always_false,
+      simulate_looking=False, car_speed=TEST_ABOVE_GATE_MS,
+    )
+    s = d_status.settings
+    assert alert_lvls[int((s._VISION_POLICY_ALERT_1_TIMEOUT + 0.4) / DT_DMON)] == 1
+    assert alert_lvls[int((s._VISION_POLICY_ALERT_2_TIMEOUT + 0.4) / DT_DMON)] == 2
+
+  def test_above_gate_simulate_look_still_avoids_orange(self):
+    """Above 2 mph, Sim Look On keeps prior 1–3 s full-wipe behavior."""
+    alert_lvls, d_status = self._run_seq(
+      always_distracted, always_false, always_true, always_false,
+      simulate_looking=True, rng_seed=4, car_speed=TEST_ABOVE_GATE_MS,
+    )
+    assert all(a < 2 for a in alert_lvls)
+    assert d_status.awareness > d_status.threshold_alert_2
+
+  def test_creeping_then_launch_continues_countdown(self):
+    """Like traffic-light standstill, but creeping 1 mph then rolling out."""
+    _redlight_time = 60
+    n = int(TEST_TIMESPAN / DT_DMON)
+    i_go = int(_redlight_time / DT_DMON)
+    speeds = [TEST_CREEP_MS] * i_go + [TEST_MOVING_MS] * (n - i_go)
+    alert_lvls, d_status = self._run_seq(
+      always_distracted, always_false, always_true, always_false,
+      simulate_looking=False, car_speed=speeds,
+    )
+    s = d_status.settings
+    assert alert_lvls[int((_redlight_time - 0.1) / DT_DMON)] == 0
+    _alert_1_to_2 = s._VISION_POLICY_ALERT_2_TIMEOUT - s._VISION_POLICY_ALERT_1_TIMEOUT
+    assert alert_lvls[int((_redlight_time + 0.5) / DT_DMON)] == 1
+    assert alert_lvls[int((_redlight_time + _alert_1_to_2 + 0.5) / DT_DMON)] == 2
+
+  def test_run_step_below_gate_no_lookaway_alert(self):
+    """run_step uses vEgo: 1 mph + standstill false, toggles On or Off."""
+    steps = int((dm_settings._VISION_POLICY_ALERT_2_TIMEOUT + 2.0) / DT_DMON)
+    for sim, fai in ((False, False), (True, False), (False, True)):
+      DM = DriverMonitoring()
+      DM.nap_dm_simulate_looking = sim
+      DM.nap_dm_false_alert_ignore = fai
+      for _ in range(steps):
+        DM.run_step(_fake_sm(hands=0, driver_state=msg_DISTRACTED,
+                             v_ego=TEST_CREEP_MS, standstill=False))
+      assert DM.alert_level == 0, (sim, fai)
+
   # engaged, model is somehow uncertain and driver is distracted
   #  - should fall back to wheel touch after uncertain alert
   def test_somehow_indecisive_model(self):
@@ -280,6 +376,8 @@ class TestMonitoring:
     assert VISION_LOOKING_FILTER_X == 0.37
     assert s._TIMEOUT_RECOVERY_FACTOR_MAX == VISION_RECOVERY_FACTOR_MAX == 5.
     assert s._TIMEOUT_RECOVERY_FACTOR_MIN == VISION_RECOVERY_FACTOR_MIN == 1.25
+    assert DM_LOOKAWAY_GATE_MPH == 2.0
+    assert abs(DM_LOOKAWAY_GATE_MS - 2.0 * CV.MPH_TO_MS) < 1e-9
 
   def test_vision_looking_path_is_stock_glance_predicates(self):
     """Green-prompt clear path: face + low std + filter.x < 0.37."""
@@ -315,9 +413,9 @@ class TestMonitoring:
     DM._look_sim_fire_s = fire_s
     return DM
 
-  def _step(self, DM, msg):
-    DM._update_states(msg, [0, 0, 0], 0, True, False)
-    DM._update_events(False, True, False, 0)
+  def _step(self, DM, msg, *, car_speed=TEST_MOVING_MS, standstill=False):
+    DM._update_states(msg, [0, 0, 0], car_speed, True, standstill)
+    DM._update_events(False, True, standstill, 0)
 
   def test_simulate_looking_holds_until_awareness_recovers(self):
     """Full-wipe hold is many frames on the looking-path; awareness to 1.0."""
@@ -487,7 +585,7 @@ class TestMonitoring:
     DM.nap_dm_false_alert_ignore = True
     alert_lvls = []
     for idx in range(n):
-      DM._update_states(always_distracted[idx], [0, 0, 0], 0, False, False)
+      DM._update_states(always_distracted[idx], [0, 0, 0], TEST_MOVING_MS, False, False)
       DM._update_events(False, False, False, 0)
       alert_lvls.append(DM.alert_level)
     s = DM.settings
