@@ -19,7 +19,7 @@ Simulate Look (`NAPDmSimulateLooking`) defaults **On**. False Alert Ignore (`NAP
 
 Hypermile (`NAPHypermile`) defaults **Off** (nap-dev experimental). Hill Climb (`NAPHypermileHillClimb`) defaults **On** but is inert unless Hypermile is On. See [hypermile.md](hypermile.md). Do not merge Hypermile into nap-release until Justin signs off.
 
-One-Pedal Long (`NAPOnePedalLong`) defaults **Off**. Pedal mode: gas while long is **already holding** **pauses** software long (silent long pause, lat stays, not a full disable) and **holds that pause until a stalk SET** — lift / coast / regen must not resume or climb back to MAX. SET with the foot already on the pedal still arms long; lift starts A+B/A3. Brake pause resume stays as today. Off = stock gas override + A+B/A3. Do not merge to nap-release until Justin signs off.
+One-Pedal Long (`NAPOnePedalLong`) defaults **Off**. Pedal mode: gas while long is **already holding** **pauses** software long (silent long pause, lat stays, not a full disable) and **holds that pause until a stalk SET** — lift / coast / regen must not resume or climb back to MAX. SET with the foot already on the pedal still arms long; lift starts A+B/A3. Brake that pauses long RELEASEs immediately to stock regen (no tip-brake soft glide). Off = stock gas override + A+B/A3.
 
 ## Submodules
 

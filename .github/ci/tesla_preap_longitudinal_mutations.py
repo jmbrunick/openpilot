@@ -42,43 +42,10 @@ MUTATIONS = (
   HistoricalMutation(
     name="brake-cancel-keeps-interceptor-after-long-drop",
     source_path="opendbc_repo/opendbc/car/tesla/preap/carcontroller.py",
-    original=(
-      b"      authority_requested = (\n"
-      b"        pedal_long_allowed\n"
-      b"        and not gas_pressed\n"
-      b"        and ((long_active and not brake_pressed) or keep_enabled)\n"
-      b"      )\n"
-    ),
+    original=b"      authority_requested = pedal_long_allowed and long_active and not brake_pressed and not gas_pressed\n",
     replacement=b"      authority_requested = pedal_long_allowed and not gas_pressed\n",
     test_nodes=(
-      f"{BRAKE_CANCEL_TEST_PATH}::test_held_brake_releases_after_tip_window",
-    ),
-  ),
-  HistoricalMutation(
-    name="tip-brake-drops-interceptor-on-long-drop",
-    source_path="opendbc_repo/opendbc/car/tesla/preap/carcontroller.py",
-    original=b"        and ((long_active and not brake_pressed) or keep_enabled)\n",
-    replacement=b"        and (long_active and not brake_pressed)\n",
-    test_nodes=(
-      f"{BRAKE_CANCEL_TEST_PATH}::test_short_tip_keeps_interceptor_and_glides",
-    ),
-  ),
-  HistoricalMutation(
-    name="tip-brake-glide-coasts-instead-of-speed-target",
-    source_path="opendbc_repo/opendbc/car/tesla/preap/brake_tip_glide.py",
-    original=b"    return comfort_ramp_accel(self.glide_s, self.a_end)\n",
-    replacement=b"    return 0.0\n",
-    test_nodes=(
-      f"{BRAKE_CANCEL_TEST_PATH}::test_short_tip_keeps_interceptor_and_glides",
-    ),
-  ),
-  HistoricalMutation(
-    name="tip-brake-glide-steps-to-full-regen",
-    source_path="opendbc_repo/opendbc/car/tesla/preap/brake_tip_glide.py",
-    original=b"    return comfort_ramp_accel(self.glide_s, self.a_end)\n",
-    replacement=b"    return float(self.a_end)\n",
-    test_nodes=(
-      f"{BRAKE_CANCEL_TEST_PATH}::test_short_tip_keeps_interceptor_and_glides",
+      f"{BRAKE_CANCEL_TEST_PATH}::test_short_tip_releases_interceptor_immediately",
     ),
   ),
   HistoricalMutation(
