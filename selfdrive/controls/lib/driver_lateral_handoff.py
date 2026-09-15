@@ -25,8 +25,11 @@ driver push. While the driver-turn blinker is latched, do not
 re-enable (stay yielded / do not finish a take-back blend). After
 it clears, land in yield and use the normal 0.15 s hands-off
 confirm + 1 s blend — no dedicated blinker rising-edge blend.
-Soft-lat Off keeps the stock lamp-latch lat pause so turns still
-free the wheel.
+The same re-enable inhibit also applies whenever v_ego is strictly
+below 10 mph (LAT_REENABLE_MIN_V_EGO_MPH), blinker or not. Above
+10 mph with the blinker off, resume is unchanged. Blinker-on still
+blocks take-back at any speed. Soft-lat Off keeps the stock
+lamp-latch lat pause so turns still free the wheel.
 
 Intent (Pre-AP EPAS) — required to *enter* yield:
   EPAS_torsionBarTorque / CS.steeringTorque
@@ -97,8 +100,9 @@ desired_curvature to measured so resume clips from the wheel. A
 driver-turn blinker is not a lat-down by itself when soft-lat is On:
 this module treats it as a re-enable inhibit and, on the falling
 edge after a yield / lat-down, enters yield so the normal resume
-owns the take-back. Soft-lat Off still uses BlinkerLateralHold to
-clear latActive on lamp latch.
+owns the take-back. v_ego below 10 mph uses that same inhibit
+(OR, not a parallel path). Soft-lat Off still uses BlinkerLateralHold
+to clear latActive on lamp latch.
 """
 
 from __future__ import annotations
@@ -109,6 +113,7 @@ import numpy as np
 
 from cereal import log
 from opendbc.car.tesla.values import STEER_THRESHOLD
+from openpilot.common.constants import CV
 
 # Match controlsd / card (openpilot.common.realtime.DT_CTRL).
 DT_CTRL = 0.01
@@ -150,6 +155,15 @@ EMERGENCY_DECEL_FRAMES = 8  # 80 ms; reject pothole aEgo spikes
 EMERGENCY_MIN_V_EGO = 1.0   # m/s; standstill KF chatter
 YIELD_EMERGENCY_WINDOW_S = 2.0
 
+# Soft-lat re-enable inhibit floor (strictly below). Same gate as a
+# driver-turn blinker latch: keep control if we still have it; already
+# yielded / blending stay yielded; do not finish a take-back blend.
+# Blinker-on still inhibits at any speed. Soft-lat Off is identity
+# (BlinkerLateralHold still pauses lat on lamp latch only). Long /
+# ALC tip-hold / FCW / AEB are not this path.
+LAT_REENABLE_MIN_V_EGO_MPH = 10.0
+LAT_REENABLE_MIN_V_EGO = LAT_REENABLE_MIN_V_EGO_MPH * CV.MPH_TO_MS
+
 # --- timing / UI ---
 QUIET_WAIT_S = 0.0
 HANDS_ON_HOLD_LEVEL = 1
@@ -179,6 +193,17 @@ PARAM_DRIVER_LAT_HANDOFF = "NAPDriverLatHandoff"
 def handoff_enabled(*, fingerprint: str, param_on: bool) -> bool:
   """Pre-AP and Settings toggle (param defaults On)."""
   return bool(param_on) and fingerprint == PREAP_FINGERPRINT
+
+
+def lat_reenable_inhibited(*, blinker_paused: bool, v_ego: float) -> bool:
+  """True when soft-lat must not take the wheel back.
+
+  Driver-turn blinker latch (any speed) OR v_ego strictly below 10 mph.
+  Keep control if we still have it; already yielded / blending stay
+  yielded. Falling edge (blinker clear or speed crosses 10 mph) lands
+  in yield so the normal 0.15 s confirm + 1 s blend owns resume.
+  """
+  return bool(blinker_paused) or float(v_ego) < LAT_REENABLE_MIN_V_EGO
 
 
 def hands_still_on(hands_on_level: int) -> bool:
@@ -540,15 +565,17 @@ class DriverLateralHandoff:
     # Full disengage (cancel / door / hands-on >= 2) clears engaged.
     # blinker_paused is a latched *driver-turn* (not ALC tip/keep-alive).
     # Soft-lat On: do not strip lat on lamp latch. Inhibit re-enable
-    # while the turn blinker is on; after it clears, enter yield so
-    # the normal 0.15 s confirm + 1 s blend owns resume (no dedicated
-    # blinker rising-edge blend). Soft-lat Off never reaches here
-    # (enabled=False → identity); BlinkerLateralHold still frees lat.
+    # while the turn blinker is on *or* v_ego is below 10 mph; after
+    # that clears, enter yield so the normal 0.15 s confirm + 1 s blend
+    # owns resume (no dedicated blinker rising-edge blend). Soft-lat
+    # Off never reaches here (enabled=False → identity);
+    # BlinkerLateralHold still frees lat on lamp latch only.
     if not engaged or alc_active:
       self._reset()
       return self._identity()
+    inhibited = lat_reenable_inhibited(blinker_paused=blinker_paused, v_ego=v_ego)
     if not lat_would_be_active:
-      remember = self._blinker_was_paused or bool(blinker_paused)
+      remember = self._blinker_was_paused or inhibited
       self._reset()
       self._blinker_was_paused = remember
       return self._identity()
@@ -560,11 +587,11 @@ class DriverLateralHandoff:
     hands_on = hands_still_on(hands_on_level)
     firm_push = mag >= SOFT_YIELD_TRIGGER_NM
 
-    if blinker_paused:
+    if inhibited:
       # Keep control if we still have it. A driver push may still yield.
       # Already yielded / blending / coming back from lat-down: stay
       # yielded. Do not finish a take-back blend while the turn lamp
-      # is latched.
+      # is latched or speed is below 10 mph.
       if self._yielded or self._blending or self._blinker_was_paused:
         self._enter_yield()
         self._blinker_was_paused = True
@@ -572,9 +599,10 @@ class DriverLateralHandoff:
         self._enter_yield()
         self._blinker_was_paused = True
     elif self._blinker_was_paused:
-      # Driver-turn blinker just cleared (or lat came back after a
-      # blinker + standstill/fault). No dedicated 1 s blend shortcut.
-      # Land in yield; normal hands-off confirm owns the resume.
+      # Inhibit just cleared (blinker off and/or speed crossed 10 mph,
+      # or lat came back after a blinker / low-speed standstill/fault).
+      # No dedicated 1 s blend shortcut. Land in yield; normal
+      # hands-off confirm owns the resume.
       self._blinker_was_paused = False
       self._enter_yield()
       if not (hands_on or firm_push):

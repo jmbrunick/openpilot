@@ -8,6 +8,7 @@ from openpilot.selfdrive.controls.lib.blinker_lateral_pause import (
   blinker_pauses_lateral,
   lat_active_with_blinker_pause,
 )
+from openpilot.common.constants import CV
 from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   BLEND_TIME_S,
   DISTURBANCE_CURVATURE_ERR,
@@ -16,6 +17,8 @@ from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   EMERGENCY_MIN_V_EGO,
   HANDS_OFF_CONFIRM_S,
   HANDS_ON_HOLD_LEVEL,
+  LAT_REENABLE_MIN_V_EGO,
+  LAT_REENABLE_MIN_V_EGO_MPH,
   PARAM_DRIVER_LAT_HANDOFF,
   PREAP_FINGERPRINT,
   QUIET_WAIT_S,
@@ -43,6 +46,7 @@ from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   hud_engaged_status,
   is_disturbance,
   lat_active_after_handoff,
+  lat_reenable_inhibited,
   pin_desired_curvature_to_measured,
   required_press_frames,
   smoothstep,
@@ -52,6 +56,9 @@ from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
 
 State = log.SelfdriveState.OpenpilotState
 DT = 0.01
+BELOW_REENABLE_MS = LAT_REENABLE_MIN_V_EGO - 0.05
+AT_REENABLE_MS = LAT_REENABLE_MIN_V_EGO
+ABOVE_REENABLE_MS = LAT_REENABLE_MIN_V_EGO + 0.05
 
 
 def _new():
@@ -77,11 +84,11 @@ def _step(h, *, torque=0.0, rate=0.0, engaged=True, lat=True, alc=False,
   )
 
 
-def _yield(h, torque=0.85, rate=25.0, hands_on=1, blinker_paused=False):
+def _yield(h, torque=0.85, rate=25.0, hands_on=1, blinker_paused=False, v_ego=15.0):
   out = None
   for _ in range(max(SOFT_YIELD_DEBOUNCE_FRAMES, required_press_frames(torque))):
     out = _step(h, torque=torque, rate=rate, hands_on=hands_on,
-                blinker_paused=blinker_paused)
+                blinker_paused=blinker_paused, v_ego=v_ego)
   assert out is not None
   assert out.yielded
   assert out.authority == 0.0
@@ -104,10 +111,10 @@ def _quiet(h, seconds):
   return _step(h, torque=0.0, rate=0.0, hands_on=0, dt=seconds)
 
 
-def _hands_off(h, *, torque=0.0, rate=0.0, blinker_paused=False, lat=True):
+def _hands_off(h, *, torque=0.0, rate=0.0, blinker_paused=False, lat=True, v_ego=15.0):
   """Confirm handsOnLevel==0 for HANDS_OFF_CONFIRM_S — starts the 1 s blend."""
   return _step(h, torque=torque, rate=rate, hands_on=0, dt=HANDS_OFF_CONFIRM_S,
-               blinker_paused=blinker_paused, lat=lat)
+               blinker_paused=blinker_paused, lat=lat, v_ego=v_ego)
 
 
 def test_thresholds_are_derived_from_real_steering_pressed():
@@ -145,6 +152,14 @@ def test_thresholds_are_derived_from_real_steering_pressed():
   assert EMERGENCY_DECEL_FRAMES == 8
   assert EMERGENCY_MIN_V_EGO == 1.0
   assert YIELD_EMERGENCY_WINDOW_S == 2.0
+  assert LAT_REENABLE_MIN_V_EGO_MPH == 10.0
+  assert abs(LAT_REENABLE_MIN_V_EGO - 10.0 * CV.MPH_TO_MS) < 1e-9
+  assert lat_reenable_inhibited(blinker_paused=False, v_ego=BELOW_REENABLE_MS)
+  assert lat_reenable_inhibited(blinker_paused=False, v_ego=LAT_REENABLE_MIN_V_EGO - 1e-6)
+  assert not lat_reenable_inhibited(blinker_paused=False, v_ego=AT_REENABLE_MS)
+  assert not lat_reenable_inhibited(blinker_paused=False, v_ego=ABOVE_REENABLE_MS)
+  assert lat_reenable_inhibited(blinker_paused=True, v_ego=ABOVE_REENABLE_MS)
+  assert lat_reenable_inhibited(blinker_paused=True, v_ego=BELOW_REENABLE_MS)
   assert torque_rate_aligned(SOFT_YIELD_TRIGGER_NM, 10.0)
   assert not torque_rate_aligned(SOFT_YIELD_TRIGGER_NM, -10.0)
   assert not torque_rate_aligned(SOFT_YIELD_TRIGGER_NM, 4095.0)
@@ -635,6 +650,150 @@ def test_soft_lat_blinker_clear_lands_in_yield_then_normal_resume():
   assert not out.blending
 
 
+def test_soft_lat_below_10_mph_does_not_strip_lat():
+  """Speed inhibit is re-enable only — keep control if we still have it."""
+  h = _new()
+  out = _step(h, torque=0.2, lat=True, v_ego=BELOW_REENABLE_MS)
+  assert out.authority == 1.0
+  assert not out.yielded
+  assert not out.blending
+  assert lat_active_after_handoff(True, out.yielded)
+  for _ in range(int(1.0 / DT)):
+    out = _step(h, torque=0.2, lat=True, v_ego=BELOW_REENABLE_MS)
+    assert out.authority == 1.0
+    assert not out.yielded
+    assert not out.blending
+  # Crossing 10 without ever yielding keeps control.
+  out = _step(h, torque=0.2, lat=True, v_ego=ABOVE_REENABLE_MS)
+  assert out.authority == 1.0
+  assert not out.yielded
+  assert not out.blending
+
+
+def test_soft_lat_may_still_yield_below_10_mph():
+  h = _new()
+  _step(h, torque=0.2, lat=True, v_ego=BELOW_REENABLE_MS)
+  out = _yield(h, v_ego=BELOW_REENABLE_MS)
+  assert out.yielded
+  assert not lat_active_after_handoff(True, out.yielded)
+  out = _hands_off(h, torque=0.0, v_ego=BELOW_REENABLE_MS)
+  assert out.yielded
+  assert not out.blending
+
+
+def test_soft_lat_below_10_mph_blocks_reenable_and_aborts_blend():
+  """Yielded or blending + v_ego < 10 mph → stay yielded (same as blinker)."""
+  h = _new()
+  _yield(h)
+  out = _hands_off(h)
+  assert out.blending
+  assert not out.yielded
+  out = _step(h, torque=0.0, lat=True, hands_on=0, v_ego=BELOW_REENABLE_MS)
+  assert out.yielded
+  assert not out.blending
+  assert out.authority == 0.0
+  for _ in range(int((HANDS_OFF_CONFIRM_S + BLEND_TIME_S) / DT) + 5):
+    out = _step(h, torque=0.0, lat=True, hands_on=0, v_ego=BELOW_REENABLE_MS)
+    assert out.yielded
+    assert not out.blending
+    assert out.authority == 0.0
+  # At exactly 10 mph the gate is off (strictly below).
+  out = _step(h, torque=0.0, lat=True, hands_on=0, v_ego=AT_REENABLE_MS,
+              dt=HANDS_OFF_CONFIRM_S)
+  assert out.blending
+  assert not out.yielded
+
+
+def test_soft_lat_cross_10_mph_lands_in_yield_then_normal_resume():
+  """After speed crosses 10 mph: enter yield, then 0.15 s confirm + 1 s blend."""
+  h = _new()
+  _yield(h, v_ego=BELOW_REENABLE_MS)
+  for _ in range(20):
+    out = _step(h, torque=0.2, lat=True, hands_on=1, v_ego=BELOW_REENABLE_MS)
+    assert out.yielded
+    assert not out.blending
+  out = _step(h, torque=0.2, lat=True, hands_on=1, v_ego=ABOVE_REENABLE_MS)
+  assert out.yielded
+  assert not out.blending
+  assert out.authority == 0.0
+  assert not lat_active_after_handoff(True, out.yielded)
+  out = _step(h, torque=0.0, lat=True, hands_on=0, v_ego=ABOVE_REENABLE_MS,
+              dt=HANDS_OFF_CONFIRM_S - DT)
+  assert out.yielded
+  assert not out.blending
+  out = _hands_off(h, v_ego=ABOVE_REENABLE_MS)
+  assert out.blending
+  assert not out.yielded
+  assert out.authority == 0.0
+  for _ in range(int(BLEND_TIME_S / DT)):
+    out = _step(h, torque=0.0, v_ego=ABOVE_REENABLE_MS)
+  assert out.authority == 1.0
+  assert not out.blending
+  assert not out.ui_paused
+
+
+def test_soft_lat_blinker_on_still_blocks_reenable_above_10_mph():
+  """Blinker-on still inhibits take-back at highway speed."""
+  h = _new()
+  _yield(h, blinker_paused=True, v_ego=ABOVE_REENABLE_MS)
+  out = _hands_off(h, blinker_paused=True, v_ego=ABOVE_REENABLE_MS)
+  assert out.yielded
+  assert not out.blending
+  for _ in range(int((HANDS_OFF_CONFIRM_S + BLEND_TIME_S) / DT) + 5):
+    out = _step(h, torque=0.0, lat=True, blinker_paused=True, hands_on=0,
+                v_ego=ABOVE_REENABLE_MS)
+    assert out.yielded
+    assert not out.blending
+
+
+def test_soft_lat_above_10_mph_blinker_off_resume_unchanged():
+  """Above 10 mph, blinker off: prior yield → hands-off → 1 s blend."""
+  h = _new()
+  _yield(h, v_ego=ABOVE_REENABLE_MS)
+  out = _hands_off(h, v_ego=ABOVE_REENABLE_MS)
+  assert out.blending
+  assert not out.yielded
+  for _ in range(int(BLEND_TIME_S / DT)):
+    out = _step(h, torque=0.0, v_ego=ABOVE_REENABLE_MS)
+  assert out.authority == 1.0
+  assert not out.blending
+  assert not out.ui_paused
+
+
+def test_standstill_lat_down_below_10_mph_does_not_snap_lat_back():
+  """Lat-down while creeping: remember speed inhibit, land in yield."""
+  h = _new()
+  for _ in range(int(1.5 / DT)):
+    out = _step(h, torque=0.2, lat=False, v_ego=0.0)
+    assert out.authority == 1.0
+    assert not out.yielded
+    assert not out.blending
+  out = _step(h, torque=0.2, lat=True, v_ego=BELOW_REENABLE_MS)
+  assert out.yielded
+  assert not out.blending
+  assert out.authority == 0.0
+  assert not lat_active_after_handoff(True, out.yielded)
+
+  # Highway-speed fault lat-down without blinker still snaps back (not this gate).
+  h = _new()
+  for _ in range(20):
+    _step(h, torque=0.0, lat=False, v_ego=ABOVE_REENABLE_MS)
+  out = _step(h, torque=0.0, lat=True, v_ego=ABOVE_REENABLE_MS)
+  assert not out.blending
+  assert not out.yielded
+  assert out.authority == 1.0
+
+
+def test_alc_active_still_resets_handoff_below_10_mph():
+  """ALC is not the speed/blinker inhibit path."""
+  h = _new()
+  _yield(h, v_ego=BELOW_REENABLE_MS)
+  out = _step(h, torque=0.8, alc=True, v_ego=BELOW_REENABLE_MS)
+  assert not out.yielded
+  assert out.authority == 1.0
+  assert not out.blending
+
+
 def test_blinker_pause_lat_down_resume_enters_yield_not_immediate_blend():
   """Standstill/fault lat-down during a driver-turn: do not 1 s-blend back.
 
@@ -883,6 +1042,10 @@ def test_blinker_resume_pins_then_blends_from_wheel_not_model():
   assert "blinker_paused" in cs
   assert "blinker_lat_hold.turn_active" in cs
   assert "soft_lat_on" in cs
+  ho = (Path(__file__).resolve().parents[4] / "selfdrive/controls/lib/driver_lateral_handoff.py").read_text()
+  assert "lat_reenable_inhibited" in ho
+  assert "LAT_REENABLE_MIN_V_EGO" in ho
+  assert "inhibited = lat_reenable_inhibited" in ho
 
 
 def test_disabled_for_non_preap_is_identity():
