@@ -217,6 +217,21 @@ def pcm_disable_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMast
   return EngagementAlert(AudibleAlert.disengage)
 
 
+def reverse_gear_disable_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
+  # Pre-AP: Reverse itself is a hard cancel (session already torn down).
+  # Stock USER_DISABLE is ImmediateDisableAlert — "TAKE CONTROL IMMEDIATELY"
+  # + warningImmediate. That is the parking-lot alarm Justin hears on R.
+  # Keep USER_DISABLE so lat/long drop immediately; mute the scary HUD.
+  # Priority.HIGH and 1s cover same-frame pcmDisable "Steering Disengaged"
+  # linger (0.8s, Priority.MID). PERMANENT reverse overlay is the quiet note.
+  if _is_tesla_preap(CP):
+    return Alert(
+      "", "",
+      AlertStatus.normal, AlertSize.none,
+      Priority.HIGH, VisualAlert.none, AudibleAlert.none, 1.)
+  return ImmediateDisableAlert("Reverse Gear")
+
+
 class NormalPermanentAlert(Alert):
   def __init__(self, alert_text_1: str, alert_text_2: str = "", duration: float = 0.2, priority: Priority = Priority.LOWER, creation_delay: float = 0.):
     super().__init__(alert_text_1, alert_text_2,
@@ -1011,7 +1026,7 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
       "",
       AlertStatus.normal, AlertSize.full,
       Priority.LOWEST, VisualAlert.none, AudibleAlert.none, .2, creation_delay=0.5),
-    ET.USER_DISABLE: ImmediateDisableAlert("Reverse Gear"),
+    ET.USER_DISABLE: reverse_gear_disable_alert,
     ET.NO_ENTRY: NoEntryAlert("Reverse Gear"),
   },
 
