@@ -1,3 +1,7 @@
+NAP no lat re-engage below 10 mph (2026-09-15)
+========================
+* Soft-lat **On**: the driver-turn blinker **no re-enable** gate (`lat_reenable_inhibited`) also applies whenever **v_ego < 10 mph** (`LAT_REENABLE_MIN_V_EGO_MPH`, strictly below, mph→m/s). Keep control if we still have it. Already yielded / blending / lat-down stay yielded — do not finish a take-back blend. After speed crosses 10 mph, resume is yield + the normal **0.15 s** hands-off confirm + **1 s** blend. Blinker-on still blocks take-back at any speed. Above 10 mph with the blinker off, prior resume is unchanged. Soft-lat **Off**, ALC tip/hold, long / follow, FCW / AEB, and #163/#164/#165 are not this path. **nap-dev only — no nap-release twin until Justin signs off (batching a release group).**
+
 NAP DM look-away pause below 2 mph (2026-09-15)
 ========================
 * Looking-away / distraction / eyes-off-road DM alerts do **not** fire below **2 mph** (`DM_LOOKAWAY_GATE_MPH`), even if **Simulate Look** and/or **False Alert Ignore** are On. Same stock standstill pause (hold before the green prompt; recover if already orange), plus creeping at a light — Tesla `CS.standstill` is only true when fully stopped, so 1 mph still nagged. Toggles stay as set; this is a speed gate, not Sim Look / FAI Off. Above 2 mph, Sim Look / FAI / stock 3 / 5 / 11 s are unchanged. FCW / AEB / hard cancels (hands-on ≥ 2 / stalk / door / reverse) unchanged. **nap-dev only — no nap-release twin until Justin signs off after a road test.**
