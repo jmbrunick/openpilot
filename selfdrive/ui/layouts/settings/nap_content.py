@@ -41,6 +41,18 @@ MAP_SPEED_LOOKAHEAD_DESCRIPTION = (
 FOLLOW_DISTANCE_VALUES = list(range(1, 8))
 FOLLOW_DISTANCE_LABELS = [str(i) for i in FOLLOW_DISTANCE_VALUES]
 FOLLOW_DISTANCE_DEFAULT = 4
+NAP_ONE_PEDAL_LONG = "NAPOnePedalLong"
+ONE_PEDAL_LONG_DESCRIPTION = (
+  "Default Off. Pedal mode only. With OP long already on, pressing the "
+  + "accelerator from rest pauses longitudinal — long lets go, lateral "
+  + "stays, no full disable or take-control. That pause stays until a "
+  + "stalk SET; lifting the pedal does not resume long. SET while your "
+  + "foot is already on the pedal still arms long; lift starts it "
+  + "(A+B / A3), same as today. After a from-rest pause, lift or "
+  + "near-zero accel is Tesla regen through interceptor RELEASE. Off = "
+  + "stock gas override + A+B/A3 resume. Brake that pauses long RELEASEs "
+  + "immediately to stock Tesla regen."
+)
 FOLLOW_DISTANCE_DESCRIPTION = (
   "1 closest, 7 farthest. A slower car ahead eases off farther back "
   + "(more distance, not a harder brake). Behind a lead, a stalk tip "

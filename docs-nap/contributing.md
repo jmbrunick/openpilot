@@ -17,6 +17,8 @@ Soft Lateral Handoff (`NAPDriverLatHandoff`) defaults **On** (Settings → NAP �
 
 Simulate Look (`NAPDmSimulateLooking`) and False Alert Ignore (`NAPDmFalseAlertIgnore`) both default **Off** on nap-release (stock DM until Justin enables them). They are **mutually exclusive** — only one may be On (both Off is allowed). Reveal them with Force Offroad via a **triple-tap on Settings → NAP** (3 taps within 1.0 s; order Force Offroad / Simulate Look / False Alert Ignore). Shared cadence: after drain is past **1.0 s**, fire at a random time in the next **2.0 s**. Simulate Look On is the pre-FAI **full looking-path wipe** (no-face / uncertain / phone / pose / eye). False Alert Ignore On (Sim Look Off) soft-clears phone/device false positives only, and only when pose/eye are not alarming. Turning one On clears the other (and aborts the other in-flight path). A stale both-On from older nap-dev installs resolves to Simulate Look On / FAI Off on first read. Looking-away alerts also pause below **2 mph** regardless of those toggles. Hypermile stays nap-dev-only.
 
+One-Pedal Long (`NAPOnePedalLong`) defaults **Off**. Pedal mode: gas while long is **already holding** **pauses** software long (silent long pause, lat stays, not a full disable) and **holds that pause until a stalk SET** — lift / coast / regen must not resume or climb back to MAX. SET with the foot already on the pedal still arms long; lift starts A+B/A3. Brake that pauses long RELEASEs immediately to stock regen (no tip-brake soft glide). Off = stock gas override + A+B/A3.
+
 ## Submodules
 
 `panda` and `opendbc_repo` use NotAutopilot forks. After checkout:

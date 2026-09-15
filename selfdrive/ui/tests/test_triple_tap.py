@@ -164,13 +164,15 @@ def test_hidden_toggles_removed_from_normal_lists():
   assert "_on_nap_clicked" in settings_mici
   assert "HiddenTogglesOverlayMici" in settings_mici
 
-  # Soft-lat / Acceleration stay on the normal mannerisms list. Hypermile is nap-dev-only.
+  # Soft-lat / One-Pedal Long / Acceleration stay on the normal mannerisms list. Hypermile is nap-dev-only.
   assert "Soft Lateral Handoff" in tici_dm
+  assert "One-Pedal Long" in tici_dm
   assert "Acceleration" in tici_dm
   assert "NAPMapSpeedAccel" in tici_dm
   assert "Hypermile" not in tici_dm
   assert "Hill Climb" not in tici_dm
   assert "soft lateral handoff" in mici_dm
+  assert "one-pedal long" in mici_dm
   assert '"acceleration"' in mici_dm
   assert "NAPMapSpeedAccel" in mici_dm
   assert "hypermile" not in mici_dm
