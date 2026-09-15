@@ -135,11 +135,10 @@ def hard_cancel_session(engagement) -> None:
   Same FSM contract as stalk cancel / door / gear-out-of-Drive /
   hands-on >= 2: cruiseEnabled down, held MAX forgotten, disengage
   chime via pcmDisable + long falling while lat is also down. Sets
-  preap_cc_cancel_needed so the carcontroller spoofs CANCEL and panda
-  runs pcm_cruise_check(false). tesla_preap drops controls_allowed on
-  leaving Drive without that latch reset; a later SET would then
-  enable selfdrived while panda stays !controls_allowed →
-  controlsMismatch. Do not call _drop_longitudinal_keep_lateral.
+  preap_cc_cancel_needed so the carcontroller spoofs CANCEL (stock CC
+  off). tesla_preap also runs pcm_cruise_check(false) on leaving Drive
+  so cruise_engaged_prev clears; a later Drive SET is a rising edge
+  and does not controlsMismatch. Do not call _drop_longitudinal_keep_lateral.
   """
   was_long = bool(getattr(engagement, "enableLongControl", False))
   engagement.cruiseEnabled = False
@@ -167,10 +166,9 @@ def _check_can_engage(self, door_open, gear_shifter, seatbelt_unlatched):
 
   Orig check_can_engage zeros cruiseEnabled / long but leaves sticky MAX,
   soft-lat yield, stalk timers, and preap_cc_cancel_needed unset. Panda
-  tesla_preap already set controls_allowed=false on leaving Drive without
-  pcm_cruise_check(false). Without the CANCEL spoof, the next Drive SET
-  raises Python cruise while panda cruise_engaged_prev stays latched —
-  selfdrived enables, panda does not, controlsMismatch after ~2s.
+  tesla_preap now pcm_cruise_check(false) on leaving Drive so the next
+  Drive SET can re-allow. The CANCEL spoof still drops stock CC. Without
+  this wrapper, sticky MAX / soft-lat yield would survive Reverse.
   """
   from opendbc.car import structs
 

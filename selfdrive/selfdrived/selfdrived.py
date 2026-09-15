@@ -66,7 +66,7 @@ class SelfdriveD:
 
     self.pose_calibrator = PoseCalibrator()
     self.calibrated_pose: Pose | None = None
-    self.excessive_actuation_check = ExcessiveActuationCheck()
+    self.excessive_actuation_check = ExcessiveActuationCheck(fingerprint=self.CP.carFingerprint)
     self.excessive_actuation = self.params.get("Offroad_ExcessiveActuation") is not None
 
     # Setup sockets
