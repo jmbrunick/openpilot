@@ -476,6 +476,8 @@ def test_nap_follow_setting_map_and_physical_gaps_are_strictly_monotonic():
 
 
 def test_nap_follow_settings_control_monotonic_maneuver_gaps():
+  # Physical t_follow * v + stop_distance. Lead-approach ease must still
+  # settle here (Follow 1 = 23.5 m); a TTC-floor hang of ~0.6 m is a miss.
   steady_gaps = [
     run_following_distance_simulation(
       FOLLOW_TEST_SPEED_MPS,
