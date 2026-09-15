@@ -21,7 +21,7 @@ NAP 2026-09-15 test group (2026-09-15)
 * **#165 Quiet reverse:** Pre-AP `reverseGear` stays `USER_DISABLE` + `NO_ENTRY` (OP off, cannot re-engage in Reverse) but **silent** — no ImmediateDisableAlert / take-control-immediately. Quiet Reverse overlay OK. Other cars keep the stock alarm.
 * **#164 Driver monitoring:** Looking-away / distraction / eyes-off-road DM alerts do **not** fire below **2 mph** (`DM_LOOKAWAY_GATE_MPH`), including creeping at a light. Sim Look / FAI mutex and above-gate 3 / 5 / 11 s are unchanged. nap-release toggles still default **Off**.
 * **#167 Lateral mannerisms:** Soft-lat On `lat_reenable_inhibited` is blinker_paused **OR** `v_ego < 10 mph`. Keep control if lat is still on; already yielded / blending stay yielded. Soft-lat Off / ALC / long unchanged.
-* **Not ported:** Force Offroad CC handoff (#129/#130), auto-wipers, Hypermile. Same product as nap-dev after Justin’s 2026-09-15 sign-off.
+* **Not ported:** Force Offroad CC handoff (#129/#130), auto-wipers, Hypermile, #169 lead-approach ease.
 
 NAP gas-lift handoff + tip-brake comfort ramp (2026-09-14)
 ========================
