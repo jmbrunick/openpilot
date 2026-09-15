@@ -2,11 +2,10 @@
 
 Toggle On + OP long already on + accelerator rising from rest pauses
 software long (same function as brake today — lat stays, not
-USER_DISABLE / full session cancel). Engage-while-gas-pressed (one or
-two SET pulls) then lift still arms / starts long via A+B + A3.
-Interceptor RELEASEs on a from-rest pause and stays RELEASED on lift.
-Resume-long after pause is still one SET (sticky MAX). Toggle Off is
-stock gas override + A+B/A3 resume.
+USER_DISABLE / full session cancel) and **latches** that pause until
+a stalk SET. Lift must not restore long / re-ACQUIRE. Engage-while-
+gas-pressed (one or two SET pulls) then lift still arms / starts long
+via A+B + A3. Brake pause does not use this latch.
 """
 from types import SimpleNamespace
 
@@ -119,12 +118,17 @@ def test_one_pedal_gas_kick_releases_and_stays_released_on_lift(monkeypatch):
   assert cs.pedal_authority_action == int(PedalCommandAction.RELEASE)
   assert not cs.enableLongControl
   assert cs.engagement.cruiseEnabled
+  assert cs.engagement._one_pedal_pause_latched
 
   cs.out.gasPressed = False
   cs.engagement.maybe_one_pedal_gas_kick(False, True)
+  # On-car, gasPressedOverride ends on lift so CC.longActive goes True
+  # while the session stays up. Latch must still block ACQUIRE.
+  cc.longActive = True
   silent = controller.update(cc, cs, frame=4, tesla_can=tesla_can, can_bus_party=0)
   assert silent == []
   assert not cs.enableLongControl
+  assert cs.engagement._one_pedal_pause_latched
   # No re-ACQUIRE / ENABLE chatter: interceptor stays out so Tesla
   # physical pedal at zero is stock lift-regen.
   assert controller.pedal_authority.state == PedalAuthorityState.INACTIVE
@@ -176,6 +180,7 @@ def test_one_pedal_wires_carstate_after_interceptor_gas():
   body = fn.split('"""', 2)[2].split("\n  def ", 1)[0]
   assert "_drop_longitudinal_keep_lateral" in body
   assert "_preap_one_pedal_long_was_on" in body
+  assert "_one_pedal_pause_latched" in body
   assert "hard_cancel_session(" not in body
   assert "cruiseEnabled = False" not in body
   keys = (root / "common/params_keys.h").read_text()
@@ -207,6 +212,37 @@ def test_one_pedal_gas_pause_never_user_disables():
   assert "USER_DISABLE" not in override
 
 
+def test_one_pedal_set_after_gas_pause_acquires(monkeypatch):
+  """After a from-rest pause, lift stays paused; one SET re-ACQUIREs."""
+  controller, cc, cs, tesla_can = controller_env(monkeypatch)
+  _activate_longitudinal(cc, cs)
+  controller.update(cc, cs, frame=0, tesla_can=tesla_can, can_bus_party=0)
+  _kick_long_on_gas(cc, cs)
+  controller.update(cc, cs, frame=2, tesla_can=tesla_can, can_bus_party=0)
+
+  cs.out.gasPressed = False
+  cs.engagement.maybe_one_pedal_gas_kick(False, True)
+  cc.longActive = True
+  silent = controller.update(cc, cs, frame=4, tesla_can=tesla_can, can_bus_party=0)
+  assert silent == []
+  assert cs.engagement._one_pedal_pause_latched
+  assert not cs.enableLongControl
+
+  cs.engagement.process_buttons(
+    cruise_buttons=2, prev_cruise_buttons=0,
+    curr_time_ms=4000, v_ego=20.0, speed_units="KPH",
+    use_pedal=True, pedal_long_allowed=True,
+    long_control_allowed=True, real_brake_pressed=False)
+  assert not cs.engagement._one_pedal_pause_latched
+  assert cs.engagement.enableLongControl
+  cs.enableLongControl = True
+  cs.cruiseEnabled = True
+  cc.longActive = True
+  acquire = controller.update(cc, cs, frame=6, tesla_can=tesla_can, can_bus_party=0)
+  assert _decode_pedal_command(acquire[0]).enabled
+  assert cs.pedal_authority_action == int(PedalCommandAction.ACQUIRE)
+
+
 def test_one_pedal_gas_pause_keeps_session_for_resume(monkeypatch):
   """After gas pause, cruiseEnabled stays so one SET can resume like brake."""
   controller, cc, cs, tesla_can = controller_env(monkeypatch)
@@ -216,6 +252,7 @@ def test_one_pedal_gas_pause_keeps_session_for_resume(monkeypatch):
   assert cs.engagement.cruiseEnabled
   assert not cs.engagement.enableLongControl
   assert not getattr(cs.engagement, "preap_cc_cancel_needed", False)
+  assert cs.engagement._one_pedal_pause_latched
 
 
 def test_engage_while_gas_held_lift_acquires_with_one_pedal_on(monkeypatch):
@@ -249,6 +286,7 @@ def test_engage_while_gas_held_lift_acquires_with_one_pedal_on(monkeypatch):
   cs.out.aEgo = 0.08
   assert not cs.engagement.maybe_one_pedal_gas_kick(False, True)
   assert cs.engagement.enableLongControl
+  assert not getattr(cs.engagement, "_one_pedal_pause_latched", False)
   cs.enableLongControl = True
   cc.longActive = True
   cc.actuators.accel = 0.55
