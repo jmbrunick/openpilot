@@ -191,6 +191,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Beam: 0/1 leave stalk, 2=high (low nibble 4).
     // DAS wiper/beam fields stay 0. No auto headlights.
     {"NAPWiperSpeed", {PERSISTENT, INT, "0"}},
+    // Live Auto-wiper camera latch (swaglog + this param, ~1 Hz). Read-only.
+    {"NAPWiperRainStatus", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, STRING}},
     {"NAPHighLowBeam", {PERSISTENT, INT, "0"}},
     // On-drive MUTCD speed-sign JSONL logger. Default off. Log-only: no sqlite,
     // no vCruise / HUD MAX, no osm.org. Process: speedsignd.
