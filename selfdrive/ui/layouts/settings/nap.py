@@ -44,7 +44,8 @@ from openpilot.selfdrive.ui.layouts.settings.driving_mannerisms import DrivingMa
 from openpilot.selfdrive.ui.layouts.settings.map_speed import MapSpeedLimitLayout
 from openpilot.selfdrive.speedsignd.install import weights_status_summary
 from openpilot.selfdrive.car.tesla.preap_body_controls import (
-  put_wiper_collar_setting, read_wiper_collar_setting, register_nap_body_params,
+  collar_button_index, put_wiper_collar_setting, read_wiper_collar_setting,
+  register_nap_body_params,
 )
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys, DEFAULTS
 
@@ -252,7 +253,7 @@ class NAPLayout(Widget):
       WIPER_COLLAR_DESCRIPTION,
       buttons=WIPER_COLLAR_LABELS,
       button_width=130,
-      selected_index=max(0, min(len(WIPER_COLLAR_VALUES) - 1, collar_setting)),
+      selected_index=collar_button_index(collar_setting),
       callback=self._on_wiper_collar,
     )
     self._main_items.append(self._collar_buttons)
@@ -820,7 +821,7 @@ class NAPLayout(Widget):
       max(0, min(len(WIPER_SPEED_VALUES) - 1, wiper_setting)))
     collar_setting = int(read_wiper_collar_setting() or 0)
     self._collar_buttons.action_item.set_selected_button(
-      max(0, min(len(WIPER_COLLAR_VALUES) - 1, collar_setting)))
+      collar_button_index(collar_setting))
     beam_setting = int(self._params.get(NAPParamKeys.HIGH_LOW_BEAM, return_default=True) or 0)
     self._beam_buttons.action_item.set_selected_button(
       max(0, min(len(HIGH_LOW_BEAM_VALUES) - 1, beam_setting)))

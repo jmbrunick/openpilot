@@ -163,6 +163,7 @@ _last_wiper_req = False
 _wiper_cancel_burst = 0
 _last_collar_on = False
 _collar_cancel_burst = 0
+_last_collar_status_t = 0.0
 _params = None
 _rain_mod = None
 _rain_import_started = False
@@ -189,6 +190,10 @@ def register_nap_body_params():
   DEFAULTS[NAP_WIPER_SPEED] = WIPER_SETTING_OFF
   DEFAULTS[NAP_HIGH_LOW_BEAM] = BEAM_SETTING_OFF
   DEFAULTS[NAP_WIPER_COLLAR] = COLLAR_SETTING_OFF
+  try:
+    migrate_wiper_collar_param()
+  except Exception:
+    pass
 
 
 def wiper_test_requested(setting: int, rain_needed: bool = False) -> bool:
@@ -300,10 +305,10 @@ def replace_relayed_stw(dat: bytes, wiper_on: bool, high_beam_on: bool, crc_fn=N
 
 
 def collar_posn_for_setting(setting: int) -> int | None:
-  """Map the NAP setting to DBC WprSw6Posn. Off leaves the live collar.
+  """Map NAPWiperCollar to DBC WprSw6Posn. Off leaves the live collar.
 
-  UI writes 1=Collar3, 2=Collar4 (NAPWiperCollar). Also accept raw DBC
-  3/4 if a tester puts those values.
+  Persist 0/3/4 (cat /data/params/d/NAPWiperCollar shows 3 for Collar3).
+  Legacy UI wrote 1=Collar3, 2=Collar4 — still accepted.
   """
   s = int(setting)
   if s in (COLLAR_SETTING_3, STW_COLLAR_POSN_3):
@@ -311,6 +316,22 @@ def collar_posn_for_setting(setting: int) -> int | None:
   if s in (COLLAR_SETTING_4, STW_COLLAR_POSN_4):
     return STW_COLLAR_POSN_4
   return None
+
+
+def persist_collar_posn(setting: int) -> int:
+  """Value written to NAPWiperCollar: 0, 3, or 4."""
+  posn = collar_posn_for_setting(setting)
+  return 0 if posn is None else int(posn)
+
+
+def collar_button_index(setting: int) -> int:
+  """Off=0 Collar3=1 Collar4=2, from persisted 0/1/2/3/4."""
+  posn = persist_collar_posn(setting)
+  if posn == STW_COLLAR_POSN_3:
+    return 1
+  if posn == STW_COLLAR_POSN_4:
+    return 2
+  return 0
 
 
 def stw_collar_posn(dat: bytes) -> int:
@@ -413,6 +434,7 @@ def collar_hold_sends(can_sends, CS, tesla_can, bus=0):
     built = build_collar_hold_msg(CS, tesla_can, bus)
     if built is not None:
       out.append(built)
+  _note_collar_tx(posn, out, appended=not had)
   return out
 
 
@@ -460,8 +482,8 @@ def _collar_file_paths() -> list[str]:
 
 
 def put_wiper_collar_setting(setting: int) -> None:
-  """UI and card share this. Params plus a file — UnknownKeyName must not drop Collar3."""
-  s = int(setting)
+  """UI and card share this. File is DBC 0/3/4 so `cat .../NAPWiperCollar` shows 3."""
+  s = persist_collar_posn(setting)
   try:
     _get_params().put(NAP_WIPER_COLLAR, s)
   except Exception:
@@ -478,6 +500,18 @@ def put_wiper_collar_setting(setting: int) -> None:
       continue
 
 
+def _collar_file_read() -> str | None:
+  for path in _collar_file_paths():
+    try:
+      with open(path, encoding="utf-8") as f:
+        txt = f.read().strip()
+      if txt:
+        return txt
+    except Exception:
+      continue
+  return None
+
+
 def read_wiper_collar_setting() -> int:
   """Prefer Params; if that is 0/unknown, honor a sidecar file write from the UI."""
   param_val = None
@@ -488,16 +522,87 @@ def read_wiper_collar_setting() -> int:
   except Exception:
     param_val = None
   if param_val not in (None, COLLAR_SETTING_OFF):
-    return param_val
-  for path in _collar_file_paths():
+    return persist_collar_posn(param_val)
+  txt = _collar_file_read()
+  if txt:
     try:
-      with open(path, encoding="utf-8") as f:
-        file_val = int(f.read().strip())
+      file_val = int(txt)
       if file_val:
-        return file_val
+        return persist_collar_posn(file_val)
+    except (TypeError, ValueError):
+      pass
+  return COLLAR_SETTING_OFF
+
+
+def migrate_wiper_collar_param() -> None:
+  """Rewrite legacy UI 1/2 to DBC 3/4 so cat shows 3 and mici does not pin Off."""
+  try:
+    val = read_wiper_collar_setting()
+  except Exception:
+    return
+  if val not in (STW_COLLAR_POSN_3, STW_COLLAR_POSN_4):
+    return
+  raw_i = None
+  try:
+    raw = _get_params().get(NAP_WIPER_COLLAR, return_default=True)
+    if raw is not None:
+      raw_i = int(raw)
+  except Exception:
+    raw_i = None
+  file_txt = _collar_file_read()
+  if raw_i == val and file_txt == str(val):
+    return
+  put_wiper_collar_setting(val)
+
+
+def _note_collar_tx(posn, can_sends, appended=False) -> None:
+  """~1 Hz proof line. Do not stomp Auto's NAPWiperRainStatus."""
+  global _last_collar_status_t
+  now = time.monotonic()
+  if now - _last_collar_status_t < 0.8:
+    return
+  _last_collar_status_t = now
+  packed = None
+  for msg in can_sends or ():
+    try:
+      if int(msg[0]) == STW_ACTN_RQ_ADDR:
+        packed = bytes(msg[1])
+        break
     except Exception:
       continue
-  return COLLAR_SETTING_OFF if param_val is None else param_val
+  d6 = "-"
+  if packed is not None and len(packed) > STW_COLLAR_BYTE:
+    d6 = str(packed[STW_COLLAR_BYTE] & STW_COLLAR_MASK)
+  line = "collar=%d tx=%d d6=%s src=128 installed=%d file=%s appended=%d" % (
+    int(posn or 0),
+    1 if packed is not None else 0,
+    d6,
+    int(_installed),
+    _collar_file_read() or "-",
+    int(bool(appended)),
+  )
+  try:
+    _get_params().put("NAPWiperCollarStatus", line, block=False)
+  except TypeError:
+    try:
+      _get_params().put("NAPWiperCollarStatus", line)
+    except Exception:
+      pass
+  except Exception:
+    pass
+  if _param_int(NAP_WIPER_SPEED, WIPER_SETTING_OFF) != WIPER_SETTING_AUTO:
+    _put_wiper_status(line)
+  for path in _collar_file_paths():
+    status_path = os.path.join(os.path.dirname(path), "NAPWiperCollarStatus")
+    try:
+      parent = os.path.dirname(status_path)
+      if parent:
+        os.makedirs(parent, exist_ok=True)
+      with open(status_path, "w", encoding="utf-8") as f:
+        f.write(line + "\n")
+      break
+    except Exception:
+      continue
 
 
 def _param_int(key: str, default: int = 0) -> int:
@@ -543,6 +648,7 @@ def reset_auto_gates() -> None:
   global _cereal_gear_override, _cereal_gear_forced, _wiper_cancel_burst
   global _last_collar_on, _collar_cancel_burst
   global _last_auto_log_t, _last_status_put_t, _last_status_gate, _auto_since_t
+  global _last_collar_status_t
   _live_cs = None
   _vehicle_on_override = None
   _gear_override = None
@@ -556,6 +662,7 @@ def reset_auto_gates() -> None:
   _last_auto_log_t = 0.0
   _last_status_put_t = 0.0
   _last_status_gate = None
+  _last_collar_status_t = 0.0
   _auto_since_t = 0.0
 
 

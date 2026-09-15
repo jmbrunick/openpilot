@@ -172,7 +172,7 @@ WIPER_SPEED_DESCRIPTION = (
   "real stalk rest on bus 0; holding nibble 1 is what already works, and "
   "Auto dry must extra-forward rest to cancel. No spray. No auto headlights."
 )
-WIPER_COLLAR_VALUES = [0, 1, 2]
+WIPER_COLLAR_VALUES = [0, 3, 4]
 WIPER_COLLAR_LABELS = ["Off", "Collar3", "Collar4"]
 WIPER_COLLAR_DESCRIPTION = (
   "Parked experiment only: spoof unused 4-click collar positions on 0x45 "
@@ -184,11 +184,14 @@ WIPER_COLLAR_DESCRIPTION = (
   "vs the real stalk is acceptable until the ESP32 column gateway "
   "(same as headlights) — not in this tip. Never a second 0x45 in the "
   "same tick. Off extra-forwards the live collar so the force drops. "
-  "candump src 0 is the live stalk (stays 0 if the physical collar is "
-  "Off). Our TX echo is src 128 (returned | 0x80) — look there for "
-  "WprSw6Posn=3/4. Default Off. Leave Wiper Control Off while testing; "
-  "camera Auto (#159) is unchanged when this is Off. Same panda 0x45 "
-  "whitelist as Int. No spray. Do not flash."
+  "After Collar3, cat /data/params/d/NAPWiperCollar must show 3 "
+  "(DBC posn, not UI index 1). candump src 0 is the live stalk (stays 0 "
+  "if the physical collar is Off). Our TX echo is src 128 "
+  "(returned | 0x80) — look there for WprSw6Posn=3/4 within 1s. "
+  "Status: cat /data/params/d/NAPWiperCollarStatus (collar=3 tx=1). "
+  "Default Off. Leave Wiper Control Off while testing; camera Auto "
+  "(#159) is unchanged when this is Off. Same panda 0x45 whitelist as "
+  "Int. No spray. Do not flash."
 )
 HIGH_LOW_BEAM_DESCRIPTION = (
   "Pre-AP Model S only, for on-car testing. Default Off. Low is the same as "

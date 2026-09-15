@@ -32,8 +32,10 @@ from openpilot.selfdrive.car.tesla.preap_body_controls import (
   WIPER_SETTING_ON,
   apply_stw_collar,
   apply_stw_wiper_beam_nibbles,
+  collar_button_index,
   collar_hold_sends,
   collar_posn_for_setting,
+  persist_collar_posn,
   extra_stw_forward_needed,
   high_beam_test_requested,
   hibm_nibble,
@@ -314,7 +316,7 @@ def test_settings_copy_describes_collar_experiment():
   from openpilot.selfdrive.ui.layouts.settings.nap_content import (
     WIPER_COLLAR_DESCRIPTION, WIPER_COLLAR_LABELS, WIPER_COLLAR_VALUES,
   )
-  assert WIPER_COLLAR_VALUES == [0, 1, 2]
+  assert WIPER_COLLAR_VALUES == [0, 3, 4]
   assert WIPER_COLLAR_LABELS == ["Off", "Collar3", "Collar4"]
   text = WIPER_COLLAR_DESCRIPTION.lower()
   assert "interval3" in text or "wprsw6posn" in text
@@ -330,6 +332,7 @@ def test_settings_copy_describes_collar_experiment():
   assert "live" in text
   assert "crc" in text
   assert "src 128" in text
+  assert "napwipercollar" in text
   assert "off" in text
   assert "auto" in text
   assert "wash" in text
@@ -2964,6 +2967,44 @@ def test_collar_setting_maps_to_dbc_posn():
   assert collar_posn_for_setting(99) is None
 
 
+def test_ui_collar3_index_1_persists_and_txs_posn_3(monkeypatch):
+  """Justin cat NAPWiperCollar=1 while UI showed Collar3. Overlay must still TX 3.
+
+  Persistent file is DBC 3 so `cat /data/params/d/NAPWiperCollar` shows 3.
+  Legacy 1/2 still map. Button index for persisted 3 is Collar3, not Collar4.
+  """
+  from types import SimpleNamespace
+
+  from opendbc.can import CANPacker
+  from opendbc.car.tesla.preap.teslacan import TeslaCANPreAP
+  from opendbc.car.tesla.values import CANBUS
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+  from openpilot.selfdrive.ui.layouts.settings.nap_content import WIPER_COLLAR_VALUES
+
+  assert WIPER_COLLAR_VALUES[1] == STW_COLLAR_POSN_3 == 3
+  assert persist_collar_posn(1) == persist_collar_posn(COLLAR_SETTING_3) == 3
+  assert persist_collar_posn(2) == persist_collar_posn(COLLAR_SETTING_4) == 4
+  assert persist_collar_posn(3) == 3
+  assert persist_collar_posn(0) == 0
+  assert collar_button_index(1) == collar_button_index(3) == 1
+  assert collar_button_index(2) == collar_button_index(4) == 2
+  assert collar_button_index(0) == 0
+  # selected_index=min(len-1, setting) with setting=3 would light Collar4.
+  assert min(len(WIPER_COLLAR_VALUES) - 1, 3) == 2
+  assert collar_button_index(3) != min(len(WIPER_COLLAR_VALUES) - 1, 3)
+
+  packer = CANPacker("tesla_preap")
+  tc = TeslaCANPreAP({CANBUS.party: packer, CANBUS.autopilot_party: packer})
+  cs = SimpleNamespace(msg_stw_actn_req=None)
+  monkeypatch.setattr(body, "read_wiper_collar_setting", lambda: 1)  # Justin's cat
+  out = collar_hold_sends([], cs, tc, CANBUS.party)
+  assert len(out) == 1
+  assert out[0][0] == STW_ACTN_RQ_ADDR
+  assert out[0][1][6] & 0x07 == 3
+  assert stw_wash(out[0][1]) == 0
+
+
 def test_collar_overlay_forces_posn_and_clears_wash_never_spray():
   rest = _rest()
   live_int1 = bytes.fromhex("00ff000000000100")  # WprSw6Posn=1, MC=0
@@ -3391,8 +3432,10 @@ def test_ui_and_params_key_is_nap_wiper_collar():
   nap3x = (repo / "selfdrive" / "ui" / "layouts" / "settings" / "nap.py").read_text()
   assert "put_wiper_collar_setting" in nap3x
   assert "read_wiper_collar_setting" in nap3x
+  assert "collar_button_index" in nap3x
   assert "put(NAPParamKeys.WIPER_COLLAR" not in nap3x
   assert "get(NAPParamKeys.WIPER_COLLAR" not in nap3x
+  assert '"NAPWiperCollarStatus"' in keys
   mici = (repo / "selfdrive" / "ui" / "mici" / "layouts" / "settings" / "nap.py").read_text()
   assert "NAP_WIPER_COLLAR" in mici
   card = (repo / "selfdrive" / "car" / "card.py").read_text()
@@ -3457,9 +3500,13 @@ def test_sidecar_file_is_collar3_when_params_unknown(monkeypatch, tmp_path):
 
   monkeypatch.setattr(body, "_get_params", lambda: _Boom())
   put_wiper_collar_setting(COLLAR_SETTING_3)
-  assert path.read_text() == "1"
-  assert read_wiper_collar_setting() == COLLAR_SETTING_3
+  assert path.read_text() == "3"
+  assert read_wiper_collar_setting() == STW_COLLAR_POSN_3
   assert collar_posn_for_setting(read_wiper_collar_setting()) == 3
+  path.write_text("1")
+  assert read_wiper_collar_setting() == STW_COLLAR_POSN_3
+  body.migrate_wiper_collar_param()
+  assert path.read_text() == "3"
 
 
 def test_stock_cc_collar_txs_when_msg_stw_missing(monkeypatch):
