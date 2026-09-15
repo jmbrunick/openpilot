@@ -91,32 +91,13 @@ def _gear_is_drive(gear) -> bool:
   return name == "drive" or gear == "drive"
 
 
-class PreapGearOutMismatchClear:
-  """One-shot mismatch_counter reset on Drive after an engaged R/P disable.
+def preap_leave_drive_clears_mismatch(*, fingerprint: str, gear, gear_prev) -> bool:
+  """True on the Drive → R/P/other falling edge (Pre-AP only).
 
-  Stalk disable→re-enable already zeros the counter because OP goes
-  disabled. A leftover count from the reverse frame (selfdrived still
-  enabled for one tick while panda already dropped) should not survive
-  Drive return.
-
-  Do not clear on every Drive entry (Park→Drive at start, Neutral
-  shuffle without an OP session). That would mask a real actuator/panda
-  mismatch. Arm only when gear leaves Drive while the session was up.
+  Clear the 3X/OP controls-mismatch counters on leave-Drive, same
+  cleanup spirit as stalk cancel. Do not clear on Drive entry: later
+  engagement in Drive uses the normal live panda/selfdrived checks.
   """
-
-  def __init__(self):
-    self._armed = False
-
-  def update(self, *, fingerprint: str, session_up: bool, gear, gear_prev) -> bool:
-    if fingerprint != PREAP_FINGERPRINT:
-      self._armed = False
-      return False
-
-    in_drive = _gear_is_drive(gear)
-    was_drive = _gear_is_drive(gear_prev)
-    if was_drive and (not in_drive) and session_up:
-      self._armed = True
-    if self._armed and (not was_drive) and in_drive:
-      self._armed = False
-      return True
+  if fingerprint != PREAP_FINGERPRINT:
     return False
+  return _gear_is_drive(gear_prev) and (not _gear_is_drive(gear))
