@@ -43,7 +43,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
 from openpilot.selfdrive.ui.layouts.settings.driving_mannerisms import DrivingMannerismsLayout
 from openpilot.selfdrive.ui.layouts.settings.map_speed import MapSpeedLimitLayout
 from openpilot.selfdrive.speedsignd.install import weights_status_summary
-from openpilot.selfdrive.car.tesla.preap_body_controls import register_nap_body_params
+from openpilot.selfdrive.car.tesla.preap_body_controls import NAP_WIPER_COLLAR, register_nap_body_params
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys, DEFAULTS
 
 register_nap_body_params()
@@ -244,7 +244,7 @@ class NAPLayout(Widget):
     )
     self._main_items.append(self._wiper_buttons)
 
-    collar_setting = int(self._params.get(NAPParamKeys.WIPER_COLLAR, return_default=True) or 0)
+    collar_setting = int(self._params.get(NAP_WIPER_COLLAR, return_default=True) or 0)
     self._collar_buttons = multiple_button_item(
       "Wiper Collar",
       WIPER_COLLAR_DESCRIPTION,
@@ -500,7 +500,8 @@ class NAPLayout(Widget):
     self._params.put(NAPParamKeys.WIPER_SPEED, WIPER_SPEED_VALUES[index])
 
   def _on_wiper_collar(self, index: int):
-    self._params.put(NAPParamKeys.WIPER_COLLAR, WIPER_COLLAR_VALUES[index])
+    # Card overlay reads this exact params_keys.h string.
+    self._params.put(NAP_WIPER_COLLAR, WIPER_COLLAR_VALUES[index])
 
   def _on_high_low_beam(self, index: int):
     self._params.put(NAPParamKeys.HIGH_LOW_BEAM, HIGH_LOW_BEAM_VALUES[index])
@@ -816,7 +817,7 @@ class NAPLayout(Widget):
     wiper_setting = int(self._params.get(NAPParamKeys.WIPER_SPEED, return_default=True) or 0)
     self._wiper_buttons.action_item.set_selected_button(
       max(0, min(len(WIPER_SPEED_VALUES) - 1, wiper_setting)))
-    collar_setting = int(self._params.get(NAPParamKeys.WIPER_COLLAR, return_default=True) or 0)
+    collar_setting = int(self._params.get(NAP_WIPER_COLLAR, return_default=True) or 0)
     self._collar_buttons.action_item.set_selected_button(
       max(0, min(len(WIPER_COLLAR_VALUES) - 1, collar_setting)))
     beam_setting = int(self._params.get(NAPParamKeys.HIGH_LOW_BEAM, return_default=True) or 0)
