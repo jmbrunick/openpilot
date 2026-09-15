@@ -90,7 +90,7 @@ Stock DM timers stay **3 / 5 / 11 s**. Triple-tap **NAP** (1.0 s window; not und
 
 ## Light/Rain sensor (Auto wipers)
 
-The windshield Light/Rain module is real on Pre-AP (Tesla service + owner Auto = intermittent 1/2). It talks **LIN to the BCM**, not CAN. `tesla_preap.dbc` has the **light** half on chassis `BODY_R1` (`0x283`: `LgtSens_*`) and stalk wiper detents on `STW_ACTN_RQ` (`0x45`). There is no rain-intensity / auto-wipe-need signal to replace #159 camera rain. Details and a parked candump experiment: [preap-rain-sensor.md](preap-rain-sensor.md).
+Justin’s 2014 Pre-AP stalk is **Off/Int/On (no Auto)**, so stock never rain-arms the wipers. The Light/Rain module still talks **LIN to the BCM**. Ambient light is expected on chassis `BODY_R1` (`0x283` `LgtSens_*`) with the stalk Off — that proves the sensor is alive, not that rain is on CAN. There is no DBC rain-intensity / auto-wipe-need signal, so NAP Auto should keep #159 camera rain. Details: [preap-rain-sensor.md](preap-rain-sensor.md).
 
 ## OSM map speed (MAX)
 
