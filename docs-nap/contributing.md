@@ -19,6 +19,8 @@ Simulate Look (`NAPDmSimulateLooking`) defaults **On**. False Alert Ignore (`NAP
 
 Hypermile (`NAPHypermile`) defaults **Off** (nap-dev experimental). Hill Climb (`NAPHypermileHillClimb`) defaults **On** but is inert unless Hypermile is On. See [hypermile.md](hypermile.md). Do not merge Hypermile into nap-release until Justin signs off.
 
+One-Pedal Long (`NAPOnePedalLong`) defaults **Off**. Pedal mode: gas from rest kicks software long off (silent pause, like brake); lift then uses Tesla regen through interceptor RELEASE. Off = stock gas override + A+B/A3. Do not merge to nap-release until Justin signs off.
+
 ## Submodules
 
 `panda` and `opendbc_repo` use NotAutopilot forks. After checkout:

@@ -224,9 +224,10 @@ class SelfdriveD:
 
       # Tesla Pre-AP lat/long engage and disengage prompts. Long follows
       # enableLongControl (stalk intent), not interceptor handshake and
-      # not gas override. Brake long pause is silent; a latched driver
-      # turn does not drop long. Full cancel still chimes
-      # pedalCruiseDisabled. Override keeps enableLongControl true.
+      # not gas override. Brake / One-Pedal Long gas kick are silent
+      # pauses; a latched driver turn does not drop long. Full cancel
+      # still chimes pedalCruiseDisabled. Override (toggle Off) keeps
+      # enableLongControl true.
       if (self.CP.brand == "tesla"
           and self.CP.carFingerprint == "TESLA_MODEL_S_PREAP"
           and self.CP.openpilotLongitudinalControl
