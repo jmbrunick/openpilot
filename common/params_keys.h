@@ -164,6 +164,12 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"NAPPedalCalibZero", {PERSISTENT, FLOAT, "0.0"}},
     {"NAPPedalCanBus", {PERSISTENT, INT, "2"}},
     {"NAPAdaptiveAccel", {PERSISTENT, BOOL, "1"}},
+    // Settings → NAP → Driving Mannerisms → One-Pedal Long. Default Off.
+    // Pedal mode: gas rising from rest kicks software long off (silent
+    // pause, like brake). After RELEASE, lift/near-zero accel is Tesla
+    // regen through interceptor pass-through — not a GAS_COMMAND rewrite.
+    // Off = stock gas override + A+B/A3 resume climb.
+    {"NAPOnePedalLong", {PERSISTENT, BOOL, "0"}},
     {"NAPPedalEnabled", {PERSISTENT, BOOL}},
     {"NAPPedalProfile", {PERSISTENT, INT, "4"}},
     {"NAPRadarBehindNosecone", {PERSISTENT, BOOL}},
