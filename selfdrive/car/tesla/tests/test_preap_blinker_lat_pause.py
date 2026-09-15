@@ -716,3 +716,14 @@ def test_check_can_engage_wrapper_is_installed():
          "selfdrive/car/tesla/preap_blinker_lat_pause.py").read_text()
   assert "PreAPEngagement.check_can_engage = _check_can_engage" in src
   assert "hard_cancel_session(self)" in src
+
+
+def test_selfdrived_oneshot_mismatch_clear_is_scoped_to_gear_out():
+  """Blanket Drive-entry clear is not allowed; only R/P after an OP session."""
+  src = (Path(__file__).resolve().parents[4] /
+         "selfdrive/selfdrived/selfdrived.py").read_text()
+  assert "preap_gear_mismatch_clear" in src
+  assert "PreapGearOutMismatchClear" in src
+  helpers = (Path(__file__).resolve().parents[4] /
+             "selfdrive/selfdrived/helpers.py").read_text()
+  assert "Do not clear on every Drive entry" in helpers

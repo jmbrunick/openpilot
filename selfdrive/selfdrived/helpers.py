@@ -84,3 +84,39 @@ class ExcessiveActuationCheck:
         excessive_type = ExcessiveActuationType.LATERAL
 
     return excessive_type
+
+
+def _gear_is_drive(gear) -> bool:
+  name = getattr(gear, "name", gear)
+  return name == "drive" or gear == "drive"
+
+
+class PreapGearOutMismatchClear:
+  """One-shot mismatch_counter reset on Drive after an engaged R/P disable.
+
+  Stalk disable→re-enable already zeros the counter because OP goes
+  disabled. A leftover count from the reverse frame (selfdrived still
+  enabled for one tick while panda already dropped) should not survive
+  Drive return.
+
+  Do not clear on every Drive entry (Park→Drive at start, Neutral
+  shuffle without an OP session). That would mask a real actuator/panda
+  mismatch. Arm only when gear leaves Drive while the session was up.
+  """
+
+  def __init__(self):
+    self._armed = False
+
+  def update(self, *, fingerprint: str, session_up: bool, gear, gear_prev) -> bool:
+    if fingerprint != PREAP_FINGERPRINT:
+      self._armed = False
+      return False
+
+    in_drive = _gear_is_drive(gear)
+    was_drive = _gear_is_drive(gear_prev)
+    if was_drive and (not in_drive) and session_up:
+      self._armed = True
+    if self._armed and (not was_drive) and in_drive:
+      self._armed = False
+      return True
+    return False
