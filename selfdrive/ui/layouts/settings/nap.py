@@ -31,6 +31,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   NAP_HYPERMILE,
   NAP_HYPERMILE_HILL_CLIMB,
   NAP_HYPERMILE_STEP_DOWN,
+  NAP_ONE_PEDAL_LONG,
   NAP_SPEED_SIGN_LOG,
   RADAR_OFFSET_MAX, RADAR_OFFSET_MIN,
   REFRESH_MAPS_INSTRUCTIONS,
@@ -145,7 +146,7 @@ class NAPLayout(Widget):
     self._driving_mannerisms_btn = button_item(
       "Driving Mannerisms",
       "Open",
-      description="Accel feel, follow, soft lat, and Hypermile.",
+      description="Accel feel, follow, soft lat, one-pedal, and Hypermile.",
       callback=self._open_driving_mannerisms,
     )
     self._main_items.append(self._driving_mannerisms_btn)
@@ -751,6 +752,7 @@ class NAPLayout(Widget):
     self._params.put_bool(NAP_HYPERMILE, False)
     self._params.put_bool(NAP_HYPERMILE_STEP_DOWN, False)
     self._params.put_bool(NAP_HYPERMILE_HILL_CLIMB, True)
+    self._params.put_bool(NAP_ONE_PEDAL_LONG, False)
     self._params.remove("NAPHypermileSaved")
     self._params.put_bool(NAP_FORCE_OFFROAD, False)
     self._params.put_bool("NAPForceOffroadConfirmed", False)

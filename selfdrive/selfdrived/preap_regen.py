@@ -12,10 +12,10 @@ enableLongControl stays true while the driver is on the pedal, so press
 and release are silent.
 
 A brake long drop that keeps cruiseEnabled is a silent pause: do not
-fire pedalCruiseDisabled / AudibleAlert.disengage. One SET that only
-restores long from that pause is also quiet. A latched driver-turn
-blinker does not drop long. Full cancel (session down) still chimes
-disengage.
+fire pedalCruiseDisabled / AudibleAlert.disengage. One-Pedal Long gas
+kick-off uses that same pause. One SET that only restores long from
+that pause is also quiet. A latched driver-turn blinker does not drop
+long. Full cancel (session down) still chimes disengage.
 """
 import math
 from typing import NamedTuple
@@ -51,10 +51,11 @@ def update_preap_chimes(*, lat_engaged: bool, long_engaged: bool,
                         prev: PreAPChimeState) -> tuple[PreAPChimes, PreAPChimeState]:
   """Rising/falling edges for Pre-AP lat and long driver prompts.
 
-  Long-only drop while the session stays up (brake / driver-turn pause)
-  is silent. Long-only resume from that pause is silent. Initial second
-  pull and full re-engage still chime long-engage. Session-down long drop
-  still chimes long-disengage (pedalCruiseDisabled).
+  Long-only drop while the session stays up (brake / One-Pedal Long gas
+  kick / driver-turn pause) is silent. Long-only resume from that pause
+  is silent. Initial second pull and full re-engage still chime
+  long-engage. Session-down long drop still chimes long-disengage
+  (pedalCruiseDisabled).
   """
   silent_pause = (
     prev.lat_engaged and lat_engaged
