@@ -655,6 +655,8 @@ def test_settings_and_docs_wire_hypermile():
   assert "ECO_OFFSET_START_MPH" in hm_src
   assert '"NAPMapSpeedOffsetMph": ECO_MAP_OFFSET_MPH' not in hm_src
   assert "NAPHypermile" in keys
+  assert "NAPOnePedalLong" in keys
+  assert 'BOOL, "0"' in next(ln for ln in keys.splitlines() if '"NAPOnePedalLong"' in ln)
   assert "NAPHypermileFollowLevel" not in keys
   assert "NAPHypermileFollowLevel" not in tici
   assert "NAPHypermileFollowLevel" not in mici

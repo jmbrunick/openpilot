@@ -1323,14 +1323,16 @@ def test_driving_mannerisms_submenu_wires_params():
   nap = (root / "selfdrive/ui/layouts/settings/nap.py").read_text()
   nap_mici = (root / "selfdrive/ui/mici/layouts/settings/nap.py").read_text()
   for src in (tici, mici):
-    for key in ("ADAPTIVE_ACCEL", "FOLLOW_DISTANCE", "NAP_DRIVER_LAT_HANDOFF", "NAP_HYPERMILE", "NAP_HYPERMILE_STEP_DOWN", "NAPMapSpeedAccel"):
+    for key in ("ADAPTIVE_ACCEL", "FOLLOW_DISTANCE", "NAP_DRIVER_LAT_HANDOFF", "NAP_ONE_PEDAL_LONG", "NAP_HYPERMILE", "NAP_HYPERMILE_STEP_DOWN", "NAPMapSpeedAccel"):
       assert key in src
   content = (root / "selfdrive/ui/layouts/settings/nap_content.py").read_text()
   assert "Hypermile" in tici
+  assert "One-Pedal Long" in tici
   assert "Adaptive Accel" in tici
   assert "Acceleration" in tici
   assert "MAP_SPEED_ACCEL_DESCRIPTION" in tici
   assert "ADAPTIVE_ACCEL_DESCRIPTION" in tici
+  assert "ONE_PEDAL_LONG_DESCRIPTION" in tici
   assert "stays Accel 5" in content
   assert "Lead still owns follow" in content
   assert "1 lazy" in content
@@ -1338,7 +1340,8 @@ def test_driving_mannerisms_submenu_wires_params():
   assert tici.index("self._accel_buttons") < tici.index("self._adaptive_accel")
   assert tici.index("self._adaptive_accel") < tici.index("self._follow_buttons")
   assert tici.index("self._follow_buttons") < tici.index("self._lat_handoff")
-  assert tici.index("self._lat_handoff") < tici.index("self._hypermile")
+  assert tici.index("self._lat_handoff") < tici.index("self._one_pedal")
+  assert tici.index("self._one_pedal") < tici.index("self._hypermile")
   assert "Follow Distance" in tici
   assert "Soft Lateral Handoff" in tici
   assert "Simulate Look" not in tici
@@ -1348,6 +1351,7 @@ def test_driving_mannerisms_submenu_wires_params():
   assert '"Back To"' in tici
   assert "Return to NAP settings." in tici
   assert "hypermile" in mici
+  assert "one-pedal long" in mici
   assert "adaptive accel" in mici
   assert '"acceleration"' in mici
   assert "NAPMapSpeedAccel" in mici
@@ -1355,7 +1359,8 @@ def test_driving_mannerisms_submenu_wires_params():
   assert mici_widgets.index("self._accel") < mici_widgets.index("adaptive_accel")
   assert mici_widgets.index("adaptive_accel") < mici_widgets.index("follow_distance")
   assert mici_widgets.index("follow_distance") < mici_widgets.index("lat_handoff")
-  assert mici_widgets.index("lat_handoff") < mici_widgets.index("hypermile")
+  assert mici_widgets.index("lat_handoff") < mici_widgets.index("one_pedal")
+  assert mici_widgets.index("one_pedal") < mici_widgets.index("hypermile")
   assert "follow distance" in mici
   assert "soft lateral handoff" in mici
   assert "simulate look" not in mici
@@ -1364,6 +1369,7 @@ def test_driving_mannerisms_submenu_wires_params():
   assert "self._accel.refresh()" in mici
   assert "DrivingMannerismsLayout" in nap
   assert "Accel feel, follow, soft lat" in nap
+  assert "one-pedal" in nap
   assert "lookahead, acceleration" not in nap
   assert "_open_driving_mannerisms" in nap
   assert "_close_driving_mannerisms" in nap

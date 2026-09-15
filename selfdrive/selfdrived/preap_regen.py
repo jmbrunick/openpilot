@@ -12,10 +12,11 @@ enableLongControl stays true while the driver is on the pedal, so press
 and release are silent.
 
 A brake long drop that keeps cruiseEnabled is a silent pause: do not
-fire pedalCruiseDisabled / AudibleAlert.disengage. One SET that only
-restores long from that pause is also quiet. A latched driver-turn
-blinker does not drop long. Full cancel (session down) still chimes
-disengage.
+fire pedalCruiseDisabled / AudibleAlert.disengage. One-Pedal Long gas
+from rest uses that same pause — not USER_DISABLE / full session
+cancel. One SET that only restores long from that pause is also quiet.
+A latched driver-turn blinker does not drop long. Full cancel (session
+down) still chimes disengage.
 """
 import math
 from typing import NamedTuple
@@ -51,10 +52,11 @@ def update_preap_chimes(*, lat_engaged: bool, long_engaged: bool,
                         prev: PreAPChimeState) -> tuple[PreAPChimes, PreAPChimeState]:
   """Rising/falling edges for Pre-AP lat and long driver prompts.
 
-  Long-only drop while the session stays up (brake / driver-turn pause)
-  is silent. Long-only resume from that pause is silent. Initial second
-  pull and full re-engage still chime long-engage. Session-down long drop
-  still chimes long-disengage (pedalCruiseDisabled).
+  Long-only drop while the session stays up (brake / One-Pedal Long gas
+  pause / driver-turn pause) is silent. Long-only resume from that pause
+  is silent. Initial second pull and full re-engage still chime
+  long-engage. Session-down long drop still chimes long-disengage
+  (pedalCruiseDisabled).
   """
   silent_pause = (
     prev.lat_engaged and lat_engaged
@@ -77,6 +79,20 @@ def update_preap_chimes(*, lat_engaged: bool, long_engaged: bool,
   else:
     long_paused = prev.long_paused
   return chimes, PreAPChimeState(lat_engaged, long_engaged, long_paused)
+
+
+def gas_should_user_disable(*, disengage_on_accelerator: bool,
+                            one_pedal_long: bool) -> bool:
+  """Rising-gas EventName.pedalPressed is stock DisengageOnAccelerator.
+
+  That event is USER_DISABLE (full session cancel / take-control).
+  One-Pedal Long On must never take it: gas-from-rest is the same
+  silent long pause as brake (lat stays, sticky MAX, one SET resumes).
+  This does not touch OVERRIDE_LONGITUDINAL or the A+B / A3 gas-lift
+  handoff. Engage-while-gas-pressed still starts long on lift.
+  Toggle Off (default): stock DisengageOnAccelerator still applies.
+  """
+  return bool(disengage_on_accelerator) and not bool(one_pedal_long)
 
 
 class RegenDemandCheck:

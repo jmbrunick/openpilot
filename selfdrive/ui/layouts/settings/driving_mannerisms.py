@@ -17,6 +17,8 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   NAP_HYPERMILE,
   NAP_HYPERMILE_HILL_CLIMB,
   NAP_HYPERMILE_STEP_DOWN,
+  NAP_ONE_PEDAL_LONG,
+  ONE_PEDAL_LONG_DESCRIPTION,
 )
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys
 
@@ -78,6 +80,14 @@ class DrivingMannerismsLayout(Widget):
     )
     self._all_items.append(self._lat_handoff)
 
+    self._one_pedal = toggle_item(
+      "One-Pedal Long",
+      description=ONE_PEDAL_LONG_DESCRIPTION,
+      initial_state=self._params.get_bool(NAP_ONE_PEDAL_LONG),
+      callback=self._on_one_pedal,
+    )
+    self._all_items.append(self._one_pedal)
+
     self._hypermile = toggle_item(
       "Hypermile",
       description=HYPERMILE_DESCRIPTION,
@@ -129,6 +139,9 @@ class DrivingMannerismsLayout(Widget):
   def _on_lat_handoff(self, state):
     self._params.put_bool(NAP_DRIVER_LAT_HANDOFF, state)
 
+  def _on_one_pedal(self, state):
+    self._params.put_bool(NAP_ONE_PEDAL_LONG, state)
+
   def refresh(self):
     hypermile_on = self._params.get_bool(NAP_HYPERMILE)
     self._hypermile.action_item.set_state(hypermile_on)
@@ -143,6 +156,7 @@ class DrivingMannerismsLayout(Widget):
     self._follow_buttons.action_item.set_selected_button(max(0, min(6, follow_dist - 1)))
     self._follow_buttons.set_visible(True)
     self._lat_handoff.action_item.set_state(self._params.get_bool(NAP_DRIVER_LAT_HANDOFF))
+    self._one_pedal.action_item.set_state(self._params.get_bool(NAP_ONE_PEDAL_LONG))
 
   def show_event(self):
     self._scroller.show_event()

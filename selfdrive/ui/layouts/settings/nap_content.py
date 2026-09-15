@@ -44,6 +44,18 @@ FOLLOW_DISTANCE_DEFAULT = 4
 NAP_HYPERMILE = "NAPHypermile"
 NAP_HYPERMILE_STEP_DOWN = "NAPHypermileStepDown"
 NAP_HYPERMILE_HILL_CLIMB = "NAPHypermileHillClimb"
+NAP_ONE_PEDAL_LONG = "NAPOnePedalLong"
+ONE_PEDAL_LONG_DESCRIPTION = (
+  "Default Off. Pedal mode only. With OP long already on, pressing the "
+  + "accelerator from rest pauses longitudinal the same way brake does "
+  + "today — long lets go, lateral stays, no full disable or take-control. "
+  + "SET while your foot is already on the pedal still arms long; lift "
+  + "starts it (A+B / A3), same as today. After a from-rest pause, lift "
+  + "or near-zero accel is Tesla regen through interceptor RELEASE. One "
+  + "SET resumes at held MAX, same as brake pause. Off = stock gas "
+  + "override + A+B/A3 resume. Brake cancel, tip-brake glide, and FCW/AEB "
+  + "stay as they are."
+)
 HYPERMILE_DESCRIPTION = (
   "Default Off. Comfort-biased efficiency — early light ease, not max "
   + "regen. On snaps Adaptive Accel, Cap/Follow, Early lookahead, and "

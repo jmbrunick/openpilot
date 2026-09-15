@@ -119,7 +119,7 @@ When stock Follow Distance changes onroad, selfdrived fires `EventName.hypermile
 - Default Off
 - Stay at/under MAX and posted Cap/Follow
 - Do not disable lead braking
-- Soft-lat / DM / blinker / sticky MAX / one-SET / standstill gas-gate / reverse hard-cancel unchanged
+- Soft-lat / DM / blinker / sticky MAX / one-SET / standstill gas-gate / reverse hard-cancel / One-Pedal Long unchanged
 - Hill Climb does not raise MAX and does not disable lead braking
 - Eco / Step Down / Hill Climb do not force Follow Distance
 

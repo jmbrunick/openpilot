@@ -21,7 +21,9 @@ from openpilot.selfdrive.controls.lib.blinker_lateral_pause import (
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 from openpilot.selfdrive.selfdrived.events import Events, ET
 from openpilot.selfdrive.selfdrived.helpers import ExcessiveActuationCheck, preap_not_in_drive_clears_mismatch
-from openpilot.selfdrive.selfdrived.preap_regen import PreAPChimeState, RegenDemandCheck, update_preap_chimes
+from openpilot.selfdrive.selfdrived.preap_regen import (
+  PreAPChimeState, RegenDemandCheck, gas_should_user_disable, update_preap_chimes,
+)
 from openpilot.selfdrive.selfdrived.state import StateMachine
 from openpilot.selfdrive.selfdrived.alertmanager import AlertManager, set_offroad_alert
 
@@ -100,6 +102,7 @@ class SelfdriveD:
     self.is_metric = self.params.get_bool("IsMetric")
     self.is_ldw_enabled = self.params.get_bool("IsLdwEnabled")
     self.disengage_on_accelerator = self.params.get_bool("DisengageOnAccelerator")
+    self.one_pedal_long = self.params.get_bool("NAPOnePedalLong")
 
     car_recognized = self.CP.brand != 'mock'
 
@@ -224,9 +227,10 @@ class SelfdriveD:
 
       # Tesla Pre-AP lat/long engage and disengage prompts. Long follows
       # enableLongControl (stalk intent), not interceptor handshake and
-      # not gas override. Brake long pause is silent; a latched driver
-      # turn does not drop long. Full cancel still chimes
-      # pedalCruiseDisabled. Override keeps enableLongControl true.
+      # not gas override. Brake / One-Pedal Long gas-from-rest are silent
+      # long pauses (lat stays); a latched driver turn does not drop
+      # long. Full cancel still chimes pedalCruiseDisabled. Override
+      # (toggle Off) keeps enableLongControl true.
       if (self.CP.brand == "tesla"
           and self.CP.carFingerprint == "TESLA_MODEL_S_PREAP"
           and self.CP.openpilotLongitudinalControl
@@ -268,7 +272,8 @@ class SelfdriveD:
       # Tesla Pre-AP hotfix:
       # On brake/regen press, keep lateral active but drop longitudinal only.
       # This mirrors expected "steering-only on brake" behavior for pedal-long cars.
-      gas_disable = CS.gasPressed and not self.CS_prev.gasPressed and self.disengage_on_accelerator
+      # One-Pedal Long On: rising gas is that same silent long pause, never
+      # EventName.pedalPressed USER_DISABLE / full session cancel.
       brake_or_regen_disable = (
         (CS.brakePressed and (not self.CS_prev.brakePressed or not CS.standstill)) or
         (CS.regenBraking and (not self.CS_prev.regenBraking or not CS.standstill))
@@ -278,6 +283,13 @@ class SelfdriveD:
         and self.CP.carFingerprint == "TESLA_MODEL_S_PREAP"
         and self.CP.openpilotLongitudinalControl
         and not self.CP.pcmCruise
+      )
+      gas_disable = (
+        CS.gasPressed and not self.CS_prev.gasPressed
+        and gas_should_user_disable(
+          disengage_on_accelerator=self.disengage_on_accelerator,
+          one_pedal_long=preap_steering_only_brake and self.one_pedal_long,
+        )
       )
       if gas_disable:
         self.events.add(EventName.pedalPressed)
@@ -664,6 +676,7 @@ class SelfdriveD:
       self.is_metric = self.params.get_bool("IsMetric")
       self.is_ldw_enabled = self.params.get_bool("IsLdwEnabled")
       self.disengage_on_accelerator = self.params.get_bool("DisengageOnAccelerator")
+      self.one_pedal_long = self.params.get_bool("NAPOnePedalLong")
       self.experimental_mode = self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl
       self.personality = self.params.get("LongitudinalPersonality", return_default=True)
       time.sleep(0.1)
