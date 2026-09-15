@@ -22,6 +22,7 @@ from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import (
 from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   EMERGENCY_DECEL_FRAMES,
   EMERGENCY_DECEL_MPS2,
+  LAT_REENABLE_MIN_V_EGO,
   SOFT_YIELD_DEBOUNCE_FRAMES,
 )
 from openpilot.selfdrive.car.tesla import preap_blinker_lat_pause as pause_mod
@@ -583,6 +584,36 @@ def test_card_handoff_keeps_yield_during_driver_turn_blinker():
       param_on=True, blinker_paused=True)
   assert canceled
   assert not eng.cruiseEnabled
+
+
+def test_card_handoff_keeps_yield_below_10_mph():
+  """Same re-enable inhibit as blinker: stay yielded below 10 mph."""
+  install_blinker_lat_pause()
+  eng = _engaged(double_pull=True)
+  for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES):
+    update_card_lat_handoff(
+      eng, engaged=True, lat_would_be_active=True,
+      steering_torque=0.85, steering_rate_deg=20.0, hands_on_level=1,
+      brake_applied=False, a_ego=0.0, v_ego=15.0, param_on=True)
+  assert eng._nap_lat_handoff._yielded
+  slow = LAT_REENABLE_MIN_V_EGO - 0.05
+  for _ in range(20):
+    out = update_card_lat_handoff(
+      eng, engaged=True, lat_would_be_active=True,
+      steering_torque=0.0, steering_rate_deg=0.0, hands_on_level=0,
+      brake_applied=False, a_ego=0.0, v_ego=slow, param_on=True)
+    assert not out
+    assert eng._nap_lat_handoff._yielded
+    assert not eng._nap_lat_handoff._blending
+  # Blinker-on still inhibits at highway speed on the card path.
+  for _ in range(20):
+    out = update_card_lat_handoff(
+      eng, engaged=True, lat_would_be_active=True,
+      steering_torque=0.0, steering_rate_deg=0.0, hands_on_level=0,
+      brake_applied=False, a_ego=0.0, v_ego=15.0, param_on=True,
+      blinker_paused=True)
+    assert not out
+    assert eng._nap_lat_handoff._yielded
 
 
 def test_card_update_preap_does_not_clear_lat_on_blinker_when_soft_lat_on():

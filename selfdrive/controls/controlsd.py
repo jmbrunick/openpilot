@@ -147,8 +147,9 @@ class Controls:
     )
     CC.longActive = CC.enabled and not any(e.overrideLongitudinal for e in self.sm['onroadEvents']) and self.CP.openpilotLongitudinalControl
     # turn_active is the latched driver-turn blinker (not ALC, not the
-    # post-turn hand-on hold). Soft-lat uses it as re-enable inhibit +
-    # falling-edge enter-yield. Soft-lat Off ignores it (identity).
+    # post-turn hand-on hold). Soft-lat ORs that with v_ego < 10 mph
+    # as re-enable inhibit + falling-edge enter-yield. Soft-lat Off
+    # ignores it (identity).
     self._lat_handoff = self.lat_handoff.update(
       engaged=bool(CC.enabled),
       lat_would_be_active=bool(lat_would_be_active),
