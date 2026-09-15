@@ -588,9 +588,10 @@ def _update_preap(cs, can_parsers):
     hold = getattr(engagement, "_nap_lat_hold", None)
     # Driver-turn latch only (not ALC, not post-turn hand-on). Soft-lat
     # On must not treat lamp latch as lat-down — that reset the card
-    # handoff and forgot a yield (emergency cancel / inhibit). Soft-lat
-    # Off is identity here; BlinkerLateralHold still frees lat in
-    # controlsd.
+    # handoff and forgot a yield (emergency cancel / inhibit). v_ego
+    # is already passed so the same < 10 mph re-enable inhibit applies.
+    # Soft-lat Off is identity here; BlinkerLateralHold still frees lat
+    # in controlsd.
     driver_turn = bool(hold is not None and hold.turn_active)
     canceled = update_card_lat_handoff(
       engagement,
