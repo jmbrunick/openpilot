@@ -26,21 +26,27 @@ return the real stalk. Do not pulse 4 then drop to SNA or rest.
 
 Off leaves the driver’s real stalk nibble alone (do not force 0) unless
 Int/On just dropped to Off — then extra-forward rest so the body cancels.
-Wiper On/Int holds high nibble 1. Auto holds that same nibble 1 only when
-all of: setting is Auto, the vehicle is on, gear is Drive or Reverse, and
-the 3X road camera sees a rainy or icy/frosted windshield (unwarped
-ROAD Y). Park and Neutral never Auto-wipe, even with the car on.
+Wiper On/Int holds high nibble 1 (TIPWIPE, WprWashSw_Psd=0x10). Camera
+Auto does not use TIPWIPE. Auto overlays WprSw6Posn INTERVAL1 (collar=1)
+and WprWashSw_Psd=0 only when all of: setting is Auto, the vehicle is on,
+gear is Drive or Reverse, and the 3X road camera sees a rainy or icy/
+frosted windshield (unwarped ROAD Y). Park and Neutral never Auto-wipe,
+even with the car on. Physical collar Off=0 Int1=1 Int2=2 Low=5 High=6;
+Int1 already timed-wipes on this BCM. No stalk Auto required.
 
-Pre-AP latches ~32 s intermittent from nibble 1. Bus-0 rest does not
-cancel that. Stopping the extra-forward when rain/hold drops leaves the
-body wiping forever (status wipe=0 is honest — we are not commanding
-wipe, but we also are not canceling). While Auto is selected and wipe is
-False, still extra-forward 0x45 at the 10 Hz slot with the high nibble
-cleared (real stalk rest) so the body gets an explicit cancel. On the
-falling edge of wipe, send several rest frames immediately (do not wait
-for the next 10 Hz slot). Park/Neutral stay wipe=0 and use that same
-cancel if we had been wiping. Do not force wipe on dry glass. Off that
-never Auto-wiped still leaves the stalk alone.
+Live stalk Off repeats collar=0 on bus 0. A 10 Hz Int hold loses that
+last-win, so Auto wipe extra-forwards every card frame (~100 Hz) like
+High: live MC, in-place 0x45, resign CRC, collar=1 held. candump src 0
+is the live stalk; src 128 is our TX echo (returned | 0x80).
+
+Pre-AP latches ~32 s intermittent from TIPWIPE nibble 1. Bus-0 rest does
+not cancel that. Collar Int1 is a held position — live Off would cancel
+if it last-wins, so Auto dry still extra-forwards rest with collar forced
+0 (and wash 0) at the 10 Hz slot. On the falling edge of wipe, send
+several rest frames immediately (do not wait for the next 10 Hz slot).
+Park/Neutral stay wipe=0 and use that same cancel if we had been wiping.
+Do not force wipe on dry glass. Off that never Auto-wiped still leaves
+the stalk alone.
 
 Dry overcast must not acquire or keep HOLD. Off is the escape. Default
 Off — Auto is opt-in. No spray. No auto high-beam. Do not flash.
@@ -56,23 +62,18 @@ changes. Do not fake this through another ID.
 Auto is not gated on cruiseEnabled, latActive, or a stalk pull. Int/On
 do not use the camera or gear gate.
 
-Known risk: pre-AP may still see the real stalk rest on bus 0. Int already
-wins when held, so Auto uses that same hold, not a pulse.
+Known risk: pre-AP may still see the real stalk rest on bus 0. Auto
+holds INTERVAL1 at high rate so Off cannot last-win, not a pulse.
 
 Collar3/Collar4 is a parked experiment on the same 0x45. Justin's 2014
 4-click collar sends Off=0 Int1=1 Int2=2 Low=5 High=6 and never 3 or 4.
-DBC WprSw6Posn INTERVAL3=3 INTERVAL4=4 is “unused on 4-click collar.”
+DBC WprSw6Posn INTERVAL3=3 INTERVAL4=4 is unused on the 4-click collar.
 Hypothesis: 3/4 are rain Auto. Overlay WprSw6Posn=3 or 4 and force
-WprWashSw_Psd=0 (no TIPWIPE, no WASH). Live stalk Off TXes collar=0 on
-bus 0 continuously; 10 Hz Int hold loses that last-win. Collar3/4 brute-
-force holds like High: extra-forward every card frame (~100 Hz) on the
-live MC, overlay 3/4 on the packed TX (even if create_action_request is
-unpatched), resign CRC. Flicker vs the real stalk is acceptable on this
-parked experiment; longer term Justin will use the ESP32 column gateway
-(same as headlights) — do not build that here. Never a second 0x45 in
-the same tick. Off extra-forwards live collar so the force drops. Do
-not weaken panda safety — 0x45 is already whitelisted. Camera Auto
-(#159) is unchanged while this setting is Off.
+WprWashSw_Psd=0 (no TIPWIPE, no WASH). Same last-win as Auto INTERVAL1
+and High: extra-forward every card frame (~100 Hz). Camera Auto (#162)
+is unchanged while this setting is Off. When Collar3/4 is selected it
+overrides Auto INTERVAL1. Flicker vs the real stalk is acceptable;
+do not build the ESP32 column gateway here.
 """
 
 # Params / UI. 0 is off (today's forwarded stalk). Indexes, not raw DBC.
@@ -106,6 +107,7 @@ STW_HIGH_BEAM_FLASH = 0x08  # HIBM_FLSH_ON_PSD — never send
 STW_WASH_MASK = 0x30  # WprWashSw_Psd bits 4-5. 0=NPSD 1=TIPWIPE 2=WASH.
 STW_COLLAR_BYTE = 6
 STW_COLLAR_MASK = 0x07  # WprSw6Posn bits 0-2. MC lives in the high nibble.
+STW_COLLAR_INTERVAL1 = 1  # Physical Int1. Camera Auto wipe command.
 STW_COLLAR_POSN_3 = 3  # INTERVAL3 — unused on the 4-click collar
 STW_COLLAR_POSN_4 = 4  # INTERVAL4 — unused on the 4-click collar
 STW_FORWARD_SLOT = 10
@@ -218,10 +220,11 @@ def register_nap_body_params():
 
 
 def wiper_test_requested(setting: int, rain_needed: bool = False) -> bool:
-  """Int and On hold nibble 1. Auto holds it only while the glass is not clear.
+  """Int and On hold TIPWIPE nibble 1. Auto wipe is true only while wet.
 
   Gear / vehicle-on are applied in requested_wiper_test, not here, so packing
-  tests can still check the nibble without a CarState.
+  tests can still check the flag without a CarState. Auto TX is INTERVAL1
+  (collar=1), not this nibble — see requested_auto_collar_posn.
   """
   s = int(setting)
   if s in (WIPER_SETTING_INTERMITTENT, WIPER_SETTING_ON):
@@ -240,6 +243,34 @@ def hibm_nibble(dat: bytes) -> int:
   if len(dat) <= STW_WIPER_BEAM_BYTE:
     return 0
   return dat[STW_WIPER_BEAM_BYTE] & STW_HIBM_MASK
+
+
+def stw_collar_posn(dat: bytes) -> int:
+  if len(dat) <= STW_COLLAR_BYTE:
+    return 0
+  return dat[STW_COLLAR_BYTE] & STW_COLLAR_MASK
+
+
+def stw_wash(dat: bytes) -> int:
+  """WprWashSw_Psd: 0 NPSD, 1 TIPWIPE, 2 WASH, 3 SNA."""
+  if len(dat) <= STW_WIPER_BEAM_BYTE:
+    return 0
+  return (dat[STW_WIPER_BEAM_BYTE] & STW_WASH_MASK) >> 4
+
+
+def apply_stw_collar(dat: bytes, posn: int | None) -> bytes:
+  """Force WprSw6Posn and WprWashSw_Psd=0. None is identity. Never spray.
+
+  Keeps MC (high nibble of byte 6), turn, high-beam, and rear-wash bits.
+  Camera Auto wipe is INTERVAL1 — no TIPWIPE 0x10. Auto dry forces 0.
+  """
+  if posn is None or len(dat) <= STW_COLLAR_BYTE:
+    return bytes(dat)
+  out = bytearray(dat)
+  out[STW_COLLAR_BYTE] = (out[STW_COLLAR_BYTE] & ~STW_COLLAR_MASK) | (int(posn) & STW_COLLAR_MASK)
+  if len(out) > STW_WIPER_BEAM_BYTE:
+    out[STW_WIPER_BEAM_BYTE] = out[STW_WIPER_BEAM_BYTE] & ~STW_WASH_MASK
+  return bytes(out)
 
 
 def apply_stw_wiper_beam_nibbles(dat: bytes, wiper_on: bool, high_beam_on: bool,
@@ -276,25 +307,23 @@ def stalk_test_active(wiper_on: bool | None = None, high_beam_on: bool | None = 
 
 def extra_stw_forward_needed(can_sends, frame: int, wiper_on: bool, high_beam_on: bool,
                              wiper_cancel: bool = False, cancel_now: bool = False,
-                             collar_on: bool = False, collar_cancel: bool = False) -> bool:
-  """One 0x45 when holding a nibble or sending rest-cancel. Never a second frame.
+                             collar_hold: bool = False, collar_on: bool = False,
+                             collar_cancel: bool = False) -> bool:
+  """One 0x45 when holding a nibble/collar or sending rest-cancel. Never a second frame.
 
   Parked / not-engaged: stock-cc only TXes 0x45 on engage/cancel. Wiper
-  On/Int extra-forwards on the 10 Hz slot so nibble 1 stays held. Auto
-  uses that same 10 Hz hold while the glass looks rainy or icy, and the
-  same 10 Hz slot with nibble NOT held while Auto is selected and dry so
-  Pre-AP drops latched intermittent. Falling-edge cancel_now does not
-  wait for the slot. High extra-forwards every 10 ms so held nibble 4
-  can last-win against repeating bus-0 IDLE. Collar3/4 brute-force holds
-  every card frame (~100 Hz, live-MC extra-forward) so bus-0 live Off
-  cannot overwrite 3/4; flicker vs the real stalk is acceptable until
-  the ESP32 column gateway. Off bursts live collar (no force) then
-  leaves the stalk. candump src 0 is the live stalk; our TX echo is
-  src 128 (returned | 0x80).
+  On/Int extra-forwards on the 10 Hz slot so TIPWIPE nibble 1 stays held.
+  Camera Auto wipe extra-forwards every 10 ms like High so INTERVAL1
+  last-wins against repeating bus-0 Off (collar=0). Collar3/4 uses the
+  same 100 Hz hold. Auto dry / wipe-release extra-forwards rest with
+  collar forced 0 on the 10 Hz slot so Pre-AP drops intermittent.
+  Falling-edge cancel_now does not wait for the slot. High extra-forwards
+  every 10 ms so held nibble 4 can last-win against repeating bus-0 IDLE.
   """
-  if not (stalk_test_active(wiper_on, high_beam_on) or wiper_cancel or collar_on or collar_cancel):
+  hold = bool(collar_hold or collar_on)
+  if not (stalk_test_active(wiper_on, high_beam_on) or wiper_cancel or hold or collar_cancel):
     return False
-  if not high_beam_on and not collar_on and not cancel_now and int(frame) % STW_FORWARD_SLOT != 0:
+  if not high_beam_on and not hold and not cancel_now and int(frame) % STW_FORWARD_SLOT != 0:
     return False
   return not any(msg[0] == STW_ACTN_RQ_ADDR for msg in can_sends)
 
@@ -307,9 +336,10 @@ def live_stw_counter(msg_stw) -> int:
 
 
 def overlay_stw_wiper_beam(dat: bytes, wiper_on: bool, high_beam_on: bool, crc_fn=None,
-                           clear_wiper: bool = False) -> bytes:
-  """Apply nibbles and resign CRC only when the payload changed."""
+                           clear_wiper: bool = False, collar_posn: int | None = None) -> bytes:
+  """Apply nibbles/collar and resign CRC only when the payload changed."""
   new_dat = apply_stw_wiper_beam_nibbles(dat, wiper_on, high_beam_on, clear_wiper=clear_wiper)
+  new_dat = apply_stw_collar(new_dat, collar_posn)
   if new_dat == dat:
     return dat
   if crc_fn is None or len(new_dat) < 8:
@@ -320,9 +350,39 @@ def overlay_stw_wiper_beam(dat: bytes, wiper_on: bool, high_beam_on: bool, crc_f
 
 
 def replace_relayed_stw(dat: bytes, wiper_on: bool, high_beam_on: bool, crc_fn=None,
-                        clear_wiper: bool = False) -> bytes:
+                        clear_wiper: bool = False, collar_posn: int | None = None) -> bytes:
   """Edit the live/relayed 0x45 payload. Do not invent a second frame."""
-  return overlay_stw_wiper_beam(dat, wiper_on, high_beam_on, crc_fn=crc_fn, clear_wiper=clear_wiper)
+  return overlay_stw_wiper_beam(dat, wiper_on, high_beam_on, crc_fn=crc_fn,
+                               clear_wiper=clear_wiper, collar_posn=collar_posn)
+
+
+def overlay_collar_on_can_msg(msg, tesla_can, posn: int | None):
+  """Force WprSw6Posn / wash=0 on a packed 0x45 TX and resign CRC.
+
+  Last-mile so Auto INTERVAL1 still TXes if create_action_request is the
+  stock packer. Identity when posn is None, tesla_can is missing, or dat
+  is too short.
+  """
+  if msg is None or posn is None or tesla_can is None:
+    return msg
+  try:
+    addr, dat, bus = msg[0], msg[1], msg[2]
+  except (TypeError, IndexError, ValueError):
+    return msg
+  if int(addr) != STW_ACTN_RQ_ADDR:
+    return msg
+  crc_fn = getattr(tesla_can, "stw_crc", None)
+  if crc_fn is None:
+    return msg
+  new_dat = overlay_stw_wiper_beam(bytes(dat), False, False, crc_fn=crc_fn, collar_posn=int(posn))
+  if new_dat == bytes(dat):
+    return msg
+  return (addr, new_dat, bus)
+
+
+def overlay_stw_collar(dat: bytes, posn: int | None, crc_fn=None) -> bytes:
+  """Apply collar force and resign CRC only when the payload changed."""
+  return overlay_stw_wiper_beam(dat, False, False, crc_fn=crc_fn, collar_posn=posn)
 
 
 def collar_posn_for_setting(setting: int) -> int | None:
@@ -355,68 +415,12 @@ def collar_button_index(setting: int) -> int:
   return 0
 
 
-def stw_collar_posn(dat: bytes) -> int:
-  if len(dat) <= STW_COLLAR_BYTE:
-    return 0
-  return dat[STW_COLLAR_BYTE] & STW_COLLAR_MASK
-
-
-def stw_wash(dat: bytes) -> int:
-  """WprWashSw_Psd: 0 NPSD, 1 TIPWIPE, 2 WASH, 3 SNA."""
-  if len(dat) <= STW_WIPER_BEAM_BYTE:
-    return 0
-  return (dat[STW_WIPER_BEAM_BYTE] & STW_WASH_MASK) >> 4
-
-
-def apply_stw_collar(dat: bytes, posn: int | None) -> bytes:
-  """Force WprSw6Posn and WprWashSw_Psd=0. Off is identity. Never spray.
-
-  Keeps MC (high nibble of byte 6), turn, high-beam, and rear-wash bits.
-  Collar3/4 is the rain-Auto experiment — no TIPWIPE 0x10.
-  """
-  if posn is None or len(dat) <= STW_COLLAR_BYTE:
-    return bytes(dat)
-  out = bytearray(dat)
-  out[STW_COLLAR_BYTE] = (out[STW_COLLAR_BYTE] & ~STW_COLLAR_MASK) | (int(posn) & STW_COLLAR_MASK)
-  if len(out) > STW_WIPER_BEAM_BYTE:
-    out[STW_WIPER_BEAM_BYTE] = out[STW_WIPER_BEAM_BYTE] & ~STW_WASH_MASK
-  return bytes(out)
-
-
-def overlay_stw_collar(dat: bytes, posn: int | None, crc_fn=None) -> bytes:
-  """Apply collar force and resign CRC only when the payload changed."""
-  new_dat = apply_stw_collar(dat, posn)
-  if new_dat == dat:
-    return dat
-  if crc_fn is None or len(new_dat) < 8:
-    return new_dat
-  out = bytearray(new_dat)
-  out[7] = crc_fn(bytes(out[:7]))
-  return bytes(out)
-
-
-def overlay_collar_on_can_msg(msg, tesla_can, posn: int | None):
-  """Force WprSw6Posn / wash=0 on a packed 0x45 TX and resign CRC.
-
-  Idle extra-forward must TX collar even when TeslaCANPreAP.create_action_request
-  is the stock packer (install missed, or this instance is unpatched).
-  Identity when posn is None, tesla_can is missing, or dat is too short.
-  """
-  if msg is None or posn is None or tesla_can is None:
+def live_or_rest_stw(CS) -> dict:
+  """Parked extra-forward must not die if msg_stw_actn_req is missing."""
+  msg = getattr(CS, "msg_stw_actn_req", None) if CS is not None else None
+  if isinstance(msg, dict) and msg:
     return msg
-  try:
-    addr, dat, bus = msg[0], msg[1], msg[2]
-  except (TypeError, IndexError, ValueError):
-    return msg
-  if int(addr) != STW_ACTN_RQ_ADDR:
-    return msg
-  crc_fn = getattr(tesla_can, "stw_crc", None)
-  if crc_fn is None:
-    return msg
-  new_dat = overlay_stw_collar(bytes(dat), int(posn), crc_fn=crc_fn)
-  if new_dat == bytes(dat):
-    return msg
-  return (addr, new_dat, bus)
+  return dict(REST_STW_ACTN)
 
 
 def build_collar_hold_msg(CS, tesla_can, bus=0):
@@ -493,32 +497,6 @@ def _is_stw_msg(msg) -> bool:
     return int(msg[0]) == STW_ACTN_RQ_ADDR
   except Exception:
     return False
-
-
-def send_replaced_live_stw(spoofer, CS, tesla_can, bus):
-  """TX the live stalk with nibbles patched, same MC as bus 0 RX."""
-  msg_stw = live_or_rest_stw(CS)
-  button = int(msg_stw.get("SpdCtrlLvr_Stat", 0) or 0)
-  if tesla_can is None:
-    return spoofer._send(CS, tesla_can, bus, button)
-  return tesla_can.create_action_request(button, bus, live_stw_counter(msg_stw), msg_stw)
-
-
-def live_or_rest_stw(CS) -> dict:
-  """Parked extra-forward must not die if msg_stw_actn_req is missing."""
-  msg = getattr(CS, "msg_stw_actn_req", None) if CS is not None else None
-  if isinstance(msg, dict) and msg:
-    return msg
-  return dict(REST_STW_ACTN)
-
-
-def _get_params():
-  """Reuse one Params handle. Constructing Params() every 10 ms lagged card."""
-  global _params
-  if _params is None:
-    from openpilot.common.params import Params
-    _params = Params()
-  return _params
 
 
 def _collar_file_paths() -> list[str]:
@@ -673,6 +651,24 @@ def _note_collar_tx(posn, can_sends, appended=False, err: str = "-") -> None:
       continue
 
 
+def send_replaced_live_stw(spoofer, CS, tesla_can, bus):
+  """TX the live stalk with nibbles patched, same MC as bus 0 RX."""
+  msg_stw = live_or_rest_stw(CS)
+  button = int(msg_stw.get("SpdCtrlLvr_Stat", 0) or 0)
+  if tesla_can is None:
+    return spoofer._send(CS, tesla_can, bus, button)
+  return tesla_can.create_action_request(button, bus, live_stw_counter(msg_stw), msg_stw)
+
+
+def _get_params():
+  """Reuse one Params handle. Constructing Params() every 10 ms lagged card."""
+  global _params
+  if _params is None:
+    from openpilot.common.params import Params
+    _params = Params()
+  return _params
+
+
 def _param_int(key: str, default: int = 0) -> int:
   try:
     val = _get_params().get(key, return_default=True)
@@ -714,9 +710,8 @@ def set_cereal_gear(gear) -> None:
 def reset_auto_gates() -> None:
   global _live_cs, _vehicle_on_override, _gear_override, _last_gear_src, _last_wiper_req
   global _cereal_gear_override, _cereal_gear_forced, _wiper_cancel_burst
-  global _last_collar_on, _collar_cancel_burst
   global _last_auto_log_t, _last_status_put_t, _last_status_gate, _auto_since_t
-  global _last_collar_status_t, _collar_tx_count, _collar_last_err
+  global _last_collar_on, _collar_cancel_burst
   _live_cs = None
   _vehicle_on_override = None
   _gear_override = None
@@ -730,9 +725,6 @@ def reset_auto_gates() -> None:
   _last_auto_log_t = 0.0
   _last_status_put_t = 0.0
   _last_status_gate = None
-  _last_collar_status_t = 0.0
-  _collar_tx_count = 0
-  _collar_last_err = "-"
   _auto_since_t = 0.0
 
 
@@ -1087,10 +1079,15 @@ def _auto_status_line(setting: int, on: bool, drive: bool, rain: bool, wipe: boo
     rain_bits = "rain=err"
   gi = _gear_int(gear)
   raw = "-" if gi is None else str(gi)
+  if int(setting) == WIPER_SETTING_AUTO:
+    collar_n = STW_COLLAR_INTERVAL1 if wipe else 0
+    collar_bits = f"collar={collar_n} wash=0"
+  else:
+    collar_bits = "collar=-"
   return (
     f"nap wiper auto setting={int(setting)} on={int(on)} gear={_gear_name(gear) or '-'} gear_src={src} "
     + f"gear_type={_gear_type_name(gear)} raw={raw} drive={int(drive)} rain={int(rain)} wipe={int(wipe)} "
-    + f"cancel={int(wiper_rest_tx_needed(wipe))} "
+    + f"cancel={int(wiper_rest_tx_needed(wipe))} {collar_bits} "
     + f"installed={int(_installed)} {rain_bits}"
   )
 
@@ -1152,6 +1149,19 @@ def _note_wiper_cancel_frame() -> None:
     _wiper_cancel_burst -= 1
 
 
+def requested_auto_collar_posn(wiper_on: bool | None = None) -> int | None:
+  """INTERVAL1 while Auto wants wipe; 0 while Auto rest-cancel; else live collar.
+
+  Int/On stay TIPWIPE and leave WprSw6Posn alone. Camera Auto is collar=1.
+  Collar3/4 experiment is requested_collar_posn and overrides this.
+  """
+  if int(_param_int(NAP_WIPER_SPEED, WIPER_SETTING_OFF)) != WIPER_SETTING_AUTO:
+    return None
+  if wiper_on is None:
+    wiper_on = requested_wiper_test()
+  return STW_COLLAR_INTERVAL1 if wiper_on else 0
+
+
 def requested_collar_posn() -> int | None:
   return collar_posn_for_setting(read_wiper_collar_setting())
 
@@ -1183,6 +1193,14 @@ def _note_collar_cancel_frame() -> None:
   global _collar_cancel_burst
   if _collar_cancel_burst > 0:
     _collar_cancel_burst -= 1
+
+
+def effective_collar_posn(wiper_on: bool | None = None) -> int | None:
+  """Collar3/4 experiment overrides camera Auto INTERVAL1."""
+  exp = requested_collar_posn()
+  if exp is not None:
+    return exp
+  return requested_auto_collar_posn(wiper_on)
 
 
 def requested_wiper_test() -> bool:
@@ -1217,9 +1235,14 @@ def create_action_request_with_overlay(self, button_to_press, bus, counter, msg_
     orig = _tesla_can().create_action_request
   addr, dat, out_bus = orig(self, button_to_press, bus, counter, msg_stw)
   wiper = requested_wiper_test()
-  dat = replace_relayed_stw(dat, wiper, requested_high_beam_test(),
-                            crc_fn=self.stw_crc, clear_wiper=wiper_rest_tx_needed(wiper))
-  dat = overlay_stw_collar(dat, requested_collar_posn(), crc_fn=self.stw_crc)
+  exp_collar = requested_collar_posn()
+  auto_collar = requested_auto_collar_posn(wiper)
+  collar = exp_collar if exp_collar is not None else auto_collar
+  tipwipe = bool(wiper and auto_collar is None and exp_collar is None)
+  clear = bool(wiper_rest_tx_needed(wiper) or (auto_collar == 0 and exp_collar is None))
+  dat = replace_relayed_stw(dat, tipwipe, requested_high_beam_test(),
+                            crc_fn=self.stw_crc, clear_wiper=clear and not tipwipe,
+                            collar_posn=collar)
   return addr, dat, out_bus
 
 
@@ -1227,19 +1250,17 @@ def stock_cc_update_with_overlay(self, CS, frame, tesla_can, can_bus_party):
   """Keep the single 0x45 TX path. When the test is on, forward if idle this slot.
 
   Does not read cruiseEnabled, latActive, or CC.enabled. High extra-forwards
-  every 10 ms with held nibble 4 on the live-counter frame; wipers keep
-  forwarding on the 10 Hz slot. Auto dry / wipe-release extra-forwards
-  rest (cleared high nibble) on that same slot so Pre-AP drops latched
-  intermittent; a wipe 1→0 burst does not wait for the slot. Auto reads
-  gear from this CS: Park/Neutral stay wipe=0 and still cancel if we had
-  been wiping. Primes the ROAD VisionIpc helper only while Auto so poll()
-  does not recv on this CTRL_HIGH thread. Off/Int/On stop the helper.
-  Collar3/4 brute-force extra-forwards every card frame (~100 Hz) like
-  High (live MC, in-place replace) with WprSw6Posn forced and
-  WprWashSw_Psd=0 so bus-0 Off cannot last-win. Flicker vs the real
-  stalk is acceptable on this parked experiment; do not build the
-  ESP32 column gateway here. Off bursts live collar then leaves the
-  stalk. Our TX echo is candump src 128, not src 0 (live stalk).
+  every 10 ms with held nibble 4 on the live-counter frame; Int/On keep
+  forwarding TIPWIPE on the 10 Hz slot. Camera Auto wipe extra-forwards
+  every 10 ms like High with WprSw6Posn=INTERVAL1 and WprWashSw_Psd=0 so
+  live stalk Off (collar=0) cannot last-win. Auto dry / wipe-release
+  extra-forwards rest (collar 0, wash 0, TIPWIPE cleared) on the 10 Hz
+  slot so Pre-AP drops intermittent; a wipe 1→0 burst does not wait for
+  the slot. Auto reads gear from this CS: Park/Neutral stay wipe=0 and
+  still cancel if we had been wiping. Primes the ROAD VisionIpc helper
+  only while Auto so poll() does not recv on this CTRL_HIGH thread.
+  Off/Int/On stop the helper. Collar3/4 brute-force extra-forwards every
+  card frame like Auto INTERVAL1 and overrides Auto when selected.
   """
   orig = _ORIG_STOCK_CC_UPDATE
   if orig is None:
@@ -1250,39 +1271,42 @@ def stock_cc_update_with_overlay(self, CS, frame, tesla_can, can_bus_party):
   wiper = requested_wiper_test()
   _arm_wiper_cancel(prev_wiper, wiper)
   prev_collar = _last_collar_on
-  collar = requested_collar_test()
-  _arm_collar_cancel(prev_collar, collar)
+  exp_on = requested_collar_test()
+  _arm_collar_cancel(prev_collar, exp_on)
+  auto_collar = requested_auto_collar_posn(wiper)
+  collar = requested_collar_posn() if exp_on else auto_collar
+  collar_hold = collar in (STW_COLLAR_INTERVAL1, STW_COLLAR_POSN_3, STW_COLLAR_POSN_4)
   high_setting = requested_high_beam_test()
-  wiper_cancel = wiper_rest_tx_needed(wiper)
-  collar_cancel = collar_rest_tx_needed(collar)
-  cancel_now = bool((wiper_cancel and _wiper_cancel_burst > 0) or
+  cancel = wiper_rest_tx_needed(wiper)
+  collar_cancel = collar_rest_tx_needed(exp_on)
+  cancel_now = bool((cancel and _wiper_cancel_burst > 0) or
                     (collar_cancel and _collar_cancel_burst > 0))
   can_sends = orig(self, CS, frame, tesla_can, can_bus_party)
   had_stw = any(msg[0] == STW_ACTN_RQ_ADDR for msg in can_sends)
   if extra_stw_forward_needed(can_sends, frame, wiper, high_setting,
-                              wiper_cancel=wiper_cancel, cancel_now=cancel_now,
-                              collar_on=collar, collar_cancel=collar_cancel):
+                              wiper_cancel=cancel, cancel_now=cancel_now,
+                              collar_hold=collar_hold, collar_on=exp_on,
+                              collar_cancel=collar_cancel):
     msg_stw = getattr(CS, "msg_stw_actn_req", None)
-    if msg_stw is None and (collar or high_setting):
+    if msg_stw is None and (exp_on or high_setting or collar_hold):
       msg_stw = live_or_rest_stw(CS)
     if msg_stw is not None:
-      if high_setting or collar:
+      if high_setting or collar_hold or exp_on:
         # Same MC as the bus-0 RX rest — edit that frame, do not +1 a second 0x45.
-        # Collar must last-win like High: live Off repeats collar=0 on bus 0.
+        # Auto INTERVAL1 and Collar3/4 must last-win like High.
         sent = send_replaced_live_stw(self, CS, tesla_can, can_bus_party)
       else:
-        # Int hold (10 Hz) and collar Off-cancel burst.
         sent = self._send(CS, tesla_can, can_bus_party,
                           int(msg_stw.get("SpdCtrlLvr_Stat", 0) or 0))
       if sent is not None:
-        # Pack collar on the TX itself. create_action_request overlay is not
-        # enough — if that method is unpatched, live-MC replace would TX Off
-        # (collar=0) and the 0x45 monitor would not move.
-        sent = overlay_collar_on_can_msg(sent, tesla_can, requested_collar_posn())
+        sent = overlay_collar_on_can_msg(sent, tesla_can, collar)
         can_sends.append(sent)
         had_stw = True
+  if collar is not None:
+    can_sends = [overlay_collar_on_can_msg(msg, tesla_can, collar) for msg in can_sends]
+    had_stw = any(msg[0] == STW_ACTN_RQ_ADDR for msg in can_sends)
   if had_stw:
-    if wiper_cancel:
+    if cancel:
       _note_wiper_cancel_frame()
     if collar_cancel:
       _note_collar_cancel_frame()
@@ -1309,7 +1333,7 @@ def install_body_controls_test():
   _installed = True
   try:
     from openpilot.common.swaglog import cloudlog
-    cloudlog.info("nap body controls overlay installed (0x45 wiper/beam/collar)")
+    cloudlog.info("nap body controls overlay installed (0x45 wiper/beam)")
   except Exception:
     pass
-  _put_wiper_status("nap wiper auto setting=- on=0 gear=- gear_src=none raw=- drive=0 rain=0 wipe=0 installed=1 waiting")
+  _put_wiper_status("nap wiper auto setting=- on=0 gear=- gear_src=none raw=- drive=0 rain=0 wipe=0 collar=0 wash=0 installed=1 waiting")

@@ -185,8 +185,8 @@ def test_collar_overlay_resigns_crc_only_when_changed():
   assert same == out
 
 
-def test_auto_overlay_preserves_live_four_click_collar(monkeypatch):
-  """#159 camera Auto still holds TIPWIPE and leaves Justin's Int1=1 collar."""
+def test_auto_overlay_uses_interval1_and_collar3_overrides(monkeypatch):
+  """#162 camera Auto holds INTERVAL1; Collar3 overrides that to posn 3."""
   from opendbc.can import CANPacker
   from opendbc.car.tesla.preap.teslacan import TeslaCANPreAP
   from opendbc.car.tesla.values import CANBUS, CruiseButtons
@@ -200,7 +200,7 @@ def test_auto_overlay_preserves_live_four_click_collar(monkeypatch):
     "CRC_STW_ACTN_RQ": 0,
     "DTR_Dist_Rq": 255,
     "VSL_Enbl_Rq": 1,
-    "WprSw6Posn": 1,
+    "WprSw6Posn": 2,
     "WprWashSw_Psd": 0,
     "HiBmLvr_Stat": 0,
   }
@@ -210,17 +210,24 @@ def test_auto_overlay_preserves_live_four_click_collar(monkeypatch):
   ))
   monkeypatch.setattr(body, "rain_wiper_needed", lambda: True)
   monkeypatch.setattr(body, "requested_high_beam_test", lambda: False)
+  monkeypatch.setattr(body, "read_wiper_collar_setting", lambda: 0)
   monkeypatch.setattr(body, "_ORIG_CREATE_ACTION_REQUEST", TeslaCANPreAP.create_action_request)
   set_auto_gates(True, "drive")
   try:
     addr, dat, bus = body.create_action_request_with_overlay(
       tc, CruiseButtons.IDLE, CANBUS.party, 6, msg_stw)
     assert addr == STW_ACTN_RQ_ADDR == stock[0]
-    assert _byte(dat) == STW_WIPER_ON
-    assert stw_wash(dat) == 1  # TIPWIPE
+    assert _byte(dat) != STW_WIPER_ON
+    assert stw_wash(dat) == 0
     assert stw_collar_posn(dat) == 1
-    assert dat[6] & 0x07 == stock[1][6] & 0x07
+    assert stw_collar_posn(stock[1]) == 2
     assert dat[7] == tc.stw_crc(dat[:7])
+    monkeypatch.setattr(body, "read_wiper_collar_setting", lambda: STW_COLLAR_POSN_3)
+    addr, dat, bus = body.create_action_request_with_overlay(
+      tc, CruiseButtons.IDLE, CANBUS.party, 6, msg_stw)
+    assert stw_collar_posn(dat) == 3
+    assert stw_wash(dat) == 0
+    assert _byte(dat) != STW_WIPER_ON
   finally:
     reset_auto_gates()
 

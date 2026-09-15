@@ -48,11 +48,11 @@ Selfdrive Process Lagging). Recv downsamples immediately; one feature
 pass per scored frame; ice contrast uses the tiny grid. Keep the ROAD client while Auto so we do not
 resubscribe every 4 s (Justin: frames stuck at 1–2, age_ms thousands,
 stale first Y after reconnect). Recv+numpy still once per period, not
-20 Hz. One wipe is WIPE_PULSE_S (~1.5 s of nibble 1, one slow
-park-to-park), then CLEAR_WAIT_S with HOLD off (cancel + blades out of
+20 Hz. One wipe is WIPE_PULSE_S (~1.5 s of Auto INTERVAL1 / collar=1, one
+slow park-to-park), then CLEAR_WAIT_S with HOLD off (cancel + blades out of
 FOV), then the helper assesses — it does not wait another idle 4 s.
 2 s settle left blades in ROAD FOV on bone-dry Auto (wipe loop). Do not
-prime hold_n after a wipe: a marginal post-wipe score must not nibble-1
+prime hold_n after a wipe: a marginal post-wipe score must not INTERVAL1
 again. (Old LIGHT_REST_N=6 left wet glass ~15 s. BURST_MAX_N=3 sat on
 Low for ~7.5 s / several sweeps. Idle used to score every 2.5 s.)
 card is CTRL_HIGH: stock_cc.update / poll() only reads the latch, never
@@ -164,9 +164,9 @@ MIN_HOLD_N = 2
 WIPE_CLEAR_N = 1
 # First looks after helper start (VisionIpc / first ROAD) do not acquire.
 WARMUP_N = 2
-# One slow park-to-park sweep. Pre-AP nibble 1 *held* is BCM Wiper Low
-# (constant slow power). Slow cycle is ~1.2–1.5 s. Pulse then cancel —
-# do not sit on continuous Low. poll() ends the pulse on wall-clock so
+# One slow park-to-park sweep. Camera Auto holds INTERVAL1 (physical Int1),
+# not TIPWIPE nibble 1 (BCM Wiper Low / ~32 s latch). Pulse then cancel —
+# do not sit on continuous Int. poll() ends the pulse on wall-clock so
 # we do not wait for the next idle ROAD score.
 WIPE_PULSE_S = 1.5
 # After wipe=0 + rest-cancel: ignore ROAD until blades park and streaks
