@@ -325,7 +325,7 @@ def test_gas_then_lift_stays_paused_until_set(monkeypatch):
   assert cs.engagement._one_pedal_pause_latched
 
   cs.out.gasPressed = False
-  for i, frame in enumerate(range(6, 20, 2)):
+  for frame in range(6, 20, 2):
     cs.engagement.maybe_one_pedal_gas_kick(False, True)
     # Stock gasPressedOverride ends on lift: CC.longActive goes True
     # while the session stays up. Must not ACQUIRE or flip long back.
