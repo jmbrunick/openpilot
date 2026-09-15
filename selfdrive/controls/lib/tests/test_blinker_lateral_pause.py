@@ -184,6 +184,18 @@ def test_inactive_or_fault_still_blocks_lat():
   assert not lat_active_with_blinker_pause(**_lat_kwargs(standstill=True, steer_at_standstill=False))
 
 
+def test_low_speed_without_blinker_does_not_pause_lat_in_hold():
+  """Speed re-enable inhibit is the soft-lat handoff, not BlinkerLateralHold."""
+  hold = BlinkerLateralHold()
+  assert _lat_active(hold, v_ego=0.0)
+  assert _lat_active(hold, v_ego=10 * CV.MPH_TO_MS - 0.05)
+  assert not hold.turn_active
+  assert not hold.holding
+  # Blinker-on still pauses at any speed when soft-lat is Off.
+  assert not _lat_active(hold, left=True, v_ego=30.0)
+  assert hold.turn_active
+
+
 def _tip_then_idle(hold, *, v_ego, stalk=1, left=True, dt=0.01):
   assert _lat_active(hold, left=left, v_ego=v_ego, stalk_state=stalk, dt=dt)
   assert _lat_active(hold, left=left, v_ego=v_ego, stalk_state=0, dt=dt)

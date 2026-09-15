@@ -151,6 +151,22 @@ class TestAlerts:
     assert stock_enable.alert_text_1 == ""
     assert stock_enable.audible_alert == AudibleAlert.engage
 
+  def test_preap_reverse_disable_is_quiet(self):
+    from openpilot.selfdrive.selfdrived.events import reverse_gear_disable_alert
+
+    cp = car.CarParams.new_message()
+    cp.brand = "tesla"
+    cp.carFingerprint = "TESLA_MODEL_S_PREAP"
+    args = (cp, self.CS, self.sm, False, 100, log.LongitudinalPersonality.standard)
+    alert = reverse_gear_disable_alert(*args)
+    assert alert.alert_text_1 == ""
+    assert alert.audible_alert == AudibleAlert.none
+    assert alert.alert_size == AlertSize.none
+
+    stock = reverse_gear_disable_alert(car.CarParams.new_message(), *args[1:])
+    assert stock.alert_text_1 == "TAKE CONTROL IMMEDIATELY"
+    assert stock.audible_alert == AudibleAlert.warningImmediate
+
   def test_follow_distance_changed_alert_matches_mannerisms(self):
     event_types = EVENTS[log.OnroadEvent.EventName.followDistanceChanged]
     assert ET.WARNING in event_types

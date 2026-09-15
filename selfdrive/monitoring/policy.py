@@ -5,6 +5,7 @@ import random
 import numpy as np
 
 from cereal import car, log
+from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_DMON
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.stat_live import RunningStatFilter
@@ -57,6 +58,15 @@ LOOK_SIM_MODE_GLANCE = "glance"
 VISION_LOOKING_FILTER_X = 0.37
 VISION_RECOVERY_FACTOR_MAX = 5.0
 VISION_RECOVERY_FACTOR_MIN = 1.25
+# Pause looking-away / distraction / eyes-off-road alerts below this speed
+# (same stock standstill exemption, plus creeping). Tesla CS.standstill is
+# only true when fully stopped; 1 mph still nags at a light. Justin: "below
+# two miles an hour, or maybe even below one" — gate is 2 mph (strictly
+# below). Toggles stay as-is; this is not Simulate Look / FAI Off.
+# controlsd lat standstill (~0.3 m/s) is too low for creep. FCW/AEB and
+# hard cancels are unchanged.
+DM_LOOKAWAY_GATE_MPH = 2.0
+DM_LOOKAWAY_GATE_MS = DM_LOOKAWAY_GATE_MPH * CV.MPH_TO_MS
 
 
 def _param_bool(name: str, default: bool) -> bool:
@@ -71,6 +81,16 @@ def _param_bool(name: str, default: bool) -> bool:
 def vision_looking_path(face_detected, low_std, distraction_filter_x) -> bool:
   """True when stock DM treats the driver as looking / attentive."""
   return bool(face_detected and low_std and distraction_filter_x < VISION_LOOKING_FILTER_X)
+
+
+def lookaway_alerts_paused(standstill, car_speed) -> bool:
+  """True when looking-away / distraction alerts must not fire.
+
+  Stock already pauses at CS.standstill before the green prompt. Creeping
+  below DM_LOOKAWAY_GATE_MPH is not standstill on Pre-AP, so OR that in.
+  Independent of Simulate Look / FAI.
+  """
+  return bool(standstill or abs(float(car_speed)) < DM_LOOKAWAY_GATE_MS)
 
 
 def looking_recovery_time_s(awareness, alert_3_timeout,
@@ -236,6 +256,7 @@ class DriverMonitoring:
     self._look_sim_hold_s = 0.0
     self._look_sim_hold_start_awareness = 1.0
     self._look_sim_mode = None
+    self.car_speed = 0.0
     self._redraw_look_sim_interval()
 
     self._reset_awareness()
@@ -479,6 +500,7 @@ class DriverMonitoring:
     self.distracted_types['phone'] = bool(self.phone_prob > self.settings._PHONE_THRESH)
 
   def _update_states(self, driver_state, cal_rpy, car_speed, op_engaged, standstill, demo_mode=False, steering_angle_deg=0.):
+    self.car_speed = float(car_speed)
     rhd_pred = driver_state.wheelOnRightProb
     # calibrates only when there's movement and either face detected
     if car_speed > self.settings._WHEELPOS_CALIB_MIN_SPEED and (driver_state.leftDriverData.faceProb > self.settings._FACE_THRESHOLD or
@@ -564,7 +586,9 @@ class DriverMonitoring:
     awareness_prev = self.awareness
     _reaching_alert_1 = self.awareness - self.step_change <= self.threshold_alert_1
     _reaching_alert_3 = self.awareness - self.step_change <= 0
-    standstill_exemption = standstill and _reaching_alert_1
+    # Stock pauses before green at CS.standstill. Also pause while creeping
+    # below DM_LOOKAWAY_GATE_MPH (Sim Look / FAI stay as toggled).
+    standstill_exemption = lookaway_alerts_paused(standstill, self.car_speed) and _reaching_alert_1
     always_on_exemption = always_on_valid and not op_engaged and _reaching_alert_3
 
     looking = vision_looking_path(self.face_detected, self.pose.low_std,
