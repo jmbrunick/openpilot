@@ -1,3 +1,12 @@
+NAP 2026-09-15 test group (2026-09-15)
+========================
+* **#163 Safety / knockoff:** Pre-AP `ExcessiveActuationCheck` 2× → **3× ISO** (lateral 6.0 → **9.0 m/s²** ~0.92 g, long accel 4.0 → **6.0**, decel −7.0 → **−10.5**). Faster-but-legal ramps stay in; a real panic swerve / panic stop still trips. Other fingerprints stay at 2×. Locationd / camera / panda ISO steer-command limits unchanged.
+* **#163 Leave-Drive mismatch:** While not in Drive, panda `pcm_cruise_check(false)` on every non-Drive 0x118 and selfdrived holds `mismatch_counter` / `cruise_mismatch_counter` at 0 for the whole R/P period. In-Drive mismatch checks unchanged. Drive SET while `!controls_allowed` is last-resort only. **Flash the panda** after this lands (rebuild + reboot so pandad flashes; Python-only pull is not enough).
+* **#165 Quiet reverse:** Pre-AP `reverseGear` stays `USER_DISABLE` + `NO_ENTRY` (OP off, cannot re-engage in Reverse) but **silent** — no ImmediateDisableAlert / take-control-immediately. Quiet Reverse overlay OK. Other cars keep the stock alarm.
+* **#164 Driver monitoring:** Looking-away / distraction / eyes-off-road DM alerts do **not** fire below **2 mph** (`DM_LOOKAWAY_GATE_MPH`), including creeping at a light. Sim Look / FAI mutex and above-gate 3 / 5 / 11 s are unchanged. nap-release toggles still default **Off**.
+* **#167 Lateral mannerisms:** Soft-lat On `lat_reenable_inhibited` is blinker_paused **OR** `v_ego < 10 mph`. Keep control if lat is still on; already yielded / blending stay yielded. Soft-lat Off / ALC / long unchanged.
+* **Not ported:** Force Offroad CC handoff (#129/#130), auto-wipers, Hypermile. Same product as nap-dev after Justin’s 2026-09-15 sign-off.
+
 NAP gas-lift handoff + tip-brake comfort ramp (2026-09-14)
 ========================
 * **#152 A+B:** After engage-on-gas then lift (or a gas override while software long is already on), Pre-AP no longer restarts the 0.5 s `ENGAGE_GRACE` a=0 floor, and VDAS is seeded from the last non-negative `aEgo` (MAX-capped) instead of `commanded_accel=0`. Lead hard decel / FCW / should-stop and brake still win. First engage without gas is unchanged (grace still ramps from 0).
