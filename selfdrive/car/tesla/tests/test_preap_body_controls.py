@@ -7,14 +7,22 @@ from openpilot.selfdrive.car.tesla.preap_body_controls import (
   BEAM_SETTING_HIGH,
   BEAM_SETTING_LOW,
   BEAM_SETTING_OFF,
+  COLLAR_SETTING_3,
+  COLLAR_SETTING_4,
+  COLLAR_SETTING_OFF,
   NAP_HIGH_LOW_BEAM,
+  NAP_WIPER_COLLAR,
   NAP_WIPER_SPEED,
   STW_ACTN_RQ_ADDR,
   STW_CANCEL_BURST_N,
+  STW_COLLAR_MASK,
+  STW_COLLAR_POSN_3,
+  STW_COLLAR_POSN_4,
   STW_HIBM_MASK,
   STW_HIGH_BEAM,
   STW_HIGH_BEAM_FLASH,
   STW_TURN_MASK,
+  STW_WASH_MASK,
   STW_WASHER_SPRAY,
   STW_WIPER_BEAM_BYTE,
   STW_WIPER_ON,
@@ -22,11 +30,14 @@ from openpilot.selfdrive.car.tesla.preap_body_controls import (
   WIPER_SETTING_INTERMITTENT,
   WIPER_SETTING_OFF,
   WIPER_SETTING_ON,
+  apply_stw_collar,
   apply_stw_wiper_beam_nibbles,
+  collar_posn_for_setting,
   extra_stw_forward_needed,
   high_beam_test_requested,
   hibm_nibble,
   live_stw_counter,
+  overlay_stw_collar,
   overlay_stw_wiper_beam,
   rain_wiper_needed,
   register_nap_body_params,
@@ -37,6 +48,8 @@ from openpilot.selfdrive.car.tesla.preap_body_controls import (
   set_cereal_gear,
   set_rain_wiper_needed,
   stalk_test_active,
+  stw_collar_posn,
+  stw_wash,
   wiper_rest_tx_needed,
   wiper_test_requested,
 )
@@ -239,6 +252,13 @@ def test_extra_forward_only_when_on_and_no_existing_0x45():
   assert extra_stw_forward_needed([], 11, auto_dry, False, wiper_cancel=True, cancel_now=True) is True
   assert extra_stw_forward_needed(existing, 10, auto_dry, False, wiper_cancel=True) is False
   assert extra_stw_forward_needed(existing, 11, auto_dry, False, wiper_cancel=True, cancel_now=True) is False
+  # Collar3/4 uses the same 10 Hz hold as Int. Off without cancel leaves the stalk.
+  assert extra_stw_forward_needed([], 10, False, False, collar_on=True) is True
+  assert extra_stw_forward_needed([], 11, False, False, collar_on=True) is False
+  assert extra_stw_forward_needed(existing, 10, False, False, collar_on=True) is False
+  assert extra_stw_forward_needed([], 11, False, False, collar_cancel=True, cancel_now=True) is True
+  assert extra_stw_forward_needed([], 11, False, False, collar_cancel=True) is False
+  assert extra_stw_forward_needed([], 10, False, False) is False
 
 
 def test_settings_copy_describes_held_4_same_counter_replace():
@@ -282,6 +302,27 @@ def test_settings_copy_describes_auto_rain_hold():
   assert "cancel" in text
   assert "pulse" not in text
   assert "rainprob" not in text
+
+
+def test_settings_copy_describes_collar_experiment():
+  from openpilot.selfdrive.ui.layouts.settings.nap_content import (
+    WIPER_COLLAR_DESCRIPTION, WIPER_COLLAR_LABELS, WIPER_COLLAR_VALUES,
+  )
+  assert WIPER_COLLAR_VALUES == [0, 1, 2]
+  assert WIPER_COLLAR_LABELS == ["Off", "Collar3", "Collar4"]
+  text = WIPER_COLLAR_DESCRIPTION.lower()
+  assert "interval3" in text or "wprsw6posn" in text
+  assert "collar3" in text
+  assert "collar4" in text
+  assert "tipwipe" in text
+  assert "spray" in text
+  assert "10 hz" in text
+  assert "live" in text
+  assert "crc" in text
+  assert "off" in text
+  assert "auto" in text
+  assert "wash" in text
+  assert "0x45" in text
 
 
 def test_auto_rain_signal_sets_and_clears_hold():
@@ -2211,8 +2252,10 @@ def test_register_defaults_stay_off():
   register_nap_body_params()
   assert NAPParamKeys.WIPER_SPEED == NAP_WIPER_SPEED
   assert NAPParamKeys.HIGH_LOW_BEAM == NAP_HIGH_LOW_BEAM
+  assert NAPParamKeys.WIPER_COLLAR == NAP_WIPER_COLLAR
   assert DEFAULTS[NAP_WIPER_SPEED] == 0
   assert DEFAULTS[NAP_HIGH_LOW_BEAM] == 0
+  assert DEFAULTS[NAP_WIPER_COLLAR] == 0
 
 
 def test_das_body_controls_stays_zero_when_settings_on():
@@ -2891,10 +2934,314 @@ def test_auto_overlay_dry_clears_held_nibble_not_identity(monkeypatch):
     assert bus == stock[2]
     assert _byte(dat) != STW_WIPER_ON
     assert _byte(dat) != STW_WASHER_SPRAY
-    assert dat == stock
+    assert (addr, dat, bus) == stock
     held = bytes.fromhex("00ff10") + stock[1][3:]
     cleared = replace_relayed_stw(held, False, False, crc_fn=tc.stw_crc, clear_wiper=True)
     assert _byte(cleared) == 0
     assert cleared[7] == tc.stw_crc(cleared[:7])
+  finally:
+    reset_auto_gates()
+
+
+def test_collar_setting_maps_to_dbc_posn():
+  assert collar_posn_for_setting(COLLAR_SETTING_OFF) is None
+  assert collar_posn_for_setting(COLLAR_SETTING_3) == STW_COLLAR_POSN_3 == 3
+  assert collar_posn_for_setting(COLLAR_SETTING_4) == STW_COLLAR_POSN_4 == 4
+  assert collar_posn_for_setting(99) is None
+
+
+def test_collar_overlay_forces_posn_and_clears_wash_never_spray():
+  rest = _rest()
+  live_int1 = bytes.fromhex("00ff000000000100")  # WprSw6Posn=1, MC=0
+  tipwipe = bytes.fromhex("00ff100000000100")
+  spray = bytes.fromhex("00ff200000000100")
+  high = bytes.fromhex("00ff040000000100")
+  assert apply_stw_collar(rest, None) == rest
+  assert apply_stw_collar(live_int1, None) == live_int1
+  forced3 = apply_stw_collar(live_int1, 3)
+  assert stw_collar_posn(forced3) == 3
+  assert stw_wash(forced3) == 0
+  assert _byte(forced3) != STW_WASHER_SPRAY
+  assert _byte(forced3) != STW_WIPER_ON
+  forced4 = apply_stw_collar(live_int1, 4)
+  assert stw_collar_posn(forced4) == 4
+  assert stw_wash(forced4) == 0
+  cleared = apply_stw_collar(tipwipe, 3)
+  assert stw_wash(cleared) == 0
+  assert _byte(cleared) & STW_WASH_MASK == 0
+  assert _byte(cleared) != STW_WIPER_ON
+  assert _byte(cleared) != STW_WASHER_SPRAY
+  nospray = apply_stw_collar(spray, 4)
+  assert _byte(nospray) != STW_WASHER_SPRAY
+  assert stw_wash(nospray) == 0
+  # High-beam nibble and turn bits stay. Rear-wash bits stay (only WprWashSw_Psd).
+  held_high = apply_stw_collar(high, 3)
+  assert hibm_nibble(held_high) == STW_HIGH_BEAM
+  blinker = bytes.fromhex("00ff010000000100")
+  assert apply_stw_collar(blinker, 3)[STW_WIPER_BEAM_BYTE] & STW_TURN_MASK == 0x01
+  # MC lives in byte 6 high nibble — do not clobber it. posn=1, MC=9 → 0x91.
+  live_mc = bytes.fromhex("00ff000000009100")
+  out = apply_stw_collar(live_mc, 3)
+  assert (out[6] >> 4) & 0x0F == 9
+  assert stw_collar_posn(out) == 3
+  assert stw_collar_posn(live_int1) & STW_COLLAR_MASK == 1
+
+
+def test_collar_overlay_resigns_crc_only_when_changed():
+  rest = _rest()
+  crc = lambda payload: sum(payload) & 0xFF
+  assert overlay_stw_collar(rest, None, crc_fn=lambda _: 0xAA) == rest
+  out = overlay_stw_collar(rest, 3, crc_fn=crc)
+  assert stw_collar_posn(out) == 3
+  assert stw_wash(out) == 0
+  assert out[7] == crc(out[:7])
+  same = overlay_stw_collar(out, 3, crc_fn=lambda _: 0xAA)
+  assert same == out
+
+
+def test_auto_overlay_preserves_live_four_click_collar(monkeypatch):
+  """#159 camera Auto still holds TIPWIPE and leaves Justin's Int1=1 collar."""
+  from opendbc.can import CANPacker
+  from opendbc.car.tesla.preap.teslacan import TeslaCANPreAP
+  from opendbc.car.tesla.values import CANBUS, CruiseButtons
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  packer = CANPacker("tesla_preap")
+  tc = TeslaCANPreAP({CANBUS.party: packer, CANBUS.autopilot_party: packer})
+  msg_stw = {
+    "MC_STW_ACTN_RQ": 5,
+    "CRC_STW_ACTN_RQ": 0,
+    "DTR_Dist_Rq": 255,
+    "VSL_Enbl_Rq": 1,
+    "WprSw6Posn": 1,
+    "WprWashSw_Psd": 0,
+    "HiBmLvr_Stat": 0,
+  }
+  stock = tc.create_action_request(CruiseButtons.IDLE, CANBUS.party, 6, msg_stw)
+  monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
+    WIPER_SETTING_AUTO if key == NAP_WIPER_SPEED else default
+  ))
+  monkeypatch.setattr(body, "rain_wiper_needed", lambda: True)
+  monkeypatch.setattr(body, "requested_high_beam_test", lambda: False)
+  monkeypatch.setattr(body, "_ORIG_CREATE_ACTION_REQUEST", TeslaCANPreAP.create_action_request)
+  set_auto_gates(True, "drive")
+  try:
+    addr, dat, bus = body.create_action_request_with_overlay(
+      tc, CruiseButtons.IDLE, CANBUS.party, 6, msg_stw)
+    assert addr == STW_ACTN_RQ_ADDR == stock[0]
+    assert _byte(dat) == STW_WIPER_ON
+    assert stw_wash(dat) == 1  # TIPWIPE
+    assert stw_collar_posn(dat) == 1
+    assert dat[6] & 0x07 == stock[1][6] & 0x07
+    assert dat[7] == tc.stw_crc(dat[:7])
+  finally:
+    reset_auto_gates()
+
+
+def test_create_action_request_collar3_forces_posn_wash0_live_mc(monkeypatch):
+  from opendbc.can import CANPacker
+  from opendbc.car.tesla.preap.teslacan import TeslaCANPreAP
+  from opendbc.car.tesla.values import CANBUS, CruiseButtons
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  packer = CANPacker("tesla_preap")
+  tc = TeslaCANPreAP({CANBUS.party: packer, CANBUS.autopilot_party: packer})
+  msg_stw = {
+    "MC_STW_ACTN_RQ": 9,
+    "CRC_STW_ACTN_RQ": 0,
+    "DTR_Dist_Rq": 255,
+    "VSL_Enbl_Rq": 1,
+    "WprSw6Posn": 1,  # live 4-click Int1
+    "WprWashSw_Psd": 1,  # live would be TIPWIPE if Int were on; experiment forces 0
+    "HiBmLvr_Stat": 0,
+  }
+  stock = tc.create_action_request(CruiseButtons.IDLE, CANBUS.party, 9, msg_stw)
+  monkeypatch.setattr(body, "requested_wiper_test", lambda: False)
+  monkeypatch.setattr(body, "requested_high_beam_test", lambda: False)
+  monkeypatch.setattr(body, "requested_collar_posn", lambda: 3)
+  monkeypatch.setattr(body, "_ORIG_CREATE_ACTION_REQUEST", TeslaCANPreAP.create_action_request)
+  addr, dat, bus = body.create_action_request_with_overlay(
+    tc, CruiseButtons.IDLE, CANBUS.party, 9, msg_stw)
+  assert addr == STW_ACTN_RQ_ADDR == stock[0]
+  assert bus == stock[2]
+  assert stw_collar_posn(dat) == 3
+  assert stw_wash(dat) == 0
+  assert _byte(dat) != STW_WIPER_ON
+  assert _byte(dat) != STW_WASHER_SPRAY
+  assert (dat[6] >> 4) & 0x0F == 9
+  assert dat[:2] == stock[1][:2]
+  assert dat[7] == tc.stw_crc(dat[:7])
+  monkeypatch.setattr(body, "requested_collar_posn", lambda: 4)
+  _, four, _ = body.create_action_request_with_overlay(
+    tc, CruiseButtons.IDLE, CANBUS.party, 9, msg_stw)
+  assert stw_collar_posn(four) == 4
+  assert stw_wash(four) == 0
+  assert four[7] == tc.stw_crc(four[:7])
+
+
+def test_collar_on_clears_int_tipwipe(monkeypatch):
+  """Collar experiment is wash=0. Int TIPWIPE must not ride along."""
+  from opendbc.can import CANPacker
+  from opendbc.car.tesla.preap.teslacan import TeslaCANPreAP
+  from opendbc.car.tesla.values import CANBUS, CruiseButtons
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  packer = CANPacker("tesla_preap")
+  tc = TeslaCANPreAP({CANBUS.party: packer, CANBUS.autopilot_party: packer})
+  msg_stw = {
+    "MC_STW_ACTN_RQ": 2,
+    "CRC_STW_ACTN_RQ": 0,
+    "DTR_Dist_Rq": 255,
+    "VSL_Enbl_Rq": 1,
+    "WprSw6Posn": 0,
+    "WprWashSw_Psd": 0,
+    "HiBmLvr_Stat": 0,
+  }
+  monkeypatch.setattr(body, "requested_wiper_test", lambda: True)
+  monkeypatch.setattr(body, "requested_high_beam_test", lambda: False)
+  monkeypatch.setattr(body, "requested_collar_posn", lambda: 3)
+  monkeypatch.setattr(body, "_ORIG_CREATE_ACTION_REQUEST", TeslaCANPreAP.create_action_request)
+  _, dat, _ = body.create_action_request_with_overlay(
+    tc, CruiseButtons.IDLE, CANBUS.party, 6, msg_stw)
+  assert stw_collar_posn(dat) == 3
+  assert stw_wash(dat) == 0
+  assert _byte(dat) != STW_WIPER_ON
+  assert _byte(dat) != STW_WASHER_SPRAY
+  assert dat[7] == tc.stw_crc(dat[:7])
+
+
+def test_collar_off_matches_stock_live_collar(monkeypatch):
+  from opendbc.can import CANPacker
+  from opendbc.car.tesla.preap.teslacan import TeslaCANPreAP
+  from opendbc.car.tesla.values import CANBUS, CruiseButtons
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  packer = CANPacker("tesla_preap")
+  tc = TeslaCANPreAP({CANBUS.party: packer, CANBUS.autopilot_party: packer})
+  msg_stw = {
+    "MC_STW_ACTN_RQ": 5,
+    "CRC_STW_ACTN_RQ": 0,
+    "DTR_Dist_Rq": 255,
+    "VSL_Enbl_Rq": 1,
+    "WprSw6Posn": 2,
+  }
+  stock = tc.create_action_request(CruiseButtons.IDLE, CANBUS.party, 6, msg_stw)
+  monkeypatch.setattr(body, "requested_wiper_test", lambda: False)
+  monkeypatch.setattr(body, "requested_high_beam_test", lambda: False)
+  monkeypatch.setattr(body, "requested_collar_posn", lambda: None)
+  monkeypatch.setattr(body, "_ORIG_CREATE_ACTION_REQUEST", TeslaCANPreAP.create_action_request)
+  assert body.create_action_request_with_overlay(
+    tc, CruiseButtons.IDLE, CANBUS.party, 6, msg_stw) == stock
+
+
+def test_stock_cc_collar_extra_forwards_10hz_not_a_second_0x45(monkeypatch):
+  from types import SimpleNamespace
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  reset_auto_gates()
+  fake = _FakeSpoofer()
+  cs = SimpleNamespace(msg_stw_actn_req={"SpdCtrlLvr_Stat": 0})
+  monkeypatch.setattr(body, "requested_wiper_test", lambda: False)
+  monkeypatch.setattr(body, "requested_high_beam_test", lambda: False)
+  monkeypatch.setattr(body, "requested_collar_test", lambda: True)
+  monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: [])
+  try:
+    out = body.stock_cc_update_with_overlay(fake, cs, 10, None, 0)
+    assert len(out) == 1
+    assert out[0][0] == STW_ACTN_RQ_ADDR
+    fake.sent.clear()
+    out = body.stock_cc_update_with_overlay(fake, cs, 11, None, 0)
+    assert out == []
+    already = [(STW_ACTN_RQ_ADDR, b"\x00" * 8, 0)]
+    monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: already)
+    out = body.stock_cc_update_with_overlay(fake, cs, 20, None, 0)
+    assert out == already
+  finally:
+    reset_auto_gates()
+
+
+def test_collar_to_off_sends_rest_cancel_burst_then_leaves_stalk(monkeypatch):
+  from types import SimpleNamespace
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  reset_auto_gates()
+  fake = _FakeSpoofer()
+  cs = SimpleNamespace(msg_stw_actn_req={"SpdCtrlLvr_Stat": 0})
+  on = {"v": True}
+  monkeypatch.setattr(body, "requested_wiper_test", lambda: False)
+  monkeypatch.setattr(body, "requested_high_beam_test", lambda: False)
+  monkeypatch.setattr(body, "requested_collar_test", lambda: on["v"])
+  monkeypatch.setattr(body, "requested_collar_posn", lambda: 3 if on["v"] else None)
+  monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: [])
+  try:
+    out = body.stock_cc_update_with_overlay(fake, cs, 10, None, 0)
+    assert len(out) == 1
+    on["v"] = False
+    forwarded = 0
+    for frame in range(11, 11 + STW_CANCEL_BURST_N):
+      fake.sent.clear()
+      out = body.stock_cc_update_with_overlay(fake, cs, frame, None, 0)
+      assert len(out) == 1
+      assert out[0][0] == STW_ACTN_RQ_ADDR
+      forwarded += 1
+    assert forwarded == STW_CANCEL_BURST_N
+    fake.sent.clear()
+    out = body.stock_cc_update_with_overlay(fake, cs, 10 + STW_CANCEL_BURST_N * 10, None, 0)
+    assert out == []
+    assert extra_stw_forward_needed([], 10, False, False) is False
+  finally:
+    reset_auto_gates()
+
+
+def test_stock_cc_collar_uses_live_mc_and_valid_crc(monkeypatch):
+  from types import SimpleNamespace
+
+  from opendbc.can import CANPacker
+  from opendbc.car.tesla.preap.teslacan import TeslaCANPreAP
+  from opendbc.car.tesla.values import CANBUS
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  packer = CANPacker("tesla_preap")
+  tc = TeslaCANPreAP({CANBUS.party: packer, CANBUS.autopilot_party: packer})
+  orig = TeslaCANPreAP.create_action_request
+  monkeypatch.setattr(TeslaCANPreAP, "create_action_request", body.create_action_request_with_overlay)
+  monkeypatch.setattr(body, "_ORIG_CREATE_ACTION_REQUEST", orig)
+  monkeypatch.setattr(body, "requested_wiper_test", lambda: False)
+  monkeypatch.setattr(body, "requested_high_beam_test", lambda: False)
+  monkeypatch.setattr(body, "requested_collar_test", lambda: True)
+  monkeypatch.setattr(body, "requested_collar_posn", lambda: 3)
+  monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: [])
+
+  fake = _FakeSpoofer()
+  cs = SimpleNamespace(msg_stw_actn_req={
+    "SpdCtrlLvr_Stat": 0,
+    "MC_STW_ACTN_RQ": 9,
+    "CRC_STW_ACTN_RQ": 0,
+    "DTR_Dist_Rq": 255,
+    "VSL_Enbl_Rq": 1,
+    "WprSw6Posn": 1,
+    "WprWashSw_Psd": 0,
+    "HiBmLvr_Stat": 0,
+  })
+  reset_auto_gates()
+  try:
+    out = body.stock_cc_update_with_overlay(fake, cs, 10, tc, CANBUS.party)
+    assert len(out) == 1
+    addr, dat, bus = out[0]
+    assert addr == STW_ACTN_RQ_ADDR
+    assert bus == CANBUS.party
+    assert stw_collar_posn(dat) == 3
+    assert stw_wash(dat) == 0
+    assert _byte(dat) != STW_WASHER_SPRAY
+    assert (dat[6] >> 4) & 0x0F == 9
+    assert dat[7] == tc.stw_crc(dat[:7])
+    assert fake.sent == []  # Collar uses send_replaced_live_stw, not _send MC+1
   finally:
     reset_auto_gates()

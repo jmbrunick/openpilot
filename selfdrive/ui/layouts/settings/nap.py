@@ -37,6 +37,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   RESTORE_EPAS_INSTRUCTIONS,
   SPEED_SIGN_LOG_DESCRIPTION,
   WIPER_SPEED_DESCRIPTION, WIPER_SPEED_LABELS, WIPER_SPEED_VALUES,
+  WIPER_COLLAR_DESCRIPTION, WIPER_COLLAR_LABELS, WIPER_COLLAR_VALUES,
   acknowledgments_html, find_preset_index,
 )
 from openpilot.selfdrive.ui.layouts.settings.driving_mannerisms import DrivingMannerismsLayout
@@ -242,6 +243,17 @@ class NAPLayout(Widget):
       callback=self._on_wiper_speed,
     )
     self._main_items.append(self._wiper_buttons)
+
+    collar_setting = int(self._params.get(NAPParamKeys.WIPER_COLLAR, return_default=True) or 0)
+    self._collar_buttons = multiple_button_item(
+      "Wiper Collar",
+      WIPER_COLLAR_DESCRIPTION,
+      buttons=WIPER_COLLAR_LABELS,
+      button_width=130,
+      selected_index=max(0, min(len(WIPER_COLLAR_VALUES) - 1, collar_setting)),
+      callback=self._on_wiper_collar,
+    )
+    self._main_items.append(self._collar_buttons)
 
     beam_setting = int(self._params.get(NAPParamKeys.HIGH_LOW_BEAM, return_default=True) or 0)
     self._beam_buttons = multiple_button_item(
@@ -486,6 +498,9 @@ class NAPLayout(Widget):
 
   def _on_wiper_speed(self, index: int):
     self._params.put(NAPParamKeys.WIPER_SPEED, WIPER_SPEED_VALUES[index])
+
+  def _on_wiper_collar(self, index: int):
+    self._params.put(NAPParamKeys.WIPER_COLLAR, WIPER_COLLAR_VALUES[index])
 
   def _on_high_low_beam(self, index: int):
     self._params.put(NAPParamKeys.HIGH_LOW_BEAM, HIGH_LOW_BEAM_VALUES[index])
@@ -801,6 +816,9 @@ class NAPLayout(Widget):
     wiper_setting = int(self._params.get(NAPParamKeys.WIPER_SPEED, return_default=True) or 0)
     self._wiper_buttons.action_item.set_selected_button(
       max(0, min(len(WIPER_SPEED_VALUES) - 1, wiper_setting)))
+    collar_setting = int(self._params.get(NAPParamKeys.WIPER_COLLAR, return_default=True) or 0)
+    self._collar_buttons.action_item.set_selected_button(
+      max(0, min(len(WIPER_COLLAR_VALUES) - 1, collar_setting)))
     beam_setting = int(self._params.get(NAPParamKeys.HIGH_LOW_BEAM, return_default=True) or 0)
     self._beam_buttons.action_item.set_selected_button(
       max(0, min(len(HIGH_LOW_BEAM_VALUES) - 1, beam_setting)))

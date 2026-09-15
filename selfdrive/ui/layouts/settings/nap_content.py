@@ -172,6 +172,18 @@ WIPER_SPEED_DESCRIPTION = (
   "real stalk rest on bus 0; holding nibble 1 is what already works, and "
   "Auto dry must extra-forward rest to cancel. No spray. No auto headlights."
 )
+WIPER_COLLAR_VALUES = [0, 1, 2]
+WIPER_COLLAR_LABELS = ["Off", "Collar3", "Collar4"]
+WIPER_COLLAR_DESCRIPTION = (
+  "Parked experiment: spoof unused 4-click collar positions on 0x45 "
+  "STW_ACTN_RQ. Off leaves the live stalk (Off=0 Int1=1 Int2=2 Low=5 "
+  "High=6). Collar3/Collar4 hold WprSw6Posn INTERVAL3=3 or INTERVAL4=4 "
+  "with WprWashSw_Psd=0 — no TIPWIPE 0x10, no wash spray. Live MC, CRC, "
+  "~10 Hz so bus-0 rest cannot last-win. Off extra-forwards the live "
+  "collar so the force drops. Default Off. Leave Wiper Control Off while "
+  "testing; camera Auto (#159) is unchanged when this is Off. Same panda "
+  "0x45 whitelist as Int. No spray. Do not flash."
+)
 HIGH_LOW_BEAM_DESCRIPTION = (
   "Pre-AP Model S only, for on-car testing. Default Off. Low is the same as "
   "Off — the stalk's rest 0x45 (00ff00) is low/cancel, so there is no extra "
