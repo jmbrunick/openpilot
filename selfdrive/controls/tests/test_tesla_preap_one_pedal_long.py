@@ -1,9 +1,11 @@
-"""One-Pedal Long: gas-from-rest kick-off + RELEASE regen (no ENABLE chatter).
+"""One-Pedal Long: gas-from-rest silent long pause + RELEASE regen.
 
-Toggle On + OP long + accelerator rising from rest drops software long
-(same silent pause as brake). Interceptor RELEASEs on that press and
-stays RELEASED on lift so Tesla stock lift-regen is the one-pedal path.
-No GAS_COMMAND DI rewrite, no re-ACQUIRE on lift (ENABLE 0↔1 chatter).
+Toggle On + OP long + accelerator rising from rest pauses software long
+(same function as brake today — lat stays, not USER_DISABLE / full
+session cancel). Interceptor RELEASEs on that press and stays RELEASED
+on lift so Tesla stock lift-regen is the one-pedal path. Resume-long
+after pause is still one SET (sticky MAX), same as brake pause. No
+GAS_COMMAND DI rewrite, no re-ACQUIRE on lift (ENABLE 0↔1 chatter).
 Toggle Off is stock gas override + A+B/A3 resume. Tip-brake glide and
 FCW/AEB are not this path.
 """
@@ -159,17 +161,55 @@ def test_brake_cancel_still_works_with_one_pedal_on(monkeypatch):
 
 
 def test_one_pedal_wires_carstate_after_interceptor_gas():
-  """Kick must use interceptor gasPressed, published after GAS_SENSOR parse."""
+  """Pause must use interceptor gasPressed, published after GAS_SENSOR parse."""
   from pathlib import Path
-  cs = (Path(__file__).resolve().parents[3] /
-        "opendbc_repo/opendbc/car/tesla/preap/carstate.py").read_text()
+  root = Path(__file__).resolve().parents[3]
+  cs = (root / "opendbc_repo/opendbc/car/tesla/preap/carstate.py").read_text()
   gas_at = cs.find("ret.gasPressed = cs.pedal.gas_pressed")
   kick_at = cs.find("maybe_one_pedal_gas_kick")
   assert 0 <= gas_at < kick_at
   assert "nap_conf.one_pedal_long" in cs
-  eng = (Path(__file__).resolve().parents[3] /
-         "opendbc_repo/opendbc/car/tesla/preap/engagement.py").read_text()
-  assert "def maybe_one_pedal_gas_kick" in eng
-  keys = (Path(__file__).resolve().parents[3] / "common/params_keys.h").read_text()
+  eng = (root / "opendbc_repo/opendbc/car/tesla/preap/engagement.py").read_text()
+  fn = eng.split("def maybe_one_pedal_gas_kick", 1)[1]
+  body = fn.split('"""', 2)[2].split("\n  def ", 1)[0]
+  assert "_drop_longitudinal_keep_lateral" in body
+  assert "hard_cancel_session(" not in body
+  assert "cruiseEnabled = False" not in body
+  keys = (root / "common/params_keys.h").read_text()
   assert "NAPOnePedalLong" in keys
   assert 'BOOL, "0"' in next(ln for ln in keys.splitlines() if '"NAPOnePedalLong"' in ln)
+
+
+def test_one_pedal_gas_pause_never_user_disables():
+  """DisengageOnAccelerator must not full-cancel when One-Pedal Long is On."""
+  from openpilot.selfdrive.selfdrived.preap_regen import gas_should_user_disable
+
+  assert gas_should_user_disable(disengage_on_accelerator=True, one_pedal_long=False)
+  assert not gas_should_user_disable(disengage_on_accelerator=True, one_pedal_long=True)
+  assert not gas_should_user_disable(disengage_on_accelerator=False, one_pedal_long=True)
+  assert not gas_should_user_disable(disengage_on_accelerator=False, one_pedal_long=False)
+
+  from pathlib import Path
+  root = Path(__file__).resolve().parents[3]
+  sd = (root / "selfdrive/selfdrived/selfdrived.py").read_text()
+  assert "gas_should_user_disable" in sd
+  gas_block = sd.split("gas_disable = (", 1)[1].split("if gas_disable:", 1)[0]
+  assert "one_pedal_long" in gas_block
+  assert "disengage_on_accelerator" in gas_block
+  events = (root / "selfdrive/selfdrived/events.py").read_text()
+  pedal = events.split("EventName.pedalPressed:", 1)[1].split("EventName.", 1)[0]
+  assert "USER_DISABLE" in pedal
+  override = events.split("EventName.gasPressedOverride:", 1)[1].split("EventName.", 1)[0]
+  assert "OVERRIDE_LONGITUDINAL" in override
+  assert "USER_DISABLE" not in override
+
+
+def test_one_pedal_gas_pause_keeps_session_for_resume(monkeypatch):
+  """After gas pause, cruiseEnabled stays so one SET can resume like brake."""
+  controller, cc, cs, tesla_can = controller_env(monkeypatch)
+  _activate_longitudinal(cc, cs)
+  controller.update(cc, cs, frame=0, tesla_can=tesla_can, can_bus_party=0)
+  _kick_long_on_gas(cc, cs)
+  assert cs.engagement.cruiseEnabled
+  assert not cs.engagement.enableLongControl
+  assert not getattr(cs.engagement, "preap_cc_cancel_needed", False)

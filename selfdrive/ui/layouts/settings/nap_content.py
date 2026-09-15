@@ -47,11 +47,13 @@ NAP_HYPERMILE_HILL_CLIMB = "NAPHypermileHillClimb"
 NAP_ONE_PEDAL_LONG = "NAPOnePedalLong"
 ONE_PEDAL_LONG_DESCRIPTION = (
   "Default Off. Pedal mode only. With OP long on, pressing the accelerator "
-  + "from rest drops software long (like brake) so you do not have to tap "
-  + "friction brake. After that, lift or near-zero accel is Tesla regen "
-  + "through interceptor RELEASE — one-pedal-style within Pre-AP limits, "
-  + "not a GAS_COMMAND rewrite. Off = stock gas override + A+B/A3 resume. "
-  + "Brake cancel, tip-brake glide, and FCW/AEB stay as they are."
+  + "from rest pauses longitudinal the same way brake does today — long "
+  + "lets go, lateral stays, no full disable or take-control. After that, "
+  + "lift or near-zero accel is Tesla regen through interceptor RELEASE "
+  + "(one-pedal-style within Pre-AP limits, not a GAS_COMMAND rewrite). "
+  + "One SET resumes at held MAX, same as brake pause. Off = stock gas "
+  + "override + A+B/A3 resume. Brake cancel, tip-brake glide, and FCW/AEB "
+  + "stay as they are."
 )
 HYPERMILE_DESCRIPTION = (
   "Default Off. Comfort-biased efficiency — early light ease, not max "

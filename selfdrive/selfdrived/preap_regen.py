@@ -13,9 +13,10 @@ and release are silent.
 
 A brake long drop that keeps cruiseEnabled is a silent pause: do not
 fire pedalCruiseDisabled / AudibleAlert.disengage. One-Pedal Long gas
-kick-off uses that same pause. One SET that only restores long from
-that pause is also quiet. A latched driver-turn blinker does not drop
-long. Full cancel (session down) still chimes disengage.
+from rest uses that same pause — not USER_DISABLE / full session
+cancel. One SET that only restores long from that pause is also quiet.
+A latched driver-turn blinker does not drop long. Full cancel (session
+down) still chimes disengage.
 """
 import math
 from typing import NamedTuple
@@ -52,7 +53,7 @@ def update_preap_chimes(*, lat_engaged: bool, long_engaged: bool,
   """Rising/falling edges for Pre-AP lat and long driver prompts.
 
   Long-only drop while the session stays up (brake / One-Pedal Long gas
-  kick / driver-turn pause) is silent. Long-only resume from that pause
+  pause / driver-turn pause) is silent. Long-only resume from that pause
   is silent. Initial second pull and full re-engage still chime
   long-engage. Session-down long drop still chimes long-disengage
   (pedalCruiseDisabled).
@@ -78,6 +79,18 @@ def update_preap_chimes(*, lat_engaged: bool, long_engaged: bool,
   else:
     long_paused = prev.long_paused
   return chimes, PreAPChimeState(lat_engaged, long_engaged, long_paused)
+
+
+def gas_should_user_disable(*, disengage_on_accelerator: bool,
+                            one_pedal_long: bool) -> bool:
+  """Rising-gas EventName.pedalPressed is stock DisengageOnAccelerator.
+
+  That event is USER_DISABLE (full session cancel / take-control).
+  One-Pedal Long On must never take it: gas-from-rest is the same
+  silent long pause as brake (lat stays, sticky MAX, one SET resumes).
+  Toggle Off (default): stock DisengageOnAccelerator still applies.
+  """
+  return bool(disengage_on_accelerator) and not bool(one_pedal_long)
 
 
 class RegenDemandCheck:
