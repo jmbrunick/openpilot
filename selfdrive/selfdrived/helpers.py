@@ -1,12 +1,16 @@
+from __future__ import annotations
+
 import math
 from enum import StrEnum, auto
+from typing import TYPE_CHECKING
 
-from cereal import car, messaging
-from openpilot.common.realtime import DT_CTRL
-from openpilot.selfdrive.locationd.helpers import Pose
-from opendbc.car import ACCELERATION_DUE_TO_GRAVITY
+from opendbc.car import ACCELERATION_DUE_TO_GRAVITY, DT_CTRL
 from opendbc.car.lateral import ISO_LATERAL_ACCEL
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
+
+if TYPE_CHECKING:
+  from cereal import car, messaging
+  from openpilot.selfdrive.locationd.helpers import Pose
 
 MIN_EXCESSIVE_ACTUATION_COUNT = int(0.25 / DT_CTRL)
 MIN_LATERAL_ENGAGE_BUFFER = int(1 / DT_CTRL)
