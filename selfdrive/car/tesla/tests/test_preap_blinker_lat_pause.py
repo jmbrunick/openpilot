@@ -675,9 +675,32 @@ def test_panda_gear_out_clears_cruise_latch():
   """Panda must pcm_cruise_check(false) on gear-out, not controls_allowed=false alone."""
   rx = (Path(__file__).resolve().parents[4] /
         "opendbc_repo/opendbc/safety/modes/tesla_preap_rx.h").read_text()
-  gear_block = rx.split("if ((preap_gear_prev == 4) && (preap_gear != 4))")[1].split("preap_gear_prev")[0]
+  assert "if (preap_gear != 4)" in rx
+  gear_block = rx.split("if (preap_gear != 4)")[1].split("preap_gear_prev = preap_gear")[0]
   assert "pcm_cruise_check(false)" in gear_block
   assert "controls_allowed = false" not in gear_block
+  assert "preap_gear_prev != 4" in gear_block
+
+
+def test_panda_drive_set_matches_stalk_cancel_rearm():
+  """Drive SET while !allowed must pulse pcm_cruise_check(false) then true."""
+  rx = (Path(__file__).resolve().parents[4] /
+        "opendbc_repo/opendbc/safety/modes/tesla_preap_rx.h").read_text()
+  set_block = rx.split("if (lever == 2)")[1].split("else if (lever == 1)")[0]
+  assert "if (!controls_allowed)" in set_block
+  assert "pcm_cruise_check(false)" in set_block
+  assert "pcm_cruise_check(true)" in set_block
+
+
+def test_panda_tx_cancel_clears_latch_when_disallowed():
+  """TX-only CANCEL spoof must re-arm the latch without dropping an engaged session."""
+  tx = (Path(__file__).resolve().parents[4] /
+        "opendbc_repo/opendbc/safety/modes/tesla_preap_tx.h").read_text()
+  assert "msg->addr == 0x45U" in tx
+  cancel_block = tx.split("msg->addr == 0x45U")[1].split("DAS_steeringControl")[0]
+  assert "lever == 1" in cancel_block
+  assert "!controls_allowed" in cancel_block
+  assert "pcm_cruise_check(false)" in cancel_block
 
 
 def test_park_while_engaged_is_also_hard_cancel():
