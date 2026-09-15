@@ -609,9 +609,22 @@ class Car:
                 self.radar_donor_vin.reader.failure.name.lower().replace("_", " "),
               )
             self.params.put_bool("NAPRadarReadVin", False)
+      if getattr(self, "_tesla_preap", False):
+        can_sends = self._collar_hold_sends(can_sends)
       self.pm.send('sendcan', can_list_to_can_capnp(can_sends, msgtype='sendcan', valid=CS.canValid))
 
       self.CC_prev = CC
+
+  def _collar_hold_sends(self, can_sends):
+    from openpilot.selfdrive.car.tesla.preap_body_controls import collar_hold_sends
+    inner = getattr(self.CI, "CS", None)
+    tesla_can = getattr(getattr(self.CI, "CC", None), "tesla_can", None)
+    return collar_hold_sends(can_sends, inner, tesla_can, 0)
+
+  def _publish_collar_hold(self):
+    sends = self._collar_hold_sends([])
+    if sends:
+      self.pm.send('sendcan', can_list_to_can_capnp(sends, msgtype='sendcan', valid=True))
 
   def step(self):
     CS, RD = self.state_update()
@@ -622,6 +635,10 @@ class Car:
                    self.sm.seen['onroadEvents'])
     if not self.CP.passive and initialized:
       self.controls_update(CS, self.sm['carControl'])
+    elif getattr(self, "_tesla_preap", False):
+      # Parked / not initialized: CI.apply never runs, so stock-cc overlay
+      # never TXes. Collar3/4 must still last-win bus-0 Off.
+      self._publish_collar_hold()
 
     self.initialized_prev = initialized
     self.CS_prev = CS
