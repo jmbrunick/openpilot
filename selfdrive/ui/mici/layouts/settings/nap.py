@@ -24,6 +24,8 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   RESTORE_EPAS_INSTRUCTIONS,
   INSTALL_SPEED_SIGN_WEIGHTS_INSTRUCTIONS,
   NAP_SPEED_SIGN_LOG,
+  WIPER_COLLAR_LABELS,
+  WIPER_COLLAR_VALUES,
   WIPER_SPEED_LABELS,
   WIPER_SPEED_VALUES,
 )
@@ -32,6 +34,7 @@ from openpilot.selfdrive.ui.mici.layouts.settings.map_speed import MapSpeedLimit
 from openpilot.selfdrive.speedsignd.install import weights_status_summary
 from openpilot.selfdrive.car.tesla.preap_body_controls import (
   NAP_HIGH_LOW_BEAM,
+  NAP_WIPER_COLLAR,
   NAP_WIPER_SPEED,
   register_nap_body_params,
 )
@@ -276,6 +279,14 @@ class NAPLayoutMici(NavScroller):
       default_value=0,
     )
 
+    wiper_collar = BigMultiValueParamToggle(
+      "wiper collar",
+      NAP_WIPER_COLLAR,
+      values=WIPER_COLLAR_VALUES,
+      labels=WIPER_COLLAR_LABELS,
+      default_value=0,
+    )
+
     high_low_beam = BigMultiValueParamToggle(
       "high / low beam",
       NAP_HIGH_LOW_BEAM,
@@ -327,6 +338,7 @@ class NAPLayoutMici(NavScroller):
       calibrate_pedal_btn,
       radar_settings_btn,
       wiper_control,
+      wiper_collar,
       high_low_beam,
       ibooster_enabled,
       force_pre_ap,

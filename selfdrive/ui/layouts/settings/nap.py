@@ -37,12 +37,16 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   RESTORE_EPAS_INSTRUCTIONS,
   SPEED_SIGN_LOG_DESCRIPTION,
   WIPER_SPEED_DESCRIPTION, WIPER_SPEED_LABELS, WIPER_SPEED_VALUES,
+  WIPER_COLLAR_DESCRIPTION, WIPER_COLLAR_LABELS, WIPER_COLLAR_VALUES,
   acknowledgments_html, find_preset_index,
 )
 from openpilot.selfdrive.ui.layouts.settings.driving_mannerisms import DrivingMannerismsLayout
 from openpilot.selfdrive.ui.layouts.settings.map_speed import MapSpeedLimitLayout
 from openpilot.selfdrive.speedsignd.install import weights_status_summary
-from openpilot.selfdrive.car.tesla.preap_body_controls import register_nap_body_params
+from openpilot.selfdrive.car.tesla.preap_body_controls import (
+  collar_button_index, put_wiper_collar_setting, read_wiper_collar_setting,
+  register_nap_body_params,
+)
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys, DEFAULTS
 
 register_nap_body_params()
@@ -243,6 +247,17 @@ class NAPLayout(Widget):
     )
     self._main_items.append(self._wiper_buttons)
 
+    collar_setting = int(read_wiper_collar_setting() or 0)
+    self._collar_buttons = multiple_button_item(
+      "Wiper Collar",
+      WIPER_COLLAR_DESCRIPTION,
+      buttons=WIPER_COLLAR_LABELS,
+      button_width=130,
+      selected_index=collar_button_index(collar_setting),
+      callback=self._on_wiper_collar,
+    )
+    self._main_items.append(self._collar_buttons)
+
     beam_setting = int(self._params.get(NAPParamKeys.HIGH_LOW_BEAM, return_default=True) or 0)
     self._beam_buttons = multiple_button_item(
       "High / Low Beam",
@@ -266,9 +281,9 @@ class NAPLayout(Widget):
     self._weights_status = text_item(
       "Speed Sign Weights",
       weights_status_summary,
-      description="YOLO ONNX at /data/media/0/nap/speed_sign.onnx. "
-      "Missing → onroad SIGN shows NO WT and will not read roadside signs. "
-      "Installed → blank plate until a confirmed mph.",
+      description=("YOLO ONNX at /data/media/0/nap/speed_sign.onnx. "
+      + "Missing → onroad SIGN shows NO WT and will not read roadside signs. "
+      + "Installed → blank plate until a confirmed mph."),
     )
     self._main_items.append(self._weights_status)
 
@@ -486,6 +501,9 @@ class NAPLayout(Widget):
 
   def _on_wiper_speed(self, index: int):
     self._params.put(NAPParamKeys.WIPER_SPEED, WIPER_SPEED_VALUES[index])
+
+  def _on_wiper_collar(self, index: int):
+    put_wiper_collar_setting(WIPER_COLLAR_VALUES[index])
 
   def _on_high_low_beam(self, index: int):
     self._params.put(NAPParamKeys.HIGH_LOW_BEAM, HIGH_LOW_BEAM_VALUES[index])
@@ -801,6 +819,9 @@ class NAPLayout(Widget):
     wiper_setting = int(self._params.get(NAPParamKeys.WIPER_SPEED, return_default=True) or 0)
     self._wiper_buttons.action_item.set_selected_button(
       max(0, min(len(WIPER_SPEED_VALUES) - 1, wiper_setting)))
+    collar_setting = int(read_wiper_collar_setting() or 0)
+    self._collar_buttons.action_item.set_selected_button(
+      collar_button_index(collar_setting))
     beam_setting = int(self._params.get(NAPParamKeys.HIGH_LOW_BEAM, return_default=True) or 0)
     self._beam_buttons.action_item.set_selected_button(
       max(0, min(len(HIGH_LOW_BEAM_VALUES) - 1, beam_setting)))

@@ -125,6 +125,12 @@ class Car:
     self.CP.alternativeExperience = 0
     openpilot_enabled_toggle = self.params.get_bool("OpenpilotEnabledToggle")
     controller_available = self.CI.CC is not None and openpilot_enabled_toggle and not self.CP.dashcamOnly
+    # Fingerprint before passive may overwrite safetyConfigs to noOutput.
+    tesla_preap = str(getattr(self.CP, "carFingerprint", "") or "") == "TESLA_MODEL_S_PREAP"
+    tesla_preap = tesla_preap or any(
+      cfg.safetyModel == car.CarParams.SafetyModel.teslaPreap for cfg in self.CP.safetyConfigs
+    )
+    self._tesla_preap = tesla_preap
     self.CP.passive = not controller_available or self.CP.dashcamOnly
     if self.CP.passive:
       safety_config = structs.CarParams.SafetyConfig()
@@ -180,8 +186,7 @@ class Car:
 
     self._can_packets: list[CanData] = []
     self.radar_donor_vin = None
-    tesla_preap = any(cfg.safetyModel == car.CarParams.SafetyModel.teslaPreap for cfg in self.CP.safetyConfigs)
-    self._tesla_preap = tesla_preap
+    tesla_preap = getattr(self, "_tesla_preap", False)
     if tesla_preap:
       from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import install_blinker_lat_pause
       from openpilot.selfdrive.car.tesla.preap_body_controls import install_body_controls_test
@@ -609,9 +614,32 @@ class Car:
                 self.radar_donor_vin.reader.failure.name.lower().replace("_", " "),
               )
             self.params.put_bool("NAPRadarReadVin", False)
+      if getattr(self, "_tesla_preap", False):
+        can_sends = self._collar_hold_sends(can_sends)
       self.pm.send('sendcan', can_list_to_can_capnp(can_sends, msgtype='sendcan', valid=CS.canValid))
 
       self.CC_prev = CC
+
+  def _collar_hold_sends(self, can_sends):
+    from openpilot.selfdrive.car.tesla.preap_body_controls import collar_hold_sends
+    inner = getattr(self.CI, "CS", None)
+    tesla_can = getattr(getattr(self.CI, "CC", None), "tesla_can", None)
+    return collar_hold_sends(can_sends, inner, tesla_can, 0)
+
+  def _publish_collar_hold(self):
+    """Always last-mile 0x45. Do not wait for CI.apply / carControl / engage.
+
+    NAP Int extra-forward is the same stock-cc overlay inside apply. Parked,
+    apply is skipped or sendcan is gated on carControl alive — collar must
+    still TX. Panda teslaPreap already allows 0x45 while disengaged.
+    """
+    from openpilot.selfdrive.car.tesla.preap_body_controls import write_collar_heartbeat
+    try:
+      sends = self._collar_hold_sends([])
+      if sends:
+        self.pm.send('sendcan', can_list_to_can_capnp(sends, msgtype='sendcan', valid=True))
+    except Exception as e:
+      write_collar_heartbeat(f"exception:{type(e).__name__}")
 
   def step(self):
     CS, RD = self.state_update()
@@ -622,6 +650,10 @@ class Car:
                    self.sm.seen['onroadEvents'])
     if not self.CP.passive and initialized:
       self.controls_update(CS, self.sm['carControl'])
+    if getattr(self, "_tesla_preap", False):
+      # Not elif: initialized+apply can still skip sendcan (carControl dead).
+      # Collar3 uses this same 0x45 path every tick like Int extra-forward.
+      self._publish_collar_hold()
 
     self.initialized_prev = initialized
     self.CS_prev = CS

@@ -189,11 +189,17 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Wiper: 0=off 1=int 2=on 3=auto. Int/On hold high nibble 1. Auto holds nibble 1
     // while on, in Drive/Reverse, and the 3X ROAD camera sees rain or ice/frost.
     // Beam: 0/1 leave stalk, 2=high (low nibble 4).
+    // Collar: 0=off (live WprSw6Posn) 3=INTERVAL3 4=INTERVAL4.
+    // Legacy UI wrote 1/2 (button indexes) — still mapped to 3/4.
+    // Collar3/4 also force WprWashSw_Psd=0 (no TIPWIPE/WASH). Default 0.
+    // Live TX proof (~1 Hz): NAPWiperCollarStatus.
     // DAS wiper/beam fields stay 0. No auto headlights.
     {"NAPWiperSpeed", {PERSISTENT, INT, "0"}},
     // Live Auto-wiper camera latch (swaglog + this param, ~1 Hz). Read-only.
     {"NAPWiperRainStatus", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, STRING}},
+    {"NAPWiperCollarStatus", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, STRING}},
     {"NAPHighLowBeam", {PERSISTENT, INT, "0"}},
+    {"NAPWiperCollar", {PERSISTENT, INT, "0"}},
     // On-drive MUTCD speed-sign JSONL logger. Default off. Log-only: no sqlite,
     // no vCruise / HUD MAX, no osm.org. Process: speedsignd.
     {"NAPSpeedSignLog", {PERSISTENT, BOOL, "0"}},
