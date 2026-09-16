@@ -1,0 +1,565 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#05070a">
+<title>NAP Dash</title>
+<style>
+:root{--p:#10151d;--line:#293241;--t:#f5f7fa;--m:#9aa7b7;--a:#56b6ff;--g:#34c759;--warn:#ffb340;}
+*{box-sizing:border-box}
+body{margin:0;background:#05070a;color:var(--t);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display",sans-serif;}
+.wrap{max-width:1320px;margin:auto;padding:10px}
+.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:10px}
+.title{font-size:18px;font-weight:800}
+.health-bar{font-size:11px;color:var(--m);display:flex;gap:10px;flex-wrap:wrap}
+.nav-tabs{display:flex;gap:8px;margin-bottom:12px;background:#111720;padding:4px;border-radius:12px;border:1px solid var(--line);overflow-x:auto}
+.nav-tabs button{flex:1;background:transparent;border:none;color:var(--m);padding:10px 6px;font-weight:700;border-radius:8px;font-size:12px;min-width:0}
+.nav-tabs button.active{background:#1a222e;color:var(--t)}
+.cluster{position:relative;background:#03070c;border-radius:22px;border:1px solid #203850;overflow:hidden;display:flex;flex-direction:column;align-items:center;padding-top:18px;margin-bottom:15px;width:100%;height:min(72vh,740px);min-height:560px;box-shadow:inset 0 0 90px #000b,0 20px 70px #0009}
+.cluster-top{display:flex;justify-content:space-between;width:100%;padding:0 24px;z-index:10;align-items:flex-start}
+.speed-block{text-align:center;display:flex;flex-direction:column;align-items:center}
+.speed-val{font-size:64px;font-weight:800;line-height:1;letter-spacing:-2px;text-shadow:0 0 20px rgba(255,255,255,.2)}
+.speed-unit{font-size:14px;color:var(--m);font-weight:700}
+.max-speed,.steer-block{display:flex;flex-direction:column;align-items:center;background:rgba(26,34,46,.6);padding:6px 12px;border-radius:10px;border:1px solid #344153;backdrop-filter:blur(4px)}
+.max-lbl{font-size:10px;color:var(--m);font-weight:800}
+.max-val,.steer-val{font-size:22px;font-weight:800;color:#fff}
+.max-val{color:var(--a)}
+.radar-canvas{position:absolute;inset:0;width:100%;height:100%;z-index:1;background:#03070c}
+.hud-pedals{position:absolute;bottom:15px;left:15px;display:flex;gap:10px;z-index:10}
+.pedal{width:30px;height:8px;border-radius:4px;background:#344153}
+.pedal.brk.active{background:#ff3b30;box-shadow:0 0 10px #ff3b30}
+.pedal.gas.active{background:var(--g);box-shadow:0 0 10px var(--g)}
+.turn-arrow{font-size:24px;color:#293241}
+.turn-arrow.active{color:var(--g);text-shadow:0 0 10px var(--g)}
+.scene-lane{fill:none;stroke:#edf7ff;stroke-linecap:round;vector-effect:non-scaling-stroke}
+.scene-edge{fill:none;stroke:#657b91;stroke-dasharray:9 9;vector-effect:non-scaling-stroke}
+.scene-plan-center{fill:none;stroke-linecap:round;stroke-dasharray:18 14;vector-effect:non-scaling-stroke;animation:nap-road-flow .65s linear infinite}
+.scene-lead-label{fill:#fff;font-size:15px;font-weight:850;text-anchor:middle;paint-order:stroke;stroke:#06101a;stroke-width:5px}
+.scene-lead-sub{fill:#b9c9d9;font-size:10px;font-weight:800;text-anchor:middle;paint-order:stroke;stroke:#06101a;stroke-width:4px}
+.scene-ego-body{fill:#dce9f4;stroke:#fff;stroke-width:2}.scene-ego-glass{fill:#24384c}.scene-ego-light{fill:#6a141b}
+@keyframes nap-road-flow{from{stroke-dashoffset:32}to{stroke-dashoffset:0}}
+.grid-layout{display:grid;grid-template-columns:1fr;gap:12px}
+@media(min-width:700px){.grid-layout{grid-template-columns:1fr 1fr}}
+.card{background:#111720;border:1px solid var(--line);border-radius:16px;padding:14px}
+.label{font-size:12px;color:var(--m);text-transform:uppercase;letter-spacing:.08em;margin-bottom:9px}
+.buttons{display:flex;gap:6px;flex-wrap:wrap}
+.btn{flex:1;border:1px solid #344153;background:#1a222e;color:var(--t);padding:10px 6px;border-radius:10px;font-weight:700;font-size:13px;min-width:36px}
+.btn.active{background:#284d68;border-color:var(--a)}
+.row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0}
+.small{font-size:12px;color:var(--m)}
+.switch{width:50px;height:28px;border-radius:16px;background:#303a47;border:0;position:relative;flex:none}
+.switch i{position:absolute;width:22px;height:22px;top:3px;left:3px;border-radius:50%;background:#fff;transition:.15s}
+.switch.on{background:var(--g)}.switch.on i{left:25px}
+.follow,.choice-row{display:grid;gap:5px}
+.follow{grid-template-columns:repeat(7,1fr)}
+.accel{grid-template-columns:repeat(10,1fr)}
+.choice-row{grid-template-columns:repeat(4,1fr)}
+.follow button,.choice-row button,.accel button{padding:10px 2px;border-radius:8px;border:1px solid #344153;background:#1a222e;color:#fff;font-weight:700}
+.follow button.active,.choice-row button.active,.accel button.active{background:#315b75;border-color:var(--a)}
+.kv{display:grid;grid-template-columns:1fr 1fr;gap:5px;font-size:11px}.kv span{color:var(--m)}
+.health-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:7px;margin-top:8px}
+.health-pill{background:#0b0f15;border:1px solid #293241;border-radius:9px;padding:7px;text-align:center;font-size:10px;color:var(--m)}
+.health-pill b{display:block;color:var(--t);font-size:13px;margin-top:2px}
+.note{font-size:11px;color:var(--m);line-height:1.4;margin-top:8px}
+.toast{position:fixed;right:16px;bottom:16px;z-index:50;padding:10px 14px;border-radius:12px;background:#182330;border:1px solid #56b6ff66;opacity:0;transform:translateY(10px);transition:.2s}
+.toast.on{opacity:1;transform:none}
+.power-hud{background:#0b0f15;padding:15px;border-radius:12px;border:1px solid #293241;margin-top:10px}
+.power-labels{display:flex;justify-content:space-between;font-size:10px;font-weight:800;color:var(--m);margin-bottom:8px}
+.power-bar-container{display:flex;align-items:center;height:16px;background:#111720;border-radius:8px;overflow:hidden;position:relative;border:1px solid #1f2733}
+.power-side{flex:1;height:100%;position:relative}
+.power-side.left{border-right:1px solid #344153}
+.power-center-mark{position:absolute;left:50%;width:2px;height:100%;background:#fff;z-index:10;transform:translateX(-50%)}
+.lim-bar{position:absolute;height:100%;background:#293241}
+.left .lim-bar{right:0}.right .lim-bar{left:0}
+.act-bar{position:absolute;height:100%;z-index:5}
+.left .act-bar{right:0;background:var(--g)}.right .act-bar{left:0;background:#ff5d67}
+.brick{aspect-ratio:1;border-radius:3px;background:#1a222e;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;color:#fff;font-family:monospace}
+.vid-container{width:100%;position:relative;aspect-ratio:16/9;background:#000;border-radius:16px;overflow:hidden;margin-bottom:12px;border:1px solid var(--line)}
+video{width:100%;height:100%}
+.hud-overlay{position:absolute;inset:0;pointer-events:none;padding:15px;display:none;flex-direction:column;justify-content:space-between;z-index:20;background:linear-gradient(180deg,rgba(0,0,0,.5) 0%,transparent 20%,transparent 80%,rgba(0,0,0,.6) 100%)}
+.hud-top,.hud-bot{display:flex;justify-content:space-between;align-items:center}
+.hud-box{background:#00000088;border:1px solid #ffffff33;padding:6px 12px;border-radius:10px;color:#fff;font-weight:800;text-transform:uppercase;font-size:14px}
+.btn-ui{padding:8px 14px;background:#1a222e;color:var(--t);border-radius:10px;font-weight:700;font-size:13px;border:1px solid #344153}
+select.cam-drop{background:#1a222e;color:var(--t);border:1px solid #344153;padding:8px 12px;border-radius:10px;font-weight:700;width:100%;margin-bottom:10px}
+.route-item{background:#111720;border-radius:12px;padding:12px;margin-bottom:10px;border:1px solid var(--line)}
+.segs-grid{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.seg-btn{background:#1a222e;border:1px solid #344153;color:var(--t);padding:8px 12px;border-radius:8px;font-size:12px;font-weight:700}
+.seg-btn.playing{background:var(--a);color:#000}
+.timeline{background:#111720;border:1px solid var(--line);border-radius:16px;padding:12px;margin-bottom:12px}
+.timeline input[type=range]{width:100%;accent-color:var(--a)}
+.timeline-track{height:7px;border-radius:4px;background:#293241;position:relative;overflow:hidden;margin-top:7px}
+.engage-segment{position:absolute;top:0;bottom:0;background:var(--g);opacity:.8}
+@media(max-width:650px){.cluster{height:68vh;min-height:470px;padding-top:12px}.cluster-top{padding:0 12px}.steer-block{display:none}.accel{grid-template-columns:repeat(5,1fr)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div class="title">NAP Dash</div>
+    <div class="health-bar">
+      <span>CPU: <b id="cpu-temp">—</b>°C</span>
+      <span><b id="status">Wait</b></span>
+    </div>
+  </div>
+  <div class="nav-tabs">
+    <button id="tabbtn-drive" class="active" onclick="switchTab('drive')">Drive</button>
+    <button id="tabbtn-settings" onclick="switchTab('settings')">Mannerisms</button>
+    <button id="tabbtn-bms" onclick="switchTab('bms')">BMS</button>
+    <button id="tabbtn-video" onclick="switchTab('video')">Dashcam</button>
+  </div>
+
+  <div id="tab-drive">
+    <div class="cluster">
+      <div class="cluster-top">
+        <div id="arr-l" class="turn-arrow">◀</div>
+        <div class="steer-block"><span class="max-lbl">STEER</span><span id="steer-val" class="steer-val">0°</span></div>
+        <div class="speed-block">
+          <div id="speed-val" class="speed-val">0</div>
+          <div class="speed-unit">MPH</div>
+        </div>
+        <div class="max-speed"><span class="max-lbl">MAX</span><span id="max-val" class="max-val">--</span></div>
+        <div id="arr-r" class="turn-arrow">▶</div>
+      </div>
+      <svg class="radar-canvas" viewBox="0 0 960 540" preserveAspectRatio="xMidYMid slice">
+        <defs>
+          <linearGradient id="nap-sky" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#020509"/><stop offset=".56" stop-color="#112033"/><stop offset="1" stop-color="#07101a"/>
+          </linearGradient>
+          <linearGradient id="nap-road" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#17273a"/><stop offset="1" stop-color="#070c13"/>
+          </linearGradient>
+          <linearGradient id="nap-plan-blue" x1="0" y1="1" x2="0" y2="0">
+            <stop offset="0" stop-color="#56b6ff" stop-opacity=".60"/><stop offset="1" stop-color="#56b6ff" stop-opacity="0"/>
+          </linearGradient>
+          <linearGradient id="nap-plan-green" x1="0" y1="1" x2="0" y2="0">
+            <stop offset="0" stop-color="#34c759" stop-opacity=".62"/><stop offset="1" stop-color="#34c759" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+        <rect width="960" height="540" fill="url(#nap-sky)"/>
+        <path d="M0 166 L430 166 L30 540 L0 540 Z" fill="#08121b"/>
+        <path d="M530 166 L960 166 L960 540 L930 540 Z" fill="#08121b"/>
+        <path d="M430 166 L530 166 L930 540 L30 540 Z" fill="url(#nap-road)"/>
+        <path d="M426 166 L434 166 L48 540 L20 540 Z" fill="#9aa9b5" opacity=".58"/>
+        <path d="M526 166 L534 166 L940 540 L912 540 Z" fill="#9aa9b5" opacity=".58"/>
+        <g id="road-grp"></g>
+        <g id="track-grp"></g>
+        <g id="scene-ego" transform="translate(480 478)">
+          <path class="scene-ego-body" d="M-70 18 L-58-34 Q-50-66 0-72 Q50-66 58-34 L70 18 Q71 39 50 44 L-50 44 Q-71 39-70 18Z"/>
+          <path class="scene-ego-glass" d="M-39-35 Q-30-57 0-60 Q30-57 39-35 L28-18 L-28-18Z"/>
+          <rect id="scene-brake-l" class="scene-ego-light" x="-51" y="13" width="22" height="8" rx="3"/>
+          <rect id="scene-brake-r" class="scene-ego-light" x="29" y="13" width="22" height="8" rx="3"/>
+          <rect id="scene-turn-l" x="-60" y="4" width="7" height="11" rx="3" fill="#493b19"/>
+          <rect id="scene-turn-r" x="53" y="4" width="7" height="11" rx="3" fill="#493b19"/>
+        </g>
+      </svg>
+      <div class="hud-pedals">
+        <div id="pedal-brk" class="pedal brk"></div>
+        <div id="pedal-gas" class="pedal gas"></div>
+      </div>
+    </div>
+    <div class="grid-layout">
+      <div class="card">
+        <div class="label">Remote cockpit</div>
+        <div class="health-grid">
+          <div class="health-pill">BRAKE<b id="brake-state">OFF</b></div>
+          <div class="health-pill">GAS<b id="gas-state">OFF</b></div>
+          <div class="health-pill">ENGAGED<b id="engage-state">--</b></div>
+          <div class="health-pill">LEAD<b id="lead-state">--</b></div>
+        </div>
+        <div class="note">Comma hotspot only — http://&lt;device&gt;:7070. No public tunnel.</div>
+      </div>
+      <div class="card">
+        <div class="label">Lead telemetry</div>
+        <div id="l1" class="kv"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="tab-settings" style="display:none">
+    <div class="grid-layout">
+      <div class="card">
+        <div class="label">Driving Mannerisms</div>
+        <div class="small">Same Params as Settings → NAP → Driving Mannerisms.</div>
+        <div class="row"><div><b>Acceleration</b><div class="small">1 lazy → 10 quicker</div></div></div>
+        <div id="accel" class="follow accel"></div>
+        <div class="row"><div><b>Adaptive Accel</b></div><button id="adaptive_accel" class="switch" onclick="toggle('adaptive_accel')"><i></i></button></div>
+        <div class="row"><div><b>Follow Distance</b></div></div>
+        <div id="follow" class="follow"></div>
+        <div class="row"><div><b>Soft Lateral Handoff</b></div><button id="driver_lat_handoff" class="switch" onclick="toggle('driver_lat_handoff')"><i></i></button></div>
+        <div class="row"><div><b>One-Pedal Long</b></div><button id="one_pedal_long" class="switch" onclick="toggle('one_pedal_long')"><i></i></button></div>
+      </div>
+      <div class="card">
+        <div class="label">Map Speed</div>
+        <div class="row"><div><b>Map Speed (MAX)</b></div></div>
+        <div id="map_speed_mode" class="choice-row"></div>
+        <div class="row"><div><b>Offset</b></div></div>
+        <div id="map_speed_offset_mph" class="choice-row"></div>
+        <div class="row"><div><b>Lookahead</b></div></div>
+        <div id="map_speed_lookahead" class="choice-row"></div>
+      </div>
+      <div class="card">
+        <div class="label">Stock openpilot</div>
+        <div class="row"><div><b>Driving Personality</b></div></div>
+        <div id="personality" class="choice-row"></div>
+        <div class="row"><div><b>Experimental Mode</b></div><button id="experimental" class="switch" onclick="toggle('experimental')"><i></i></button></div>
+      </div>
+      <div class="card">
+        <div class="label">DM</div>
+        <div class="row"><div><b>SL</b></div><button id="sl" class="switch" onclick="toggle('sl')"><i></i></button></div>
+        <div class="row"><div><b>FAI</b></div><button id="fai" class="switch" onclick="toggle('fai')"><i></i></button></div>
+        <div class="small">Mutually exclusive. Same Params as the triple-tap NAP items.</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="tab-bms" style="display:none">
+    <div class="card" style="margin-bottom:12px">
+      <div class="label">Powertrain output</div>
+      <div style="display:flex;justify-content:space-between;align-items:flex-end">
+        <div style="font-size:42px;font-weight:800;color:var(--a);line-height:1"><span id="bms-kw">0.0</span> <span style="font-size:16px;color:var(--m)">kW</span></div>
+        <div style="text-align:right">
+          <div style="font-size:16px;font-weight:700"><span id="bms-pack-v">0.0</span> V</div>
+          <div style="font-size:16px;font-weight:700;color:var(--m)"><span id="bms-pack-i">0.0</span> A</div>
+        </div>
+      </div>
+      <div class="power-hud">
+        <div class="power-labels">
+          <span id="txt-max-regen" style="color:var(--g)">-0 kW</span>
+          <span>0 kW</span>
+          <span id="txt-max-dis" style="color:#ff5d67">+0 kW</span>
+        </div>
+        <div class="power-bar-container">
+          <div class="power-side left"><div id="bar-regen-lim" class="lim-bar"></div><div id="bar-regen-act" class="act-bar"></div></div>
+          <div class="power-center-mark"></div>
+          <div class="power-side right"><div id="bar-dis-lim" class="lim-bar"></div><div id="bar-dis-act" class="act-bar"></div></div>
+        </div>
+      </div>
+    </div>
+    <div class="grid-layout">
+      <div class="card">
+        <div class="label">Battery health</div>
+        <div class="kv">
+          <span>Raw BMS SOC</span><b id="bms-soc">0.0 %</b>
+          <span>Rated range</span><b id="bms-range">0 mi</b>
+          <span>Nominal full</span><b id="bms-nom-full">0.0 kWh</b>
+          <span>Nom. remain</span><b id="bms-nom-rem">0.0 kWh</b>
+          <span>Usable / dash SOC</span><b id="bms-display-soc">0.0 %</b>
+        </div>
+      </div>
+      <div class="card">
+        <div class="label">Thermal &amp; balance</div>
+        <div class="kv">
+          <span>Min temp</span><b id="bms-min-t">0.0 °F</b>
+          <span>Max temp</span><b id="bms-max-t">0.0 °F</b>
+          <span>Imbalance</span><b id="bms-delta-v">0 mV</b>
+        </div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <div class="label">96-brick cell voltages</div>
+      <div id="brick-grid" style="display:grid;grid-template-columns:repeat(16,1fr);gap:4px;margin-top:12px"></div>
+    </div>
+  </div>
+
+  <div id="tab-video" style="display:none">
+    <div class="vid-container">
+      <video id="player" playsinline></video>
+      <div id="hud-overlay" class="hud-overlay">
+        <div class="hud-top">
+          <div id="hud-left-arrow" class="turn-arrow">◀</div>
+          <div class="hud-box" style="color:var(--a)">LEAD: <span id="hud-lead">--</span> m</div>
+          <div id="hud-right-arrow" class="turn-arrow">▶</div>
+        </div>
+        <div class="hud-bot">
+          <div class="hud-box" style="font-size:22px"><span id="hud-speed">0</span> MPH</div>
+          <div class="hud-box">STR <span id="hud-steer">0</span>°</div>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:15px">
+      <select id="cam-select" class="cam-drop" onchange="if(currentRoute)playVid(currentRoute,currentSeg,$('player').currentTime)" style="margin:0;width:auto">
+        <option value="qcamera">Road (fast)</option>
+        <option value="fcamera">Road (high-res)</option>
+        <option value="dcamera">Driver cam</option>
+      </select>
+      <button class="btn-ui" onclick="toggleHud()">Toggle HUD</button>
+      <button class="btn-ui" onclick="exportWithHud()" id="export-btn" style="display:none;background:var(--g);color:#000">Export w/ HUD</button>
+    </div>
+    <div class="timeline">
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--m);margin-bottom:8px">
+        <span id="timeline-title">Select a drive</span>
+        <span id="timeline-time">00:00 / 00:00</span>
+      </div>
+      <input id="timeline-range" type="range" min="0" max="0" step="0.1" value="0" oninput="seekTimeline(this.value)">
+      <div id="engagement-track" class="timeline-track"></div>
+      <div class="note">Export is on-demand (ffmpeg). Leave this tab closed while driving if you want the lightest CPU.</div>
+    </div>
+    <div id="routes-list"><div class="label" style="text-align:center">Loading logs…</div></div>
+  </div>
+</div>
+<div id="toast" class="toast"></div>
+<script>
+const $=id=>document.getElementById(id);
+let S={settings:{}};
+let VIS={speed:0,speedTarget:0,steer:0,steerTarget:0};
+function toast(text,bad){const el=$('toast');el.textContent=text;el.style.borderColor=bad?'#ff5d67':'#56b6ff66';el.classList.add('on');setTimeout(()=>el.classList.remove('on'),1600)}
+function animateTelemetry(){
+  VIS.speed+=(VIS.speedTarget-VIS.speed)*.16;
+  VIS.steer+=(VIS.steerTarget-VIS.steer)*.18;
+  const sp=$('speed-val'),st=$('steer-val');
+  if(sp)sp.textContent=Math.round(VIS.speed);
+  if(st)st.textContent=Math.round(VIS.steer)+'°';
+  requestAnimationFrame(animateTelemetry);
+}
+function switchTab(t){
+  ['drive','settings','bms','video'].forEach(name=>{
+    const page=$('tab-'+name),btn=$('tabbtn-'+name);
+    if(page)page.style.display=name===t?'block':'none';
+    if(btn)btn.classList.toggle('active',name===t);
+  });
+  if(t==='video')loadRoutes();
+}
+function fillButtons(id,values,labels,name){
+  const el=$(id);if(!el)return;
+  el.innerHTML=values.map((v,i)=>`<button data-val="${v}" onclick="setv('${name}',${v})">${labels[i]}</button>`).join('');
+}
+function markButtons(id,value){
+  const root=$(id);if(!root)return;
+  root.querySelectorAll('button').forEach(b=>b.classList.toggle('active',+b.dataset.val===+value));
+}
+function sw(id,v){const el=$(id);if(el)el.classList.toggle('on',!!v)}
+function lb(id,l){
+  if(!l||!l.status){$(id).innerHTML='<span>status</span><b>none</b>';return}
+  const rows=[['dRel','m'],['yRel','m'],['vRel','m/s'],['vLead','m/s'],['aLeadK','m/s²']];
+  $(id).innerHTML=rows.map(x=>`<span>${x[0]}</span><b>${typeof l[x[0]]==='number'?l[x[0]].toFixed(2):(l[x[0]]??'—')} ${x[1]}</b>`).join('');
+}
+function proj(lat,dist,z=0){
+  const d=Math.max(0,Number(dist||0));
+  const t=16/(d+16);
+  return {x:480+(Number(lat||0)*128*t),y:540-(374*(1-t))-(Number(z||0)*78*t),s:Math.max(.42,Math.min(1.55,30/(d+10)))};
+}
+function projStr(lat,dist,z=0){const p=proj(lat,dist,z);return `${p.x.toFixed(1)},${p.y.toFixed(1)}`}
+function renderSettings(q){
+  markButtons('accel',q.accel??5);
+  markButtons('follow',q.follow_distance??4);
+  markButtons('map_speed_mode',q.map_speed_mode??0);
+  markButtons('map_speed_offset_mph',q.map_speed_offset_mph??0);
+  markButtons('map_speed_lookahead',q.map_speed_lookahead??2);
+  markButtons('personality',q.personality??1);
+  ['adaptive_accel','driver_lat_handoff','one_pedal_long','experimental','sl','fai']
+    .forEach(k=>sw(k,q[k]));
+}
+function renderBMS(b){
+  if(!b)return;
+  const pv=b.pack_v||0,pi=b.pack_i||0,pkw=-(pv*pi)/1000;
+  const set=(id,v)=>{const el=$(id);if(el)el.textContent=v};
+  set('bms-pack-v',pv.toFixed(1));set('bms-pack-i',pi.toFixed(1));
+  const elKw=$('bms-kw');if(elKw){elKw.textContent=Math.abs(pkw).toFixed(1);elKw.style.color=pkw<0?'var(--g)':'#ff5d67'}
+  const maxD=b.max_discharge||0,maxR=b.max_regen||0;
+  set('txt-max-dis','+'+maxD.toFixed(0)+' kW');set('txt-max-regen','-'+maxR.toFixed(0)+' kW');
+  const boundR=Math.max(60,maxR),boundD=Math.max(160,maxD);
+  const barLimR=$('bar-regen-lim'),barLimD=$('bar-dis-lim');
+  if(barLimR)barLimR.style.width=Math.min(100,(maxR/boundR)*100)+'%';
+  if(barLimD)barLimD.style.width=Math.min(100,(maxD/boundD)*100)+'%';
+  const actR=$('bar-regen-act'),actD=$('bar-dis-act');
+  if(actR&&actD){
+    if(pkw<0){actR.style.width=Math.min(100,(Math.abs(pkw)/boundR)*100)+'%';actD.style.width='0%'}
+    else{actD.style.width=Math.min(100,(pkw/boundD)*100)+'%';actR.style.width='0%'}
+  }
+  set('bms-soc',(b.ui_soc||0).toFixed(1)+' %');
+  set('bms-range',(b.rated_range||0)+' mi');
+  set('bms-nom-full',(b.nom_full||0).toFixed(1)+' kWh');
+  set('bms-nom-rem',(b.nom_rem||0).toFixed(1)+' kWh');
+  set('bms-display-soc',(b.display_soc||0).toFixed(1)+' %');
+  const ctof=v=>v*9/5+32;
+  set('bms-min-t',b.min_t!=null?ctof(b.min_t).toFixed(1)+' °F':'--');
+  set('bms-max-t',b.max_t!=null?ctof(b.max_t).toFixed(1)+' °F':'--');
+  const cells=(b.bricks||[]).map(Number).filter(v=>v>2000&&v<5000);
+  const avg=cells.length?cells.reduce((a,v)=>a+v,0)/cells.length:0;
+  set('bms-delta-v',cells.length?(Math.max(...cells)-Math.min(...cells)).toFixed(0)+' mV':'--');
+  const grid=$('brick-grid');
+  if(grid){
+    grid.innerHTML=(b.bricks||Array(96).fill(0)).map(v=>{
+      let bg='#1a222e';
+      if(v>2000){const diff=v-avg;bg=diff>10?'#56b6ff':diff<-10?'#ff5d67':'var(--g)'}
+      return `<div class="brick" style="background:${bg}">${v>2000?(v/1000).toFixed(2):'--'}</div>`;
+    }).join('');
+  }
+}
+function render(s){
+  try{
+    S=s;
+    const drive=s.drive||{},c=s.car||{},pl=s.plan||{},l=s.lead1||{},q=s.settings||{};
+    const status=$('status');
+    if(status){status.textContent=drive.active?'ENGAGED':drive.enabled?'READY':'STANDBY';status.style.color=drive.active?'var(--g)':'var(--m)'}
+    const cpu=$('cpu-temp');if(cpu)cpu.textContent=Math.round((s.health&&s.health.temp)||0);
+    renderSettings(q);
+    VIS.speedTarget=(+c.vEgo||0)*2.23694;
+    VIS.steerTarget=Number(c.steer||0);
+    const maxMph=(+c.vCruise||0)*0.621371;
+    const elMax=$('max-val');if(elMax)elMax.textContent=maxMph>5?Math.round(maxMph):'--';
+    $('arr-l').classList.toggle('active',!!c.leftBlinker);
+    $('arr-r').classList.toggle('active',!!c.rightBlinker);
+    $('pedal-brk').classList.toggle('active',!!c.brakePressed);
+    $('pedal-gas').classList.toggle('active',!!c.gasPressed);
+    $('brake-state').textContent=c.brakePressed?'ON':'OFF';
+    $('gas-state').textContent=c.gasPressed?'ON':'OFF';
+    $('engage-state').textContent=drive.active?'ACTIVE':'OFF';
+    $('lead-state').textContent=l.status?(Number(l.dRel||0).toFixed(1)+' m'):'none';
+    lb('l1',l);
+    renderBMS(s.bms);
+    let rd='';
+    (pl.edges||[]).forEach(edge=>{
+      if(edge.pts&&edge.pts.length>1){
+        const d='M '+edge.pts.map(pt=>projStr(pt[1],pt[0])).join(' L ');
+        const opacity=Math.max(.18,Math.min(.7,1/(1+Number(edge.std||1))));
+        rd+=`<path class="scene-edge" d="${d}" stroke-width="2" opacity="${opacity.toFixed(2)}"/>`;
+      }
+    });
+    (pl.lanes||[]).forEach(lane=>{
+      if(lane.pts&&lane.pts.length>1){
+        const isEgo=lane.idx===1||lane.idx===2;
+        const opacity=isEgo?Math.max(.38,Number(lane.prob||0)):Math.max(.12,Number(lane.prob||0)*.5);
+        const d='M '+lane.pts.map(pt=>projStr(pt[1],pt[0])).join(' L ');
+        rd+=`<path class="scene-lane" d="${d}" stroke-width="${isEgo?4:2}" opacity="${Math.min(1,opacity).toFixed(2)}"/>`;
+      }
+    });
+    if(pl.ego&&pl.ego.length>1){
+      const left=[],right=[],center=[];
+      pl.ego.forEach(pt=>{
+        const distance=Number(pt[0]||0),lateral=Number(pt[1]||0);
+        left.push(projStr(lateral+1.75,distance));
+        right.unshift(projStr(lateral-1.75,distance));
+        center.push(projStr(lateral,distance));
+      });
+      const fill=drive.active?'url(#nap-plan-green)':'url(#nap-plan-blue)';
+      const color=drive.active?'#34c759':'#56b6ff';
+      rd+=`<path d="M ${left.join(' L ')} L ${right.join(' L ')} Z" fill="${fill}"/>`;
+      rd+=`<path class="scene-plan-center" d="M ${center.join(' L ')}" stroke="${color}" stroke-width="5" opacity=".9"/>`;
+    }
+    const rGrp=$('road-grp');if(rGrp)rGrp.innerHTML=rd;
+    let targetHtml='';
+    (pl.leads||[]).slice().sort((a,b)=>Number(b.x||0)-Number(a.x||0)).forEach((target,index)=>{
+      const distance=Number(target.x||0),probability=Number(target.prob||0);
+      if(distance<=1||probability<=.1||index>3)return;
+      const p=proj(Number(target.y||0),distance,0);
+      const targetSpeed=Math.max(0,Number(target.v||0)*2.23694);
+      const side=Math.abs(Number(target.y||0))<1.8?'AHEAD':Number(target.y||0)>0?'LEFT':'RIGHT';
+      const color=distance<15?'#ff4d5e':distance<30?'#ffb84d':'#56b6ff';
+      targetHtml+=`<g class="scene-lead" transform="translate(${p.x.toFixed(1)} ${p.y.toFixed(1)}) scale(${p.s.toFixed(2)})">
+        <path d="M-32-13 L-24-35 Q-18-47 0-48 Q18-47 24-35 L32-13 L32 5 Q32 13 23 13 L-23 13 Q-32 13-32 5Z" fill="#26394c" stroke="${color}" stroke-width="2"/>
+        <text class="scene-lead-label" x="0" y="-62">${distance.toFixed(0)} m</text>
+        <text class="scene-lead-sub" x="0" y="-49">${side} · ${targetSpeed.toFixed(0)} mph</text>
+      </g>`;
+    });
+    const tGrp=$('track-grp');if(tGrp)tGrp.innerHTML=targetHtml;
+    const brakeColor=c.brakePressed?'#ff3348':'#6a141b';
+    if($('scene-brake-l'))$('scene-brake-l').setAttribute('fill',brakeColor);
+    if($('scene-brake-r'))$('scene-brake-r').setAttribute('fill',brakeColor);
+    if($('scene-turn-l'))$('scene-turn-l').setAttribute('fill',c.leftBlinker?'#ffb020':'#493b19');
+    if($('scene-turn-r'))$('scene-turn-r').setAttribute('fill',c.rightBlinker?'#ffb020':'#493b19');
+  }catch(e){
+    const el=$('status');if(el){el.textContent='UI ERROR';el.style.color='#ff5d67'}
+  }
+}
+async function get(){
+  try{
+    const r=await fetch('/api/state',{cache:'no-store'});
+    if(!r.ok)throw Error();
+    render(await r.json());
+  }catch(e){
+    const el=$('status');if(el){el.textContent='Disconnected';el.style.color='#ff5d67'}
+  }
+}
+async function setv(name,value){
+  try{
+    const r=await fetch('/api/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,value})});
+    const d=await r.json();
+    if(!r.ok)throw Error(d.error||('HTTP '+r.status));
+    render(d);
+    toast('Saved '+name);
+  }catch(e){toast(String(e.message||e),true)}
+}
+function toggle(name){setv(name,!(S.settings&&S.settings[name]))}
+
+let routesLoaded=false,currentRoute=null,currentSeg=null,hudActive=false,logData=[];
+function toggleHud(){hudActive=!hudActive;$('hud-overlay').style.display=hudActive?'flex':'none'}
+async function loadRoutes(){
+  if(routesLoaded)return;
+  try{
+    const r=await fetch('/api/routes').then(x=>x.json());
+    let h=r.length===0?"<div class='label'>No drives found.</div>":'';
+    r.forEach(rt=>{
+      const routeStr=rt.name.includes('|')?rt.name.split('|')[1]:rt.name;
+      const dateMatch=routeStr.match(/(\d{4}-\d{2}-\d{2})--(\d{2}-\d{2}-\d{2})/);
+      const readable=dateMatch?`${dateMatch[1]} at ${dateMatch[2].replace(/-/g,':')}`:routeStr;
+      const btns=rt.segs.map(s=>`<button class="seg-btn" onclick="playVid('${rt.name}',${s})">Seg ${s}</button>`).join('');
+      h+=`<div class="route-item"><b>${readable}</b><div class="segs-grid">${btns}</div></div>`;
+    });
+    $('routes-list').innerHTML=h;routesLoaded=true;
+  }catch(e){$('routes-list').innerHTML="<div class='label'>Failed to load logs.</div>"}
+}
+async function fetchLogData(route,seg){
+  logData=[];
+  try{
+    const j=await fetch(`/api/log/${encodeURIComponent(route+'--'+seg)}`).then(x=>x.json());
+    if(j.data&&j.data.length)logData=j.data;
+  }catch(e){}
+}
+function playVid(route,seg,preserveTime=null){
+  document.querySelectorAll('.seg-btn').forEach(b=>b.classList.remove('playing'));
+  currentRoute=route;currentSeg=seg;
+  const cam=$('cam-select').value,vid=$('player'),oldTime=preserveTime===null?0:preserveTime;
+  vid.src=`/stream/${encodeURIComponent(route+'--'+seg)}?cam=${cam}`;vid.load();
+  vid.addEventListener('loadedmetadata',function restore(){
+    vid.removeEventListener('loadedmetadata',restore);
+    $('timeline-range').max=(isFinite(vid.duration)?vid.duration:60).toFixed(1);
+    if(oldTime>0)vid.currentTime=Math.min(oldTime,Math.max(0,vid.duration-0.1));
+    vid.play().catch(()=>{});
+  });
+  $('export-btn').style.display='inline-block';
+  $('timeline-title').textContent=`${route} — Seg ${seg}`;
+  fetchLogData(route,seg);
+}
+async function exportWithHud(){
+  if(!currentRoute)return;
+  const btn=$('export-btn'),cam=$('cam-select').value;
+  btn.disabled=true;btn.textContent='Exporting…';
+  try{
+    const r=await fetch(`/export/${encodeURIComponent(currentRoute+'--'+currentSeg)}?cam=${cam}`);
+    if(!r.ok)throw Error('Export failed');
+    const blob=await r.blob();
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');a.href=url;a.download=`NAP_Clip_${currentRoute}_Seg${currentSeg}.mp4`;
+    document.body.appendChild(a);a.click();a.remove();
+  }catch(e){toast('Export failed',true)}
+  finally{btn.disabled=false;btn.textContent='Export w/ HUD'}
+}
+function fmtTime(t){t=Math.max(0,t||0);return `${String(Math.floor(t/60)).padStart(2,'0')}:${String(Math.floor(t%60)).padStart(2,'0')}`}
+function seekTimeline(v){if($('player').readyState>=1)$('player').currentTime=+v}
+$('player').addEventListener('timeupdate',()=>{
+  const t=$('player').currentTime||0;
+  $('timeline-range').value=t;
+  $('timeline-time').textContent=`${fmtTime(t)} / ${fmtTime($('player').duration)}`;
+  if(!hudActive||!logData.length)return;
+  const idx=Math.floor(t*10);
+  if(idx>=0&&idx<logData.length){
+    const f=logData[idx];
+    $('hud-speed').textContent=Number(f[0]||0).toFixed(0);
+    $('hud-steer').textContent=Number(f[1]||0).toFixed(1);
+    $('hud-lead').textContent=f[4]>0?Number(f[4]).toFixed(1):'--';
+    $('hud-left-arrow').classList.toggle('active',f[5]===1);
+    $('hud-right-arrow').classList.toggle('active',f[6]===1);
+  }
+});
+fillButtons('accel',[1,2,3,4,5,6,7,8,9,10],['1','2','3','4','5','6','7','8','9','10'],'accel');
+fillButtons('follow',[1,2,3,4,5,6,7],['1','2','3','4','5','6','7'],'follow_distance');
+fillButtons('map_speed_mode',[0,1,2,3],['Off','Display','Cap','Follow'],'map_speed_mode');
+fillButtons('map_speed_offset_mph',[-5,0,5],['-5 mph','0','+5 mph'],'map_speed_offset_mph');
+fillButtons('map_speed_lookahead',[0,1,2,3],['Off','Late','Normal','Early'],'map_speed_lookahead');
+fillButtons('personality',[0,1,2],['Aggr','Std','Chill'],'personality');
+animateTelemetry();get();setInterval(get,150);
+</script>
+</body>
+</html>

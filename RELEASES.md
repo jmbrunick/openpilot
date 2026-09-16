@@ -1,3 +1,7 @@
+NAP companion Dash (hotspot) (2026-09-16)
+========================
+* In-tree always-on **NAP companion Dash** on the comma hotspot (`http://<device-ip>:7070`). Live cluster, Driving Mannerisms + Map Speed + stock personality / Experimental Mode + SL / FAI, Tesla BMS (read-only), dashcam viewer / opt-in export. Writes Justin's Params only — not Philip City Turns / cruise trim / nav / Funnel. Hypermile stays nap-dev-only. **Do not merge until Justin flashes this PR tip.** No panda flash.
+
 NAP revert tip-brake soft-glide (2026-09-15)
 ========================
 * **#157 reverted:** Pre-AP silent long pause brake cancel is **firm/stock again** (#156-era RELEASE). When `real_brake_pressed` drops software long, interceptor **RELEASEs immediately** to Tesla regen — no tip/hold classifier, no −0.30 start, no ~2.5 s comfort-shaped glide. On-car: the soft cancel felt worse than stock regen. **Kept:** One-Pedal Long (#170–#172) accelerator pause + SET latch, #152 A+B and #153 A3 gas-lift climb. Full cancel / FCW / AEB / hard lead unchanged. No `GAS_COMMAND` rewrite, no PostEngageCoast / climb latch / pedal-hold, no locationd or safety change.
