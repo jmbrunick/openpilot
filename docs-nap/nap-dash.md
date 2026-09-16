@@ -30,7 +30,7 @@ This is a Python-only change. **No panda flash.**
 On the comma 3X, Software → Custom Fork (or the installer URL):
 
 ```
-https://installer.comma.ai/jmbrunick/openpilot/cursor/nap-dash-release-e946
+https://installer.comma.ai/jmbrunick/openpilot/cursor/nap-dash-dev-e946
 ```
 
 Use the **PR branch name**, not `nap-release` and not `nap-dev`. Wait for the update to finish, then reboot so manager starts `nap_dash`.
