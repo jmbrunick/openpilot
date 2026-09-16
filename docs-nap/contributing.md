@@ -19,6 +19,8 @@ Simulate Look (`NAPDmSimulateLooking`) defaults **On**. False Alert Ignore (`NAP
 
 Hypermile (`NAPHypermile`) defaults **Off** (nap-dev experimental). Hill Climb (`NAPHypermileHillClimb`) defaults **On** but is inert unless Hypermile is On. See [hypermile.md](hypermile.md). Do not merge Hypermile into nap-release until Justin signs off.
 
+Companion Dash (`nap_dash`) is the in-tree hotspot page on port 7070. It writes the same Mannerisms / Map Speed Params as Settings → NAP. See [nap-dash.md](nap-dash.md). Flash the PR tip for the first road test; do not merge until Justin signs off.
+
 One-Pedal Long (`NAPOnePedalLong`) defaults **Off**. Pedal mode: gas while long is **already holding** **pauses** software long (silent long pause, lat stays, not a full disable) and **holds that pause until a stalk SET** — lift / coast / regen must not resume or climb back to MAX. SET with the foot already on the pedal still arms long; lift starts A+B/A3. Brake that pauses long RELEASEs immediately to stock regen (no tip-brake soft glide). Off = stock gas override + A+B/A3.
 
 ## Submodules

@@ -118,6 +118,8 @@ procs = [
   PythonProcess("uploader", "system.loggerd.uploader", always_run),
   PythonProcess("statsd", "system.statsd", always_run),
   PythonProcess("feedbackd", "selfdrive.ui.feedback.feedbackd", only_onroad),
+  # Companion Dash: hotspot web UI. Always on; writes Justin's NAP Params only.
+  PythonProcess("nap_dash", "selfdrive.nap_dash.server", always_run, restart_if_crash=True),
 
   # debug procs
   NativeProcess("bridge", "cereal/messaging", ["./bridge"], notcar),
