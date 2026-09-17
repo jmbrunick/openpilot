@@ -11,6 +11,8 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   FOLLOW_DISTANCE_VALUES,
   MAP_SPEED_ACCEL, MAP_SPEED_ACCEL_DEFAULT, MAP_SPEED_ACCEL_LABELS,
   NAP_DRIVER_LAT_HANDOFF,
+  NAP_FOLLOW_DISTANCE_CITY,
+  NAP_FOLLOW_DISTANCE_HWY,
   NAP_HYPERMILE,
   NAP_HYPERMILE_HILL_CLIMB,
   NAP_HYPERMILE_STEP_DOWN,
@@ -39,9 +41,17 @@ class DrivingMannerismsLayoutMici(NavScroller):
     adaptive_accel = BigParamControl("adaptive accel", NAPParamKeys.ADAPTIVE_ACCEL)
     adaptive_accel.set_value("Softer near a lead")
 
-    follow_distance = BigMultiValueParamToggle(
-      "follow distance",
-      NAPParamKeys.FOLLOW_DISTANCE,
+    self._follow_distance_city = BigMultiValueParamToggle(
+      "city follow distance",
+      NAP_FOLLOW_DISTANCE_CITY,
+      values=FOLLOW_DISTANCE_VALUES,
+      labels=FOLLOW_DISTANCE_LABELS,
+      default_value=FOLLOW_DISTANCE_DEFAULT,
+    )
+
+    self._follow_distance_hwy = BigMultiValueParamToggle(
+      "highway follow distance",
+      NAP_FOLLOW_DISTANCE_HWY,
       values=FOLLOW_DISTANCE_VALUES,
       labels=FOLLOW_DISTANCE_LABELS,
       default_value=FOLLOW_DISTANCE_DEFAULT,
@@ -67,7 +77,8 @@ class DrivingMannerismsLayoutMici(NavScroller):
     self._scroller.add_widgets([
       self._accel,
       adaptive_accel,
-      follow_distance,
+      self._follow_distance_city,
+      self._follow_distance_hwy,
       lat_handoff,
       one_pedal,
       hypermile,
@@ -77,7 +88,11 @@ class DrivingMannerismsLayoutMici(NavScroller):
 
   def show_event(self):
     super().show_event()
+    from openpilot.selfdrive.controls.lib.follow_distance import migrate_follow_distance_params
+    migrate_follow_distance_params(self._params)
     self._accel.refresh()
+    self._follow_distance_city._load_value()
+    self._follow_distance_hwy._load_value()
 
 
 def open_driving_mannerisms_menu(page: DrivingMannerismsLayoutMici | None = None) -> DrivingMannerismsLayoutMici:

@@ -75,10 +75,14 @@ class _CapturingPubMaster:
 
 
 class _MutablePlannerParams:
-  def __init__(self, nap_follow_dist, adaptive_accel=False, map_speed_accel=5):
+  def __init__(self, nap_follow_dist, adaptive_accel=False, map_speed_accel=5,
+               city=None, hwy=None):
     self.nap_follow_dist = nap_follow_dist
     self.adaptive_accel = adaptive_accel
     self.map_speed_accel = map_speed_accel
+    self.city = city if city is not None else nap_follow_dist
+    self.hwy = hwy if hwy is not None else nap_follow_dist
+    self.migrated = True
 
   def __bool__(self):
     return False
@@ -87,6 +91,10 @@ class _MutablePlannerParams:
     assert return_default
     if key == "NAPFollowDistance":
       return self.nap_follow_dist
+    if key == "NAPFollowDistanceCity":
+      return self.city
+    if key == "NAPFollowDistanceHwy":
+      return self.hwy
     if key == "NAPMapSpeedAccel":
       return self.map_speed_accel
     if key == "NAPMapSpeedMode":
@@ -104,7 +112,23 @@ class _MutablePlannerParams:
       return False
     if key == "NAPHypermileHillClimb":
       return True
+    if key == "NAPFollowDistanceSplitMigrated":
+      return self.migrated
     raise AssertionError(key)
+
+  def put(self, key, value):
+    if key == "NAPFollowDistance":
+      self.nap_follow_dist = value
+    elif key == "NAPFollowDistanceCity":
+      self.city = value
+    elif key == "NAPFollowDistanceHwy":
+      self.hwy = value
+
+  def put_bool(self, key, value):
+    if key == "NAPFollowDistanceSplitMigrated":
+      self.migrated = bool(value)
+    elif key == "NAPAdaptiveAccel":
+      self.adaptive_accel = bool(value)
 
 
 class _ConstantAccelerationMpc:
@@ -623,13 +647,20 @@ def test_planner_eases_for_slower_lead_before_mpc_and_lead_can_brake_harder():
   lead.vLead = v_lead
   for _ in range(16):
     planner.update(inputs)
-  # 9.8 mph close is mild: light regen, not the 0.55 bite. MPC −2 still wins.
+  # 9.8 mph close is mild: light regen, not the 0.55 bite.
   assert planner.output_a_target == pytest.approx(-LEAD_APPROACH_MILD_A_MS2, abs=0.08)
   assert planner.output_a_target > -LEAD_APPROACH_A_MS2 + 0.15
 
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
   planner.update(inputs)
+  # Non-rapid MPC dump is soft-limited to MILD (was the −2.5 surge).
+  assert planner.output_a_target == pytest.approx(-LEAD_APPROACH_MILD_A_MS2, abs=0.08)
+
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
+  planner.mpc.crash_cnt = 3
+  planner.update(inputs)
   assert planner.output_a_target == pytest.approx(-2.0, abs=0.08)
+  planner.mpc.crash_cnt = 0
 
   # Farther closing lead (old 140 m / short need stayed off): now eases.
   lead.dRel = 160.0
@@ -651,7 +682,7 @@ def test_planner_eases_for_slower_lead_before_mpc_and_lead_can_brake_harder():
 
 
 def test_planner_caps_lead_close_accel_at_min_accel_and_keeps_hard_brake():
-  """Accel 1 catch-up is a nudge. MPC danger / −2.0 brake is unchanged."""
+  """Accel 1 catch-up uses Mannerisms Accel. Rapid / FCW still own −2.0."""
   v_ego = 25.0
   v_lead = 25.0
   t_follow = get_T_FOLLOW(nap_follow_dist=4)
@@ -669,27 +700,48 @@ def test_planner_caps_lead_close_accel_at_min_accel_and_keeps_hard_brake():
   lead.status = True
   lead.dRel = d_rel
   lead.vLead = v_lead
+  lead.modelProb = 1.0
+  lead.radar = True
 
   for _ in range(32):
     planner.update(inputs)
 
   assert planner.output_a_target == pytest.approx(LEAD_CLOSE_A_MIN_MS2, abs=0.06)
-  assert planner.output_a_target < 0.30
-  assert planner.output_a_target < longitudinal_planner.get_max_accel(v_ego) / 2.0
+  assert planner.output_a_target < longitudinal_planner.get_max_accel(v_ego)
 
+  # Same-speed / mild: MPC −2.0 is soft-limited to MILD.
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
+  planner.update(inputs)
+  assert planner.output_a_target == pytest.approx(-LEAD_APPROACH_MILD_A_MS2, abs=0.08)
+
+  # Rapid close: MPC danger still wins.
+  lead.vLead = v_ego - 8.0
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
   planner.update(inputs)
   assert planner.output_a_target == pytest.approx(-2.0, abs=0.08)
+  lead.vLead = v_lead
 
-  # Flickering far track: do not cap MAX-rise / open-road climb.
+  # Vision-only far flicker: do not cap MAX-rise / open-road climb.
   lead.dRel = 160.0
+  lead.modelProb = 0.2
+  lead.radar = False
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=1.5)
   cruise_limit = longitudinal_planner.get_max_accel(v_ego)
   planner.prev_accel_clip = [-1.2, cruise_limit]
+  planner._lead_close_hold_d = None
+  planner._lead_close_hold_v = None
+  planner._lead_close_a_cap = None
   for _ in range(8):
     planner.update(inputs)
-  assert planner.output_a_target > LEAD_CLOSE_A_MAX_MS2
   assert planner.output_a_target == pytest.approx(cruise_limit, abs=0.08)
+
+  # Far Bosch radar lead is capped (used to punch cruise at 160 m).
+  lead.modelProb = 1.0
+  lead.radar = True
+  planner.prev_accel_clip = [-1.2, cruise_limit]
+  for _ in range(8):
+    planner.update(inputs)
+  assert planner.output_a_target == pytest.approx(LEAD_CLOSE_A_MIN_MS2, abs=0.08)
 
 
 def test_planner_lead_close_accel_scales_with_accel_personality():
@@ -715,7 +767,8 @@ def test_planner_lead_close_accel_scales_with_accel_personality():
 
   a1 = _run(1)
   a10 = _run(10)
+  cruise_limit = longitudinal_planner.get_max_accel(v_ego)
   assert a1 == pytest.approx(LEAD_CLOSE_A_MIN_MS2, abs=0.06)
-  assert a10 == pytest.approx(LEAD_CLOSE_A_MAX_MS2, abs=0.06)
+  assert a10 == pytest.approx(min(LEAD_CLOSE_A_MAX_MS2, cruise_limit), abs=0.06)
   assert a1 < a10
   assert lead_close_accel_ms2(1) < lead_close_accel_ms2(10)

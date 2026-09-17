@@ -50,6 +50,8 @@ def test_focused_tests_and_mutations_are_pinned():
   focused_job = indented_block(workflow, "  tesla_preap_longitudinal_regression:")
   required_commands = (
     "selfdrive/controls/tests/test_following_distance.py",
+    "selfdrive/controls/tests/test_follow_distance.py",
+    "selfdrive/controls/tests/test_lead_approach.py",
     "selfdrive/controls/tests/test_tesla_preap_following.py",
     "selfdrive/controls/tests/test_tesla_preap_longcontrol.py",
     "selfdrive/controls/tests/test_tesla_preap_gas_lift_handoff.py",

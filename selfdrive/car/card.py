@@ -501,7 +501,7 @@ class Car:
     )
     routed = commit or self._follow_gesture.is_pending or undo is not None
     if commit and closer is not None and (time.monotonic() - self._follow_stalk_mono) >= 0.25:
-      persist_follow_distance(self.params, bool(closer))
+      persist_follow_distance(self.params, bool(closer), v_ego=getattr(CS, "vEgo", None))
       self._follow_stalk_mono = time.monotonic()
     if undo is not None and soft_long:
       self._write_preap_pedal_speed(CS, undo)
