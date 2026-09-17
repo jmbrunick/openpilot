@@ -351,9 +351,11 @@ class LongitudinalPlanner:
     # +110 m is road distance to a sign and must not be used here. Rapid
     # 0.55 needs consecutive high v_rel frames (a single closing-rate blip
     # stays on mild). A far nibble must not steal large-gap catch-up +a;
-    # near-gap / real-close eases off throttle. Non-rapid MPC −a is floored
-    # at MILD so min(MPC, overlay) cannot dump ~−2.5; FCW / rapid / a real
-    # stop still own danger. Map MAX cannot cancel this.
+    # near-gap / real-close eases off throttle. MPC −a is floored at MILD
+    # only as anti-chatter (gap opening / small |v_rel|, lead not braking)
+    # so min(MPC, overlay) cannot dump ~−2.5 on noise; closing or a slowing
+    # lead keeps full match-speed −a. FCW / rapid / a real stop still own
+    # danger. Map MAX cannot cancel this.
     if self._is_preap:
       lead = sm['radarState'].leadOne
       allow_rapid = False
@@ -387,17 +389,22 @@ class LongitudinalPlanner:
       if lead.status:
         lead_v_hold = float(lead.vLead)
         lead_d_hold = float(lead.dRel)
+        lead_a_k = float(lead.aLeadK)
       elif self._lead_close_hold_d is not None:
         lead_v_hold = self._lead_close_hold_v
         lead_d_hold = self._lead_close_hold_d
+        lead_a_k = None
       else:
         lead_v_hold = None
         lead_d_hold = None
+        lead_a_k = None
       # Floor MPC before overlay so a confirmed rapid 0.55 path is not
-      # also clamped. One-frame v_rel spikes stay at MILD.
+      # also clamped. One-frame v_rel spikes stay at MILD unless we are
+      # already closing or the lead is braking (match-speed −a).
       output_a_target = soft_limit_mpc_a_target(
         output_a_target, v_ego, lead_v_hold, lead_d_hold,
         fcw=self.fcw, crash_cnt=self.mpc.crash_cnt, allow_rapid=allow_rapid,
+        a_lead=lead_a_k,
       )
       a_lead = slew_lead_approach_a(a_lead, self._lead_approach_a)
       self._lead_approach_a = a_lead
