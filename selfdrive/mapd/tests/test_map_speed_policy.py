@@ -1306,7 +1306,8 @@ def test_map_speed_submenu_wires_params():
   manner_mici = (root / "selfdrive/ui/mici/layouts/settings/driving_mannerisms.py").read_text()
   assert "MAP_SPEED_ACCEL_DESCRIPTION" in manner
   assert "ADAPTIVE_ACCEL_DESCRIPTION" in manner
-  assert "FOLLOW_DISTANCE_DESCRIPTION" in manner
+  assert "FOLLOW_DISTANCE_CITY_DESCRIPTION" in manner
+  assert "FOLLOW_DISTANCE_HWY_DESCRIPTION" in manner
   assert "MAP_SPEED_ACCEL_DESCRIPTION" in content
   assert "1 lazy" in content
   assert "same Accel 1–10 gradient" in content

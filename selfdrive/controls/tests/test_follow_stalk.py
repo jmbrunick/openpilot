@@ -357,7 +357,7 @@ def test_card_and_hud_wire_stock_follow_only():
   assert "NAPFollowDistance" in helper or "PARAM_FOLLOW" in helper
   assert "NAPHypermile" not in helper
   assert "PARAM_HYPERMILE" not in helper
-  assert "FOLLOW_DISTANCE_DESCRIPTION" in manner
+  assert "FOLLOW_DISTANCE_DESCRIPTION" in content
   assert "steps the active 1–7" in content
   assert "No lead:" in content and "MAX" in content
   assert "1 mph" in helper or "tip" in helper
