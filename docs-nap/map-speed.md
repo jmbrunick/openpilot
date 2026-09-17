@@ -144,7 +144,7 @@ When the upcoming drop is inside that window, MAX interpolates from the current 
 | **5** | 1.00 | **0.80 m/s²** | **0.30 m/s²** | climb, catch-up, *and* all map braking |
 | 10 | 2.00 | **1.60 m/s²** | **0.50 m/s²** | climb (quickest, clamped); catch-up still capped |
 
-MAX-rise `a = clamp(0.30, 1.60, a_lookahead × factor)`. Lead-close `a = clamp(0.20, 0.50, 0.30 × factor)` inside 140 m. Changing Accel 1 vs 10 must not change brake feel or MPC danger. A higher limit ahead may still be published as `nextSpeedLimit`; Cap/Follow ignore it until `speedLimit` itself is the higher value.
+MAX-rise `a = clamp(0.30, 1.60, a_lookahead × factor)`. Lead-close `a = clamp(0.20, 0.50, 0.30 × factor)` inside 140 m. Mild / normal follow closes stay light regen (~0.22 m/s²); rapid dumps still use 0.55. Near-gap rematch +a trickles (0.08 opening / 0.12 slow). Changing Accel 1 vs 10 must not change brake feel or MPC danger. A higher limit ahead may still be published as `nextSpeedLimit`; Cap/Follow ignore it until `speedLimit` itself is the higher value.
 
 ## How to test
 

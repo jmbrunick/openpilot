@@ -1290,6 +1290,8 @@ def test_map_speed_submenu_wires_params():
   assert "ADAPTIVE_ACCEL_DESCRIPTION" in manner
   assert "MAP_SPEED_ACCEL_DESCRIPTION" in content
   assert "1 lazy" in content
+  assert "close cap" in content
+  assert "0.20 / 0.30 / 0.50" in content
   assert "not a harder brake" in content
   assert "follow distance" in manner_mici
   assert "Adaptive Accel Limits" not in nap
@@ -1336,6 +1338,8 @@ def test_driving_mannerisms_submenu_wires_params():
   assert "stays Accel 5" in content
   assert "Lead still owns follow" in content
   assert "1 lazy" in content
+  assert "close cap" in content
+  assert "0.20 / 0.30 / 0.50" in content
   assert tici.index('"Acceleration"') < tici.index('"Adaptive Accel"')
   assert tici.index("self._accel_buttons") < tici.index("self._adaptive_accel")
   assert tici.index("self._adaptive_accel") < tici.index("self._follow_buttons")

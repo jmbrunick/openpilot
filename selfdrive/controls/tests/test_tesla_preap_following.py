@@ -14,6 +14,7 @@ from openpilot.selfdrive.controls.lib import longitudinal_planner
 from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_APPROACH_A_MS2,
   LEAD_APPROACH_MAX_START_M,
+  LEAD_APPROACH_MILD_A_MS2,
   LEAD_CLOSE_A_MAX_MS2,
   LEAD_CLOSE_A_MIN_MS2,
   LEAD_CLOSE_MAX_M,
@@ -617,7 +618,9 @@ def test_planner_eases_for_slower_lead_before_mpc_and_lead_can_brake_harder():
   lead.vLead = v_lead
   for _ in range(16):
     planner.update(inputs)
-  assert planner.output_a_target == pytest.approx(-LEAD_APPROACH_A_MS2, abs=0.08)
+  # 9.8 mph close is mild: light regen, not the 0.55 bite. MPC −2 still wins.
+  assert planner.output_a_target == pytest.approx(-LEAD_APPROACH_MILD_A_MS2, abs=0.08)
+  assert planner.output_a_target > -LEAD_APPROACH_A_MS2 + 0.15
 
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
   planner.update(inputs)
