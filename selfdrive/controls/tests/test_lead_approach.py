@@ -74,10 +74,11 @@ def test_lead_approach_keeps_early_map_brake_not_map_110m_margin():
   assert abs(LEAD_APPROACH_HEADSTART_S - 24.0) < 1e-9
   assert abs(LEAD_APPROACH_MAX_START_M - 200.0) < 1e-9
   assert abs(LEAD_APPROACH_RELIABLE_M - 140.0) < 1e-9
-  assert abs(LEAD_APPROACH_CLEAR_DV_MS - 2.5) < 1e-9
+  assert abs(LEAD_APPROACH_CLEAR_DV_MS - 1.5) < 1e-9
   assert abs(LEAD_APPROACH_MODEL_PROB_MIN - 0.50) < 1e-9
   assert LEAD_APPROACH_RELIABLE_M < LEAD_APPROACH_MAX_START_M
   assert LEAD_APPROACH_CLEAR_DV_MS > LEAD_APPROACH_DV_MS
+  assert abs(LEAD_APPROACH_CLEAR_DV_MS - LEAD_APPROACH_SOFT_LIMIT_CLOSE_MS) < 1e-9
   assert LEAD_APPROACH_A_MS2 < 0.80
   assert LEAD_APPROACH_A_MS2 < 1.0
   assert LEAD_APPROACH_A_MS2 < 2.5
@@ -520,8 +521,63 @@ def test_clear_close_allows_large_slack_still_capped():
   ) is None
 
 
+def test_steady_lead_meshes_at_city_and_hwy_follow_gap():
+  """Stable radar lock, moderate close: bleed early and mesh at the set gap.
+
+  Commanding 0 held extra speed and bit late. Overlay nibble must actually
+  regen. City vs hwy t_follow are different setpoints; both mesh. Vision
+  flicker does not early-start past need. Soft — never the 0.55 bite.
+  """
+  v_lead = 22.0
+  v_rel0 = 1.6
+  dt = 0.05
+  catchup = LEAD_CLOSE_A_MIN_MS2
+  for t_follow in (nap_t_follow(1), nap_t_follow(7)):
+    v_ego = v_lead + v_rel0
+    d_follow = t_follow * v_lead + STOP_DISTANCE
+    slack0 = 70.0
+    d_rel = d_follow + slack0
+    need = lead_approach_need_m(v_ego, v_lead, t_follow=t_follow)
+    assert slack0 > need
+    assert v_rel0 >= LEAD_APPROACH_CLEAR_DV_MS
+    a0 = lead_approach_decel_ms2(
+      v_ego, v_lead, d_rel, t_follow, model_prob=1.0, radar=True,
+    )
+    assert a0 is not None and a0 < 0.0
+    assert abs(a0) <= LEAD_APPROACH_MILD_A_MS2 + 1e-9
+    assert lead_approach_decel_ms2(
+      v_ego, v_lead, d_rel, t_follow, model_prob=1.0, radar=False,
+    ) is None
+
+    active = False
+    min_d = d_rel
+    peak_neg = 0.0
+    for _ in range(int(90.0 / dt)):
+      a_over = lead_approach_decel_ms2(
+        v_ego, v_lead, d_rel, t_follow, active=active, model_prob=1.0, radar=True,
+      )
+      active = a_over is not None
+      slack = d_rel - d_follow
+      v_rel = v_ego - v_lead
+      if a_over is None:
+        a = 0.0
+      else:
+        a = apply_lead_approach_overlay(catchup, a_over, v_rel=v_rel, slack=slack)
+      peak_neg = min(peak_neg, a)
+      v_ego = max(0.0, v_ego + a * dt)
+      d_rel -= (v_ego - v_lead) * dt
+      min_d = min(min_d, d_rel)
+      if d_rel <= d_follow + 1.0 or v_ego <= v_lead:
+        break
+    assert min_d <= d_follow + 8.0
+    assert d_rel <= d_follow + 8.0
+    assert v_ego <= v_lead + 0.8
+    assert peak_neg > -LEAD_APPROACH_A_MS2 + 0.15
+    assert peak_neg <= -0.02
+
+
 def test_nibble_overlay_does_not_steal_catchup_plus_a():
-  """Far/gentle overlay must not beat rematch +a. Real ease / MPC 0/−a still min()."""
+  """Far/gentle overlay must not beat rematch +a. Real close bleeds to mesh."""
   assert apply_lead_approach_overlay(0.20, -0.05) == pytest.approx(0.20)
   assert apply_lead_approach_overlay(0.20, -0.13) == pytest.approx(0.20)
   assert apply_lead_approach_overlay(0.20, -LEAD_APPROACH_NIBBLE_MS2) == pytest.approx(-LEAD_APPROACH_NIBBLE_MS2)
@@ -530,9 +586,9 @@ def test_nibble_overlay_does_not_steal_catchup_plus_a():
   assert apply_lead_approach_overlay(-0.30, -0.05) == pytest.approx(-0.30)
   assert apply_lead_approach_overlay(-0.10, -0.20) == pytest.approx(-0.20)
   assert apply_lead_approach_overlay(0.20, None) == pytest.approx(0.20)
-  # Large-gap rematch still keeps catch-up. A real close eases off throttle.
+  # Large-gap rematch still keeps catch-up. A real close bleeds, not hold-speed 0.
   assert apply_lead_approach_overlay(0.20, -0.08, v_rel=0.3, slack=40.0) == pytest.approx(0.20)
-  assert apply_lead_approach_overlay(0.20, -0.08, v_rel=4.0, slack=40.0) == pytest.approx(0.0)
+  assert apply_lead_approach_overlay(0.20, -0.08, v_rel=4.0, slack=40.0) == pytest.approx(-0.08)
   # Near the follow gap, a fading nibble still min()s (no Accel slam).
   assert apply_lead_approach_overlay(0.20, -0.08, v_rel=0.1, slack=3.0) == pytest.approx(-0.08)
 
