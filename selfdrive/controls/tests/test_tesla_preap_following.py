@@ -658,8 +658,9 @@ def test_planner_eases_for_slower_lead_before_mpc_and_lead_can_brake_harder():
 
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
   planner.update(inputs)
-  # Non-rapid MPC dump is soft-limited to MILD (was the −2.5 surge).
-  assert planner.output_a_target == pytest.approx(-LEAD_APPROACH_MILD_A_MS2, abs=0.08)
+  # 4.4 m/s close is under the rapid gate but must not pin −0.22 — match-speed −a.
+  assert planner.output_a_target == pytest.approx(-2.0, abs=0.08)
+  assert planner.output_a_target < -LEAD_APPROACH_MILD_A_MS2 - 0.50
 
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
   planner.mpc.crash_cnt = 3
@@ -718,6 +719,19 @@ def test_planner_caps_lead_close_accel_at_min_accel_and_keeps_hard_brake():
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
   planner.update(inputs)
   assert planner.output_a_target == pytest.approx(-LEAD_APPROACH_MILD_A_MS2, abs=0.08)
+
+  # Closing under the rapid gate, or a braking lead: full match-speed −a.
+  lead.vLead = v_ego - 1.6
+  lead.aLeadK = 0.0
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
+  planner.update(inputs)
+  assert planner.output_a_target == pytest.approx(-2.0, abs=0.08)
+  lead.vLead = v_lead
+  lead.aLeadK = -0.4
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
+  planner.update(inputs)
+  assert planner.output_a_target == pytest.approx(-2.0, abs=0.08)
+  lead.aLeadK = 0.0
 
   # Rapid close: MPC danger still wins after the 4-frame confirm.
   lead.vLead = v_ego - 8.0

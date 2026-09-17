@@ -44,8 +44,10 @@ stop at 140 m so a 160–180 m lead still got that punch. With a lead in
 Bosch range, close slack at Accel 1–10 — never hotter. Near-gap rematch
 trickles. A brief `leadOne` drop holds the last in-window lead so the
 cap cannot be bypassed. Vision-only far flicker does not cap empty-road
-climb. Non-rapid MPC −a is also floored at MILD so min(MPC, overlay)
-cannot dump ~−2.5; rapid / FCW / emergency still own danger.
+climb. Non-rapid MPC −a is floored at MILD only as anti-chatter (gap
+opening, or small |v_rel| with the lead not braking) so min(MPC, overlay)
+cannot dump ~−2.5 on radar noise. Closing / a slowing lead keeps full
+MPC match-speed −a; rapid / FCW / emergency still own danger.
 """
 from __future__ import annotations
 
@@ -88,6 +90,13 @@ LEAD_APPROACH_TTC_START_S = 20.0
 # promote that to 0.55.
 LEAD_APPROACH_RAPID_DV_MS = 6.0
 LEAD_APPROACH_RAPID_TTC_S = 8.0
+# Skip the non-rapid −MILD MPC floor when matching a slowing lead. 1.5 m/s
+# (~3.4 mph) is above overlay-enter jitter (0.55) so rematch chatter still
+# floors, and at/below the town-entry log that pinned aTarget at −0.22
+# while closing rose 1.6→4.4 m/s under the 6 m/s rapid gate.
+LEAD_APPROACH_SOFT_LIMIT_CLOSE_MS = 1.5
+# Lead clearly braking. −0.3 is a real coast/brake, not aLeadK noise at 0.
+LEAD_APPROACH_SOFT_LIMIT_ALEAD_MS2 = -0.3
 # Planner frames of high v_rel before the 0.55 path. One radar blip must
 # not fire hard regen; mild ease stays immediate. Count only in-window
 # closes (do not pre-arm from a far flicker). 4 × DT_MDL ≈ 0.20 s.
@@ -276,14 +285,21 @@ def lead_approach_rapid_gate(v_rel, prev_count, need_n=LEAD_APPROACH_RAPID_CONFI
 
 
 def soft_limit_mpc_a_target(output_a, v_ego, v_lead, d_rel, fcw=False, crash_cnt=0,
-                            allow_rapid=False):
-  """Floor non-rapid MPC −a at mild ease. Rapid / FCW / emergency still own danger.
+                            allow_rapid=False, a_lead=None):
+  """Floor chatter-shaped MPC −a at mild ease. Match-speed / danger still dump.
 
-  Overlay min(MPC, mild) cannot stop MPC commanding ~−2.5 on a 3–10 mph
-  close. Apply this to the MPC (and map) command *before* the overlay so
-  a confirmed rapid 0.55 path is not also floored. A one-frame v_rel blip
-  (`allow_rapid=False`) stays floored; four agreeing samples pass the
-  rapid gate and skip the floor.
+  Overlay min(MPC, mild) cannot stop MPC commanding ~−2.5 on radar noise
+  around a same-speed lead. Apply this to the MPC (and map) command
+  *before* the overlay so a confirmed rapid 0.55 path is not also floored.
+
+  Keep the floor only when it is anti-chatter: gap opening, or |v_rel|
+  small *and* the lead is not decelerating. Skip it when closing
+  (≳ SOFT_LIMIT_CLOSE) or aLead is clearly negative so we can match lead
+  speed — including slightly slower than the lead to settle the gap.
+  A one-frame v_rel blip below SOFT_LIMIT_CLOSE stays floored; closing
+  or aLead skip immediately so match-speed braking is not delayed.
+  Four agreeing samples pass `allow_rapid` and skip the floor. FCW /
+  crash / stop kinematics still own danger.
   """
   if output_a is None:
     return output_a
@@ -296,6 +312,11 @@ def soft_limit_mpc_a_target(output_a, v_ego, v_lead, d_rel, fcw=False, crash_cnt
     return a
   v_rel = float(v_ego) - max(0.0, float(v_lead))
   if allow_rapid and lead_approach_is_rapid(v_rel):
+    return a
+  # Closing onto the lead, or the lead is braking: full match-speed −a.
+  if v_rel >= LEAD_APPROACH_SOFT_LIMIT_CLOSE_MS:
+    return a
+  if a_lead is not None and float(a_lead) <= LEAD_APPROACH_SOFT_LIMIT_ALEAD_MS2:
     return a
   stop_slack = float(d_rel) - STOP_DISTANCE
   if v_rel > 0.0:
