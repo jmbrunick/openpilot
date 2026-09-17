@@ -1,3 +1,11 @@
+NAP companion Dash engage fix (2026-09-17)
+========================
+* **Do not merge** (stays on **nap-dash-dev** / #177). Follow-up after flash-test of #177: `nap_dash` as an always-on **required** manager process can raise `processNotRunning` (`Process Not Running` / `nap_dash`) — NO_ENTRY + SOFT_DISABLE, blocks energize/engage, not a controls mismatch. Dash is now **optional / non-critical**; bind/preimport failures keep the process alive or out of the critical set; `NAPDashEnabled` (default On) disables the process without a nap-release rollback. No carstate, cereal, panda, or engagement-Param writes at startup. **No panda flash.**
+
+NAP companion Dash (hotspot) (2026-09-16)
+========================
+* In-tree always-on **NAP companion Dash** on the comma hotspot (`http://<device-ip>:7070`). Live cluster, Driving Mannerisms + Map Speed + stock personality / Experimental Mode + SL / FAI, Tesla BMS (read-only), dashcam viewer / opt-in export. Writes Justin's Params only — not Philip City Turns / cruise trim / nav / Funnel. Hypermile stays nap-dev-only. **Do not merge until Justin flashes this PR tip.** No panda flash.
+
 NAP revert tip-brake soft-glide (2026-09-15)
 ========================
 * **#157 reverted:** Pre-AP silent long pause brake cancel is **firm/stock again** (#156-era RELEASE). When `real_brake_pressed` drops software long, interceptor **RELEASEs immediately** to Tesla regen — no tip/hold classifier, no −0.30 start, no ~2.5 s comfort-shaped glide. On-car: the soft cancel felt worse than stock regen. **Kept:** One-Pedal Long (#170–#172) accelerator pause + SET latch, #152 A+B and #153 A3 gas-lift climb. Full cancel / FCW / AEB / hard lead unchanged. No `GAS_COMMAND` rewrite, no PostEngageCoast / climb latch / pedal-hold, no locationd or safety change.

@@ -6,6 +6,7 @@ from cereal import car
 from openpilot.common.params import Params
 from openpilot.system.hardware import PC, TICI
 from openpilot.system.manager.process import PythonProcess, NativeProcess, DaemonProcess
+from openpilot.system.manager.optional_procs import nap_dash_enabled
 
 WEBCAM = os.getenv("USE_WEBCAM") is not None
 
@@ -84,6 +85,7 @@ procs = [
 
   PythonProcess("sensord", "system.sensord.sensord", only_onroad, enabled=not PC),
   PythonProcess("ui", "selfdrive.ui.ui", always_run, restart_if_crash=True),
+  PythonProcess("nap_dash", "selfdrive.nap_dash.server", nap_dash_enabled, restart_if_crash=True, optional=True),
   PythonProcess("soundd", "selfdrive.ui.soundd", only_onroad),
   PythonProcess("locationd", "selfdrive.locationd.locationd", only_onroad),
   NativeProcess("_pandad", "selfdrive/pandad", ["./pandad"], always_run, enabled=False),
