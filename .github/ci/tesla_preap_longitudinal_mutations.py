@@ -18,6 +18,10 @@ NOISE_GATE_TEST_NODE = (
   "opendbc_repo/opendbc/car/tesla/preap/tests/test_virtual_das.py::TestInnerPID::" +
   "test_sub_deadband_sign_changing_noise_does_not_accumulate_residual_authority"
 )
+INNER_DEADBAND_TEST_NODE = (
+  "opendbc_repo/opendbc/car/tesla/preap/tests/test_virtual_das.py::TestInnerPID::" +
+  "test_persistent_sub_deadband_error_earns_residual_authority"
+)
 
 
 @dataclass(frozen=True)
@@ -114,9 +118,7 @@ MUTATIONS = (
       b"    if abs(error) < PID_ERROR_DEADBAND:\n" +
       b"      error = 0.0\n"
     ),
-    test_nodes=(
-      f"{FOLLOWING_TEST_PATH}::test_max_follow_full_closed_loop_recovers_gap_with_production_fallback",
-    ),
+    test_nodes=(INNER_DEADBAND_TEST_NODE,),
   ),
   HistoricalMutation(
     name="inner-error-noise-gate-call-bypassed",
