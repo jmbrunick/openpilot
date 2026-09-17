@@ -75,9 +75,9 @@ LEAD_APPROACH_MAX_HOLD_M = 8.0
 LEAD_APPROACH_RELIABLE_M = 140.0
 LEAD_APPROACH_MODEL_PROB_MIN = 0.50  # radard association gate
 # Clearly closing: skip the need window and ease from first reliable track.
-# 2.5 m/s (~5.6 mph). 1.0 stole Accel-1 catch-up; 1.5 on a far radar lock
-# stole cruise / MAX +a (felt like long was dead). 10 mph still skips need.
-# Vision-only flicker does not skip need.
+# 2.5 m/s (~5.6 mph). 1.0 stole Accel-1 catch-up; 1.5 on a far first lock
+# stole cruise / MAX +a on first acquire (sequence-specific, then recovered).
+# 10 mph still skips need. Vision-only flicker does not skip need.
 LEAD_APPROACH_CLEAR_DV_MS = 2.5
 # Mild-close comfort ceiling. Kinematics used to hit 0.55 on a 3–10 mph
 # close right at the gap (hard let-off). Light regen / ease-off only.
@@ -380,8 +380,8 @@ def apply_lead_approach_overlay(output_a, a_lead, nibble=LEAD_APPROACH_NIBBLE_MS
 
   Near the follow gap, a nibble min()s so we mesh into lead speed at the
   set gap and release slew is not a regen→Accel punch. Far mild close
-  keeps +a — applying the nibble from 100–200 m caps cruise and feels
-  like long is dead.
+  keeps +a — first-acquire nibble from 100–200 m stole cruise +a until it
+  recovered; not a dead-long fail.
   """
   if a_lead is None:
     return float(output_a)

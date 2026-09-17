@@ -688,7 +688,7 @@ def test_planner_eases_for_slower_lead_before_mpc_and_lead_can_brake_harder():
 
 
 def test_planner_far_mild_close_keeps_cruise_plus_a():
-  """Far mild close must not pin aTarget negative (cruise / MAX still pull)."""
+  """First far mild lock must not steal cruise +a (sequence-specific, not dead long)."""
   v_ego = 25.0
   v_lead = v_ego - 1.6
   params = _MutablePlannerParams(nap_follow_dist=4, map_speed_accel=5)
@@ -704,10 +704,18 @@ def test_planner_far_mild_close_keeps_cruise_plus_a():
   lead.vLead = v_lead
   lead.modelProb = 1.0
   lead.radar = True
-  for _ in range(16):
+  planner._lead_approach_active = False
+  planner._lead_approach_a = None
+  planner.update(inputs)
+  assert planner.output_a_target >= 0.0
+  assert planner.output_a_target > 0.20
+  for _ in range(15):
     planner.update(inputs)
   assert planner.output_a_target > 0.20
   assert planner.output_a_target == pytest.approx(a_cap, abs=0.08)
+
+
+def test_planner_caps_lead_close_accel_at_min_accel_and_keeps_hard_brake():
   """Accel 1 catch-up uses Mannerisms Accel. Rapid / FCW still own −2.0."""
   v_ego = 25.0
   v_lead = 25.0
