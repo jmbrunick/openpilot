@@ -18,12 +18,14 @@ MAP_SPEED_ACCEL = list(range(1, 11))
 MAP_SPEED_ACCEL_LABELS = [str(i) for i in MAP_SPEED_ACCEL]
 MAP_SPEED_ACCEL_DEFAULT = 5
 MAP_SPEED_ACCEL_DESCRIPTION = (
-  "MAX climb / open-road feel (1 lazy → 10 quicker). Follow climb only. "
+  "MAX climb / open-road feel (1 lazy → 10 quicker). "
+  + "Coming up behind a lead uses the Accel 1–10 close cap "
+  + "(0.20 / 0.30 / 0.50 m/s²), not a full-gap punch. "
   + "Brake to a lower MAX stays Accel 5. Lead still owns follow."
 )
 ADAPTIVE_ACCEL_DESCRIPTION = (
   "Softer accel near a lead so you don't overshoot. "
-  + "Open road uses Acceleration 1–10."
+  + "Open road uses Acceleration 1–10. Coming up behind a lead uses the close cap, not a full-gap punch."
 )
 MAP_SPEED_MODE_DESCRIPTION = (
   "OSM posted limit for HUD MAX. Off: no change. Display: LIMIT sign only. "
