@@ -47,14 +47,13 @@ def clamp_follow_distance(level: int | None) -> int:
     return FOLLOW_DEFAULT
 
 
-def _get_int(params, key, default=FOLLOW_DEFAULT) -> int:
+def parse_follow_distance(level) -> int | None:
+  """1–7, or None when unset / invalid (planner then uses personality)."""
   try:
-    raw = params.get(key, return_default=True)
-  except Exception:
-    return default
-  if raw is None or raw == "":
-    return default
-  return clamp_follow_distance(raw)
+    n = int(level)
+  except (TypeError, ValueError):
+    return None
+  return n if n in NAP_FOLLOW_DISTANCE_RANGE else None
 
 
 def _get_bool(params, key) -> bool:
@@ -64,22 +63,41 @@ def _get_bool(params, key) -> bool:
     return False
 
 
-def migrate_follow_distance_params(params) -> tuple[int, int]:
+def migrate_follow_distance_params(params) -> tuple[int | None, int | None]:
   """Copy legacy NAPFollowDistance into city/hwy once, then read both.
 
-  Returns `(city, hwy)` in 1–7. Always available (not Hypermile).
+  Returns `(city, hwy)` in 1–7, or None when that band is invalid so the
+  planner can keep personality t_follow (napFollowDistance 0). Always
+  available (not Hypermile).
   """
-  legacy = _get_int(params, PARAM_FOLLOW)
+  try:
+    raw_legacy = params.get(PARAM_FOLLOW, return_default=True)
+  except Exception:
+    raw_legacy = None
+  legacy = parse_follow_distance(raw_legacy)
   if not _get_bool(params, PARAM_FOLLOW_MIGRATED):
+    seed = legacy if legacy is not None else FOLLOW_DEFAULT
     try:
-      params.put(PARAM_FOLLOW_CITY, int(legacy))
-      params.put(PARAM_FOLLOW_HWY, int(legacy))
+      params.put(PARAM_FOLLOW_CITY, int(seed))
+      params.put(PARAM_FOLLOW_HWY, int(seed))
       params.put_bool(PARAM_FOLLOW_MIGRATED, True)
     except Exception:
       pass
-    return legacy, legacy
-  city = _get_int(params, PARAM_FOLLOW_CITY, default=legacy)
-  hwy = _get_int(params, PARAM_FOLLOW_HWY, default=legacy)
+    return seed, seed
+  try:
+    raw_city = params.get(PARAM_FOLLOW_CITY, return_default=True)
+  except Exception:
+    raw_city = None
+  try:
+    raw_hwy = params.get(PARAM_FOLLOW_HWY, return_default=True)
+  except Exception:
+    raw_hwy = None
+  city = parse_follow_distance(raw_city)
+  hwy = parse_follow_distance(raw_hwy)
+  if city is None:
+    city = legacy
+  if hwy is None:
+    hwy = legacy
   return city, hwy
 
 
@@ -125,10 +143,14 @@ class FollowDistanceBlend:
   def update(self, v_ego, dt, *, engaged, has_lead, v_lead=None):
     self.highway = follow_band_is_highway(v_ego, self.highway)
     target_dist = self.hwy if self.highway else self.city
-    self.active_dist = target_dist if target_dist in NAP_FOLLOW_DISTANCE_RANGE else FOLLOW_DEFAULT
+    if target_dist not in NAP_FOLLOW_DISTANCE_RANGE:
+      self.active_dist = None
+      return None, None, None
+    self.active_dist = target_dist
     target_t = nap_t_follow(self.active_dist)
     if target_t is None:
-      target_t = NAP_T_FOLLOW[FOLLOW_DEFAULT - 1]
+      self.active_dist = None
+      return None, None, None
     if self.t_follow is None:
       self.t_follow = float(target_t)
 

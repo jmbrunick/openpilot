@@ -1341,6 +1341,11 @@ def test_map_speed_submenu_wires_params():
   assert "FOLLOW_DISTANCE_DESCRIPTION" in manner
   assert "MAP_SPEED_ACCEL_DESCRIPTION" in manner
   assert "ADAPTIVE_ACCEL_DESCRIPTION" in manner
+<<<<<<< HEAD
+=======
+  assert "FOLLOW_DISTANCE_CITY_DESCRIPTION" in manner
+  assert "FOLLOW_DISTANCE_HWY_DESCRIPTION" in manner
+>>>>>>> 33d996733 (test: align Pre-AP follow fixtures with Accel cap, rapid gate, city/hwy)
   assert "MAP_SPEED_ACCEL_DESCRIPTION" in content
   assert "1 lazy" in content
   assert "same Accel 1–10 gradient" in content

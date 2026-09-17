@@ -99,7 +99,7 @@ def test_blend_opens_gradually_to_city_then_holds():
   assert times[0] == pytest.approx(nap_t_follow(2))
   assert times[-1] == pytest.approx(t_city, abs=1e-6)
   assert any(a is not None and a < 0.0 for a in extras)
-  assert max(t - s for s, t in zip(times, times[1:])) <= FOLLOW_T_SLEW_OPEN_PER_S * dt + 1e-9
+  assert max(t - s for s, t in zip(times, times[1:], strict=False)) <= FOLLOW_T_SLEW_OPEN_PER_S * dt + 1e-9
   t, dist, extra = b.update(v_lead, dt, engaged=True, has_lead=True, v_lead=v_lead)
   assert t == pytest.approx(t_city)
   assert extra is None
@@ -123,7 +123,7 @@ def test_blend_creeps_toward_hwy_without_a_step():
       break
   assert dist == 2
   assert times[-1] == pytest.approx(t_hwy, abs=1e-6)
-  steps = [s - t for s, t in zip(times, times[1:])]
+  steps = [s - t for s, t in zip(times, times[1:], strict=False)]
   assert max(steps) <= FOLLOW_T_SLEW_CREEP_PER_S * dt + 1e-9
   assert min(steps) >= 0.0 or times[-1] == pytest.approx(t_hwy)
 
@@ -154,6 +154,16 @@ def test_persist_steps_city_or_hwy_band_by_speed():
   assert params.get(PARAM_FOLLOW_CITY) == 3
   assert params.get(PARAM_FOLLOW_HWY) == 5
   assert params.get(PARAM_FOLLOW) == 5
+
+
+def test_invalid_setpoints_do_not_blend():
+  params = FakeParams(follow=0, city=0, hwy=8, migrated=True)
+  b = FollowDistanceBlend()
+  b.read_setpoints(params)
+  t, dist, extra = b.update(25.0, 0.05, engaged=True, has_lead=True, v_lead=25.0)
+  assert dist is None
+  assert t is None
+  assert extra is None
 
 
 def test_open_a_is_slightly_slower_than_lead():
