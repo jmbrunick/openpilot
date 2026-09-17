@@ -45,7 +45,7 @@ def test_docs_cover_hotspot_and_mannerisms():
   assert "optional" in docs.lower()
   assert "processNotRunning" in docs
   assert "NAPDashEnabled" in docs
-  assert "cursor/nap-dash-engage-fix-bdc4" in docs
+  assert "cursor/nap-dash-dev-e946" in docs
 
 
 def test_onroad_cpu_budget_lists_nap_dash():

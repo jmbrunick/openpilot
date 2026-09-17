@@ -1,6 +1,6 @@
 NAP companion Dash engage fix (2026-09-17)
 ========================
-* **Do not merge.** Follow-up to #177 after flash-test: `nap_dash` as an always-on **required** manager process can raise `processNotRunning` (`Process Not Running` / `nap_dash`) — NO_ENTRY + SOFT_DISABLE, blocks energize/engage, not a controls mismatch. Dash is now **optional / non-critical**; bind/preimport failures keep the process alive or out of the critical set; `NAPDashEnabled` (default On) disables the process without a nap-release rollback. No carstate, cereal, panda, or engagement-Param writes at startup. **No panda flash.**
+* **Do not merge** (stays on **nap-dash-dev** / #177). Follow-up after flash-test of #177: `nap_dash` as an always-on **required** manager process can raise `processNotRunning` (`Process Not Running` / `nap_dash`) — NO_ENTRY + SOFT_DISABLE, blocks energize/engage, not a controls mismatch. Dash is now **optional / non-critical**; bind/preimport failures keep the process alive or out of the critical set; `NAPDashEnabled` (default On) disables the process without a nap-release rollback. No carstate, cereal, panda, or engagement-Param writes at startup. **No panda flash.**
 
 NAP companion Dash (hotspot) (2026-09-16)
 ========================

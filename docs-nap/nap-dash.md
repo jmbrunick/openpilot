@@ -8,7 +8,7 @@ In-tree hotspot web UI for Justin's tree. Process: `nap_dash` (`selfdrive.nap_da
 
 `nap_dash` is an **optional / non-critical** manager process. A Dash crash, `:7070` bind failure, or preimport error must **not** raise `processNotRunning` (`Process Not Running` / `nap_dash`) and must **not** fail `manager` start. That alert is NO_ENTRY + SOFT_DISABLE — it prevents engage entirely and is easy to read as “some other error” (not controls mismatch).
 
-#177 registered Dash as always-on and **required**. If the process died or never stayed running, selfdrived blocked engage. This fix keeps the page, but Dash cannot take down the stack.
+The first nap-dash-dev flash registered Dash as always-on and **required**. If the process died or never stayed running, selfdrived blocked engage. This nap-dash-dev tip keeps the page, but Dash cannot take down the stack.
 
 No carstate / cereal / panda / pedal-interceptor changes. Dash does not write engagement Params at startup.
 
@@ -38,10 +38,10 @@ This is a Python + `NAPDashEnabled` Params-key change. **No panda flash.** The i
 On the comma 3X, Software → Custom Fork (or the installer URL):
 
 ```
-https://installer.comma.ai/jmbrunick/openpilot/cursor/nap-dash-engage-fix-bdc4
+https://installer.comma.ai/jmbrunick/openpilot/cursor/nap-dash-dev-e946
 ```
 
-Use the **fix PR branch name**, not `nap-release`, not `nap-dev`, and not the original `#177` branch (`cursor/nap-dash-dev-e946`) that blocked engage. Wait for the update to finish, then reboot so manager starts `nap_dash`.
+Use the **nap-dash-dev** branch (`cursor/nap-dash-dev-e946`), not `nap-release` and not `nap-dev`. This tip includes the engage fix: `nap_dash` is optional / non-critical, so **Process Not Running** no longer blocks energize. Wait for the update to finish, then reboot so manager starts `nap_dash`.
 
 Confirm the tip SHA on-device matches the PR head before the first road test (`Settings → Software` / `git rev-parse HEAD` over SSH).
 
