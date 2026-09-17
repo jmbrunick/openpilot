@@ -12,6 +12,7 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_APPROACH_MODEL_PROB_MIN,
   LEAD_APPROACH_NIBBLE_MS2,
   LEAD_APPROACH_NEED_HOLD_M,
+  LEAD_APPROACH_RAPID_CONFIRM_N,
   LEAD_APPROACH_RAPID_DV_MS,
   LEAD_APPROACH_RAPID_TTC_S,
   LEAD_APPROACH_RELEASE_SLEW_MS2,
@@ -34,6 +35,7 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   lead_approach_decel_ms2,
   lead_approach_is_rapid,
   lead_approach_need_m,
+  lead_approach_rapid_gate,
   lead_approach_track_ok,
   lead_approach_ttc_s,
   lead_close_accel_ms2,
@@ -97,6 +99,7 @@ def test_lead_approach_keeps_early_map_brake_not_map_110m_margin():
   assert abs(LEAD_APPROACH_RAPID_DV_MS - 6.0) < 1e-9
   assert abs(LEAD_APPROACH_TTC_START_S - 20.0) < 1e-9
   assert abs(LEAD_APPROACH_RAPID_TTC_S - 8.0) < 1e-9
+  assert LEAD_APPROACH_RAPID_CONFIRM_N >= 2
   assert LEAD_APPROACH_RAPID_DV_MS > LEAD_APPROACH_CLEAR_DV_MS
   assert abs(LEAD_CLOSE_OPENING_A_MS2 - 0.05) < 1e-9
   assert abs(LEAD_CLOSE_REMATCH_A_MS2 - 0.08) < 1e-9
@@ -594,6 +597,9 @@ def test_planner_wires_hysteresis_and_slew():
   assert "radar=lead_close.radar" in planner
   assert "self._lead_close_a_cap" in planner
   assert "self._lead_approach_active = a_lead is not None" in planner
+  assert "lead_approach_rapid_gate(" in planner
+  assert "allow_rapid=allow_rapid" in planner
+  assert "self._lead_approach_rapid_count" in planner
   slew_at = planner.find("self.prev_accel_clip[idx] - 0.05")
   recap_at = planner.find("min(float(accel_clip[1]), float(self._lead_close_a_cap))")
   assert 0 <= slew_at < recap_at
@@ -655,6 +661,49 @@ def test_rapid_close_allows_stronger_early_decel():
   a_dump = lead_approach_decel_ms2(v_ego, v_lead, d_dump, t4, model_prob=1.0, radar=True)
   assert a_dump == pytest.approx(-LEAD_APPROACH_A_MS2, abs=0.08)
   assert abs(a_dump) > LEAD_APPROACH_MILD_A_MS2 + 0.20
+
+
+def test_one_outlier_rapid_v_rel_does_not_commit_hard_regen():
+  """A single high closing-rate sample stays on mild ease. Sustained dump gets 0.55."""
+  assert LEAD_APPROACH_RAPID_CONFIRM_N == 3
+  v_rel = LEAD_APPROACH_RAPID_DV_MS + 0.5
+  assert lead_approach_is_rapid(v_rel)
+
+  allow, n = lead_approach_rapid_gate(v_rel, 0)
+  assert allow is False
+  assert n == 1
+  allow, n = lead_approach_rapid_gate(v_rel, n)
+  assert allow is False
+  assert n == 2
+  allow, n = lead_approach_rapid_gate(v_rel, n)
+  assert allow is True
+  assert n == 3
+
+  # Outlier then mild: count resets; next rapid starts over.
+  allow, n = lead_approach_rapid_gate(v_rel, 0)
+  assert allow is False
+  allow, n = lead_approach_rapid_gate(1.0, n)
+  assert allow is False
+  assert n == 0
+  allow, n = lead_approach_rapid_gate(v_rel, n)
+  assert allow is False
+  assert n == 1
+
+  t4 = nap_t_follow(4)
+  v_lead = 50.0 * 0.44704
+  v_ego = 70.0 * 0.44704
+  v_rel_dump = v_ego - v_lead
+  assert lead_approach_is_rapid(v_rel_dump)
+  d_dump = t4 * v_lead + STOP_DISTANCE + v_rel_dump * LEAD_APPROACH_RAPID_TTC_S
+  a_blip = lead_approach_decel_ms2(
+    v_ego, v_lead, d_dump, t4, model_prob=1.0, radar=True, allow_rapid=False,
+  )
+  assert a_blip == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  a_held = lead_approach_decel_ms2(
+    v_ego, v_lead, d_dump, t4, model_prob=1.0, radar=True, allow_rapid=True,
+  )
+  assert a_held == pytest.approx(-LEAD_APPROACH_A_MS2, abs=0.08)
+  assert abs(a_held) > abs(a_blip) + 0.20
 
 
 def test_gap_opening_rematch_is_a_trickle():

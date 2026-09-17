@@ -19,6 +19,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
 from openpilot.selfdrive.controls.lib.lead_approach import (
   apply_lead_approach_overlay,
   lead_approach_decel_ms2,
+  lead_approach_rapid_gate,
   lead_close_accel_ms2,
   lead_follow_slack_m,
   resolve_lead_close_hold,
@@ -111,6 +112,7 @@ class LongitudinalPlanner:
     self._frame = 0
     self._lead_approach_active = False
     self._lead_approach_a = None
+    self._lead_approach_rapid_count = 0
     self._lead_close_hold_d = None
     self._lead_close_hold_v = None
     self._lead_close_hold_age = 0.0
@@ -188,6 +190,7 @@ class LongitudinalPlanner:
       self.a_desired = np.clip(sm['carState'].aEgo, accel_clip[0], accel_clip[1])
       self._lead_approach_active = False
       self._lead_approach_a = None
+      self._lead_approach_rapid_count = 0
       self._lead_close_hold_d = None
       self._lead_close_hold_v = None
       self._lead_close_hold_age = 0.0
@@ -324,24 +327,30 @@ class LongitudinalPlanner:
     # kinematics up to 0.55. Hysteresis (enter 0.65 / exit 0.20) + slew
     # both ways keep regen from slamming rematch; exit stays 0.20 so we
     # still close. Map's +110 m is road distance to a sign and must not
-    # be used here. A far nibble must not steal large-gap catch-up +a;
-    # near-gap / real-close eases off throttle. MPC close-in / FCW may
-    # still brake harder. Map MAX cannot cancel this.
+    # be used here. Rapid 0.55 needs a few consecutive high-v_rel frames
+    # (a single closing-rate blip stays on the mild 0.18 path). A far
+    # nibble must not steal large-gap catch-up +a; near-gap / real-close
+    # eases off throttle. MPC close-in / FCW may still brake harder.
+    # Map MAX cannot cancel this.
     if self._is_preap:
       lead = sm['radarState'].leadOne
       if lead.status:
+        overlay_v_rel = v_ego - float(lead.vLead)
+        allow_rapid, self._lead_approach_rapid_count = lead_approach_rapid_gate(
+          overlay_v_rel, self._lead_approach_rapid_count,
+        )
         a_lead = lead_approach_decel_ms2(
           v_ego, lead.vLead, lead.dRel, self.t_follow, active=self._lead_approach_active,
-          model_prob=lead.modelProb, radar=lead.radar,
+          model_prob=lead.modelProb, radar=lead.radar, allow_rapid=allow_rapid,
         )
         # Hysteresis follows kinematics, not release slew — otherwise a
         # fading overlay keeps the hold gate open and re-bites rematch.
         self._lead_approach_active = a_lead is not None
-        overlay_v_rel = v_ego - float(lead.vLead)
         overlay_slack = lead_follow_slack_m(lead.dRel, lead.vLead, self.t_follow)
       else:
         # Track dropped: fade overlay. Snapping to None restored cruise +a.
         self._lead_approach_active = False
+        self._lead_approach_rapid_count = 0
         a_lead = None
         overlay_v_rel = None
         overlay_slack = None

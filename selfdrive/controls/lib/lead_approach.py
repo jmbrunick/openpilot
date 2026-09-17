@@ -87,6 +87,9 @@ LEAD_APPROACH_TTC_START_S = 20.0
 # promote that to 0.55.
 LEAD_APPROACH_RAPID_DV_MS = 6.0
 LEAD_APPROACH_RAPID_TTC_S = 8.0
+# Planner frames of high v_rel before the 0.55 path. One radar blip must
+# not fire hard regen; mild ease stays immediate. 3 × DT_MDL ≈ 0.15 s.
+LEAD_APPROACH_RAPID_CONFIRM_N = 3
 
 # Enter / exit (hysteresis). A single v_rel / slack gate chatters around
 # the follow gap on a slight incline (regen ↔ accel). First pass was
@@ -250,9 +253,21 @@ def lead_approach_is_rapid(v_rel, ttc=None) -> bool:
 
   Short TTC at a mild `v_rel` is arriving at Follow Distance, not dumping.
   `ttc` is for callers; it does not promote a 5–10 mph close to 0.55.
+  Planner still requires consecutive samples via lead_approach_rapid_gate.
   """
   _ = ttc
   return float(v_rel) >= LEAD_APPROACH_RAPID_DV_MS
+
+
+def lead_approach_rapid_gate(v_rel, prev_count, need_n=LEAD_APPROACH_RAPID_CONFIRM_N):
+  """Confirm rapid close over consecutive frames. One outlier does not commit.
+
+  Returns `(allow_rapid, new_count)`. Mild / missing v_rel resets the count.
+  """
+  if v_rel is None or not lead_approach_is_rapid(v_rel):
+    return False, 0
+  count = int(prev_count) + 1
+  return count >= int(need_n), count
 
 
 def lead_approach_need_m(v_ego, v_lead, a_comfort=LEAD_APPROACH_A_MS2, t_follow=None) -> float:
@@ -324,13 +339,14 @@ def apply_lead_approach_overlay(output_a, a_lead, nibble=LEAD_APPROACH_NIBBLE_MS
 
 
 def lead_approach_decel_ms2(v_ego, v_lead, d_rel, t_follow, a_comfort=LEAD_APPROACH_A_MS2,
-                           active=False, model_prob=None, radar=None):
+                           active=False, model_prob=None, radar=None, allow_rapid=True):
   """Comfort decel to close onto the Follow Distance gap, or None.
 
   a = -v_rel² / (2 * slack) so we arrive at the selected gap with matching
   speed. |a| at the open is below the comfort peak. Mild closes stay at
-  MILD (light regen). Rapid closes reach the 0.55 peak. None when speeds
-  match, the lead is faster, or the lead is still outside the window.
+  MILD (light regen). Rapid closes reach the 0.55 peak once the planner
+  has confirmed (`allow_rapid`). None when speeds match, the lead is
+  faster, or the lead is still outside the window.
 
   `active` is last frame's *kinematic* overlay (hysteresis), not release
   slew. Enter uses DV_MS / SLACK_ON; hold uses DV_OFF / SLACK_OFF /
@@ -369,6 +385,6 @@ def lead_approach_decel_ms2(v_ego, v_lead, d_rel, t_follow, a_comfort=LEAD_APPRO
       return None
   a_needed = -(v_rel * v_rel) / (2.0 * slack)
   ttc = lead_approach_ttc_s(slack, v_rel)
-  rapid = lead_approach_is_rapid(v_rel, ttc)
+  rapid = bool(allow_rapid) and lead_approach_is_rapid(v_rel, ttc)
   a_cap = float(a_comfort) if rapid else LEAD_APPROACH_MILD_A_MS2
   return max(float(a_needed), -float(a_cap))
