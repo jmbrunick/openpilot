@@ -189,6 +189,65 @@ def test_one_pedal_wires_carstate_after_interceptor_gas():
   keys = (root / "common/params_keys.h").read_text()
   assert "NAPOnePedalLong" in keys
   assert 'BOOL, "0"' in next(ln for ln in keys.splitlines() if '"NAPOnePedalLong"' in ln)
+  overlay = (root / "selfdrive/car/tesla/preap_blinker_lat_pause.py").read_text()
+  assert "one_pedal_gas_for_pause(" in overlay
+  assert "ONE_PEDAL_GAS_DI_PRESSED = 1.0" in overlay
+  assert "PEDAL_DI_PRESSED_STOCK = 2.0" in overlay
+  assert "interceptor_value" in overlay
+  assert "maybe_one_pedal_gas_kick(True, True)" in overlay
+
+
+def test_one_pedal_light_tip_in_latches_pause():
+  """One-Pedal pause is slightly more sensitive than stock interceptor gasPressed.
+
+  Stock gasPressed is DI > 2. Pause latches at DI > 1 so a light tip-in
+  takes long. Coast / tiny noise at 0–1 stays off. SET-while-gas and lift
+  still do not resume (existing tests).
+  """
+  from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import (
+    ONE_PEDAL_GAS_DI_PRESSED,
+    PEDAL_DI_PRESSED_STOCK,
+    one_pedal_gas_for_pause,
+  )
+
+  assert abs(PEDAL_DI_PRESSED_STOCK - 2.0) < 1e-9
+  assert abs(ONE_PEDAL_GAS_DI_PRESSED - 1.0) < 1e-9
+  assert 0.0 < ONE_PEDAL_GAS_DI_PRESSED < PEDAL_DI_PRESSED_STOCK
+
+  assert not one_pedal_gas_for_pause(None)
+  assert not one_pedal_gas_for_pause(0.0)
+  assert not one_pedal_gas_for_pause(0.5)
+  assert not one_pedal_gas_for_pause(ONE_PEDAL_GAS_DI_PRESSED)
+  assert one_pedal_gas_for_pause(1.1)
+  assert one_pedal_gas_for_pause(PEDAL_DI_PRESSED_STOCK)
+  assert one_pedal_gas_for_pause(2.1)
+
+  from opendbc.car.tesla.preap.engagement import PreAPEngagement
+
+  eng = PreAPEngagement(double_pull_enabled=True, double_pull_window_ms=400)
+  eng.cruiseEnabled = True
+  eng.enableLongControl = True
+  assert not eng.maybe_one_pedal_gas_kick(False, True)
+  assert not eng._one_pedal_pause_latched
+  # Light tip-in below stock gasPressed still pauses.
+  assert one_pedal_gas_for_pause(1.2)
+  assert 1.2 < PEDAL_DI_PRESSED_STOCK
+  assert eng.maybe_one_pedal_gas_kick(True, True)
+  assert eng._one_pedal_pause_latched
+  assert not eng.enableLongControl
+  # Lift stays paused.
+  assert not eng.maybe_one_pedal_gas_kick(False, True)
+  assert eng._one_pedal_pause_latched
+
+  # Overlay extra kick still honors SET-while-gas skip_resume.
+  eng2 = PreAPEngagement(double_pull_enabled=True, double_pull_window_ms=400)
+  eng2.cruiseEnabled = True
+  eng2.enableLongControl = True
+  assert not eng2.maybe_one_pedal_gas_kick(False, True)
+  eng2._nap_set_resume_long = True
+  assert not eng2.maybe_one_pedal_gas_kick(True, True)
+  assert not eng2._one_pedal_pause_latched
+  assert eng2.enableLongControl
 
 
 def test_one_pedal_gas_pause_never_user_disables():
