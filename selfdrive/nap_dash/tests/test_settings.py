@@ -39,6 +39,7 @@ class FakeParams:
   def __init__(self, ints=None, bools=None):
     self.ints = dict(ints or {})
     self.bools = dict(bools or {})
+    self.writes: list[tuple[str, object]] = []
 
   def get(self, key, return_default=False):
     return self.ints.get(key)
@@ -47,9 +48,11 @@ class FakeParams:
     return bool(self.bools.get(key, False))
 
   def put(self, key, value):
+    self.writes.append((key, value))
     self.ints[key] = value
 
   def put_bool(self, key, value):
+    self.writes.append((key, bool(value)))
     self.bools[key] = bool(value)
 
   def remove(self, key):
@@ -159,3 +162,10 @@ def test_package_has_no_philip_settings_file_or_funnel():
   assert ">SL<" in html and ">FAI<" in html
   assert "Cruise speed trim" not in html
   assert "Phone guidance" not in html
+
+
+def test_read_settings_does_not_write_engagement_params():
+  params = FakeParams(ints={PARAM_FOLLOW_DISTANCE: 4}, bools={PARAM_SL: False, PARAM_FAI: False})
+  snap = read_settings(params)
+  assert snap["follow_distance"] == 4
+  assert params.writes == []

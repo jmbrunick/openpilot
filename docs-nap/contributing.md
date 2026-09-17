@@ -19,7 +19,7 @@ Simulate Look (`NAPDmSimulateLooking`) and False Alert Ignore (`NAPDmFalseAlertI
 
 One-Pedal Long (`NAPOnePedalLong`) defaults **Off**. Pedal mode: gas while long is **already holding** **pauses** software long (silent long pause, lat stays, not a full disable) and **holds that pause until a stalk SET** — lift / coast / regen must not resume or climb back to MAX. SET with the foot already on the pedal still arms long; lift starts A+B/A3. Brake that pauses long RELEASEs immediately to stock regen (no tip-brake soft glide). Off = stock gas override + A+B/A3.
 
-Companion Dash (`nap_dash`) is an always-on hotspot page at `:7070`. It writes the same Driving Mannerisms / Map Speed / stock / SL-FAI Params as Settings → NAP. Do not add Philip City Turns, cruise-trim injectors, nav writes, or public tunnels. Hypermile stays nap-dev-only.
+Companion Dash (`nap_dash`) is a hotspot page at `:7070`. It is **optional / non-critical** (`optional=True`, `NAPDashEnabled` default On). A Dash crash must not raise `processNotRunning` or block engage. It writes the same Driving Mannerisms / Map Speed / stock / SL-FAI Params as Settings → NAP. Do not add Philip City Turns, cruise-trim injectors, nav writes, or public tunnels. Hypermile stays nap-dev-only.
 
 ## Submodules
 

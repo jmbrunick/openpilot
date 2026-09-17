@@ -6,6 +6,8 @@ from http.client import HTTPConnection
 from pathlib import Path
 from threading import Thread
 
+import pytest
+
 from openpilot.selfdrive.nap_dash.server import Handler, ThreadingHTTPServer
 from openpilot.selfdrive.nap_dash.settings import read_settings, write_setting
 from openpilot.selfdrive.nap_dash.tests.test_settings import FakeParams, PARAM_FOLLOW_DISTANCE
@@ -13,12 +15,17 @@ from openpilot.selfdrive.nap_dash.tests.test_settings import FakeParams, PARAM_F
 ROOT = Path(__file__).resolve().parents[3]
 
 
-def test_process_config_registers_always_on_python_process():
+def test_process_config_registers_optional_python_process():
   cfg = (ROOT / "system" / "manager" / "process_config.py").read_text(encoding="utf-8")
   assert 'PythonProcess("nap_dash"' in cfg
   assert "selfdrive.nap_dash.server" in cfg
-  assert "always_run" in cfg
-  assert "restart_if_crash=True" in cfg.split("nap_dash", 1)[1][:400]
+  snippet = cfg.split('PythonProcess("nap_dash"', 1)[1][:400]
+  assert "nap_dash_enabled" in snippet
+  assert "restart_if_crash=True" in snippet
+  assert "optional=True" in snippet
+  optional_src = (ROOT / "system" / "manager" / "optional_procs.py").read_text(encoding="utf-8")
+  assert "NAPDashEnabled" in optional_src
+  assert "NAPDashEnabled" in (ROOT / "common" / "params_keys.h").read_text(encoding="utf-8")
 
 
 def test_docs_cover_hotspot_and_mannerisms():
@@ -35,6 +42,10 @@ def test_docs_cover_hotspot_and_mannerisms():
   assert "apply_hypermile_toggle" not in docs
   assert "NAPHypermile" not in docs
   assert "http://<device-ip>:7070" in docs or "http://<device>:7070" in docs
+  assert "optional" in docs.lower()
+  assert "processNotRunning" in docs
+  assert "NAPDashEnabled" in docs
+  assert "cursor/nap-dash-engage-fix-bdc4" in docs
 
 
 def test_onroad_cpu_budget_lists_nap_dash():
@@ -102,3 +113,89 @@ def test_server_source_has_no_nav_write_or_settings_file():
   assert "/api/nav" not in src
   assert "PHONE_HTML" not in src
   assert "def update_navigation" not in src
+  assert "def bind_http_server" in src
+  assert "idle_until_stop" in src
+
+
+def test_nap_dash_is_optional_and_ignored_by_process_not_running():
+  from types import SimpleNamespace
+  from openpilot.system.manager.optional_procs import (
+    OPTIONAL_PROCESS_NAMES, missing_required_processes, nap_dash_enabled,
+  )
+
+  assert "nap_dash" in OPTIONAL_PROCESS_NAMES
+  assert "card" not in OPTIONAL_PROCESS_NAMES
+  assert "selfdrived" not in OPTIONAL_PROCESS_NAMES
+  assert "controlsd" not in OPTIONAL_PROCESS_NAMES
+
+  dash = SimpleNamespace(name="nap_dash", running=False, shouldBeRunning=True)
+  card = SimpleNamespace(name="card", running=False, shouldBeRunning=True)
+  assert missing_required_processes([dash]) == []
+  assert missing_required_processes([dash, card]) == ["card"]
+
+  class _P:
+    def get(self, key):
+      return None
+    def get_bool(self, key):
+      raise AssertionError("missing NAPDashEnabled must fail open")
+  assert nap_dash_enabled(True, _P(), None) is True
+
+  class _Off:
+    def get(self, key):
+      return "0"
+    def get_bool(self, key):
+      return False
+  assert nap_dash_enabled(True, _Off(), None) is False
+
+
+def test_bind_failure_returns_none_and_idle_stops(monkeypatch):
+  from openpilot.selfdrive.nap_dash import server as srv
+
+  def _raise(*_args, **_kwargs):
+    raise OSError("Address already in use")
+
+  monkeypatch.setattr(srv, "DashHTTPServer", _raise)
+  assert srv.bind_http_server("127.0.0.1", 1) is None
+
+  calls = []
+  stop = type("E", (), {"is_set": lambda self: len(calls) >= 2})()
+  def sleeper(_dt):
+    calls.append(1)
+  srv.idle_until_stop(stop_event=stop, sleeper=sleeper)
+  assert len(calls) == 2
+
+
+def test_optional_prepare_and_dead_process_are_non_critical():
+  pytest.importorskip("capnp")
+  from openpilot.system.manager.process import PythonProcess
+
+  p = PythonProcess("nap_dash", "openpilot.does.not.exist.nap_dash", lambda *_a: True, optional=True)
+  p.prepare()  # must not raise / must not take down manager
+
+  class Dead:
+    pid = 1
+    exitcode = 1
+    def is_alive(self):
+      return False
+
+  p.proc = Dead()
+  state = p.get_process_state_msg()
+  assert state.running is False
+  assert state.shouldBeRunning is False
+
+
+def test_process_not_running_alert_omits_optional_dash():
+  pytest.importorskip("capnp")
+  from cereal import car, log
+  from openpilot.selfdrive.selfdrived.events import process_not_running_alert
+
+  cs = car.CarState.new_message()
+  cp = car.CarParams.new_message()
+  dash = log.ManagerState.ProcessState.new_message()
+  dash.name = "nap_dash"
+  dash.running = False
+  dash.shouldBeRunning = True
+  ms = log.ManagerState.new_message()
+  ms.processes = [dash]
+  alert = process_not_running_alert(cp, cs, {"managerState": ms}, False, 100, log.LongitudinalPersonality.standard)
+  assert "nap_dash" not in (alert.alert_text_1 + " " + alert.alert_text_2)

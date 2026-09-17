@@ -790,6 +790,27 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
       return self.send_json({"error": str(exc)}, 400)
 
 
+class DashHTTPServer(ThreadingHTTPServer):
+  allow_reuse_address = True
+  daemon_threads = True
+
+
+def bind_http_server(host=HOST, port=PORT):
+  """Bind :7070. Returns None on failure so the process can stay alive."""
+  try:
+    return DashHTTPServer((host, port), Handler)
+  except OSError as exc:
+    cloudlog.warning(f"nap_dash failed to bind {host}:{port}: {exc}")
+    return None
+
+
+def idle_until_stop(stop_event=None, sleeper=time.sleep):
+  """Keep the managed process alive so optional Dash cannot block engage."""
+  stop_event = STOP if stop_event is None else stop_event
+  while not stop_event.is_set():
+    sleeper(1.0)
+
+
 def main():
   cloudlog.info(f"nap_dash listening on {HOST}:{PORT} (comma hotspot / LAN only)")
   try:
@@ -797,14 +818,23 @@ def main():
   except Exception:
     traceback.print_exc()
   threading.Thread(target=telemetry, name="nap-dash-telemetry", daemon=True).start()
-  server = ThreadingHTTPServer((HOST, PORT), Handler)
+  server = bind_http_server(HOST, PORT)
+  if server is None:
+    idle_until_stop()
+    return
   try:
     server.serve_forever()
   except KeyboardInterrupt:
     pass
+  except Exception:
+    traceback.print_exc()
+    idle_until_stop()
   finally:
     STOP.set()
-    server.server_close()
+    try:
+      server.server_close()
+    except Exception:
+      pass
 
 
 if __name__ == "__main__":

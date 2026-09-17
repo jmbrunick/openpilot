@@ -1,3 +1,7 @@
+NAP companion Dash engage fix (2026-09-17)
+========================
+* **Do not merge.** Follow-up to #177 after flash-test: `nap_dash` as an always-on **required** manager process can raise `processNotRunning` (`Process Not Running` / `nap_dash`) — NO_ENTRY + SOFT_DISABLE, blocks energize/engage, not a controls mismatch. Dash is now **optional / non-critical**; bind/preimport failures keep the process alive or out of the critical set; `NAPDashEnabled` (default On) disables the process without a nap-release rollback. No carstate, cereal, panda, or engagement-Param writes at startup. **No panda flash.**
+
 NAP companion Dash (hotspot) (2026-09-16)
 ========================
 * In-tree always-on **NAP companion Dash** on the comma hotspot (`http://<device-ip>:7070`). Live cluster, Driving Mannerisms + Map Speed + stock personality / Experimental Mode + SL / FAI, Tesla BMS (read-only), dashcam viewer / opt-in export. Writes Justin's Params only — not Philip City Turns / cruise trim / nav / Funnel. Hypermile stays nap-dev-only. **Do not merge until Justin flashes this PR tip.** No panda flash.

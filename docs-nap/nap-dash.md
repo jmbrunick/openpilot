@@ -1,8 +1,16 @@
 # NAP companion Dash
 
-In-tree hotspot web UI for Justin's tree. Process: `nap_dash` (`selfdrive.nap_dash.server`). Always starts with openpilot.
+In-tree hotspot web UI for Justin's tree. Process: `nap_dash` (`selfdrive.nap_dash.server`). Starts with openpilot when `NAPDashEnabled` is On (default).
 
 **Do not merge this PR until Justin flashes the PR branch tip and road-tests it.** First-use is flash-the-tip, not merge-to-nap-release.
+
+## Engage safety (why #177 blocked energize)
+
+`nap_dash` is an **optional / non-critical** manager process. A Dash crash, `:7070` bind failure, or preimport error must **not** raise `processNotRunning` (`Process Not Running` / `nap_dash`) and must **not** fail `manager` start. That alert is NO_ENTRY + SOFT_DISABLE — it prevents engage entirely and is easy to read as “some other error” (not controls mismatch).
+
+#177 registered Dash as always-on and **required**. If the process died or never stayed running, selfdrived blocked engage. This fix keeps the page, but Dash cannot take down the stack.
+
+No carstate / cereal / panda / pedal-interceptor changes. Dash does not write engagement Params at startup.
 
 ## What it is
 
@@ -25,17 +33,31 @@ Adapted from Philip's NAP-Dash `server_v21` **UI shell**. The settings bridge is
 
 ## How to flash the PR tip
 
-This is a Python-only change. **No panda flash.**
+This is a Python + `NAPDashEnabled` Params-key change. **No panda flash.** The installer rebuilds `common` for the new key; panda firmware is unchanged.
 
 On the comma 3X, Software → Custom Fork (or the installer URL):
 
 ```
-https://installer.comma.ai/jmbrunick/openpilot/cursor/nap-dash-dev-e946
+https://installer.comma.ai/jmbrunick/openpilot/cursor/nap-dash-engage-fix-bdc4
 ```
 
-Use the **PR branch name**, not `nap-release` and not `nap-dev`. Wait for the update to finish, then reboot so manager starts `nap_dash`.
+Use the **fix PR branch name**, not `nap-release`, not `nap-dev`, and not the original `#177` branch (`cursor/nap-dash-dev-e946`) that blocked engage. Wait for the update to finish, then reboot so manager starts `nap_dash`.
 
 Confirm the tip SHA on-device matches the PR head before the first road test (`Settings → Software` / `git rev-parse HEAD` over SSH).
+
+## Dash off workaround (no reflash of nap-release)
+
+If Dash still misbehaves, disable the process. Engage stays on nap-release behavior:
+
+SSH:
+
+```
+python3 -c "from openpilot.common.params import Params; Params().put_bool('NAPDashEnabled', False)"
+```
+
+Then reboot. Or set `BLOCK=nap_dash` in the launch environment.
+
+Re-enable with `NAPDashEnabled=True` and a reboot. Default is On.
 
 ## How to open Dash
 
