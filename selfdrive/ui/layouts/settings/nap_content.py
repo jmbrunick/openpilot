@@ -18,7 +18,7 @@ MAP_SPEED_ACCEL = list(range(1, 11))
 MAP_SPEED_ACCEL_LABELS = [str(i) for i in MAP_SPEED_ACCEL]
 MAP_SPEED_ACCEL_DEFAULT = 5
 MAP_SPEED_ACCEL_DESCRIPTION = (
-  "MAX climb / open-road feel (1 lazy → 10 quicker). "
+  "How hard you climb (1 lazy → 10 quicker) — one gradient, not a flat shove. "
   + "Lead gap-close uses this same Accel 1–10 — not a hotter catch-up. "
   + "Accel 1 baby-steps the last ~5 mph; Accel 7–10 stays brisk to the target. "
   + "Brake to a lower MAX stays Accel 5. Lead still owns follow."

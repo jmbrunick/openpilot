@@ -73,9 +73,10 @@ A_CLAMP_MAX = 1.60  # m/s²; below MPC cruise min accel magnitude and COMFORT_BR
 TRACK_DEADBAND_MS = 0.40  # ~0.9 mph; ignore set-speed / GPS jitter
 TRACK_TAPER_MS = 2.00     # brake / default; ~4.5 mph; full comfort a above this error
 # Accel climb gradient (open-road / MAX / lead gap-close — same curve).
-# Accel 1 baby-steps the last ~5 mph; Accel 10 stays brisk almost to deadband.
+# Accel 1 baby-steps the last ~5 mph; Accel 2–6 progressive; Accel 7–10
+# stay brisk almost to deadband (one plateau, not hotter toward 10).
 TRACK_TAPER_ACCEL_LO_MS = 2.24  # Accel 1; 5 mph
-TRACK_TAPER_ACCEL_HI_MS = 0.55  # Accel 10; ~1.2 mph
+TRACK_TAPER_ACCEL_HI_MS = 0.55  # Accel 7–10; ~1.2 mph
 
 # Default offline DB location on comma 3X / PC
 DB_FILENAME = "speed_limits.sqlite"
@@ -110,16 +111,17 @@ def map_comfort_a_ms2(lookahead: int, accel_level: int = ACCEL_DEFAULT) -> float
 def map_track_taper_ms(accel_level: int | None) -> float:
   """Speed-error window (m/s) for Accel climb taper. None → brake default 2.0.
 
-  Accel 1: last ~5 mph is a baby-step. Accel 7–10: full a almost to deadband.
+  Accel 1: last ~5 mph is a baby-step. Accel 2–6 progressive. Accel 7–10:
+  full a almost to deadband (brisk all the way to the target).
   """
   if accel_level is None:
     return TRACK_TAPER_MS
-  f = accel_scale_factor(int(accel_level))
-  span_f = ACCEL_FACTOR_HI - ACCEL_FACTOR_LO
-  t = TRACK_TAPER_ACCEL_LO_MS + (
-    TRACK_TAPER_ACCEL_HI_MS - TRACK_TAPER_ACCEL_LO_MS
-  ) * (f - ACCEL_FACTOR_LO) / span_f
-  return max(TRACK_DEADBAND_MS, t)
+  lvl = max(ACCEL_MIN, min(ACCEL_MAX, int(accel_level)))
+  if lvl >= 7:
+    return TRACK_TAPER_ACCEL_HI_MS
+  t1 = TRACK_TAPER_ACCEL_LO_MS
+  t7 = TRACK_TAPER_ACCEL_HI_MS
+  return t1 + (t7 - t1) * (lvl - ACCEL_MIN) / (7 - ACCEL_MIN)
 
 
 def osm_sign_lead_m(v_ego_ms: float) -> float:
