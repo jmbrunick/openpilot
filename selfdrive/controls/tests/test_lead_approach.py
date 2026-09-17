@@ -509,10 +509,10 @@ def test_clear_close_allows_large_slack_still_capped():
 
 
 def test_far_mild_close_overlay_does_not_kill_cruise_plus_a():
-  """Large slack + mild v_rel + cruise +a: overlay must not force negative a.
+  """Large slack + mild v_rel + cruise +a: stay non-negative / keep +a.
 
-  #188 mesh applied nibble regen from first far radar lock (CLEAR_DV 1.5 +
-  min() on any close). That capped MAX climb and felt like long was dead.
+  Sequence-specific: first acquire / first mild close at large slack used to
+  min() a nibble and steal cruise +a (then recover). Not a dead-long fail.
   """
   v_lead = 22.0
   v_rel = 1.6
@@ -525,17 +525,20 @@ def test_far_mild_close_overlay_does_not_kill_cruise_plus_a():
   assert slack > need
   assert v_rel < LEAD_APPROACH_CLEAR_DV_MS
   assert v_rel >= LEAD_APPROACH_SOFT_LIMIT_CLOSE_MS
-  # Mild close past need: overlay stays off so cruise can climb.
+  # First lock past need: overlay stays off so cruise can climb.
   assert lead_approach_decel_ms2(
-    v_ego, v_lead, d_rel, t4, model_prob=1.0, radar=True,
+    v_ego, v_lead, d_rel, t4, active=False, model_prob=1.0, radar=True,
   ) is None
   cruise = 0.80
-  # Even if a far nibble were present, apply must keep cruise +a.
-  assert apply_lead_approach_overlay(
-    cruise, -0.08, v_rel=v_rel, slack=slack,
-  ) == pytest.approx(cruise)
+  first = apply_lead_approach_overlay(cruise, -0.08, v_rel=v_rel, slack=slack)
+  assert first >= 0.0
+  assert first == pytest.approx(cruise)
   assert apply_lead_approach_overlay(
     cruise, -0.08, v_rel=v_rel, slack=160.0,
+  ) == pytest.approx(cruise)
+  # CLEAR_DV skip can arm overlay on a faster first lock; still keep +a far out.
+  assert apply_lead_approach_overlay(
+    cruise, -0.08, v_rel=4.0, slack=120.0,
   ) == pytest.approx(cruise)
   # Vision flicker must not early-start past need (even above CLEAR_DV).
   v_clear = v_lead + LEAD_APPROACH_CLEAR_DV_MS + 0.2
