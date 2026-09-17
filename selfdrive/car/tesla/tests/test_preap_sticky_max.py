@@ -545,6 +545,72 @@ def test_one_pedal_gas_kick_one_set_resumes_held_max():
   assert abs(eng.pedal_speed_kph - held) < 1e-6
 
 
+def test_one_pedal_set_while_gas_held_clears_latch_and_resumes():
+  """After gas pause, one SET with the foot still down restores long.
+
+  Must not fall through to double-pull first-pull (lat-only). Lift then
+  starts A+B; lift alone before SET must not have resumed.
+  """
+  install_blinker_lat_pause()
+  held = 55 * CV.MPH_TO_KPH
+  eng = _engaged(pedal_kph=held)
+  assert not eng.maybe_one_pedal_gas_kick(False, True)
+  eng.maybe_one_pedal_gas_kick(True, True)
+  assert not eng.enableLongControl
+  assert getattr(eng, "_one_pedal_pause_latched", False)
+  eng._nap_gas_pressed = True
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=4000, v_ego=13.4)
+  assert eng.enableLongControl
+  assert not getattr(eng, "_one_pedal_pause_latched", False)
+  assert getattr(eng, "_nap_set_resume_long", False)
+  assert abs(eng.pedal_speed_kph - held) < 1e-6
+  assert not eng.maybe_one_pedal_gas_kick(True, True)
+  assert eng.enableLongControl
+  assert not getattr(eng, "_one_pedal_pause_latched", False)
+  eng._nap_set_resume_long = False
+  assert not eng.maybe_one_pedal_gas_kick(True, True)
+  assert eng.enableLongControl
+  assert not eng.maybe_one_pedal_gas_kick(False, True)
+  assert eng.enableLongControl
+
+
+def test_one_pedal_set_resumes_even_if_pending_lost():
+  """Pause latch alone is enough for one SET; do not demand a second pull."""
+  install_blinker_lat_pause()
+  held = 55 * CV.MPH_TO_KPH
+  eng = _engaged(pedal_kph=held)
+  assert not eng.maybe_one_pedal_gas_kick(False, True)
+  eng.maybe_one_pedal_gas_kick(True, True)
+  eng.maybe_one_pedal_gas_kick(False, True)
+  eng._nap_long_resume_pending = False
+  assert getattr(eng, "_one_pedal_pause_latched", False)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=4000, v_ego=13.4)
+  assert eng.enableLongControl
+  assert not getattr(eng, "_one_pedal_pause_latched", False)
+  assert getattr(eng, "_nap_set_resume_long", False)
+  assert abs(eng.pedal_speed_kph - held) < 1e-6
+
+
+def test_one_pedal_standstill_set_clears_latch_then_gas_resumes():
+  """Stop + SET after gas pause arms wait-gas; later gas completes held MAX."""
+  install_blinker_lat_pause()
+  held = 55 * CV.MPH_TO_KPH
+  eng = _engaged(pedal_kph=held)
+  assert not eng.maybe_one_pedal_gas_kick(False, True)
+  eng.maybe_one_pedal_gas_kick(True, True)
+  eng.maybe_one_pedal_gas_kick(False, True)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=4000, v_ego=0.0)
+  assert not eng.enableLongControl
+  assert getattr(eng, "_nap_resume_wait_gas", False)
+  assert not getattr(eng, "_one_pedal_pause_latched", False)
+  assert abs(eng.pedal_speed_kph - held) < 1e-6
+  eng._nap_gas_pressed = True
+  _buttons(eng, t_ms=4100, v_ego=0.0)
+  assert eng.enableLongControl
+  assert getattr(eng, "_nap_set_resume_long", False)
+  assert abs(eng.pedal_speed_kph - held) < 1e-6
+
+
 def test_one_pedal_does_not_steal_standstill_wait_gas():
   """Armed stop-SET + gas touch still resumes; kick must not fire."""
   install_blinker_lat_pause()
