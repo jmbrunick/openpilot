@@ -14,7 +14,6 @@ from __future__ import annotations
 from openpilot.common.constants import CV
 from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_CLOSE_OPENING_A_MS2,
-  NAP_T_FOLLOW,
   nap_t_follow,
 )
 
