@@ -2,6 +2,10 @@ NAP lead-close accel cap (2026-09-17)
 ========================
 * Pre-AP: closing on / coming up behind a radar lead no longer uses the cruise **1.6–0.6 m/s²** punch (Adaptive Accel used the full profile on a large gap; map Accel 1–10 only gated MAX-rise climb). Catch-up **+a** is now `lead_close_accel_ms2`: **0.20** at Accel 1, **0.30** at 5, **0.50** at 10, inside ~140 m. Still closes onto the selected Follow Distance. MPC danger / hard brake, sticky MAX, soft-lat, One-Pedal Long, and DM unchanged. **Not ported:** Hypermile, NAP Dash, TTC-floor lead-approach ease. Settings → NAP → Driving Mannerisms → Acceleration. Same close-cap as nap-dev (#106).
 
+NAP One-Pedal SET after gas pause (2026-09-17)
+========================
+* **One-Pedal Long On** (default still **Off**): after a from-rest gas pause, **one stalk SET** restores long at held MAX again. SET with the foot still on the accelerator clears the pause latch and arms lift-to-start (A+B / A3) — the long controller no longer re-latches from `_saw_long_without_gas`. Lift alone still stays paused. At a stop, SET arms wait-for-gas (clears the One-Pedal latch) like brake pause. Brake one-SET resume and in-session double-SET take-speed-now unchanged. No panda flash.
+
 NAP revert tip-brake soft-glide (2026-09-15)
 ========================
 * **#157 reverted:** Pre-AP silent long pause brake cancel is **firm/stock again** (#156-era RELEASE). When `real_brake_pressed` drops software long, interceptor **RELEASEs immediately** to Tesla regen — no tip/hold classifier, no −0.30 start, no ~2.5 s comfort-shaped glide. On-car: the soft cancel felt worse than stock regen. **Kept:** One-Pedal Long (#170–#172) accelerator pause + SET latch, #152 A+B and #153 A3 gas-lift climb. Full cancel / FCW / AEB / hard lead unchanged. No `GAS_COMMAND` rewrite, no PostEngageCoast / climb latch / pedal-hold, no locationd or safety change.
