@@ -19,7 +19,7 @@ close path (large slack is OK) so later brakes are not as hard.
 
 Mild / normal closes were still a hard let-off: `a = -v_rel² / (2 * slack)`
 ramps every close to the 0.55 peak near Follow Distance. Cap non-rapid
-closes at light regen (MILD 0.22). Rapid / dumping (high `v_rel`) still
+closes at light regen (MILD 0.18). Rapid / dumping (high `v_rel`) still
 uses kinematics up to 0.55. Start early and light; do not delay ease
 (that forces a late bite). MPC / FCW win via min().
 
@@ -39,8 +39,9 @@ re-bite; keep the 0.20 exit so we still close onto Follow Distance.
 Positive close-the-gap accel is a separate cap (`lead_close_accel_ms2`).
 Map Accel 1–10 used to gate only MAX-rise climb; Adaptive Accel used the
 full cruise profile (1.6–0.6) when the gap was large. That is the punch.
-Large-gap catch-up 0.20/0.30/0.50 is unchanged. Near-gap opening rematch
-is a trickle.
+Large-gap catch-up is 0.12/0.18/0.28 (Accel 1/5/10). Near-gap opening
+rematch is a gentler trickle. A brief `leadOne` drop holds the last
+in-window lead so the cap cannot be bypassed.
 """
 from __future__ import annotations
 
@@ -62,7 +63,7 @@ LEAD_APPROACH_HEADSTART_S = 24.0
 # hysteresis, not a short ceiling — see lead_approach_track_ok.
 LEAD_APPROACH_MAX_START_M = 200.0
 # Hold a few meters past the ceiling so a track at 199–201 m does not chatter.
-LEAD_APPROACH_MAX_HOLD_M = 8.0
+LEAD_APPROACH_MAX_HOLD_M = 12.0
 # Inside this, leadOne.status is enough. Beyond it, require radar + modelProb.
 # LeadData exposes those two; Track.cnt age is not published on Pre-AP.
 LEAD_APPROACH_RELIABLE_M = 140.0
@@ -74,7 +75,7 @@ LEAD_APPROACH_CLEAR_DV_MS = 2.5
 # Mild-close comfort ceiling. Kinematics used to hit 0.55 on a 3–10 mph
 # close right at the gap (hard let-off). Light regen / ease-off only.
 # Rapid (high closing rate) keeps the 0.55 path.
-LEAD_APPROACH_MILD_A_MS2 = 0.22
+LEAD_APPROACH_MILD_A_MS2 = 0.18
 # Time-to-follow-gap window. Far TTC stays kinematic nibble; inside this
 # a mild close is the light ceiling, not a delayed 0.55 bite.
 LEAD_APPROACH_TTC_START_S = 20.0
@@ -88,17 +89,17 @@ LEAD_APPROACH_RAPID_TTC_S = 8.0
 # the follow gap on a slight incline (regen ↔ accel). First pass was
 # 0.50 / 0.20; leftover bump-pull was rematch re-crossing 0.50. Raise
 # enter only — a 0.12 exit held ease too long and parked far back.
-LEAD_APPROACH_DV_MS = 0.55         # enter: ~1.2 mph closing; ignore radar jitter
+LEAD_APPROACH_DV_MS = 0.65         # enter: ~1.5 mph closing; wider than 0.55 rematch band
 LEAD_APPROACH_DV_OFF_MS = 0.20     # exit: ~0.45 mph; drop so rematch can finish the close
 LEAD_APPROACH_SLACK_ON_M = 1.0     # enter only with slack above Follow Distance
 LEAD_APPROACH_SLACK_OFF_M = 0.0    # stay until at/inside the follow gap
-LEAD_APPROACH_NEED_HOLD_M = 4.0    # extra slack (m) before dropping after open
+LEAD_APPROACH_NEED_HOLD_M = 6.0    # extra slack (m) before dropping after open
 
-# Gradual regen onset (planner frame). Same step as accel_clip slew.
-# At DT_MDL=0.05 s → 1.0 m/s²/s. Milder / off slews toward 0 so rematch
-# is not a regen→Accel slam.
-LEAD_APPROACH_SLEW_MS2 = 0.05
-LEAD_APPROACH_RELEASE_SLEW_MS2 = 0.025
+# Gradual regen onset (planner frame). Longer than the 0.05 accel_clip
+# slew so mild ease and gap-opening rematch do not step. At DT_MDL=0.05 s
+# onset is 0.60 m/s²/s; release is 0.24 m/s²/s.
+LEAD_APPROACH_SLEW_MS2 = 0.03
+LEAD_APPROACH_RELEASE_SLEW_MS2 = 0.012
 # Softer than this is a nibble (matching-traffic / far slack, |a| ~0.06–0.13).
 # Large-gap catch-up +a may ignore it; real ease, near-gap rematch, and
 # MPC 0/−a still use min() / ease-off.
@@ -111,16 +112,19 @@ NAP_T_FOLLOW = (0.7, 0.9, 1.1, 1.3, 1.5, 1.7, 1.9)
 # product and is not expanded here.
 LEAD_CLOSE_MAX_M = 140.0
 # Max +a when coming up behind a radar lead (gap close / catch-up).
-# Accel 5 → 0.30; Accel 1 → 0.20; Accel 10 → 0.50. Cruise get_max_accel is
+# Accel 5 → 0.18; Accel 1 → 0.12; Accel 10 → 0.28. Cruise get_max_accel is
 # 1.6–0.6; do not raise the min. Does not change MPC danger / hard brake.
-LEAD_CLOSE_A_BASE_MS2 = 0.30
-LEAD_CLOSE_A_MIN_MS2 = 0.20
-LEAD_CLOSE_A_MAX_MS2 = 0.50
+LEAD_CLOSE_A_BASE_MS2 = 0.18
+LEAD_CLOSE_A_MIN_MS2 = 0.12
+LEAD_CLOSE_A_MAX_MS2 = 0.28
 # Near Follow Distance, rematch after ease must trickle. Large-gap
-# catch-up (slack above REMATCH) keeps 0.20/0.30/0.50.
-LEAD_CLOSE_OPENING_A_MS2 = 0.08
-LEAD_CLOSE_REMATCH_A_MS2 = 0.12
-LEAD_CLOSE_REMATCH_SLACK_M = 12.0
+# catch-up (slack above REMATCH) keeps 0.12/0.18/0.28.
+LEAD_CLOSE_OPENING_A_MS2 = 0.05
+LEAD_CLOSE_REMATCH_A_MS2 = 0.08
+LEAD_CLOSE_REMATCH_SLACK_M = 18.0
+# Brief hold of the last in-window lead when `leadOne.status` drops so
+# cruise punch cannot leak through a radar flicker. ~10 planner frames.
+LEAD_CLOSE_HOLD_S = 0.50
 
 
 def nap_t_follow(nap_follow_dist: int | None) -> float | None:
@@ -143,8 +147,9 @@ def lead_close_accel_ms2(accel_level: int = 5, v_rel=None, slack=None) -> float:
   Accel 1–10 scales this. Separate from map MAX-rise climb (0.36–1.60)
   and from lead_approach decel (0.55). MPC −a / danger is unchanged.
 
-  Large-gap catch-up is unchanged. Near the follow gap, a lead pulling
-  away / slow rematch trickles +a so ease→Accel does not surge.
+  Large-gap catch-up is Accel 1/5/10 = 0.12/0.18/0.28. Near the follow
+  gap, a lead pulling away / slow rematch trickles +a so ease→Accel
+  does not surge.
   """
   a = LEAD_CLOSE_A_BASE_MS2 * accel_scale_factor(int(accel_level))
   a = max(LEAD_CLOSE_A_MIN_MS2, min(LEAD_CLOSE_A_MAX_MS2, a))
@@ -163,6 +168,33 @@ def lead_close_should_cap(d_rel) -> bool:
     return False
   d = float(d_rel)
   return 0.0 < d <= LEAD_CLOSE_MAX_M
+
+
+def resolve_lead_close_hold(status, d_rel, v_lead, held_d, held_v, held_age, dt,
+                            hold_s=LEAD_CLOSE_HOLD_S):
+  """Lead used for the +a close cap, with a brief hold on status flicker.
+
+  Live in-window radar wins. A dropped `leadOne.status` keeps the last
+  in-window lead for `hold_s` so cruise 1.6 cannot punch through a
+  flicker. A valid far lead (`dRel` past 140 m) drops the hold so
+  MAX-rise / open-road climb is not stuck capped.
+
+  Returns `(d_use, v_use, held_d, held_v, held_age)`. `d_use` is None
+  when the cap should not apply.
+  """
+  if status and lead_close_should_cap(d_rel) and v_lead is not None:
+    d = float(d_rel)
+    v = float(v_lead)
+    return d, v, d, v, 0.0
+
+  far_valid = bool(status) and d_rel is not None and float(d_rel) > LEAD_CLOSE_MAX_M
+  if far_valid or held_d is None or held_v is None:
+    return None, None, None, None, 0.0
+
+  age = float(held_age) + float(dt)
+  if age > float(hold_s):
+    return None, None, None, None, 0.0
+  return float(held_d), float(held_v), float(held_d), float(held_v), age
 
 
 def lead_approach_track_ok(d_rel, model_prob=None, radar=None, active=False) -> bool:
@@ -288,7 +320,7 @@ def lead_approach_decel_ms2(v_ego, v_lead, d_rel, t_follow, a_comfort=LEAD_APPRO
 
   When `v_rel` is clearly positive (≥ CLEAR_DV) and the track is reliable,
   large slack is allowed — speed-match from the first reasonable radar
-  feedback, still capped (mild 0.22 / rapid 0.55) and slewed by the planner.
+  feedback, still capped (mild 0.18 / rapid 0.55) and slewed by the planner.
   """
   if t_follow is None or float(t_follow) <= 0 or a_comfort <= 0:
     return None

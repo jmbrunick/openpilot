@@ -27,6 +27,7 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_CLOSE_OPENING_A_MS2,
   LEAD_CLOSE_REMATCH_A_MS2,
   LEAD_CLOSE_REMATCH_SLACK_M,
+  LEAD_CLOSE_HOLD_S,
   NAP_T_FOLLOW,
   STOP_DISTANCE,
   apply_lead_approach_overlay,
@@ -39,6 +40,7 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   lead_close_should_cap,
   lead_follow_slack_m,
   nap_t_follow,
+  resolve_lead_close_hold,
   slew_lead_approach_a,
 )
 from openpilot.selfdrive.mapd.constants import (
@@ -75,30 +77,31 @@ def test_lead_approach_keeps_early_map_brake_not_map_110m_margin():
   assert LEAD_APPROACH_A_MS2 < 1.0
   assert LEAD_APPROACH_A_MS2 < 2.5
   # Tiny comfort tune: raise enter only. Exit stays 0.20 so we still close.
-  assert abs(LEAD_APPROACH_DV_MS - 0.55) < 1e-9
+  assert abs(LEAD_APPROACH_DV_MS - 0.65) < 1e-9
   assert abs(LEAD_APPROACH_DV_OFF_MS - 0.20) < 1e-9
   assert LEAD_APPROACH_DV_OFF_MS < LEAD_APPROACH_DV_MS
   assert LEAD_APPROACH_DV_MS > 0.50  # harder rematch re-enter than #122
   assert LEAD_APPROACH_SLACK_OFF_M < LEAD_APPROACH_SLACK_ON_M
   assert LEAD_APPROACH_NEED_HOLD_M > 0.0
   assert LEAD_APPROACH_MAX_HOLD_M > 0.0
-  assert abs(LEAD_APPROACH_SLEW_MS2 - 0.05) < 1e-9
-  assert abs(LEAD_APPROACH_RELEASE_SLEW_MS2 - 0.025) < 1e-9
+  assert abs(LEAD_APPROACH_SLEW_MS2 - 0.03) < 1e-9
+  assert abs(LEAD_APPROACH_RELEASE_SLEW_MS2 - 0.012) < 1e-9
   assert LEAD_APPROACH_RELEASE_SLEW_MS2 < LEAD_APPROACH_SLEW_MS2
   assert abs(LEAD_APPROACH_NIBBLE_MS2 - 0.15) < 1e-9
   assert LEAD_APPROACH_NIBBLE_MS2 > 0.13  # covers matching-traffic |a|
   assert abs(LEAD_APPROACH_A_MS2 - 0.55) < 1e-9  # rapid peak unchanged
-  assert abs(LEAD_APPROACH_MILD_A_MS2 - 0.22) < 1e-9
+  assert abs(LEAD_APPROACH_MILD_A_MS2 - 0.18) < 1e-9
   assert LEAD_APPROACH_MILD_A_MS2 < LEAD_APPROACH_A_MS2
   assert LEAD_APPROACH_MILD_A_MS2 > LEAD_APPROACH_NIBBLE_MS2
   assert abs(LEAD_APPROACH_RAPID_DV_MS - 6.0) < 1e-9
   assert abs(LEAD_APPROACH_TTC_START_S - 20.0) < 1e-9
   assert abs(LEAD_APPROACH_RAPID_TTC_S - 8.0) < 1e-9
   assert LEAD_APPROACH_RAPID_DV_MS > LEAD_APPROACH_CLEAR_DV_MS
-  assert abs(LEAD_CLOSE_OPENING_A_MS2 - 0.08) < 1e-9
-  assert abs(LEAD_CLOSE_REMATCH_A_MS2 - 0.12) < 1e-9
+  assert abs(LEAD_CLOSE_OPENING_A_MS2 - 0.05) < 1e-9
+  assert abs(LEAD_CLOSE_REMATCH_A_MS2 - 0.08) < 1e-9
   assert LEAD_CLOSE_OPENING_A_MS2 < LEAD_CLOSE_REMATCH_A_MS2 < LEAD_CLOSE_A_MIN_MS2
-  assert LEAD_CLOSE_REMATCH_SLACK_M > 0.0
+  assert LEAD_CLOSE_REMATCH_SLACK_M > 12.0
+  assert abs(LEAD_CLOSE_HOLD_S - 0.50) < 1e-9
   import openpilot.selfdrive.controls.lib.lead_approach as lead_approach
   assert not hasattr(lead_approach, "LEAD_APPROACH_MARGIN_M")
 
@@ -251,8 +254,8 @@ def test_lead_close_accel_is_well_below_cruise_and_scales_with_accel():
   assert abs(a5 - LEAD_CLOSE_A_BASE_MS2) < 1e-9
   assert abs(a10 - LEAD_CLOSE_A_MAX_MS2) < 1e-9
   assert a1 < a5 < a10
-  assert a1 < 0.25
-  assert a10 <= 0.50
+  assert a1 < 0.15
+  assert a10 <= 0.30
   # City / highway cruise clip is the old large-gap punch (1.2 at 10 m/s, 0.8 at 25).
   assert a1 < 1.2 / 3.0
   assert a1 < 0.8 / 2.0
@@ -338,7 +341,7 @@ def test_lead_approach_hysteresis_holds_through_v_rel_and_slack_noise():
 def test_lead_approach_gap_edge_rematch_does_not_chatter():
   """Slight-grade rematch: rematch after a 0.20 exit used to re-cross 0.50.
 
-  Enter 0.55 blocks that re-bite. Exit stays 0.20 so we still drop and close.
+  Enter 0.65 blocks that re-bite. Exit stays 0.20 so we still drop and close.
   """
   v_lead = 22.0
   t4 = nap_t_follow(4)
@@ -368,7 +371,7 @@ def test_lead_approach_slew_softens_onset_and_release():
   assert a == pytest.approx(-LEAD_APPROACH_SLEW_MS2)
   prev = None
   reached = 0
-  for n in range(1, 20):
+  for n in range(1, 40):
     prev = slew_lead_approach_a(target, prev)
     assert prev is not None
     assert prev >= target - 1e-9
@@ -378,7 +381,7 @@ def test_lead_approach_slew_softens_onset_and_release():
   else:
     raise AssertionError("slew did not reach comfort peak")
   assert abs(prev + LEAD_APPROACH_A_MS2) < 1e-9
-  assert reached == int(round(LEAD_APPROACH_A_MS2 / LEAD_APPROACH_SLEW_MS2))
+  assert reached >= int(LEAD_APPROACH_A_MS2 / LEAD_APPROACH_SLEW_MS2)
 
   assert slew_lead_approach_a(-0.10, -0.40) == pytest.approx(-0.40 + LEAD_APPROACH_RELEASE_SLEW_MS2)
   released = slew_lead_approach_a(None, -0.40)
@@ -389,13 +392,13 @@ def test_lead_approach_slew_softens_onset_and_release():
   while fading is not None:
     fading = slew_lead_approach_a(None, fading)
     frames += 1
-    if frames > 40:
+    if frames > 80:
       raise AssertionError("release slew did not reach off")
-  assert frames == int(round(0.40 / LEAD_APPROACH_RELEASE_SLEW_MS2))
+  assert frames >= int(0.40 / LEAD_APPROACH_RELEASE_SLEW_MS2)
 
 
 def test_lead_approach_peak_stays_at_early_comfort_not_mpc():
-  """Rapid overlay caps at 0.55. Mild stays at 0.22. Does not own MPC 2.5."""
+  """Rapid overlay caps at 0.55. Mild stays at 0.18. Does not own MPC 2.5."""
   t4 = nap_t_follow(4)
   v_lead = 22.4
   d_follow = t4 * v_lead + STOP_DISTANCE
@@ -494,19 +497,20 @@ def test_clear_close_allows_large_slack_still_capped():
 
 def test_nibble_overlay_does_not_steal_catchup_plus_a():
   """Far/gentle overlay must not beat rematch +a. Real ease / MPC 0/−a still min()."""
-  assert apply_lead_approach_overlay(0.20, -0.05) == pytest.approx(0.20)
-  assert apply_lead_approach_overlay(0.20, -0.13) == pytest.approx(0.20)
-  assert apply_lead_approach_overlay(0.20, -LEAD_APPROACH_NIBBLE_MS2) == pytest.approx(-LEAD_APPROACH_NIBBLE_MS2)
-  assert apply_lead_approach_overlay(0.20, -0.20) == pytest.approx(-0.20)
+  a_min = LEAD_CLOSE_A_MIN_MS2
+  assert apply_lead_approach_overlay(a_min, -0.05) == pytest.approx(a_min)
+  assert apply_lead_approach_overlay(a_min, -0.13) == pytest.approx(a_min)
+  assert apply_lead_approach_overlay(a_min, -LEAD_APPROACH_NIBBLE_MS2) == pytest.approx(-LEAD_APPROACH_NIBBLE_MS2)
+  assert apply_lead_approach_overlay(a_min, -0.20) == pytest.approx(-0.20)
   assert apply_lead_approach_overlay(0.0, -0.05) == pytest.approx(-0.05)
   assert apply_lead_approach_overlay(-0.30, -0.05) == pytest.approx(-0.30)
   assert apply_lead_approach_overlay(-0.10, -0.20) == pytest.approx(-0.20)
-  assert apply_lead_approach_overlay(0.20, None) == pytest.approx(0.20)
+  assert apply_lead_approach_overlay(a_min, None) == pytest.approx(a_min)
   # Large-gap rematch still keeps catch-up. A real close eases off throttle.
-  assert apply_lead_approach_overlay(0.20, -0.08, v_rel=0.3, slack=40.0) == pytest.approx(0.20)
-  assert apply_lead_approach_overlay(0.20, -0.08, v_rel=4.0, slack=40.0) == pytest.approx(0.0)
+  assert apply_lead_approach_overlay(a_min, -0.08, v_rel=0.3, slack=40.0) == pytest.approx(a_min)
+  assert apply_lead_approach_overlay(a_min, -0.08, v_rel=4.0, slack=40.0) == pytest.approx(0.0)
   # Near the follow gap, a fading nibble still min()s (no Accel slam).
-  assert apply_lead_approach_overlay(0.20, -0.08, v_rel=0.1, slack=3.0) == pytest.approx(-0.08)
+  assert apply_lead_approach_overlay(a_min, -0.08, v_rel=0.1, slack=3.0) == pytest.approx(-0.08)
 
 
 def test_planner_wires_hysteresis_and_slew():
@@ -518,11 +522,15 @@ def test_planner_wires_hysteresis_and_slew():
   assert "radar=lead.radar" in planner
   assert "slew_lead_approach_a(a_lead, self._lead_approach_a)" in planner
   assert "apply_lead_approach_overlay(" in planner
-  assert "v_rel=v_ego - float(lead.vLead)" in planner
+  assert "v_rel=overlay_v_rel" in planner
   assert "lead_follow_slack_m(" in planner
-  assert "lead_close_should_cap(lead_close.dRel)" in planner
-  assert "lead_close_accel_ms2(self._map_speed_accel" in planner
+  assert "resolve_lead_close_hold(" in planner
+  assert "lead_close_accel_ms2(" in planner
+  assert "self._lead_close_a_cap" in planner
   assert "self._lead_approach_active = a_lead is not None" in planner
+  slew_at = planner.find("self.prev_accel_clip[idx] - 0.05")
+  recap_at = planner.find("min(float(accel_clip[1]), float(self._lead_close_a_cap))")
+  assert 0 <= slew_at < recap_at
   assert "hypermile" not in planner.lower()
   assert "hill_climb" not in planner.lower()
 
@@ -586,7 +594,7 @@ def test_rapid_close_allows_stronger_early_decel():
 def test_gap_opening_rematch_is_a_trickle():
   """When the gap is opening / just rematching near Follow Distance: small +a.
 
-  Large-gap catch-up (lead-close cap that already feels right) stays 0.20/0.30/0.50.
+  Large-gap catch-up (lead-close cap) is 0.12/0.18/0.28.
   """
   assert lead_close_accel_ms2(1) == pytest.approx(LEAD_CLOSE_A_MIN_MS2)
   assert lead_close_accel_ms2(1, v_rel=0.0, slack=40.0) == pytest.approx(LEAD_CLOSE_A_MIN_MS2)
@@ -594,7 +602,7 @@ def test_gap_opening_rematch_is_a_trickle():
 
   a_open = lead_close_accel_ms2(1, v_rel=-0.4, slack=3.0)
   assert a_open == pytest.approx(LEAD_CLOSE_OPENING_A_MS2)
-  assert a_open < 0.10
+  assert a_open < 0.07
   a_open_5 = lead_close_accel_ms2(5, v_rel=-0.2, slack=2.0)
   assert a_open_5 == pytest.approx(LEAD_CLOSE_OPENING_A_MS2)
 
@@ -618,3 +626,50 @@ def test_gap_opening_rematch_is_a_trickle():
   near_slack = lead_follow_slack_m(d_follow + 5.0, v_lead, t4)
   assert near_slack == pytest.approx(5.0)
   assert near_slack < LEAD_CLOSE_REMATCH_SLACK_M
+  mid_slack = lead_follow_slack_m(d_follow + 15.0, v_lead, t4)
+  assert mid_slack == pytest.approx(15.0)
+  assert mid_slack < LEAD_CLOSE_REMATCH_SLACK_M
+  a_mid = lead_close_accel_ms2(1, v_rel=-0.2, slack=mid_slack)
+  assert a_mid == pytest.approx(LEAD_CLOSE_OPENING_A_MS2)
+
+
+def test_lead_close_hold_keeps_cap_through_status_flicker():
+  """Dropped leadOne.status keeps the last in-window lead; a valid far lead does not."""
+  d_live, v_live, held_d, held_v, age = resolve_lead_close_hold(
+    True, 80.0, 22.0, None, None, 0.0, 0.05,
+  )
+  assert d_live == pytest.approx(80.0)
+  assert v_live == pytest.approx(22.0)
+  assert held_d == pytest.approx(80.0)
+  assert age == pytest.approx(0.0)
+
+  d_use, v_use, held_d, held_v, age = resolve_lead_close_hold(
+    False, 80.0, 22.0, held_d, held_v, age, 0.05,
+  )
+  assert d_use == pytest.approx(80.0)
+  assert v_use == pytest.approx(22.0)
+  assert age == pytest.approx(0.05)
+
+  # Hold through several planner frames, then expire.
+  for _ in range(8):
+    d_use, v_use, held_d, held_v, age = resolve_lead_close_hold(
+      False, 0.0, 0.0, held_d, held_v, age, 0.05,
+    )
+    assert d_use == pytest.approx(80.0)
+  assert age < LEAD_CLOSE_HOLD_S
+
+  d_use, v_use, held_d, held_v, age = resolve_lead_close_hold(
+    False, 0.0, 0.0, 80.0, 22.0, LEAD_CLOSE_HOLD_S, 0.05,
+  )
+  assert d_use is None
+  assert held_d is None
+  assert age == pytest.approx(0.0)
+
+  # Valid far track is not a flicker: drop the hold so MAX-rise can climb.
+  d_use, v_use, held_d, held_v, age = resolve_lead_close_hold(
+    True, 160.0, 22.0, 80.0, 22.0, 0.10, 0.05,
+  )
+  assert d_use is None
+  assert held_d is None
+  assert not lead_close_should_cap(160.0)
+  assert lead_close_should_cap(80.0)

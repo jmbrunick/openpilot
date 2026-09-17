@@ -662,7 +662,7 @@ def test_planner_caps_lead_close_accel_at_min_accel_and_keeps_hard_brake():
     planner.update(inputs)
 
   assert planner.output_a_target == pytest.approx(LEAD_CLOSE_A_MIN_MS2, abs=0.06)
-  assert planner.output_a_target < 0.30
+  assert planner.output_a_target < 0.20
   assert planner.output_a_target < longitudinal_planner.get_max_accel(v_ego) / 2.0
 
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
@@ -673,6 +673,46 @@ def test_planner_caps_lead_close_accel_at_min_accel_and_keeps_hard_brake():
   lead.dRel = 160.0
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=1.5)
   cruise_limit = longitudinal_planner.get_max_accel(v_ego)
+  planner.prev_accel_clip = [-1.2, cruise_limit]
+  for _ in range(8):
+    planner.update(inputs)
+  assert planner.output_a_target > LEAD_CLOSE_A_MAX_MS2
+  assert planner.output_a_target == pytest.approx(cruise_limit, abs=0.08)
+
+
+def test_planner_lead_close_cap_is_immediate_and_holds_status_flicker():
+  """Cruise punch must not leak while accel_clip slews, or when leadOne flickers."""
+  v_ego = 25.0
+  v_lead = 25.0
+  t_follow = get_T_FOLLOW(nap_follow_dist=4)
+  d_follow = t_follow * v_lead + STOP_DISTANCE_M
+  d_rel = min(LEAD_CLOSE_MAX_M - 1.0, d_follow + 40.0)
+
+  params = _MutablePlannerParams(nap_follow_dist=4, map_speed_accel=1)
+  planner = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
+  planner._map_speed_accel = 1
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=1.5)
+  planner.prev_accel_clip = [-1.2, 1.6]
+  inputs = _make_planner_inputs(v_ego)
+  lead = inputs["radarState"].leadOne
+  lead.status = True
+  lead.dRel = d_rel
+  lead.vLead = v_lead
+
+  planner.update(inputs)
+  assert planner.output_a_target == pytest.approx(LEAD_CLOSE_A_MIN_MS2, abs=0.06)
+  assert planner.output_a_target < 0.20
+
+  lead.status = False
+  for _ in range(6):
+    planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=1.5)
+    planner.update(inputs)
+    assert planner.output_a_target == pytest.approx(LEAD_CLOSE_A_MIN_MS2, abs=0.06)
+
+  lead.status = True
+  lead.dRel = 160.0
+  cruise_limit = longitudinal_planner.get_max_accel(v_ego)
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=1.5)
   planner.prev_accel_clip = [-1.2, cruise_limit]
   for _ in range(8):
     planner.update(inputs)

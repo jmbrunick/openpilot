@@ -1,3 +1,7 @@
+NAP follow tighter close-cap + smoother rematch (2026-09-17)
+========================
+* Pre-AP follow on the #181 stack (One-Pedal SET resume kept): **lead-close +a** is now **0.12 / 0.18 / 0.28** at Accel 1 / 5 / 10 (was 0.20 / 0.30 / 0.50). Still closes onto Follow Distance; not the cruise 1.6 punch. Cap applies **immediately** (clip slew cannot leak cruise +a for a second) and **holds the last in-window lead ~0.5 s** if `leadOne` flickers. **Mild close** stays light regen (~0.18 m/s²); **rapid / dumping** (~13 mph closing) still uses the firmer 0.55 path. Overlay slew is longer (onset 0.03 / release 0.012 per frame); rematch trickle is gentler (0.05 opening / 0.08 slow rematch) over a wider near-gap. MPC / FCW danger still wins. No panda flash.
+
 NAP follow ease/rematch soften (2026-09-17)
 ========================
 * Pre-AP follow on the #180 stack: **mild / normal closes stay light** (ease off throttle, then ~0.22 m/s² regen) instead of ramping every close to the **0.55** let-off near Follow Distance. **Rapid / dumping** only (`v_rel` ≥ ~13 mph) still uses the firmer 0.55 path. Overlay **slew both ways** so backing off is not a regen→Accel slam; when the gap is **opening** near Follow Distance, rematch **+a trickles** (0.08 opening / 0.12 slow rematch). Large-gap lead-close cap **0.20 / 0.30 / 0.50** (Accel 1/5/10) and One-Pedal SET resume are unchanged. MPC / FCW danger still wins. No panda flash.

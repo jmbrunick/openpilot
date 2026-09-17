@@ -1257,7 +1257,7 @@ def test_map_speed_submenu_wires_params():
   assert "MAP_SPEED_ACCEL_DESCRIPTION" in content
   assert "1 lazy" in content
   assert "close cap" in content
-  assert "0.20 / 0.30 / 0.50" in content
+  assert "0.12 / 0.18 / 0.28" in content
   assert "not a harder brake" in content
   assert "steps this 1–7" in content
   assert "No lead:" in content
@@ -1306,7 +1306,7 @@ def test_driving_mannerisms_submenu_wires_params():
   assert "Lead still owns follow" in content
   assert "1 lazy" in content
   assert "close cap" in content
-  assert "0.20 / 0.30 / 0.50" in content
+  assert "0.12 / 0.18 / 0.28" in content
   assert tici.index('"Acceleration"') < tici.index('"Adaptive Accel"')
   assert tici.index("self._accel_buttons") < tici.index("self._adaptive_accel")
   assert tici.index("self._adaptive_accel") < tici.index("self._follow_buttons")
@@ -1373,7 +1373,8 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   assert 0 <= close_at < mpc_at
   assert "map_brake_a_ms2" in planner
   assert "map_track_accel_ms2" in planner
-  assert "lead_close_should_cap" in planner
+  assert "resolve_lead_close_hold" in planner
+  assert "lead_close_accel_ms2" in planner
   assert "min(float(output_a_target), a_brake)" in planner
   assert "if float(output_a_target) >= 0.0:" in planner
   assert "output_a_target = 0.0" in planner
