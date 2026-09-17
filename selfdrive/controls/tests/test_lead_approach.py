@@ -99,7 +99,7 @@ def test_lead_approach_keeps_early_map_brake_not_map_110m_margin():
   assert abs(LEAD_APPROACH_RAPID_DV_MS - 6.0) < 1e-9
   assert abs(LEAD_APPROACH_TTC_START_S - 20.0) < 1e-9
   assert abs(LEAD_APPROACH_RAPID_TTC_S - 8.0) < 1e-9
-  assert LEAD_APPROACH_RAPID_CONFIRM_N >= 2
+  assert LEAD_APPROACH_RAPID_CONFIRM_N >= 4
   assert LEAD_APPROACH_RAPID_DV_MS > LEAD_APPROACH_CLEAR_DV_MS
   assert abs(LEAD_CLOSE_OPENING_A_MS2 - 0.05) < 1e-9
   assert abs(LEAD_CLOSE_REMATCH_A_MS2 - 0.08) < 1e-9
@@ -480,13 +480,17 @@ def test_lead_approach_peak_stays_at_early_comfort_not_mpc():
   v_ego = v_lead + LEAD_APPROACH_RAPID_DV_MS + 0.5
   v_rel = v_ego - v_lead
   rel_need = (v_rel * v_rel) / (2.0 * LEAD_APPROACH_A_MS2)
-  peak = lead_approach_decel_ms2(v_ego, v_lead, d_follow + rel_need, t4)
+  # Ungated / single sample stays mild — 0.55 is opt-in after confirm.
+  assert lead_approach_decel_ms2(v_ego, v_lead, d_follow + rel_need, t4) == pytest.approx(
+    -LEAD_APPROACH_MILD_A_MS2,
+  )
+  peak = lead_approach_decel_ms2(v_ego, v_lead, d_follow + rel_need, t4, allow_rapid=True)
   assert peak is not None
   assert abs(peak + LEAD_APPROACH_A_MS2) < 1e-9
   assert abs(peak) <= 0.55 + 1e-9
   assert abs(peak) < 0.80
   assert abs(peak) < 2.5
-  tight = lead_approach_decel_ms2(v_ego, v_lead, d_follow + 1.05, t4)
+  tight = lead_approach_decel_ms2(v_ego, v_lead, d_follow + 1.05, t4, allow_rapid=True)
   assert tight is not None
   assert tight == pytest.approx(-LEAD_APPROACH_A_MS2)
 
@@ -599,6 +603,7 @@ def test_planner_wires_hysteresis_and_slew():
   assert "self._lead_approach_active = a_lead is not None" in planner
   assert "lead_approach_rapid_gate(" in planner
   assert "allow_rapid=allow_rapid" in planner
+  assert "sample_ok=a_lead is not None" in planner
   assert "self._lead_approach_rapid_count" in planner
   slew_at = planner.find("self.prev_accel_clip[idx] - 0.05")
   recap_at = planner.find("min(float(accel_clip[1]), float(self._lead_close_a_cap))")
@@ -651,33 +656,37 @@ def test_rapid_close_allows_stronger_early_decel():
   assert v_rel >= LEAD_APPROACH_RAPID_DV_MS
   assert lead_approach_is_rapid(v_rel)
 
-  a_far = lead_approach_decel_ms2(v_ego, v_lead, 180.0, t4, model_prob=1.0, radar=True)
+  a_far = lead_approach_decel_ms2(v_ego, v_lead, 180.0, t4, model_prob=1.0, radar=True,
+                                 allow_rapid=True)
   slack_far = 180.0 - d_follow
   a_kin = -(v_rel * v_rel) / (2.0 * slack_far)
   assert a_far == pytest.approx(max(a_kin, -LEAD_APPROACH_A_MS2), abs=1e-6)
   assert abs(a_far) > LEAD_APPROACH_MILD_A_MS2 or abs(a_kin) <= LEAD_APPROACH_MILD_A_MS2
 
   d_dump = d_follow + v_rel * LEAD_APPROACH_RAPID_TTC_S
-  a_dump = lead_approach_decel_ms2(v_ego, v_lead, d_dump, t4, model_prob=1.0, radar=True)
+  assert lead_approach_decel_ms2(
+    v_ego, v_lead, d_dump, t4, model_prob=1.0, radar=True,
+  ) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  a_dump = lead_approach_decel_ms2(v_ego, v_lead, d_dump, t4, model_prob=1.0, radar=True,
+                                  allow_rapid=True)
   assert a_dump == pytest.approx(-LEAD_APPROACH_A_MS2, abs=0.08)
   assert abs(a_dump) > LEAD_APPROACH_MILD_A_MS2 + 0.20
 
 
 def test_one_outlier_rapid_v_rel_does_not_commit_hard_regen():
   """A single high closing-rate sample stays on mild ease. Sustained dump gets 0.55."""
-  assert LEAD_APPROACH_RAPID_CONFIRM_N == 3
+  assert LEAD_APPROACH_RAPID_CONFIRM_N == 4
   v_rel = LEAD_APPROACH_RAPID_DV_MS + 0.5
   assert lead_approach_is_rapid(v_rel)
 
-  allow, n = lead_approach_rapid_gate(v_rel, 0)
-  assert allow is False
-  assert n == 1
-  allow, n = lead_approach_rapid_gate(v_rel, n)
-  assert allow is False
-  assert n == 2
+  n = 0
+  for i in range(LEAD_APPROACH_RAPID_CONFIRM_N - 1):
+    allow, n = lead_approach_rapid_gate(v_rel, n)
+    assert allow is False
+    assert n == i + 1
   allow, n = lead_approach_rapid_gate(v_rel, n)
   assert allow is True
-  assert n == 3
+  assert n == LEAD_APPROACH_RAPID_CONFIRM_N
 
   # Outlier then mild: count resets; next rapid starts over.
   allow, n = lead_approach_rapid_gate(v_rel, 0)
@@ -688,22 +697,51 @@ def test_one_outlier_rapid_v_rel_does_not_commit_hard_regen():
   allow, n = lead_approach_rapid_gate(v_rel, n)
   assert allow is False
   assert n == 1
+  # Far flicker / overlay not in play must not pre-arm the 0.55 path.
+  allow, n = lead_approach_rapid_gate(v_rel, n, sample_ok=False)
+  assert allow is False
+  assert n == 0
 
   t4 = nap_t_follow(4)
   v_lead = 50.0 * 0.44704
   v_ego = 70.0 * 0.44704
   v_rel_dump = v_ego - v_lead
+  v_ego_mild = v_lead + 4.47  # ~10 mph close — not rapid
   assert lead_approach_is_rapid(v_rel_dump)
+  assert not lead_approach_is_rapid(v_ego_mild - v_lead)
   d_dump = t4 * v_lead + STOP_DISTANCE + v_rel_dump * LEAD_APPROACH_RAPID_TTC_S
-  a_blip = lead_approach_decel_ms2(
-    v_ego, v_lead, d_dump, t4, model_prob=1.0, radar=True, allow_rapid=False,
-  )
-  assert a_blip == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
-  a_held = lead_approach_decel_ms2(
-    v_ego, v_lead, d_dump, t4, model_prob=1.0, radar=True, allow_rapid=True,
-  )
-  assert a_held == pytest.approx(-LEAD_APPROACH_A_MS2, abs=0.08)
-  assert abs(a_held) > abs(a_blip) + 0.20
+
+  def _step(v0, count):
+    a_probe = lead_approach_decel_ms2(
+      v0, v_lead, d_dump, t4, model_prob=1.0, radar=True, allow_rapid=False,
+    )
+    allow, count = lead_approach_rapid_gate(
+      v0 - v_lead, count, sample_ok=a_probe is not None,
+    )
+    a = lead_approach_decel_ms2(
+      v0, v_lead, d_dump, t4, model_prob=1.0, radar=True, allow_rapid=allow,
+    )
+    return a, count, allow
+
+  # One dump-shaped blip, then a mild close: never 0.55.
+  a, count, allow = _step(v_ego, 0)
+  assert allow is False
+  assert a == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  a, count, allow = _step(v_ego_mild, count)
+  assert allow is False
+  assert count == 0
+  assert a is None or abs(a) <= LEAD_APPROACH_MILD_A_MS2 + 1e-9
+
+  # Sustained rapid: first N-1 frames stay mild; then 0.55.
+  count = 0
+  for _ in range(LEAD_APPROACH_RAPID_CONFIRM_N - 1):
+    a, count, allow = _step(v_ego, count)
+    assert allow is False
+    assert a == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  a, count, allow = _step(v_ego, count)
+  assert allow is True
+  assert a == pytest.approx(-LEAD_APPROACH_A_MS2, abs=0.08)
+  assert abs(a) > LEAD_APPROACH_MILD_A_MS2 + 0.20
 
 
 def test_gap_opening_rematch_is_a_trickle():

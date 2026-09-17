@@ -327,8 +327,8 @@ class LongitudinalPlanner:
     # kinematics up to 0.55. Hysteresis (enter 0.65 / exit 0.20) + slew
     # both ways keep regen from slamming rematch; exit stays 0.20 so we
     # still close. Map's +110 m is road distance to a sign and must not
-    # be used here. Rapid 0.55 needs a few consecutive high-v_rel frames
-    # (a single closing-rate blip stays on the mild 0.18 path). A far
+    # be used here. Rapid 0.55 needs a few consecutive in-window high
+    # v_rel frames (a single closing-rate blip stays on mild 0.18). A far
     # nibble must not steal large-gap catch-up +a; near-gap / real-close
     # eases off throttle. MPC close-in / FCW may still brake harder.
     # Map MAX cannot cancel this.
@@ -336,13 +336,18 @@ class LongitudinalPlanner:
       lead = sm['radarState'].leadOne
       if lead.status:
         overlay_v_rel = v_ego - float(lead.vLead)
-        allow_rapid, self._lead_approach_rapid_count = lead_approach_rapid_gate(
-          overlay_v_rel, self._lead_approach_rapid_count,
-        )
         a_lead = lead_approach_decel_ms2(
           v_ego, lead.vLead, lead.dRel, self.t_follow, active=self._lead_approach_active,
-          model_prob=lead.modelProb, radar=lead.radar, allow_rapid=allow_rapid,
+          model_prob=lead.modelProb, radar=lead.radar, allow_rapid=False,
         )
+        allow_rapid, self._lead_approach_rapid_count = lead_approach_rapid_gate(
+          overlay_v_rel, self._lead_approach_rapid_count, sample_ok=a_lead is not None,
+        )
+        if allow_rapid:
+          a_lead = lead_approach_decel_ms2(
+            v_ego, lead.vLead, lead.dRel, self.t_follow, active=self._lead_approach_active,
+            model_prob=lead.modelProb, radar=lead.radar, allow_rapid=allow_rapid,
+          )
         # Hysteresis follows kinematics, not release slew — otherwise a
         # fading overlay keeps the hold gate open and re-bites rematch.
         self._lead_approach_active = a_lead is not None

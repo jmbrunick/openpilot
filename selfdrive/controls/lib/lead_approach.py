@@ -88,8 +88,9 @@ LEAD_APPROACH_TTC_START_S = 20.0
 LEAD_APPROACH_RAPID_DV_MS = 6.0
 LEAD_APPROACH_RAPID_TTC_S = 8.0
 # Planner frames of high v_rel before the 0.55 path. One radar blip must
-# not fire hard regen; mild ease stays immediate. 3 × DT_MDL ≈ 0.15 s.
-LEAD_APPROACH_RAPID_CONFIRM_N = 3
+# not fire hard regen; mild ease stays immediate. Count only in-window
+# closes (do not pre-arm from a far flicker). 4 × DT_MDL ≈ 0.20 s.
+LEAD_APPROACH_RAPID_CONFIRM_N = 4
 
 # Enter / exit (hysteresis). A single v_rel / slack gate chatters around
 # the follow gap on a slight incline (regen ↔ accel). First pass was
@@ -259,12 +260,15 @@ def lead_approach_is_rapid(v_rel, ttc=None) -> bool:
   return float(v_rel) >= LEAD_APPROACH_RAPID_DV_MS
 
 
-def lead_approach_rapid_gate(v_rel, prev_count, need_n=LEAD_APPROACH_RAPID_CONFIRM_N):
-  """Confirm rapid close over consecutive frames. One outlier does not commit.
+def lead_approach_rapid_gate(v_rel, prev_count, need_n=LEAD_APPROACH_RAPID_CONFIRM_N,
+                             sample_ok=True):
+  """Confirm rapid close over consecutive in-window frames.
 
-  Returns `(allow_rapid, new_count)`. Mild / missing v_rel resets the count.
+  One outlier / far flicker does not commit. Mild ease does not wait.
+  Returns `(allow_rapid, new_count)`. Non-rapid, missing v_rel, or
+  `sample_ok=False` (overlay not in play) resets the count.
   """
-  if v_rel is None or not lead_approach_is_rapid(v_rel):
+  if (not sample_ok) or v_rel is None or not lead_approach_is_rapid(v_rel):
     return False, 0
   count = int(prev_count) + 1
   return count >= int(need_n), count
@@ -339,14 +343,15 @@ def apply_lead_approach_overlay(output_a, a_lead, nibble=LEAD_APPROACH_NIBBLE_MS
 
 
 def lead_approach_decel_ms2(v_ego, v_lead, d_rel, t_follow, a_comfort=LEAD_APPROACH_A_MS2,
-                           active=False, model_prob=None, radar=None, allow_rapid=True):
+                           active=False, model_prob=None, radar=None, allow_rapid=False):
   """Comfort decel to close onto the Follow Distance gap, or None.
 
   a = -v_rel² / (2 * slack) so we arrive at the selected gap with matching
   speed. |a| at the open is below the comfort peak. Mild closes stay at
-  MILD (light regen). Rapid closes reach the 0.55 peak once the planner
-  has confirmed (`allow_rapid`). None when speeds match, the lead is
-  faster, or the lead is still outside the window.
+  MILD (light regen) and do not wait on the rapid gate. Rapid closes
+  reach the 0.55 peak only after the planner confirms (`allow_rapid`);
+  default is off so a single v_rel blip stays mild. None when speeds
+  match, the lead is faster, or the lead is still outside the window.
 
   `active` is last frame's *kinematic* overlay (hysteresis), not release
   slew. Enter uses DV_MS / SLACK_ON; hold uses DV_OFF / SLACK_OFF /
