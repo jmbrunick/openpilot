@@ -232,11 +232,11 @@ class LongitudinalPlanner:
           blended = accel_clip[1] * (1.0 - cap_strength) + follow_limit * cap_strength
           accel_clip[1] = min(accel_clip[1], blended)
 
-    # Coming up behind a radar lead: cap +a. Never above Mannerisms Accel
-    # (map 1–10). Large-gap catch-up is the gentler 0.12/0.18/0.28 curve,
-    # including 160–200 m Bosch tracks — cruise 1.6 / Adaptive full-profile
-    # used to punch there. Near-gap rematch trickles. Hold last in-window
-    # lead on a brief status drop. Does not change MPC danger / −a.
+    # Coming up behind a radar lead: cap +a to the same Accel 1–10
+    # envelope as open-road / MAX climb (including last-mph baby-step).
+    # Cruise 1.6 / Adaptive full-profile used to punch a 160–200 m lead.
+    # Near-gap rematch trickles. Hold last in-window lead on a brief
+    # status drop. Does not change MPC danger / −a.
     self._lead_close_a_cap = None
     if self._is_preap:
       lead_close = sm['radarState'].leadOne
@@ -250,9 +250,13 @@ class LongitudinalPlanner:
       if d_cap is not None:
         v_rel_lead = v_ego - float(v_cap)
         slack = lead_follow_slack_m(d_cap, v_cap, self.t_follow)
-        a_personality = map_accel_a_ms2(self._map_speed_lookahead, self._map_speed_accel)
+        a_peak = map_accel_a_ms2(self._map_speed_lookahead, self._map_speed_accel)
+        a_grad = map_track_accel_ms2(
+          v_ego, v_hud_ms, a_peak, accel_level=self._map_speed_accel,
+        )
+        a_env = a_peak if a_grad is None else min(a_peak, float(a_grad))
         self._lead_close_a_cap = lead_close_accel_ms2(
-          self._map_speed_accel, v_rel=v_rel_lead, slack=slack, a_personality=a_personality,
+          self._map_speed_accel, v_rel=v_rel_lead, slack=slack, a_personality=a_env,
         )
         accel_clip[1] = min(accel_clip[1], self._lead_close_a_cap)
 
@@ -306,6 +310,7 @@ class LongitudinalPlanner:
         else:
           a_up = map_track_accel_ms2(
             v_ego, v_hud_ms, map_accel_a_ms2(self._map_speed_lookahead, self._map_speed_accel),
+            accel_level=self._map_speed_accel,
           )
           if a_up is not None and float(output_a_target) >= 0.0:
             # min() alone never created climb (MPC holds ~0). Command Accel 1–10

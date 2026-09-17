@@ -396,9 +396,9 @@ def test_planner_adaptive_cap_changes_the_delivered_acceleration_for_unequal_spe
                               a_personality=personality)
 
   assert planner.mpc.captured_t_follow == t_follow
-  assert planner.output_a_target == pytest.approx(a_cap, abs=0.06)
+  assert planner.output_a_target == pytest.approx(min(a_cap, open_road_limit), abs=0.06)
   assert planner.output_a_target <= personality + 1e-6
-  assert planner.output_a_target < open_road_limit / 2.0
+  assert planner.output_a_target <= open_road_limit + 1e-6
 
 
 def test_planner_publishes_the_follow_policy_used_by_mpc():
@@ -662,8 +662,8 @@ def test_planner_caps_lead_close_accel_at_min_accel_and_keeps_hard_brake():
     planner.update(inputs)
 
   assert planner.output_a_target == pytest.approx(LEAD_CLOSE_A_MIN_MS2, abs=0.06)
-  assert planner.output_a_target < 0.20
-  assert planner.output_a_target < longitudinal_planner.get_max_accel(v_ego) / 2.0
+  assert planner.output_a_target <= map_accel_a_ms2(LOOKAHEAD_NORMAL, 1)
+  assert planner.output_a_target < longitudinal_planner.get_max_accel(v_ego)
 
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
   planner.update(inputs)
@@ -681,7 +681,7 @@ def test_planner_caps_lead_close_accel_at_min_accel_and_keeps_hard_brake():
   personality = map_accel_a_ms2(LOOKAHEAD_NORMAL, 1)
   assert planner.output_a_target == pytest.approx(LEAD_CLOSE_A_MIN_MS2, abs=0.06)
   assert planner.output_a_target <= personality
-  assert planner.output_a_target < cruise_limit / 2.0
+  assert planner.output_a_target < cruise_limit
 
   # Vision-only far flicker: do not cap MAX-rise / open-road climb.
   planner._lead_close_hold_d = None
@@ -693,7 +693,7 @@ def test_planner_caps_lead_close_accel_at_min_accel_and_keeps_hard_brake():
   planner.prev_accel_clip = [-1.2, cruise_limit]
   for _ in range(8):
     planner.update(inputs)
-  assert planner.output_a_target > LEAD_CLOSE_A_MAX_MS2
+  assert planner.output_a_target > LEAD_CLOSE_A_MIN_MS2
   assert planner.output_a_target == pytest.approx(cruise_limit, abs=0.08)
 
   # Past usable Bosch: empty-road climb is not stuck capped.
@@ -707,7 +707,7 @@ def test_planner_caps_lead_close_accel_at_min_accel_and_keeps_hard_brake():
   planner.prev_accel_clip = [-1.2, cruise_limit]
   for _ in range(8):
     planner.update(inputs)
-  assert planner.output_a_target > LEAD_CLOSE_A_MAX_MS2
+  assert planner.output_a_target > LEAD_CLOSE_A_MIN_MS2
   assert planner.output_a_target == pytest.approx(cruise_limit, abs=0.08)
 
 
@@ -732,7 +732,7 @@ def test_planner_lead_close_cap_is_immediate_and_holds_status_flicker():
 
   planner.update(inputs)
   assert planner.output_a_target == pytest.approx(LEAD_CLOSE_A_MIN_MS2, abs=0.06)
-  assert planner.output_a_target < 0.20
+  assert planner.output_a_target <= map_accel_a_ms2(LOOKAHEAD_NORMAL, 1)
 
   lead.status = False
   for _ in range(6):
@@ -752,7 +752,7 @@ def test_planner_lead_close_cap_is_immediate_and_holds_status_flicker():
   personality = map_accel_a_ms2(LOOKAHEAD_NORMAL, 1)
   assert planner.output_a_target == pytest.approx(LEAD_CLOSE_A_MIN_MS2, abs=0.06)
   assert planner.output_a_target <= personality
-  assert planner.output_a_target < cruise_limit / 2.0
+  assert planner.output_a_target < cruise_limit
 
 
 def test_planner_lead_close_accel_scales_with_accel_personality():
@@ -778,8 +778,9 @@ def test_planner_lead_close_accel_scales_with_accel_personality():
 
   a1 = _run(1)
   a10 = _run(10)
+  cruise_limit = longitudinal_planner.get_max_accel(v_ego)
   assert a1 == pytest.approx(LEAD_CLOSE_A_MIN_MS2, abs=0.06)
-  assert a10 == pytest.approx(LEAD_CLOSE_A_MAX_MS2, abs=0.06)
+  assert a10 == pytest.approx(min(LEAD_CLOSE_A_MAX_MS2, cruise_limit), abs=0.06)
   assert a1 < a10
   assert lead_close_accel_ms2(1) < lead_close_accel_ms2(10)
 
@@ -812,8 +813,7 @@ def test_planner_far_lead_close_stays_at_or_below_mannerisms_accel():
   cruise_limit = longitudinal_planner.get_max_accel(v_ego)
   assert planner.output_a_target == pytest.approx(LEAD_CLOSE_A_MIN_MS2, abs=0.06)
   assert planner.output_a_target <= personality
-  assert planner.output_a_target < 0.20
-  assert planner.output_a_target < cruise_limit / 2.0
+  assert planner.output_a_target < cruise_limit
 
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
   planner.update(inputs)

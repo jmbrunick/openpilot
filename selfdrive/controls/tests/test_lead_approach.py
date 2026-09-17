@@ -247,21 +247,21 @@ def test_stopped_lead_still_plans_a_comfortable_stop_gap():
   assert lead_approach_decel_ms2(v_ego, 0.0, d_follow + need + 20.0, t4) is None
 
 
-def test_lead_close_accel_is_well_below_cruise_and_scales_with_accel():
-  """Accel 1–10 gates catch-up +a. Min Accel is a nudge, not cruise 1.6–0.6."""
+def test_lead_close_accel_matches_mannerisms_not_cruise_punch():
+  """Catch-up +a is Accel 1–10, same as open-road. Not cruise 1.6–0.6."""
   a1 = lead_close_accel_ms2(1)
   a5 = lead_close_accel_ms2(5)
   a10 = lead_close_accel_ms2(10)
   assert abs(a1 - LEAD_CLOSE_A_MIN_MS2) < 1e-9
   assert abs(a5 - LEAD_CLOSE_A_BASE_MS2) < 1e-9
   assert abs(a10 - LEAD_CLOSE_A_MAX_MS2) < 1e-9
+  assert a1 == pytest.approx(map_accel_a_ms2(LOOKAHEAD_NORMAL, 1))
+  assert a5 == pytest.approx(map_accel_a_ms2(LOOKAHEAD_NORMAL, 5))
+  assert a10 == pytest.approx(map_accel_a_ms2(LOOKAHEAD_NORMAL, 10))
   assert a1 < a5 < a10
-  assert a1 < 0.15
-  assert a10 <= 0.30
   # City / highway cruise clip is the old large-gap punch (1.2 at 10 m/s, 0.8 at 25).
-  assert a1 < 1.2 / 3.0
-  assert a1 < 0.8 / 2.0
-  assert a5 < LEAD_APPROACH_A_MS2
+  assert a1 < 1.2
+  assert a1 < 0.8
   assert lead_close_should_cap(80.0)
   assert lead_close_should_cap(LEAD_CLOSE_MAX_M)
   # Old 140 m hole: a 160–200 m lead still counted as open-road cruise punch.
@@ -301,19 +301,22 @@ def test_lead_close_accel_still_closes_onto_follow_distance():
 
 
 def test_lead_close_accel_never_exceeds_mannerisms_personality():
-  """Catch-up +a ≤ Accel 1–10 open-road. Not a higher punch profile."""
+  """Catch-up +a is the Accel 1–10 open-road envelope. Not a hotter punch."""
   for accel in range(1, 11):
     personality = map_accel_a_ms2(LOOKAHEAD_NORMAL, accel)
     a = lead_close_accel_ms2(accel, v_rel=0.0, slack=80.0, a_personality=personality)
-    assert a <= personality + 1e-9
-    assert a <= lead_close_accel_ms2(accel) + 1e-9
-    assert a < 0.30
-  # Explicit ceiling: a lower personality wins over the catch-up curve.
+    assert a == pytest.approx(personality)
+    assert a == pytest.approx(lead_close_accel_ms2(accel))
+  # Explicit ceiling: a lower (tapered) personality wins.
   assert lead_close_accel_ms2(10, a_personality=0.10) == pytest.approx(0.10)
   assert lead_close_accel_ms2(1, a_personality=0.36) == pytest.approx(LEAD_CLOSE_A_MIN_MS2)
-  # Slack close stays on the gentler curve, not MAX-rise 0.36–1.60.
-  assert lead_close_accel_ms2(1, v_rel=0.0, slack=80.0) < map_accel_a_ms2(LOOKAHEAD_NORMAL, 1)
-  assert lead_close_accel_ms2(5, v_rel=0.0, slack=80.0) < map_accel_a_ms2(LOOKAHEAD_NORMAL, 5)
+  # Same as MAX-rise, not a separate curve.
+  assert lead_close_accel_ms2(1, v_rel=0.0, slack=80.0) == pytest.approx(
+    map_accel_a_ms2(LOOKAHEAD_NORMAL, 1),
+  )
+  assert lead_close_accel_ms2(5, v_rel=0.0, slack=80.0) == pytest.approx(
+    map_accel_a_ms2(LOOKAHEAD_NORMAL, 5),
+  )
 
 
 def test_large_gap_lead_closes_gradually_without_cruise_punch():
@@ -331,7 +334,7 @@ def test_large_gap_lead_closes_gradually_without_cruise_punch():
   a_cap = lead_close_accel_ms2(1, v_rel=0.0, slack=slack0, a_personality=personality)
   assert a_cap == pytest.approx(LEAD_CLOSE_A_MIN_MS2)
   assert a_cap <= personality + 1e-9
-  assert a_cap < 0.20
+  assert a_cap < 0.50
   dt = 0.05
   max_plus_a = 0.0
   for _ in range(int(25.0 / dt)):
@@ -350,7 +353,7 @@ def test_large_gap_lead_closes_gradually_without_cruise_punch():
   assert slack1 < slack0 - 10.0
   assert max_plus_a == pytest.approx(LEAD_CLOSE_A_MIN_MS2, abs=1e-9)
   assert max_plus_a <= personality + 1e-9
-  assert max_plus_a < 0.20
+  assert max_plus_a < 0.50
 
 
 def test_lead_approach_hysteresis_holds_through_v_rel_and_slack_noise():
@@ -585,7 +588,8 @@ def test_planner_wires_hysteresis_and_slew():
   assert "lead_follow_slack_m(" in planner
   assert "resolve_lead_close_hold(" in planner
   assert "lead_close_accel_ms2(" in planner
-  assert "a_personality=a_personality" in planner
+  assert "a_personality=a_env" in planner
+  assert "accel_level=self._map_speed_accel" in planner
   assert "model_prob=lead_close.modelProb" in planner
   assert "radar=lead_close.radar" in planner
   assert "self._lead_close_a_cap" in planner
@@ -656,7 +660,7 @@ def test_rapid_close_allows_stronger_early_decel():
 def test_gap_opening_rematch_is_a_trickle():
   """When the gap is opening / just rematching near Follow Distance: small +a.
 
-  Large-gap catch-up (lead-close cap) is 0.12/0.18/0.28.
+  Large-gap catch-up is Mannerisms Accel (same as open-road).
   """
   assert lead_close_accel_ms2(1) == pytest.approx(LEAD_CLOSE_A_MIN_MS2)
   assert lead_close_accel_ms2(1, v_rel=0.0, slack=40.0) == pytest.approx(LEAD_CLOSE_A_MIN_MS2)

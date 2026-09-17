@@ -36,18 +36,19 @@ occasional bump-pull was still that gap-edge rematch (overlay |a| ~0.06–0.13,
 then rematch), not the 0.55 peak. Raise enter only so rematch does not
 re-bite; keep the 0.20 exit so we still close onto Follow Distance.
 
-Positive close-the-gap accel is a cap (`lead_close_accel_ms2`), never a
-punch above Mannerisms Accel. Map Accel 1–10 used to gate only MAX-rise;
-Adaptive Accel used full cruise (1.6–0.6) when the gap was large; the
-close-cap used to stop at 140 m so a 160–180 m lead still got cruise +a.
-With a lead in Bosch range, close slack at the Accel 1/5/10 curve
-(0.12/0.18/0.28) and never above personality. Near-gap rematch trickles.
-A brief `leadOne` drop holds the last in-window lead so the cap cannot
-be bypassed. Vision-only far flicker does not cap empty-road climb.
+Positive close-the-gap accel uses the same Accel 1–10 envelope as open-road
+/ MAX climb (`lead_close_accel_ms2` = Mannerisms Accel, with the same
+last-mph gradient). Map Accel used to gate only MAX-rise; Adaptive Accel
+and cruise 1.6–0.6 punched when the gap was large; the close-cap used to
+stop at 140 m so a 160–180 m lead still got that punch. With a lead in
+Bosch range, close slack at Accel 1–10 — never hotter. Near-gap rematch
+trickles. A brief `leadOne` drop holds the last in-window lead so the
+cap cannot be bypassed. Vision-only far flicker does not cap empty-road
+climb.
 """
 from __future__ import annotations
 
-from openpilot.selfdrive.mapd.constants import accel_scale_factor
+from openpilot.selfdrive.mapd.constants import LOOKAHEAD_NORMAL, map_accel_a_ms2
 
 # Keep in sync with long_mpc.STOP_DISTANCE (acados cruise/lead obstacle).
 STOP_DISTANCE = 6.0
@@ -112,15 +113,15 @@ NAP_T_FOLLOW = (0.7, 0.9, 1.1, 1.3, 1.5, 1.7, 1.9)
 # Same Bosch ceiling as ease. A 160–180 m same-speed lead used to skip the
 # cap and punch cruise / MAX-rise to close Follow Distance. Do not.
 LEAD_CLOSE_MAX_M = LEAD_APPROACH_MAX_START_M
-# Max +a when coming up behind a radar lead (gap close / catch-up).
-# Accel 5 → 0.18; Accel 1 → 0.12; Accel 10 → 0.28. Always ≤ Mannerisms
-# Accel (map 0.36–1.60) and well below cruise 1.6–0.6. Not a higher
-# catch-up profile. Does not change MPC danger / hard brake.
-LEAD_CLOSE_A_BASE_MS2 = 0.18
-LEAD_CLOSE_A_MIN_MS2 = 0.12
-LEAD_CLOSE_A_MAX_MS2 = 0.28
+# Catch-up +a is Mannerisms Accel (same as open-road / MAX climb). Not a
+# separate 0.12/0.18/0.28 punch curve. Accel 1/5/10 = 0.36/0.80/1.60 at
+# Lookahead Normal. Planner also applies the Accel 1–10 last-mph taper.
+# Does not change MPC danger / hard brake.
+LEAD_CLOSE_A_BASE_MS2 = map_accel_a_ms2(LOOKAHEAD_NORMAL, 5)
+LEAD_CLOSE_A_MIN_MS2 = map_accel_a_ms2(LOOKAHEAD_NORMAL, 1)
+LEAD_CLOSE_A_MAX_MS2 = map_accel_a_ms2(LOOKAHEAD_NORMAL, 10)
 # Near Follow Distance, rematch after ease must trickle. Large-gap
-# catch-up (slack above REMATCH) keeps 0.12/0.18/0.28.
+# catch-up uses Mannerisms Accel (same as open-road).
 LEAD_CLOSE_OPENING_A_MS2 = 0.05
 LEAD_CLOSE_REMATCH_A_MS2 = 0.08
 LEAD_CLOSE_REMATCH_SLACK_M = 18.0
@@ -147,16 +148,15 @@ def lead_close_accel_ms2(accel_level: int = 5, v_rel=None, slack=None,
                          a_personality=None) -> float:
   """Max positive a (m/s²) when closing the gap on a radar lead.
 
-  Accel 1–10 scales this. Never above Mannerisms Accel (`a_personality`,
-  map MAX-rise 0.36–1.60). Gentler than open-road when only closing slack
-  (0.12/0.18/0.28). lead_approach decel (0.55) and MPC −a / danger are
-  unchanged.
+  Same Accel 1–10 envelope as open-road / MAX climb — not a separate
+  hotter (or cooler) catch-up curve. `a_personality` is that envelope
+  (peak or last-mph tapered). lead_approach decel (0.55) and MPC −a /
+  danger are unchanged.
 
   Near the follow gap, a lead pulling away / slow rematch trickles +a
   so ease→Accel does not surge.
   """
-  a = LEAD_CLOSE_A_BASE_MS2 * accel_scale_factor(int(accel_level))
-  a = max(LEAD_CLOSE_A_MIN_MS2, min(LEAD_CLOSE_A_MAX_MS2, a))
+  a = map_accel_a_ms2(LOOKAHEAD_NORMAL, int(accel_level))
   if a_personality is not None:
     a = min(a, max(0.0, float(a_personality)))
   if slack is None or float(slack) > LEAD_CLOSE_REMATCH_SLACK_M:

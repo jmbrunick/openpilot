@@ -423,6 +423,37 @@ def test_accel_setting_does_not_change_brake_a():
   assert abs(a1 - 0.36) < 1e-9 and abs(a10 - 1.60) < 1e-9
 
 
+def test_accel_climb_gradient_baby_steps_at_1_and_stays_brisk_at_10():
+  """Accel 1 baby-steps the last ~5 mph; Accel 10 is full a well before that."""
+  from openpilot.selfdrive.mapd.constants import (
+    TRACK_DEADBAND_MS, TRACK_TAPER_ACCEL_HI_MS, TRACK_TAPER_ACCEL_LO_MS, map_track_taper_ms,
+  )
+  a1 = map_accel_a_ms2(LOOKAHEAD_NORMAL, 1)
+  a10 = map_accel_a_ms2(LOOKAHEAD_NORMAL, 10)
+  v_set = 31.29
+  assert abs(map_track_taper_ms(1) - TRACK_TAPER_ACCEL_LO_MS) < 1e-9
+  assert abs(map_track_taper_ms(10) - TRACK_TAPER_ACCEL_HI_MS) < 1e-9
+  assert map_track_taper_ms(1) > map_track_taper_ms(5) > map_track_taper_ms(10)
+  # ~4 mph below setpoint: Accel 1 is still tapering; Accel 10 is already full.
+  dv_4mph = 4.0 * CV.MPH_TO_MS
+  assert TRACK_TAPER_ACCEL_HI_MS < dv_4mph < TRACK_TAPER_ACCEL_LO_MS
+  g1 = map_track_accel_ms2(v_set - dv_4mph, v_set, a1, accel_level=1)
+  g10 = map_track_accel_ms2(v_set - dv_4mph, v_set, a10, accel_level=10)
+  assert g1 is not None and g1 < a1 - 0.02
+  assert abs(g10 - a10) < 1e-9
+  # ~1 mph below: Accel 1 is a baby-step; Accel 10 is still moving.
+  dv_1mph = 1.0 * CV.MPH_TO_MS
+  assert dv_1mph > TRACK_DEADBAND_MS
+  b1 = map_track_accel_ms2(v_set - dv_1mph, v_set, a1, accel_level=1)
+  b10 = map_track_accel_ms2(v_set - dv_1mph, v_set, a10, accel_level=10)
+  assert b1 is not None and b1 < 0.10
+  assert b10 is not None and b10 > b1
+  # Lead catch-up uses this same envelope (not a 0.12/0.18/0.28 punch).
+  from openpilot.selfdrive.controls.lib.lead_approach import lead_close_accel_ms2
+  assert abs(lead_close_accel_ms2(1, v_rel=0.0, slack=80.0, a_personality=g1) - g1) < 1e-9
+  assert abs(lead_close_accel_ms2(10, v_rel=0.0, slack=80.0, a_personality=g10) - g10) < 1e-9
+
+
 def test_map_track_decel_loses_to_stronger_lead_brake():
   """Planner applies min(mpc, map_track). A slower lead still wins."""
   a_map = map_track_decel_ms2(31.29, 20.12, 0.80)
@@ -1256,8 +1287,9 @@ def test_map_speed_submenu_wires_params():
   assert "FOLLOW_DISTANCE_DESCRIPTION" in manner
   assert "MAP_SPEED_ACCEL_DESCRIPTION" in content
   assert "1 lazy" in content
-  assert "close cap" in content
-  assert "0.12 / 0.18 / 0.28" in content
+  assert "same Accel 1–10" in content
+  assert "baby-steps the last ~5 mph" in content
+  assert "0.12 / 0.18 / 0.28" not in content
   assert "not a harder brake" in content
   assert "steps this 1–7" in content
   assert "No lead:" in content
@@ -1305,8 +1337,8 @@ def test_driving_mannerisms_submenu_wires_params():
   assert "stays Accel 5" in content
   assert "Lead still owns follow" in content
   assert "1 lazy" in content
-  assert "close cap" in content
-  assert "0.12 / 0.18 / 0.28" in content
+  assert "same Accel 1–10" in content
+  assert "0.12 / 0.18 / 0.28" not in content
   assert tici.index('"Acceleration"') < tici.index('"Adaptive Accel"')
   assert tici.index("self._accel_buttons") < tici.index("self._adaptive_accel")
   assert tici.index("self._adaptive_accel") < tici.index("self._follow_buttons")
@@ -1375,7 +1407,8 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   assert "map_track_accel_ms2" in planner
   assert "resolve_lead_close_hold" in planner
   assert "lead_close_accel_ms2" in planner
-  assert "a_personality=a_personality" in planner
+  assert "accel_level=self._map_speed_accel" in planner
+  assert "a_personality=a_env" in planner
   assert "min(float(output_a_target), a_brake)" in planner
   assert "if float(output_a_target) >= 0.0:" in planner
   assert "output_a_target = 0.0" in planner
