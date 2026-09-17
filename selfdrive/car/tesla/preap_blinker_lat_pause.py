@@ -454,10 +454,17 @@ def _process_buttons(self, cruise_buttons, prev_cruise_buttons, *args, **kwargs)
   # At a stop, one SET must not take long / creep from 0. Arm wait-for-gas
   # and keep held MAX. Double SET in the window is still take-speed-now.
   # Rolling: unchanged one-SET resume.
+  # One-Pedal gas pause uses the same one-SET overlay. If `_nap_long_
+  # resume_pending` was missed (latch without drop), the pause latch
+  # itself still means "one SET resumes" — do not fall through to
+  # double-pull first-pull (lat-only, long stays off).
   resume_set = (
     set_edge
     and bool(self.cruiseEnabled)
-    and bool(getattr(self, "_nap_long_resume_pending", False))
+    and (
+      bool(getattr(self, "_nap_long_resume_pending", False))
+      or bool(getattr(self, "_one_pedal_pause_latched", False))
+    )
     and not _should_drop_long_for_turn(self)
   )
   swallow_standstill_set = (
@@ -495,6 +502,13 @@ def _process_buttons(self, cruise_buttons, prev_cruise_buttons, *args, **kwargs)
     self.last_stalk_non_cancel_ms = curr_time_ms
   if swallow_standstill_set:
     self._nap_resume_wait_gas = True
+    # Orig did not see MAIN (swallowed), so it never cleared the
+    # One-Pedal latch. Wait-for-gas complete is gated on that latch
+    # being false — leave it set and a later gas touch stays paused.
+    if hasattr(self, "_clear_one_pedal_pause_latch"):
+      self._clear_one_pedal_pause_latch()
+    else:
+      self._one_pedal_pause_latched = False
 
   _drop_long_if_driver_turn(self)
 

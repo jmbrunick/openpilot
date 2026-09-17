@@ -43,7 +43,7 @@ def _zero_torque():
   )
 
 
-def controller_env(monkeypatch, one_pedal_long=False):
+def controller_env(monkeypatch, one_pedal_long=False, double_pull=False):
   zero_torque = _zero_torque()
   conf = _pedal_conf(one_pedal_long=one_pedal_long)
   monkeypatch.setattr('opendbc.car.tesla.preap.carcontroller.nap_conf', conf)
@@ -53,7 +53,7 @@ def controller_env(monkeypatch, one_pedal_long=False):
 
   feedback = PedalFeedback()
   feedback.update({"INTERCEPTOR_GAS": 0.0, "INTERCEPTOR_GAS2": 0.0, "STATE": 0, "IDX": 1}, 0)
-  engagement = PreAPEngagement(double_pull_enabled=False, double_pull_window_ms=750)
+  engagement = PreAPEngagement(double_pull_enabled=double_pull, double_pull_window_ms=750)
   cs = SimpleNamespace(
     cruiseEnabled=False,
     enableLongControl=False,
@@ -386,5 +386,98 @@ def test_controller_latches_when_engagement_kick_misses(monkeypatch):
   cs.enableLongControl = True
   cc.longActive = True
   acquire = controller.update(cc, cs, frame=16, tesla_can=tesla_can, can_bus_party=0)
+  assert _decode_pedal_command(acquire[0]).enabled
+  assert cs.pedal_authority_action == int(PedalCommandAction.ACQUIRE)
+
+
+def _on_car_cycle(controller, cc, cs, tesla_can, frame, *, gas, set_edge=False, t_ms=4000, v_ego=22.0):
+  """Carstate then carcontroller: process_buttons, kick, then long update."""
+  from opendbc.car.tesla.values import CruiseButtons
+
+  cs.out.gasPressed = gas
+  cs.engagement._nap_gas_pressed = gas
+  buttons = CruiseButtons.MAIN if set_edge else 0
+  cs.engagement.process_buttons(
+    cruise_buttons=buttons, prev_cruise_buttons=0,
+    curr_time_ms=t_ms, v_ego=v_ego, speed_units="KPH",
+    use_pedal=True, pedal_long_allowed=True,
+    long_control_allowed=True, real_brake_pressed=False)
+  cs.engagement.maybe_one_pedal_gas_kick(gas, True)
+  cs.enableLongControl = cs.engagement.enableLongControl
+  cs.cruiseEnabled = cs.engagement.cruiseEnabled
+  cs.enableJustCC = cs.engagement.enableJustCC
+  cc.longActive = (not gas) and bool(cs.enableLongControl)
+  return controller.update(cc, cs, frame=frame, tesla_can=tesla_can, can_bus_party=0)
+
+
+def test_one_pedal_set_while_gas_held_controller_does_not_relatch(monkeypatch):
+  """On-car order: long holding → gas pause → SET with foot still down.
+
+  Overlay one-SET resume must stick; controller `_saw_long_without_gas`
+  must not re-latch. Lift then ACQUIREs (A+B). Lift alone stays paused.
+  """
+  from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import install_blinker_lat_pause
+
+  install_blinker_lat_pause()
+  controller, cc, cs, tesla_can = controller_env(
+    monkeypatch, one_pedal_long=True, double_pull=True)
+  _activate_longitudinal(cc, cs)
+  controller.update(cc, cs, frame=0, tesla_can=tesla_can, can_bus_party=0)
+  controller.update(cc, cs, frame=2, tesla_can=tesla_can, can_bus_party=0)
+  assert controller._saw_long_without_gas
+
+  _kick_long_on_gas(cc, cs)
+  release = controller.update(cc, cs, frame=4, tesla_can=tesla_can, can_bus_party=0)
+  assert not _decode_pedal_command(release[0]).enabled
+  assert cs.engagement._one_pedal_pause_latched
+  assert not cs.enableLongControl
+
+  out = _on_car_cycle(controller, cc, cs, tesla_can, 6, gas=True, set_edge=True, t_ms=4000)
+  assert cs.engagement.enableLongControl
+  assert not cs.engagement._one_pedal_pause_latched
+  assert getattr(cs.engagement, "_nap_set_resume_long", False)
+  assert not controller._saw_long_without_gas
+  # Gas still down: interceptor stays RELEASED (pass-through).
+  if out:
+    assert not _decode_pedal_command(out[0]).enabled
+
+  # Later frames with foot still down must not re-latch.
+  later = _on_car_cycle(controller, cc, cs, tesla_can, 12, gas=True, t_ms=4100)
+  assert cs.engagement.enableLongControl
+  assert not cs.engagement._one_pedal_pause_latched
+  if later:
+    assert not _decode_pedal_command(later[0]).enabled
+
+  cs.out.gasPressed = False
+  cs.engagement._nap_gas_pressed = False
+  assert not cs.engagement.maybe_one_pedal_gas_kick(False, True)
+  assert cs.engagement.enableLongControl
+  cs.enableLongControl = True
+  cc.longActive = True
+  acquire = controller.update(cc, cs, frame=14, tesla_can=tesla_can, can_bus_party=0)
+  assert _decode_pedal_command(acquire[0]).enabled
+  assert cs.pedal_authority_action == int(PedalCommandAction.ACQUIRE)
+
+
+def test_one_pedal_set_after_lift_with_overlay_double_pull_acquires(monkeypatch):
+  """Rolling one SET after lift resumes at held MAX with double-pull On."""
+  from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import install_blinker_lat_pause
+
+  install_blinker_lat_pause()
+  controller, cc, cs, tesla_can = controller_env(
+    monkeypatch, one_pedal_long=True, double_pull=True)
+  _activate_longitudinal(cc, cs)
+  controller.update(cc, cs, frame=0, tesla_can=tesla_can, can_bus_party=0)
+  _kick_long_on_gas(cc, cs)
+  controller.update(cc, cs, frame=2, tesla_can=tesla_can, can_bus_party=0)
+
+  silent = _on_car_cycle(controller, cc, cs, tesla_can, 4, gas=False, t_ms=3000)
+  assert silent == []
+  assert cs.engagement._one_pedal_pause_latched
+  assert not cs.enableLongControl
+
+  acquire = _on_car_cycle(controller, cc, cs, tesla_can, 6, gas=False, set_edge=True, t_ms=4000)
+  assert not cs.engagement._one_pedal_pause_latched
+  assert cs.engagement.enableLongControl
   assert _decode_pedal_command(acquire[0]).enabled
   assert cs.pedal_authority_action == int(PedalCommandAction.ACQUIRE)
