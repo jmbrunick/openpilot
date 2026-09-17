@@ -1,3 +1,8 @@
+NAP Accel-owns-catch-up + city/hwy Follow Distance (2026-09-17)
+========================
+* **Accel 1–10 owns all +a**, including lead gap-close: same Mannerisms gradient as open-road / MAX climb (Accel 1 baby-steps the last ~5 mph; Accel 7–10 stay brisk). No separate 0.20/0.30/0.50 catch-up curve. Close-cap covers the Bosch window (**~200 m**) so a 160–180 m lead does not punch cruise 1.6. Brief hold on `leadOne` flicker. **Hard/rapid regen** (0.55) waits for **4 consecutive** in-window samples (~0.20 s); mild ease is immediate. **Non-rapid MPC −a is floored at mild (~0.22)** so min(MPC, overlay) cannot dump ~−2.5; FCW / rapid / a real stop still own danger.
+* **City vs highway Follow Distance** on Driving Mannerisms (TICI + mici): City (<~50 mph) and Highway (>~50 mph), 1–7. Fluid blend with hysteresis around 50 — not a step. Dropping below 50 while following, ego is slightly slower than the lead so the gap opens to city FD, then holds. Rising above 50, t_follow creeps toward hwy FD. Only with a valid lead + long engaged. Migrates from single `NAPFollowDistance`. **Not Hypermile** — available whenever Mannerisms FD is used. Stalk tip steps the active band. No panda flash.
+
 NAP One-Pedal pause light tip-in (2026-09-17)
 ========================
 * **One-Pedal Long On:** pause gate is interceptor DI **> 1** (stock `gasPressed` stays DI **> 2**). A light tip-in now pauses long; foot at coast (0–1) still does not. SET-while-gas, lift-does-not-resume, and one-SET resume unchanged. Ships with the #181 follow stack (lead-close **0.20 / 0.30 / 0.50**, mild ease 0.22, rematch trickle). No panda flash.

@@ -423,6 +423,59 @@ def test_accel_setting_does_not_change_brake_a():
   assert abs(a1 - 0.36) < 1e-9 and abs(a10 - 1.60) < 1e-9
 
 
+def test_accel_climb_gradient_baby_steps_at_1_and_stays_brisk_at_10():
+  """Accel is a gradient for MAX climb *and* lead close: 1 baby-steps last ~5 mph; 7–10 brisk."""
+  from openpilot.selfdrive.mapd.constants import (
+    TRACK_DEADBAND_MS, TRACK_TAPER_ACCEL_HI_MS, TRACK_TAPER_ACCEL_LO_MS, map_track_taper_ms,
+  )
+  a1 = map_accel_a_ms2(LOOKAHEAD_NORMAL, 1)
+  a5 = map_accel_a_ms2(LOOKAHEAD_NORMAL, 5)
+  a7 = map_accel_a_ms2(LOOKAHEAD_NORMAL, 7)
+  a10 = map_accel_a_ms2(LOOKAHEAD_NORMAL, 10)
+  v10 = 10.0 * CV.MPH_TO_MS
+  v70 = 70.0 * CV.MPH_TO_MS
+  v_set = v70
+  assert abs(map_track_taper_ms(1) - TRACK_TAPER_ACCEL_LO_MS) < 1e-9
+  assert abs(map_track_taper_ms(10) - TRACK_TAPER_ACCEL_HI_MS) < 1e-9
+  assert abs(map_track_taper_ms(7) - TRACK_TAPER_ACCEL_HI_MS) < 1e-9
+  assert map_track_taper_ms(1) > map_track_taper_ms(5) > map_track_taper_ms(7)
+  assert map_track_taper_ms(7) == map_track_taper_ms(10)
+  c1 = map_track_accel_ms2(v10, v70, a1, accel_level=1)
+  c5 = map_track_accel_ms2(v10, v70, a5, accel_level=5)
+  c10 = map_track_accel_ms2(v10, v70, a10, accel_level=10)
+  assert c1 == a1 and c5 == a5 and c10 == a10
+  assert c1 < c5 < c10
+  dv_4mph = 4.0 * CV.MPH_TO_MS
+  assert TRACK_TAPER_ACCEL_HI_MS < dv_4mph < TRACK_TAPER_ACCEL_LO_MS
+  g1 = map_track_accel_ms2(v_set - dv_4mph, v_set, a1, accel_level=1)
+  g5 = map_track_accel_ms2(v_set - dv_4mph, v_set, a5, accel_level=5)
+  g7 = map_track_accel_ms2(v_set - dv_4mph, v_set, a7, accel_level=7)
+  g10 = map_track_accel_ms2(v_set - dv_4mph, v_set, a10, accel_level=10)
+  assert g1 is not None and g1 < a1 - 0.02
+  assert abs(g5 - a5) < 1e-9
+  assert abs(g10 - a10) < 1e-9
+  assert abs(g7 - a7) < 1e-9
+  dv_2mph = 2.0 * CV.MPH_TO_MS
+  m1 = map_track_accel_ms2(v_set - dv_2mph, v_set, a1, accel_level=1)
+  m5 = map_track_accel_ms2(v_set - dv_2mph, v_set, a5, accel_level=5)
+  m7 = map_track_accel_ms2(v_set - dv_2mph, v_set, a7, accel_level=7)
+  assert m1 is not None and m1 < a1 * 0.5
+  assert m5 is not None and m1 < m5 < a5
+  assert abs(m7 - a7) < 1e-9
+  dv_1mph = 1.0 * CV.MPH_TO_MS
+  assert dv_1mph > TRACK_DEADBAND_MS
+  b1 = map_track_accel_ms2(v_set - dv_1mph, v_set, a1, accel_level=1)
+  b10 = map_track_accel_ms2(v_set - dv_1mph, v_set, a10, accel_level=10)
+  assert b1 is not None and b1 < 0.10
+  assert b10 is not None and b10 > b1
+  from openpilot.selfdrive.controls.lib.lead_approach import lead_close_accel_ms2
+  assert abs(lead_close_accel_ms2(1, v_rel=0.0, slack=80.0, a_personality=c1) - c1) < 1e-9
+  assert abs(lead_close_accel_ms2(10, v_rel=0.0, slack=80.0, a_personality=c10) - c10) < 1e-9
+  assert abs(lead_close_accel_ms2(1, v_rel=0.0, slack=80.0, a_personality=g1) - g1) < 1e-9
+  assert abs(lead_close_accel_ms2(10, v_rel=0.0, slack=80.0, a_personality=g10) - g10) < 1e-9
+  assert lead_close_accel_ms2(10, v_rel=0.0, slack=80.0, a_personality=g10) <= a10 + 1e-9
+
+
 def test_map_track_decel_loses_to_stronger_lead_brake():
   """Planner applies min(mpc, map_track). A slower lead still wins."""
   a_map = map_track_decel_ms2(31.29, 20.12, 0.80)
@@ -1256,10 +1309,11 @@ def test_map_speed_submenu_wires_params():
   assert "FOLLOW_DISTANCE_DESCRIPTION" in manner
   assert "MAP_SPEED_ACCEL_DESCRIPTION" in content
   assert "1 lazy" in content
-  assert "close cap" in content
-  assert "0.20 / 0.30 / 0.50" in content
+  assert "same Accel 1–10 gradient" in content
+  assert "last-mph taper" in content
+  assert "0.20 / 0.30 / 0.50" not in content
   assert "not a harder brake" in content
-  assert "steps this 1–7" in content
+  assert "steps the active 1–7" in content
   assert "No lead:" in content
   assert "follow distance" in manner_mici
   assert "Adaptive Accel Limits" not in nap
@@ -1305,14 +1359,16 @@ def test_driving_mannerisms_submenu_wires_params():
   assert "stays Accel 5" in content
   assert "Lead still owns follow" in content
   assert "1 lazy" in content
-  assert "close cap" in content
-  assert "0.20 / 0.30 / 0.50" in content
+  assert "same Accel 1–10 gradient" in content
+  assert "0.20 / 0.30 / 0.50" not in content
   assert tici.index('"Acceleration"') < tici.index('"Adaptive Accel"')
   assert tici.index("self._accel_buttons") < tici.index("self._adaptive_accel")
-  assert tici.index("self._adaptive_accel") < tici.index("self._follow_buttons")
-  assert tici.index("self._follow_buttons") < tici.index("self._lat_handoff")
+  assert tici.index("self._adaptive_accel") < tici.index("self._follow_city_buttons")
+  assert tici.index("self._follow_city_buttons") < tici.index("self._follow_hwy_buttons")
+  assert tici.index("self._follow_hwy_buttons") < tici.index("self._lat_handoff")
   assert tici.index("self._lat_handoff") < tici.index("self._one_pedal")
-  assert "Follow Distance" in tici
+  assert "City Follow Distance" in tici
+  assert "Highway Follow Distance" in tici
   assert "Soft Lateral Handoff" in tici
   assert "Simulate Look" not in tici
   assert "False Alert Ignore" not in tici
@@ -1326,10 +1382,12 @@ def test_driving_mannerisms_submenu_wires_params():
   assert "NAPMapSpeedAccel" in mici
   mici_widgets = mici.split("self._scroller.add_widgets", 1)[1]
   assert mici_widgets.index("self._accel") < mici_widgets.index("adaptive_accel")
-  assert mici_widgets.index("adaptive_accel") < mici_widgets.index("self._follow_distance")
-  assert mici_widgets.index("self._follow_distance") < mici_widgets.index("lat_handoff")
+  assert mici_widgets.index("adaptive_accel") < mici_widgets.index("self._follow_distance_city")
+  assert mici_widgets.index("self._follow_distance_city") < mici_widgets.index("self._follow_distance_hwy")
+  assert mici_widgets.index("self._follow_distance_hwy") < mici_widgets.index("lat_handoff")
   assert mici_widgets.index("lat_handoff") < mici_widgets.index("one_pedal")
-  assert "follow distance" in mici
+  assert "city follow distance" in mici
+  assert "highway follow distance" in mici
   assert "soft lateral handoff" in mici
   assert "simulate look" not in mici
   assert "false alert ignore" not in mici
@@ -1367,13 +1425,14 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   hold_at = planner.find("map_in_track_deadband(v_ego, v_hud_ms)")
   track_at = planner.find("a_brake = map_track_decel_ms2")
   lead_at = planner.find("a_lead = lead_approach_decel_ms2")
-  close_at = planner.find("lead_close_accel_ms2(self._map_speed_accel")
+  close_at = planner.find("lead_close_accel_ms2(")
   assert 0 <= cap_at < mpc_at
   assert 0 <= mpc_at < hold_at < track_at < lead_at
   assert 0 <= close_at < mpc_at
   assert "map_brake_a_ms2" in planner
   assert "map_track_accel_ms2" in planner
-  assert "lead_close_should_cap" in planner
+  assert "resolve_lead_close_hold" in planner
+  assert "soft_limit_mpc_a_target" in planner
   assert "min(float(output_a_target), a_brake)" in planner
   assert "if float(output_a_target) >= 0.0:" in planner
   assert "output_a_target = 0.0" in planner

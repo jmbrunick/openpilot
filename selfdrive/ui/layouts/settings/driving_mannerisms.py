@@ -6,7 +6,9 @@ from openpilot.system.ui.widgets.scroller_tici import Scroller
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   ADAPTIVE_ACCEL_DESCRIPTION,
   DRIVER_LAT_HANDOFF_DESCRIPTION,
+  FOLLOW_DISTANCE_CITY_DESCRIPTION,
   FOLLOW_DISTANCE_DESCRIPTION,
+  FOLLOW_DISTANCE_HWY_DESCRIPTION,
   MAP_SPEED_ACCEL, MAP_SPEED_ACCEL_DEFAULT, MAP_SPEED_ACCEL_DESCRIPTION,
   MAP_SPEED_ACCEL_LABELS,
   NAP_DRIVER_LAT_HANDOFF,
@@ -54,16 +56,29 @@ class DrivingMannerismsLayout(Widget):
     )
     self._all_items.append(self._adaptive_accel)
 
-    follow_dist = self._params.get(NAPParamKeys.FOLLOW_DISTANCE, return_default=True)
-    self._follow_buttons = multiple_button_item(
-      "Follow Distance",
-      FOLLOW_DISTANCE_DESCRIPTION,
+    from openpilot.selfdrive.controls.lib.follow_distance import migrate_follow_distance_params
+    migrate_follow_distance_params(self._params)
+    city = self._params.get(NAPParamKeys.FOLLOW_DISTANCE_CITY, return_default=True)
+    hwy = self._params.get(NAPParamKeys.FOLLOW_DISTANCE_HWY, return_default=True)
+    self._follow_city_buttons = multiple_button_item(
+      "City Follow Distance",
+      FOLLOW_DISTANCE_CITY_DESCRIPTION,
       buttons=["1", "2", "3", "4", "5", "6", "7"],
       button_width=80,
-      selected_index=max(0, min(6, follow_dist - 1)),
-      callback=self._on_follow_distance,
+      selected_index=max(0, min(6, city - 1)),
+      callback=self._on_follow_distance_city,
     )
-    self._all_items.append(self._follow_buttons)
+    self._all_items.append(self._follow_city_buttons)
+
+    self._follow_hwy_buttons = multiple_button_item(
+      "Highway Follow Distance",
+      FOLLOW_DISTANCE_HWY_DESCRIPTION,
+      buttons=["1", "2", "3", "4", "5", "6", "7"],
+      button_width=80,
+      selected_index=max(0, min(6, hwy - 1)),
+      callback=self._on_follow_distance_hwy,
+    )
+    self._all_items.append(self._follow_hwy_buttons)
 
     self._lat_handoff = toggle_item(
       "Soft Lateral Handoff",
@@ -92,8 +107,11 @@ class DrivingMannerismsLayout(Widget):
   def _on_accel(self, index: int):
     self._params.put("NAPMapSpeedAccel", MAP_SPEED_ACCEL[index])
 
-  def _on_follow_distance(self, index: int):
-    self._params.put(NAPParamKeys.FOLLOW_DISTANCE, index + 1)
+  def _on_follow_distance_city(self, index: int):
+    self._params.put(NAPParamKeys.FOLLOW_DISTANCE_CITY, index + 1)
+
+  def _on_follow_distance_hwy(self, index: int):
+    self._params.put(NAPParamKeys.FOLLOW_DISTANCE_HWY, index + 1)
 
   def _on_lat_handoff(self, state):
     self._params.put_bool(NAP_DRIVER_LAT_HANDOFF, state)
@@ -105,8 +123,10 @@ class DrivingMannerismsLayout(Widget):
     self._adaptive_accel.action_item.set_state(self._params.get_bool(NAPParamKeys.ADAPTIVE_ACCEL))
     accel = int(self._params.get("NAPMapSpeedAccel", return_default=True) or MAP_SPEED_ACCEL_DEFAULT)
     self._accel_buttons.action_item.set_selected_button(self._accel_index(accel))
-    follow_dist = self._params.get(NAPParamKeys.FOLLOW_DISTANCE, return_default=True)
-    self._follow_buttons.action_item.set_selected_button(max(0, min(6, follow_dist - 1)))
+    city = self._params.get(NAPParamKeys.FOLLOW_DISTANCE_CITY, return_default=True)
+    hwy = self._params.get(NAPParamKeys.FOLLOW_DISTANCE_HWY, return_default=True)
+    self._follow_city_buttons.action_item.set_selected_button(max(0, min(6, city - 1)))
+    self._follow_hwy_buttons.action_item.set_selected_button(max(0, min(6, hwy - 1)))
     self._lat_handoff.action_item.set_state(self._params.get_bool(NAP_DRIVER_LAT_HANDOFF))
     self._one_pedal.action_item.set_state(self._params.get_bool(NAP_ONE_PEDAL_LONG))
 

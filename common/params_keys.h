@@ -134,6 +134,11 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // NAP (NotAutopilot) Pre-AP Tesla params
     {"NAPBrakeFactor", {PERSISTENT, FLOAT, "1.0"}},
     {"NAPFollowDistance", {PERSISTENT, INT, "4"}},
+    // City (<~50 mph) and highway (>~50 mph) Follow Distance 1–7. Migrated
+    // from NAPFollowDistance on first use. Mannerisms always; not Hypermile.
+    {"NAPFollowDistanceCity", {PERSISTENT, INT, "4"}},
+    {"NAPFollowDistanceHwy", {PERSISTENT, INT, "4"}},
+    {"NAPFollowDistanceSplitMigrated", {PERSISTENT, BOOL, "0"}},
     // One-shot Follow Distance HUD. card sets on every stalk persist
     // (including a tip already at 1 or 7). selfdrived consumes and
     // holds the toast ~1.5 s. Not a preference.
