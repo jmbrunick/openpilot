@@ -1,3 +1,7 @@
+NAP One-Pedal pause light tip-in (2026-09-17)
+========================
+* **One-Pedal Long On:** pause gate is interceptor DI **> 1** (stock `gasPressed` stays DI **> 2**). A light tip-in now pauses long; foot at coast (0–1) still does not. SET-while-gas, lift-does-not-resume, and one-SET resume unchanged. Ships with the #181 follow stack (lead-close **0.20 / 0.30 / 0.50**, mild ease 0.22, rematch trickle). No panda flash.
+
 NAP follow ease/rematch soften (2026-09-17)
 ========================
 * Pre-AP follow on the #180 stack: **mild / normal closes stay light** (ease off throttle, then ~0.22 m/s² regen) instead of ramping every close to the **0.55** let-off near Follow Distance. **Rapid / dumping** only (`v_rel` ≥ ~13 mph) still uses the firmer 0.55 path. Overlay **slew both ways** so backing off is not a regen→Accel slam; when the gap is **opening** near Follow Distance, rematch **+a trickles** (0.08 opening / 0.12 slow rematch). Large-gap lead-close cap **0.20 / 0.30 / 0.50** (Accel 1/5/10) and One-Pedal SET resume are unchanged. MPC / FCW danger still wins. No panda flash.

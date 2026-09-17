@@ -59,6 +59,21 @@ _installed = False
 # Same floor as controlsd lat standstill: abs(vEgo) <= max(minSteerSpeed, 0.3).
 # Pre-AP minSteerSpeed is 0, so 0.3 m/s (~0.7 mph) is "at a stop."
 RESUME_STANDSTILL_V_EGO = 0.3
+# Stock interceptor / DI gasPressed is DI > 2. One-Pedal pause is slightly
+# more sensitive so a light tip-in latches; keep a tiny deadzone above coast.
+ONE_PEDAL_GAS_DI_PRESSED = 1.0
+PEDAL_DI_PRESSED_STOCK = 2.0
+
+
+def one_pedal_gas_for_pause(interceptor_di) -> bool:
+  """True when interceptor DI is enough to pause One-Pedal Long.
+
+  Stock `gasPressed` / OVERRIDE stays DI > 2. Pause is DI > 1 so a light
+  tip-in latches; foot at coast (0) does not.
+  """
+  if interceptor_di is None:
+    return False
+  return float(interceptor_di) > ONE_PEDAL_GAS_DI_PRESSED
 
 
 def _peek_blinker_lamps(can_parsers):
@@ -656,6 +671,25 @@ def _update_preap(cs, can_parsers):
         cs.enableLongControl = engagement.enableLongControl
         cs.enableJustCC = engagement.enableJustCC
         cs.pedal_speed_kph = engagement.pedal_speed_kph
+      # One-Pedal pause is slightly more sensitive than stock gasPressed
+      # (DI > 1 vs DI > 2). Orig kick already ran at the stock gate.
+      try:
+        from opendbc.car.tesla.preap.nap_conf import nap_conf as _nap_conf
+        di = float(getattr(getattr(cs, "pedal", None), "interceptor_value", 0.0) or 0.0)
+        if (
+          bool(getattr(_nap_conf, "one_pedal_long", False))
+          and bool(getattr(_nap_conf, "use_pedal", False))
+          and one_pedal_gas_for_pause(di)
+          and hasattr(engagement, "maybe_one_pedal_gas_kick")
+        ):
+          engagement.maybe_one_pedal_gas_kick(True, True)
+          cs.enableLongControl = engagement.enableLongControl
+          cs.enableJustCC = engagement.enableJustCC
+          cs.pedal_speed_kph = engagement.pedal_speed_kph
+          cs.longCtrlEvent = engagement.longCtrlEvent
+          cs.one_pedal_pause_latched = bool(engagement._one_pedal_pause_latched)
+      except Exception:
+        pass
   return ret
 
 
