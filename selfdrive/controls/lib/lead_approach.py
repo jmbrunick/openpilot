@@ -23,11 +23,10 @@ closes at light regen (MILD 0.22). Rapid / dumping (high `v_rel`) still
 uses kinematics up to 0.55. Start early and light; do not delay ease
 (that forces a late bite). MPC / FCW win via min().
 
-A far/gentle nibble must not steal large-gap rematch catch-up +a.
-A real close (v_rel ≥ enter) applies that nibble as light regen so we
-mesh into lead speed at the set Follow Distance — commanding 0 would
-hold extra speed and bite late. Rematch after ease (v_rel flips /
-slack growing) trickles +a — do not slam regen → Accel.
+A far/gentle nibble must not steal large-gap lead-close catch-up +a
+(cruise / MAX climb). Near the follow gap, a nibble min()s so we can
+mesh into lead speed at the set Follow Distance. Rematch after ease
+(v_rel flips / slack growing) trickles +a — do not slam regen → Accel.
 
 On a slight grade, radar `v_rel` / slack chatter around the follow gap used
 to snap this overlay on/off (regen bite → rematch crawl → bite). Enter/exit
@@ -75,11 +74,11 @@ LEAD_APPROACH_MAX_HOLD_M = 8.0
 # LeadData exposes those two; Track.cnt age is not published on Pre-AP.
 LEAD_APPROACH_RELIABLE_M = 140.0
 LEAD_APPROACH_MODEL_PROB_MIN = 0.50  # radard association gate
-# Clearly closing: skip the need window and ease from first reliable radar
-# track so we mesh at Follow Distance instead of holding speed then biting.
-# 1.5 m/s (~3.4 mph) matches the MPC-floor skip. 1.0 still uses need (Accel-1
-# catch-up at large slack). Vision-only flicker does not skip need.
-LEAD_APPROACH_CLEAR_DV_MS = 1.5
+# Clearly closing: skip the need window and ease from first reliable track.
+# 2.5 m/s (~5.6 mph). 1.0 stole Accel-1 catch-up; 1.5 on a far radar lock
+# stole cruise / MAX +a (felt like long was dead). 10 mph still skips need.
+# Vision-only flicker does not skip need.
+LEAD_APPROACH_CLEAR_DV_MS = 2.5
 # Mild-close comfort ceiling. Kinematics used to hit 0.55 on a 3–10 mph
 # close right at the gap (hard let-off). Light regen / ease-off only.
 # Rapid (high closing rate) keeps the 0.55 path.
@@ -373,24 +372,25 @@ def slew_lead_approach_a(target, prev, slew=LEAD_APPROACH_SLEW_MS2,
 
 def apply_lead_approach_overlay(output_a, a_lead, nibble=LEAD_APPROACH_NIBBLE_MS2,
                                 v_rel=None, slack=None):
-  """Soft overlay via min(), except a far nibble must not steal rematch +a.
+  """Soft overlay via min(), except a far nibble must not steal cruise +a.
 
   Matching-traffic / far-slack overlay sits at |a| ~0.06–0.13. That must
-  not beat rematch +a on a *large* Follow Distance close. Real ease and
-  MPC 0 / −a still use min().
+  not beat rematch / cruise / MAX +a on a *large* Follow Distance close.
+  Real ease (|a| ≥ nibble) and MPC 0 / −a still use min().
 
-  A real close (v_rel ≥ enter) applies the nibble as light regen so ego
-  meshes into lead speed at the set gap. Commanding 0 held extra speed
-  and bit late. Near the follow gap, a nibble still min()s so release
-  slew is not a regen→Accel punch.
+  Near the follow gap, a nibble min()s so we mesh into lead speed at the
+  set gap and release slew is not a regen→Accel punch. Far mild close
+  keeps +a — applying the nibble from 100–200 m caps cruise and feels
+  like long is dead.
   """
   if a_lead is None:
     return float(output_a)
   out = float(output_a)
   a = float(a_lead)
+  if out <= 0.0 or a <= -float(nibble):
+    return min(out, a)
   near = slack is not None and float(slack) <= LEAD_CLOSE_REMATCH_SLACK_M
-  closing = v_rel is not None and float(v_rel) >= LEAD_APPROACH_DV_MS
-  if out <= 0.0 or a <= -float(nibble) or near or closing:
+  if near:
     return min(out, a)
   return out
 
@@ -411,9 +411,10 @@ def lead_approach_decel_ms2(v_ego, v_lead, d_rel, t_follow, a_comfort=LEAD_APPRO
   need+NEED_HOLD so small radar noise does not chatter regen ↔ accel.
 
   When `v_rel` is clearly positive (≥ CLEAR_DV) on a radar lock, large
-  slack is allowed — mesh from the first reasonable track onto the city
-  or hwy Follow Distance, still capped (mild / rapid 0.55) and slewed.
-  Vision-only flicker still waits on the need window.
+  slack is allowed — speed-match from the first reasonable track, still
+  capped (mild / rapid 0.55) and slewed. Vision-only flicker still waits
+  on the need window. Overlay apply must not turn a far nibble into
+  cruise-killing −a; mesh regen is near the set gap.
   """
   if t_follow is None or float(t_follow) <= 0 or a_comfort <= 0:
     return None
