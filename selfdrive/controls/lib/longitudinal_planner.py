@@ -219,9 +219,10 @@ class LongitudinalPlanner:
     self.t_follow = get_T_FOLLOW(sm['selfdriveState'].personality, self.active_nap_follow_dist)
 
     # Pre-AP adaptive accel: only limit accel when the lead's obstacle-equivalent
-    # distance is close. Above 1.5x the safe obstacle distance, use the full
-    # profile for gap closing. Below 1.2x, cap acceleration to follow limits to
-    # prevent overshoot → regen → overshoot oscillation. Blend in between.
+    # distance is close. Above 1.5x, Adaptive Accel used the full cruise profile
+    # to close the gap — that punch. The lead-close cap below owns large-gap
+    # +a (Mannerisms Accel, never higher). Below 1.2x, cap to follow limits
+    # to prevent overshoot → regen → overshoot oscillation. Blend in between.
     if self.CP.carFingerprint == "TESLA_MODEL_S_PREAP" and self.nap_adaptive_accel and sm['radarState'].leadOne.status:
       follow_limit = _get_preap_follow_limit(v_ego)
       if follow_limit is not None:
@@ -231,11 +232,11 @@ class LongitudinalPlanner:
           blended = accel_clip[1] * (1.0 - cap_strength) + follow_limit * cap_strength
           accel_clip[1] = min(accel_clip[1], blended)
 
-    # Coming up behind a radar lead: cap +a (Accel 1–10 close curve).
-    # Adaptive Accel used full cruise when the gap was large — that punch.
-    # Map Accel 1–10 only gated MAX-rise. Does not change MPC danger / −a.
-    # Near-gap opening rematch trickles. Hold last in-window lead on a
-    # brief status drop so cruise 1.6 cannot leak through a flicker.
+    # Coming up behind a radar lead: cap +a. Never above Mannerisms Accel
+    # (map 1–10). Large-gap catch-up is the gentler 0.12/0.18/0.28 curve,
+    # including 160–200 m Bosch tracks — cruise 1.6 / Adaptive full-profile
+    # used to punch there. Near-gap rematch trickles. Hold last in-window
+    # lead on a brief status drop. Does not change MPC danger / −a.
     self._lead_close_a_cap = None
     if self._is_preap:
       lead_close = sm['radarState'].leadOne
@@ -243,13 +244,16 @@ class LongitudinalPlanner:
         resolve_lead_close_hold(
           lead_close.status, lead_close.dRel, lead_close.vLead,
           self._lead_close_hold_d, self._lead_close_hold_v, self._lead_close_hold_age,
-          self.dt,
+          self.dt, model_prob=lead_close.modelProb, radar=lead_close.radar,
         )
       )
       if d_cap is not None:
         v_rel_lead = v_ego - float(v_cap)
         slack = lead_follow_slack_m(d_cap, v_cap, self.t_follow)
-        self._lead_close_a_cap = lead_close_accel_ms2(self._map_speed_accel, v_rel=v_rel_lead, slack=slack)
+        a_personality = map_accel_a_ms2(self._map_speed_lookahead, self._map_speed_accel)
+        self._lead_close_a_cap = lead_close_accel_ms2(
+          self._map_speed_accel, v_rel=v_rel_lead, slack=slack, a_personality=a_personality,
+        )
         accel_clip[1] = min(accel_clip[1], self._lead_close_a_cap)
 
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)

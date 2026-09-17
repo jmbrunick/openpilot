@@ -47,6 +47,7 @@ from openpilot.selfdrive.mapd.constants import (
   DECREASE_START_MARGIN_M,
   LOOKAHEAD_EARLY,
   LOOKAHEAD_NORMAL,
+  map_accel_a_ms2,
   map_brake_a_ms2,
 )
 
@@ -102,6 +103,7 @@ def test_lead_approach_keeps_early_map_brake_not_map_110m_margin():
   assert LEAD_CLOSE_OPENING_A_MS2 < LEAD_CLOSE_REMATCH_A_MS2 < LEAD_CLOSE_A_MIN_MS2
   assert LEAD_CLOSE_REMATCH_SLACK_M > 12.0
   assert abs(LEAD_CLOSE_HOLD_S - 0.50) < 1e-9
+  assert abs(LEAD_CLOSE_MAX_M - LEAD_APPROACH_MAX_START_M) < 1e-9
   import openpilot.selfdrive.controls.lib.lead_approach as lead_approach
   assert not hasattr(lead_approach, "LEAD_APPROACH_MARGIN_M")
 
@@ -262,10 +264,14 @@ def test_lead_close_accel_is_well_below_cruise_and_scales_with_accel():
   assert a5 < LEAD_APPROACH_A_MS2
   assert lead_close_should_cap(80.0)
   assert lead_close_should_cap(LEAD_CLOSE_MAX_M)
-  assert not lead_close_should_cap(160.0)
-  assert not lead_close_should_cap(LEAD_APPROACH_MAX_START_M)
+  # Old 140 m hole: a 160–200 m lead still counted as open-road cruise punch.
+  assert lead_close_should_cap(160.0)
+  assert lead_close_should_cap(LEAD_APPROACH_MAX_START_M)
+  assert not lead_close_should_cap(LEAD_APPROACH_MAX_START_M + LEAD_APPROACH_MAX_HOLD_M + 1.0)
   assert not lead_close_should_cap(0.0)
   assert not lead_close_should_cap(None)
+  assert not lead_close_should_cap(160.0, model_prob=0.2, radar=False)
+  assert lead_close_should_cap(160.0, model_prob=1.0, radar=True)
 
 
 def test_lead_close_accel_still_closes_onto_follow_distance():
@@ -292,6 +298,59 @@ def test_lead_close_accel_still_closes_onto_follow_distance():
   assert min_d_rel <= d_follow + 8.0
   assert d_rel <= d_follow + 8.0
   assert d_rel < d_follow + 20.0
+
+
+def test_lead_close_accel_never_exceeds_mannerisms_personality():
+  """Catch-up +a ≤ Accel 1–10 open-road. Not a higher punch profile."""
+  for accel in range(1, 11):
+    personality = map_accel_a_ms2(LOOKAHEAD_NORMAL, accel)
+    a = lead_close_accel_ms2(accel, v_rel=0.0, slack=80.0, a_personality=personality)
+    assert a <= personality + 1e-9
+    assert a <= lead_close_accel_ms2(accel) + 1e-9
+    assert a < 0.30
+  # Explicit ceiling: a lower personality wins over the catch-up curve.
+  assert lead_close_accel_ms2(10, a_personality=0.10) == pytest.approx(0.10)
+  assert lead_close_accel_ms2(1, a_personality=0.36) == pytest.approx(LEAD_CLOSE_A_MIN_MS2)
+  # Slack close stays on the gentler curve, not MAX-rise 0.36–1.60.
+  assert lead_close_accel_ms2(1, v_rel=0.0, slack=80.0) < map_accel_a_ms2(LOOKAHEAD_NORMAL, 1)
+  assert lead_close_accel_ms2(5, v_rel=0.0, slack=80.0) < map_accel_a_ms2(LOOKAHEAD_NORMAL, 5)
+
+
+def test_large_gap_lead_closes_gradually_without_cruise_punch():
+  """Lead a ways out (past old 140 m): +a stays ≤ Accel 1, slack still shrinks."""
+  v_ego = 22.0
+  v_lead = 22.0
+  t4 = nap_t_follow(4)
+  d_follow = t4 * v_lead + STOP_DISTANCE
+  d_rel = 180.0
+  slack0 = d_rel - d_follow
+  assert slack0 > 100.0
+  assert d_rel > 140.0
+  assert lead_close_should_cap(d_rel, model_prob=1.0, radar=True)
+  personality = map_accel_a_ms2(LOOKAHEAD_NORMAL, 1)
+  a_cap = lead_close_accel_ms2(1, v_rel=0.0, slack=slack0, a_personality=personality)
+  assert a_cap == pytest.approx(LEAD_CLOSE_A_MIN_MS2)
+  assert a_cap <= personality + 1e-9
+  assert a_cap < 0.20
+  dt = 0.05
+  max_plus_a = 0.0
+  for _ in range(int(25.0 / dt)):
+    slack = d_rel - d_follow
+    a = lead_close_accel_ms2(1, v_rel=v_ego - v_lead, slack=slack, a_personality=personality)
+    assert a <= personality + 1e-9
+    assert a <= LEAD_CLOSE_A_MIN_MS2 + 1e-9
+    decel = lead_approach_decel_ms2(v_ego, v_lead, d_rel, t4, model_prob=1.0, radar=True)
+    if decel is not None:
+      a = min(a, decel)
+    if a > 0.0:
+      max_plus_a = max(max_plus_a, a)
+    v_ego = max(0.0, v_ego + a * dt)
+    d_rel -= (v_ego - v_lead) * dt
+  slack1 = d_rel - d_follow
+  assert slack1 < slack0 - 10.0
+  assert max_plus_a == pytest.approx(LEAD_CLOSE_A_MIN_MS2, abs=1e-9)
+  assert max_plus_a <= personality + 1e-9
+  assert max_plus_a < 0.20
 
 
 def test_lead_approach_hysteresis_holds_through_v_rel_and_slack_noise():
@@ -526,6 +585,9 @@ def test_planner_wires_hysteresis_and_slew():
   assert "lead_follow_slack_m(" in planner
   assert "resolve_lead_close_hold(" in planner
   assert "lead_close_accel_ms2(" in planner
+  assert "a_personality=a_personality" in planner
+  assert "model_prob=lead_close.modelProb" in planner
+  assert "radar=lead_close.radar" in planner
   assert "self._lead_close_a_cap" in planner
   assert "self._lead_approach_active = a_lead is not None" in planner
   slew_at = planner.find("self.prev_accel_clip[idx] - 0.05")
@@ -665,11 +727,27 @@ def test_lead_close_hold_keeps_cap_through_status_flicker():
   assert held_d is None
   assert age == pytest.approx(0.0)
 
-  # Valid far track is not a flicker: drop the hold so MAX-rise can climb.
+  # Far Bosch radar lead stays capped — that was the cruise punch at 160 m.
   d_use, v_use, held_d, held_v, age = resolve_lead_close_hold(
-    True, 160.0, 22.0, 80.0, 22.0, 0.10, 0.05,
+    True, 160.0, 22.0, 80.0, 22.0, 0.10, 0.05, model_prob=1.0, radar=True,
+  )
+  assert d_use == pytest.approx(160.0)
+  assert v_use == pytest.approx(22.0)
+  assert lead_close_should_cap(160.0, model_prob=1.0, radar=True)
+  assert lead_close_should_cap(80.0)
+
+  # Vision-only far flicker does not start a cap (empty-road MAX-rise).
+  d_use, v_use, held_d, held_v, age = resolve_lead_close_hold(
+    True, 160.0, 22.0, None, None, 0.0, 0.05, model_prob=0.2, radar=False,
   )
   assert d_use is None
   assert held_d is None
-  assert not lead_close_should_cap(160.0)
-  assert lead_close_should_cap(80.0)
+  assert not lead_close_should_cap(160.0, model_prob=0.2, radar=False)
+
+  # Past usable Bosch: drop the hold so MAX-rise can climb.
+  d_use, v_use, held_d, held_v, age = resolve_lead_close_hold(
+    True, 220.0, 22.0, 80.0, 22.0, 0.10, 0.05, model_prob=1.0, radar=True,
+  )
+  assert d_use is None
+  assert held_d is None
+  assert not lead_close_should_cap(220.0, model_prob=1.0, radar=True)

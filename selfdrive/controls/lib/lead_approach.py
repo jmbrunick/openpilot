@@ -36,12 +36,14 @@ occasional bump-pull was still that gap-edge rematch (overlay |a| ~0.06–0.13,
 then rematch), not the 0.55 peak. Raise enter only so rematch does not
 re-bite; keep the 0.20 exit so we still close onto Follow Distance.
 
-Positive close-the-gap accel is a separate cap (`lead_close_accel_ms2`).
-Map Accel 1–10 used to gate only MAX-rise climb; Adaptive Accel used the
-full cruise profile (1.6–0.6) when the gap was large. That is the punch.
-Large-gap catch-up is 0.12/0.18/0.28 (Accel 1/5/10). Near-gap opening
-rematch is a gentler trickle. A brief `leadOne` drop holds the last
-in-window lead so the cap cannot be bypassed.
+Positive close-the-gap accel is a cap (`lead_close_accel_ms2`), never a
+punch above Mannerisms Accel. Map Accel 1–10 used to gate only MAX-rise;
+Adaptive Accel used full cruise (1.6–0.6) when the gap was large; the
+close-cap used to stop at 140 m so a 160–180 m lead still got cruise +a.
+With a lead in Bosch range, close slack at the Accel 1/5/10 curve
+(0.12/0.18/0.28) and never above personality. Near-gap rematch trickles.
+A brief `leadOne` drop holds the last in-window lead so the cap cannot
+be bypassed. Vision-only far flicker does not cap empty-road climb.
 """
 from __future__ import annotations
 
@@ -107,13 +109,13 @@ LEAD_APPROACH_NIBBLE_MS2 = 0.15
 
 NAP_T_FOLLOW = (0.7, 0.9, 1.1, 1.3, 1.5, 1.7, 1.9)
 
-# Catch-up +a cap stays at the old 140 m flicker-safe window. Ease start
-# grew; punching MAX-rise toward a 180 m same-speed lead is a different
-# product and is not expanded here.
-LEAD_CLOSE_MAX_M = 140.0
+# Same Bosch ceiling as ease. A 160–180 m same-speed lead used to skip the
+# cap and punch cruise / MAX-rise to close Follow Distance. Do not.
+LEAD_CLOSE_MAX_M = LEAD_APPROACH_MAX_START_M
 # Max +a when coming up behind a radar lead (gap close / catch-up).
-# Accel 5 → 0.18; Accel 1 → 0.12; Accel 10 → 0.28. Cruise get_max_accel is
-# 1.6–0.6; do not raise the min. Does not change MPC danger / hard brake.
+# Accel 5 → 0.18; Accel 1 → 0.12; Accel 10 → 0.28. Always ≤ Mannerisms
+# Accel (map 0.36–1.60) and well below cruise 1.6–0.6. Not a higher
+# catch-up profile. Does not change MPC danger / hard brake.
 LEAD_CLOSE_A_BASE_MS2 = 0.18
 LEAD_CLOSE_A_MIN_MS2 = 0.12
 LEAD_CLOSE_A_MAX_MS2 = 0.28
@@ -141,18 +143,22 @@ def lead_follow_slack_m(d_rel, v_lead, t_follow):
   return float(d_rel) - d_follow
 
 
-def lead_close_accel_ms2(accel_level: int = 5, v_rel=None, slack=None) -> float:
+def lead_close_accel_ms2(accel_level: int = 5, v_rel=None, slack=None,
+                         a_personality=None) -> float:
   """Max positive a (m/s²) when closing the gap on a radar lead.
 
-  Accel 1–10 scales this. Separate from map MAX-rise climb (0.36–1.60)
-  and from lead_approach decel (0.55). MPC −a / danger is unchanged.
+  Accel 1–10 scales this. Never above Mannerisms Accel (`a_personality`,
+  map MAX-rise 0.36–1.60). Gentler than open-road when only closing slack
+  (0.12/0.18/0.28). lead_approach decel (0.55) and MPC −a / danger are
+  unchanged.
 
-  Large-gap catch-up is Accel 1/5/10 = 0.12/0.18/0.28. Near the follow
-  gap, a lead pulling away / slow rematch trickles +a so ease→Accel
-  does not surge.
+  Near the follow gap, a lead pulling away / slow rematch trickles +a
+  so ease→Accel does not surge.
   """
   a = LEAD_CLOSE_A_BASE_MS2 * accel_scale_factor(int(accel_level))
   a = max(LEAD_CLOSE_A_MIN_MS2, min(LEAD_CLOSE_A_MAX_MS2, a))
+  if a_personality is not None:
+    a = min(a, max(0.0, float(a_personality)))
   if slack is None or float(slack) > LEAD_CLOSE_REMATCH_SLACK_M:
     return a
   if v_rel is not None and float(v_rel) <= 0.0:
@@ -162,33 +168,45 @@ def lead_close_accel_ms2(accel_level: int = 5, v_rel=None, slack=None) -> float:
   return a
 
 
-def lead_close_should_cap(d_rel) -> bool:
-  """True when a radar lead is in the close-cap window (not a 160 m flicker)."""
+def lead_close_should_cap(d_rel, model_prob=None, radar=None, active=False) -> bool:
+  """True when a detected lead is in the close-cap window.
+
+  Bosch ceiling matches ease (200 m). Far tracks need the same radar +
+  modelProb quality as ease so a 160 m vision flicker cannot cap
+  empty-road climb. Missing quality args (unit tests) are ok.
+  """
   if d_rel is None:
     return False
   d = float(d_rel)
-  return 0.0 < d <= LEAD_CLOSE_MAX_M
+  d_max = LEAD_CLOSE_MAX_M + (LEAD_APPROACH_MAX_HOLD_M if active else 0.0)
+  if d <= 0.0 or d > d_max:
+    return False
+  return lead_approach_track_ok(d, model_prob, radar, active=active)
 
 
 def resolve_lead_close_hold(status, d_rel, v_lead, held_d, held_v, held_age, dt,
-                            hold_s=LEAD_CLOSE_HOLD_S):
+                            hold_s=LEAD_CLOSE_HOLD_S, model_prob=None, radar=None):
   """Lead used for the +a close cap, with a brief hold on status flicker.
 
-  Live in-window radar wins. A dropped `leadOne.status` keeps the last
-  in-window lead for `hold_s` so cruise 1.6 cannot punch through a
-  flicker. A valid far lead (`dRel` past 140 m) drops the hold so
-  MAX-rise / open-road climb is not stuck capped.
+  Live in-window lead wins, including a far Bosch track (160–200 m).
+  A dropped `leadOne.status` keeps the last in-window lead for `hold_s`
+  so cruise 1.6 cannot punch through a flicker. Past Bosch, or a
+  vision-only far flicker with no hold, drops so empty-road MAX-rise
+  is not stuck capped.
 
   Returns `(d_use, v_use, held_d, held_v, held_age)`. `d_use` is None
   when the cap should not apply.
   """
-  if status and lead_close_should_cap(d_rel) and v_lead is not None:
+  holding = held_d is not None
+  if status and lead_close_should_cap(d_rel, model_prob, radar, active=holding) and v_lead is not None:
     d = float(d_rel)
     v = float(v_lead)
     return d, v, d, v, 0.0
 
-  far_valid = bool(status) and d_rel is not None and float(d_rel) > LEAD_CLOSE_MAX_M
-  if far_valid or held_d is None or held_v is None:
+  past_bosch = (
+    d_rel is not None and float(d_rel) > LEAD_CLOSE_MAX_M + LEAD_APPROACH_MAX_HOLD_M
+  )
+  if past_bosch or held_d is None or held_v is None:
     return None, None, None, None, 0.0
 
   age = float(held_age) + float(dt)
