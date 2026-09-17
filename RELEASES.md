@@ -1,6 +1,10 @@
+NAP follow ease/rematch soften (2026-09-17)
+========================
+* Pre-AP follow on the #180 stack: **mild / normal closes stay light** (ease off throttle, then ~0.22 m/s² regen) instead of ramping every close to the **0.55** let-off near Follow Distance. **Rapid / dumping** only (`v_rel` ≥ ~13 mph) still uses the firmer 0.55 path. Overlay **slew both ways** so backing off is not a regen→Accel slam; when the gap is **opening** near Follow Distance, rematch **+a trickles** (0.08 opening / 0.12 slow rematch). Large-gap lead-close cap **0.20 / 0.30 / 0.50** (Accel 1/5/10) and One-Pedal SET resume are unchanged. MPC / FCW danger still wins. No panda flash.
+
 NAP lead-close accel cap (2026-09-17)
 ========================
-* Pre-AP: closing on / coming up behind a radar lead no longer uses the cruise **1.6–0.6 m/s²** punch (Adaptive Accel used the full profile on a large gap; map Accel 1–10 only gated MAX-rise climb). Catch-up **+a** is now `lead_close_accel_ms2`: **0.20** at Accel 1, **0.30** at 5, **0.50** at 10, inside ~140 m. Still closes onto the selected Follow Distance. MPC danger / hard brake, sticky MAX, soft-lat, One-Pedal Long, and DM unchanged. **Not ported:** Hypermile, NAP Dash, TTC-floor lead-approach ease. Settings → NAP → Driving Mannerisms → Acceleration. Same close-cap as nap-dev (#106).
+* Pre-AP: closing on / coming up behind a radar lead no longer uses the cruise **1.6–0.6 m/s²** punch (Adaptive Accel used the full profile on a large gap; map Accel 1–10 only gated MAX-rise climb). Catch-up **+a** is now `lead_close_accel_ms2`: **0.20** at Accel 1, **0.30** at 5, **0.50** at 10, inside ~140 m. Still closes onto the selected Follow Distance. MPC danger / hard brake, sticky MAX, soft-lat, One-Pedal Long, and DM unchanged. **Not ported:** Hypermile, NAP Dash. Settings → NAP → Driving Mannerisms → Acceleration. Same close-cap as nap-dev (#106).
 
 NAP One-Pedal SET after gas pause (2026-09-17)
 ========================
