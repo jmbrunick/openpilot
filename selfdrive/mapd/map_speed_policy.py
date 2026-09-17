@@ -13,7 +13,7 @@ from openpilot.selfdrive.mapd.constants import (
   ACCEL_DEFAULT, ACCEL_MAX, ACCEL_MIN, LOOKAHEAD_NORMAL, LOOKAHEAD_OFF,
   LOOKAHEAD_TUNING, MANUAL_SET_EPS_KPH, MIN_DECREASE_MS, MODE_CAP, MODE_DISPLAY,
   MODE_FOLLOW, MODE_OFF, POSTED_LIMIT_EPS_KPH, TRACK_DEADBAND_MS, TRACK_TAPER_MS,
-  map_accel_a_ms2, map_brake_a_ms2,
+  map_accel_a_ms2, map_brake_a_ms2, map_track_taper_ms,
 )
 
 # Keep in sync with openpilot.selfdrive.car.cruise (avoid importing cereal here).
@@ -153,19 +153,23 @@ def map_track_decel_ms2(v_ego_ms: float, v_cruise_ms: float, a_comfort: float) -
   return -float(a_comfort) * scale
 
 
-def map_track_accel_ms2(v_ego_ms: float, v_cruise_ms: float, a_comfort: float) -> float | None:
+def map_track_accel_ms2(v_ego_ms: float, v_cruise_ms: float, a_comfort: float,
+                        accel_level=None) -> float | None:
   """Comfort accel (positive m/s²) when catching a higher Follow MAX, or None.
 
   MPC cruise_obstacle will not climb to a higher MAX (V_EGO_COST=0). The
   planner commands this a when ego is below MAX and MPC is not braking.
-  Accel 1–10 sets the climb rate. A slower lead (negative aTarget) still wins.
+  Accel 1–10 sets the climb rate *and* the last-mph taper (Accel 1 baby-steps
+  ~5 mph out; Accel 7–10 stays brisk to the target). Lead gap-close uses
+  this same envelope. A slower lead (negative aTarget) still wins.
   """
   if a_comfort <= 0 or v_ego_ms <= 0 or v_cruise_ms <= 0:
     return None
   dv = float(v_cruise_ms) - float(v_ego_ms)
   if dv <= TRACK_DEADBAND_MS:
     return None
-  span = max(1e-6, TRACK_TAPER_MS - TRACK_DEADBAND_MS)
+  taper = map_track_taper_ms(accel_level)
+  span = max(1e-6, float(taper) - TRACK_DEADBAND_MS)
   scale = min(1.0, (dv - TRACK_DEADBAND_MS) / span)
   return float(a_comfort) * scale
 

@@ -1,3 +1,19 @@
+NAP follow tighter close-cap + smoother rematch (2026-09-17)
+========================
+* Pre-AP follow on the #181 stack (One-Pedal SET resume kept): **lead-close +a** is now **0.12 / 0.18 / 0.28** at Accel 1 / 5 / 10 (was 0.20 / 0.30 / 0.50). Still closes onto Follow Distance; not the cruise 1.6 punch. Cap applies **immediately** (clip slew cannot leak cruise +a for a second) and **holds the last in-window lead ~0.5 s** if `leadOne` flickers. **Mild close** stays light regen (~0.18 m/s²); **rapid / dumping** (~13 mph closing) still uses the firmer 0.55 path. Overlay slew is longer (onset 0.03 / release 0.012 per frame); rematch trickle is gentler (0.05 opening / 0.08 slow rematch) over a wider near-gap. **One-Pedal pause** is a bit more sensitive: interceptor DI **> 1** (was stock gasPressed **> 2**) so a light tip-in pauses long; foot at coast still does not. SET-while-gas and lift-does-not-resume unchanged. MPC / FCW danger still wins. No panda flash.
+
+NAP follow ease/rematch soften (2026-09-17)
+========================
+* Pre-AP follow on the #180 stack: **mild / normal closes stay light** (ease off throttle, then ~0.22 m/s² regen) instead of ramping every close to the **0.55** let-off near Follow Distance. **Rapid / dumping** only (`v_rel` ≥ ~13 mph) still uses the firmer 0.55 path. Overlay **slew both ways** so backing off is not a regen→Accel slam; when the gap is **opening** near Follow Distance, rematch **+a trickles** (0.08 opening / 0.12 slow rematch). Large-gap lead-close cap **0.20 / 0.30 / 0.50** (Accel 1/5/10) and One-Pedal SET resume are unchanged. MPC / FCW danger still wins. No panda flash.
+
+NAP lead-close accel cap (2026-09-17)
+========================
+* Pre-AP: closing on / coming up behind a radar lead no longer uses the cruise **1.6–0.6 m/s²** punch (Adaptive Accel used the full profile on a large gap; map Accel 1–10 only gated MAX-rise climb). Catch-up **+a** is now `lead_close_accel_ms2`: **0.20** at Accel 1, **0.30** at 5, **0.50** at 10, inside ~140 m. Still closes onto the selected Follow Distance. MPC danger / hard brake, sticky MAX, soft-lat, One-Pedal Long, and DM unchanged. **Not ported:** Hypermile, NAP Dash. Settings → NAP → Driving Mannerisms → Acceleration. Same close-cap as nap-dev (#106).
+
+NAP One-Pedal SET after gas pause (2026-09-17)
+========================
+* **One-Pedal Long On** (default still **Off**): after a from-rest gas pause, **one stalk SET** restores long at held MAX again. SET with the foot still on the accelerator clears the pause latch and arms lift-to-start (A+B / A3) — the long controller no longer re-latches from `_saw_long_without_gas`. Lift alone still stays paused. At a stop, SET arms wait-for-gas (clears the One-Pedal latch) like brake pause. Brake one-SET resume and in-session double-SET take-speed-now unchanged. No panda flash.
+
 NAP revert tip-brake soft-glide (2026-09-15)
 ========================
 * **#157 reverted:** Pre-AP silent long pause brake cancel is **firm/stock again** (#156-era RELEASE). When `real_brake_pressed` drops software long, interceptor **RELEASEs immediately** to Tesla regen — no tip/hold classifier, no −0.30 start, no ~2.5 s comfort-shaped glide. On-car: the soft cancel felt worse than stock regen. **Kept:** One-Pedal Long (#170–#172) accelerator pause + SET latch, #152 A+B and #153 A3 gas-lift climb. Full cancel / FCW / AEB / hard lead unchanged. No `GAS_COMMAND` rewrite, no PostEngageCoast / climb latch / pedal-hold, no locationd or safety change.

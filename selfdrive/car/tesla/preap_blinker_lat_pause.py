@@ -59,6 +59,21 @@ _installed = False
 # Same floor as controlsd lat standstill: abs(vEgo) <= max(minSteerSpeed, 0.3).
 # Pre-AP minSteerSpeed is 0, so 0.3 m/s (~0.7 mph) is "at a stop."
 RESUME_STANDSTILL_V_EGO = 0.3
+# Stock interceptor / DI gasPressed is DI > 2. One-Pedal pause is slightly
+# more sensitive so a light tip-in latches; keep a tiny deadzone above coast.
+ONE_PEDAL_GAS_DI_PRESSED = 1.0
+PEDAL_DI_PRESSED_STOCK = 2.0
+
+
+def one_pedal_gas_for_pause(interceptor_di) -> bool:
+  """True when interceptor DI is enough to pause One-Pedal Long.
+
+  Stock `gasPressed` / OVERRIDE stays DI > 2. Pause is DI > 1 so a light
+  tip-in latches; foot at coast (0) does not.
+  """
+  if interceptor_di is None:
+    return False
+  return float(interceptor_di) > ONE_PEDAL_GAS_DI_PRESSED
 
 
 def _peek_blinker_lamps(can_parsers):
@@ -454,10 +469,17 @@ def _process_buttons(self, cruise_buttons, prev_cruise_buttons, *args, **kwargs)
   # At a stop, one SET must not take long / creep from 0. Arm wait-for-gas
   # and keep held MAX. Double SET in the window is still take-speed-now.
   # Rolling: unchanged one-SET resume.
+  # One-Pedal gas pause uses the same one-SET overlay. If `_nap_long_
+  # resume_pending` was missed (latch without drop), the pause latch
+  # itself still means "one SET resumes" — do not fall through to
+  # double-pull first-pull (lat-only, long stays off).
   resume_set = (
     set_edge
     and bool(self.cruiseEnabled)
-    and bool(getattr(self, "_nap_long_resume_pending", False))
+    and (
+      bool(getattr(self, "_nap_long_resume_pending", False))
+      or bool(getattr(self, "_one_pedal_pause_latched", False))
+    )
     and not _should_drop_long_for_turn(self)
   )
   swallow_standstill_set = (
@@ -495,6 +517,13 @@ def _process_buttons(self, cruise_buttons, prev_cruise_buttons, *args, **kwargs)
     self.last_stalk_non_cancel_ms = curr_time_ms
   if swallow_standstill_set:
     self._nap_resume_wait_gas = True
+    # Orig did not see MAIN (swallowed), so it never cleared the
+    # One-Pedal latch. Wait-for-gas complete is gated on that latch
+    # being false — leave it set and a later gas touch stays paused.
+    if hasattr(self, "_clear_one_pedal_pause_latch"):
+      self._clear_one_pedal_pause_latch()
+    else:
+      self._one_pedal_pause_latched = False
 
   _drop_long_if_driver_turn(self)
 
@@ -642,6 +671,25 @@ def _update_preap(cs, can_parsers):
         cs.enableLongControl = engagement.enableLongControl
         cs.enableJustCC = engagement.enableJustCC
         cs.pedal_speed_kph = engagement.pedal_speed_kph
+      # One-Pedal pause is slightly more sensitive than stock gasPressed
+      # (DI > 1 vs DI > 2). Orig kick already ran at the stock gate.
+      try:
+        from opendbc.car.tesla.preap.nap_conf import nap_conf as _nap_conf
+        di = float(getattr(getattr(cs, "pedal", None), "interceptor_value", 0.0) or 0.0)
+        if (
+          bool(getattr(_nap_conf, "one_pedal_long", False))
+          and bool(getattr(_nap_conf, "use_pedal", False))
+          and one_pedal_gas_for_pause(di)
+          and hasattr(engagement, "maybe_one_pedal_gas_kick")
+        ):
+          engagement.maybe_one_pedal_gas_kick(True, True)
+          cs.enableLongControl = engagement.enableLongControl
+          cs.enableJustCC = engagement.enableJustCC
+          cs.pedal_speed_kph = engagement.pedal_speed_kph
+          cs.longCtrlEvent = engagement.longCtrlEvent
+          cs.one_pedal_pause_latched = bool(engagement._one_pedal_pause_latched)
+      except Exception:
+        pass
   return ret
 
 

@@ -128,15 +128,15 @@ When the upcoming drop is inside that window, MAX interpolates from the current 
 
 **HUD current speed** (top-middle on the 3X) is wheel/ESP `vEgo` only. `vEgoCluster` is Tesla `DI_digitalSpeed`, which pre-AP also uses as `cruiseState.speed`. Map-speed writes MAX into `vCruise` / `pedal_speed` / `cruiseState.speed` (90 kph = **56 mph**). LIMIT/MAX may show the map limit; the live number must not.
 
-**Acceleration** (Settings → NAP → Driving Mannerisms) scales **Follow climb only**. Brake uses Accel 5 (`map_brake_a_ms2` / `map_track_decel`). Lead still owns follow.
+**Acceleration** (Settings → NAP → Driving Mannerisms) scales **Follow climb** (MAX rising, no overriding lead) **and** the lead-close +a cap when coming up behind a radar lead. Brake uses Accel 5 (`map_brake_a_ms2` / `map_track_decel`). Adaptive Accel no longer uses the full cruise profile to punch a large follow gap.
 
-| Accel | Factor | `a` at Lookahead=Normal | Used for |
-|---|---|---|---|
-| 1 | 0.45 | **0.36 m/s²** | climb only (gentlest) |
-| **5** | 1.00 | **0.80 m/s²** | climb *and* all map braking |
-| 10 | 2.00 | **1.60 m/s²** | climb only (quickest, clamped) |
+| Accel | Factor | MAX climb `a` (Normal) | Lead-close +a | Used for |
+|---|---|---|---|---|
+| 1 | 0.45 | **0.36 m/s²** | **0.12 m/s²** | climb + catch-up (gentlest) |
+| **5** | 1.00 | **0.80 m/s²** | **0.18 m/s²** | climb, catch-up, *and* all map braking |
+| 10 | 2.00 | **1.60 m/s²** | **0.28 m/s²** | climb (quickest, clamped); catch-up still capped |
 
-`a = clamp(0.30, 1.60, a_lookahead × factor)`. Changing Accel 1 vs 10 must not change brake feel. A higher limit ahead may still be published as `nextSpeedLimit`; Cap/Follow ignore it until `speedLimit` itself is the higher value.
+MAX-rise `a = clamp(0.30, 1.60, a_lookahead × factor)`. Lead-close `a = clamp(0.12, 0.28, 0.18 × factor)` inside 140 m. Changing Accel 1 vs 10 must not change brake feel or MPC danger. A higher limit ahead may still be published as `nextSpeedLimit`; Cap/Follow ignore it until `speedLimit` itself is the higher value.
 
 ## How to test
 

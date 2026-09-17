@@ -19,6 +19,10 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
 from openpilot.selfdrive.controls.lib.lead_approach import (
   apply_lead_approach_overlay,
   lead_approach_decel_ms2,
+  lead_approach_rapid_gate,
+  lead_close_accel_ms2,
+  lead_follow_slack_m,
+  resolve_lead_close_hold,
   slew_lead_approach_a,
 )
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
@@ -108,6 +112,11 @@ class LongitudinalPlanner:
     self._frame = 0
     self._lead_approach_active = False
     self._lead_approach_a = None
+    self._lead_approach_rapid_count = 0
+    self._lead_close_hold_d = None
+    self._lead_close_hold_v = None
+    self._lead_close_hold_age = 0.0
+    self._lead_close_a_cap = None
 
     self.a_desired = init_a
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
@@ -181,6 +190,11 @@ class LongitudinalPlanner:
       self.a_desired = np.clip(sm['carState'].aEgo, accel_clip[0], accel_clip[1])
       self._lead_approach_active = False
       self._lead_approach_a = None
+      self._lead_approach_rapid_count = 0
+      self._lead_close_hold_d = None
+      self._lead_close_hold_v = None
+      self._lead_close_hold_age = 0.0
+      self._lead_close_a_cap = None
 
     # Prevent divergence, smooth in current v_ego
     self.v_desired_filter.x = max(0.0, self.v_desired_filter.update(v_ego))
@@ -208,9 +222,10 @@ class LongitudinalPlanner:
     self.t_follow = get_T_FOLLOW(sm['selfdriveState'].personality, self.active_nap_follow_dist)
 
     # Pre-AP adaptive accel: only limit accel when the lead's obstacle-equivalent
-    # distance is close. Above 1.5x the safe obstacle distance, use the full
-    # profile for gap closing. Below 1.2x, cap acceleration to follow limits to
-    # prevent overshoot → regen → overshoot oscillation. Blend in between.
+    # distance is close. Above 1.5x, Adaptive Accel used the full cruise profile
+    # to close the gap — that punch. The lead-close cap below owns large-gap
+    # +a (Mannerisms Accel, never higher). Below 1.2x, cap to follow limits
+    # to prevent overshoot → regen → overshoot oscillation. Blend in between.
     if self.CP.carFingerprint == "TESLA_MODEL_S_PREAP" and self.nap_adaptive_accel and sm['radarState'].leadOne.status:
       follow_limit = _get_preap_follow_limit(v_ego)
       if follow_limit is not None:
@@ -219,6 +234,34 @@ class LongitudinalPlanner:
         if cap_strength > 0:
           blended = accel_clip[1] * (1.0 - cap_strength) + follow_limit * cap_strength
           accel_clip[1] = min(accel_clip[1], blended)
+
+    # Coming up behind a radar lead: cap +a to the same Accel 1–10
+    # envelope as open-road / MAX climb (including last-mph baby-step).
+    # Cruise 1.6 / Adaptive full-profile used to punch a 160–200 m lead.
+    # Near-gap rematch trickles. Hold last in-window lead on a brief
+    # status drop. Does not change MPC danger / −a.
+    self._lead_close_a_cap = None
+    if self._is_preap:
+      lead_close = sm['radarState'].leadOne
+      d_cap, v_cap, self._lead_close_hold_d, self._lead_close_hold_v, self._lead_close_hold_age = (
+        resolve_lead_close_hold(
+          lead_close.status, lead_close.dRel, lead_close.vLead,
+          self._lead_close_hold_d, self._lead_close_hold_v, self._lead_close_hold_age,
+          self.dt, model_prob=lead_close.modelProb, radar=lead_close.radar,
+        )
+      )
+      if d_cap is not None:
+        v_rel_lead = v_ego - float(v_cap)
+        slack = lead_follow_slack_m(d_cap, v_cap, self.t_follow)
+        a_peak = map_accel_a_ms2(self._map_speed_lookahead, self._map_speed_accel)
+        a_grad = map_track_accel_ms2(
+          v_ego, v_hud_ms, a_peak, accel_level=self._map_speed_accel,
+        )
+        a_env = a_peak if a_grad is None else min(a_peak, float(a_grad))
+        self._lead_close_a_cap = lead_close_accel_ms2(
+          self._map_speed_accel, v_rel=v_rel_lead, slack=slack, a_personality=a_env,
+        )
+        accel_clip[1] = min(accel_clip[1], self._lead_close_a_cap)
 
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
@@ -270,37 +313,70 @@ class LongitudinalPlanner:
         else:
           a_up = map_track_accel_ms2(
             v_ego, v_hud_ms, map_accel_a_ms2(self._map_speed_lookahead, self._map_speed_accel),
+            accel_level=self._map_speed_accel,
           )
           if a_up is not None and float(output_a_target) >= 0.0:
             # min() alone never created climb (MPC holds ~0). Command Accel 1–10
             # toward MAX; a slower lead (negative aTarget) still outranks map.
             output_a_target = a_up
 
-    # Slower radar lead: Early 0.55 ease as soon as radar feedback is
+    # Slower radar lead: early light ease as soon as radar feedback is
     # reasonable (200 m Bosch ceiling, 24 s head-start, clear-close skips
     # the late-gap need). Far tracks need radar + modelProb; LeadData has
-    # no track age. Hysteresis (enter 0.55 / exit 0.20) + slew keep regen
-    # from re-biting after rematch; exit stays 0.20 so we still close.
-    # Map's +110 m is road distance to a sign and must not be used here.
-    # Overlay never harder than 0.55; a nibble must not steal catch-up +a.
-    # MPC close-in / FCW may still brake harder. Map MAX cannot cancel this.
-    if self._is_preap and sm['radarState'].leadOne.status:
+    # no track age. Mild closes stay at 0.18; rapid / dumping still uses
+    # kinematics up to 0.55. Hysteresis (enter 0.65 / exit 0.20) + slew
+    # both ways keep regen from slamming rematch; exit stays 0.20 so we
+    # still close. Map's +110 m is road distance to a sign and must not
+    # be used here. Rapid 0.55 needs a few consecutive in-window high
+    # v_rel frames (a single closing-rate blip stays on mild 0.18). A far
+    # nibble must not steal large-gap catch-up +a; near-gap / real-close
+    # eases off throttle. MPC close-in / FCW may still brake harder.
+    # Map MAX cannot cancel this.
+    if self._is_preap:
       lead = sm['radarState'].leadOne
-      a_lead = lead_approach_decel_ms2(
-        v_ego, lead.vLead, lead.dRel, self.t_follow, active=self._lead_approach_active,
-        model_prob=lead.modelProb, radar=lead.radar,
-      )
+      if lead.status:
+        overlay_v_rel = v_ego - float(lead.vLead)
+        a_lead = lead_approach_decel_ms2(
+          v_ego, lead.vLead, lead.dRel, self.t_follow, active=self._lead_approach_active,
+          model_prob=lead.modelProb, radar=lead.radar, allow_rapid=False,
+        )
+        allow_rapid, self._lead_approach_rapid_count = lead_approach_rapid_gate(
+          overlay_v_rel, self._lead_approach_rapid_count, sample_ok=a_lead is not None,
+        )
+        if allow_rapid:
+          a_lead = lead_approach_decel_ms2(
+            v_ego, lead.vLead, lead.dRel, self.t_follow, active=self._lead_approach_active,
+            model_prob=lead.modelProb, radar=lead.radar, allow_rapid=allow_rapid,
+          )
+        # Hysteresis follows kinematics, not release slew — otherwise a
+        # fading overlay keeps the hold gate open and re-bites rematch.
+        self._lead_approach_active = a_lead is not None
+        overlay_slack = lead_follow_slack_m(lead.dRel, lead.vLead, self.t_follow)
+      else:
+        # Track dropped: fade overlay. Snapping to None restored cruise +a.
+        self._lead_approach_active = False
+        self._lead_approach_rapid_count = 0
+        a_lead = None
+        overlay_v_rel = None
+        overlay_slack = None
+        if self._lead_close_hold_d is not None and self._lead_close_hold_v is not None:
+          overlay_v_rel = v_ego - float(self._lead_close_hold_v)
+          overlay_slack = lead_follow_slack_m(
+            self._lead_close_hold_d, self._lead_close_hold_v, self.t_follow,
+          )
       a_lead = slew_lead_approach_a(a_lead, self._lead_approach_a)
-      self._lead_approach_active = a_lead is not None
       self._lead_approach_a = a_lead
       if a_lead is not None:
-        output_a_target = apply_lead_approach_overlay(output_a_target, a_lead)
-    else:
-      self._lead_approach_active = False
-      self._lead_approach_a = None
+        output_a_target = apply_lead_approach_overlay(
+          output_a_target, a_lead, v_rel=overlay_v_rel, slack=overlay_slack,
+        )
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
+    # Hard +a ceiling: the 0.05 clip slew must not leak cruise punch for a
+    # second, and a status flicker must not restore 1.6.
+    if self._lead_close_a_cap is not None:
+      accel_clip[1] = min(float(accel_clip[1]), float(self._lead_close_a_cap))
     self.output_a_target = np.clip(output_a_target, accel_clip[0], accel_clip[1])
     self.prev_accel_clip = accel_clip
 
