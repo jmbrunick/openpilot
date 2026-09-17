@@ -21,6 +21,7 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   lead_approach_decel_ms2,
   lead_close_accel_ms2,
   lead_close_should_cap,
+  lead_follow_slack_m,
   slew_lead_approach_a,
 )
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
@@ -242,8 +243,11 @@ class LongitudinalPlanner:
     # Adaptive Accel used full cruise when the gap was large — that punch.
     # Map Accel 1–10 only gated MAX-rise. Does not change MPC danger / −a.
     if self._is_preap and sm['radarState'].leadOne.status:
-      if lead_close_should_cap(sm['radarState'].leadOne.dRel):
-        accel_clip[1] = min(accel_clip[1], lead_close_accel_ms2(self._map_speed_accel))
+      lead_close = sm['radarState'].leadOne
+      if lead_close_should_cap(lead_close.dRel):
+        v_rel_lead = v_ego - float(lead_close.vLead)
+        slack = lead_follow_slack_m(lead_close.dRel, lead_close.vLead, self.t_follow)
+        accel_clip[1] = min(accel_clip[1], lead_close_accel_ms2(self._map_speed_accel, v_rel=v_rel_lead, slack=slack))
 
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
@@ -341,17 +345,15 @@ class LongitudinalPlanner:
           output_a_target = pre_hill
     self._hill_pitch = hill_pitch
 
-    # Slower radar lead: Early 0.55 ease as soon as radar feedback is
-    # reasonable (200 m Bosch ceiling, 28 s head-start, clear-close skips
+    # Slower radar lead: early light ease as soon as radar feedback is
+    # reasonable (200 m Bosch ceiling, 24 s head-start, clear-close skips
     # the late-gap need). Far tracks need radar + modelProb; LeadData has
-    # no track age. TTC floor (~0.26 when time-to-gap ≤ 20 s *and*
-    # kinematic |a| already past a nibble) so a normal close is felt
-    # earlier than the 0.55 peak without stealing Follow 1–7 catch-up.
-    # Rapid / short TTC still uses kinematics up to 0.55. Hysteresis
-    # (enter 0.55 / exit 0.20) + slew keep regen from re-biting after
-    # rematch; exit stays 0.20 so we still close. A nibble must not steal
-    # rematch +a. Map's +110 m is road distance to a sign and must not be
-    # used here. Overlay never harder than 0.55. MPC close-in / FCW may
+    # no track age. Mild closes stay at 0.22; rapid / dumping still uses
+    # kinematics up to 0.55. Hysteresis (enter 0.55 / exit 0.20) + slew
+    # both ways keep regen from slamming rematch; exit stays 0.20 so we
+    # still close. Map's +110 m is road distance to a sign and must not
+    # be used here. A far nibble must not steal large-gap catch-up +a;
+    # near-gap / real-close eases off throttle. MPC close-in / FCW may
     # still brake harder. Map MAX cannot cancel this.
     if self._is_preap and sm['radarState'].leadOne.status:
       lead = sm['radarState'].leadOne
@@ -359,11 +361,17 @@ class LongitudinalPlanner:
         v_ego, lead.vLead, lead.dRel, self.t_follow, active=self._lead_approach_active,
         model_prob=lead.modelProb, radar=lead.radar,
       )
-      a_lead = slew_lead_approach_a(a_lead, self._lead_approach_a)
+      # Hysteresis follows kinematics, not release slew — otherwise a
+      # fading overlay keeps the hold gate open and re-bites rematch.
       self._lead_approach_active = a_lead is not None
+      a_lead = slew_lead_approach_a(a_lead, self._lead_approach_a)
       self._lead_approach_a = a_lead
       if a_lead is not None:
-        output_a_target = apply_lead_approach_overlay(output_a_target, a_lead)
+        output_a_target = apply_lead_approach_overlay(
+          output_a_target, a_lead,
+          v_rel=v_ego - float(lead.vLead),
+          slack=lead_follow_slack_m(lead.dRel, lead.vLead, self.t_follow),
+        )
     else:
       self._lead_approach_active = False
       self._lead_approach_a = None

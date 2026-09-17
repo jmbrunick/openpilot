@@ -1,3 +1,7 @@
+NAP follow soften + One-Pedal pause DI>1 (2026-09-17)
+========================
+* Port of the nap-release **#181 stack** plus pause sensitivity: **mild / normal closes stay light** (~0.22 m/s²) instead of the TTC-floor 0.26 / short-TTC 0.55 path. **Rapid / dumping** only (`v_rel` ≥ ~13 mph) still uses 0.55. Overlay **slew both ways**; near-gap opening rematch **+a trickles** (0.08 / 0.12). Large-gap lead-close cap stays **0.20 / 0.30 / 0.50**. **One-Pedal SET resume** (pause latch is one SET, including SET-while-gas; opendbc skip_resume). Pause gate interceptor DI **> 1** (stock gasPressed stays **> 2**). Hypermile / Hill Climb / map-climb-owns-follow unchanged. No panda flash.
+
 NAP revert tip-brake soft-glide (2026-09-15)
 ========================
 * **#157 reverted:** Pre-AP silent long pause brake cancel is **firm/stock again** (#156-era RELEASE). When `real_brake_pressed` drops software long, interceptor **RELEASEs immediately** to Tesla regen — no tip/hold classifier, no −0.30 start, no ~2.5 s comfort-shaped glide. On-car: the soft cancel felt worse than stock regen. **Kept:** One-Pedal Long (#170–#172) accelerator pause + SET latch, #152 A+B and #153 A3 gas-lift climb. Full cancel / FCW / AEB / hard lead unchanged. No `GAS_COMMAND` rewrite, no PostEngageCoast / climb latch / pedal-hold, no locationd or safety change.

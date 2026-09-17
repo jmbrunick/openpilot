@@ -19,11 +19,13 @@ MAP_SPEED_ACCEL_LABELS = [str(i) for i in MAP_SPEED_ACCEL]
 MAP_SPEED_ACCEL_DEFAULT = 5
 MAP_SPEED_ACCEL_DESCRIPTION = (
   "MAX climb / open-road feel (1 lazy → 10 quicker). "
+  + "Coming up behind a lead uses the Accel 1–10 close cap "
+  + "(0.20 / 0.30 / 0.50 m/s²), not a full-gap punch. "
   + "Brake to a lower MAX stays Accel 5. Lead still owns follow."
 )
 ADAPTIVE_ACCEL_DESCRIPTION = (
   "Softer accel near a lead so you don't overshoot. "
-  + "Open road uses Acceleration 1–10."
+  + "Open road uses Acceleration 1–10. Coming up behind a lead uses the close cap, not a full-gap punch."
 )
 MAP_SPEED_MODE_DESCRIPTION = (
   "OSM posted limit for HUD MAX. Off: no change. Display: LIMIT sign only. "
@@ -49,7 +51,8 @@ ONE_PEDAL_LONG_DESCRIPTION = (
   "Default Off. Pedal mode only. With OP long already on, pressing the "
   + "accelerator from rest pauses longitudinal — long lets go, lateral "
   + "stays, no full disable or take-control. That pause stays until a "
-  + "stalk SET; lifting the pedal does not resume long. SET while your "
+  + "stalk SET; lifting the pedal does not resume long. A light tip-in "
+  + "pauses (slightly more sensitive than a full gasPressed). SET while your "
   + "foot is already on the pedal still arms long; lift starts it "
   + "(A+B / A3), same as today. After a from-rest pause, lift or "
   + "near-zero accel is Tesla regen through interceptor RELEASE. Off = "
@@ -65,7 +68,7 @@ HYPERMILE_DESCRIPTION = (
 FOLLOW_DISTANCE_DESCRIPTION = (
   "1 closest, 7 farthest. A slower car ahead eases off farther back "
   + "(more distance, not a harder brake). Behind a lead, a stalk tip "
-  + "steps this; a full press still steps MAX."
+  + "steps this 1–7; a full press still steps MAX. No lead: both still adjust MAX."
 )
 HYPERMILE_STEP_DOWN_DESCRIPTION = (
   "Default Off. Only while Hypermile is On. Larger posted-scale drop "
