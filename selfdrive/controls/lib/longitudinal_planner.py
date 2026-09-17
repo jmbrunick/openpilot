@@ -350,12 +350,12 @@ class LongitudinalPlanner:
     # Hysteresis + slew both ways keep regen from slamming rematch. Map's
     # +110 m is road distance to a sign and must not be used here. Rapid
     # 0.55 needs consecutive high v_rel frames (a single closing-rate blip
-    # stays on mild). A far nibble must not steal large-gap catch-up +a;
-    # near-gap / real-close eases off throttle. MPC −a is floored at MILD
-    # only as anti-chatter (gap opening / small |v_rel|, lead not braking)
-    # so min(MPC, overlay) cannot dump ~−2.5 on noise; closing or a slowing
-    # lead keeps full match-speed −a. FCW / rapid / a real stop still own
-    # danger. Map MAX cannot cancel this.
+    # stays on mild). A far nibble must not steal rematch catch-up +a; a
+    # real close bleeds that nibble to mesh at Follow Distance. MPC −a is
+    # floored at MILD only as anti-chatter (gap opening / small |v_rel|,
+    # lead not braking) so min(MPC, overlay) cannot dump ~−2.5 on noise;
+    # closing or a slowing lead keeps full match-speed −a. FCW / rapid /
+    # a real stop still own danger. Map MAX cannot cancel this.
     if self._is_preap:
       lead = sm['radarState'].leadOne
       allow_rapid = False
