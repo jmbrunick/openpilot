@@ -683,6 +683,8 @@ def test_settings_and_docs_wire_hypermile():
   assert "FollowStalkGesture" in card
   assert "_preap_cruise_detent" in card
   assert "persist_follow_distance" in card
+  assert "v_cruise=v_cruise_ms" in card
+  assert "has_lead=has_lead" in card
   assert "radarState" in card
   assert "hypermileFollowChanged" in events
   assert "follow_distance_hud_text" in events

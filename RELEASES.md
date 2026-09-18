@@ -1,6 +1,21 @@
+NAP port of #192 flash tip onto nap-dev (2026-09-18)
+========================
+* Tonight ship to **nap-dev** of the stacked flash tip through **#192** (`c3570c957`). Same Pre-AP longitudinal behavior as `cursor/alead-opening-gate-bc6e`. No panda flash. Hypermile / Hill Climb / map-climb-owns-follow kept.
+* **#187** Accel-owns-catch-up + MPC mild floor + city/hwy Follow Distance.
+* **#188** skip MPC −MILD floor when closing / lead braking; far mild close must not steal cruise +a.
+* **#189** analog `DI_pedalPos` as `gasDEPRECATED`; SET-while-gas arms long.
+* **#190** hard-block rematch / cruise +a while closing on a live or held lead; farther radar lead ID.
+* **#191** settle rematch deadband + Accel-proportional gap hunt; hwy FD from ~30 mph when MAX > 50.
+* **#192** do not match aLeadK on far opening leads (slack ≳ 20 m / gap opening).
+
 NAP One-Pedal SET-while-gas lift keeps long (2026-09-18)
 ========================
-* **One-Pedal Long On:** double-SET (or one SET) **while the foot is already on gas**, then lift, must **keep `enableLongControl`**, hold MAX, and **ACQUIRE** the interceptor on that falling edge — not dive into stock Tesla one-pedal regen. #185's pause-gate DI **> 1** extra kick treated lift-through DI 1–2 as a from-rest tip-in (phantom rising edge after stock `gasPressed` fell), dropped long, zeroed cruise speed, and left `aTarget` climbing while `aEgo` was stock regen (~−1.5). Log: `1c95345a3286a5db|000000dc--9b28358130` 13:16:14 (SET→lift **197 ms**), 13:15:30 (7.5 s regen hole), 13:17:19 success when DI dropped through 1 in one sample. **Now:** orig kick takes `interceptor_di`; `_one_pedal_armed_with_gas` holds lift-to-start until DI is fully off; overlay skips extra kick on falling edge / armed. Light tip-in after a real rest still pauses. Toggle default **Off**. **nap-dev only — do not merge until Pre-AP / related long tests are green.**
+* **One-Pedal Long On:** double-SET (or one SET) **while the foot is already on gas**, then lift, must **keep `enableLongControl`**, hold MAX, and **ACQUIRE** the interceptor on that falling edge — not dive into stock Tesla one-pedal regen. #185's pause-gate DI **> 1** extra kick treated lift-through DI 1–2 as a from-rest tip-in (phantom rising edge after stock `gasPressed` fell), dropped long, zeroed cruise speed, and left `aTarget` climbing while `aEgo` was stock regen (~−1.5). Log: `1c95345a3286a5db|000000dc--9b28358130` 13:16:14 (SET→lift **197 ms**), 13:15:30 (7.5 s regen hole), 13:17:19 success when DI dropped through 1 in one sample. **Now:** orig kick takes `interceptor_di`; `_one_pedal_armed_with_gas` holds lift-to-start until DI is fully off; overlay skips extra kick on falling edge / armed. Light tip-in after a real rest still pauses. Toggle default **Off**.
+
+NAP Accel-owns-catch-up + city/hwy Follow Distance (2026-09-17)
+========================
+* **Accel 1–10 owns all +a**, including lead gap-close: same Mannerisms gradient as open-road / MAX climb (Accel 1 baby-steps the last ~5 mph; Accel 7–10 stay brisk). No separate 0.20/0.30/0.50 catch-up curve. Close-cap covers the Bosch window (**~200 m**) so a 160–180 m lead does not punch cruise 1.6. Brief hold on `leadOne` flicker. **Hard/rapid regen** (0.55) waits for **4 consecutive** in-window samples (~0.20 s); mild ease is immediate. **Non-rapid MPC −a is floored at mild (~0.22)** so min(MPC, overlay) cannot dump ~−2.5; FCW / rapid / a real stop still own danger.
+* **City vs highway Follow Distance** on Driving Mannerisms (TICI + mici): City (<~50 mph) and Highway (>~50 mph), 1–7. Fluid blend with hysteresis around 50 — not a step. Dropping below 50 while following, ego is slightly slower than the lead so the gap opens to city FD, then holds. Rising above 50, t_follow creeps toward hwy FD. Only with a valid lead + long engaged. Migrates from single `NAPFollowDistance`. **Not Hypermile** — available whenever Mannerisms FD is used. Stalk tip steps the active band. Hypermile / Hill Climb / map-climb-owns-follow kept. No panda flash.
 
 NAP follow soften + One-Pedal pause DI>1 (2026-09-17)
 ========================

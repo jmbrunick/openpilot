@@ -229,6 +229,32 @@ def test_initial_double_pull_engage_is_take_speed_now():
   assert not getattr(eng, "_nap_set_resume_long", False)
 
 
+def test_set_while_di_gas_held_from_disengaged_arms_long():
+  """Single SET while accelerating: arm long (do not leave lat-only regen)."""
+  install_blinker_lat_pause()
+  eng = PreAPEngagement(double_pull_enabled=True, double_pull_window_ms=750)
+  eng._nap_di_pedal_pos = 20.0
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=1000, v_ego=8.0)
+  assert eng.cruiseEnabled
+  assert eng.enableLongControl
+  assert not getattr(eng, "_one_pedal_pause_latched", False)
+  assert getattr(eng, "_nap_set_take_speed_now", False)
+  assert not getattr(eng, "_nap_set_resume_long", False)
+  assert eng.enableDoublePull
+
+
+def test_set_without_di_gas_from_disengaged_stays_lat_only():
+  """Foot off: stock double-pull. Interceptor-only sticky must not skip it."""
+  install_blinker_lat_pause()
+  eng = PreAPEngagement(double_pull_enabled=True, double_pull_window_ms=750)
+  eng._nap_di_pedal_pos = 0.0
+  eng._nap_gas_pressed = True
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=1000, v_ego=8.0)
+  assert eng.cruiseEnabled
+  assert not eng.enableLongControl
+  assert not getattr(eng, "_nap_set_take_speed_now", False)
+
+
 def test_cancel_full_disengage_clears_held_max():
   install_blinker_lat_pause()
   held = 55 * CV.MPH_TO_KPH

@@ -81,6 +81,10 @@ HUD MAX is `CS.vCruise` / `pedal_speed_kph`. Policy lives in `MapCruiseHold` (`s
 
 No-pedal / stock CC does not own software MAX. Brake does not pause NAP long (stock CC handles brake). Double-pull still engages lat; set speed stays with Tesla CC.
 
+### Follow Distance stalk (radar lead)
+
+When `radarState.leadOne` is present, a Pre-AP stalk **tip** (first detent, 1 mph / 1 kph) undoes that frame’s MAX and steps the **active** City or Highway Follow Distance **1–7** (`NAPFollowDistanceCity` / `NAPFollowDistanceHwy`, HUD still `NAPFollowDistance`) when the lever returns to IDLE — the same controls as Settings → NAP → Driving Mannerisms. Below ~50 mph the city slider is active; above ~50 the highway slider is; hysteresis around 50. Stalk up = closer (toward 1). Stalk down = farther (toward 7). Closest (1) is allowed. A **full press** (2nd detent, 5 mph / 5 kph) keeps MAX +5/−5 and does not remap Follow Distance, even though a physical full press walks through first detent. Raw `SpdCtrlLvr_Stat` / CruiseButtons distinguish tip vs hold; `buttonEvents` alone do not. HUD shows **Follow Distance: N** (`EventName.followDistanceChanged`, WARNING + PERMANENT, held ~1.5 s). A tip already at 1 or 7 still requests the HUD (`NAPFollowHudPending`). No lead: tip and hold both stay MAX / RES+/−. This is not Hypermile (no 1–5, no ≤50 forced far gap — city/hwy are independent Mannerisms setpoints with a fluid blend). Helper: `selfdrive/controls/lib/hypermile.py` + `follow_distance.py`; remap lives in `card.py` (`_maybe_follow_stalk`).
+
 ## Steering disengage
 
 `handle_steering_disengage()` runs on every frame. Rising edge of `steeringDisengage` (hands-on level ≥ 2 or EPAS rejecting) fully tears down FSM state: `cruiseEnabled=False`, `enableLongControl=False`, `pedal_speed_kph=0`, pull timers cleared.

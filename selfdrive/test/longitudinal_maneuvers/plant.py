@@ -14,16 +14,29 @@ from openpilot.selfdrive.controls.radard import _LEAD_ACCEL_TAU
 class _ManeuverParams:
   def __init__(self, nap_follow_dist):
     self.nap_follow_dist = nap_follow_dist
+    self.migrated = True
 
   def get(self, key, return_default=False):
     assert return_default
-    assert key == "NAPFollowDistance"
-    return self.nap_follow_dist
+    if key in ("NAPFollowDistance", "NAPFollowDistanceCity", "NAPFollowDistanceHwy"):
+      return self.nap_follow_dist
+    if key in ("NAPMapSpeedMode", "NAPMapSpeedOffsetMph", "NAPMapSpeedLookahead", "NAPMapSpeedAccel"):
+      return {"NAPMapSpeedMode": 0, "NAPMapSpeedOffsetMph": 0, "NAPMapSpeedLookahead": 2, "NAPMapSpeedAccel": 5}[key]
+    raise AssertionError(key)
 
-  @staticmethod
-  def get_bool(key):
-    assert key == "NAPAdaptiveAccel"
-    return False
+  def get_bool(self, key):
+    if key == "NAPAdaptiveAccel":
+      return False
+    if key == "NAPFollowDistanceSplitMigrated":
+      return self.migrated
+    raise AssertionError(key)
+
+  def put(self, key, value):
+    pass
+
+  def put_bool(self, key, value):
+    if key == "NAPFollowDistanceSplitMigrated":
+      self.migrated = bool(value)
 
 
 class Plant:
