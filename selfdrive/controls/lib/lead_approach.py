@@ -263,9 +263,9 @@ def lead_settled_rematch_a_ms2(a, v_rel, slack) -> float:
   v = 0.0 if v_rel is None else float(v_rel)
   opening = v <= 0.0
   if s is None or s < LEAD_HUNT_SLACK_M:
-    # Finish Follow Distance even if slightly opening. Comfortable
-    # opening (the 49→59 chatter band) stays 0.
-    if opening and (s is None or s <= 0.0 or s > LEAD_SETTLE_FINISH_SLACK_M):
+    # Comfortable opening (the 49→59 chatter band) stays 0. At or inside
+    # Follow Distance, trickle so ego does not sag below the lead.
+    if opening and s is not None and s > LEAD_SETTLE_FINISH_SLACK_M:
       return 0.0
     return min(a, LEAD_CLOSE_OPENING_A_MS2)
   if opening and s < LEAD_REMATCH_PULL_SLACK_M:
@@ -290,7 +290,11 @@ def lead_close_accel_ms2(accel_level: int = 5, v_rel=None, slack=None,
   if a_personality is not None:
     a = min(a, max(0.0, float(a_personality)))
   if v_rel is not None and float(v_rel) >= LEAD_CLOSING_REMATCH_BLOCK_MS:
-    return 0.0
+    # Last meters of Follow Distance may still trickle while closing 1.0–1.5.
+    # ≳ 1.5 match-speed still owns; #190 is the large-gap block.
+    if (slack is None or float(slack) > LEAD_SETTLE_FINISH_SLACK_M
+        or float(v_rel) >= LEAD_CLOSING_MATCH_MS):
+      return 0.0
   if settled:
     return lead_settled_rematch_a_ms2(a, v_rel, slack)
   if slack is None or float(slack) > LEAD_CLOSE_REMATCH_SLACK_M:
@@ -300,6 +304,29 @@ def lead_close_accel_ms2(accel_level: int = 5, v_rel=None, slack=None,
   if v_rel is not None and float(v_rel) < LEAD_APPROACH_DV_MS:
     return min(a, LEAD_CLOSE_REMATCH_A_MS2)
   return a
+
+
+def lead_remaining_close_a_ms2(output_a, v_rel, slack):
+  """Command trickle +a to finish Follow Distance when MPC/cruise sat at 0.
+
+  lead_close_accel_ms2 is a +a *ceiling*. A same-speed hang 2–4 m long of
+  FD therefore stays at a_target=0 unless something commands the rematch
+  trickle. Same when ego sags below the lead at/near FD. Do not override
+  overlay −a, and do not rematch into a ≳ 1.5 close.
+  """
+  if output_a is None or slack is None:
+    return output_a
+  if float(output_a) < -1e-6:
+    return output_a
+  if v_rel is not None and float(v_rel) >= LEAD_CLOSING_MATCH_MS:
+    return output_a
+  s = float(slack)
+  v = 0.0 if v_rel is None else float(v_rel)
+  finish = 0.0 < s <= LEAD_SETTLE_FINISH_SLACK_M
+  sag = s <= LEAD_SETTLE_FINISH_SLACK_M and v < 0.0
+  if finish or sag:
+    return max(float(output_a), LEAD_CLOSE_OPENING_A_MS2)
+  return output_a
 
 
 def slew_follow_plus_a(target, prev, v_rel, slew=LEAD_ATARGET_SLEW_MS2):
@@ -444,8 +471,11 @@ def cap_closing_lead_accel(output_a, v_rel, a_lead=None, lead_present=False,
     return float(output_a)
   if not (owned or lead_is_closing(v_rel, a_lead, slack=slack)):
     return float(output_a)
-  a = min(float(output_a), 0.0)
   v = 0.0 if v_rel is None else float(v_rel)
+  near_finish = slack is not None and 0.0 < float(slack) <= LEAD_SETTLE_FINISH_SLACK_M
+  if near_finish and (not owned) and v < LEAD_CLOSING_MATCH_MS:
+    return float(output_a)
+  a = min(float(output_a), 0.0)
   match_speed = owned or v >= LEAD_CLOSING_MATCH_MS or lead_alead_owns_match(
     v_rel, a_lead, slack,
   )
