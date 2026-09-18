@@ -403,7 +403,7 @@ class LongitudinalPlanner:
       lead = sm['radarState'].leadOne
       allow_rapid = False
       lead_held = self._lead_close_hold_d is not None and self._lead_close_hold_v is not None
-      live_ok = bool(lead.status) and lead_approach_track_ok(
+      live_ok = bool(lead.status) and lead_close_should_cap(
         lead.dRel, lead.modelProb, lead.radar, active=False,
       )
       if live_ok:
@@ -482,7 +482,7 @@ class LongitudinalPlanner:
       output_a_target = cap_closing_lead_accel(
         output_a_target, overlay_v_rel, a_lead=lead_a_k,
         lead_present=live_ok or lead_held, owned=self._lead_close_hold_owned,
-        slack=overlay_slack,
+        slack=overlay_slack, d_rel=overlay_d,
       )
       if live_ok or lead_held:
         output_a_target = slew_follow_plus_a(
