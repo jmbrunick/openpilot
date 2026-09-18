@@ -265,7 +265,7 @@ def lead_settled_rematch_a_ms2(a, v_rel, slack) -> float:
   if s is None or s < LEAD_HUNT_SLACK_M:
     # Comfortable opening (the 49→59 chatter band) stays 0. At or inside
     # Follow Distance, trickle so ego does not sag below the lead.
-    if opening and s is not None and s > LEAD_SETTLE_FINISH_SLACK_M:
+    if opening and s is not None and (s > LEAD_SETTLE_FINISH_SLACK_M or s < 0.0):
       return 0.0
     return min(a, LEAD_CLOSE_OPENING_A_MS2)
   if opening and s < LEAD_REMATCH_PULL_SLACK_M:
@@ -311,19 +311,20 @@ def lead_remaining_close_a_ms2(output_a, v_rel, slack):
 
   lead_close_accel_ms2 is a +a *ceiling*. A same-speed hang 2–4 m long of
   FD therefore stays at a_target=0 unless something commands the rematch
-  trickle. Same when ego sags below the lead at/near FD. Do not override
-  overlay −a, and do not rematch into a ≳ 1.5 close.
+  trickle. Same when ego sags below the lead at/near FD. Real overlay
+  ease (|a| ≥ nibble) still wins; a fading nibble must not park the gap.
+  Do not rematch into a ≳ 1.5 close.
   """
   if output_a is None or slack is None:
     return output_a
-  if float(output_a) < -1e-6:
+  if float(output_a) <= -LEAD_APPROACH_NIBBLE_MS2:
     return output_a
   if v_rel is not None and float(v_rel) >= LEAD_CLOSING_MATCH_MS:
     return output_a
   s = float(slack)
   v = 0.0 if v_rel is None else float(v_rel)
   finish = 0.0 < s <= LEAD_SETTLE_FINISH_SLACK_M
-  sag = s <= LEAD_SETTLE_FINISH_SLACK_M and v < 0.0
+  sag = 0.0 <= s <= LEAD_SETTLE_FINISH_SLACK_M and v < 0.0
   if finish or sag:
     return max(float(output_a), LEAD_CLOSE_OPENING_A_MS2)
   return output_a

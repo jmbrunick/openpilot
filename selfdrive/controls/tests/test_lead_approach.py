@@ -838,8 +838,10 @@ def test_settled_rematch_deadbands_accel_ceil_while_gap_ok_or_opening():
 def test_remaining_close_commands_trickle_when_mpc_sits_at_zero():
   assert lead_remaining_close_a_ms2(0.0, 0.0, 3.0) == pytest.approx(LEAD_CLOSE_OPENING_A_MS2)
   assert lead_remaining_close_a_ms2(-0.20, 0.2, 3.0) == pytest.approx(-0.20)
+  assert lead_remaining_close_a_ms2(-0.05, 0.0, 3.0) == pytest.approx(LEAD_CLOSE_OPENING_A_MS2)
   assert lead_remaining_close_a_ms2(0.0, 0.2, 8.0) == pytest.approx(0.0)
   assert lead_remaining_close_a_ms2(0.0, -0.4, 0.0) == pytest.approx(LEAD_CLOSE_OPENING_A_MS2)
+  assert lead_remaining_close_a_ms2(0.0, -0.4, -2.0) == pytest.approx(0.0)
   assert lead_remaining_close_a_ms2(0.0, 1.6, 3.0) == pytest.approx(0.0)
 
 
