@@ -617,9 +617,9 @@ def test_planner_wires_hysteresis_and_slew():
   """Overlay stays after map track; MPC hard path is still a min()."""
   from pathlib import Path
   planner = (Path(__file__).resolve().parents[1] / "lib/longitudinal_planner.py").read_text()
-  assert "active=self._lead_approach_active" in planner
-  assert "model_prob=lead.modelProb" in planner
-  assert "radar=lead.radar" in planner
+  assert "active=self._lead_approach_active or lead_held" in planner
+  assert "model_prob=overlay_prob" in planner
+  assert "radar=overlay_radar" in planner
   assert "slew_lead_approach_a(a_lead, self._lead_approach_a)" in planner
   assert "apply_lead_approach_overlay(" in planner
   assert "lead_follow_slack_m(" in planner
