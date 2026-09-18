@@ -8,6 +8,7 @@ from opendbc.car.tesla.preap import virtual_das
 from opendbc.car.tesla.preap.constants import PEDAL_LONG_K_BP, PEDAL_LONG_KI_V, PEDAL_LONG_KP_V
 from opendbc.car.tesla.preap.virtual_das import GRAVITY, VirtualDAS
 from opendbc.car.tesla.pedal.controller import PEDAL_RAMP_RATE_DOWN, PEDAL_RAMP_RATE_UP
+from openpilot.common.constants import CV
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl
 from openpilot.selfdrive.controls.lib import longitudinal_planner
@@ -20,8 +21,11 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_CLOSE_A_MIN_MS2,
   LEAD_CLOSE_HOLD_S,
   LEAD_CLOSE_MAX_M,
+  LEAD_CLOSE_OPENING_A_MS2,
   LEAD_CLOSING_MATCH_GAIN,
+  LEAD_SETTLE_HOLD_S,
   lead_close_accel_ms2,
+  lead_hunt_accel_ms2,
 )
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   LongitudinalPlanSource,
@@ -922,3 +926,128 @@ def test_planner_far_radar_lead_eases_without_model_prob():
   for _ in range(8):
     planner.update(inputs)
   assert planner.output_a_target > 0.20
+
+
+def test_planner_settled_opening_gap_does_not_pin_accel_ceil():
+  """d7 20:25:33: after match, opening slack must not rematch Accel 2 ceil."""
+  v_ego = 25.0
+  v_lead = 25.0
+  t_follow = get_T_FOLLOW(nap_follow_dist=4)
+  d_follow = t_follow * v_lead + STOP_DISTANCE_M
+  params = _MutablePlannerParams(nap_follow_dist=4, map_speed_accel=2)
+  planner = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
+  planner._map_speed_accel = 2
+  a2 = lead_close_accel_ms2(2)
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=a2)
+  planner.prev_accel_clip = [-1.2, a2]
+  inputs = _make_planner_inputs(v_ego)
+  lead = inputs["radarState"].leadOne
+  lead.status = True
+  lead.dRel = d_follow + 8.0
+  lead.vLead = v_lead
+  lead.aLeadK = 0.0
+  lead.modelProb = 1.0
+  lead.radar = True
+  for _ in range(int(LEAD_SETTLE_HOLD_S / 0.05) + 2):
+    planner.update(inputs)
+  assert planner._lead_settled
+  # Gap already opening, slack ~18 m — trickle/0, not Accel ceil.
+  lead.vLead = v_ego + 0.4
+  lead.dRel = d_follow + 18.0
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=a2)
+  planner.prev_accel_clip = [-1.2, a2]
+  for _ in range(4):
+    planner.update(inputs)
+  assert planner._lead_settled
+  assert planner.output_a_target < 0.05
+  assert planner.output_a_target < a2 * 0.25
+  # Large same-speed gap that never matched still catch-up at Accel.
+  planner2 = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
+  planner2._map_speed_accel = 2
+  planner2.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=a2)
+  planner2.prev_accel_clip = [-1.2, a2]
+  inputs2 = _make_planner_inputs(v_ego)
+  lead2 = inputs2["radarState"].leadOne
+  lead2.status = True
+  lead2.dRel = 160.0
+  lead2.vLead = v_ego
+  lead2.modelProb = 1.0
+  lead2.radar = True
+  for _ in range(16):
+    planner2.update(inputs2)
+  assert not planner2._lead_settled
+  assert planner2.output_a_target == pytest.approx(a2, abs=0.08)
+
+
+def test_planner_settled_gap_hunt_is_not_full_accel_ceil():
+  """Hwy +30 m long: small Accel-proportional close, not full Accel every pulse."""
+  v_ego = 25.0
+  v_lead = 24.8
+  t_follow = get_T_FOLLOW(nap_follow_dist=4)
+  d_follow = t_follow * v_lead + STOP_DISTANCE_M
+  params = _MutablePlannerParams(nap_follow_dist=4, map_speed_accel=5)
+  planner = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
+  planner._map_speed_accel = 5
+  a5 = lead_close_accel_ms2(5)
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=a5)
+  planner.prev_accel_clip = [-1.2, a5]
+  inputs = _make_planner_inputs(v_ego)
+  lead = inputs["radarState"].leadOne
+  lead.status = True
+  lead.dRel = d_follow + 8.0
+  lead.vLead = v_ego
+  lead.aLeadK = 0.0
+  lead.modelProb = 1.0
+  lead.radar = True
+  for _ in range(int(LEAD_SETTLE_HOLD_S / 0.05) + 2):
+    planner.update(inputs)
+  assert planner._lead_settled
+  lead.vLead = v_lead
+  lead.dRel = d_follow + 30.0
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=a5)
+  planner.prev_accel_clip = [-1.2, a5]
+  for _ in range(8):
+    planner.update(inputs)
+  hunt = lead_hunt_accel_ms2(a5, 30.0)
+  assert planner.output_a_target <= hunt + 0.06
+  assert planner.output_a_target < a5 * 0.5
+  assert planner.output_a_target >= LEAD_CLOSE_OPENING_A_MS2 - 0.02
+
+
+def test_planner_hwy_intent_applies_hwy_fd_from_30():
+  """MAX 65 + lead + long: hwy FD while accelerating through 35, not 48/52."""
+  v_ego = 35.0 * CV.MPH_TO_MS
+  v_max_kph = 65.0 * CV.MPH_TO_KPH
+  params = _MutablePlannerParams(nap_follow_dist=6, city=6, hwy=2)
+  planner = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=0.0)
+  inputs = _make_planner_inputs(v_ego)
+  inputs["carState"].vCruise = v_max_kph
+  lead = inputs["radarState"].leadOne
+  lead.status = True
+  lead.dRel = 40.0
+  lead.vLead = v_ego
+  lead.modelProb = 1.0
+  lead.radar = True
+  planner._follow_blend.t_follow = get_T_FOLLOW(nap_follow_dist=6)
+  planner._follow_blend.highway = False
+  planner.update(inputs)
+  assert planner.active_nap_follow_dist == 2
+  assert planner.t_follow < get_T_FOLLOW(nap_follow_dist=6)
+  assert planner._follow_blend.highway is True
+  # MAX 45 at 55 mph stays city.
+  v55 = 55.0 * CV.MPH_TO_MS
+  planner55 = LongitudinalPlanner(_make_preap_params(), init_v=v55, params=params)
+  planner55.mpc = _ConstantAccelerationMpc(v55, acceleration_mps2=0.0)
+  inputs55 = _make_planner_inputs(v55)
+  inputs55["carState"].vCruise = 45.0 * CV.MPH_TO_KPH
+  lead55 = inputs55["radarState"].leadOne
+  lead55.status = True
+  lead55.dRel = 50.0
+  lead55.vLead = v55
+  lead55.modelProb = 1.0
+  lead55.radar = True
+  planner55.update(inputs55)
+  assert planner55.active_nap_follow_dist == 6
+  assert planner55._follow_blend.highway is False
+

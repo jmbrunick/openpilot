@@ -27,8 +27,10 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   lead_follow_slack_m,
   lead_owns_plan,
   resolve_lead_close_hold,
+  slew_follow_plus_a,
   slew_lead_approach_a,
   soft_limit_mpc_a_target,
+  update_lead_settle,
 )
 from openpilot.selfdrive.controls.lib.follow_distance import FollowDistanceBlend, NAP_FOLLOW_DISTANCE_RANGE
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
@@ -141,6 +143,8 @@ class LongitudinalPlanner:
     self._lead_close_hold_owned = False
     self._lead_close_a_cap = None
     self._follow_open_a = None
+    self._lead_settle_age = 0.0
+    self._lead_settled = False
 
     self.a_desired = init_a
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
@@ -226,6 +230,8 @@ class LongitudinalPlanner:
       self._lead_close_hold_owned = False
       self._lead_close_a_cap = None
       self._follow_open_a = None
+      self._lead_settle_age = 0.0
+      self._lead_settled = False
 
     # Prevent divergence, smooth in current v_ego
     self.v_desired_filter.x = max(0.0, self.v_desired_filter.update(v_ego))
@@ -261,6 +267,7 @@ class LongitudinalPlanner:
         engaged=long_engaged,
         has_lead=has_lead_status,
         v_lead=float(lead_tf.vLead) if has_lead_status else None,
+        v_cruise=v_hud_ms,
       )
       if active_dist in NAP_FOLLOW_DISTANCE_RANGE:
         self.active_nap_follow_dist = active_dist
@@ -284,8 +291,10 @@ class LongitudinalPlanner:
     # Coming up behind a radar lead: cap +a to the same Accel 1–10
     # envelope as open-road / MAX climb (including last-mph baby-step).
     # Cruise 1.6 / Adaptive full-profile used to punch a 160–200 m lead.
-    # Near-gap rematch trickles. Hold last in-window lead on a brief
-    # status drop. Does not change MPC danger / −a.
+    # Near-gap rematch trickles. After match-settle, Accel-ceil rematch
+    # is deadbanded (trickle / hunt, not +0.323 for 7 s while opening).
+    # Hold last in-window lead on a brief status drop. Does not change
+    # MPC danger / −a.
     self._lead_close_a_cap = None
     if self._is_preap:
       lead_close = sm['radarState'].leadOne
@@ -309,8 +318,13 @@ class LongitudinalPlanner:
         ):
           self._lead_close_hold_a = float(lead_close.aLeadK)
           self._lead_close_hold_owned = lead_owns_plan(v_rel_lead, self._lead_close_hold_a)
+        self._lead_settle_age, self._lead_settled = update_lead_settle(
+          self._lead_settle_age, self._lead_settled, v_rel_lead, slack, self.dt,
+          present=True, closing_hard=lead_owns_plan(v_rel_lead, self._lead_close_hold_a),
+        )
         self._lead_close_a_cap = lead_close_accel_ms2(
           self._map_speed_accel, v_rel=v_rel_lead, slack=slack, a_personality=a_env,
+          settled=self._lead_settled,
         )
         if self._lead_close_hold_owned or lead_owns_plan(v_rel_lead, self._lead_close_hold_a):
           self._lead_close_a_cap = min(float(self._lead_close_a_cap), 0.0)
@@ -318,6 +332,8 @@ class LongitudinalPlanner:
       else:
         self._lead_close_hold_a = None
         self._lead_close_hold_owned = False
+        self._lead_settle_age = 0.0
+        self._lead_settled = False
 
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
@@ -519,6 +535,10 @@ class LongitudinalPlanner:
         output_a_target, overlay_v_rel, a_lead=lead_a_k,
         lead_present=live_ok or lead_held, owned=self._lead_close_hold_owned,
       )
+      if live_ok or lead_held:
+        output_a_target = slew_follow_plus_a(
+          output_a_target, self.output_a_target, overlay_v_rel,
+        )
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
