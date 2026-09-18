@@ -134,7 +134,7 @@ class ModelRenderer(Widget):
 
       self._update_model(lead_one, path_x_array)
       if render_lead_indicator:
-        self._update_leads(radar_state, path_x_array)
+        self._update_leads(radar_state, path_x_array, has_lead=bool(sm['longitudinalPlan'].hasLead))
       self._transform_dirty = False
 
     # Draw elements (hide when disengaged)
@@ -159,13 +159,14 @@ class ModelRenderer(Widget):
     self._road_edge_stds = np.array(model.roadEdgeStds, dtype=np.float32)
     self._acceleration_x = np.array(model.acceleration.x, dtype=np.float32)
 
-  def _update_leads(self, radar_state, path_x_array):
+  def _update_leads(self, radar_state, path_x_array, has_lead=False):
     """Update positions of lead vehicles"""
     self._lead_vehicles = [LeadVehicle(), LeadVehicle()]
     leads = [radar_state.leadOne, radar_state.leadTwo]
 
     for i, lead_data in enumerate(leads):
-      if lead_data and lead_data.status:
+      control_lead = bool(has_lead) and i == 0 and lead_data is not None and float(lead_data.dRel) > 0.0
+      if lead_data and (lead_data.status or control_lead):
         d_rel, y_rel, v_rel = lead_data.dRel, lead_data.yRel, lead_data.vRel
         idx = self._get_path_length_idx(path_x_array, d_rel)
 
