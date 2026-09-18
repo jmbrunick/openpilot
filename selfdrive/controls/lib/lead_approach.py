@@ -44,12 +44,19 @@ last-mph gradient). Map Accel used to gate only MAX-rise; Adaptive Accel
 and cruise 1.6–0.6 punched when the gap was large; the close-cap used to
 stop at 140 m so a 160–180 m lead still got that punch. With a lead in
 Bosch range, close slack at Accel 1–10 — never hotter. Near-gap rematch
-trickles. A brief `leadOne` drop holds the last in-window lead so the
-cap cannot be bypassed. Vision-only far flicker does not cap empty-road
-climb. Non-rapid MPC −a is floored at MILD only as anti-chatter (gap
-opening, or small |v_rel| with the lead not braking) so min(MPC, overlay)
-cannot dump ~−2.5 on radar noise. Closing / a slowing lead keeps full
-MPC match-speed −a; rapid / FCW / emergency still own danger.
+trickles. After speeds match (`|v_rel| < 0.5` for ~0.75 s near the follow
+gap), do not pin Accel-ceil rematch +a while the gap is OK or already
+opening (d7 20:25:33: +0.323 for 7 s as dRel 49→59). Rematch above a
+trickle only if slack ≳ 20 m and the lead is pulling away; a ≳ 15 m gap
+error with `|closing| < 1` may use a small Accel-proportional hunt, not
+full Accel every pulse. Large same-speed gaps that never matched still
+use Accel catch-up. Rate-limit +a across cruise↔lead flips when not
+rapidly closing. A brief `leadOne` drop holds the last in-window lead so
+the cap cannot be bypassed. Vision-only far flicker does not cap
+empty-road climb. Non-rapid MPC −a is floored at MILD only as anti-chatter
+(gap opening, or small |v_rel| with the lead not braking) so min(MPC,
+overlay) cannot dump ~−2.5 on radar noise. Closing / a slowing lead keeps
+full MPC match-speed −a; rapid / FCW / emergency still own danger.
 """
 from __future__ import annotations
 
@@ -149,6 +156,23 @@ LEAD_CLOSE_A_MAX_MS2 = map_accel_a_ms2(LOOKAHEAD_NORMAL, 10)
 LEAD_CLOSE_OPENING_A_MS2 = 0.08
 LEAD_CLOSE_REMATCH_A_MS2 = 0.12
 LEAD_CLOSE_REMATCH_SLACK_M = 12.0
+# After |v_rel| < 0.5 for 0.5–1 s near the follow gap, Accel-ceil rematch
+# is deadbanded. Arm settle only while slack is still follow-like so a
+# 160 m same-speed catch-up stays Accel-owned. Once settled, hold through
+# a growing gap (do not re-arm Accel ceil as dRel 49→59).
+LEAD_SETTLE_VREL_MS = 0.5
+LEAD_SETTLE_HOLD_S = 0.75
+LEAD_SETTLE_SLACK_M = 25.0
+# Settled rematch: trickle/0 while gap is OK or opening. Hunt (small
+# Accel-proportional, not full ceil) when gap error ≳ 15 m and |closing|
+# < 1. Rematch above trickle if slack ≳ 20 m *and* lead pulling away.
+LEAD_HUNT_SLACK_M = 15.0
+LEAD_REMATCH_PULL_SLACK_M = 20.0
+LEAD_HUNT_A_FRAC = 0.35
+LEAD_HUNT_SLACK_SPAN_M = 25.0  # 15→40 m scales hunt 0→frac
+# Rate-limit +a across cruise↔lead ownership flips. Same step as the
+# accel_clip slew. Closing ≳ 1.0 / −a is immediate (do not delay #190).
+LEAD_ATARGET_SLEW_MS2 = 0.05
 # Brief hold of the last in-window lead when `leadOne.status` drops so
 # cruise punch cannot leak through a radar flicker. ~10 planner frames.
 LEAD_CLOSE_HOLD_S = 0.50
@@ -168,8 +192,70 @@ def lead_follow_slack_m(d_rel, v_lead, t_follow):
   return float(d_rel) - d_follow
 
 
+def lead_is_settled_sample(v_rel, slack) -> bool:
+  """True when this frame can count toward match-settle.
+
+  Match means speeds already agree *and* the gap is still follow-like.
+  A 160 m same-speed lead is catch-up, not a settled follow.
+  """
+  if v_rel is None:
+    return False
+  if abs(float(v_rel)) >= LEAD_SETTLE_VREL_MS:
+    return False
+  if slack is None or float(slack) > LEAD_SETTLE_SLACK_M:
+    return False
+  return True
+
+
+def update_lead_settle(age, settled, v_rel, slack, dt, present=True,
+                       closing_hard=False):
+  """Arm settle after |v_rel| < 0.5 for ~0.75 s near the follow gap.
+
+  Once settled, hold while the lead is present even if slack grows
+  (do not re-arm Accel-ceil rematch). Clear on lead loss or closing
+  ≳ 1.5 (lead owns the plan — not a follow rematch).
+  Returns `(age, settled)`.
+  """
+  if (not present) or closing_hard:
+    return 0.0, False
+  if settled:
+    return max(float(age), LEAD_SETTLE_HOLD_S), True
+  if lead_is_settled_sample(v_rel, slack):
+    nxt = float(age) + max(0.0, float(dt))
+    return nxt, nxt >= LEAD_SETTLE_HOLD_S
+  return 0.0, False
+
+
+def lead_hunt_accel_ms2(a, slack) -> float:
+  """Small Accel-proportional close after settle. Never full Accel ceil."""
+  a = max(0.0, float(a))
+  s = 0.0 if slack is None else float(slack)
+  excess = max(0.0, s - LEAD_HUNT_SLACK_M)
+  scale = min(1.0, excess / LEAD_HUNT_SLACK_SPAN_M) if LEAD_HUNT_SLACK_SPAN_M > 0 else 0.0
+  a_hunt = a * LEAD_HUNT_A_FRAC * scale
+  return min(a, max(LEAD_CLOSE_OPENING_A_MS2, a_hunt))
+
+
+def lead_settled_rematch_a_ms2(a, v_rel, slack) -> float:
+  """After match: no Accel-ceil rematch while the gap is OK or opening.
+
+  Trickle (~0.08) or 0 until slack is clearly large. Gap error ≳ 15 m
+  with `|closing| < 1` may hunt (small Accel-proportional). Rematch
+  above trickle only if slack ≳ 20 m *and* the lead is pulling away.
+  Closing ≳ 1.0 is already 0 from the caller.
+  """
+  s = None if slack is None else float(slack)
+  v = 0.0 if v_rel is None else float(v_rel)
+  opening = v <= 0.0
+  if s is None or s < LEAD_HUNT_SLACK_M:
+    return 0.0 if opening else min(a, LEAD_CLOSE_OPENING_A_MS2)
+  if opening and s < LEAD_REMATCH_PULL_SLACK_M:
+    return 0.0
+  return lead_hunt_accel_ms2(a, s)
+
+
 def lead_close_accel_ms2(accel_level: int = 5, v_rel=None, slack=None,
-                         a_personality=None) -> float:
+                         a_personality=None, settled=False) -> float:
   """Max positive a (m/s²) when closing the gap on a radar lead.
 
   Same Accel 1–10 envelope as open-road / MAX climb — not a separate
@@ -178,13 +264,16 @@ def lead_close_accel_ms2(accel_level: int = 5, v_rel=None, slack=None,
   danger are unchanged.
 
   Near the follow gap, a lead pulling away / slow rematch trickles +a
-  so ease→Accel does not surge.
+  so ease→Accel does not surge. After settle, Accel-ceil rematch is
+  deadbanded; large same-speed gaps that never matched still use Accel.
   """
   a = map_accel_a_ms2(LOOKAHEAD_NORMAL, int(accel_level))
   if a_personality is not None:
     a = min(a, max(0.0, float(a_personality)))
   if v_rel is not None and float(v_rel) >= LEAD_CLOSING_REMATCH_BLOCK_MS:
     return 0.0
+  if settled:
+    return lead_settled_rematch_a_ms2(a, v_rel, slack)
   if slack is None or float(slack) > LEAD_CLOSE_REMATCH_SLACK_M:
     return a
   if v_rel is not None and float(v_rel) <= 0.0:
@@ -192,6 +281,25 @@ def lead_close_accel_ms2(accel_level: int = 5, v_rel=None, slack=None,
   if v_rel is not None and float(v_rel) < LEAD_APPROACH_DV_MS:
     return min(a, LEAD_CLOSE_REMATCH_A_MS2)
   return a
+
+
+def slew_follow_plus_a(target, prev, v_rel, slew=LEAD_ATARGET_SLEW_MS2):
+  """Rate-limit +a across cruise↔lead ownership flips.
+
+  Closing ≳ 1.0 or a more-negative command is immediate so #190
+  match-speed −a is not delayed. Positive a slews by `slew` per frame.
+  """
+  if target is None:
+    return target
+  t = float(target)
+  p = t if prev is None else float(prev)
+  if lead_is_closing(v_rel) or t <= 0.0:
+    return t
+  if t > p:
+    return min(t, p + float(slew))
+  if t < p:
+    return max(t, p - float(slew))
+  return t
 
 
 def lead_close_should_cap(d_rel, model_prob=None, radar=None, active=False) -> bool:

@@ -331,6 +331,8 @@ def test_card_and_hud_wire_stock_follow_only():
   assert "FollowStalkGesture" in card
   assert "_preap_cruise_detent" in card
   assert "persist_follow_distance" in card
+  assert "v_cruise=v_cruise_ms" in card
+  assert "has_lead=has_lead" in card
   assert "_write_preap_pedal_speed(CS, undo)" in card
   assert "hypermile" not in card.lower()
   assert "NAPHypermile" not in card

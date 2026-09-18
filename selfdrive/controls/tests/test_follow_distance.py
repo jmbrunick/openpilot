@@ -6,6 +6,10 @@ from openpilot.selfdrive.controls.lib.follow_distance import (
   FOLLOW_CITY_ENTER_MPH,
   FOLLOW_DEFAULT,
   FOLLOW_HWY_ENTER_MPH,
+  FOLLOW_HWY_INTENT_EGO_EXIT_MPH,
+  FOLLOW_HWY_INTENT_EGO_MPH,
+  FOLLOW_HWY_INTENT_EXIT_MPH,
+  FOLLOW_HWY_INTENT_MPH,
   FOLLOW_OPEN_SLOW_FRAC,
   FOLLOW_SPLIT_MPH,
   FOLLOW_T_SLEW_CREEP_PER_S,
@@ -16,6 +20,8 @@ from openpilot.selfdrive.controls.lib.follow_distance import (
   PARAM_FOLLOW_HWY,
   PARAM_FOLLOW_MIGRATED,
   follow_band_is_highway,
+  follow_ego_highway_intent,
+  follow_highway_intent,
   follow_open_a_ms2,
   migrate_follow_distance_params,
 )
@@ -74,6 +80,102 @@ def test_follow_band_hysteresis_around_50():
   v51 = 51.0 * CV.MPH_TO_MS
   assert follow_band_is_highway(v51, prev_highway=False) is False
   assert follow_band_is_highway(v52 + 0.05, prev_highway=False) is True
+
+
+def test_highway_intent_starts_hwy_fd_from_30_not_48_52():
+  """Lead + long + MAX > 50: hwy FD once ego > ~30. MAX ≤ 50 stays city."""
+  v30 = FOLLOW_HWY_INTENT_EGO_MPH * CV.MPH_TO_MS
+  v28 = FOLLOW_HWY_INTENT_EGO_EXIT_MPH * CV.MPH_TO_MS
+  v35 = 35.0 * CV.MPH_TO_MS
+  v29 = 29.0 * CV.MPH_TO_MS
+  v55 = 55.0 * CV.MPH_TO_MS
+  v_max65 = 65.0 * CV.MPH_TO_MS
+  v_max50 = FOLLOW_HWY_INTENT_MPH * CV.MPH_TO_MS
+  v_max45 = 45.0 * CV.MPH_TO_MS
+  kw = dict(engaged=True, has_lead=True)
+
+  assert abs(FOLLOW_HWY_INTENT_MPH - 50.0) < 1e-9
+  assert abs(FOLLOW_HWY_INTENT_EXIT_MPH - 48.0) < 1e-9
+  assert abs(FOLLOW_HWY_INTENT_EGO_MPH - 30.0) < 1e-9
+  assert abs(FOLLOW_HWY_INTENT_EGO_EXIT_MPH - 28.0) < 1e-9
+  assert FOLLOW_HWY_INTENT_EGO_EXIT_MPH < FOLLOW_HWY_INTENT_EGO_MPH < FOLLOW_CITY_ENTER_MPH
+  assert follow_highway_intent(v_max65) is True
+  assert follow_highway_intent(v_max50) is False
+  assert follow_highway_intent(v_max45) is False
+  assert follow_highway_intent(49.0 * CV.MPH_TO_MS, prev_intent=True) is True
+  assert follow_highway_intent(47.5 * CV.MPH_TO_MS, prev_intent=True) is False
+
+  # Climbing out of town toward MAX 65: hwy from ~30, not 48/52.
+  assert follow_band_is_highway(v35, v_cruise=v_max65, **kw) is True
+  assert follow_band_is_highway(v30 + 0.05, v_cruise=v_max65, **kw) is True
+  assert follow_band_is_highway(v29, v_cruise=v_max65, **kw) is False
+  # Chatter at 30: hold hwy down through 29; drop only below 28.
+  assert follow_ego_highway_intent(v29, prev_highway=True) is True
+  assert follow_ego_highway_intent(v28 - 0.05, prev_highway=True) is False
+  # MAX ≤ 50: city even at 55 (blend back toward city FD).
+  assert follow_band_is_highway(v55, v_cruise=v_max45, **kw) is False
+  assert follow_band_is_highway(v55, v_cruise=v_max50, **kw) is False
+  # Unknown MAX keeps 48/52 (no silent city flip at 60).
+  assert follow_band_is_highway(v55, engaged=True, has_lead=True) is True
+  assert follow_band_is_highway(v35, engaged=True, has_lead=True) is False
+  # No lead / not engaged: still 48/52 even with MAX 65.
+  assert follow_band_is_highway(v35, v_cruise=v_max65, engaged=True, has_lead=False) is False
+  assert follow_band_is_highway(v55, v_cruise=v_max65, engaged=False, has_lead=True) is True
+
+
+def test_blend_creeps_to_hwy_from_30_when_max_is_highway_intent():
+  b = FollowDistanceBlend()
+  b.city, b.hwy = 6, 2
+  b.highway = False
+  b.t_follow = nap_t_follow(6)
+  v_ego = 35.0 * CV.MPH_TO_MS
+  v_max = 65.0 * CV.MPH_TO_MS
+  dt = 0.05
+  t_hwy = nap_t_follow(2)
+  t, dist, extra = b.update(
+    v_ego, dt, engaged=True, has_lead=True, v_lead=v_ego, v_cruise=v_max,
+  )
+  assert dist == 2
+  assert extra is None
+  assert t < nap_t_follow(6)
+  times = [t]
+  for _ in range(int(20.0 / dt)):
+    t, dist, extra = b.update(
+      v_ego, dt, engaged=True, has_lead=True, v_lead=v_ego, v_cruise=v_max,
+    )
+    times.append(t)
+    assert extra is None
+    if t <= t_hwy + 1e-6:
+      break
+  assert dist == 2
+  assert times[-1] == pytest.approx(t_hwy, abs=1e-6)
+  steps = [s - t for s, t in zip(times, times[1:], strict=False)]
+  assert max(steps) <= FOLLOW_T_SLEW_CREEP_PER_S * dt + 1e-9
+
+
+def test_blend_returns_to_city_when_max_drops_below_50():
+  b = FollowDistanceBlend()
+  b.city, b.hwy = 6, 2
+  b.highway = True
+  b.intent = True
+  b.t_follow = nap_t_follow(2)
+  v_ego = 55.0 * CV.MPH_TO_MS
+  t_city = nap_t_follow(6)
+  t, dist, extra = b.update(
+    v_ego, 0.05, engaged=True, has_lead=True, v_lead=v_ego,
+    v_cruise=45.0 * CV.MPH_TO_MS,
+  )
+  assert dist == 6
+  assert t > nap_t_follow(2)
+  assert extra is not None and extra < 0.0
+  # Keep slewing toward city; do not snap.
+  t2, dist2, _ = b.update(
+    v_ego, 0.05, engaged=True, has_lead=True, v_lead=v_ego,
+    v_cruise=45.0 * CV.MPH_TO_MS,
+  )
+  assert dist2 == 6
+  assert t2 > t
+  assert t2 < t_city
 
 
 def test_blend_opens_gradually_to_city_then_holds():
@@ -154,6 +256,13 @@ def test_persist_steps_city_or_hwy_band_by_speed():
   assert params.get(PARAM_FOLLOW_CITY) == 3
   assert params.get(PARAM_FOLLOW_HWY) == 5
   assert params.get(PARAM_FOLLOW) == 5
+  # Highway intent at 35 mph with MAX 65 + lead writes hwy, not city.
+  persist_follow_distance(
+    params, closer=False, v_ego=35.0 * CV.MPH_TO_MS,
+    v_cruise=65.0 * CV.MPH_TO_MS, has_lead=True, engaged=True,
+  )
+  assert params.get(PARAM_FOLLOW_CITY) == 3
+  assert params.get(PARAM_FOLLOW_HWY) == 6
 
 
 def test_invalid_setpoints_do_not_blend():
@@ -184,6 +293,7 @@ def test_planner_and_ui_wire_city_hwy_follow():
   content = (root / "selfdrive/ui/layouts/settings/nap_content.py").read_text()
   nap_params = (root / "opendbc_repo/opendbc/car/tesla/preap/nap_params.py").read_text()
   assert "FollowDistanceBlend" in planner
+  assert "v_cruise=v_hud_ms" in planner
   assert "NAPFollowDistanceCity" in keys
   assert "NAPFollowDistanceHwy" in keys
   assert "FOLLOW_DISTANCE_CITY" in nap_params

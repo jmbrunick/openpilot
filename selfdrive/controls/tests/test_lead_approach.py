@@ -35,6 +35,14 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_CLOSE_OPENING_A_MS2,
   LEAD_CLOSE_REMATCH_A_MS2,
   LEAD_CLOSE_REMATCH_SLACK_M,
+  LEAD_SETTLE_HOLD_S,
+  LEAD_SETTLE_SLACK_M,
+  LEAD_SETTLE_VREL_MS,
+  LEAD_HUNT_A_FRAC,
+  LEAD_HUNT_SLACK_M,
+  LEAD_HUNT_SLACK_SPAN_M,
+  LEAD_REMATCH_PULL_SLACK_M,
+  LEAD_ATARGET_SLEW_MS2,
   NAP_T_FOLLOW,
   STOP_DISTANCE,
   apply_lead_approach_overlay,
@@ -50,10 +58,13 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   lead_close_accel_ms2,
   lead_close_should_cap,
   lead_follow_slack_m,
+  lead_hunt_accel_ms2,
   nap_t_follow,
   resolve_lead_close_hold,
+  slew_follow_plus_a,
   slew_lead_approach_a,
   soft_limit_mpc_a_target,
+  update_lead_settle,
 )
 from openpilot.selfdrive.mapd.constants import (
   DECREASE_START_MARGIN_M,
@@ -125,6 +136,18 @@ def test_lead_approach_keeps_early_map_brake_not_map_110m_margin():
   assert abs(LEAD_CLOSE_REMATCH_A_MS2 - 0.12) < 1e-9
   assert LEAD_CLOSE_OPENING_A_MS2 < LEAD_CLOSE_REMATCH_A_MS2
   assert LEAD_CLOSE_REMATCH_SLACK_M > 0.0
+  assert abs(LEAD_SETTLE_VREL_MS - 0.5) < 1e-9
+  assert abs(LEAD_SETTLE_HOLD_S - 0.75) < 1e-9
+  assert 0.5 <= LEAD_SETTLE_HOLD_S <= 1.0
+  assert abs(LEAD_SETTLE_SLACK_M - 25.0) < 1e-9
+  assert abs(LEAD_HUNT_SLACK_M - 15.0) < 1e-9
+  assert abs(LEAD_REMATCH_PULL_SLACK_M - 20.0) < 1e-9
+  assert 18.0 <= LEAD_REMATCH_PULL_SLACK_M <= 25.0
+  assert LEAD_HUNT_SLACK_M < LEAD_REMATCH_PULL_SLACK_M < LEAD_SETTLE_SLACK_M
+  assert abs(LEAD_HUNT_A_FRAC - 0.35) < 1e-9
+  assert LEAD_HUNT_A_FRAC < 1.0
+  assert abs(LEAD_HUNT_SLACK_SPAN_M - 25.0) < 1e-9
+  assert abs(LEAD_ATARGET_SLEW_MS2 - 0.05) < 1e-9
   assert abs(LEAD_CLOSE_HOLD_S - 0.50) < 1e-9
   assert abs(LEAD_CLOSE_MAX_M - LEAD_APPROACH_MAX_START_M) < 1e-9
   import openpilot.selfdrive.controls.lib.lead_approach as lead_approach
@@ -630,6 +653,10 @@ def test_planner_wires_hysteresis_and_slew():
   assert "cap_closing_lead_accel(" in planner
   assert "lead_owns_plan(" in planner
   assert "lead_approach_track_ok(" in planner
+  assert "update_lead_settle(" in planner
+  assert "settled=self._lead_settled" in planner
+  assert "slew_follow_plus_a(" in planner
+  assert "v_cruise=v_hud_ms" in planner
   assert "allow_rapid=allow_rapid" in planner
   assert "a_lead=lead_a_k" in planner
   assert "self._lead_approach_active = a_lead is not None" in planner
@@ -728,6 +755,88 @@ def test_gap_opening_rematch_is_a_trickle():
   near_slack = lead_follow_slack_m(d_follow + 5.0, v_lead, t4)
   assert near_slack == pytest.approx(5.0)
   assert near_slack < LEAD_CLOSE_REMATCH_SLACK_M
+
+
+def test_settled_rematch_deadbands_accel_ceil_while_gap_ok_or_opening():
+  """d7 20:25:33: after match, do not pin Accel-ceil +a while opening.
+
+  Unsettled large same-speed gaps still use Accel catch-up.
+  """
+  a2 = lead_close_accel_ms2(2)
+  assert a2 > 0.20
+  # Evidence shape: Accel 2 ceil (~0.32) for 7 s as dRel 49→59 opening.
+  a_open_ok = lead_close_accel_ms2(2, v_rel=-0.3, slack=10.0, settled=True)
+  assert a_open_ok == pytest.approx(0.0)
+  a_open_mid = lead_close_accel_ms2(2, v_rel=-0.3, slack=18.0, settled=True)
+  assert a_open_mid == pytest.approx(0.0)
+  assert a_open_mid < 0.05
+  # Slack clearly large *and* lead pulling away: hunt, not Accel ceil.
+  a_pull = lead_close_accel_ms2(2, v_rel=-0.4, slack=22.0, settled=True)
+  assert 0.0 < a_pull <= LEAD_CLOSE_OPENING_A_MS2 + 0.05
+  assert a_pull < a2 * 0.5
+  a_pull_40 = lead_close_accel_ms2(2, v_rel=-0.4, slack=40.0, settled=True)
+  assert a_pull_40 == pytest.approx(lead_hunt_accel_ms2(a2, 40.0))
+  assert a_pull_40 < a2 * LEAD_HUNT_A_FRAC + 1e-9
+  assert a_pull_40 < a2 - 0.10
+  # Matched, gap OK: trickle if slightly closing, 0 if opening.
+  a_ok = lead_close_accel_ms2(2, v_rel=0.2, slack=8.0, settled=True)
+  assert a_ok == pytest.approx(LEAD_CLOSE_OPENING_A_MS2)
+  assert lead_close_accel_ms2(2, v_rel=-0.1, slack=8.0, settled=True) == pytest.approx(0.0)
+  # Large same-speed gap that never matched: Accel-owned catch-up.
+  assert lead_close_accel_ms2(2, v_rel=0.0, slack=40.0, settled=False) == pytest.approx(a2)
+  assert lead_close_accel_ms2(5, v_rel=0.0, slack=80.0) == pytest.approx(LEAD_CLOSE_A_BASE_MS2)
+  # #190: closing ≳ 1.0 still 0 after settle.
+  assert lead_close_accel_ms2(2, v_rel=1.2, slack=22.0, settled=True) == pytest.approx(0.0)
+  assert lead_close_accel_ms2(2, v_rel=1.6, slack=40.0, settled=True) == pytest.approx(0.0)
+
+
+def test_settled_gap_hunt_is_small_accel_proportional_not_ceil():
+  """Gap error ≳ 15 m and |closing| < 1: small Accel-proportional close."""
+  a5 = lead_close_accel_ms2(5)
+  a_hunt = lead_close_accel_ms2(5, v_rel=0.3, slack=30.0, settled=True)
+  assert a_hunt == pytest.approx(lead_hunt_accel_ms2(a5, 30.0))
+  assert a_hunt < a5 * LEAD_HUNT_A_FRAC + 1e-9
+  assert a_hunt < a5 * 0.5
+  assert a_hunt >= LEAD_CLOSE_OPENING_A_MS2 - 1e-9
+  a_15 = lead_close_accel_ms2(5, v_rel=0.2, slack=15.0, settled=True)
+  assert a_15 == pytest.approx(LEAD_CLOSE_OPENING_A_MS2)
+  # Full Accel ceil must not pulse at ~30 m after settle.
+  assert lead_close_accel_ms2(2, v_rel=0.2, slack=30.0, settled=True) < lead_close_accel_ms2(2) * 0.5
+
+
+def test_lead_settle_arms_near_gap_not_far_same_speed():
+  age, settled = 0.0, False
+  while age + 0.05 < LEAD_SETTLE_HOLD_S - 1e-9:
+    age, settled = update_lead_settle(age, settled, 0.2, 10.0, 0.05)
+    assert not settled
+  age, settled = update_lead_settle(age, settled, 0.2, 10.0, 0.05)
+  assert settled
+  # Hold through a growing gap (dRel 49→59).
+  age, settled = update_lead_settle(age, True, -0.4, 22.0, 0.05)
+  assert settled
+  # Far same-speed never arms.
+  age, settled = update_lead_settle(0.0, False, 0.0, 80.0, 0.05)
+  assert not settled and age == pytest.approx(0.0)
+  for _ in range(20):
+    age, settled = update_lead_settle(age, settled, 0.0, 80.0, 0.05)
+  assert not settled
+  # Closing ≳ 1.5 clears settle so match-speed −a owns.
+  age, settled = update_lead_settle(1.0, True, 1.6, 10.0, 0.05, closing_hard=True)
+  assert not settled and age == pytest.approx(0.0)
+  age, settled = update_lead_settle(0.4, False, 0.2, 10.0, 0.05, present=False)
+  assert not settled
+
+
+def test_follow_plus_a_slew_rate_limits_ownership_flips_not_closing():
+  """Cruise↔lead +a flips slew; closing ≳ 1.0 / −a is immediate."""
+  a = slew_follow_plus_a(0.323, 0.0, v_rel=0.2)
+  assert a == pytest.approx(LEAD_ATARGET_SLEW_MS2)
+  nxt = slew_follow_plus_a(0.323, a, v_rel=-0.3)
+  assert nxt == pytest.approx(2 * LEAD_ATARGET_SLEW_MS2)
+  # Closing block / match-speed −a is not delayed.
+  assert slew_follow_plus_a(0.0, 0.323, v_rel=1.2) == pytest.approx(0.0)
+  assert slew_follow_plus_a(-0.40, 0.20, v_rel=1.6) == pytest.approx(-0.40)
+  assert slew_follow_plus_a(-0.22, 0.0, v_rel=0.3) == pytest.approx(-0.22)
 
 
 def test_one_outlier_rapid_v_rel_does_not_commit_hard_regen():
