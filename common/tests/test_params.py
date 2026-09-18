@@ -139,3 +139,21 @@ class TestParams:
     now = datetime.datetime.now(datetime.UTC)
     self.params.put("InstallDate", now, block=True)
     assert self.params.get("InstallDate") == now
+
+  def test_nap_wiper_rain_status_key_survives_onroad_for_qlog(self):
+    # loggerd copies Params into qlog InitData at route start. Unknown keys
+    # fail put silently; CLEAR_ON_ONROAD would wipe this before that snapshot.
+    import re
+    from openpilot.common.basedir import BASEDIR
+    keys_h = os.path.join(BASEDIR, "common/params_keys.h")
+    with open(keys_h) as f:
+      src = f.read()
+    m = re.search(r'\{\s*"NAPWiperRainStatus"\s*,\s*\{([^}]+)\}', src)
+    assert m, "NAPWiperRainStatus missing from params_keys.h"
+    attrs = m.group(1)
+    assert "CLEAR_ON_MANAGER_START" in attrs
+    assert "CLEAR_ON_ONROAD_TRANSITION" not in attrs
+    assert "STRING" in attrs
+    assert "DONT_LOG" not in attrs
+    wiper_speed = re.search(r'\{\s*"NAPWiperSpeed"\s*,\s*\{([^}]+)\}', src)
+    assert wiper_speed and "PERSISTENT" in wiper_speed.group(1)
