@@ -1,3 +1,7 @@
+NAP One-Pedal SET-while-gas lift keeps long (2026-09-18)
+========================
+* **One-Pedal Long On:** double-SET (or one SET) **while the foot is already on gas**, then lift, must **keep `enableLongControl`**, hold MAX, and **ACQUIRE** the interceptor on that falling edge — not dive into stock Tesla one-pedal regen. #185's pause-gate DI **> 1** extra kick treated lift-through DI 1–2 as a from-rest tip-in (phantom rising edge after stock `gasPressed` fell), dropped long, zeroed cruise speed, and left `aTarget` climbing while `aEgo` was stock regen (~−1.5). Log: `1c95345a3286a5db|000000dc--9b28358130` 13:16:14 (SET→lift **197 ms**), 13:15:30 (7.5 s regen hole), 13:17:19 success when DI dropped through 1 in one sample. **Now:** orig kick takes `interceptor_di`; `_one_pedal_armed_with_gas` holds lift-to-start until DI is fully off; overlay skips extra kick on falling edge / armed. Light tip-in after a real rest still pauses. Toggle default **Off**. Port of nap-dev #196. No panda flash.
+
 NAP One-Pedal pause light tip-in (2026-09-17)
 ========================
 * **One-Pedal Long On:** pause gate is interceptor DI **> 1** (stock `gasPressed` stays DI **> 2**). A light tip-in now pauses long; foot at coast (0–1) still does not. SET-while-gas, lift-does-not-resume, and one-SET resume unchanged. Ships with the #181 follow stack (lead-close **0.20 / 0.30 / 0.50**, mild ease 0.22, rematch trickle). No panda flash.

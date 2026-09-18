@@ -61,6 +61,7 @@ _installed = False
 RESUME_STANDSTILL_V_EGO = 0.3
 # Stock interceptor / DI gasPressed is DI > 2. One-Pedal pause is slightly
 # more sensitive so a light tip-in latches; keep a tiny deadzone above coast.
+# Must match opendbc nap_conf.ONE_PEDAL_GAS_DI_PRESSED / PEDAL_DI_PRESSED.
 ONE_PEDAL_GAS_DI_PRESSED = 1.0
 PEDAL_DI_PRESSED_STOCK = 2.0
 
@@ -74,6 +75,39 @@ def one_pedal_gas_for_pause(interceptor_di) -> bool:
   if interceptor_di is None:
     return False
   return float(interceptor_di) > ONE_PEDAL_GAS_DI_PRESSED
+
+
+def maybe_one_pedal_overlay_kick(engagement, interceptor_di) -> bool:
+  """Light tip-in extra kick after orig stock gasPressed kick.
+
+  Do **not** fire on a stock falling edge this cycle: that is lift
+  through DI 1–2 after engage/SET-while-gas, not a from-rest tip-in.
+  `_one_pedal_armed_with_gas` is the same grace until interceptor DI
+  is fully off. If extra does not fire, clear `_one_pedal_gas_falling_edge`
+  so the next real from-rest press is still a takeover.
+  """
+  falling = bool(getattr(engagement, "_one_pedal_gas_falling_edge", False))
+  armed = bool(getattr(engagement, "_one_pedal_armed_with_gas", False))
+  if armed:
+    if one_pedal_gas_for_pause(interceptor_di):
+      return False
+    engagement._one_pedal_armed_with_gas = False
+    if bool(getattr(engagement, "enableLongControl", False)):
+      engagement._one_pedal_had_long_at_rest = True
+    if falling:
+      engagement._one_pedal_gas_falling_edge = False
+    return False
+  if not one_pedal_gas_for_pause(interceptor_di):
+    if falling:
+      engagement._one_pedal_gas_falling_edge = False
+    return False
+  if falling:
+    engagement._one_pedal_gas_falling_edge = False
+    return False
+  if not hasattr(engagement, "maybe_one_pedal_gas_kick"):
+    return False
+  return bool(engagement.maybe_one_pedal_gas_kick(
+    True, True, interceptor_di=interceptor_di))
 
 
 def _peek_blinker_lamps(can_parsers):
@@ -672,17 +706,17 @@ def _update_preap(cs, can_parsers):
         cs.enableJustCC = engagement.enableJustCC
         cs.pedal_speed_kph = engagement.pedal_speed_kph
       # One-Pedal pause is slightly more sensitive than stock gasPressed
-      # (DI > 1 vs DI > 2). Orig kick already ran at the stock gate.
+      # (DI > 1 vs DI > 2). Orig kick already ran with interceptor_di.
+      # Always run the overlay helper so a stock falling edge with DI ≤ 1
+      # closes `_one_pedal_gas_falling_edge` (extra will not fire).
       try:
         from opendbc.car.tesla.preap.nap_conf import nap_conf as _nap_conf
         di = float(getattr(getattr(cs, "pedal", None), "interceptor_value", 0.0) or 0.0)
         if (
           bool(getattr(_nap_conf, "one_pedal_long", False))
           and bool(getattr(_nap_conf, "use_pedal", False))
-          and one_pedal_gas_for_pause(di)
-          and hasattr(engagement, "maybe_one_pedal_gas_kick")
         ):
-          engagement.maybe_one_pedal_gas_kick(True, True)
+          maybe_one_pedal_overlay_kick(engagement, di)
           cs.enableLongControl = engagement.enableLongControl
           cs.enableJustCC = engagement.enableJustCC
           cs.pedal_speed_kph = engagement.pedal_speed_kph
