@@ -38,6 +38,8 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   RESTORE_EPAS_INSTRUCTIONS,
   SPEED_SIGN_LOG_DESCRIPTION,
   WIPER_SPEED_DESCRIPTION, WIPER_SPEED_LABELS, WIPER_SPEED_VALUES,
+  WIPER_SENSITIVITY_DEFAULT, WIPER_SENSITIVITY_DESCRIPTION,
+  WIPER_SENSITIVITY_LABELS, WIPER_SENSITIVITY_VALUES,
   acknowledgments_html, find_preset_index,
 )
 from openpilot.selfdrive.ui.layouts.settings.driving_mannerisms import DrivingMannerismsLayout
@@ -243,6 +245,21 @@ class NAPLayout(Widget):
       callback=self._on_wiper_speed,
     )
     self._main_items.append(self._wiper_buttons)
+
+    raw_sens = self._params.get(NAPParamKeys.WIPER_SENSITIVITY, return_default=True)
+    try:
+      sens_setting = WIPER_SENSITIVITY_DEFAULT if raw_sens is None else int(raw_sens)
+    except (TypeError, ValueError):
+      sens_setting = WIPER_SENSITIVITY_DEFAULT
+    self._wiper_sens_buttons = multiple_button_item(
+      "Wiper Sensitivity",
+      WIPER_SENSITIVITY_DESCRIPTION,
+      buttons=WIPER_SENSITIVITY_LABELS,
+      button_width=110,
+      selected_index=max(0, min(len(WIPER_SENSITIVITY_VALUES) - 1, sens_setting)),
+      callback=self._on_wiper_sensitivity,
+    )
+    self._main_items.append(self._wiper_sens_buttons)
 
     beam_setting = int(self._params.get(NAPParamKeys.HIGH_LOW_BEAM, return_default=True) or 0)
     self._beam_buttons = multiple_button_item(
@@ -487,6 +504,9 @@ class NAPLayout(Widget):
 
   def _on_wiper_speed(self, index: int):
     self._params.put(NAPParamKeys.WIPER_SPEED, WIPER_SPEED_VALUES[index])
+
+  def _on_wiper_sensitivity(self, index: int):
+    self._params.put(NAPParamKeys.WIPER_SENSITIVITY, WIPER_SENSITIVITY_VALUES[index])
 
   def _on_high_low_beam(self, index: int):
     self._params.put(NAPParamKeys.HIGH_LOW_BEAM, HIGH_LOW_BEAM_VALUES[index])
@@ -803,6 +823,13 @@ class NAPLayout(Widget):
     wiper_setting = int(self._params.get(NAPParamKeys.WIPER_SPEED, return_default=True) or 0)
     self._wiper_buttons.action_item.set_selected_button(
       max(0, min(len(WIPER_SPEED_VALUES) - 1, wiper_setting)))
+    raw_sens = self._params.get(NAPParamKeys.WIPER_SENSITIVITY, return_default=True)
+    try:
+      sens_setting = WIPER_SENSITIVITY_DEFAULT if raw_sens is None else int(raw_sens)
+    except (TypeError, ValueError):
+      sens_setting = WIPER_SENSITIVITY_DEFAULT
+    self._wiper_sens_buttons.action_item.set_selected_button(
+      max(0, min(len(WIPER_SENSITIVITY_VALUES) - 1, sens_setting)))
     beam_setting = int(self._params.get(NAPParamKeys.HIGH_LOW_BEAM, return_default=True) or 0)
     self._beam_buttons.action_item.set_selected_button(
       max(0, min(len(HIGH_LOW_BEAM_VALUES) - 1, beam_setting)))

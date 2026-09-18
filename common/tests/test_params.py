@@ -158,3 +158,8 @@ def test_nap_wiper_rain_status_key_survives_onroad_for_qlog():
   assert "DONT_LOG" not in attrs
   wiper_speed = re.search(r'\{\s*"NAPWiperSpeed"\s*,\s*\{([^}]+)\}', src)
   assert wiper_speed and "PERSISTENT" in wiper_speed.group(1)
+  wiper_sens = re.search(r'\{\s*"NAPWiperSensitivity"\s*,\s*\{([^}]+)\}', src)
+  assert wiper_sens, "NAPWiperSensitivity missing from params_keys.h"
+  assert "PERSISTENT" in wiper_sens.group(1)
+  assert "INT" in wiper_sens.group(1)
+  assert '"2"' in wiper_sens.group(1)

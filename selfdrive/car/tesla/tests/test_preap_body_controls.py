@@ -74,8 +74,13 @@ from openpilot.selfdrive.car.tesla.preap_windshield_rain import (
   WIPE_PULSE_S,
   WARMUP_N,
   Y_COPY_SIDE,
+  MIN_REWIPE_GAP_LIGHT_S,
   WindshieldRain,
+  acquire_threshold,
+  min_rewipe_gap_light_s,
+  repeat_threshold,
   reset_windshield_rain,
+  set_wiper_sensitivity,
   windshield_frost_score,
   windshield_ice_score,
   windshield_looks_rainy,
@@ -289,10 +294,26 @@ def test_settings_copy_describes_auto_rain_hold():
   assert "drive" in text
   assert "reverse" in text
   assert "park" in text
+  assert "standstill" in text or "v≈0" in text or "creep" in text
   assert "rest" in text
   assert "cancel" in text
   assert "pulse" not in text
   assert "rainprob" not in text
+
+
+def test_settings_copy_describes_wiper_sensitivity():
+  from openpilot.selfdrive.ui.layouts.settings.nap_content import (
+    WIPER_SENSITIVITY_DEFAULT, WIPER_SENSITIVITY_DESCRIPTION,
+    WIPER_SENSITIVITY_LABELS, WIPER_SENSITIVITY_VALUES,
+  )
+  assert WIPER_SENSITIVITY_VALUES == [0, 1, 2, 3, 4]
+  assert len(WIPER_SENSITIVITY_LABELS) == 5
+  assert WIPER_SENSITIVITY_DEFAULT == 2
+  text = WIPER_SENSITIVITY_DESCRIPTION.lower()
+  assert "dry" in text
+  assert "wet" in text
+  assert "mid" in text
+  assert "spray" in text
 
 
 def test_auto_rain_signal_sets_and_clears_hold():
@@ -902,6 +923,15 @@ def _expire_wait(det) -> None:
   det._wait_t0 = time.monotonic() - float(rain.CLEAR_WAIT_S) - 0.05
 
 
+def _expire_min_gap(det) -> None:
+  """Skip the light-mist min rewipe gap so the next wet look may acquire."""
+  from openpilot.selfdrive.car.tesla import preap_windshield_rain as rain
+
+  gap = float(rain.min_rewipe_gap_light_s())
+  if det._last_wipe_t0 > 0.0:
+    det._last_wipe_t0 = time.monotonic() - gap - 0.05
+
+
 def test_helper_holds_soft_bokeh_and_poll_does_not_recv(monkeypatch):
   """stock_cc / card is CTRL_HIGH: poll must not drain VisionIpc. Heavy bokeh HOLD."""
   import time as time_mod
@@ -1255,7 +1285,7 @@ def test_elevated_residual_below_rewipe_exits_loop():
   """After one wipe + settle, residual / marginal / HOLD_ON must not re-wipe."""
   assert WIPE_CLEAR_N < CLEAR_RELEASE_N
   assert HOLD_OFF < HOLD_ON
-  assert HOLD_ON < ACQUIRE_ON <= REWIPE_ON
+  assert HOLD_ON < ACQUIRE_ON < REWIPE_ON
   assert REWIPE_ON == HEAVY_ON
 
   for residual in (0.0, 0.45, 0.70, 0.95, 1.05, HOLD_ON, 1.7, 3.16, 4.42, 6.1, 6.77, 8.27):
@@ -1402,11 +1432,14 @@ def test_mist_on_glass_acquires_and_fog_does_not():
   assert det.hold
   _expire_wipe(det)
   _expire_wait(det)
-  # Light mist must not easy-rewipe every 3 s — back to idle 4 s assess.
+  # Light mist must not easy-rewipe every ~12.5 s — min gap, then acquire.
   assert not det.update_from_y(mist)
   assert not det.hold
   assert not det.update_from_y(mist)
-  assert det.update_from_y(mist)
+  assert not det.hold
+  _expire_min_gap(det)
+  if not det.hold:
+    assert det.update_from_y(mist)
   assert det.hold
 
   fog_det = WindshieldRain()
@@ -1542,15 +1575,17 @@ def test_helper_score_period_is_every_few_seconds():
   assert WIPE_CLEAR_N == 1
   assert MIN_HOLD_N * SCORE_PERIOD_S <= 8.0
   assert HOLD_ON < ACQUIRE_ON
-  assert ACQUIRE_ON <= REWIPE_ON
+  assert ACQUIRE_ON < REWIPE_ON
   assert REWIPE_ON == HEAVY_ON
   assert 1.0 <= WIPE_PULSE_S <= 2.0
-  assert 2.5 <= CLEAR_WAIT_S <= 4.0
+  assert 2.0 <= CLEAR_WAIT_S <= 2.55
   assert CLEAR_WAIT_S < SCORE_PERIOD_S
+  assert 20.0 <= MIN_REWIPE_GAP_LIGHT_S <= 30.0
+  assert MIN_REWIPE_GAP_LIGHT_S > (WIPE_PULSE_S + CLEAR_WAIT_S + 2.0 * SCORE_PERIOD_S)
 
 
 def test_idle_watch_then_wipe_loop_cadence():
-  """First look is assess-now (not wipe-first). Idle is ~4 s. Post-wipe is ~3 s."""
+  """First look is assess-now (not wipe-first). Idle is ~4 s. Post-wipe is ~2.5 s."""
   det = WindshieldRain()
   t0 = time.monotonic()
   assert det._next_score_at(0.0, t0) == t0
@@ -1667,7 +1702,10 @@ def test_after_wipe_dry_score_exits_loop_and_stays_idle():
 
 
 def test_light_mist_score_after_wipe_needs_full_reacquire():
-  """Justin: light misty rain acquired, then wipe→3s→rewipe over-fired."""
+  """Justin: light misty rain acquired, then wipe→3s→rewipe over-fired.
+
+  Post-wipe uses the repeat bar. Light mist must not clock ~12.5 s pulses.
+  """
   mist = 6.7
   assert ACQUIRE_ON <= mist < REWIPE_ON
   det = WindshieldRain()
@@ -1680,8 +1718,68 @@ def test_light_mist_score_after_wipe_needs_full_reacquire():
   assert not det._update_score(mist)
   assert not det.hold
   assert not det._update_score(mist)
+  assert not det.hold
+  assert not det._update_score(mist)
+  assert not det.hold
+  _expire_min_gap(det)
   assert det._update_score(mist)
   assert det.hold
+
+
+def test_light_mist_min_rewipe_gap_is_20_to_30s_not_12s():
+  """Eager ~12.5 s light-mist pulse (1.5+2.5+4+4) must not wipe again."""
+  mist = 6.7
+  assert ACQUIRE_ON <= mist < REWIPE_ON
+  cycle_12 = WIPE_PULSE_S + CLEAR_WAIT_S + 2.0 * SCORE_PERIOD_S
+  assert MIN_REWIPE_GAP_LIGHT_S > cycle_12
+  det = WindshieldRain()
+  _skip_warmup(det)
+  assert not det._update_score(mist)
+  assert det._update_score(mist)
+  t0 = det._last_wipe_t0
+  assert t0 > 0.0
+  _expire_wipe(det)
+  _expire_wait(det)
+  # Simulate the old 12.5 s cadence: several idle looks, still too soon.
+  for _ in range(6):
+    assert not det._update_score(mist)
+    assert not det.hold
+  assert (time.monotonic() - t0) < MIN_REWIPE_GAP_LIGHT_S
+  det._last_wipe_t0 = time.monotonic() - (cycle_12 + 0.05)
+  assert not det._update_score(mist)
+  assert not det.hold
+  _expire_min_gap(det)
+  assert det._update_score(mist)
+  assert det.hold
+
+
+def test_wiper_sensitivity_scales_acquire_repeat_and_gap():
+  """Lower index = wipe sooner / more often. Higher = tolerate more film."""
+  assert acquire_threshold(0) < acquire_threshold(2) < acquire_threshold(4)
+  assert repeat_threshold(0) < repeat_threshold(2) < repeat_threshold(4)
+  assert min_rewipe_gap_light_s(0) < min_rewipe_gap_light_s(2) < min_rewipe_gap_light_s(4)
+  assert abs(acquire_threshold(2) - ACQUIRE_ON) < 1e-6
+  assert abs(repeat_threshold(2) - REWIPE_ON) < 1e-6
+  assert 20.0 <= min_rewipe_gap_light_s(0) <= 22.5
+  assert abs(min_rewipe_gap_light_s(2) - MIN_REWIPE_GAP_LIGHT_S) < 1e-6
+  assert 27.5 <= min_rewipe_gap_light_s(4) <= 30.0
+  try:
+    set_wiper_sensitivity(0)
+    mist = 4.1
+    assert acquire_threshold(0) <= mist < acquire_threshold(4)
+    det = WindshieldRain()
+    _skip_warmup(det)
+    assert not det._update_score(mist)
+    assert det._update_score(mist)
+    assert det.hold
+    set_wiper_sensitivity(4)
+    dryish = WindshieldRain()
+    _skip_warmup(dryish)
+    for _ in range(MIN_HOLD_N + 4):
+      assert not dryish._update_score(mist)
+    assert not dryish.hold
+  finally:
+    set_wiper_sensitivity(None)
 
 
 def test_clearly_wet_still_wipes_and_rewipes():
@@ -1810,6 +1908,93 @@ def test_auto_only_in_drive_or_reverse(monkeypatch):
     assert not body.requested_wiper_test()
     set_auto_gates(False, "drive")
     assert not body.requested_wiper_test()
+  finally:
+    set_rain_wiper_needed(None)
+    reset_auto_gates()
+
+
+def test_auto_park_or_standstill_suppress_drive_moving_still_wipes(monkeypatch):
+  """Garage v≈0 / Park must not Auto-wipe. Drive at speed still wipes."""
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
+    WIPER_SETTING_AUTO if key == NAP_WIPER_SPEED else default
+  ))
+  set_rain_wiper_needed(True)
+  try:
+    set_auto_gates(True, "park", v_ego=0.0)
+    assert not body.auto_wipe_moving()
+    assert not body.requested_wiper_test()
+    set_auto_gates(True, "drive", v_ego=0.0)
+    assert body.in_drive_gear()
+    assert not body.auto_wipe_moving()
+    assert not body.requested_wiper_test()
+    set_auto_gates(True, "drive", v_ego=0.3)
+    assert not body.requested_wiper_test()
+    set_auto_gates(True, "drive", v_ego=12.0)
+    assert body.auto_wipe_moving()
+    assert body.requested_wiper_test()
+    set_auto_gates(True, "reverse", v_ego=5.0)
+    assert body.requested_wiper_test()
+    # Unknown speed does not suppress (Drive tests without vEgo still wipe).
+    set_auto_gates(True, "drive")
+    assert body.live_v_ego() is None
+    assert body.auto_wipe_moving()
+    assert body.requested_wiper_test()
+  finally:
+    set_rain_wiper_needed(None)
+    reset_auto_gates()
+
+
+def test_auto_reads_vego_from_cs_out(monkeypatch):
+  """Stock-cc CS.out.vEgo=0 (garage in Drive) must not Auto-wipe."""
+  from types import SimpleNamespace
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
+    WIPER_SETTING_AUTO if key == NAP_WIPER_SPEED else default
+  ))
+  set_rain_wiper_needed(True)
+  reset_auto_gates()
+  try:
+    inner = SimpleNamespace(
+      msg_stw_actn_req={"SpdCtrlLvr_Stat": 0},
+      out=SimpleNamespace(gearShifter="drive", vEgo=0.0),
+    )
+    body.update_live_car_state(inner)
+    assert body.in_drive_gear()
+    assert body.live_v_ego() == 0.0
+    assert not body.auto_wipe_moving()
+    assert not body.requested_wiper_test()
+    line = body._auto_status_line(3, True, True, True, False, moving=False)
+    assert "park=0" in line
+    assert "v0=1" in line
+    assert "moving=0" in line
+    assert "wipe=0" in line
+    inner.out.vEgo = 15.0
+    assert body.auto_wipe_moving()
+    assert body.requested_wiper_test()
+  finally:
+    set_rain_wiper_needed(None)
+    reset_auto_gates()
+
+
+def test_int_on_ignore_standstill(monkeypatch):
+  """Int/On ignore gear, camera, and v≈0. Auto is the only gated mode."""
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  set_rain_wiper_needed(False)
+  set_auto_gates(True, "park", v_ego=0.0)
+  try:
+    monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
+      WIPER_SETTING_INTERMITTENT if key == NAP_WIPER_SPEED else default
+    ))
+    assert body.requested_wiper_test()
+    monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
+      WIPER_SETTING_ON if key == NAP_WIPER_SPEED else default
+    ))
+    assert body.requested_wiper_test()
   finally:
     set_rain_wiper_needed(None)
     reset_auto_gates()
@@ -2148,6 +2333,12 @@ def test_auto_status_param_is_full_gate_line_not_short_rain(monkeypatch):
     assert "wait=" in line
     assert "score=" in line
     assert "bokeh=" in line
+    assert "sens=" in line
+    assert "acq=" in line
+    assert "rpt=" in line
+    assert "park=" in line
+    assert "v0=" in line
+    assert "moving=" in line
     assert not line.startswith("hold=")
   finally:
     set_rain_wiper_needed(None)
@@ -2234,8 +2425,10 @@ def test_register_defaults_stay_off():
   register_nap_body_params()
   assert NAPParamKeys.WIPER_SPEED == NAP_WIPER_SPEED
   assert NAPParamKeys.HIGH_LOW_BEAM == NAP_HIGH_LOW_BEAM
+  assert NAPParamKeys.WIPER_SENSITIVITY == "NAPWiperSensitivity"
   assert DEFAULTS[NAP_WIPER_SPEED] == 0
   assert DEFAULTS[NAP_HIGH_LOW_BEAM] == 0
+  assert DEFAULTS["NAPWiperSensitivity"] == 2
 
 
 def test_das_body_controls_stays_zero_when_settings_on():

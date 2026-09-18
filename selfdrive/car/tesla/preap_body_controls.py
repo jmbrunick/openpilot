@@ -29,9 +29,10 @@ Int/On just dropped to Off — then extra-forward rest so the body cancels.
 Wiper On/Int holds high nibble 1 (TIPWIPE, WprWashSw_Psd=0x10). Camera
 Auto does not use TIPWIPE. Auto overlays WprSw6Posn INTERVAL1 (collar=1)
 and WprWashSw_Psd=0 only when all of: setting is Auto, the vehicle is on,
-gear is Drive or Reverse, and the 3X road camera sees a rainy or icy/
-frosted windshield (unwarped ROAD Y). Park and Neutral never Auto-wipe,
-even with the car on. Physical collar Off=0 Int1=1 Int2=2 Low=5 High=6;
+gear is Drive or Reverse, vEgo is above a small creep floor, and the 3X
+road camera sees a rainy or icy/frosted windshield (unwarped ROAD Y).
+Park, Neutral, and standstill (v≈0) never Auto-wipe, even with the car
+on. Physical collar Off=0 Int1=1 Int2=2 Low=5 High=6;
 Int1 already timed-wipes on this BCM. No stalk Auto required.
 
 Live stalk Off repeats collar=0 on bus 0. A 10 Hz Int hold loses that
@@ -44,7 +45,7 @@ not cancel that. Collar Int1 is a held position — live Off would cancel
 if it last-wins, so Auto dry still extra-forwards rest with collar forced
 0 (and wash 0) at the 10 Hz slot. On the falling edge of wipe, send
 several rest frames immediately (do not wait for the next 10 Hz slot).
-Park/Neutral stay wipe=0 and use that same cancel if we had been wiping.
+Park/Neutral/standstill stay wipe=0 and use that same cancel if we had been wiping.
 Do not force wipe on dry glass. Off that never Auto-wiped still leaves
 the stalk alone.
 
@@ -71,12 +72,17 @@ import threading
 import time
 
 NAP_WIPER_SPEED = "NAPWiperSpeed"
+NAP_WIPER_SENSITIVITY = "NAPWiperSensitivity"
 NAP_HIGH_LOW_BEAM = "NAPHighLowBeam"
 
 WIPER_SETTING_OFF = 0
 WIPER_SETTING_INTERMITTENT = 1
 WIPER_SETTING_ON = 2
 WIPER_SETTING_AUTO = 3
+WIPER_SENSITIVITY_DEFAULT = 2
+# Garage / stopped-in-Drive: do not Auto-wipe below this (m/s). Unknown
+# speed does not suppress so Drive tests without vEgo still wipe.
+AUTO_WIPE_CREEP_MS = 0.5
 BEAM_SETTING_OFF = 0
 BEAM_SETTING_LOW = 1
 BEAM_SETTING_HIGH = 2
@@ -104,6 +110,7 @@ _rain_needed_override = None
 _live_cs = None
 _vehicle_on_override = None
 _gear_override = None
+_v_ego_override = None
 _cereal_gear_override = None
 _cereal_gear_forced = False
 _cereal_sm = None
@@ -154,8 +161,10 @@ def register_nap_body_params():
   """Expose the test keys on NAPParamKeys / DEFAULTS for settings reset."""
   from opendbc.car.tesla.preap.nap_params import DEFAULTS, NAPParamKeys
   NAPParamKeys.WIPER_SPEED = NAP_WIPER_SPEED
+  NAPParamKeys.WIPER_SENSITIVITY = NAP_WIPER_SENSITIVITY
   NAPParamKeys.HIGH_LOW_BEAM = NAP_HIGH_LOW_BEAM
   DEFAULTS[NAP_WIPER_SPEED] = WIPER_SETTING_OFF
+  DEFAULTS[NAP_WIPER_SENSITIVITY] = WIPER_SENSITIVITY_DEFAULT
   DEFAULTS[NAP_HIGH_LOW_BEAM] = BEAM_SETTING_OFF
 
 
@@ -362,11 +371,12 @@ def update_live_car_state(cs) -> None:
   _live_cs = cs
 
 
-def set_auto_gates(vehicle_on: bool | None = None, gear=None) -> None:
-  """Tests inject vehicle-on and gear. None leaves that field on live CS."""
-  global _vehicle_on_override, _gear_override
+def set_auto_gates(vehicle_on: bool | None = None, gear=None, v_ego=None) -> None:
+  """Tests inject vehicle-on, gear, and vEgo. None leaves that field on live CS."""
+  global _vehicle_on_override, _gear_override, _v_ego_override
   _vehicle_on_override = None if vehicle_on is None else bool(vehicle_on)
   _gear_override = gear
+  _v_ego_override = v_ego
 
 
 def set_cereal_gear(gear) -> None:
@@ -380,9 +390,11 @@ def reset_auto_gates() -> None:
   global _live_cs, _vehicle_on_override, _gear_override, _last_gear_src, _last_wiper_req
   global _cereal_gear_override, _cereal_gear_forced, _wiper_cancel_burst
   global _last_auto_log_t, _last_status_put_t, _last_status_gate, _auto_since_t
+  global _v_ego_override
   _live_cs = None
   _vehicle_on_override = None
   _gear_override = None
+  _v_ego_override = None
   _cereal_gear_override = None
   _cereal_gear_forced = False
   _last_gear_src = "none"
@@ -639,6 +651,45 @@ def in_drive_gear() -> bool:
   return _is_drive_or_reverse(gear)
 
 
+def _read_v_ego(host) -> float | None:
+  if host is None:
+    return None
+  for attr in ("vEgo", "v_ego"):
+    try:
+      v = getattr(host, attr, None)
+    except Exception:
+      v = None
+    if v is None:
+      continue
+    try:
+      return abs(float(v))
+    except (TypeError, ValueError):
+      continue
+  return None
+
+
+def live_v_ego() -> float | None:
+  """Signed speed is folded to abs. None means unknown — do not suppress."""
+  if _v_ego_override is not None:
+    try:
+      return abs(float(_v_ego_override))
+    except (TypeError, ValueError):
+      return None
+  cs = _live_cs
+  v = _read_v_ego(cs)
+  if v is not None:
+    return v
+  return _read_v_ego(_attr_gear(cs, "out"))
+
+
+def auto_wipe_moving() -> bool:
+  """False when vEgo is known and below creep. Unknown speed does not suppress."""
+  v = live_v_ego()
+  if v is None:
+    return True
+  return v >= AUTO_WIPE_CREEP_MS
+
+
 def rain_wiper_needed() -> bool:
   """Rainy or icy/frosted windshield latch. Default clear so Auto does not wipe every drive.
 
@@ -714,12 +765,21 @@ def _sync_rain_helper() -> None:
     pass
 
 
-def _auto_status_line(setting: int, on: bool, drive: bool, rain: bool, wipe: bool) -> str:
+def _auto_status_line(setting: int, on: bool, drive: bool, rain: bool, wipe: bool,
+                     moving: bool = True) -> str:
   gear, src = _resolved_gear()
   rain_bits = "rain=0"
+  sens = _param_int(NAP_WIPER_SENSITIVITY, WIPER_SENSITIVITY_DEFAULT)
+  acq = 0
+  rpt = 0
+  gap_left = 0.0
+  gap_s = 0.0
   try:
     from openpilot.selfdrive.car.tesla import preap_windshield_rain as rainmod
     d = rainmod._detector
+    acq_on = rainmod.acquire_threshold(sens)
+    rpt_on = rainmod.repeat_threshold(sens)
+    gap_s = rainmod.min_rewipe_gap_light_s(sens)
     if d is not None:
       now = time.monotonic()
       age_ms = (now - d._last_frame_t) * 1000.0 if d._last_frame_t else -1.0
@@ -727,16 +787,23 @@ def _auto_status_line(setting: int, on: bool, drive: bool, rain: bool, wipe: boo
       wait_s = float(getattr(rainmod, "CLEAR_WAIT_S", 0.0))
       wipe_t0 = float(getattr(d, "_wipe_t0", 0.0) or 0.0)
       wait_t0 = float(getattr(d, "_wait_t0", 0.0) or 0.0)
+      last_wipe = float(getattr(d, "_last_wipe_t0", 0.0) or 0.0)
       pulse_left = max(0.0, pulse_s - (now - wipe_t0)) if d.hold and wipe_t0 else 0.0
       wait_left = max(0.0, wait_s - (now - wait_t0)) if wait_t0 else 0.0
+      acq = int(d.last_score >= acq_on)
+      rpt = int(d.last_score >= rpt_on)
+      if last_wipe > 0.0:
+        gap_left = max(0.0, gap_s - (now - last_wipe))
       rain_bits = (
         f"hold={int(d.hold)} holdn={int(getattr(d, '_hold_n', 0))}/{int(getattr(rainmod, 'MIN_HOLD_N', 0))} "
         + f"warm={int(getattr(d, '_warm_n', 0))}/{int(getattr(rainmod, 'WARMUP_N', 0))} "
         + f"ema={d.ema:.2f} score={d.last_score:.2f} bokeh={d.last_bokeh:.2f} blob={d.last_blob:.2f} "
         + f"speckle={d.last_speckle:.3f} sparse={d.last_sparse:.1f} struct={d.last_structure:.3f} sat={d.last_sat:.3f} "
         + f"clear={int(getattr(d, '_clear_n', 0))}/{int(getattr(rainmod, 'CLEAR_RELEASE_N', 0))} "
+        + f"sens={int(sens)} acq={acq} rpt={rpt} "
         + f"heavy={int(d.last_score >= float(getattr(rainmod, 'HEAVY_ON', 2.2)))} "
         + f"pulse={pulse_left:.1f}/{pulse_s:.1f} wait={wait_left:.1f}/{wait_s:.1f} "
+        + f"gap={gap_left:.1f}/{gap_s:.1f} "
         + f"connected={int(d.connected)} failed={int(d._failed)} frames={d.n_frames} stream={d.stream} "
         + f"helper={int(d.helper_alive)} period_s={float(getattr(rainmod, 'SCORE_PERIOD_S', 0)):.1f} "
         + f"hz={float(getattr(rainmod, 'SCORE_HZ', 0)):.1f} age_ms={age_ms:.0f} err={d.last_err or '-'}"
@@ -745,6 +812,10 @@ def _auto_status_line(setting: int, on: bool, drive: bool, rain: bool, wipe: boo
     rain_bits = "rain=err"
   gi = _gear_int(gear)
   raw = "-" if gi is None else str(gi)
+  park = int(_is_park_or_neutral(gear))
+  v = live_v_ego()
+  v0 = int(v is not None and v < AUTO_WIPE_CREEP_MS)
+  v_bits = "-" if v is None else f"{v:.2f}"
   if int(setting) == WIPER_SETTING_AUTO:
     collar_n = STW_COLLAR_INTERVAL1 if wipe else 0
     collar_bits = f"collar={collar_n} wash=0"
@@ -752,7 +823,9 @@ def _auto_status_line(setting: int, on: bool, drive: bool, rain: bool, wipe: boo
     collar_bits = "collar=-"
   return (
     f"nap wiper auto setting={int(setting)} on={int(on)} gear={_gear_name(gear) or '-'} gear_src={src} "
-    + f"gear_type={_gear_type_name(gear)} raw={raw} drive={int(drive)} rain={int(rain)} wipe={int(wipe)} "
+    + f"gear_type={_gear_type_name(gear)} raw={raw} drive={int(drive)} moving={int(moving)} "
+    + f"rain={int(rain)} wipe={int(wipe)} "
+    + f"sens={int(sens)} acq={int(acq)} rpt={int(rpt)} park={park} v0={v0} v={v_bits} "
     + f"cancel={int(wiper_rest_tx_needed(wipe))} {collar_bits} "
     + f"installed={int(_installed)} {rain_bits}"
   )
@@ -771,16 +844,18 @@ def _put_wiper_status(line: str) -> None:
     pass
 
 
-def _log_auto_status(setting: int, on: bool, drive: bool, rain: bool, wipe: bool) -> None:
+def _log_auto_status(setting: int, on: bool, drive: bool, rain: bool, wipe: bool,
+                    moving: bool = True) -> None:
   """Params.put / cloudlog at 1 Hz, or immediately on Auto gate changes. Not every 10 ms."""
   global _last_auto_log_t, _last_status_put_t, _last_status_gate
-  gate = (int(setting), bool(on), bool(drive), bool(rain), bool(wipe))
+  sens = _param_int(NAP_WIPER_SENSITIVITY, WIPER_SENSITIVITY_DEFAULT)
+  gate = (int(setting), bool(on), bool(drive), bool(moving), bool(rain), bool(wipe), int(sens))
   now = time.monotonic()
   if gate == _last_status_gate and now - _last_status_put_t < _AUTO_DEBUG_S:
     return
   _last_status_gate = gate
   _last_status_put_t = now
-  line = _auto_status_line(setting, on, drive, rain, wipe)
+  line = _auto_status_line(setting, on, drive, rain, wipe, moving=moving)
   if now - _last_auto_log_t >= _AUTO_DEBUG_S:
     _last_auto_log_t = now
     try:
@@ -834,14 +909,15 @@ def requested_wiper_test() -> bool:
   if int(setting) == WIPER_SETTING_AUTO:
     on = vehicle_is_on()
     drive = in_drive_gear()
+    moving = auto_wipe_moving()
     rain = False
     try:
       rain = rain_wiper_needed()
     except Exception:
       rain = False
-    wipe = bool(on and drive and rain)
+    wipe = bool(on and drive and moving and rain)
     _last_wiper_req = wipe
-    _log_auto_status(setting, on, drive, rain, wipe)
+    _log_auto_status(setting, on, drive, rain, wipe, moving=moving)
     return wipe
   wipe = wiper_test_requested(setting)
   _last_wiper_req = wipe
@@ -878,10 +954,11 @@ def stock_cc_update_with_overlay(self, CS, frame, tesla_can, can_bus_party):
   live stalk Off (collar=0) cannot last-win. Auto dry / wipe-release
   extra-forwards rest (collar 0, wash 0, TIPWIPE cleared) on the 10 Hz
   slot so Pre-AP drops intermittent; a wipe 1→0 burst does not wait for
-  the slot. Auto reads gear from this CS: Park/Neutral stay wipe=0 and
-  still cancel if we had been wiping. Primes the ROAD VisionIpc helper
-  only while Auto so poll() does not recv on this CTRL_HIGH thread.
-  Off/Int/On stop the helper.
+  the slot.   Auto reads gear and vEgo from this CS: Park/Neutral/standstill stay
+  wipe=0 and still cancel if we had been wiping. Scoring/status keep
+  running so Connect digs can see park/v0 suppress. Primes the ROAD
+  VisionIpc helper only while Auto so poll() does not recv on this
+  CTRL_HIGH thread. Off/Int/On stop the helper.
   """
   orig = _ORIG_STOCK_CC_UPDATE
   if orig is None:

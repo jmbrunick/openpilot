@@ -29,9 +29,13 @@ wet-sheet path (blob≈7–9, live dry score=6.29). That must score well
 below acquire. Light mist / film on the glass (highway streaks; ROAD
 UI looks through it) must still wipe via the near-glass haze path —
 not distant atmospheric fog alone. Then: one blade sweep →
-wipe=0 + Auto rest-cancel → wait CLEAR_WAIT_S → assess. Re-wipe only if
-still *clearly heavy* (REWIPE_ON, above light-mist film). Light mist
-returns to idle 4 s and must full-reacquire. Off still leaves the real stalk.
+wipe=0 + Auto rest-cancel → wait CLEAR_WAIT_S (~2.5 s) → assess against
+the *repeat* bar (REWIPE_ON), not acquire. Heavy can rewipe after that
+holdoff. Light mist must not clock ~12.5 s pulses (pulse+wait+two idle
+looks); enforce MIN_REWIPE_GAP_LIGHT_S (~25 s) before another acquire.
+NAPWiperSensitivity (0–4, mid=2) scales acquire, repeat, and that gap.
+Park / v≈0 suppress is in body controls; scoring still runs. Off still
+leaves the real stalk.
 
 Bokeh energy is an 8-bit residual (~0 dry, ~2–5 wet). A live clear-glass
 log showed bokeh=49165 — wrong Y scale or a bandpass blowup. Impossible
@@ -150,12 +154,24 @@ HOLD_ON = 1.0
 # First wipe: two consecutive idle scores at/above this *after* warmup.
 # Mist film live/offline sits ~6–8. Do not "fix" dry garage by raising
 # this past old 6.29. Heavy milky / dense beads (~10+) still enter.
+# Lower than REWIPE_ON so the first wipe is not waiting on a heavy bar.
 ACQUIRE_ON = 4.5
 # Post-wipe re-enter and status "heavy": above light-mist film (~6–8.4).
-# Justin 48f458dd9: first mist wipe worked, then wipe→3s→rewipe over-fired.
-# Light mist exits to idle 4 s (full re-acquire). Heavy can rewipe after settle.
+# Justin 48f458dd9 / 2026-09-18 mist: first wipe was late, then light mist
+# re-acquired every ~12.5 s. Repeat stays above that film; light uses the
+# min-rewipe gap, not the acquire path.
 HEAVY_ON = 9.0
 REWIPE_ON = HEAVY_ON
+# 0 = wipe sooner / more often (more dry). 4 = tolerate more film (more wet).
+NAP_WIPER_SENSITIVITY = "NAPWiperSensitivity"
+WIPER_SENSITIVITY_MIN = 0
+WIPER_SENSITIVITY_MAX = 4
+WIPER_SENSITIVITY_DEFAULT = 2
+# Mid=1.00. Lower index lowers acquire/repeat (wipe sooner).
+SENSITIVITY_SCALE = (0.80, 0.90, 1.00, 1.10, 1.20)
+# Light-mist min interval between wipe *starts*. Mid=25 s (20 s at 0, 30 s at 4).
+MIN_REWIPE_GAP_LIGHT_S = 25.0
+MIN_REWIPE_GAP_SENS_STEP = 2.5
 HOLD_OFF = 0.70
 EMA_ALPHA = 0.35
 EMA_HOLD_ALPHA = 0.35
@@ -170,8 +186,9 @@ WARMUP_N = 2
 # we do not wait for the next idle ROAD score.
 WIPE_PULSE_S = 1.5
 # After wipe=0 + rest-cancel: ignore ROAD until blades park and streaks
-# settle, then assess. 2.0 s still caught blades on bone-dry Auto.
-CLEAR_WAIT_S = 3.0
+# settle, then assess against the repeat bar. ~2–2.5 s (2.0 s still
+# caught blades on bone-dry Auto).
+CLEAR_WAIT_S = 2.5
 # Compat aliases (old burst/rest names). Duty cycle uses WIPE_PULSE_S / CLEAR_WAIT_S.
 BURST_MAX_N = 1
 BURST_MAX_S = WIPE_PULSE_S
@@ -207,6 +224,57 @@ _FOLIAGE_BLOB = 18.0
 _FINE_R = 2
 _MED_R = 4
 _COARSE_R = 8
+
+_sensitivity_override: int | None = None
+
+
+def clip_sensitivity(index: int) -> int:
+  try:
+    i = int(index)
+  except (TypeError, ValueError):
+    return WIPER_SENSITIVITY_DEFAULT
+  return max(WIPER_SENSITIVITY_MIN, min(WIPER_SENSITIVITY_MAX, i))
+
+
+def set_wiper_sensitivity(index: int | None) -> None:
+  """Tests inject 0–4. None returns to NAPWiperSensitivity / mid default."""
+  global _sensitivity_override
+  _sensitivity_override = None if index is None else clip_sensitivity(index)
+
+
+def current_sensitivity() -> int:
+  if _sensitivity_override is not None:
+    return clip_sensitivity(_sensitivity_override)
+  try:
+    from openpilot.common.params import Params
+    val = Params().get(NAP_WIPER_SENSITIVITY, return_default=True)
+    if val is None:
+      return WIPER_SENSITIVITY_DEFAULT
+    if isinstance(val, (bytes, bytearray)):
+      val = val.decode("utf-8", errors="ignore").strip()
+    return clip_sensitivity(int(val))
+  except Exception:
+    return WIPER_SENSITIVITY_DEFAULT
+
+
+def acquire_threshold(sens: int | None = None) -> float:
+  if sens is None:
+    sens = current_sensitivity()
+  return ACQUIRE_ON * SENSITIVITY_SCALE[clip_sensitivity(sens)]
+
+
+def repeat_threshold(sens: int | None = None) -> float:
+  if sens is None:
+    sens = current_sensitivity()
+  return REWIPE_ON * SENSITIVITY_SCALE[clip_sensitivity(sens)]
+
+
+def min_rewipe_gap_light_s(sens: int | None = None) -> float:
+  """Seconds between wipe starts when score is below the repeat bar."""
+  if sens is None:
+    sens = current_sensitivity()
+  s = clip_sensitivity(sens)
+  return MIN_REWIPE_GAP_LIGHT_S + MIN_REWIPE_GAP_SENS_STEP * (s - WIPER_SENSITIVITY_DEFAULT)
 
 
 def y_plane_from_nv12(buf, max_side: int = 0) -> np.ndarray | None:
@@ -628,9 +696,14 @@ class WindshieldRain:
     self._clear_n = 0
     self._hold_n = 0
     self._wipe_t0 = 0.0
+    self._last_wipe_t0 = 0.0
     self._wait_t0 = 0.0
     self._post_wipe = False
     self._warm_n = 0
+    self._sens = WIPER_SENSITIVITY_DEFAULT
+    self._acquire_on = ACQUIRE_ON
+    self._repeat_on = REWIPE_ON
+    self._gap_light_s = MIN_REWIPE_GAP_LIGHT_S
     self._owns_client = False
     self._need_flush = False
 
@@ -648,9 +721,31 @@ class WindshieldRain:
     self._store_feats(feats)
     return self._update_score(obs)
 
+  def _thresholds(self) -> tuple[int, float, float, float]:
+    """sens, acquire, repeat, light min-rewipe gap."""
+    sens = current_sensitivity()
+    acquire = acquire_threshold(sens)
+    repeat = repeat_threshold(sens)
+    gap_light = min_rewipe_gap_light_s(sens)
+    self._sens = sens
+    self._acquire_on = acquire
+    self._repeat_on = repeat
+    self._gap_light_s = gap_light
+    return sens, acquire, repeat, gap_light
+
+  def _gap_ok(self, now: float, score: float, repeat: float, gap_light: float) -> bool:
+    """First wipe has no gap. Heavy may rewipe after CLEAR_WAIT_S. Light waits."""
+    last = self._last_wipe_t0
+    if last <= 0.0:
+      return True
+    if score >= repeat:
+      return True
+    return (now - last) >= gap_light
+
   def _start_wipe(self, now: float) -> None:
     self.hold = True
     self._wipe_t0 = now
+    self._last_wipe_t0 = now
     self._wait_t0 = 0.0
     self._post_wipe = False
     self._hold_n = MIN_HOLD_N
@@ -671,6 +766,7 @@ class WindshieldRain:
     with self._lock:
       now = time.monotonic()
       self.last_score = _finite_score(score)
+      _sens, acquire, repeat, gap_light = self._thresholds()
       alpha = EMA_HOLD_ALPHA if self.hold else EMA_ALPHA
       self.ema = alpha * self.last_score + (1.0 - alpha) * self.ema
       waiting = self._wait_t0 > 0.0 and (now - self._wait_t0) < CLEAR_WAIT_S
@@ -685,18 +781,20 @@ class WindshieldRain:
         self._clear_n = 0
         if self._post_wipe:
           self._post_wipe = False
-          if self.last_score >= REWIPE_ON:
+          if (self.last_score >= repeat
+              and self._gap_ok(now, self.last_score, repeat, gap_light)):
             self._start_wipe(now)
           else:
-            # Dry / light mist / marginal → idle 4 s. Full re-acquire.
+            # Dry / light mist / marginal → idle. Light needs min rewipe gap.
             self._hold_n = 0
         elif self._warm_n < WARMUP_N:
           # First ROAD looks after helper start. Do not acquire.
           self._warm_n += 1
           self._hold_n = 0
-        elif self.last_score >= ACQUIRE_ON:
+        elif self.last_score >= acquire:
           self._hold_n += 1
-          if self._hold_n >= MIN_HOLD_N:
+          if (self._hold_n >= MIN_HOLD_N
+              and self._gap_ok(now, self.last_score, repeat, gap_light)):
             self._start_wipe(now)
         else:
           # Consecutive idle wet looks only. One below-wet resets.
@@ -804,6 +902,9 @@ class WindshieldRain:
     pulse_left = 0.0
     if self.hold and self._wipe_t0 > 0.0:
       pulse_left = max(0.0, WIPE_PULSE_S - (now - self._wipe_t0))
+    gap_left = 0.0
+    if self._last_wipe_t0 > 0.0:
+      gap_left = max(0.0, float(self._gap_light_s) - (now - self._last_wipe_t0))
     age_ms = (now - self._last_frame_t) * 1000.0 if self._last_frame_t else -1.0
     err = f" err={self.last_err}" if self.last_err else ""
     why = f" {reason}" if reason else ""
@@ -813,8 +914,11 @@ class WindshieldRain:
       + f"sparse={self.last_sparse:.1f} sat={self.last_sat:.3f} struct={self.last_structure:.3f} "
       + f"holdn={int(self._hold_n)}/{int(MIN_HOLD_N)} warm={int(self._warm_n)}/{int(WARMUP_N)} "
       + f"clear={int(self._clear_n)}/{int(CLEAR_RELEASE_N)} "
+      + f"sens={int(self._sens)} acq={int(self.last_score >= float(self._acquire_on))} "
+      + f"rpt={int(self.last_score >= float(self._repeat_on))} "
       + f"heavy={int(self.last_score >= HEAVY_ON)} pulse={pulse_left:.1f}/{WIPE_PULSE_S:.1f} "
-      + f"wait={wait_left:.1f}/{CLEAR_WAIT_S:.1f} connected={int(self.connected)} "
+      + f"wait={wait_left:.1f}/{CLEAR_WAIT_S:.1f} gap={gap_left:.1f}/{self._gap_light_s:.1f} "
+      + f"connected={int(self.connected)} "
       + f"failed={int(self._failed)} frames={self.n_frames} stream={self.stream} "
       + f"helper={int(self.helper_alive)} period_s={SCORE_PERIOD_S:.1f} hz={SCORE_HZ:.1f} age_ms={age_ms:.0f}{err}{why}"
     )
@@ -837,6 +941,7 @@ class WindshieldRain:
       self._clear_n = 0
       self._hold_n = 0
       self._wipe_t0 = 0.0
+      self._last_wipe_t0 = 0.0
       self._wait_t0 = 0.0
       self._post_wipe = False
       self._warm_n = 0
@@ -891,7 +996,7 @@ class WindshieldRain:
 
     Idle watching: SCORE_PERIOD_S (~4 s) after the last look. First look
     is immediate (assess, do not wipe-first). After a wipe, assess when
-    CLEAR_WAIT_S elapses — not another idle 4 s.
+    CLEAR_WAIT_S elapses against the repeat bar — not another idle 4 s.
     """
     with self._lock:
       if self.hold and self._wipe_t0 > 0.0:
@@ -990,6 +1095,7 @@ def windshield_rain_needed() -> bool:
 def reset_windshield_rain() -> None:
   """Tests reset the singleton."""
   global _detector
+  set_wiper_sensitivity(None)
   if _detector is not None:
     _detector.stop_helper()
   _detector = None

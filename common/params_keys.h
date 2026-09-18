@@ -202,6 +202,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Beam: 0/1 leave stalk, 2=high (low nibble 4).
     // DAS wiper/beam fields stay 0. No auto headlights.
     {"NAPWiperSpeed", {PERSISTENT, INT, "0"}},
+    // Auto wiper sensitivity 0–4. Mid 2 = baseline. Lower = wipe sooner /
+    // more often (more dry). Higher = tolerate more film (more wet).
+    {"NAPWiperSensitivity", {PERSISTENT, INT, "2"}},
     // Live Auto-wiper status (~1 Hz Params.put). STRING so unknown-key put
     // cannot fail silently. No CLEAR_ON_ONROAD: loggerd embeds Params in qlog
     // InitData at route start (same snapshot copied into each segment), so an
