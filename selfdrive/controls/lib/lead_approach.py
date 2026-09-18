@@ -165,11 +165,15 @@ LEAD_CLOSE_REMATCH_A_MS2 = 0.12
 LEAD_CLOSE_REMATCH_SLACK_M = 12.0
 # After |v_rel| < 0.5 for 0.5–1 s near the follow gap, Accel-ceil rematch
 # is deadbanded. Arm settle only while slack is still follow-like so a
-# 160 m same-speed catch-up stays Accel-owned. Once settled, hold through
-# a growing gap (do not re-arm Accel ceil as dRel 49→59).
+# 160 m same-speed catch-up stays Accel-owned. Do not arm while still
+# inside Follow Distance (recovering from too-close). Once settled, hold
+# through a growing gap (do not re-arm Accel ceil as dRel 49→59).
 LEAD_SETTLE_VREL_MS = 0.5
 LEAD_SETTLE_HOLD_S = 0.75
 LEAD_SETTLE_SLACK_M = 25.0
+# Remaining close after settle. Slight opening at 2–4 m must still
+# trickle onto Follow Distance; 8 m+ opening stays deadbanded.
+LEAD_SETTLE_FINISH_SLACK_M = 4.0
 # Settled rematch: trickle/0 while gap is OK or opening. Hunt (small
 # Accel-proportional, not full ceil) when gap error ≳ 15 m and |closing|
 # < 1. Rematch above trickle if slack ≳ 20 m *and* lead pulling away.
@@ -203,13 +207,17 @@ def lead_is_settled_sample(v_rel, slack) -> bool:
   """True when this frame can count toward match-settle.
 
   Match means speeds already agree *and* the gap is still follow-like.
-  A 160 m same-speed lead is catch-up, not a settled follow.
+  A 160 m same-speed lead is catch-up, not a settled follow. Still
+  inside Follow Distance (negative slack) is a too-close recovery, not
+  a matched follow — Accel/MPC must be allowed to open back to the gap.
   """
   if v_rel is None:
     return False
   if abs(float(v_rel)) >= LEAD_SETTLE_VREL_MS:
     return False
   if slack is None or float(slack) > LEAD_SETTLE_SLACK_M:
+    return False
+  if float(slack) < 0.0:
     return False
   return True
 
@@ -255,7 +263,11 @@ def lead_settled_rematch_a_ms2(a, v_rel, slack) -> float:
   v = 0.0 if v_rel is None else float(v_rel)
   opening = v <= 0.0
   if s is None or s < LEAD_HUNT_SLACK_M:
-    return 0.0 if opening else min(a, LEAD_CLOSE_OPENING_A_MS2)
+    # Finish Follow Distance even if slightly opening. Comfortable
+    # opening (the 49→59 chatter band) stays 0.
+    if opening and (s is None or s <= 0.0 or s > LEAD_SETTLE_FINISH_SLACK_M):
+      return 0.0
+    return min(a, LEAD_CLOSE_OPENING_A_MS2)
   if opening and s < LEAD_REMATCH_PULL_SLACK_M:
     return 0.0
   return lead_hunt_accel_ms2(a, s)
@@ -417,16 +429,19 @@ def lead_owns_plan(v_rel, a_lead=None, slack=None) -> bool:
 
 
 def cap_closing_lead_accel(output_a, v_rel, a_lead=None, lead_present=False,
-                           owned=False, slack=None):
+                           owned=False, slack=None, d_rel=None):
   """Never rematch +a into a closing / near-gap braking live or held lead.
 
   Closing ≳ 1.0 m/s (or hold-owned) hard-caps a at 0. Closing ≳ 1.5
   prefers match-speed −a (`aLead − k·v_rel`). aLead ≲ −0.2 matches
   only near the follow gap — not when the gap is opening or slack is
-  large. Same-speed far catch-up +a is unchanged.
+  large. Same-speed far catch-up +a is unchanged. Past Bosch, do not
+  apply match-speed −a (no extra crawl on a 215 m lock).
   """
   if output_a is None or not (lead_present or owned):
     return output_a
+  if d_rel is not None and float(d_rel) > LEAD_CLOSE_MAX_M + LEAD_APPROACH_MAX_HOLD_M:
+    return float(output_a)
   if not (owned or lead_is_closing(v_rel, a_lead, slack=slack)):
     return float(output_a)
   a = min(float(output_a), 0.0)
