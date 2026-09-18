@@ -309,19 +309,22 @@ def _peek_stalk_and_speed(can_parsers):
     return 0, 0.0
 
 
+def _peek_di_pedal_percent(can_parsers) -> float:
+  """Parser-scaled DI_pedalPos as 0–100%. SNA / missing → 0."""
+  try:
+    from opendbc.car import Bus
+    from opendbc.car.tesla.preap.carstate import di_pedal_pos_percent
+    pos = can_parsers[Bus.pt].vl["DI_torque1"].get("DI_pedalPos", 0)
+    return di_pedal_pos_percent(pos)
+  except Exception:
+    return 0.0
+
+
 def _peek_gas_pressed(cs, can_parsers) -> bool:
   """Light throttle: interceptor (prior frame) or DI_pedalPos this frame."""
   if bool(getattr(getattr(cs, "pedal", None), "gas_pressed", False)):
     return True
-  try:
-    from opendbc.car import Bus
-    from opendbc.car.tesla.preap.nap_conf import PEDAL_DI_PRESSED
-    pos = can_parsers[Bus.pt].vl["DI_torque1"].get("DI_pedalPos", 0)
-    if float(pos or 0) > PEDAL_DI_PRESSED:
-      return True
-  except Exception:
-    pass
-  return False
+  return _peek_di_pedal_percent(can_parsers) > PEDAL_DI_PRESSED_STOCK
 
 
 def _peek_standstill(can_parsers) -> bool:
@@ -489,6 +492,11 @@ def _process_buttons(self, cruise_buttons, prev_cruise_buttons, *args, **kwargs)
     cruise_buttons == CruiseButtons.MAIN
     and prev_cruise_buttons != CruiseButtons.MAIN
   )
+  # Tesla DI percent (not interceptor). Sticky interceptor rest-noise
+  # must not skip double-pull. A real press (DI > 2) on a rolling SET
+  # is engage-while-gas: arm long on this pull, acquire on lift.
+  di_pedal_pct = float(getattr(self, "_nap_di_pedal_pos", 0.0) or 0.0)
+  di_gas = di_pedal_pct > PEDAL_DI_PRESSED_STOCK
   window_ms = float(getattr(self, "double_pull_window_ms", 0) or 0)
   dt_ms = curr_time_ms - float(getattr(self, "stalk_pull_time_ms", 0) or 0)
   in_double_window = (
@@ -535,8 +543,22 @@ def _process_buttons(self, cruise_buttons, prev_cruise_buttons, *args, **kwargs)
   swallow_set = in_session_long_set and not in_double_window
   take_now_in_session = in_session_long_set and in_double_window
 
+  # Foot on gas + SET (from disengaged or lat-only): do not leave
+  # lat-only after cancelling Tesla CC — that is regen-only until a
+  # second pull. Arm long now; lift still ACQUIREs (A+B / A3).
+  # Foot off keeps stock double-pull (first SET stays lat-only).
+  engage_while_gas = (
+    set_edge
+    and di_gas
+    and not at_stop
+    and bool(use_pedal)
+    and not resume
+    and not bool(self.enableLongControl)
+    and not _should_drop_long_for_turn(self)
+  )
+
   saved_double = self.enableDoublePull
-  if resume:
+  if resume or engage_while_gas:
     self.enableDoublePull = False
   orig_buttons = prev_cruise_buttons if (swallow_set or swallow_standstill_set) else cruise_buttons
   was_long = bool(self.enableLongControl)
@@ -637,6 +659,7 @@ def _update_preap(cs, can_parsers):
     engagement._nap_steering_pressed = pressed or disengage
     engagement._nap_stalk_state = stalk
     engagement._nap_v_ego = v_ego
+    engagement._nap_di_pedal_pos = _peek_di_pedal_percent(can_parsers)
     engagement._nap_gas_pressed = _peek_gas_pressed(cs, can_parsers)
     engagement._nap_standstill = _peek_standstill(can_parsers)
     _hold_for(engagement).update(

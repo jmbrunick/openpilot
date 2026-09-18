@@ -19,13 +19,13 @@ MAP_SPEED_ACCEL_LABELS = [str(i) for i in MAP_SPEED_ACCEL]
 MAP_SPEED_ACCEL_DEFAULT = 5
 MAP_SPEED_ACCEL_DESCRIPTION = (
   "MAX climb / open-road feel (1 lazy → 10 quicker). "
-  + "Coming up behind a lead uses the Accel 1–10 close cap "
-  + "(0.20 / 0.30 / 0.50 m/s²), not a full-gap punch. "
+  + "Coming up behind a lead uses the same Accel 1–10 gradient "
+  + "(including last-mph taper), not a hotter catch-up punch. "
   + "Brake to a lower MAX stays Accel 5. Lead still owns follow."
 )
 ADAPTIVE_ACCEL_DESCRIPTION = (
   "Softer accel near a lead so you don't overshoot. "
-  + "Open road uses Acceleration 1–10. Coming up behind a lead uses the close cap, not a full-gap punch."
+  + "Open road uses Acceleration 1–10. Coming up behind a lead uses that same Accel gradient, not a full-gap punch."
 )
 MAP_SPEED_MODE_DESCRIPTION = (
   "OSM posted limit for HUD MAX. Off: no change. Display: LIMIT sign only. "
@@ -43,6 +43,19 @@ MAP_SPEED_LOOKAHEAD_DESCRIPTION = (
 FOLLOW_DISTANCE_VALUES = list(range(1, 8))
 FOLLOW_DISTANCE_LABELS = [str(i) for i in FOLLOW_DISTANCE_VALUES]
 FOLLOW_DISTANCE_DEFAULT = 4
+NAP_FOLLOW_DISTANCE_CITY = "NAPFollowDistanceCity"
+NAP_FOLLOW_DISTANCE_HWY = "NAPFollowDistanceHwy"
+FOLLOW_DISTANCE_CITY_DESCRIPTION = (
+  "City follow (<~50 mph). 1 closest, 7 farthest. Below ~50 behind a "
+  + "lead, gap opens gradually to this (ego a bit slower than the lead), "
+  + "then holds. Not a step at 50. A stalk tip behind a lead steps the "
+  + "active (city or highway) 1–7. Not Hypermile."
+)
+FOLLOW_DISTANCE_HWY_DESCRIPTION = (
+  "Highway follow (>~50 mph). 1 closest, 7 farthest. Rising above ~50 "
+  + "behind a lead, gap creeps toward this. Hysteresis around 50. Same "
+  + "stalk tip as city. Not Hypermile."
+)
 NAP_ONE_PEDAL_LONG = "NAPOnePedalLong"
 ONE_PEDAL_LONG_DESCRIPTION = (
   "Default Off. Pedal mode only. With OP long already on, pressing the "
@@ -57,9 +70,11 @@ ONE_PEDAL_LONG_DESCRIPTION = (
   + "immediately to stock Tesla regen."
 )
 FOLLOW_DISTANCE_DESCRIPTION = (
-  "1 closest, 7 farthest. A slower car ahead eases off farther back "
-  + "(more distance, not a harder brake). Behind a lead, a stalk tip "
-  + "steps this 1–7; a full press still steps MAX. No lead: both still adjust MAX."
+  "1 closest, 7 farthest. City and highway are separate sliders "
+  + "(<~50 / >~50, fluid blend, not a step). A slower car ahead eases "
+  + "off farther back (more distance, not a harder brake). Behind a lead, "
+  + "a stalk tip steps the active 1–7; a full press still steps MAX. "
+  + "No lead: both still adjust MAX."
 )
 
 NAP_DRIVER_LAT_HANDOFF = "NAPDriverLatHandoff"

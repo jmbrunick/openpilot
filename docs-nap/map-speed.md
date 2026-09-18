@@ -128,15 +128,15 @@ When the upcoming drop is inside that window, MAX interpolates from the current 
 
 **HUD current speed** (top-middle on the 3X) is wheel/ESP `vEgo` only. `vEgoCluster` is Tesla `DI_digitalSpeed`, which pre-AP also uses as `cruiseState.speed`. Map-speed writes MAX into `vCruise` / `pedal_speed` / `cruiseState.speed` (90 kph = **56 mph**). LIMIT/MAX may show the map limit; the live number must not.
 
-**Acceleration** (Settings → NAP → Driving Mannerisms) scales **Follow climb** (MAX rising, no overriding lead) **and** the lead-close +a cap when coming up behind a radar lead. Brake uses Accel 5 (`map_brake_a_ms2` / `map_track_decel`). Adaptive Accel no longer uses the full cruise profile to punch a large follow gap.
+**Acceleration** (Settings → NAP → Driving Mannerisms) scales **Follow climb** (MAX rising, no overriding lead) **and** lead gap-close +a. Same Accel 1–10 envelope, including last-mph taper (Accel 1 baby-steps ~5 mph out; Accel 7–10 stay brisk). Brake uses Accel 5 (`map_brake_a_ms2` / `map_track_decel`). Adaptive Accel no longer uses the full cruise profile to punch a large follow gap.
 
-| Accel | Factor | MAX climb `a` (Normal) | Lead-close +a | Used for |
-|---|---|---|---|---|
-| 1 | 0.45 | **0.36 m/s²** | **0.20 m/s²** | climb + catch-up (gentlest) |
-| **5** | 1.00 | **0.80 m/s²** | **0.30 m/s²** | climb, catch-up, *and* all map braking |
-| 10 | 2.00 | **1.60 m/s²** | **0.50 m/s²** | climb (quickest, clamped); catch-up still capped |
+| Accel | Factor | MAX climb / lead-close `a` (Normal) | Used for |
+|---|---|---|---|
+| 1 | 0.45 | **0.36 m/s²** | climb + catch-up (gentlest; last ~5 mph is a baby-step) |
+| **5** | 1.00 | **0.80 m/s²** | climb, catch-up, *and* all map braking |
+| 10 | 2.00 | **1.60 m/s²** | climb + catch-up (quickest, clamped); Accel 7–10 stay brisk to the target |
 
-MAX-rise `a = clamp(0.30, 1.60, a_lookahead × factor)`. Lead-close `a = clamp(0.20, 0.50, 0.30 × factor)` inside 140 m. Changing Accel 1 vs 10 must not change brake feel or MPC danger. A higher limit ahead may still be published as `nextSpeedLimit`; Cap/Follow ignore it until `speedLimit` itself is the higher value.
+MAX-rise and lead-close `a = clamp(0.30, 1.60, a_lookahead × factor)` inside ~200 m (Bosch). Changing Accel 1 vs 10 must not change brake feel. Rapid / FCW / a real stop still own MPC danger; non-rapid mild closes are floored at overlay MILD. A higher limit ahead may still be published as `nextSpeedLimit`; Cap/Follow ignore it until `speedLimit` itself is the higher value.
 
 ## How to test
 

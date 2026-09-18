@@ -331,6 +331,8 @@ def test_card_and_hud_wire_stock_follow_only():
   assert "FollowStalkGesture" in card
   assert "_preap_cruise_detent" in card
   assert "persist_follow_distance" in card
+  assert "v_cruise=v_cruise_ms" in card
+  assert "has_lead=has_lead" in card
   assert "_write_preap_pedal_speed(CS, undo)" in card
   assert "hypermile" not in card.lower()
   assert "NAPHypermile" not in card
@@ -357,14 +359,15 @@ def test_card_and_hud_wire_stock_follow_only():
   assert "NAPFollowDistance" in helper or "PARAM_FOLLOW" in helper
   assert "NAPHypermile" not in helper
   assert "PARAM_HYPERMILE" not in helper
-  assert "FOLLOW_DISTANCE_DESCRIPTION" in manner
-  assert "steps this 1–7" in content
+  assert "FOLLOW_DISTANCE_DESCRIPTION" in content
+  assert "steps the active 1–7" in content
   assert "No lead:" in content and "MAX" in content
   assert "1 mph" in helper or "tip" in helper
   assert "5 mph" in helper or "hold" in helper
   assert "1 mph" in docs and "5 mph" in docs
   assert "self.refresh()" in manner
-  assert "self._follow_distance._load_value()" in manner_mici
+  assert "self._follow_distance_city._load_value()" in manner_mici
+  assert "self._follow_distance_hwy._load_value()" in manner_mici
   assert "def show_event" in manner_mici
   assert "hypermile" not in manner.lower()
   assert "Hypermile" not in manner_mici

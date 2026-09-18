@@ -441,7 +441,20 @@ class Car:
     )
     routed = commit or self._follow_gesture.is_pending or undo is not None
     if commit and closer is not None and (time.monotonic() - self._follow_stalk_mono) >= STALK_COOLDOWN_S:
-      persist_follow_distance(self.params, bool(closer))
+      v_cruise_ms = None
+      try:
+        v_kph = float(getattr(CS, "vCruise", V_CRUISE_UNSET))
+        if v_kph != V_CRUISE_UNSET:
+          v_cruise_ms = v_kph * CV.KPH_TO_MS
+      except (TypeError, ValueError):
+        v_cruise_ms = None
+      persist_follow_distance(
+        self.params, bool(closer),
+        v_ego=getattr(CS, "vEgo", None),
+        v_cruise=v_cruise_ms,
+        has_lead=has_lead,
+        engaged=soft_long,
+      )
       self._follow_stalk_mono = time.monotonic()
     if undo is not None and soft_long:
       self._write_preap_pedal_speed(CS, undo)
