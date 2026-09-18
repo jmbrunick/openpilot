@@ -183,6 +183,10 @@ def test_one_pedal_wires_carstate_after_interceptor_gas():
   assert "_preap_one_pedal_long_was_on" in body
   assert "_one_pedal_pause_latched" in body
   assert "_one_pedal_had_long_at_rest" in body
+  assert "_one_pedal_gas_falling_edge" in body
+  assert "_one_pedal_armed_with_gas" in body
+  assert "interceptor_di" in body
+  assert "phantom_rise" in body
   assert "latch_one_pedal_gas_takeover" in body
   assert "hard_cancel_session(" not in body
   assert "cruiseEnabled = False" not in body
@@ -191,13 +195,15 @@ def test_one_pedal_wires_carstate_after_interceptor_gas():
   assert 'BOOL, "0"' in next(ln for ln in keys.splitlines() if '"NAPOnePedalLong"' in ln)
   overlay = (root / "selfdrive/car/tesla/preap_blinker_lat_pause.py").read_text()
   assert "one_pedal_gas_for_pause(" in overlay
+  assert "maybe_one_pedal_overlay_kick(" in overlay
   assert "ONE_PEDAL_GAS_DI_PRESSED = 1.0" in overlay
   assert "PEDAL_DI_PRESSED_STOCK = 2.0" in overlay
   assert "interceptor_value" in overlay
-  assert "maybe_one_pedal_gas_kick(True, True)" in overlay
-  assert "engage_while_gas" in overlay
-  assert "_publish_analog_gas" in cs or "gasDEPRECATED" in cs
-  assert "di_pedal_pos_percent" in cs
+  assert "_one_pedal_gas_falling_edge" in overlay
+  nap_conf = (root / "opendbc_repo/opendbc/car/tesla/preap/nap_conf.py").read_text()
+  assert "ONE_PEDAL_GAS_DI_PRESSED = 1.0" in nap_conf
+  carstate = (root / "opendbc_repo/opendbc/car/tesla/preap/carstate.py").read_text()
+  assert "interceptor_di=" in carstate or "interceptor_di =" in carstate
 
 
 def test_one_pedal_light_tip_in_latches_pause():
@@ -387,7 +393,7 @@ def test_gas_then_lift_stays_paused_until_set(monkeypatch):
   assert cs.engagement._one_pedal_pause_latched
 
   cs.out.gasPressed = False
-  for frame in range(6, 20, 2):
+  for i, frame in enumerate(range(6, 20, 2)):
     cs.engagement.maybe_one_pedal_gas_kick(False, True)
     # Stock gasPressedOverride ends on lift: CC.longActive goes True
     # while the session stays up. Must not ACQUIRE or flip long back.
@@ -452,20 +458,25 @@ def test_controller_latches_when_engagement_kick_misses(monkeypatch):
   assert cs.pedal_authority_action == int(PedalCommandAction.ACQUIRE)
 
 
-def _on_car_cycle(controller, cc, cs, tesla_can, frame, *, gas, set_edge=False, t_ms=4000, v_ego=22.0):
-  """Carstate then carcontroller: process_buttons, kick, then long update."""
+def _on_car_cycle(controller, cc, cs, tesla_can, frame, *, gas, set_edge=False, t_ms=4000, v_ego=22.0,
+                  interceptor_di=None):
+  """Carstate then carcontroller: process_buttons, kick, extra DI>1, then long update."""
   from opendbc.car.tesla.values import CruiseButtons
+  from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import maybe_one_pedal_overlay_kick
 
   cs.out.gasPressed = gas
   cs.engagement._nap_gas_pressed = gas
-  cs.engagement._nap_di_pedal_pos = 20.0 if gas else 0.0
+  if interceptor_di is None:
+    interceptor_di = 8.0 if gas else 0.0
+  cs.pedal_interceptor_value = interceptor_di
   buttons = CruiseButtons.MAIN if set_edge else 0
   cs.engagement.process_buttons(
     cruise_buttons=buttons, prev_cruise_buttons=0,
     curr_time_ms=t_ms, v_ego=v_ego, speed_units="KPH",
     use_pedal=True, pedal_long_allowed=True,
     long_control_allowed=True, real_brake_pressed=False)
-  cs.engagement.maybe_one_pedal_gas_kick(gas, True)
+  cs.engagement.maybe_one_pedal_gas_kick(gas, True, interceptor_di=interceptor_di)
+  maybe_one_pedal_overlay_kick(cs.engagement, interceptor_di)
   cs.enableLongControl = cs.engagement.enableLongControl
   cs.cruiseEnabled = cs.engagement.cruiseEnabled
   cs.enableJustCC = cs.engagement.enableJustCC
@@ -546,46 +557,131 @@ def test_one_pedal_set_after_lift_with_overlay_double_pull_acquires(monkeypatch)
   assert cs.pedal_authority_action == int(PedalCommandAction.ACQUIRE)
 
 
-def test_set_while_di_gas_from_disengaged_arms_then_lift_acquires(monkeypatch):
-  """Double-pull On + foot on gas + one SET: long pending; lift ACQUIREs.
-
-  Must not one-pedal-pause. Gas after long is already on still pauses.
-  """
+def _double_set_while_gas(controller, cc, cs, tesla_can, *, v_ego=22.8):
+  """Fully disengaged → double SET with foot on gas (One-Pedal On)."""
   from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import install_blinker_lat_pause
 
   install_blinker_lat_pause()
+  _on_car_cycle(controller, cc, cs, tesla_can, 0, gas=True, interceptor_di=8.0,
+                t_ms=1000, v_ego=v_ego)
+  assert not cs.engagement.cruiseEnabled
+  _on_car_cycle(controller, cc, cs, tesla_can, 2, gas=True, set_edge=True,
+                interceptor_di=8.0, t_ms=2000, v_ego=v_ego)
+  assert cs.engagement.cruiseEnabled
+  assert not cs.engagement.enableLongControl
+  _on_car_cycle(controller, cc, cs, tesla_can, 4, gas=True, set_edge=True,
+                interceptor_di=6.0, t_ms=2400, v_ego=v_ego)
+  assert cs.engagement.enableLongControl
+  assert not cs.engagement._one_pedal_pause_latched
+  return cs.engagement.pedal_speed_kph
+
+
+def test_dc_131614_lift_through_di1_acquires_same_frame(monkeypatch):
+  """Route 1c95345a3286a5db|000000dc--9b28358130 ~13:16:14 / 13:15:30.
+
+  Double-SET while on gas, then lift with no lead. Stock gasPressed falls
+  while interceptor DI is still > 1. Must keep enableLongControl, not latch
+  One-Pedal pause, and ACQUIRE pedal authority on that falling edge.
+  """
+  from opendbc.car.tesla.preap.carcontroller import ENGAGE_GRACE_FRAMES
+
   controller, cc, cs, tesla_can = controller_env(
     monkeypatch, one_pedal_long=True, double_pull=True)
   monkeypatch.setattr(
     'opendbc.car.tesla.preap.carcontroller.get_preap_accel_limits',
     lambda _v_ego: (-1.5, 0.8),
   )
-  assert not cs.engagement.cruiseEnabled
-  assert not cs.engagement.enableLongControl
-
-  armed = _on_car_cycle(
-    controller, cc, cs, tesla_can, 0, gas=True, set_edge=True, t_ms=1000, v_ego=8.0)
-  assert cs.engagement.cruiseEnabled
-  assert cs.engagement.enableLongControl
-  assert not getattr(cs.engagement, "_one_pedal_pause_latched", False)
-  if armed:
-    assert not _decode_pedal_command(armed[0]).enabled
-
-  held = _on_car_cycle(controller, cc, cs, tesla_can, 2, gas=True, t_ms=1100, v_ego=8.0)
-  assert cs.engagement.enableLongControl
-  assert not getattr(cs.engagement, "_one_pedal_pause_latched", False)
-  if held:
-    assert not _decode_pedal_command(held[0]).enabled
+  held = _double_set_while_gas(controller, cc, cs, tesla_can, v_ego=22.8)
+  assert held > 0.0
+  cs.out.aEgo = 0.47
+  cc.actuators.accel = 0.47
 
   acquire = _on_car_cycle(
-    controller, cc, cs, tesla_can, 4, gas=False, t_ms=1200, v_ego=8.0)
+    controller, cc, cs, tesla_can, 6, gas=False, interceptor_di=1.5,
+    t_ms=3000, v_ego=22.8)
   assert cs.engagement.enableLongControl
-  assert not getattr(cs.engagement, "_one_pedal_pause_latched", False)
+  assert cs.enableLongControl
+  assert not cs.engagement._one_pedal_pause_latched
+  assert abs(cs.engagement.pedal_speed_kph - held) < 1e-6
+  assert _decode_pedal_command(acquire[0]).enabled
+  assert cs.pedal_authority_action == int(PedalCommandAction.ACQUIRE)
+  assert (6 - controller.preap_long_engage_frame) >= ENGAGE_GRACE_FRAMES
+
+  linger = _on_car_cycle(
+    controller, cc, cs, tesla_can, 8, gas=False, interceptor_di=1.2,
+    t_ms=3100, v_ego=22.5)
+  assert cs.engagement.enableLongControl
+  assert not cs.engagement._one_pedal_pause_latched
+  if linger:
+    assert _decode_pedal_command(linger[0]).enabled
+
+
+def test_dc_131530_no_pedal_authority_gap_for_7s(monkeypatch):
+  """dc 13:15:30: after lift, pedL must rise immediately — not a 7.5 s regen hole."""
+  controller, cc, cs, tesla_can = controller_env(
+    monkeypatch, one_pedal_long=True, double_pull=True)
+  monkeypatch.setattr(
+    'opendbc.car.tesla.preap.carcontroller.get_preap_accel_limits',
+    lambda _v_ego: (-1.5, 0.8),
+  )
+  held = _double_set_while_gas(controller, cc, cs, tesla_can, v_ego=24.5)
+  cs.out.aEgo = 0.40
+  cc.actuators.accel = 0.47
+  acquire = _on_car_cycle(
+    controller, cc, cs, tesla_can, 6, gas=False, interceptor_di=1.5,
+    t_ms=3000, v_ego=24.5)
+  assert cs.enableLongControl
+  assert not cs.engagement._one_pedal_pause_latched
+  assert _decode_pedal_command(acquire[0]).enabled
+  assert cs.pedal_authority_action == int(PedalCommandAction.ACQUIRE)
+  assert abs(cs.engagement.pedal_speed_kph - held) < 1e-6
+
+  for i, frame in enumerate(range(8, 8 + 376, 2)):
+    di = 1.3 if i < 8 else 0.0
+    cs.out.aEgo = 0.2
+    out = _on_car_cycle(
+      controller, cc, cs, tesla_can, frame, gas=False, interceptor_di=di,
+      t_ms=3000 + (frame - 6) * 10, v_ego=24.5 - 0.01 * i)
+    assert cs.engagement.enableLongControl, frame
+    assert cs.enableLongControl, frame
+    assert not cs.engagement._one_pedal_pause_latched, frame
+    assert cs.engagement.pedal_speed_kph > 0.0
+    if out:
+      assert _decode_pedal_command(out[0]).enabled
+
+
+def test_dc_131719_clean_lift_to_zero_acquires(monkeypatch):
+  """Same route ~13:17:19: lift drops through DI 1 in one sample; ACQUIRE."""
+  controller, cc, cs, tesla_can = controller_env(
+    monkeypatch, one_pedal_long=True, double_pull=True)
+  monkeypatch.setattr(
+    'opendbc.car.tesla.preap.carcontroller.get_preap_accel_limits',
+    lambda _v_ego: (-1.5, 0.8),
+  )
+  _double_set_while_gas(controller, cc, cs, tesla_can, v_ego=22.8)
+  cs.out.aEgo = 0.40
+  cc.actuators.accel = 0.47
+  acquire = _on_car_cycle(
+    controller, cc, cs, tesla_can, 6, gas=False, interceptor_di=0.0,
+    t_ms=3000, v_ego=22.8)
+  assert cs.engagement.enableLongControl
+  assert not cs.engagement._one_pedal_pause_latched
   assert _decode_pedal_command(acquire[0]).enabled
   assert cs.pedal_authority_action == int(PedalCommandAction.ACQUIRE)
 
-  _kick_long_on_gas(cc, cs)
-  pause = controller.update(cc, cs, frame=6, tesla_can=tesla_can, can_bus_party=0)
-  assert not cs.enableLongControl
-  assert cs.engagement._one_pedal_pause_latched
-  assert not _decode_pedal_command(pause[0]).enabled
+
+def test_overlay_helper_skips_extra_kick_on_stock_falling_edge():
+  from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import (
+    maybe_one_pedal_overlay_kick,
+  )
+  from opendbc.car.tesla.preap.engagement import PreAPEngagement
+
+  eng = PreAPEngagement(double_pull_enabled=True, double_pull_window_ms=400)
+  eng.cruiseEnabled = True
+  eng.enableLongControl = True
+  assert not eng.maybe_one_pedal_gas_kick(True, True)
+  assert not eng.maybe_one_pedal_gas_kick(False, True)
+  assert eng._one_pedal_gas_falling_edge
+  assert not maybe_one_pedal_overlay_kick(eng, 1.5)
+  assert eng.enableLongControl
+  assert not eng._one_pedal_pause_latched
