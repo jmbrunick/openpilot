@@ -18,7 +18,9 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_APPROACH_RAPID_CONFIRM_N,
   LEAD_CLOSE_A_MAX_MS2,
   LEAD_CLOSE_A_MIN_MS2,
+  LEAD_CLOSE_HOLD_S,
   LEAD_CLOSE_MAX_M,
+  LEAD_CLOSING_MATCH_GAIN,
   lead_close_accel_ms2,
 )
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
@@ -646,9 +648,9 @@ def test_planner_eases_for_slower_lead_before_mpc_and_lead_can_brake_harder():
   lead.vLead = v_lead
   for _ in range(16):
     planner.update(inputs)
-  # 9.8 mph close is mild: light regen, not the 0.55 bite.
-  assert planner.output_a_target == pytest.approx(-LEAD_APPROACH_MILD_A_MS2, abs=0.08)
-  assert planner.output_a_target > -LEAD_APPROACH_A_MS2 + 0.15
+  # Closing ≥ 1.5: never rematch +a; match-speed −a unpins overlay-MILD −0.22.
+  assert planner.output_a_target <= 0.0
+  assert planner.output_a_target == pytest.approx(-LEAD_CLOSING_MATCH_GAIN * v_rel, abs=0.08)
 
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
   planner.update(inputs)
@@ -672,7 +674,7 @@ def test_planner_eases_for_slower_lead_before_mpc_and_lead_can_brake_harder():
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=0.0)
   planner.update(inputs)
   assert planner.output_a_target < 0.0
-  assert planner.output_a_target >= -LEAD_APPROACH_A_MS2 - 0.08
+  assert planner.output_a_target <= -LEAD_CLOSING_MATCH_GAIN * v_rel + 0.08
 
   # Past usable Bosch: no extra crawl.
   lead.dRel = LEAD_APPROACH_MAX_START_M + 15.0
@@ -681,10 +683,39 @@ def test_planner_eases_for_slower_lead_before_mpc_and_lead_can_brake_harder():
   assert planner.output_a_target == pytest.approx(0.0, abs=0.08)
 
 
-def test_planner_far_mild_close_keeps_cruise_plus_a():
-  """First far mild lock must not steal cruise +a (sequence-specific, not dead long)."""
+def test_planner_far_closing_lead_blocks_rematch_plus_a():
+  """First far closing lock must not rematch cruise +a (d7 20:33)."""
   v_ego = 25.0
-  v_lead = v_ego - 1.6
+  v_rel = 1.6
+  v_lead = v_ego - v_rel
+  params = _MutablePlannerParams(nap_follow_dist=4, map_speed_accel=5)
+  planner = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
+  planner._map_speed_accel = 5
+  a_cap = lead_close_accel_ms2(5)
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=1.5)
+  planner.prev_accel_clip = [-1.2, a_cap]
+  inputs = _make_planner_inputs(v_ego)
+  lead = inputs["radarState"].leadOne
+  lead.status = True
+  lead.dRel = 160.0
+  lead.vLead = v_lead
+  lead.aLeadK = 0.0
+  lead.modelProb = 1.0
+  lead.radar = True
+  planner._lead_approach_active = False
+  planner._lead_approach_a = None
+  planner.update(inputs)
+  assert planner.output_a_target <= 0.0
+  for _ in range(15):
+    planner.update(inputs)
+  assert planner.output_a_target <= 0.0
+  assert planner.output_a_target == pytest.approx(-LEAD_CLOSING_MATCH_GAIN * v_rel, abs=0.08)
+
+
+def test_planner_far_same_speed_lead_may_keep_catchup_plus_a():
+  """Same-speed far Bosch lead may still close Follow Distance at Accel 1–10."""
+  v_ego = 25.0
+  v_lead = v_ego
   params = _MutablePlannerParams(nap_follow_dist=4, map_speed_accel=5)
   planner = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
   planner._map_speed_accel = 5
@@ -700,10 +731,7 @@ def test_planner_far_mild_close_keeps_cruise_plus_a():
   lead.radar = True
   planner._lead_approach_active = False
   planner._lead_approach_a = None
-  planner.update(inputs)
-  assert planner.output_a_target >= 0.0
-  assert planner.output_a_target > 0.20
-  for _ in range(15):
+  for _ in range(16):
     planner.update(inputs)
   assert planner.output_a_target > 0.20
   assert planner.output_a_target == pytest.approx(a_cap, abs=0.08)
@@ -789,7 +817,7 @@ def test_planner_caps_lead_close_accel_at_min_accel_and_keeps_hard_brake():
 
 def test_planner_lead_close_accel_scales_with_accel_personality():
   v_ego = 25.0
-  v_lead = 24.0
+  v_lead = 24.6  # 0.4 m/s — below rematch-block, still a catch-up +a case
   t_follow = get_T_FOLLOW(nap_follow_dist=4)
   d_rel = min(LEAD_CLOSE_MAX_M - 1.0, t_follow * v_lead + STOP_DISTANCE_M + 35.0)
 
@@ -815,3 +843,76 @@ def test_planner_lead_close_accel_scales_with_accel_personality():
   assert a10 == pytest.approx(min(LEAD_CLOSE_A_MAX_MS2, cruise_limit), abs=0.06)
   assert a1 < a10
   assert lead_close_accel_ms2(1) < lead_close_accel_ms2(10)
+
+
+def test_planner_lead_flicker_hold_blocks_rematch_plus_a():
+  """leadOne flicker must not restore cruise +a while the last lead was closing."""
+  v_ego = 27.5
+  v_lead = 24.5
+  v_rel = v_ego - v_lead
+  assert v_rel >= 1.5
+  params = _MutablePlannerParams(nap_follow_dist=2, map_speed_accel=5)
+  planner = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
+  planner._map_speed_accel = 5
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=0.80)
+  planner.prev_accel_clip = [-1.2, 0.80]
+  inputs = _make_planner_inputs(v_ego)
+  lead = inputs["radarState"].leadOne
+  lead.status = True
+  lead.dRel = 100.0
+  lead.vLead = v_lead
+  lead.aLeadK = -0.20
+  lead.modelProb = 0.6
+  lead.radar = True
+  for _ in range(6):
+    planner.update(inputs)
+  assert planner.output_a_target <= 0.0
+  assert planner._lead_close_hold_owned
+
+  publisher = _CapturingPubMaster()
+  planner.publish(inputs, publisher)
+  assert publisher.message.longitudinalPlan.hasLead
+
+  lead.status = False
+  for _ in range(int(LEAD_CLOSE_HOLD_S / 0.05) - 1):
+    planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=0.80)
+    planner.update(inputs)
+    assert planner.output_a_target <= 0.0
+    assert planner._lead_close_hold_d is not None
+  planner.publish(inputs, publisher)
+  assert publisher.message.longitudinalPlan.hasLead
+
+
+def test_planner_far_radar_lead_eases_without_model_prob():
+  """Far Bosch-associated lead is owned immediately; vision-only far flicker is not."""
+  v_ego = 28.0
+  v_lead = 24.5
+  params = _MutablePlannerParams(nap_follow_dist=2, map_speed_accel=5)
+  planner = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=0.80)
+  planner.prev_accel_clip = [-1.2, 0.80]
+  inputs = _make_planner_inputs(v_ego)
+  lead = inputs["radarState"].leadOne
+  lead.status = True
+  lead.dRel = 170.0
+  lead.vLead = v_lead
+  lead.aLeadK = -0.15
+  lead.modelProb = 0.15
+  lead.radar = True
+  for _ in range(8):
+    planner.update(inputs)
+  assert planner.output_a_target <= 0.0
+
+  lead.radar = False
+  lead.modelProb = 0.9
+  planner._lead_close_hold_d = None
+  planner._lead_close_hold_v = None
+  planner._lead_close_hold_a = None
+  planner._lead_close_hold_owned = False
+  planner._lead_approach_active = False
+  planner._lead_approach_a = None
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=0.80)
+  planner.prev_accel_clip = [-1.2, 0.80]
+  for _ in range(8):
+    planner.update(inputs)
+  assert planner.output_a_target > 0.20
