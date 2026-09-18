@@ -197,8 +197,12 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Beam: 0/1 leave stalk, 2=high (low nibble 4).
     // DAS wiper/beam fields stay 0. No auto headlights.
     {"NAPWiperSpeed", {PERSISTENT, INT, "0"}},
-    // Live Auto-wiper camera latch (swaglog + this param, ~1 Hz). Read-only.
-    {"NAPWiperRainStatus", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, STRING}},
+    // Live Auto-wiper status (~1 Hz Params.put). STRING so unknown-key put
+    // cannot fail silently. No CLEAR_ON_ONROAD: loggerd embeds Params in qlog
+    // InitData at route start (same snapshot copied into each segment), so an
+    // onroad wipe would hide this from Connect qlog digs. Last 1 Hz line must
+    // survive into the next snapshot. Still cleared on manager start.
+    {"NAPWiperRainStatus", {CLEAR_ON_MANAGER_START, STRING}},
     {"NAPHighLowBeam", {PERSISTENT, INT, "0"}},
     // On-drive MUTCD speed-sign JSONL logger. Default off. Log-only: no sqlite,
     // no vCruise / HUD MAX, no osm.org. Process: speedsignd.
