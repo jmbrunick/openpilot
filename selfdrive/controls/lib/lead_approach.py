@@ -263,10 +263,13 @@ def lead_settled_rematch_a_ms2(a, v_rel, slack) -> float:
   v = 0.0 if v_rel is None else float(v_rel)
   opening = v <= 0.0
   if s is None or s < LEAD_HUNT_SLACK_M:
-    # Comfortable opening (the 49→59 chatter band) stays 0. At or inside
-    # Follow Distance, trickle so ego does not sag below the lead.
+    # Comfortable opening (the 49→59 chatter band) stays 0. Still inside
+    # Follow Distance is a too-close recovery, not rematch. At the gap
+    # with speeds matched, allow Accel so grade / cruise can hold speed.
     if opening and s is not None and (s > LEAD_SETTLE_FINISH_SLACK_M or s < 0.0):
       return 0.0
+    if s is not None and s <= 0.5 and abs(v) < LEAD_SETTLE_VREL_MS:
+      return a
     return min(a, LEAD_CLOSE_OPENING_A_MS2)
   if opening and s < LEAD_REMATCH_PULL_SLACK_M:
     return 0.0
@@ -290,11 +293,15 @@ def lead_close_accel_ms2(accel_level: int = 5, v_rel=None, slack=None,
   if a_personality is not None:
     a = min(a, max(0.0, float(a_personality)))
   if v_rel is not None and float(v_rel) >= LEAD_CLOSING_REMATCH_BLOCK_MS:
-    # Last meters of Follow Distance may still trickle while closing 1.0–1.5.
-    # ≳ 1.5 match-speed still owns; #190 is the large-gap block.
-    if (slack is None or float(slack) > LEAD_SETTLE_FINISH_SLACK_M
-        or float(v_rel) >= LEAD_CLOSING_MATCH_MS):
-      return 0.0
+    # Large-gap catch-up still uses Accel (#187) even while closing ≳ 1.0.
+    # #190 is near-gap rematch-block; last meters may trickle; ≳ 1.5 owns.
+    large_unsettled = (
+      (not settled) and slack is not None and float(slack) > LEAD_CLOSE_REMATCH_SLACK_M
+    )
+    if not large_unsettled:
+      if (slack is None or float(slack) > LEAD_SETTLE_FINISH_SLACK_M
+          or float(v_rel) >= LEAD_CLOSING_MATCH_MS):
+        return 0.0
   if settled:
     return lead_settled_rematch_a_ms2(a, v_rel, slack)
   if slack is None or float(slack) > LEAD_CLOSE_REMATCH_SLACK_M:
@@ -460,11 +467,12 @@ def cap_closing_lead_accel(output_a, v_rel, a_lead=None, lead_present=False,
                            owned=False, slack=None, d_rel=None):
   """Never rematch +a into a closing / near-gap braking live or held lead.
 
-  Closing ≳ 1.0 m/s (or hold-owned) hard-caps a at 0. Closing ≳ 1.5
-  prefers match-speed −a (`aLead − k·v_rel`). aLead ≲ −0.2 matches
-  only near the follow gap — not when the gap is opening or slack is
-  large. Same-speed far catch-up +a is unchanged. Past Bosch, do not
-  apply match-speed −a (no extra crawl on a 215 m lock).
+  Closing ≳ 1.0 m/s (or hold-owned) hard-caps a at 0, except large-gap
+  catch-up (#187) while closing 1.0–1.5. Closing ≳ 1.5 prefers
+  match-speed −a (`aLead − k·v_rel`). aLead ≲ −0.2 matches only near
+  the follow gap — not when the gap is opening or slack is large.
+  Same-speed far catch-up +a is unchanged. Past Bosch, do not apply
+  match-speed −a (no extra crawl on a 215 m lock).
   """
   if output_a is None or not (lead_present or owned):
     return output_a
@@ -474,7 +482,8 @@ def cap_closing_lead_accel(output_a, v_rel, a_lead=None, lead_present=False,
     return float(output_a)
   v = 0.0 if v_rel is None else float(v_rel)
   near_finish = slack is not None and 0.0 < float(slack) <= LEAD_SETTLE_FINISH_SLACK_M
-  if near_finish and (not owned) and v < LEAD_CLOSING_MATCH_MS:
+  large_gap = slack is not None and float(slack) > LEAD_CLOSE_REMATCH_SLACK_M
+  if (near_finish or large_gap) and (not owned) and v < LEAD_CLOSING_MATCH_MS:
     return float(output_a)
   a = min(float(output_a), 0.0)
   match_speed = owned or v >= LEAD_CLOSING_MATCH_MS or lead_alead_owns_match(
@@ -614,9 +623,9 @@ def apply_lead_approach_overlay(output_a, a_lead, nibble=LEAD_APPROACH_NIBBLE_MS
   Real ease (|a| ≥ nibble) and MPC 0 / −a still use min().
 
   Near the follow gap, a nibble min()s so we mesh into lead speed at the
-  set gap and release slew is not a regen→Accel punch. A far lock that
-  is already closing (≳ 1.0 m/s) always min()s — never keep rematch +a
-  into a shrinking gap. Same-speed far catch-up may still keep +a.
+  set gap and release slew is not a regen→Accel punch. Large-gap catch-up
+  closing 1.0–1.5 may still keep +a (#187). Match-speed ≳ 1.5 always
+  min()s — never keep rematch +a into a hard close.
   """
   if a_lead is None:
     return float(output_a)
@@ -624,7 +633,9 @@ def apply_lead_approach_overlay(output_a, a_lead, nibble=LEAD_APPROACH_NIBBLE_MS
   a = float(a_lead)
   if out <= 0.0 or a <= -float(nibble):
     return min(out, a)
-  if lead_is_closing(v_rel):
+  v = 0.0 if v_rel is None else float(v_rel)
+  large_gap = slack is not None and float(slack) > LEAD_CLOSE_REMATCH_SLACK_M
+  if lead_is_closing(v_rel) and not (large_gap and v < LEAD_CLOSING_MATCH_MS):
     return min(out, a)
   near = slack is not None and float(slack) <= LEAD_CLOSE_REMATCH_SLACK_M
   if near:
