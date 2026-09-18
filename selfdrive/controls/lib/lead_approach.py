@@ -23,8 +23,10 @@ closes at light regen (MILD 0.22). Rapid / dumping (high `v_rel`) still
 uses kinematics up to 0.55. Start early and light; do not delay ease
 (that forces a late bite). MPC / FCW win via min().
 
-A far/gentle nibble must not steal large-gap lead-close catch-up +a
-(cruise / MAX climb). Near the follow gap, a nibble min()s so we can
+A far/gentle nibble must not steal large-gap *same-speed* catch-up +a
+(cruise / MAX climb). A live or held lead that is already closing
+(≳ 1.0–1.5 m/s, or aLead clearly negative) never rematches +a — coast
+or match-speed −a only. Near the follow gap, a nibble min()s so we can
 mesh into lead speed at the set Follow Distance. Rematch after ease
 (v_rel flips / slack growing) trickles +a — do not slam regen → Accel.
 
@@ -70,15 +72,16 @@ LEAD_APPROACH_HEADSTART_S = 24.0
 LEAD_APPROACH_MAX_START_M = 200.0
 # Hold a few meters past the ceiling so a track at 199–201 m does not chatter.
 LEAD_APPROACH_MAX_HOLD_M = 8.0
-# Inside this, leadOne.status is enough. Beyond it, require radar + modelProb.
-# LeadData exposes those two; Track.cnt age is not published on Pre-AP.
+# Inside this, leadOne.status is enough. Beyond it, require radar
+# association so vision-only far flicker cannot own the plan. Radar
+# tracks do not wait on modelProb. LeadData has no track age on Pre-AP.
 LEAD_APPROACH_RELIABLE_M = 140.0
 LEAD_APPROACH_MODEL_PROB_MIN = 0.50  # radard association gate
 # Clearly closing: skip the need window and ease from first reliable track.
-# 2.5 m/s (~5.6 mph). 1.0 stole Accel-1 catch-up; 1.5 on a far first lock
-# stole cruise / MAX +a on first acquire (sequence-specific, then recovered).
-# 10 mph still skips need. Vision-only flicker does not skip need.
-LEAD_APPROACH_CLEAR_DV_MS = 2.5
+# 1.5 m/s — same as the rematch-block / floor-skip close gate — so a far
+# radar lock that is already closing starts ease immediately. 1.0 still
+# stays Accel-1 catch-up. Vision-only flicker does not skip need.
+LEAD_APPROACH_CLEAR_DV_MS = 1.5
 # Mild-close comfort ceiling. Kinematics used to hit 0.55 on a 3–10 mph
 # close right at the gap (hard let-off). Light regen / ease-off only.
 # Rapid (high closing rate) keeps the 0.55 path.
@@ -96,8 +99,14 @@ LEAD_APPROACH_RAPID_TTC_S = 8.0
 # floors, and at/below the town-entry log that pinned aTarget at −0.22
 # while closing rose 1.6→4.4 m/s under the 6 m/s rapid gate.
 LEAD_APPROACH_SOFT_LIMIT_CLOSE_MS = 1.5
-# Lead clearly braking. −0.3 is a real coast/brake, not aLeadK noise at 0.
-LEAD_APPROACH_SOFT_LIMIT_ALEAD_MS2 = -0.3
+# Lead clearly braking. −0.2 is a real coast/brake, not aLeadK noise at 0.
+LEAD_APPROACH_SOFT_LIMIT_ALEAD_MS2 = -0.2
+# Never rematch / cruise +a into a live or held closing gap. 1.0 m/s
+# (~2.2 mph) is above rematch-enter jitter; 1.5 is match-speed / ownership.
+LEAD_CLOSING_REMATCH_BLOCK_MS = 1.0
+LEAD_CLOSING_MATCH_MS = LEAD_APPROACH_SOFT_LIMIT_CLOSE_MS
+LEAD_CLOSING_ALEAD_MS2 = LEAD_APPROACH_SOFT_LIMIT_ALEAD_MS2
+LEAD_CLOSING_MATCH_GAIN = 0.25
 # Planner frames of high v_rel before the 0.55 path. One radar blip must
 # not fire hard regen; mild ease stays immediate. Count only in-window
 # closes (do not pre-arm from a far flicker). 4 × DT_MDL ≈ 0.20 s.
@@ -174,6 +183,8 @@ def lead_close_accel_ms2(accel_level: int = 5, v_rel=None, slack=None,
   a = map_accel_a_ms2(LOOKAHEAD_NORMAL, int(accel_level))
   if a_personality is not None:
     a = min(a, max(0.0, float(a_personality)))
+  if v_rel is not None and float(v_rel) >= LEAD_CLOSING_REMATCH_BLOCK_MS:
+    return 0.0
   if slack is None or float(slack) > LEAD_CLOSE_REMATCH_SLACK_M:
     return a
   if v_rel is not None and float(v_rel) <= 0.0:
@@ -186,9 +197,9 @@ def lead_close_accel_ms2(accel_level: int = 5, v_rel=None, slack=None,
 def lead_close_should_cap(d_rel, model_prob=None, radar=None, active=False) -> bool:
   """True when a detected lead is in the close-cap window.
 
-  Bosch ceiling matches ease (200 m). Far tracks need the same radar +
-  modelProb quality as ease so a 160 m vision flicker cannot cap
-  empty-road climb. Missing quality args (unit tests) are ok.
+  Bosch ceiling matches ease (200 m). Far tracks need radar association
+  so a 160 m vision flicker cannot cap empty-road climb. Radar-only
+  far locks do cap. Missing quality args (unit tests) are ok.
   """
   if d_rel is None:
     return False
@@ -234,10 +245,11 @@ def lead_approach_track_ok(d_rel, model_prob=None, radar=None, active=False) -> 
   """Far-track anti-flicker. LeadData has modelProb + radar; no track age.
 
   Inside RELIABLE_M, `leadOne.status` is enough (planner already gated).
-  Beyond it, enter needs a radar-associated lead (`radar=True`) and
-  modelProb at/above radard's 0.5 association gate. Missing quality
-  args (unit kinematics) are treated as ok. Once active, hold through
-  a brief modelProb dip so far tracks do not chatter.
+  Beyond it, enter needs a radar-associated lead (`radar=True`) so a
+  160–200 m Bosch lock can ease / show immediately. Vision-only far
+  flicker stays off. Missing quality args (unit kinematics) are ok.
+  Once active, hold through a brief quality dip so far tracks do not
+  chatter.
   """
   if d_rel is None:
     return False
@@ -246,9 +258,52 @@ def lead_approach_track_ok(d_rel, model_prob=None, radar=None, active=False) -> 
     return True
   if radar is False:
     return False
+  # Solid Bosch association: ease / cap from first far lock. Do not wait
+  # on modelProb — that delayed yellow-arrow reaction on radar-only tracks.
+  # Vision-only far flicker still stays off.
+  if radar is True:
+    return True
   if model_prob is not None and float(model_prob) < LEAD_APPROACH_MODEL_PROB_MIN:
     return False
   return True
+
+
+def lead_is_closing(v_rel, a_lead=None, close_ms=LEAD_CLOSING_REMATCH_BLOCK_MS,
+                    a_lead_ms2=LEAD_CLOSING_ALEAD_MS2) -> bool:
+  """True when a live/held lead is closing or clearly braking."""
+  if v_rel is not None and float(v_rel) >= float(close_ms):
+    return True
+  if a_lead is not None and float(a_lead) <= float(a_lead_ms2):
+    return True
+  return False
+
+
+def lead_owns_plan(v_rel, a_lead=None) -> bool:
+  """Hold-window planner ownership: last close ≥ 1.5 or aLead clearly negative."""
+  return lead_is_closing(v_rel, a_lead, close_ms=LEAD_CLOSING_MATCH_MS)
+
+
+def cap_closing_lead_accel(output_a, v_rel, a_lead=None, lead_present=False,
+                           owned=False):
+  """Never rematch +a into a closing / braking live or held lead.
+
+  Closing ≳ 1.0 m/s (or aLead ≲ −0.2, or hold-owned) hard-caps a at 0.
+  Closing ≳ 1.5 or a braking lead also prefers match-speed −a
+  (`aLead − k·v_rel`). Same-speed far catch-up +a is unchanged.
+  """
+  if output_a is None or not (lead_present or owned):
+    return output_a
+  if not (owned or lead_is_closing(v_rel, a_lead)):
+    return float(output_a)
+  a = min(float(output_a), 0.0)
+  v = 0.0 if v_rel is None else float(v_rel)
+  match_speed = owned or v >= LEAD_CLOSING_MATCH_MS or (
+    a_lead is not None and float(a_lead) <= LEAD_CLOSING_ALEAD_MS2
+  )
+  if match_speed:
+    a_k = 0.0 if a_lead is None else float(a_lead)
+    a = min(a, a_k - LEAD_CLOSING_MATCH_GAIN * max(0.0, v), 0.0)
+  return a
 
 
 def lead_approach_ttc_s(slack, v_rel) -> float:
@@ -315,9 +370,8 @@ def soft_limit_mpc_a_target(output_a, v_ego, v_lead, d_rel, fcw=False, crash_cnt
   if allow_rapid and lead_approach_is_rapid(v_rel):
     return a
   # Closing onto the lead, or the lead is braking: full match-speed −a.
-  if v_rel >= LEAD_APPROACH_SOFT_LIMIT_CLOSE_MS:
-    return a
-  if a_lead is not None and float(a_lead) <= LEAD_APPROACH_SOFT_LIMIT_ALEAD_MS2:
+  # Same gate as rematch-block ownership / overlay-MILD skip.
+  if lead_owns_plan(v_rel, a_lead):
     return a
   stop_slack = float(d_rel) - STOP_DISTANCE
   if v_rel > 0.0:
@@ -375,19 +429,21 @@ def apply_lead_approach_overlay(output_a, a_lead, nibble=LEAD_APPROACH_NIBBLE_MS
   """Soft overlay via min(), except a far nibble must not steal cruise +a.
 
   Matching-traffic / far-slack overlay sits at |a| ~0.06–0.13. That must
-  not beat rematch / cruise / MAX +a on a *large* Follow Distance close.
+  not beat rematch / cruise / MAX +a on a *large same-speed* gap close.
   Real ease (|a| ≥ nibble) and MPC 0 / −a still use min().
 
   Near the follow gap, a nibble min()s so we mesh into lead speed at the
-  set gap and release slew is not a regen→Accel punch. Far mild close
-  keeps +a — first-acquire nibble from 100–200 m stole cruise +a until it
-  recovered; not a dead-long fail.
+  set gap and release slew is not a regen→Accel punch. A far lock that
+  is already closing (≳ 1.0 m/s) always min()s — never keep rematch +a
+  into a shrinking gap. Same-speed far catch-up may still keep +a.
   """
   if a_lead is None:
     return float(output_a)
   out = float(output_a)
   a = float(a_lead)
   if out <= 0.0 or a <= -float(nibble):
+    return min(out, a)
+  if lead_is_closing(v_rel):
     return min(out, a)
   near = slack is not None and float(slack) <= LEAD_CLOSE_REMATCH_SLACK_M
   if near:

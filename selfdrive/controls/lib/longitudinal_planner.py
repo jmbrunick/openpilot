@@ -18,10 +18,14 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
 )
 from openpilot.selfdrive.controls.lib.lead_approach import (
   apply_lead_approach_overlay,
+  cap_closing_lead_accel,
   lead_approach_decel_ms2,
   lead_approach_rapid_gate,
+  lead_approach_track_ok,
   lead_close_accel_ms2,
+  lead_close_should_cap,
   lead_follow_slack_m,
+  lead_owns_plan,
   resolve_lead_close_hold,
   slew_lead_approach_a,
   soft_limit_mpc_a_target,
@@ -119,7 +123,9 @@ class LongitudinalPlanner:
     self._lead_approach_rapid_count = 0
     self._lead_close_hold_d = None
     self._lead_close_hold_v = None
+    self._lead_close_hold_a = None
     self._lead_close_hold_age = 0.0
+    self._lead_close_hold_owned = False
     self._lead_close_a_cap = None
     self._follow_open_a = None
 
@@ -199,7 +205,9 @@ class LongitudinalPlanner:
       self._lead_approach_rapid_count = 0
       self._lead_close_hold_d = None
       self._lead_close_hold_v = None
+      self._lead_close_hold_a = None
       self._lead_close_hold_age = 0.0
+      self._lead_close_hold_owned = False
       self._lead_close_a_cap = None
       self._follow_open_a = None
 
@@ -280,10 +288,20 @@ class LongitudinalPlanner:
           v_ego, v_hud_ms, a_peak, accel_level=self._map_speed_accel,
         )
         a_env = a_peak if a_grad is None else min(a_peak, float(a_grad))
+        if lead_close.status and lead_close_should_cap(
+          lead_close.dRel, lead_close.modelProb, lead_close.radar, active=True,
+        ):
+          self._lead_close_hold_a = float(lead_close.aLeadK)
+          self._lead_close_hold_owned = lead_owns_plan(v_rel_lead, self._lead_close_hold_a)
         self._lead_close_a_cap = lead_close_accel_ms2(
           self._map_speed_accel, v_rel=v_rel_lead, slack=slack, a_personality=a_env,
         )
+        if self._lead_close_hold_owned or lead_owns_plan(v_rel_lead, self._lead_close_hold_a):
+          self._lead_close_a_cap = min(float(self._lead_close_a_cap), 0.0)
         accel_clip[1] = min(accel_clip[1], self._lead_close_a_cap)
+      else:
+        self._lead_close_hold_a = None
+        self._lead_close_hold_owned = False
 
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
@@ -344,56 +362,81 @@ class LongitudinalPlanner:
 
     # Slower radar lead: early light ease as soon as radar feedback is
     # reasonable (200 m Bosch ceiling, 24 s head-start, clear-close skips
-    # the late-gap need). Far tracks need radar + modelProb; LeadData has
-    # no track age. Mild closes stay at MILD; rapid / dumping still uses
-    # kinematics up to 0.55 after 4 agreeing in-window samples (~0.20 s).
-    # Hysteresis + slew both ways keep regen from slamming rematch. Map's
-    # +110 m is road distance to a sign and must not be used here. Rapid
-    # 0.55 needs consecutive high v_rel frames (a single closing-rate blip
-    # stays on mild). A far nibble must not steal cruise / rematch +a.
-    # Near the follow gap, a nibble can mesh. MPC −a is floored at MILD
-    # only as anti-chatter (gap opening / small |v_rel|, lead not braking)
-    # so min(MPC, overlay) cannot dump ~−2.5 on noise; closing or a slowing
-    # lead keeps full match-speed −a. FCW / rapid / a real stop still own
-    # danger. Map MAX cannot cancel this.
+    # the late-gap need). Far radar-associated tracks are accepted without
+    # a modelProb wait; vision-only far flicker is not. Mild closes stay
+    # at MILD; rapid / dumping still uses kinematics up to 0.55 after 4
+    # agreeing in-window samples (~0.20 s). Hysteresis + slew both ways
+    # keep regen from slamming rematch. Map's +110 m is road distance to
+    # a sign and must not be used here. Rapid 0.55 needs consecutive high
+    # v_rel frames (a single closing-rate blip stays on mild). A far
+    # same-speed nibble must not steal cruise +a; a closing lock never
+    # rematches +a. Hold last in-window lead through status flicker so
+    # cruise cannot reclaim +a. Near the follow gap, a nibble can mesh.
+    # MPC −a is floored at MILD only as anti-chatter (gap opening /
+    # small |v_rel|, lead not braking) so min(MPC, overlay) cannot dump
+    # ~−2.5 on noise; closing or a slowing lead keeps full match-speed
+    # −a. FCW / rapid / a real stop still own danger. Map MAX cannot
+    # cancel this.
     if self._is_preap:
       lead = sm['radarState'].leadOne
       allow_rapid = False
-      if lead.status:
+      lead_held = self._lead_close_hold_d is not None and self._lead_close_hold_v is not None
+      live_ok = bool(lead.status) and lead_approach_track_ok(
+        lead.dRel, lead.modelProb, lead.radar, active=False,
+      )
+      if live_ok:
         overlay_v_rel = v_ego - float(lead.vLead)
+        overlay_d = float(lead.dRel)
+        overlay_v = float(lead.vLead)
+        overlay_radar = lead.radar
+        overlay_prob = lead.modelProb
+      elif lead_held:
+        overlay_v_rel = v_ego - float(self._lead_close_hold_v)
+        overlay_d = float(self._lead_close_hold_d)
+        overlay_v = float(self._lead_close_hold_v)
+        overlay_radar = True
+        overlay_prob = None
+      else:
+        overlay_v_rel = None
+        overlay_d = None
+        overlay_v = None
+        overlay_radar = None
+        overlay_prob = None
+      keep_overlay = live_ok or (
+        lead_held and (self._lead_close_hold_owned or lead_owns_plan(overlay_v_rel, self._lead_close_hold_a))
+      )
+      if keep_overlay:
         a_lead = lead_approach_decel_ms2(
-          v_ego, lead.vLead, lead.dRel, self.t_follow, active=self._lead_approach_active,
-          model_prob=lead.modelProb, radar=lead.radar, allow_rapid=False,
+          v_ego, overlay_v, overlay_d, self.t_follow, active=self._lead_approach_active or lead_held,
+          model_prob=overlay_prob, radar=overlay_radar, allow_rapid=False,
         )
         allow_rapid, self._lead_approach_rapid_count = lead_approach_rapid_gate(
           overlay_v_rel, self._lead_approach_rapid_count, sample_ok=a_lead is not None,
         )
         if allow_rapid:
           a_lead = lead_approach_decel_ms2(
-            v_ego, lead.vLead, lead.dRel, self.t_follow, active=self._lead_approach_active,
-            model_prob=lead.modelProb, radar=lead.radar, allow_rapid=allow_rapid,
+            v_ego, overlay_v, overlay_d, self.t_follow, active=self._lead_approach_active or lead_held,
+            model_prob=overlay_prob, radar=overlay_radar, allow_rapid=allow_rapid,
           )
         self._lead_approach_active = a_lead is not None
-        overlay_slack = lead_follow_slack_m(lead.dRel, lead.vLead, self.t_follow)
+        overlay_slack = lead_follow_slack_m(overlay_d, overlay_v, self.t_follow)
       else:
         self._lead_approach_active = False
         self._lead_approach_rapid_count = 0
         a_lead = None
-        overlay_v_rel = None
         overlay_slack = None
-        if self._lead_close_hold_d is not None and self._lead_close_hold_v is not None:
-          overlay_v_rel = v_ego - float(self._lead_close_hold_v)
+        if lead_held:
           overlay_slack = lead_follow_slack_m(
             self._lead_close_hold_d, self._lead_close_hold_v, self.t_follow,
           )
-      if lead.status:
+      if live_ok:
         lead_v_hold = float(lead.vLead)
         lead_d_hold = float(lead.dRel)
         lead_a_k = float(lead.aLeadK)
-      elif self._lead_close_hold_d is not None:
+      elif lead_held:
         lead_v_hold = self._lead_close_hold_v
         lead_d_hold = self._lead_close_hold_d
-        lead_a_k = None
+        lead_a_k = self._lead_close_hold_a
       else:
         lead_v_hold = None
         lead_d_hold = None
@@ -414,6 +457,12 @@ class LongitudinalPlanner:
         )
       if self._follow_open_a is not None and float(output_a_target) > float(self._follow_open_a):
         output_a_target = float(self._follow_open_a)
+      # Hard block rematch / cruise +a while closing on a live or held
+      # lead. Prefer match-speed −a; never positive into a shrinking gap.
+      output_a_target = cap_closing_lead_accel(
+        output_a_target, overlay_v_rel, a_lead=lead_a_k,
+        lead_present=live_ok or lead_held, owned=self._lead_close_hold_owned,
+      )
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
@@ -438,7 +487,19 @@ class LongitudinalPlanner:
     longitudinalPlan.accels = self.a_desired_trajectory.tolist()
     longitudinalPlan.jerks = self.j_desired_trajectory.tolist()
 
-    longitudinalPlan.hasLead = sm['radarState'].leadOne.status
+    # Chevron / HUD lead: live status, or the planner still owns a held
+    # in-window lead through a brief flicker.
+    live_lead = bool(sm['radarState'].leadOne.status)
+    if self._is_preap and live_lead:
+      live_lead = lead_approach_track_ok(
+        sm['radarState'].leadOne.dRel,
+        sm['radarState'].leadOne.modelProb,
+        sm['radarState'].leadOne.radar,
+        active=False,
+      )
+    longitudinalPlan.hasLead = live_lead or (
+      self._is_preap and self._lead_close_hold_d is not None
+    )
     longitudinalPlan.longitudinalPlanSource = self.mpc.source
     longitudinalPlan.fcw = self.fcw
 
