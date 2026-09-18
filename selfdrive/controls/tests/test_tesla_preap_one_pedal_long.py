@@ -195,6 +195,9 @@ def test_one_pedal_wires_carstate_after_interceptor_gas():
   assert "PEDAL_DI_PRESSED_STOCK = 2.0" in overlay
   assert "interceptor_value" in overlay
   assert "maybe_one_pedal_gas_kick(True, True)" in overlay
+  assert "engage_while_gas" in overlay
+  assert "_publish_analog_gas" in cs or "gasDEPRECATED" in cs
+  assert "di_pedal_pos_percent" in cs
 
 
 def test_one_pedal_light_tip_in_latches_pause():
@@ -455,6 +458,7 @@ def _on_car_cycle(controller, cc, cs, tesla_can, frame, *, gas, set_edge=False, 
 
   cs.out.gasPressed = gas
   cs.engagement._nap_gas_pressed = gas
+  cs.engagement._nap_di_pedal_pos = 20.0 if gas else 0.0
   buttons = CruiseButtons.MAIN if set_edge else 0
   cs.engagement.process_buttons(
     cruise_buttons=buttons, prev_cruise_buttons=0,
@@ -540,3 +544,48 @@ def test_one_pedal_set_after_lift_with_overlay_double_pull_acquires(monkeypatch)
   assert cs.engagement.enableLongControl
   assert _decode_pedal_command(acquire[0]).enabled
   assert cs.pedal_authority_action == int(PedalCommandAction.ACQUIRE)
+
+
+def test_set_while_di_gas_from_disengaged_arms_then_lift_acquires(monkeypatch):
+  """Double-pull On + foot on gas + one SET: long pending; lift ACQUIREs.
+
+  Must not one-pedal-pause. Gas after long is already on still pauses.
+  """
+  from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import install_blinker_lat_pause
+
+  install_blinker_lat_pause()
+  controller, cc, cs, tesla_can = controller_env(
+    monkeypatch, one_pedal_long=True, double_pull=True)
+  monkeypatch.setattr(
+    'opendbc.car.tesla.preap.carcontroller.get_preap_accel_limits',
+    lambda _v_ego: (-1.5, 0.8),
+  )
+  assert not cs.engagement.cruiseEnabled
+  assert not cs.engagement.enableLongControl
+
+  armed = _on_car_cycle(
+    controller, cc, cs, tesla_can, 0, gas=True, set_edge=True, t_ms=1000, v_ego=8.0)
+  assert cs.engagement.cruiseEnabled
+  assert cs.engagement.enableLongControl
+  assert not getattr(cs.engagement, "_one_pedal_pause_latched", False)
+  if armed:
+    assert not _decode_pedal_command(armed[0]).enabled
+
+  held = _on_car_cycle(controller, cc, cs, tesla_can, 2, gas=True, t_ms=1100, v_ego=8.0)
+  assert cs.engagement.enableLongControl
+  assert not getattr(cs.engagement, "_one_pedal_pause_latched", False)
+  if held:
+    assert not _decode_pedal_command(held[0]).enabled
+
+  acquire = _on_car_cycle(
+    controller, cc, cs, tesla_can, 4, gas=False, t_ms=1200, v_ego=8.0)
+  assert cs.engagement.enableLongControl
+  assert not getattr(cs.engagement, "_one_pedal_pause_latched", False)
+  assert _decode_pedal_command(acquire[0]).enabled
+  assert cs.pedal_authority_action == int(PedalCommandAction.ACQUIRE)
+
+  _kick_long_on_gas(cc, cs)
+  pause = controller.update(cc, cs, frame=6, tesla_can=tesla_can, can_bus_party=0)
+  assert not cs.enableLongControl
+  assert cs.engagement._one_pedal_pause_latched
+  assert not _decode_pedal_command(pause[0]).enabled
