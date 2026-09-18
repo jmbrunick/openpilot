@@ -25,10 +25,13 @@ uses kinematics up to 0.55. Start early and light; do not delay ease
 
 A far/gentle nibble must not steal large-gap *same-speed* catch-up +a
 (cruise / MAX climb). A live or held lead that is already closing
-(≳ 1.0–1.5 m/s, or aLead clearly negative) never rematches +a — coast
-or match-speed −a only. Near the follow gap, a nibble min()s so we can
-mesh into lead speed at the set Follow Distance. Rematch after ease
-(v_rel flips / slack growing) trickles +a — do not slam regen → Accel.
+(≳ 1.0–1.5 m/s) never rematches +a — coast or match-speed −a only.
+aLead ≲ −0.2 owns match-speed only near the follow gap; a far or
+opening lead (da 2026-09-18: dRel~64 m, v_rel~−1.44 opening,
+aLeadK~−1.46) must not snap cruise +a to aLeadK. Near the follow
+gap, a nibble min()s so we can mesh into lead speed at the set
+Follow Distance. Rematch after ease (v_rel flips / slack growing)
+trickles +a — do not slam regen → Accel.
 
 On a slight grade, radar `v_rel` / slack chatter around the follow gap used
 to snap this overlay on/off (regen bite → rematch crawl → bite). Enter/exit
@@ -114,6 +117,10 @@ LEAD_CLOSING_REMATCH_BLOCK_MS = 1.0
 LEAD_CLOSING_MATCH_MS = LEAD_APPROACH_SOFT_LIMIT_CLOSE_MS
 LEAD_CLOSING_ALEAD_MS2 = LEAD_APPROACH_SOFT_LIMIT_ALEAD_MS2
 LEAD_CLOSING_MATCH_GAIN = 0.25
+# aLead-only ownership / match-aLeadK. Opening or slack ≳ 20 m must not
+# force aTarget ≤ aLeadK (far braking lead, gap opening). Near-gap
+# braking-lead protection still matches. 20 m is inside the 15–25 m tune.
+LEAD_ALEAD_MATCH_SLACK_M = 20.0
 # Planner frames of high v_rel before the 0.55 path. One radar blip must
 # not fire hard regen; mild ease stays immediate. Count only in-window
 # closes (do not pre-arm from a far flicker). 4 × DT_MDL ≈ 0.20 s.
@@ -376,37 +383,56 @@ def lead_approach_track_ok(d_rel, model_prob=None, radar=None, active=False) -> 
   return True
 
 
+def lead_alead_owns_match(v_rel, a_lead, slack=None,
+                         a_lead_ms2=LEAD_CLOSING_ALEAD_MS2) -> bool:
+  """True when aLead alone may own match-speed −a / closing.
+
+  aLead ≲ −0.2 used to own regardless of gap. A far or opening lead
+  (da 2026-09-18: dRel~64 m, v_rel~−1.44 opening, aLeadK~−1.46) then
+  snapped cruise +a to aLeadK. Gate: slack ≳ 20 m never owns from
+  aLead alone. Opening owns only when slack is known and near the
+  follow gap (braking-lead protection). Real closing ≳ 1.0–1.5 is a
+  separate v_rel gate.
+  """
+  if a_lead is None or float(a_lead) > float(a_lead_ms2):
+    return False
+  if slack is not None and float(slack) >= LEAD_ALEAD_MATCH_SLACK_M:
+    return False
+  if v_rel is not None and float(v_rel) < 0.0:
+    return slack is not None
+  return True
+
+
 def lead_is_closing(v_rel, a_lead=None, close_ms=LEAD_CLOSING_REMATCH_BLOCK_MS,
-                    a_lead_ms2=LEAD_CLOSING_ALEAD_MS2) -> bool:
-  """True when a live/held lead is closing or clearly braking."""
+                    a_lead_ms2=LEAD_CLOSING_ALEAD_MS2, slack=None) -> bool:
+  """True when a live/held lead is closing or a near-gap braking lead."""
   if v_rel is not None and float(v_rel) >= float(close_ms):
     return True
-  if a_lead is not None and float(a_lead) <= float(a_lead_ms2):
-    return True
-  return False
+  return lead_alead_owns_match(v_rel, a_lead, slack, a_lead_ms2=a_lead_ms2)
 
 
-def lead_owns_plan(v_rel, a_lead=None) -> bool:
-  """Hold-window planner ownership: last close ≥ 1.5 or aLead clearly negative."""
-  return lead_is_closing(v_rel, a_lead, close_ms=LEAD_CLOSING_MATCH_MS)
+def lead_owns_plan(v_rel, a_lead=None, slack=None) -> bool:
+  """Hold-window planner ownership: last close ≥ 1.5 or near-gap aLead."""
+  return lead_is_closing(v_rel, a_lead, close_ms=LEAD_CLOSING_MATCH_MS, slack=slack)
 
 
 def cap_closing_lead_accel(output_a, v_rel, a_lead=None, lead_present=False,
-                           owned=False):
-  """Never rematch +a into a closing / braking live or held lead.
+                           owned=False, slack=None):
+  """Never rematch +a into a closing / near-gap braking live or held lead.
 
-  Closing ≳ 1.0 m/s (or aLead ≲ −0.2, or hold-owned) hard-caps a at 0.
-  Closing ≳ 1.5 or a braking lead also prefers match-speed −a
-  (`aLead − k·v_rel`). Same-speed far catch-up +a is unchanged.
+  Closing ≳ 1.0 m/s (or hold-owned) hard-caps a at 0. Closing ≳ 1.5
+  prefers match-speed −a (`aLead − k·v_rel`). aLead ≲ −0.2 matches
+  only near the follow gap — not when the gap is opening or slack is
+  large. Same-speed far catch-up +a is unchanged.
   """
   if output_a is None or not (lead_present or owned):
     return output_a
-  if not (owned or lead_is_closing(v_rel, a_lead)):
+  if not (owned or lead_is_closing(v_rel, a_lead, slack=slack)):
     return float(output_a)
   a = min(float(output_a), 0.0)
   v = 0.0 if v_rel is None else float(v_rel)
-  match_speed = owned or v >= LEAD_CLOSING_MATCH_MS or (
-    a_lead is not None and float(a_lead) <= LEAD_CLOSING_ALEAD_MS2
+  match_speed = owned or v >= LEAD_CLOSING_MATCH_MS or lead_alead_owns_match(
+    v_rel, a_lead, slack,
   )
   if match_speed:
     a_k = 0.0 if a_lead is None else float(a_lead)
@@ -449,7 +475,7 @@ def lead_approach_rapid_gate(v_rel, prev_count, need_n=LEAD_APPROACH_RAPID_CONFI
 
 
 def soft_limit_mpc_a_target(output_a, v_ego, v_lead, d_rel, fcw=False, crash_cnt=0,
-                            allow_rapid=False, a_lead=None):
+                            allow_rapid=False, a_lead=None, slack=None):
   """Floor chatter-shaped MPC −a at mild ease. Match-speed / danger still dump.
 
   Overlay min(MPC, mild) cannot stop MPC commanding ~−2.5 on radar noise
@@ -458,12 +484,13 @@ def soft_limit_mpc_a_target(output_a, v_ego, v_lead, d_rel, fcw=False, crash_cnt
 
   Keep the floor only when it is anti-chatter: gap opening, or |v_rel|
   small *and* the lead is not decelerating. Skip it when closing
-  (≳ SOFT_LIMIT_CLOSE) or aLead is clearly negative so we can match lead
+  (≳ SOFT_LIMIT_CLOSE) or a near-gap braking lead so we can match lead
   speed — including slightly slower than the lead to settle the gap.
-  A one-frame v_rel blip below SOFT_LIMIT_CLOSE stays floored; closing
-  or aLead skip immediately so match-speed braking is not delayed.
-  Four agreeing samples pass `allow_rapid` and skip the floor. FCW /
-  crash / stop kinematics still own danger.
+  A far / opening aLead does not skip the floor. A one-frame v_rel blip
+  below SOFT_LIMIT_CLOSE stays floored; closing or near-gap aLead skip
+  immediately so match-speed braking is not delayed. Four agreeing
+  samples pass `allow_rapid` and skip the floor. FCW / crash / stop
+  kinematics still own danger.
   """
   if output_a is None:
     return output_a
@@ -477,9 +504,9 @@ def soft_limit_mpc_a_target(output_a, v_ego, v_lead, d_rel, fcw=False, crash_cnt
   v_rel = float(v_ego) - max(0.0, float(v_lead))
   if allow_rapid and lead_approach_is_rapid(v_rel):
     return a
-  # Closing onto the lead, or the lead is braking: full match-speed −a.
+  # Closing onto the lead, or a near-gap braking lead: full match-speed −a.
   # Same gate as rematch-block ownership / overlay-MILD skip.
-  if lead_owns_plan(v_rel, a_lead):
+  if lead_owns_plan(v_rel, a_lead, slack):
     return a
   stop_slack = float(d_rel) - STOP_DISTANCE
   if v_rel > 0.0:

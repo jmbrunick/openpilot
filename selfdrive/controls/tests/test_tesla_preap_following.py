@@ -722,6 +722,76 @@ def test_planner_far_closing_lead_blocks_rematch_plus_a():
   assert planner.output_a_target == pytest.approx(-LEAD_CLOSING_MATCH_GAIN * v_rel, abs=0.08)
 
 
+def test_planner_far_opening_alead_keeps_cruise_plus_a():
+  """da 2026-09-18: far lead braking + gap opening must not snap aTarget to aLeadK.
+
+  Double SET + gas lift armed long at +0.47. ~0.5 s later a 64 m lead
+  appeared with v_rel opening and aLeadK −1.46; #190 aLead-only ownership
+  forced regen. Keep cruise climb. Real closing / near-gap brake still bite.
+  """
+  v_ego = 22.8 * CV.MPH_TO_MS
+  v_rel_open = -1.44
+  v_lead = v_ego - v_rel_open
+  t_follow = get_T_FOLLOW(nap_follow_dist=4)
+  d_follow = t_follow * v_lead + STOP_DISTANCE_M
+  d_rel = 64.0
+  slack = d_rel - d_follow
+  assert slack > 25.0
+  params = _MutablePlannerParams(nap_follow_dist=4, map_speed_accel=5)
+  planner = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
+  planner._map_speed_accel = 5
+  a_cap = lead_close_accel_ms2(5)
+  cruise_a = 0.47
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=cruise_a)
+  planner.prev_accel_clip = [-1.2, a_cap]
+  inputs = _make_planner_inputs(v_ego)
+  lead = inputs["radarState"].leadOne
+  lead.status = True
+  lead.dRel = d_rel
+  lead.vLead = v_lead
+  lead.aLeadK = -1.46
+  lead.modelProb = 1.0
+  lead.radar = True
+  planner._lead_approach_active = False
+  planner._lead_approach_a = None
+  for _ in range(8):
+    planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=cruise_a)
+    planner.update(inputs)
+  assert planner.output_a_target > 0.20
+  assert planner.output_a_target > -0.20
+  assert planner.output_a_target != pytest.approx(-1.46, abs=0.20)
+  assert not planner._lead_close_hold_owned
+
+  # Real closing ≳ 1.5 at the same range still match-speed −a.
+  lead.vLead = v_ego - 1.6
+  lead.aLeadK = -0.40
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=cruise_a)
+  planner.prev_accel_clip = [-1.2, a_cap]
+  planner._lead_close_hold_owned = False
+  for _ in range(6):
+    planner.update(inputs)
+  assert planner.output_a_target <= 0.0
+
+  # Near-gap braking lead still matches aLeadK.
+  planner2 = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
+  planner2._map_speed_accel = 5
+  planner2.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=cruise_a)
+  planner2.prev_accel_clip = [-1.2, a_cap]
+  inputs2 = _make_planner_inputs(v_ego)
+  lead2 = inputs2["radarState"].leadOne
+  lead2.status = True
+  lead2.dRel = d_follow + 8.0
+  lead2.vLead = v_ego - 0.4
+  lead2.aLeadK = -0.80
+  lead2.modelProb = 1.0
+  lead2.radar = True
+  for _ in range(6):
+    planner2.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=cruise_a)
+    planner2.update(inputs2)
+  assert planner2.output_a_target <= 0.0
+  assert planner2.output_a_target <= -0.70
+
+
 def test_planner_far_same_speed_lead_may_keep_catchup_plus_a():
   """Same-speed far Bosch lead may still close Follow Distance at Accel 1–10."""
   v_ego = 25.0
@@ -780,17 +850,19 @@ def test_planner_caps_lead_close_accel_at_min_accel_and_keeps_hard_brake():
   planner.update(inputs)
   assert planner.output_a_target == pytest.approx(-LEAD_APPROACH_MILD_A_MS2, abs=0.08)
 
-  # Closing under the rapid gate, or a braking lead: full match-speed −a.
+  # Closing under the rapid gate, or a near-gap braking lead: full match-speed −a.
   lead.vLead = v_ego - 1.6
   lead.aLeadK = 0.0
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
   planner.update(inputs)
   assert planner.output_a_target == pytest.approx(-2.0, abs=0.08)
   lead.vLead = v_lead
+  lead.dRel = d_follow + 8.0
   lead.aLeadK = -0.4
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
   planner.update(inputs)
   assert planner.output_a_target == pytest.approx(-2.0, abs=0.08)
+  lead.dRel = d_rel
   lead.aLeadK = 0.0
 
   # Rapid close: MPC danger still wins after the 4-frame confirm.
