@@ -184,6 +184,7 @@ def test_one_pedal_wires_carstate_after_interceptor_gas():
   assert "_one_pedal_pause_latched" in body
   assert "_one_pedal_had_long_at_rest" in body
   assert "_one_pedal_gas_falling_edge" in body
+  assert "_one_pedal_armed_with_gas" in body
   assert "interceptor_di" in body
   assert "phantom_rise" in body
   assert "latch_one_pedal_gas_takeover" in body
@@ -610,6 +611,40 @@ def test_dc_131614_lift_through_di1_acquires_same_frame(monkeypatch):
   assert not cs.engagement._one_pedal_pause_latched
   if linger:
     assert _decode_pedal_command(linger[0]).enabled
+
+
+def test_dc_131530_no_pedal_authority_gap_for_7s(monkeypatch):
+  """dc 13:15:30: after lift, pedL must rise immediately — not a 7.5 s regen hole."""
+  controller, cc, cs, tesla_can = controller_env(
+    monkeypatch, one_pedal_long=True, double_pull=True)
+  monkeypatch.setattr(
+    'opendbc.car.tesla.preap.carcontroller.get_preap_accel_limits',
+    lambda _v_ego: (-1.5, 0.8),
+  )
+  held = _double_set_while_gas(controller, cc, cs, tesla_can, v_ego=24.5)
+  cs.out.aEgo = 0.40
+  cc.actuators.accel = 0.47
+  acquire = _on_car_cycle(
+    controller, cc, cs, tesla_can, 6, gas=False, interceptor_di=1.5,
+    t_ms=3000, v_ego=24.5)
+  assert cs.enableLongControl
+  assert not cs.engagement._one_pedal_pause_latched
+  assert _decode_pedal_command(acquire[0]).enabled
+  assert cs.pedal_authority_action == int(PedalCommandAction.ACQUIRE)
+  assert abs(cs.engagement.pedal_speed_kph - held) < 1e-6
+
+  for i, frame in enumerate(range(8, 8 + 376, 2)):
+    di = 1.3 if i < 8 else 0.0
+    cs.out.aEgo = 0.2
+    out = _on_car_cycle(
+      controller, cc, cs, tesla_can, frame, gas=False, interceptor_di=di,
+      t_ms=3000 + (frame - 6) * 10, v_ego=24.5 - 0.01 * i)
+    assert cs.engagement.enableLongControl, frame
+    assert cs.enableLongControl, frame
+    assert not cs.engagement._one_pedal_pause_latched, frame
+    assert cs.engagement.pedal_speed_kph > 0.0
+    if out:
+      assert _decode_pedal_command(out[0]).enabled
 
 
 def test_dc_131719_clean_lift_to_zero_acquires(monkeypatch):

@@ -82,10 +82,21 @@ def maybe_one_pedal_overlay_kick(engagement, interceptor_di) -> bool:
 
   Do **not** fire on a stock falling edge this cycle: that is lift
   through DI 1–2 after engage/SET-while-gas, not a from-rest tip-in.
-  If extra does not fire, clear `_one_pedal_gas_falling_edge` so the
-  next real from-rest press is still a takeover.
+  `_one_pedal_armed_with_gas` is the same grace until interceptor DI
+  is fully off. If extra does not fire, clear `_one_pedal_gas_falling_edge`
+  so the next real from-rest press is still a takeover.
   """
   falling = bool(getattr(engagement, "_one_pedal_gas_falling_edge", False))
+  armed = bool(getattr(engagement, "_one_pedal_armed_with_gas", False))
+  if armed:
+    if one_pedal_gas_for_pause(interceptor_di):
+      return False
+    engagement._one_pedal_armed_with_gas = False
+    if bool(getattr(engagement, "enableLongControl", False)):
+      engagement._one_pedal_had_long_at_rest = True
+    if falling:
+      engagement._one_pedal_gas_falling_edge = False
+    return False
   if not one_pedal_gas_for_pause(interceptor_di):
     if falling:
       engagement._one_pedal_gas_falling_edge = False
