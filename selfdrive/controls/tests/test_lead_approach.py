@@ -800,11 +800,12 @@ def test_settled_rematch_deadbands_accel_ceil_while_gap_ok_or_opening():
   a2 = lead_close_accel_ms2(2)
   assert a2 > 0.20
   # Evidence shape: Accel 2 ceil (~0.32) for 7 s as dRel 49→59 opening.
+  # Trickle, not Accel ceil — a 0 ceiling parks speed after a grade dip.
   a_open_ok = lead_close_accel_ms2(2, v_rel=-0.3, slack=10.0, settled=True)
-  assert a_open_ok == pytest.approx(0.0)
+  assert a_open_ok == pytest.approx(LEAD_CLOSE_OPENING_A_MS2)
   a_open_mid = lead_close_accel_ms2(2, v_rel=-0.3, slack=18.0, settled=True)
-  assert a_open_mid == pytest.approx(0.0)
-  assert a_open_mid < 0.05
+  assert a_open_mid == pytest.approx(LEAD_CLOSE_OPENING_A_MS2)
+  assert a_open_mid < a2 * 0.5
   # Slack clearly large *and* lead pulling away: hunt, not Accel ceil.
   a_pull = lead_close_accel_ms2(2, v_rel=-0.4, slack=22.0, settled=True)
   assert 0.0 < a_pull <= LEAD_CLOSE_OPENING_A_MS2 + 0.05
@@ -813,10 +814,15 @@ def test_settled_rematch_deadbands_accel_ceil_while_gap_ok_or_opening():
   assert a_pull_40 == pytest.approx(lead_hunt_accel_ms2(a2, 40.0))
   assert a_pull_40 < a2 * LEAD_HUNT_A_FRAC + 1e-9
   assert a_pull_40 < a2 - 0.10
-  # Matched, gap OK: trickle if slightly closing, 0 if opening.
+  # Matched, gap OK: trickle if slightly closing or opening.
   a_ok = lead_close_accel_ms2(2, v_rel=0.2, slack=8.0, settled=True)
   assert a_ok == pytest.approx(LEAD_CLOSE_OPENING_A_MS2)
-  assert lead_close_accel_ms2(2, v_rel=-0.1, slack=8.0, settled=True) == pytest.approx(0.0)
+  assert lead_close_accel_ms2(2, v_rel=-0.1, slack=8.0, settled=True) == pytest.approx(
+    LEAD_CLOSE_OPENING_A_MS2
+  )
+  # Ego clearly slower: Accel so grade / cruise can recover speed.
+  assert lead_close_accel_ms2(2, v_rel=-0.6, slack=10.0, settled=True) == pytest.approx(a2)
+  assert lead_close_accel_ms2(2, v_rel=-0.6, slack=18.0, settled=True) == pytest.approx(a2)
   # Remaining Follow Distance (≲ 4 m) still trickles, even if slightly opening.
   a_finish = lead_close_accel_ms2(2, v_rel=-0.1, slack=3.0, settled=True)
   assert a_finish == pytest.approx(LEAD_CLOSE_OPENING_A_MS2)

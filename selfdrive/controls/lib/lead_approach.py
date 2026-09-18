@@ -254,25 +254,29 @@ def lead_hunt_accel_ms2(a, slack) -> float:
 def lead_settled_rematch_a_ms2(a, v_rel, slack) -> float:
   """After match: no Accel-ceil rematch while the gap is OK or opening.
 
-  Trickle (~0.08) or 0 until slack is clearly large. Gap error ≳ 15 m
-  with `|closing| < 1` may hunt (small Accel-proportional). Rematch
-  above trickle only if slack ≳ 20 m *and* the lead is pulling away.
-  Closing ≳ 1.0 is already 0 from the caller.
+  A 0 ceiling parks cruise below the lead after a grade dip (closed-loop
+  plant 24.38 vs 25.0). Comfortable opening trickles (~0.08), not Accel
+  ceil — the 49→59 chatter was +0.32 for 7 s. Ego clearly slower
+  (`v_rel` ≲ −0.5) may use Accel to hold/recover speed. Still inside
+  Follow Distance is a too-close recovery, not rematch. Gap error ≳ 15 m
+  with `|closing| < 1` may hunt. Rematch above trickle if slack ≳ 20 m
+  *and* the lead is pulling away. Closing ≳ 1.0 is already 0 from the
+  caller.
   """
   s = None if slack is None else float(slack)
   v = 0.0 if v_rel is None else float(v_rel)
   opening = v <= 0.0
+  # Real speed sag (ego clearly slower): cruise/grade hold, not rematch.
+  if s is not None and s >= 0.0 and v <= -LEAD_SETTLE_VREL_MS:
+    return a
   if s is None or s < LEAD_HUNT_SLACK_M:
-    # Comfortable opening (the 49→59 chatter band) stays 0. Still inside
-    # Follow Distance is a too-close recovery, not rematch. At the gap
-    # with speeds matched, allow Accel so grade / cruise can hold speed.
-    if opening and s is not None and (s > LEAD_SETTLE_FINISH_SLACK_M or s < 0.0):
+    if opening and s is not None and s < 0.0:
       return 0.0
     if s is not None and s <= 0.5 and abs(v) < LEAD_SETTLE_VREL_MS:
       return a
     return min(a, LEAD_CLOSE_OPENING_A_MS2)
   if opening and s < LEAD_REMATCH_PULL_SLACK_M:
-    return 0.0
+    return min(a, LEAD_CLOSE_OPENING_A_MS2)
   return lead_hunt_accel_ms2(a, s)
 
 
