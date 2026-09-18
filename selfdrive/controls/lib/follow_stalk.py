@@ -250,15 +250,19 @@ def detect_follow_stalk(
   )
 
 
-def persist_follow_distance(params, closer: bool, v_ego=None) -> int:
+def persist_follow_distance(params, closer: bool, v_ego=None, v_cruise=None,
+                            has_lead=False, engaged=False) -> int:
   """Step city or highway Follow Distance (and HUD NAPFollowDistance).
 
-  With v_ego, the active ~50 mph band is stepped. Without speed (tests),
-  all three keys stay in sync. Always request the HUD (including at 1/7).
+  With v_ego, the active band is stepped (48/52 ego, or hwy-from-30 when
+  MAX > 50 with a lead). Without speed (tests), all three keys stay in
+  sync. Always request the HUD (including at 1/7).
   """
   migrate_follow_distance_params(params)
   if v_ego is not None:
-    key = PARAM_FOLLOW_HWY if follow_band_is_highway(v_ego) else PARAM_FOLLOW_CITY
+    key = PARAM_FOLLOW_HWY if follow_band_is_highway(
+      v_ego, v_cruise=v_cruise, engaged=engaged, has_lead=has_lead,
+    ) else PARAM_FOLLOW_CITY
     try:
       raw = params.get(key, return_default=True)
     except Exception:
