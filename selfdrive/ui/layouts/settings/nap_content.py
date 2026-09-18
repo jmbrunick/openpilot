@@ -184,6 +184,9 @@ Press START to download."""
 # Forwarded 0x45 STW_ACTN_RQ wiper / high-beam. 0 = off (today's stalk).
 WIPER_SPEED_VALUES = [0, 1, 2, 3]
 WIPER_SPEED_LABELS = ["Off", "Int", "On", "Auto"]
+WIPER_SENSITIVITY_VALUES = [0, 1, 2, 3, 4]
+WIPER_SENSITIVITY_LABELS = ["Drier", "Dry", "Mid", "Wet", "Wetter"]
+WIPER_SENSITIVITY_DEFAULT = 2
 HIGH_LOW_BEAM_VALUES = [0, 1, 2]
 HIGH_LOW_BEAM_LABELS = ["Off", "Low", "High"]
 WIPER_SPEED_DESCRIPTION = (
@@ -193,15 +196,23 @@ WIPER_SPEED_DESCRIPTION = (
   "Int/On set the high nibble to 1 (TIPWIPE) and hold it — they do not "
   "spray. Auto does not use TIPWIPE: it overlays WprSw6Posn INTERVAL1 "
   "(collar=1) and WprWashSw_Psd=0 only when the car is on, gear is "
-  "Drive or Reverse, and the 3X road camera sees a rainy or icy/frosted "
-  "windshield. Hold INTERVAL1 at ~100 Hz (same last-win as high-beam) so "
-  "live stalk Off (collar=0) cannot cancel. While Auto is selected and dry "
-  "(or Park/Neutral), still extra-forward 0x45 rest with collar forced 0 "
+  "Drive or Reverse, speed is above a small creep floor, and the 3X road "
+  "camera sees a rainy or icy/frosted windshield. Hold INTERVAL1 at "
+  "~100 Hz (same last-win as high-beam) so live stalk Off (collar=0) "
+  "cannot cancel. While Auto is selected and dry (or Park/Neutral/"
+  "standstill), still extra-forward 0x45 rest with collar forced 0 "
   "and nibble 1 cleared so Pre-AP drops intermittent; a wipe 1→0 sends "
-  "rest immediately. Park and Neutral never Auto-wipe. Default Off — Auto "
-  "is opt-in, not every drive. DAS wiper fields stay 0 (they were ignored "
-  "and caused a controls mismatch). Do not engage NAP and do not pull the "
-  "stalk. No stalk Auto required. No spray. No auto headlights."
+  "rest immediately. Park, Neutral, and standstill (v≈0) never Auto-wipe. "
+  "Default Off — Auto is opt-in, not every drive. DAS wiper fields stay 0 "
+  "(they were ignored and caused a controls mismatch). Do not engage NAP "
+  "and do not pull the stalk. No stalk Auto required. No spray. No auto "
+  "headlights."
+)
+WIPER_SENSITIVITY_DESCRIPTION = (
+  "Auto only. More dry (Drier) ↔ more wet (Wetter). Mid is the baseline. "
+  "Lower wipes sooner / more often; higher tolerates more film before a "
+  "repeat wipe. Scales the first-wipe bar, the post-wipe repeat bar, and "
+  "the light-mist minimum rewipe gap (~20–30 s). Does not spray."
 )
 HIGH_LOW_BEAM_DESCRIPTION = (
   "Pre-AP Model S only, for on-car testing. Default Off. Low is the same as "
