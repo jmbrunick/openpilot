@@ -245,7 +245,7 @@ def test_no_lead_or_not_engaged_snaps_to_band():
 
 
 def test_persist_steps_city_or_hwy_band_by_speed():
-  from openpilot.selfdrive.controls.lib.follow_stalk import persist_follow_distance
+  from openpilot.selfdrive.controls.lib.hypermile import persist_follow_distance
 
   params = FakeParams(follow=4, city=4, hwy=4, migrated=True)
   persist_follow_distance(params, closer=True, v_ego=40.0 * CV.MPH_TO_MS)
@@ -302,4 +302,5 @@ def test_planner_and_ui_wire_city_hwy_follow():
   assert "city follow distance" in mici
   assert "highway follow distance" in mici
   assert "Not Hypermile" in content
-  assert "hypermile" not in planner.lower()
+  assert "FollowDistanceBlend" in planner
+  assert "apply_hill_climb" in planner
