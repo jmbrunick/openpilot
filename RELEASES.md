@@ -1,3 +1,13 @@
+NAP ship #192 flash tip to nap-release (2026-09-18)
+========================
+* Tonight ship to **nap-release** of the stacked flash tip through **#192** (`c3570c957`). Twin of nap-dev #193. **No panda flash.**
+* **#187** Accel-owns-catch-up + MPC mild floor + city/hwy Follow Distance.
+* **#188** skip MPC −MILD floor when closing / lead braking; far mild close must not steal cruise +a.
+* **#189** analog `DI_pedalPos` as `gasDEPRECATED`; SET-while-gas arms long.
+* **#190** hard-block rematch / cruise +a while closing on a live or held lead; farther radar lead ID.
+* **#191** settle rematch deadband + Accel-proportional gap hunt; hwy FD from ~30 mph when MAX > 50.
+* **#192** do not match aLeadK on far opening leads (slack ≳ 20 m / gap opening).
+
 NAP Accel-owns-catch-up + city/hwy Follow Distance (2026-09-17)
 ========================
 * **Accel 1–10 owns all +a**, including lead gap-close: same Mannerisms gradient as open-road / MAX climb (Accel 1 baby-steps the last ~5 mph; Accel 7–10 stay brisk). No separate 0.20/0.30/0.50 catch-up curve. Close-cap covers the Bosch window (**~200 m**) so a 160–180 m lead does not punch cruise 1.6. Brief hold on `leadOne` flicker. **Hard/rapid regen** (0.55) waits for **4 consecutive** in-window samples (~0.20 s); mild ease is immediate. **Non-rapid MPC −a is floored at mild (~0.22)** so min(MPC, overlay) cannot dump ~−2.5; FCW / rapid / a real stop still own danger.
