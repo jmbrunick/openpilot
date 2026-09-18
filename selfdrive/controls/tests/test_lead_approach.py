@@ -800,12 +800,11 @@ def test_settled_rematch_deadbands_accel_ceil_while_gap_ok_or_opening():
   a2 = lead_close_accel_ms2(2)
   assert a2 > 0.20
   # Evidence shape: Accel 2 ceil (~0.32) for 7 s as dRel 49→59 opening.
-  # Trickle, not Accel ceil — a 0 ceiling parks speed after a grade dip.
   a_open_ok = lead_close_accel_ms2(2, v_rel=-0.3, slack=10.0, settled=True)
-  assert a_open_ok == pytest.approx(LEAD_CLOSE_OPENING_A_MS2)
+  assert a_open_ok == pytest.approx(0.0)
   a_open_mid = lead_close_accel_ms2(2, v_rel=-0.3, slack=18.0, settled=True)
-  assert a_open_mid == pytest.approx(LEAD_CLOSE_OPENING_A_MS2)
-  assert a_open_mid < a2 * 0.5
+  assert a_open_mid == pytest.approx(0.0)
+  assert a_open_mid < 0.05
   # Slack clearly large *and* lead pulling away: hunt, not Accel ceil.
   a_pull = lead_close_accel_ms2(2, v_rel=-0.4, slack=22.0, settled=True)
   assert 0.0 < a_pull <= LEAD_CLOSE_OPENING_A_MS2 + 0.05
@@ -814,12 +813,10 @@ def test_settled_rematch_deadbands_accel_ceil_while_gap_ok_or_opening():
   assert a_pull_40 == pytest.approx(lead_hunt_accel_ms2(a2, 40.0))
   assert a_pull_40 < a2 * LEAD_HUNT_A_FRAC + 1e-9
   assert a_pull_40 < a2 - 0.10
-  # Matched, gap OK: trickle if slightly closing or opening.
+  # Matched, gap OK: trickle if slightly closing, 0 if opening.
   a_ok = lead_close_accel_ms2(2, v_rel=0.2, slack=8.0, settled=True)
   assert a_ok == pytest.approx(LEAD_CLOSE_OPENING_A_MS2)
-  assert lead_close_accel_ms2(2, v_rel=-0.1, slack=8.0, settled=True) == pytest.approx(
-    LEAD_CLOSE_OPENING_A_MS2
-  )
+  assert lead_close_accel_ms2(2, v_rel=-0.1, slack=8.0, settled=True) == pytest.approx(0.0)
   # Ego clearly slower: Accel so grade / cruise can recover speed.
   assert lead_close_accel_ms2(2, v_rel=-0.6, slack=10.0, settled=True) == pytest.approx(a2)
   assert lead_close_accel_ms2(2, v_rel=-0.6, slack=18.0, settled=True) == pytest.approx(a2)
@@ -856,6 +853,8 @@ def test_remaining_close_commands_trickle_when_mpc_sits_at_zero():
   assert lead_remaining_close_a_ms2(0.0, -0.4, 0.0) == pytest.approx(LEAD_CLOSE_OPENING_A_MS2)
   assert lead_remaining_close_a_ms2(0.0, -0.4, -2.0) == pytest.approx(0.0)
   assert lead_remaining_close_a_ms2(0.0, 1.6, 3.0) == pytest.approx(0.0)
+  assert lead_remaining_close_a_ms2(0.0, -0.6, 10.0) == pytest.approx(LEAD_CLOSE_A_MIN_MS2)
+  assert lead_remaining_close_a_ms2(0.0, -0.3, 18.0) == pytest.approx(0.0)
 
 
 def test_settled_gap_hunt_is_small_accel_proportional_not_ceil():

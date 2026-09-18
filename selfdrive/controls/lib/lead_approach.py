@@ -254,11 +254,11 @@ def lead_hunt_accel_ms2(a, slack) -> float:
 def lead_settled_rematch_a_ms2(a, v_rel, slack) -> float:
   """After match: no Accel-ceil rematch while the gap is OK or opening.
 
-  A 0 ceiling parks cruise below the lead after a grade dip (closed-loop
-  plant 24.38 vs 25.0). Comfortable opening trickles (~0.08), not Accel
-  ceil — the 49→59 chatter was +0.32 for 7 s. Ego clearly slower
-  (`v_rel` ≲ −0.5) may use Accel to hold/recover speed. Still inside
-  Follow Distance is a too-close recovery, not rematch. Gap error ≳ 15 m
+  Comfortable opening stays 0 (49→59 was Accel ceil +0.32 for 7 s).
+  Ego clearly slower (`v_rel` ≲ −0.5) may use Accel so grade/cruise can
+  recover speed — a 0 ceiling parked the closed-loop plant at 24.38.
+  Still inside Follow Distance is a too-close recovery, not rematch.
+  At the gap with speeds matched, Accel may hold grade. Gap error ≳ 15 m
   with `|closing| < 1` may hunt. Rematch above trickle if slack ≳ 20 m
   *and* the lead is pulling away. Closing ≳ 1.0 is already 0 from the
   caller.
@@ -270,13 +270,13 @@ def lead_settled_rematch_a_ms2(a, v_rel, slack) -> float:
   if s is not None and s >= 0.0 and v <= -LEAD_SETTLE_VREL_MS:
     return a
   if s is None or s < LEAD_HUNT_SLACK_M:
-    if opening and s is not None and s < 0.0:
+    if opening and s is not None and (s > LEAD_SETTLE_FINISH_SLACK_M or s < 0.0):
       return 0.0
     if s is not None and s <= 0.5 and abs(v) < LEAD_SETTLE_VREL_MS:
       return a
     return min(a, LEAD_CLOSE_OPENING_A_MS2)
   if opening and s < LEAD_REMATCH_PULL_SLACK_M:
-    return min(a, LEAD_CLOSE_OPENING_A_MS2)
+    return 0.0
   return lead_hunt_accel_ms2(a, s)
 
 
@@ -322,9 +322,10 @@ def lead_remaining_close_a_ms2(output_a, v_rel, slack):
 
   lead_close_accel_ms2 is a +a *ceiling*. A same-speed hang 2–4 m long of
   FD therefore stays at a_target=0 unless something commands the rematch
-  trickle. Same when ego sags below the lead at/near FD. Real overlay
-  ease (|a| ≥ nibble) still wins; a fading nibble must not park the gap.
-  Do not rematch into a ≳ 1.5 close.
+  trickle. Same when ego sags below the lead at/near FD. Ego clearly
+  slower (`v_rel` ≲ −0.5) commands Accel 1 so grade can recover — the
+  ceiling alone left the plant 0.015 m/s short. Real overlay ease
+  (|a| ≥ nibble) still wins. Do not rematch into a ≳ 1.5 close.
   """
   if output_a is None or slack is None:
     return output_a
@@ -336,8 +337,11 @@ def lead_remaining_close_a_ms2(output_a, v_rel, slack):
   v = 0.0 if v_rel is None else float(v_rel)
   finish = 0.0 < s <= LEAD_SETTLE_FINISH_SLACK_M
   sag = 0.0 <= s <= LEAD_SETTLE_FINISH_SLACK_M and v < 0.0
+  speed_sag = s >= 0.0 and v <= -LEAD_SETTLE_VREL_MS
   if finish or sag:
     return max(float(output_a), LEAD_CLOSE_OPENING_A_MS2)
+  if speed_sag:
+    return max(float(output_a), LEAD_CLOSE_A_MIN_MS2)
   return output_a
 
 
