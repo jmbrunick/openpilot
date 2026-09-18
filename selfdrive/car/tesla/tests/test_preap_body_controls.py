@@ -2198,6 +2198,16 @@ def test_rain_debug_does_not_put_status_param():
   assert "preap_body_controls" not in src
 
 
+def test_put_wiper_status_uses_exact_nap_wiper_rain_status_key():
+  """Unknown param keys fail put silently; qlog InitData only logs this name."""
+  import inspect
+  from openpilot.selfdrive.car.tesla.preap_body_controls import _put_wiper_status
+  src = inspect.getsource(_put_wiper_status)
+  assert src.count('"NAPWiperRainStatus"') >= 1
+  assert "NAPWiperRain" in src
+  assert "NAPWiperSpeed" not in src
+
+
 def test_int_on_ignore_gear_and_camera(monkeypatch):
   from openpilot.selfdrive.car.tesla import preap_body_controls as body
 
