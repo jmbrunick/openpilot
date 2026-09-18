@@ -63,6 +63,7 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   lead_follow_slack_m,
   lead_hunt_accel_ms2,
   lead_is_settled_sample,
+  lead_remaining_close_a_ms2,
   nap_t_follow,
   resolve_lead_close_hold,
   slew_follow_plus_a,
@@ -661,6 +662,7 @@ def test_planner_wires_hysteresis_and_slew():
   assert "soft_limit_mpc_a_target(" in planner
   assert "cap_closing_lead_accel(" in planner
   assert "d_rel=overlay_d" in planner
+  assert "lead_remaining_close_a_ms2(" in planner
   assert "live_ok = bool(lead.status) and lead_close_should_cap(" in planner
   assert "lead_owns_plan(" in planner
   assert "slack=overlay_slack" in planner
@@ -801,13 +803,29 @@ def test_settled_rematch_deadbands_accel_ceil_while_gap_ok_or_opening():
   assert lead_close_accel_ms2(2, v_rel=0.2, slack=3.0, settled=True) == pytest.approx(
     LEAD_CLOSE_OPENING_A_MS2
   )
-  assert lead_close_accel_ms2(2, v_rel=-0.1, slack=0.0, settled=True) == pytest.approx(0.0)
+  # At Follow Distance, a slightly slower ego still trickles so the gap
+  # does not sag open (closed-loop plant was 24.4 vs 25.0).
+  assert lead_close_accel_ms2(2, v_rel=-0.1, slack=0.0, settled=True) == pytest.approx(
+    LEAD_CLOSE_OPENING_A_MS2
+  )
   # Large same-speed gap that never matched: Accel-owned catch-up.
   assert lead_close_accel_ms2(2, v_rel=0.0, slack=40.0, settled=False) == pytest.approx(a2)
   assert lead_close_accel_ms2(5, v_rel=0.0, slack=80.0) == pytest.approx(LEAD_CLOSE_A_BASE_MS2)
-  # #190: closing ≳ 1.0 still 0 after settle.
+  # #190: closing ≳ 1.0 still 0 after settle on a large gap.
   assert lead_close_accel_ms2(2, v_rel=1.2, slack=22.0, settled=True) == pytest.approx(0.0)
   assert lead_close_accel_ms2(2, v_rel=1.6, slack=40.0, settled=True) == pytest.approx(0.0)
+  # Last meters may still trickle while closing ≳ 1.0 (finish FD).
+  assert lead_close_accel_ms2(2, v_rel=1.2, slack=3.0, settled=True) == pytest.approx(
+    LEAD_CLOSE_OPENING_A_MS2
+  )
+
+
+def test_remaining_close_commands_trickle_when_mpc_sits_at_zero():
+  assert lead_remaining_close_a_ms2(0.0, 0.0, 3.0) == pytest.approx(LEAD_CLOSE_OPENING_A_MS2)
+  assert lead_remaining_close_a_ms2(-0.20, 0.2, 3.0) == pytest.approx(-0.20)
+  assert lead_remaining_close_a_ms2(0.0, 0.2, 8.0) == pytest.approx(0.0)
+  assert lead_remaining_close_a_ms2(0.0, -0.4, 0.0) == pytest.approx(LEAD_CLOSE_OPENING_A_MS2)
+  assert lead_remaining_close_a_ms2(0.0, 1.6, 3.0) == pytest.approx(0.0)
 
 
 def test_settled_gap_hunt_is_small_accel_proportional_not_ceil():
@@ -1053,6 +1071,10 @@ def test_closing_lead_hard_blocks_rematch_plus_a():
   assert cap_closing_lead_accel(
     0.20, 4.4, a_lead=0.0, lead_present=True, d_rel=160.0,
   ) == pytest.approx(-LEAD_CLOSING_MATCH_GAIN * 4.4)
+  # Last meters: closing 1.0–1.5 may keep trickle (finish FD).
+  assert cap_closing_lead_accel(
+    LEAD_CLOSE_OPENING_A_MS2, 1.2, a_lead=0.0, lead_present=True, slack=3.0,
+  ) == pytest.approx(LEAD_CLOSE_OPENING_A_MS2)
 
 
 def test_alead_only_does_not_own_opening_or_far_slack():

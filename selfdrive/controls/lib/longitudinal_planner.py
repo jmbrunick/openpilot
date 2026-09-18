@@ -26,6 +26,7 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   lead_close_should_cap,
   lead_follow_slack_m,
   lead_owns_plan,
+  lead_remaining_close_a_ms2,
   resolve_lead_close_hold,
   slew_follow_plus_a,
   slew_lead_approach_a,
@@ -483,6 +484,9 @@ class LongitudinalPlanner:
         output_a_target, overlay_v_rel, a_lead=lead_a_k,
         lead_present=live_ok or lead_held, owned=self._lead_close_hold_owned,
         slack=overlay_slack, d_rel=overlay_d,
+      )
+      output_a_target = lead_remaining_close_a_ms2(
+        output_a_target, overlay_v_rel, overlay_slack,
       )
       if live_ok or lead_held:
         output_a_target = slew_follow_plus_a(
