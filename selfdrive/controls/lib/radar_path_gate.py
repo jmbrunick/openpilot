@@ -1,19 +1,20 @@
 """Travel-path and oncoming gates for radar follow-lead selection.
 
-e1 qlog `1c95345a3286a5db|000000e1--b993674371` (tip `638f5f7d4`,
-NAPWiperSpeed==3) confirmed #201 rain-hold latched off-path STAT /
-oncoming tracks as leadOne (modelProb ≪ 0.15 → aTarget=−3.5).
-Episodes: 20:46:45, 20:49:10, 20:51:52, 20:53:45, 20:54:53 CT.
-#199 look-ahead exonerated.
+e1 qlog `1c95345a3286a5db|000000e1--b993674371` (tip `638f5f7d4`)
+confirmed #201 rain-hold latched off-path STAT / oncoming tracks as
+leadOne (modelProb ≪ 0.15 → aTarget=−3.5). Episodes: 20:46:45,
+20:49:10, 20:51:52, 20:53:45, 20:54:53 CT. #199 look-ahead exonerated.
 
 The driving path is `modelV2.position` — the same plan path the UI
 draws and vision uses for lead-in-path (`leadsV3` is the in-path lead
-head). Radar used for long, including rain-hold, must sit on that path.
-Rain-hold latches path-valid *associations* only; it does not prefer
-an unassociated Bosch track in a wide FOV.
+head). Radar used for long — default path-gated prefer, not rain-Auto
+only — must sit on that path. Prefer latches path-valid *associations*
+only; it does not pick an unassociated Bosch track in a wide FOV.
 
 Stationary in-path objects (stopped cars) stay valid: vLead ≈ 0, not
-oncoming. Same-direction leads stay valid.
+oncoming. Same-direction leads stay valid. Off-path / oncoming are
+always rejected. Unhealthy radar / no path association falls back to
+stock fusion.
 """
 from __future__ import annotations
 

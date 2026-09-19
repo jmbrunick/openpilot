@@ -28,6 +28,9 @@ class RadarScenario:
     services = ["modelV2", "carState", "liveTracks"]
     self.sm = messaging.SubMaster(services, ignore_alive=services, ignore_avg_freq=services)
     self.radar = RadarD()
+    # Unit tests have no NAP settings. Product default is path-gated prefer
+    # when Radar Enabled is On — do not require Auto wipers.
+    self.radar.rain_gate.set_enabled_override(True)
     self.v_ego = v_ego
     self.frame = 0
 
@@ -49,6 +52,12 @@ class RadarScenario:
 
   def set_rain_hold(self, raining: bool | None):
     self.radar.rain_gate.set_override(raining)
+
+  def set_radar_enabled(self, enabled: bool | None):
+    self.radar.rain_gate.set_enabled_override(enabled)
+
+  def set_radar_reliable(self, healthy: bool | None):
+    self.radar.reliability.set_override(healthy)
 
   def _model_message(self, time_s: float, vision_d_rel: float, vision_v: float | None,
                      vision_prob: float | None, vision_y: float | None = None,
@@ -179,9 +188,10 @@ def _dig_radar_point(d_rel: float = DIG_RADAR_DREL):
   return (DIG_RADAR_ID, d_rel, 0.0, 0.0)
 
 
-def test_dry_vision_confident_wrong_range_still_drops_to_vision():
-  """Off rain gate: existing fusion. High modelProb does not keep a mismatched radar track."""
+def test_stock_fusion_drops_to_vision_when_prefer_off():
+  """Radar Enabled Off / explicit stock: high modelProb does not keep a mismatched track."""
   scenario = RadarScenario()
+  scenario.set_radar_enabled(False)
   scenario.set_rain_hold(False)
   lead = scenario.step(1.0, vision_d_rel=DIG_RADAR_DREL, radar_points=[_dig_radar_point()],
                        vision_prob=DIG_VISION_PROB)
@@ -193,6 +203,23 @@ def test_dry_vision_confident_wrong_range_still_drops_to_vision():
   assert not lead.radar
   assert lead.dRel == pytest.approx(DIG_VISION_WRONG_DREL)
   assert lead.modelProb == pytest.approx(DIG_VISION_PROB)
+
+
+def test_prefer_without_auto_holds_radar_through_vision_confident_wrong_range():
+  """Default prefer (no Auto wiper): keep track 806 through the −32 m vision jump."""
+  scenario = RadarScenario()
+  # No set_rain_hold(True) — prefer is the default operating mode.
+  lead = scenario.step(1.0, vision_d_rel=DIG_RADAR_DREL, radar_points=[_dig_radar_point()],
+                       vision_prob=DIG_VISION_PROB)
+  assert lead.radar
+  assert lead.radarTrackId == DIG_RADAR_ID
+
+  for frame, vision_d_rel in enumerate((61.6, 89.0, 65.5, 68.3, 49.4), start=1):
+    lead = scenario.step(1.0 + frame * 0.05, vision_d_rel=vision_d_rel,
+                         radar_points=[_dig_radar_point()], vision_prob=DIG_VISION_PROB)
+    assert lead.radar, f"frame {frame} dropped radar at vision {vision_d_rel}"
+    assert lead.radarTrackId == DIG_RADAR_ID
+    assert lead.dRel == pytest.approx(DIG_RADAR_DREL)
 
 
 def test_rain_holds_radar_through_vision_confident_wrong_range():
@@ -224,13 +251,36 @@ def test_rain_raises_vision_only_modelprob_bar():
   assert lead.dRel == pytest.approx(40.0)
 
 
-def test_dry_vision_only_modelprob_bar_unchanged():
+def test_stock_fusion_vision_only_modelprob_bar_unchanged():
   scenario = RadarScenario()
+  scenario.set_radar_enabled(False)
   scenario.set_rain_hold(False)
   lead = scenario.step(1.0, vision_d_rel=40.0, vision_prob=0.60)
   assert lead.status
   assert not lead.radar
   assert lead.dRel == pytest.approx(40.0)
+
+
+def test_unhealthy_radar_uses_stock_fusion_and_sets_fallback():
+  """Enabled but erratic/faulted radar → stock fusion + radarPreferFallback."""
+  scenario = RadarScenario()
+  scenario.set_radar_reliable(False)
+  lead = scenario.step(1.0, vision_d_rel=DIG_RADAR_DREL, radar_points=[_dig_radar_point()],
+                       vision_prob=DIG_VISION_PROB)
+  assert lead.radar
+  lead = scenario.step(1.1, vision_d_rel=DIG_VISION_WRONG_DREL, radar_points=[_dig_radar_point()],
+                       vision_prob=DIG_VISION_PROB)
+  assert not lead.radar
+  assert lead.dRel == pytest.approx(DIG_VISION_WRONG_DREL)
+  assert scenario.radar.radar_state.radarPreferFallback
+
+
+def test_radar_disabled_does_not_set_fallback_alert():
+  scenario = RadarScenario()
+  scenario.set_radar_enabled(False)
+  scenario.set_radar_reliable(False)
+  scenario.step(1.0, vision_d_rel=40.0, radar_points=[(7, 40.0, 0.0, 0.0)])
+  assert not scenario.radar.radar_state.radarPreferFallback
 
 
 def test_rain_hold_survives_many_mismatch_frames_while_radar_lives():
@@ -350,6 +400,33 @@ def test_on_path_stationary_still_acquired_dry_and_rain():
     lead = scenario.step(1.0, vision_d_rel=28.0, radar_points=[stopped], vision_v=0.0)
     assert lead.radar, f"rain={raining} dropped on-path stationary"
     assert lead.radarTrackId == 11
+
+
+def test_prefer_without_auto_path_oncoming_stationary():
+  """Binding: prefer (no Auto) — path on/off, oncoming reject, on-path STAT keep."""
+  scenario = RadarScenario()
+  path_x = [0.0, 20.0, 40.0, 80.0]
+  path_y = [0.0, 0.0, 0.0, 0.0]
+  off = scenario.step(1.0, vision_d_rel=40.0, radar_points=[(3, 40.0, 2.8, 0.0)],
+                      path_x=path_x, path_y=path_y)
+  assert not off.radar
+
+  oncoming = RadarScenario()
+  lead = oncoming.step(1.0, vision_d_rel=50.0, radar_points=[(9, 50.0, -1.2, ONCOMING_VREL)],
+                       vision_v=-18.0)
+  assert not lead.radar
+  assert not lead.status
+
+  stopped = RadarScenario(v_ego=12.0)
+  lead = stopped.step(1.0, vision_d_rel=28.0, radar_points=[(11, 28.0, 0.2, -12.0)],
+                      vision_v=0.0)
+  assert lead.radar
+  assert lead.radarTrackId == 11
+
+  on_path = RadarScenario()
+  lead = on_path.step(1.0, vision_d_rel=40.0, radar_points=[IN_PATH])
+  assert lead.radar
+  assert lead.radarTrackId == 11
 
 
 def test_in_path_lead_still_acquired_dry_and_rain():

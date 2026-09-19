@@ -1,30 +1,33 @@
-"""Rain-sensing radar-hold for Pre-AP longitudinal lead selection.
+"""Path-gated radar prefer for Pre-AP longitudinal lead selection.
+
+Default operating mode — not rain-Auto-only. Prefer a live **path-valid
+radar association** for long lead when:
+
+  1. NAP → Radar Settings → Radar Enabled is On (`NAPRadarEnabled`)
+  2. radar is reliable (no hardware fault / stream timeout / erratic
+     track kinematics)
+
+NAPWiperSpeed==3 was a temporary rain gate. It is not required.
+
+If radar is disabled, unhealthy, or the track is not path-associated,
+fall back to stock vision-radar fusion. Off-path / oncoming are always
+rejected. On-path stationary is kept.
 
 Evening rain on Scallywag (route 1c95345a3286a5db|000000df--467073c363)
 flapped leadOne radar↔vision: vision-only dRel steps ~7.75 m mean vs
-radar-associated 0.48 m, often with modelProb ≥ 0.9 and a −16 to −32 m
-range error. Radar track 806 stayed smooth whenever association held.
+radar-associated 0.48 m. Radar track 806 stayed smooth when associated.
 
-e1 `1c95345a3286a5db|000000e1--b993674371` (tip 638f5f7d4, Auto=3)
-then showed the hold latching off-path STAT / oncoming as leadOne
-(mp ≪ 0.15, aTarget=−3.5). #199 look-ahead is not implicated.
-
-NAPWiperSpeed==3 is the Auto / rain-sensing stalk setting — not a proof
-that it is raining right now. While that mode is selected, hold a live
-**path-valid radar association** through wet-vision range flaps. Off /
-Int / On leave stock fusion unchanged. Do not require rain=1.
+e1 `1c95345a3286a5db|000000e1--b993674371` (tip 638f5f7d4) then showed
+the old rain-hold latching off-path STAT / oncoming as leadOne
+(mp ≪ 0.15, aTarget=−3.5). Path + vLead gates stay. #199 is not
+implicated.
 
 This is not “prefer any Bosch track in a wide FOV.” Radar used for long
 must sit on the same model driving path vision uses for lead-in-path
-(`modelV2.position`). Filter is path of travel:
+(`modelV2.position`):
   on path + stationary → KEEP (stopped lead / pedestrian)
   off path + stationary → REJECT (signs, gas station)
   oncoming / opposing → REJECT
-yRel 2.5→2.0 is secondary, not a substitute for path association.
-Do not blanket-reject vLead≈0.
-
-Gate (live Params):
-  radar_prefer = NAPWiperSpeed == 3
 """
 from __future__ import annotations
 
@@ -36,14 +39,26 @@ from openpilot.selfdrive.controls.lib.radar_path_gate import (
   radar_follow_ok,
 )
 
-# Keep in sync with preap_body_controls. 3 is Auto / rain-sensing On.
+# Keep in sync with preap_body_controls / nap_params.
 NAP_WIPER_SPEED = "NAPWiperSpeed"
 WIPER_SETTING_AUTO = 3
+NAP_RADAR_ENABLED = "NAPRadarEnabled"
+NAP_RADAR_IGNORE_HW_FAIL = "NAPRadarIgnoreHwFail"
 
 # Hold last radar lead this many model frames after the track ID disappears.
 RAIN_RADAR_LOST_HOLD_FRAMES = 8
-# Vision-only bar while rain-sensing is On. Secondary — dig flaps were already ≥ 0.9.
+# Vision-only bar while path-gated prefer is active. Dig flaps were already ≥ 0.9.
 RAIN_VISION_ONLY_MIN_PROB = 0.90
+
+# Reliability: hardware / timeout trip immediately. Erratic kinematics
+# need a short streak. Recover after this many consecutive good samples
+# so a single clean frame cannot chatter the alert / prefer latch.
+RELIABLE_FAIL_FRAMES = 4
+RELIABLE_OK_FRAMES = 16
+RELIABLE_DROPOUT_S = 0.50
+RELIABLE_YREL_JUMP_M = 4.0
+RELIABLE_DREL_JUMP_M = 25.0
+RELIABLE_MIN_VEGO_MS = 5.0
 # EP_2059 (e1 segs 13–17): #201 RAIN_INLANE=2.5 latched near-edge
 # oncoming 771/802 at |yRel| 2.23–2.48 (0.02–0.27 m inside 2.5).
 # Justin: 2.5 → 2.0 m (~6.6 ft) + reject vLead < 0. Path association
@@ -79,7 +94,7 @@ def wiper_is_auto(wiper_speed: Any) -> bool:
 
 
 def rain_sensing_on(wiper_speed: Any) -> bool:
-  """Mode gate for radar-prefer. rain=1 / score are not required."""
+  """Legacy Auto-wiper helper. Not the prefer gate — prefer is default."""
   return wiper_is_auto(wiper_speed)
 
 
@@ -93,16 +108,167 @@ def read_wiper_speed(params: Any) -> int:
     return 0
 
 
-class RainRadarGate:
-  """Live Params rain-sensing mode gate. Tests inject params or set_override()."""
+def _param_bool(params: Any, key: str, default: bool = False) -> bool:
+  if params is None:
+    return default
+  try:
+    if hasattr(params, "get_bool"):
+      return bool(params.get_bool(key))
+    val = params.get(key, return_default=True)
+    if isinstance(val, (bytes, bytearray)):
+      val = val.decode("utf-8", errors="ignore")
+    if val is None or val == "":
+      return default
+    return bool(int(val)) if not isinstance(val, bool) else bool(val)
+  except Exception:
+    return default
+
+
+def radar_errors_unhealthy(errors: Any, ignore_hw_fail: bool = False) -> bool:
+  """Hardware / CAN faults. Ignore-HW-fail only masks radarFault."""
+  if errors is None:
+    return False
+
+  def _flag(name: str) -> bool:
+    if isinstance(errors, dict):
+      return bool(errors.get(name, False))
+    return bool(getattr(errors, name, False))
+
+  if _flag("canError") or _flag("radarUnavailableTemporary"):
+    return True
+  if _flag("radarFault") and not ignore_hw_fail:
+    return True
+  return False
+
+
+def _track_xy(track: Any) -> tuple[float, float] | None:
+  try:
+    d_rel = float(track.dRel)
+    y_rel = float(track.yRel)
+  except (TypeError, ValueError, AttributeError):
+    return None
+  if not (d_rel == d_rel and y_rel == y_rel):  # NaN
+    return None
+  return d_rel, y_rel
+
+
+class RadarReliability:
+  """Practical Bosch health for path-gated prefer.
+
+  Immediate trip: CAN/fault bits, measurement timeout, empty table while
+  moving. Streak trip: same-ID |ΔyRel| / |ΔdRel| jumps that look like a
+  glitching table. Recover after RELIABLE_OK_FRAMES clean samples so the
+  HUD / prefer latch does not chatter.
+  """
+
+  def __init__(self):
+    self.healthy = True
+    self.reason = ""
+    self._bad_streak = 0
+    self._good_streak = 0
+    self._last_xy: dict[int, tuple[float, float]] = {}
+    self._override: bool | None = None
+
+  def set_override(self, healthy: bool | None) -> None:
+    self._override = None if healthy is None else bool(healthy)
+
+  def reset(self) -> None:
+    self.healthy = True
+    self.reason = ""
+    self._bad_streak = 0
+    self._good_streak = 0
+    self._last_xy = {}
+
+  def update(self, tracks: dict[int, Any] | None = None,
+             errors: Any = None, v_ego: float = 0.0,
+             timed_out: bool = False, ignore_hw_fail: bool = False) -> bool:
+    if self._override is not None:
+      self.healthy = self._override
+      self.reason = "" if self.healthy else "override"
+      return self.healthy
+
+    bad, reason = self._sample_bad(tracks or {}, errors, v_ego, timed_out,
+                                   ignore_hw_fail)
+    if bad:
+      self._bad_streak += 1
+      self._good_streak = 0
+      immediate = reason in ("timeout", "fault", "dropout")
+      if immediate or self._bad_streak >= RELIABLE_FAIL_FRAMES:
+        self.healthy = False
+        self.reason = reason
+    else:
+      self._good_streak += 1
+      self._bad_streak = 0
+      if self._good_streak >= RELIABLE_OK_FRAMES:
+        self.healthy = True
+        self.reason = ""
+    return self.healthy
+
+  def _sample_bad(self, tracks: dict[int, Any], errors: Any, v_ego: float,
+                  timed_out: bool, ignore_hw_fail: bool) -> tuple[bool, str]:
+    if timed_out:
+      self._last_xy = {}
+      return True, "timeout"
+    if radar_errors_unhealthy(errors, ignore_hw_fail=ignore_hw_fail):
+      return True, "fault"
+
+    snap: dict[int, tuple[float, float]] = {}
+    for tid, track in tracks.items():
+      xy = _track_xy(track)
+      if xy is None:
+        continue
+      try:
+        snap[int(tid)] = xy
+      except (TypeError, ValueError):
+        continue
+
+    if (float(v_ego) >= RELIABLE_MIN_VEGO_MS and not snap and
+        self._last_xy):
+      self._last_xy = {}
+      return True, "dropout"
+
+    erratic = False
+    for tid, (d_rel, y_rel) in snap.items():
+      prev = self._last_xy.get(tid)
+      if prev is None:
+        continue
+      if abs(y_rel - prev[1]) > RELIABLE_YREL_JUMP_M:
+        erratic = True
+        break
+      if abs(d_rel - prev[0]) > RELIABLE_DREL_JUMP_M:
+        erratic = True
+        break
+    self._last_xy = snap
+    if erratic:
+      return True, "erratic"
+    return False, ""
+
+
+class RadarPreferGate:
+  """Default path-gated prefer. Requires Radar Enabled + reliability.
+
+  NAPWiperSpeed is not consulted. Tests inject params, set_override(),
+  or set_enabled_override().
+  """
 
   def __init__(self, params: Any = None):
     self._params = params
     self._override: bool | None = None
+    self._enabled_override: bool | None = None
     self._params_failed = False
+    self.enabled = True
+    self.reliable = True
+    self.ignore_hw_fail = False
 
-  def set_override(self, raining: bool | None) -> None:
-    self._override = None if raining is None else bool(raining)
+  def set_override(self, prefer: bool | None) -> None:
+    """Test hook. True/False forces prefer; None uses enabled+health."""
+    self._override = None if prefer is None else bool(prefer)
+
+  def set_enabled_override(self, enabled: bool | None) -> None:
+    self._enabled_override = None if enabled is None else bool(enabled)
+
+  def set_reliable(self, ok: bool) -> None:
+    self.reliable = bool(ok)
 
   def _get_params(self) -> Any:
     if self._params is not None or self._params_failed:
@@ -115,13 +281,36 @@ class RainRadarGate:
       self._params = None
     return self._params
 
-  def update(self) -> bool:
-    if self._override is not None:
-      return self._override
+  def _read_enabled(self) -> bool:
+    if self._enabled_override is not None:
+      return bool(self._enabled_override)
     params = self._get_params()
     if params is None:
+      # Unit tests / params unavailable: prefer is the default mode.
+      return True
+    return _param_bool(params, NAP_RADAR_ENABLED, default=False)
+
+  def read_ignore_hw_fail(self) -> bool:
+    self.ignore_hw_fail = _param_bool(self._get_params(), NAP_RADAR_IGNORE_HW_FAIL, default=False)
+    return self.ignore_hw_fail
+
+  def update(self) -> bool:
+    self.ignore_hw_fail = self.read_ignore_hw_fail()
+    self.enabled = self._read_enabled()
+    if self._override is not None:
+      return bool(self._override)
+    return self.enabled and self.reliable
+
+  @property
+  def fallback_alert(self) -> bool:
+    """Enabled but prefer dropped because radar is unhealthy. Not Off."""
+    if self._override is False:
       return False
-    return rain_sensing_on(read_wiper_speed(params))
+    return bool(self.enabled) and not bool(self.reliable)
+
+
+# Back-compat name used by older tests / RadarD wiring.
+RainRadarGate = RadarPreferGate
 
 
 def radar_hold_kinematics_ok(track: Any, max_yrel: float = RAIN_INCUMBENT_MAX_YREL_M,
@@ -201,7 +390,7 @@ def pick_rain_radar_track(associated: Any | None, tracks: dict[int, Any],
                           path_x: Sequence[float] | None = None,
                           path_y: Sequence[float] | None = None,
                           vision_prob: float = 1.0) -> Any | None:
-  """Hold a path-valid radar *association* while rain-sensing is On.
+  """Hold a path-valid radar *association* while prefer is active.
 
   Not a wide-FOV radar prefer. A track is eligible only if it is the
   current vision-associated lead (on the OP path) or the incumbent

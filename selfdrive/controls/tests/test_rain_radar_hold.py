@@ -19,16 +19,21 @@ from openpilot.selfdrive.controls.lib.radar_path_gate import (
   path_y_at_x,
 )
 from openpilot.selfdrive.controls.lib.rain_radar_hold import (
+  NAP_RADAR_ENABLED,
   RAIN_CUT_IN_GAP_M,
   RAIN_FAR_HOLD_DREL_M,
   RAIN_INLANE_YREL_M,
+  RELIABLE_FAIL_FRAMES,
+  RELIABLE_OK_FRAMES,
+  RadarPreferGate,
+  RadarReliability,
   RainRadarGate,
   closest_inlane_radar,
   pick_rain_radar_track,
+  radar_errors_unhealthy,
   radar_hold_kinematics_ok,
   rain_far_hold_ok,
   rain_sensing_on,
-  read_wiper_speed,
   wiper_is_auto,
 )
 
@@ -39,6 +44,9 @@ class FakeParams:
 
   def get(self, key, return_default=False):
     return self.values.get(key)
+
+  def get_bool(self, key):
+    return bool(self.values.get(key, False))
 
 
 def nap_wiper_status(*, rain=1, wipe=1, acq=1, score=5.03):
@@ -54,7 +62,7 @@ def track(identifier: int, d_rel: float, y_rel: float = 0.0, v_rel: float = 0.0)
 
 
 def test_auto_is_rain_sensing_mode_not_weather():
-  """Speed==3 means Auto / rain-sensing On. It is not proof that it is raining."""
+  """Speed==3 still means Auto. It is not the prefer gate anymore."""
   assert wiper_is_auto(3)
   assert rain_sensing_on(3)
   for speed in (0, 1, 2):
@@ -62,51 +70,98 @@ def test_auto_is_rain_sensing_mode_not_weather():
     assert not rain_sensing_on(speed)
 
 
-def test_auto_on_radar_prefer_without_rain_one():
-  """Do not require rain=1 / acq= / score. Auto On is enough."""
+def test_prefer_without_auto_when_radar_enabled():
+  """Binding: prefer is default. Do not require NAPWiperSpeed==3 / rain=1."""
   params = FakeParams({
-    "NAPWiperSpeed": 3,
+    NAP_RADAR_ENABLED: True,
+    "NAPWiperSpeed": 0,
     "NAPWiperRainStatus": nap_wiper_status(rain=0, wipe=0, acq=0, score=0.2),
   })
-  assert RainRadarGate(params=params).update()
-
-
-def test_auto_on_with_missing_status_still_radar_prefer():
-  params = FakeParams({"NAPWiperSpeed": 3})
-  assert RainRadarGate(params=params).update()
-
-
-def test_manual_wiper_modes_keep_dry_fusion_even_if_status_says_rain():
-  """Off / Int / On are not rain-sensing. Wet status must not flip the gate."""
-  wet = nap_wiper_status(rain=1, wipe=1, acq=1, score=9.0)
-  for speed in (0, 1, 2):
-    params = FakeParams({"NAPWiperSpeed": speed, "NAPWiperRainStatus": wet})
-    assert not RainRadarGate(params=params).update()
-
-
-def test_auto_not_inferred_from_wipe_or_collar():
-  params = FakeParams({
-    "NAPWiperSpeed": 1,
-    "NAPWiperRainStatus": nap_wiper_status(rain=1, wipe=1) + " collar=1",
-  })
-  assert not RainRadarGate(params=params).update()
-  assert read_wiper_speed(params) == 1
-
-
-def test_rain_gate_reads_live_speed_param():
-  params = FakeParams({"NAPWiperSpeed": 3})
-  gate = RainRadarGate(params=params)
+  gate = RadarPreferGate(params=params)
   assert gate.update()
-  params.values["NAPWiperSpeed"] = 0
+  assert not gate.fallback_alert
+
+
+def test_prefer_without_auto_for_every_wiper_mode():
+  """Off / Int / On / Auto all prefer when Radar Enabled is On."""
+  wet = nap_wiper_status(rain=1, wipe=1, acq=1, score=9.0)
+  for speed in (0, 1, 2, 3):
+    params = FakeParams({
+      NAP_RADAR_ENABLED: True,
+      "NAPWiperSpeed": speed,
+      "NAPWiperRainStatus": wet,
+    })
+    assert RadarPreferGate(params=params).update(), f"wiper={speed} should prefer"
+
+
+def test_radar_disabled_uses_stock_fusion():
+  """Radar Enabled Off → stock fusion, even if Auto / wet status."""
+  params = FakeParams({
+    NAP_RADAR_ENABLED: False,
+    "NAPWiperSpeed": 3,
+    "NAPWiperRainStatus": nap_wiper_status(rain=1, wipe=1, acq=1, score=9.0),
+  })
+  gate = RadarPreferGate(params=params)
   assert not gate.update()
+  assert not gate.fallback_alert
+
+
+def test_unhealthy_radar_falls_back_and_alerts():
+  """Enabled but unreliable → stock fusion + user-visible fallback."""
+  params = FakeParams({NAP_RADAR_ENABLED: True, "NAPWiperSpeed": 0})
+  gate = RadarPreferGate(params=params)
+  gate.set_reliable(False)
+  assert not gate.update()
+  assert gate.fallback_alert
 
 
 def test_rain_gate_override_skips_params():
-  gate = RainRadarGate(params=FakeParams({"NAPWiperSpeed": 0}))
+  gate = RainRadarGate(params=FakeParams({NAP_RADAR_ENABLED: False}))
   gate.set_override(True)
   assert gate.update()
   gate.set_override(False)
   assert not gate.update()
+  assert not gate.fallback_alert
+
+
+def test_radar_errors_unhealthy_respects_ignore_hw_fail():
+  assert radar_errors_unhealthy({"radarFault": True})
+  assert not radar_errors_unhealthy({"radarFault": True}, ignore_hw_fail=True)
+  assert radar_errors_unhealthy({"canError": True}, ignore_hw_fail=True)
+  assert radar_errors_unhealthy({"radarUnavailableTemporary": True})
+
+
+def test_reliability_trips_on_fault_timeout_dropout_and_erratic():
+  rel = RadarReliability()
+  assert rel.update(tracks={1: track(1, 40.0)}, v_ego=16.0)
+
+  rel = RadarReliability()
+  assert not rel.update(errors={"radarFault": True}, v_ego=16.0)
+  assert rel.reason == "fault"
+
+  rel = RadarReliability()
+  assert not rel.update(tracks={1: track(1, 40.0)}, v_ego=16.0, timed_out=True)
+  assert rel.reason == "timeout"
+
+  rel = RadarReliability()
+  assert rel.update(tracks={1: track(1, 40.0)}, v_ego=16.0)
+  assert not rel.update(tracks={}, v_ego=16.0)
+  assert rel.reason == "dropout"
+
+  rel = RadarReliability()
+  t = track(7, 40.0, y_rel=0.2)
+  assert rel.update(tracks={7: t}, v_ego=16.0)
+  jumpy = track(7, 40.0, y_rel=5.0)
+  for _ in range(RELIABLE_FAIL_FRAMES):
+    rel.update(tracks={7: jumpy}, v_ego=16.0)
+    jumpy = track(7, 40.0, y_rel=jumpy.yRel + 5.0)
+  assert not rel.healthy
+  assert rel.reason == "erratic"
+
+  stable = track(7, 40.0, y_rel=0.2)
+  for _ in range(RELIABLE_OK_FRAMES):
+    rel.update(tracks={7: stable}, v_ego=16.0)
+  assert rel.healthy
 
 
 def test_pick_holds_incumbent_through_vision_mismatch():

@@ -21,6 +21,7 @@ from openpilot.selfdrive.controls.lib.radar_path_gate import (
 from openpilot.selfdrive.controls.lib.rain_radar_hold import (
   RAIN_RADAR_LOST_HOLD_FRAMES,
   RAIN_VISION_ONLY_MIN_PROB,
+  RadarReliability,
   RainRadarGate,
   pick_rain_radar_track,
   rain_far_hold_ok,
@@ -166,7 +167,8 @@ def is_association_candidate(v_ego: float, vision_d_rel: float, lead: capnp._Dyn
                              track: Track, score: float,
                              path_x=None, path_y=None) -> bool:
   # Vision already nominated this lead. Allow lane-edge / early cut-in
-  # (incumbent half-width). Rain-only pick stays on the tighter acquire gate.
+  # (incumbent half-width). Unassociated prefer pick stays on the tighter
+  # acquire gate and still requires a path association.
   if not radar_follow_ok(track, v_ego, path_x, path_y,
                          max_lat=PATH_INCUMBENT_HALF_WIDTH_M):
     return False
@@ -228,15 +230,17 @@ class LeadTrackAssociation:
     self._held_radar_lead: dict[str, Any] | None = None
 
   def update(self, v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capnp._DynamicStructReader,
-             model_v_ego: float, rain_hold: bool = False,
+             model_v_ego: float, rain_hold: bool = False, radar_prefer: bool | None = None,
              path_x=None, path_y=None) -> dict[str, Any]:
+    if radar_prefer is None:
+      radar_prefer = rain_hold
     if tracks and ready and lead_msg.prob > .5:
       track = match_vision_to_track(v_ego, lead_msg, tracks, self.incumbent_track_id,
                                     path_x=path_x, path_y=path_y)
     else:
       track = None
 
-    if rain_hold:
+    if radar_prefer:
       track = pick_rain_radar_track(track, tracks, self.incumbent_track_id, v_ego,
                                     path_x, path_y, vision_prob=float(lead_msg.prob))
       if track is not None:
@@ -254,19 +258,19 @@ class LeadTrackAssociation:
       self._rain_lost_frames = 0
       self._held_radar_lead = None
 
-    vision_prob_min = RAIN_VISION_ONLY_MIN_PROB if rain_hold else .5
+    vision_prob_min = RAIN_VISION_ONLY_MIN_PROB if radar_prefer else .5
 
     lead_dict = {'status': False}
     if track is not None:
       lead_dict = track.get_RadarState(lead_msg.prob)
-    elif (rain_hold and self._held_radar_lead is not None and
+    elif (radar_prefer and self._held_radar_lead is not None and
           self._rain_lost_frames <= RAIN_RADAR_LOST_HOLD_FRAMES and
           radar_follow_ok(self._held_radar_lead, v_ego, path_x, path_y,
                           max_lat=PATH_INCUMBENT_HALF_WIDTH_M) and
           rain_far_hold_ok(self._held_radar_lead, None, float(lead_msg.prob))):
       lead_dict = dict(self._held_radar_lead)
       lead_dict["modelProb"] = float(lead_msg.prob)
-    elif (ready and lead_msg.prob > vision_prob_min and
+    elif (ready and lead_msg.prob >= vision_prob_min and
           vision_lead_follow_ok(lead_msg, v_ego, path_x, path_y)):
       lead_dict = get_RadarState_from_vision(lead_msg, v_ego, model_v_ego)
 
@@ -309,6 +313,7 @@ class RadarD:
     self.lead_one_association = LeadTrackAssociation(low_speed_override=True)
     self.lead_two_association = LeadTrackAssociation(low_speed_override=False)
     self.rain_gate = rain_gate if rain_gate is not None else RainRadarGate()
+    self.reliability = RadarReliability()
 
   def update(self, sm: messaging.SubMaster, rr: car.RadarData):
     self.ready = sm.seen['modelV2']
@@ -319,6 +324,7 @@ class RadarD:
       self.v_ego_hist.append(self.v_ego)
       self.last_v_ego_frame = sm.recv_frame['carState']
 
+    radar_timed_out = False
     if sm.updated['liveTracks']:
       radar_update_time = 1e-9 * sm.logMonoTime['liveTracks']
       radar_dt = RADAR_DT
@@ -348,6 +354,7 @@ class RadarD:
         self.tracks[ids].update(rpt[0], rpt[1], rpt[2], v_lead, rpt[3], self.kalman_params)
     elif self.last_radar_update_time is None or self.current_time - self.last_radar_update_time > RADAR_MEASUREMENT_TIMEOUT:
       self.tracks.clear()
+      radar_timed_out = self.last_radar_update_time is not None
 
     # *** publish radarState ***
     # Exclude liveTracks from validity check: it arrives at radar rate (8Hz for
@@ -364,15 +371,25 @@ class RadarD:
     else:
       model_v_ego = self.v_ego
     leads_v3 = sm['modelV2'].leadsV3
-    rain_hold = bool(self.rain_gate.update())
+    # Prefer is default (Radar Enabled + healthy). Auto wiper is not required.
+    # Unhealthy / disabled → stock fusion. Path/oncoming gates still apply.
+    self.rain_gate.set_reliable(self.reliability.update(
+      tracks=self.tracks, errors=rr.errors, v_ego=self.v_ego,
+      timed_out=radar_timed_out,
+      ignore_hw_fail=self.rain_gate.read_ignore_hw_fail()))
+    radar_prefer = bool(self.rain_gate.update())
+    if hasattr(self.radar_state, "radarPreferFallback"):
+      self.radar_state.radarPreferFallback = bool(self.rain_gate.fallback_alert)
     path_x, path_y = model_path_xy(sm['modelV2'])
     if len(leads_v3) > 1:
       self.radar_state.leadOne = self.lead_one_association.update(
         self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego,
-        rain_hold=rain_hold, path_x=path_x, path_y=path_y)
+        rain_hold=radar_prefer, radar_prefer=radar_prefer,
+        path_x=path_x, path_y=path_y)
       self.radar_state.leadTwo = self.lead_two_association.update(
         self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego,
-        rain_hold=rain_hold, path_x=path_x, path_y=path_y)
+        rain_hold=radar_prefer, radar_prefer=radar_prefer,
+        path_x=path_x, path_y=path_y)
 
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None
