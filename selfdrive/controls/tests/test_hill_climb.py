@@ -20,7 +20,10 @@ from openpilot.selfdrive.controls.lib.hill_climb import (
   hill_climb_applies,
   read_hypermile_hill_climb,
 )
-from openpilot.selfdrive.controls.lib.lead_approach import LEAD_APPROACH_A_MS2
+from openpilot.selfdrive.controls.lib.lead_approach import (
+  LEAD_APPROACH_A_MS2,
+  LEAD_APPROACH_MILD_A_MS2,
+)
 from openpilot.selfdrive.controls.tests.test_hypermile import FakeParams
 from openpilot.selfdrive.mapd.constants import (
   LOOKAHEAD_EARLY,
@@ -478,11 +481,11 @@ def test_planner_lead_still_wins_on_uphill():
   for _ in range(16):
     planner.update(inputs)
   assert planner.output_a_target < 0.0
-  assert planner.output_a_target == pytest.approx(-LEAD_APPROACH_A_MS2, abs=0.08)
+  assert planner.output_a_target == pytest.approx(-LEAD_APPROACH_MILD_A_MS2, abs=0.08)
 
   planner.mpc = h["_ConstantAccelerationMpc"](v_ego, acceleration_mps2=-2.0)
   planner.update(inputs)
-  assert planner.output_a_target == pytest.approx(-2.0, abs=0.08)
+  assert planner.output_a_target == pytest.approx(-LEAD_APPROACH_MILD_A_MS2, abs=0.08)
 
 
 def test_planner_crest_ease_near_max():

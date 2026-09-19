@@ -962,7 +962,7 @@ def test_lead_acquire_slew_kills_first_latch_yoyo():
 
 
 def test_lead_acquire_slew_keeps_rapid_and_near_bumper_authority():
-  """Dumping / near-bumper / near-gap aLead first latch must not wait."""
+  """Dumping / near-bumper / FCW first latch must not wait."""
   assert lead_mpc_needs_full_authority(8.0, 40.0, slack=20.0, confirm_rapid=False)
   assert slew_lead_acquire_a(
     -2.0, 0.0, 8.0, d_rel=40.0, slack=20.0, acquiring=True,
@@ -977,10 +977,17 @@ def test_lead_acquire_slew_keeps_rapid_and_near_bumper_authority():
   assert slew_lead_acquire_a(
     -2.0, 0.0, 1.2, d_rel=118.0, slack=80.0, acquiring=True, fcw=True,
   ) == pytest.approx(-2.0)
-  # Near-gap braking lead: match-speed −a is immediate (planner2).
+  # Near-gap aLead / closing ≳ 1.5 at range: slew (EV slight lift).
   assert slew_lead_acquire_a(
     -0.80, 0.0, 0.4, d_rel=40.0, slack=8.0, acquiring=True, a_lead=-0.80,
-  ) == pytest.approx(-0.80)
+  ) == pytest.approx(-LEAD_ACQUIRE_SLEW_MS2)
+  # 10:48 class: −0.996 at 80–130 m must not punch on first latch.
+  assert slew_lead_acquire_a(
+    -0.996, 0.0, 2.0, d_rel=110.0, slack=60.0, acquiring=True,
+  ) == pytest.approx(-LEAD_ACQUIRE_SLEW_MS2)
+  assert soft_limit_mpc_a_target(-0.996, 25.0, 23.0, 110.0, slack=60.0) == pytest.approx(
+    -LEAD_APPROACH_MILD_A_MS2
+  )
   # Same-speed slack ≤ 0 is a too-close recovery, not a dump.
   assert not lead_mpc_needs_full_authority(0.2, 40.0, slack=-2.0)
   assert soft_limit_mpc_a_target(-2.5, 25.0, 24.8, 40.0, slack=-2.0) == pytest.approx(
@@ -1058,11 +1065,10 @@ def test_lead_close_hold_covers_status_flicker_and_far_bosch():
 
 
 def test_mpc_soft_limit_floors_chatter_not_match_speed():
-  """Mild floor clamps false hard bites and large-slack small adjustments.
+  """Mild floor clamps non-emergency MPC −a to slight-lift.
 
-  Closing ≳ 1.5 m/s *near the follow gap* or aLead ≲ −0.2 still keep
-  full match-speed −a. Large slack (e4 40 m / 9.5 m/s) stays floored.
-  Rapid / FCW / stop still dump. Rematch (gap opening) still floors.
+  Closing ≳ 1.5 / near-gap aLead / 10 mph town entry stay at MILD.
+  Rapid / FCW / near-bumper / crash still dump. Rematch still floors.
   """
   v_ego = 25.0
   d_rel = 40.0
@@ -1087,14 +1093,15 @@ def test_mpc_soft_limit_floors_chatter_not_match_speed():
     -LEAD_APPROACH_MILD_A_MS2
   )
 
-  # Closing at/above the skip (incident started at 1.6 m/s): full −a
-  # *near the follow gap* (unknown slack stays conservative).
+  # Closing at/above 1.5 is still a mild EV close — slight-lift floor.
   v_lead_close = v_ego - LEAD_APPROACH_SOFT_LIMIT_CLOSE_MS
   assert (v_ego - v_lead_close) < LEAD_APPROACH_RAPID_DV_MS
-  assert soft_limit_mpc_a_target(-2.5, v_ego, v_lead_close, d_rel, a_lead=0.0) == pytest.approx(-2.5)
+  assert soft_limit_mpc_a_target(-2.5, v_ego, v_lead_close, d_rel, a_lead=0.0) == pytest.approx(
+    -LEAD_APPROACH_MILD_A_MS2
+  )
   assert soft_limit_mpc_a_target(
     -2.5, v_ego, v_lead_close, d_rel, a_lead=0.0, slack=8.0,
-  ) == pytest.approx(-2.5)
+  ) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
   # e4 40 m / 9.5 m/s: large slack, small adjustment — do not dump −2.33.
   v_e4 = 9.5
   v_lead_e4 = v_e4 - 1.6
@@ -1105,19 +1112,20 @@ def test_mpc_soft_limit_floors_chatter_not_match_speed():
   )
   assert a_e4 == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
   assert a_e4 > -0.60
-  # 10 mph-class close under the rapid gate must not pin −0.22.
+  # 10 mph-class close under the rapid gate stays slight-lift.
   v_lead_town = v_ego - 4.4
   assert (v_ego - v_lead_town) < LEAD_APPROACH_RAPID_DV_MS
-  assert soft_limit_mpc_a_target(-1.5, v_ego, v_lead_town, 17.0) == pytest.approx(-1.5)
-  # Lead braking even with small v_rel: match-speed −a (no slack → still owns).
+  assert soft_limit_mpc_a_target(-1.5, v_ego, v_lead_town, 17.0) == pytest.approx(
+    -LEAD_APPROACH_MILD_A_MS2
+  )
+  # Lead braking / near-gap aLead: still MILD (not match-speed dump).
   assert LEAD_APPROACH_SOFT_LIMIT_ALEAD_MS2 <= -0.2
   assert soft_limit_mpc_a_target(
     -2.5, v_ego, v_ego - 0.4, d_rel, a_lead=LEAD_APPROACH_SOFT_LIMIT_ALEAD_MS2,
-  ) == pytest.approx(-2.5)
-  # Near-gap braking lead still skips the floor.
+  ) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
   assert soft_limit_mpc_a_target(
     -2.5, v_ego, v_ego - 0.4, d_rel, a_lead=-0.4, slack=8.0,
-  ) == pytest.approx(-2.5)
+  ) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
   # Far opening slack: aLead alone does not skip the chatter floor.
   assert soft_limit_mpc_a_target(
     -2.5, v_ego, v_ego + 1.44, 64.0, a_lead=-1.46, slack=40.0,
@@ -1132,8 +1140,12 @@ def test_mpc_soft_limit_floors_chatter_not_match_speed():
   v_lead_route = v_route - 1.6
   assert 1.6 >= LEAD_APPROACH_SOFT_LIMIT_CLOSE_MS
   assert 1.6 < LEAD_APPROACH_RAPID_DV_MS
-  assert soft_limit_mpc_a_target(-1.2, v_route, v_lead_route, 41.0, a_lead=-0.8) == pytest.approx(-1.2)
-  assert soft_limit_mpc_a_target(-1.2, v_route, v_lead_route, 41.0) == pytest.approx(-1.2)
+  assert soft_limit_mpc_a_target(-1.2, v_route, v_lead_route, 41.0, a_lead=-0.8) == pytest.approx(
+    -LEAD_APPROACH_MILD_A_MS2
+  )
+  assert soft_limit_mpc_a_target(-1.2, v_route, v_lead_route, 41.0) == pytest.approx(
+    -LEAD_APPROACH_MILD_A_MS2
+  )
 
   # Confirmed rapid / FCW / crash still dump.
   v_lead_rapid = v_ego - LEAD_APPROACH_RAPID_DV_MS - 0.5
@@ -1167,14 +1179,12 @@ def test_closing_lead_hard_blocks_rematch_plus_a():
   assert cap_closing_lead_accel(0.20, 0.8, a_lead=0.0, lead_present=True) == pytest.approx(0.20)
   # Closing 1.0–1.5: coast ≤0, no match-speed yet.
   assert cap_closing_lead_accel(0.20, 1.2, a_lead=0.0, lead_present=True) == pytest.approx(0.0)
-  # Closing ≥ 1.5: match-speed −a, never +a.
+  # Closing ≥ 1.5: never rematch +a. Extra match-speed −a is emergency only.
   a_match = cap_closing_lead_accel(0.201, 2.68, a_lead=-0.20, lead_present=True)
-  assert a_match <= 0.0
-  assert a_match == pytest.approx(-0.20 - LEAD_CLOSING_MATCH_GAIN * 2.68)
-  # Route-shaped rematch: +0.20 while closing 2.2–3.8 at ~85 m.
+  assert a_match == pytest.approx(0.0)
+  # Route-shaped rematch: +0.20 while closing 2.2–3.8 at ~85 m → coast.
   a_d7 = cap_closing_lead_accel(0.215, 3.79, a_lead=-0.29, lead_present=True)
-  assert a_d7 <= 0.0
-  assert a_d7 == pytest.approx(-0.29 - LEAD_CLOSING_MATCH_GAIN * 3.79)
+  assert a_d7 == pytest.approx(0.0)
   # Overlay-MILD pin while closing: match-speed wins (secondary −0.22 path).
   assert cap_closing_lead_accel(-0.22, 6.8, a_lead=0.0, lead_present=True) == pytest.approx(
     -LEAD_CLOSING_MATCH_GAIN * 6.8
@@ -1190,7 +1200,7 @@ def test_closing_lead_hard_blocks_rematch_plus_a():
   ) == pytest.approx(0.0)
   assert cap_closing_lead_accel(
     0.20, 4.4, a_lead=0.0, lead_present=True, d_rel=160.0,
-  ) == pytest.approx(-LEAD_CLOSING_MATCH_GAIN * 4.4)
+  ) == pytest.approx(0.0)
   # Last meters: closing 1.0–1.5 may keep trickle (finish FD).
   assert cap_closing_lead_accel(
     LEAD_CLOSE_OPENING_A_MS2, 1.2, a_lead=0.0, lead_present=True, slack=3.0,
@@ -1246,19 +1256,17 @@ def test_alead_only_does_not_own_opening_or_far_slack():
     0.47, 1.2, a_lead=0.0, lead_present=True, slack=8.0,
   ) == pytest.approx(0.0)
 
-  # Near-gap braking lead still matches, including a slightly opening frame.
+  # Near-gap braking lead: block +a, no match-speed dump (EV slight lift).
   assert lead_alead_owns_match(-0.20, -0.80, slack=8.0)
   assert lead_owns_plan(0.4, a_lead=-0.25, slack=8.0)
   a_near = cap_closing_lead_accel(
     0.47, 0.4, a_lead=-0.80, lead_present=True, slack=8.0,
   )
-  assert a_near <= 0.0
-  assert a_near == pytest.approx(-0.80 - LEAD_CLOSING_MATCH_GAIN * 0.4)
+  assert a_near == pytest.approx(0.0)
   a_open_near = cap_closing_lead_accel(
     0.47, -0.20, a_lead=-0.80, lead_present=True, slack=8.0,
   )
-  assert a_open_near <= 0.0
-  assert a_open_near == pytest.approx(-0.80)
+  assert a_open_near == pytest.approx(0.0)
 
 
 def test_lead_flicker_hold_still_blocks_plus_a():
