@@ -53,7 +53,10 @@ opening (d7 20:25:33: +0.323 for 7 s as dRel 49→59). Rematch above a
 trickle only if slack ≳ 20 m and the lead is pulling away; a ≳ 15 m gap
 error with `|closing| < 1` may use a small Accel-proportional hunt, not
 full Accel every pulse. Large same-speed gaps that never matched still
-use Accel catch-up. Rate-limit +a across cruise↔lead flips when not
+use Accel catch-up *under MAX*. At or above MAX (vEgo ≥ vCruise −
+deadband) rematch / remaining-close / lead-close +a is 0 — never chase
+a faster lead past set/MAX (ea 11:46: +0.36 at 62 on a 60 MAX).
+Rate-limit +a across cruise↔lead flips when not
 rapidly closing. A brief `leadOne` drop holds the last in-window lead so
 the cap cannot be bypassed. Vision-only far flicker does not cap
 empty-road climb. Non-rapid MPC −a is floored at MILD (slight lift).
@@ -72,7 +75,7 @@ range does not skip the window.
 """
 from __future__ import annotations
 
-from openpilot.selfdrive.mapd.constants import LOOKAHEAD_NORMAL, map_accel_a_ms2
+from openpilot.selfdrive.mapd.constants import LOOKAHEAD_NORMAL, TRACK_DEADBAND_MS, map_accel_a_ms2
 
 # Keep in sync with long_mpc.STOP_DISTANCE (acados cruise/lead obstacle).
 STOP_DISTANCE = 6.0
@@ -268,12 +271,28 @@ def lead_hunt_accel_ms2(a, slack) -> float:
   return min(a, max(LEAD_CLOSE_OPENING_A_MS2, a_hunt))
 
 
+def lead_at_or_above_max(v_ego, v_cruise) -> bool:
+  """True when rematch / remaining-close must not command +a past MAX.
+
+  Same edge as map-track climb (`v_cruise − v_ego ≤ TRACK_DEADBAND`):
+  in or above the last ~0.9 mph, MAX is a hard ceiling. A faster lead
+  may pull away. Missing / unset speeds leave the gate off so unit
+  kinematics stay unchanged.
+  """
+  if v_ego is None or v_cruise is None:
+    return False
+  if float(v_ego) <= 0.0 or float(v_cruise) <= 0.0:
+    return False
+  return float(v_ego) >= float(v_cruise) - TRACK_DEADBAND_MS
+
+
 def lead_settled_rematch_a_ms2(a, v_rel, slack) -> float:
   """After match: no Accel-ceil rematch while the gap is OK or opening.
 
   Comfortable opening stays 0 (49→59 was Accel ceil +0.32 for 7 s).
   Ego clearly slower (`v_rel` ≲ −0.5) may use Accel so grade/cruise can
-  recover speed — a 0 ceiling parked the closed-loop plant at 24.38.
+  recover speed *under MAX* — a 0 ceiling parked the closed-loop plant
+  at 24.38. At/above MAX the caller zeros `a` so this cannot chase.
   Still inside Follow Distance is a too-close recovery, not rematch.
   At the gap with speeds matched, Accel may hold grade. Gap error ≳ 15 m
   with `|closing| < 1` may hunt. Rematch above trickle if slack ≳ 20 m
@@ -298,21 +317,26 @@ def lead_settled_rematch_a_ms2(a, v_rel, slack) -> float:
 
 
 def lead_close_accel_ms2(accel_level: int = 5, v_rel=None, slack=None,
-                         a_personality=None, settled=False) -> float:
+                         a_personality=None, settled=False, v_ego=None,
+                         v_cruise=None) -> float:
   """Max positive a (m/s²) when closing the gap on a radar lead.
 
   Same Accel 1–10 envelope as open-road / MAX climb — not a separate
   hotter (or cooler) catch-up curve. `a_personality` is that envelope
-  (peak or last-mph tapered). lead_approach decel (0.55) and MPC −a /
-  danger are unchanged.
+  (peak or last-mph tapered). At/above MAX that envelope is 0 so
+  rematch / hunt / speed-sag cannot chase a faster lead past set.
+  lead_approach decel (0.55) and MPC −a / danger are unchanged.
 
   Near the follow gap, a lead pulling away / slow rematch trickles +a
   so ease→Accel does not surge. After settle, Accel-ceil rematch is
-  deadbanded; large same-speed gaps that never matched still use Accel.
+  deadbanded; large same-speed gaps that never matched still use Accel
+  *under MAX*.
   """
   a = map_accel_a_ms2(LOOKAHEAD_NORMAL, int(accel_level))
   if a_personality is not None:
     a = min(a, max(0.0, float(a_personality)))
+  if lead_at_or_above_max(v_ego, v_cruise):
+    a = 0.0
   if v_rel is not None and float(v_rel) >= LEAD_CLOSING_REMATCH_BLOCK_MS:
     # Large-gap catch-up still uses Accel (#187) even while closing ≳ 1.0.
     # #190 is near-gap rematch-block; last meters may trickle; ≳ 1.5 owns.
@@ -334,21 +358,25 @@ def lead_close_accel_ms2(accel_level: int = 5, v_rel=None, slack=None,
   return a
 
 
-def lead_remaining_close_a_ms2(output_a, v_rel, slack):
+def lead_remaining_close_a_ms2(output_a, v_rel, slack, v_ego=None, v_cruise=None):
   """Command trickle +a to finish Follow Distance when MPC/cruise sat at 0.
 
   lead_close_accel_ms2 is a +a *ceiling*. A same-speed hang 2–4 m long of
   FD therefore stays at a_target=0 unless something commands the rematch
   trickle. Same when ego sags below the lead at/near FD. Ego clearly
-  slower (`v_rel` ≲ −0.5) commands Accel 1 so grade can recover — the
-  ceiling alone left the plant 0.015 m/s short. Real overlay ease
-  (|a| ≥ nibble) still wins. Do not rematch into a ≳ 1.5 close.
+  slower (`v_rel` ≲ −0.5) commands Accel 1 so grade can recover *under
+  MAX* — the ceiling alone left the plant 0.015 m/s short. At/above
+  MAX, do not raise +a for speed-sag / rematch (ea 11:46: Accel-1
+  while already 1–2 mph over). Real overlay ease (|a| ≥ nibble) and
+  emergency −a still win. Do not rematch into a ≳ 1.5 close.
   """
   if output_a is None or slack is None:
     return output_a
   if float(output_a) <= -LEAD_APPROACH_NIBBLE_MS2:
     return output_a
   if v_rel is not None and float(v_rel) >= LEAD_CLOSING_MATCH_MS:
+    return output_a
+  if lead_at_or_above_max(v_ego, v_cruise):
     return output_a
   s = float(slack)
   v = 0.0 if v_rel is None else float(v_rel)
