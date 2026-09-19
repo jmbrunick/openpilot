@@ -860,24 +860,22 @@ def _put_wiper_status(line: str) -> None:
   Later 1 Hz writes stay non-blocking on the card RT path.
   """
   global _status_disk_once
-  params = _get_params()
-  block = bool(_status_disk_once)
-  if not block:
-    try:
-      cur = params.get("NAPWiperRainStatus")
-      if cur is None or cur == b"" or cur == "":
-        block = True
-    except Exception:
-      block = True
   try:
-    params.put("NAPWiperRainStatus", line, block=block)
-    _status_disk_once = False
-  except TypeError:
+    params = _get_params()
+    block = bool(_status_disk_once)
+    if not block:
+      try:
+        cur = params.get("NAPWiperRainStatus")
+        if cur is None or cur == b"" or cur == "":
+          block = True
+      except Exception:
+        block = True
     try:
+      params.put("NAPWiperRainStatus", line, block=block)
+      _status_disk_once = False
+    except TypeError:
       params.put("NAPWiperRainStatus", line)
       _status_disk_once = False
-    except Exception:
-      pass
   except Exception:
     pass
 
