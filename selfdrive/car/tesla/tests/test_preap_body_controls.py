@@ -1760,7 +1760,8 @@ def test_wiper_sensitivity_scales_acquire_repeat_and_gap():
   assert min_rewipe_gap_light_s(0) < min_rewipe_gap_light_s(2) < min_rewipe_gap_light_s(4)
   assert abs(acquire_threshold(2) - ACQUIRE_ON) < 1e-6
   assert abs(repeat_threshold(2) - REWIPE_ON) < 1e-6
-  assert 20.0 <= min_rewipe_gap_light_s(0) <= 22.5
+  assert 8.0 <= min_rewipe_gap_light_s(0) <= 12.0
+  assert 20.0 <= min_rewipe_gap_light_s(2) <= 25.0
   assert abs(min_rewipe_gap_light_s(2) - MIN_REWIPE_GAP_LIGHT_S) < 1e-6
   assert 27.5 <= min_rewipe_gap_light_s(4) <= 30.0
   try:
@@ -1778,6 +1779,82 @@ def test_wiper_sensitivity_scales_acquire_repeat_and_gap():
     for _ in range(MIN_HOLD_N + 4):
       assert not dryish._update_score(mist)
     assert not dryish.hold
+  finally:
+    set_wiper_sensitivity(None)
+
+
+def test_drier_vs_mid_acquire_repeat_and_gap():
+  """Sens 0 (Drier) first-wipes and rewipes light mist sooner than Mid.
+
+  2026-09-18 evening mist on Drier: long 125–271 s quiet gaps, then ~20 s
+  pulses. Repeat was HEAVY_ON-scaled (~7.2) and the light gap was 20 s.
+  Drier acquire/repeat drop into the film band; Mid stays at 4.5 / 9.0 /
+  ~25 s so it does not thrash at the old ~12.5 s pulse.
+  """
+  assert 8.0 <= min_rewipe_gap_light_s(0) <= 12.0
+  assert 20.0 <= min_rewipe_gap_light_s(2) <= 25.0
+  assert min_rewipe_gap_light_s(2) > (WIPE_PULSE_S + CLEAR_WAIT_S + 2.0 * SCORE_PERIOD_S)
+  assert acquire_threshold(0) < acquire_threshold(2)
+  assert repeat_threshold(0) < repeat_threshold(2)
+  assert repeat_threshold(0) < HEAVY_ON
+  assert abs(repeat_threshold(2) - HEAVY_ON) < 1e-6
+
+  weak = 3.2
+  assert acquire_threshold(0) <= weak < acquire_threshold(2)
+  try:
+    set_wiper_sensitivity(0)
+    drier = WindshieldRain()
+    _skip_warmup(drier)
+    assert not drier._update_score(weak)
+    assert drier._update_score(weak)
+    assert drier.hold
+
+    set_wiper_sensitivity(2)
+    mid = WindshieldRain()
+    _skip_warmup(mid)
+    for _ in range(MIN_HOLD_N + 4):
+      assert not mid._update_score(weak)
+    assert not mid.hold
+  finally:
+    set_wiper_sensitivity(None)
+
+  mist = 6.7
+  assert acquire_threshold(2) <= mist < HEAVY_ON
+  assert mist >= repeat_threshold(0)
+  assert mist < repeat_threshold(2)
+  cycle_12 = WIPE_PULSE_S + CLEAR_WAIT_S + 2.0 * SCORE_PERIOD_S
+  try:
+    set_wiper_sensitivity(0)
+    det = WindshieldRain()
+    _skip_warmup(det)
+    assert not det._update_score(mist)
+    assert det._update_score(mist)
+    t0 = det._last_wipe_t0
+    _expire_wipe(det)
+    _expire_wait(det)
+    assert (time.monotonic() - t0) < min_rewipe_gap_light_s(0)
+    assert not det._update_score(mist)
+    assert not det.hold
+    assert not det._update_score(mist)
+    assert not det.hold
+    _expire_min_gap(det)
+    assert det._update_score(mist)
+    assert det.hold
+
+    set_wiper_sensitivity(2)
+    mid = WindshieldRain()
+    _skip_warmup(mid)
+    assert not mid._update_score(mist)
+    assert mid._update_score(mist)
+    _expire_wipe(mid)
+    _expire_wait(mid)
+    mid._last_wipe_t0 = time.monotonic() - (cycle_12 + 0.05)
+    assert not mid._update_score(mist)
+    assert not mid.hold
+    _expire_min_gap(mid)
+    if not mid.hold:
+      assert mid._update_score(mist)
+    assert mid.hold
   finally:
     set_wiper_sensitivity(None)
 
@@ -2336,6 +2413,7 @@ def test_auto_status_param_is_full_gate_line_not_short_rain(monkeypatch):
     assert "sens=" in line
     assert "acq=" in line
     assert "rpt=" in line
+    assert "gap=" in line
     assert "park=" in line
     assert "v0=" in line
     assert "moving=" in line
@@ -2343,6 +2421,43 @@ def test_auto_status_param_is_full_gate_line_not_short_rain(monkeypatch):
   finally:
     set_rain_wiper_needed(None)
     reset_auto_gates()
+    reset_windshield_rain()
+
+
+def test_auto_status_sens0_vs_mid_acq_rpt_gap(monkeypatch):
+  """HUD status: same light-mist score is rpt=1 on Drier, rpt=0 on Mid."""
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+  from openpilot.selfdrive.car.tesla import preap_windshield_rain as rain
+
+  mist = 6.7
+  assert acquire_threshold(0) <= mist
+  assert mist >= repeat_threshold(0)
+  assert mist < repeat_threshold(2)
+  det = WindshieldRain()
+  det.last_score = mist
+  rain._detector = det
+
+  def _param_for(sens):
+    return lambda key, default=0: (
+      WIPER_SETTING_AUTO if key == NAP_WIPER_SPEED else
+      sens if key == body.NAP_WIPER_SENSITIVITY else default
+    )
+
+  try:
+    monkeypatch.setattr(body, "_param_int", _param_for(0))
+    line0 = body._auto_status_line(3, True, True, True, False)
+    assert "sens=0" in line0
+    assert "acq=1" in line0
+    assert "rpt=1" in line0
+    assert "gap=" in line0
+
+    monkeypatch.setattr(body, "_param_int", _param_for(2))
+    line2 = body._auto_status_line(3, True, True, True, False)
+    assert "sens=2" in line2
+    assert "acq=1" in line2
+    assert "rpt=0" in line2
+    assert "gap=" in line2
+  finally:
     reset_windshield_rain()
 
 
