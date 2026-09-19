@@ -131,6 +131,7 @@ class SelfdriveD:
     self.personality = self.params.get("LongitudinalPersonality", return_default=True)
     self._follow_hud_dist = None
     self._follow_hud_until = 0.0
+    self._wiper_hud_until = 0.0
     self.recalibrating_seen = False
     self.dm_lockout_set = False
     self.dm_uncertain_alerted = False
@@ -566,6 +567,20 @@ class SelfdriveD:
       follow_evt = getattr(EventName, "hypermileFollowChanged", None) or getattr(EventName, "followDistanceChanged", None)
       if follow_evt is not None:
         self.events.add(follow_evt)
+
+    # NAP wiper Off↔Auto HUD. card/body sets NAPWiperHudPending on the
+    # collar 0→1→0 flick; hold the toast ~2.5 s (same affordance as Follow).
+    try:
+      if self.params.get_bool("NAPWiperHudPending"):
+        from openpilot.selfdrive.car.tesla.preap_body_controls import WIPER_HUD_DURATION_S
+        self._wiper_hud_until = time.monotonic() + float(WIPER_HUD_DURATION_S)
+        self.params.put_bool("NAPWiperHudPending", False)
+    except Exception:
+      pass
+    if time.monotonic() < self._wiper_hud_until:
+      wiper_evt = getattr(EventName, "napWiperChanged", None)
+      if wiper_evt is not None:
+        self.events.add(wiper_evt)
 
   def data_sample(self):
     _car_state = messaging.recv_one(self.car_state_sock)

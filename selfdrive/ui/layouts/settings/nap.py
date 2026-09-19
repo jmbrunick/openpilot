@@ -40,7 +40,8 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   WIPER_SPEED_DESCRIPTION, WIPER_SPEED_LABELS, WIPER_SPEED_VALUES,
   WIPER_SENSITIVITY_DEFAULT, WIPER_SENSITIVITY_DESCRIPTION,
   WIPER_SENSITIVITY_LABELS, WIPER_SENSITIVITY_VALUES,
-  acknowledgments_html, find_preset_index,
+  acknowledgments_html, coerce_wiper_speed_param, find_preset_index,
+  wiper_speed_button_index,
 )
 from openpilot.selfdrive.ui.layouts.settings.driving_mannerisms import DrivingMannerismsLayout
 from openpilot.selfdrive.ui.layouts.settings.map_speed import MapSpeedLimitLayout
@@ -235,13 +236,13 @@ class NAPLayout(Widget):
     # ── Section 5: Wipers & lights (car test) ──
     self._main_items.append(section_header_item("Wipers & Lights (test)"))
 
-    wiper_setting = int(self._params.get(NAPParamKeys.WIPER_SPEED, return_default=True) or 0)
+    wiper_setting = coerce_wiper_speed_param(self._params)
     self._wiper_buttons = multiple_button_item(
       "Wiper Control",
       WIPER_SPEED_DESCRIPTION,
       buttons=WIPER_SPEED_LABELS,
-      button_width=100,
-      selected_index=max(0, min(len(WIPER_SPEED_VALUES) - 1, wiper_setting)),
+      button_width=160,
+      selected_index=wiper_speed_button_index(wiper_setting),
       callback=self._on_wiper_speed,
     )
     self._main_items.append(self._wiper_buttons)
@@ -823,9 +824,9 @@ class NAPLayout(Widget):
     self._brake_factor_buttons.action_item.set_selected_button(
       find_preset_index(BRAKE_FACTOR_PRESETS, brake_factor))
 
-    wiper_setting = int(self._params.get(NAPParamKeys.WIPER_SPEED, return_default=True) or 0)
+    wiper_setting = coerce_wiper_speed_param(self._params)
     self._wiper_buttons.action_item.set_selected_button(
-      max(0, min(len(WIPER_SPEED_VALUES) - 1, wiper_setting)))
+      wiper_speed_button_index(wiper_setting))
     raw_sens = self._params.get(NAPParamKeys.WIPER_SENSITIVITY, return_default=True)
     try:
       sens_setting = WIPER_SENSITIVITY_DEFAULT if raw_sens is None else int(raw_sens)

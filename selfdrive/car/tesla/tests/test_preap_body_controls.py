@@ -21,14 +21,25 @@ from openpilot.selfdrive.car.tesla.preap_body_controls import (
   STW_COLLAR_INTERVAL1,
   STW_WASH_MASK,
   apply_stw_collar,
+  NAP_WIPER_HUD_PENDING,
   overlay_collar_on_can_msg,
+  poll_wiper_stalk_shortcut,
   requested_auto_collar_posn,
+  reset_wiper_stalk_detector,
   stw_collar_posn,
   stw_wash,
+  STALK_FLICK_WINDOW_S,
+  WIPER_HUD_AUTO,
+  WIPER_HUD_DURATION_S,
+  WIPER_HUD_OFF,
   WIPER_SETTING_AUTO,
   WIPER_SETTING_INTERMITTENT,
   WIPER_SETTING_OFF,
   WIPER_SETTING_ON,
+  normalize_wiper_setting,
+  read_wiper_setting,
+  toggle_wiper_auto,
+  wiper_hud_text,
   apply_stw_wiper_beam_nibbles,
   extra_stw_forward_needed,
   high_beam_test_requested,
@@ -276,23 +287,55 @@ def test_settings_copy_describes_held_4_same_counter_replace():
 
 def test_settings_copy_describes_auto_rain_hold():
   from openpilot.selfdrive.ui.layouts.settings.nap_content import (
-    WIPER_SPEED_DESCRIPTION, WIPER_SPEED_LABELS, WIPER_SPEED_VALUES,
+    WIPER_HUD_AUTO, WIPER_HUD_OFF, WIPER_SPEED_AUTO, WIPER_SPEED_DESCRIPTION,
+    WIPER_SPEED_LABELS, WIPER_SPEED_OFF, WIPER_SPEED_VALUES,
+    coerce_wiper_speed_param, normalize_wiper_speed, wiper_hud_text,
+    wiper_speed_button_index,
   )
-  assert WIPER_SPEED_VALUES == [0, 1, 2, 3]
-  assert WIPER_SPEED_LABELS == ["Off", "Int", "On", "Auto"]
+  assert WIPER_SPEED_VALUES == [0, 3]
+  assert WIPER_SPEED_LABELS == ["Off", "Auto"]
+  assert WIPER_SPEED_OFF == 0
+  assert WIPER_SPEED_AUTO == 3
+  assert "Int" not in WIPER_SPEED_LABELS
+  assert "On" not in WIPER_SPEED_LABELS
+  assert wiper_speed_button_index(0) == 0
+  assert wiper_speed_button_index(3) == 1
+  assert wiper_speed_button_index(1) == 0
+  assert wiper_speed_button_index(2) == 0
+  assert normalize_wiper_speed(1) == 0
+  assert normalize_wiper_speed(2) == 0
+  assert normalize_wiper_speed(3) == 3
+  assert wiper_hud_text(0) == WIPER_HUD_OFF == "Wipers Off"
+  assert wiper_hud_text(3) == WIPER_HUD_AUTO == "Wipers Auto"
+
+  class _Params:
+    def __init__(self, value):
+      self.value = value
+    def get(self, key, return_default=True):
+      return self.value
+    def put(self, key, value):
+      self.value = value
+
+  stale = _Params(1)
+  assert coerce_wiper_speed_param(stale) == 0
+  assert stale.value == 0
+  on_stale = _Params(2)
+  assert coerce_wiper_speed_param(on_stale) == 0
+  assert on_stale.value == 0
+  auto = _Params(3)
+  assert coerce_wiper_speed_param(auto) == 3
+  assert auto.value == 3
+
   text = WIPER_SPEED_DESCRIPTION.lower()
   assert "auto" in text
   assert "rain" in text or "windshield" in text
   assert "ice" in text or "frost" in text
   assert "camera" in text
-  assert "nibble 1" in text
   assert "interval1" in text or "collar" in text
-  assert "tipwipe" in text
   assert "hold" in text
   assert "spray" in text
   assert "das" in text
   assert "opt-in" in text or "not every drive" in text
-  assert "int/on" in text
   assert "headlight" in text
   assert "drive" in text
   assert "reverse" in text
@@ -300,8 +343,11 @@ def test_settings_copy_describes_auto_rain_hold():
   assert "standstill" in text or "v≈0" in text or "creep" in text
   assert "rest" in text
   assert "cancel" in text
+  assert "double-flick" in text or "flick" in text
+  assert "1 s" in text or "1s" in text
   assert "pulse" not in text
   assert "rainprob" not in text
+  assert "int/on" not in text
 
 
 def test_settings_copy_describes_wiper_sensitivity():
@@ -1108,12 +1154,12 @@ def test_stock_cc_int_stops_rain_helper_and_drops_hold(monkeypatch):
     monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
       WIPER_SETTING_INTERMITTENT if key == NAP_WIPER_SPEED else default
     ))
-    out = body.stock_cc_update_with_overlay(fake, cs, 10, None, 0)
+    body.stock_cc_update_with_overlay(fake, cs, 10, None, 0)
     assert not det._helper_started
     assert not det.hold
     assert det.poll() is False
     assert det._poll_recv == 0
-    assert any(msg[0] == STW_ACTN_RQ_ADDR for msg in out)
+    # Legacy Int/On coerce to Off — no TIPWIPE extra-forward.
   finally:
     reset_windshield_rain()
     reset_auto_gates()
@@ -2218,7 +2264,7 @@ def test_auto_reads_vego_from_cs_out(monkeypatch):
 
 
 def test_int_on_ignore_standstill(monkeypatch):
-  """Int/On ignore gear, camera, and v≈0. Auto is the only gated mode."""
+  """Legacy Int/On coerce to Off. Auto is the only gated wipe mode."""
   from openpilot.selfdrive.car.tesla import preap_body_controls as body
 
   set_rain_wiper_needed(False)
@@ -2227,11 +2273,11 @@ def test_int_on_ignore_standstill(monkeypatch):
     monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
       WIPER_SETTING_INTERMITTENT if key == NAP_WIPER_SPEED else default
     ))
-    assert body.requested_wiper_test()
+    assert not body.requested_wiper_test()
     monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
       WIPER_SETTING_ON if key == NAP_WIPER_SPEED else default
     ))
-    assert body.requested_wiper_test()
+    assert not body.requested_wiper_test()
   finally:
     set_rain_wiper_needed(None)
     reset_auto_gates()
@@ -2734,11 +2780,11 @@ def test_int_on_ignore_gear_and_camera(monkeypatch):
     monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
       WIPER_SETTING_INTERMITTENT if key == NAP_WIPER_SPEED else default
     ))
-    assert body.requested_wiper_test()
+    assert not body.requested_wiper_test()
     monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
       WIPER_SETTING_ON if key == NAP_WIPER_SPEED else default
     ))
-    assert body.requested_wiper_test()
+    assert not body.requested_wiper_test()
     monkeypatch.setattr(body, "_param_int", lambda key, default=0: default)
     assert not body.requested_wiper_test()
   finally:
@@ -3592,7 +3638,172 @@ def test_int_on_still_uses_tipwipe_and_leaves_collar(monkeypatch):
   addr, dat, bus = body.create_action_request_with_overlay(
     tc, CruiseButtons.IDLE, CANBUS.party, 6, msg_stw)
   assert addr == STW_ACTN_RQ_ADDR == stock[0]
-  assert _byte(dat) == STW_WIPER_ON
+  # Legacy Int coerces to Off: no TIPWIPE overlay, live collar left alone.
+  assert _byte(dat) != STW_WIPER_ON
   assert stw_collar_posn(dat) == 2
   assert body.requested_auto_collar_posn(True) is None
+
+
+class _WiperParams:
+  def __init__(self, speed=WIPER_SETTING_OFF):
+    self.store = {NAP_WIPER_SPEED: int(speed)}
+
+  def get(self, key, return_default=False):
+    return self.store.get(key, 0 if return_default else None)
+
+  def put(self, key, dat, block=False):
+    self.store[key] = dat
+
+  def put_bool(self, key, val):
+    self.store[key] = bool(val)
+
+  def get_bool(self, key):
+    return bool(self.store.get(key))
+
+
+def _collar_cs(posn: int, wash: int = 0):
+  from types import SimpleNamespace
+  return SimpleNamespace(msg_stw_actn_req={"WprSw6Posn": posn, "WprWashSw_Psd": wash, "SpdCtrlLvr_Stat": 0})
+
+
+def test_normalize_wiper_setting_keeps_auto_coerces_legacy():
+  assert normalize_wiper_setting(WIPER_SETTING_OFF) == WIPER_SETTING_OFF
+  assert normalize_wiper_setting(WIPER_SETTING_AUTO) == WIPER_SETTING_AUTO
+  assert normalize_wiper_setting(WIPER_SETTING_INTERMITTENT) == WIPER_SETTING_OFF
+  assert normalize_wiper_setting(WIPER_SETTING_ON) == WIPER_SETTING_OFF
+  assert normalize_wiper_setting(99) == WIPER_SETTING_OFF
+  assert normalize_wiper_setting(None) == WIPER_SETTING_OFF
+  assert wiper_hud_text(WIPER_SETTING_OFF) == WIPER_HUD_OFF
+  assert wiper_hud_text(WIPER_SETTING_AUTO) == WIPER_HUD_AUTO
+  assert WIPER_HUD_DURATION_S >= 2.0
+  assert STALK_FLICK_WINDOW_S == 1.0
+
+
+def test_read_wiper_setting_persists_legacy_int_as_off(monkeypatch):
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  fake = _WiperParams(WIPER_SETTING_INTERMITTENT)
+  monkeypatch.setattr(body, "_get_params", lambda: fake)
+  reset_auto_gates()
+  try:
+    assert read_wiper_setting() == WIPER_SETTING_OFF
+    assert fake.store[NAP_WIPER_SPEED] == WIPER_SETTING_OFF
+    assert not fake.store.get(NAP_WIPER_HUD_PENDING)
+  finally:
+    reset_auto_gates()
+
+
+def test_stalk_double_flick_toggles_off_auto_and_banner(monkeypatch):
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  fake = _WiperParams(WIPER_SETTING_OFF)
+  monkeypatch.setattr(body, "_get_params", lambda: fake)
+  reset_auto_gates()
+  t = 100.0
+  try:
+    assert poll_wiper_stalk_shortcut(_collar_cs(0), now=t) is None
+    assert poll_wiper_stalk_shortcut(_collar_cs(1), now=t + 0.05) is None
+    nxt = poll_wiper_stalk_shortcut(_collar_cs(0), now=t + 0.40)
+    assert nxt == WIPER_SETTING_AUTO
+    assert fake.store[NAP_WIPER_SPEED] == WIPER_SETTING_AUTO
+    assert fake.store[NAP_WIPER_HUD_PENDING] is True
+    assert wiper_hud_text() == WIPER_HUD_AUTO
+
+    fake.store[NAP_WIPER_HUD_PENDING] = False
+    t = 200.0
+    assert poll_wiper_stalk_shortcut(_collar_cs(0), now=t) is None
+    assert poll_wiper_stalk_shortcut(_collar_cs(1), now=t + 0.05) is None
+    nxt = poll_wiper_stalk_shortcut(_collar_cs(0), now=t + 0.35)
+    assert nxt == WIPER_SETTING_OFF
+    assert fake.store[NAP_WIPER_SPEED] == WIPER_SETTING_OFF
+    assert fake.store[NAP_WIPER_HUD_PENDING] is True
+    assert wiper_hud_text() == WIPER_HUD_OFF
+  finally:
+    reset_auto_gates()
+
+
+def test_stalk_slow_or_incomplete_flick_does_not_toggle(monkeypatch):
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  fake = _WiperParams(WIPER_SETTING_OFF)
+  monkeypatch.setattr(body, "_get_params", lambda: fake)
+  reset_auto_gates()
+  t = 100.0
+  try:
+    assert poll_wiper_stalk_shortcut(_collar_cs(0), now=t) is None
+    assert poll_wiper_stalk_shortcut(_collar_cs(1), now=t + 0.05) is None
+    assert poll_wiper_stalk_shortcut(_collar_cs(0), now=t + 1.20) is None
+    assert fake.store[NAP_WIPER_SPEED] == WIPER_SETTING_OFF
+    assert not fake.store.get(NAP_WIPER_HUD_PENDING)
+
+    reset_wiper_stalk_detector()
+    t = 300.0
+    assert poll_wiper_stalk_shortcut(_collar_cs(0), now=t) is None
+    assert poll_wiper_stalk_shortcut(_collar_cs(1), now=t + 0.05) is None
+    assert poll_wiper_stalk_shortcut(_collar_cs(1), now=t + 0.50) is None
+    assert fake.store[NAP_WIPER_SPEED] == WIPER_SETTING_OFF
+
+    reset_wiper_stalk_detector()
+    t = 400.0
+    assert poll_wiper_stalk_shortcut(_collar_cs(0), now=t) is None
+    assert poll_wiper_stalk_shortcut(_collar_cs(2), now=t + 0.05) is None
+    assert poll_wiper_stalk_shortcut(_collar_cs(0), now=t + 0.20) is None
+    assert fake.store[NAP_WIPER_SPEED] == WIPER_SETTING_OFF
+
+    reset_wiper_stalk_detector()
+    t = 500.0
+    assert poll_wiper_stalk_shortcut(_collar_cs(0), now=t) is None
+    assert poll_wiper_stalk_shortcut(_collar_cs(1, wash=2), now=t + 0.05) is None
+    assert poll_wiper_stalk_shortcut(_collar_cs(0), now=t + 0.20) is None
+    assert fake.store[NAP_WIPER_SPEED] == WIPER_SETTING_OFF
+  finally:
+    reset_auto_gates()
+
+
+def test_stalk_flick_uses_physical_collar_not_auto_overlay(monkeypatch):
+  """Auto INTERVAL1 overlay must not look like a driver flick."""
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  fake = _WiperParams(WIPER_SETTING_AUTO)
+  monkeypatch.setattr(body, "_get_params", lambda: fake)
+  reset_auto_gates()
+  t = 100.0
+  try:
+    # Live stalk stays Off while Auto overlays collar=1 on TX.
+    assert poll_wiper_stalk_shortcut(_collar_cs(0), now=t) is None
+    assert poll_wiper_stalk_shortcut(_collar_cs(0), now=t + 0.05) is None
+    assert fake.store[NAP_WIPER_SPEED] == WIPER_SETTING_AUTO
+    nxt = toggle_wiper_auto(announce=False)
+    assert nxt == WIPER_SETTING_OFF
+    assert not fake.store.get(NAP_WIPER_HUD_PENDING)
+  finally:
+    reset_auto_gates()
+
+
+def test_stock_cc_update_sees_physical_flick(monkeypatch):
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  fake_params = _WiperParams(WIPER_SETTING_OFF)
+  monkeypatch.setattr(body, "_get_params", lambda: fake_params)
+  monkeypatch.setattr(body, "requested_high_beam_test", lambda: False)
+  monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: [])
+
+  class _Fake:
+    def _send(self, CS, tesla_can, bus, button):
+      return (STW_ACTN_RQ_ADDR, b"\x00", bus)
+
+  reset_auto_gates()
+  t = [1000.0]
+  monkeypatch.setattr(time, "monotonic", lambda: t[0])
+  try:
+    body.stock_cc_update_with_overlay(_Fake(), _collar_cs(0), 10, None, 0)
+    t[0] += 0.05
+    body.stock_cc_update_with_overlay(_Fake(), _collar_cs(1), 11, None, 0)
+    t[0] += 0.20
+    body.stock_cc_update_with_overlay(_Fake(), _collar_cs(0), 12, None, 0)
+    assert fake_params.store[NAP_WIPER_SPEED] == WIPER_SETTING_AUTO
+    assert fake_params.store[NAP_WIPER_HUD_PENDING] is True
+  finally:
+    reset_auto_gates()
+    monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", None)
 

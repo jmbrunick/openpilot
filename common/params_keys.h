@@ -197,11 +197,15 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"NAPMapSpeedDbRevision", {PERSISTENT, STRING}},
     {"NAPMapSpeedDbSha256", {PERSISTENT, STRING}},
     // Pre-AP 0x45 stalk wiper/high-beam. Default 0 = today's forwarded stalk.
-    // Wiper: 0=off 1=int 2=on 3=auto. Int/On hold high nibble 1. Auto holds nibble 1
-    // while on, in Drive/Reverse, and the 3X ROAD camera sees rain or ice/frost.
+    // Wiper UI: 0=off 3=auto. Legacy 1=int / 2=on coerce to Off.
+    // Auto overlays collar INTERVAL1 while on, in Drive/Reverse, moving,
+    // and the 3X ROAD camera sees rain or ice/frost.
     // Beam: 0/1 leave stalk, 2=high (low nibble 4).
     // DAS wiper/beam fields stay 0. No auto headlights.
     {"NAPWiperSpeed", {PERSISTENT, INT, "0"}},
+    // One-shot Wipers Off/Auto HUD. card/body sets on collar 0→1→0 toggle.
+    // selfdrived consumes and holds the toast ~2.5 s. Not a preference.
+    {"NAPWiperHudPending", {CLEAR_ON_MANAGER_START, BOOL, "0"}},
     // Auto wiper sensitivity 0–4. Mid 2 = baseline. Lower = wipe sooner /
     // more often (more dry). Higher = tolerate more film (more wet).
     {"NAPWiperSensitivity", {PERSISTENT, INT, "2"}},

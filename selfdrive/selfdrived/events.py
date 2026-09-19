@@ -427,6 +427,11 @@ def hypermile_follow_changed_alert(CP: car.CarParams, CS: car.CarState, sm: mess
   return NormalPermanentAlert(follow_distance_hud_text(read_follow_distance(Params())), duration=1.5)
 
 
+def nap_wiper_changed_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
+  from openpilot.selfdrive.car.tesla.preap_body_controls import WIPER_HUD_DURATION_S, wiper_hud_text
+  return NormalPermanentAlert(wiper_hud_text(), duration=WIPER_HUD_DURATION_S)
+
+
 def invalid_lkas_setting_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
   text = "Toggle stock LKAS on or off to engage"
   if CP.brand == "tesla":
@@ -1152,6 +1157,13 @@ if _hypermile_follow_changed is not None:
   EVENTS[_hypermile_follow_changed] = {
     ET.WARNING: hypermile_follow_changed_alert,
     ET.PERMANENT: hypermile_follow_changed_alert,
+  }
+
+_nap_wiper_changed = getattr(EventName, "napWiperChanged", None)
+if _nap_wiper_changed is not None:
+  EVENTS[_nap_wiper_changed] = {
+    ET.WARNING: nap_wiper_changed_alert,
+    ET.PERMANENT: nap_wiper_changed_alert,
   }
 
 
