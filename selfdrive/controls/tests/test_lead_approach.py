@@ -1233,6 +1233,10 @@ def test_alead_only_does_not_own_opening_or_far_slack():
     -LEAD_APPROACH_MILD_A_MS2, 1.6, a_lead=0.0, lead_present=True, slack=40.0,
   )
   assert a_mild == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  # Planner-computed slack at 160 m / 4.4 m/s (under rapid): nibble only.
+  assert cap_closing_lead_accel(
+    -0.05, 4.4, a_lead=0.0, lead_present=True, slack=100.0, d_rel=160.0,
+  ) == pytest.approx(-0.05)
   # Large-gap catch-up still Accel while closing 1.0–1.5 (#187).
   assert cap_closing_lead_accel(
     0.47, 1.2, a_lead=0.0, lead_present=True, slack=40.0,

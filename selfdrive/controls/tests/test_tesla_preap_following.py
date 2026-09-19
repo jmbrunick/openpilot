@@ -684,6 +684,8 @@ def test_planner_eases_for_slower_lead_before_mpc_and_lead_can_brake_harder():
   planner.mpc.crash_cnt = 0
 
   # Farther closing lead (old 140 m / short need stayed off): now eases.
+  # Match-speed extra −a is near-gap only — a 160 m lock must not dump
+  # −k·v_rel (that undid the large-slack MILD floor).
   lead.dRel = 160.0
   lead.modelProb = 1.0
   lead.radar = True
@@ -693,7 +695,7 @@ def test_planner_eases_for_slower_lead_before_mpc_and_lead_can_brake_harder():
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=0.0)
   planner.update(inputs)
   assert planner.output_a_target < 0.0
-  assert planner.output_a_target <= -LEAD_CLOSING_MATCH_GAIN * v_rel + 0.08
+  assert planner.output_a_target >= -LEAD_APPROACH_MILD_A_MS2 - 0.08
 
   # Past usable Bosch: no extra crawl.
   lead.dRel = LEAD_APPROACH_MAX_START_M + 15.0
@@ -727,8 +729,10 @@ def test_planner_far_closing_lead_blocks_rematch_plus_a():
   assert planner.output_a_target <= 0.0
   for _ in range(15):
     planner.update(inputs)
+  # Never rematch +a into a far closing lock. Extra match-speed −a
+  # stays near-gap so 160 m / 1.6 m/s cannot punch −0.40.
   assert planner.output_a_target <= 0.0
-  assert planner.output_a_target == pytest.approx(-LEAD_CLOSING_MATCH_GAIN * v_rel, abs=0.08)
+  assert planner.output_a_target >= -LEAD_APPROACH_MILD_A_MS2 - 0.08
 
 
 def test_planner_far_opening_alead_keeps_cruise_plus_a():
