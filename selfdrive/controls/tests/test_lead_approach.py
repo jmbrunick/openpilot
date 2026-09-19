@@ -44,7 +44,10 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_HUNT_SLACK_M,
   LEAD_HUNT_SLACK_SPAN_M,
   LEAD_REMATCH_PULL_SLACK_M,
+  LEAD_ACQUIRE_HOLD_S,
+  LEAD_ACQUIRE_SLEW_MS2,
   LEAD_ATARGET_SLEW_MS2,
+  LEAD_MPC_SOFT_NEAR_M,
   NAP_T_FOLLOW,
   STOP_DISTANCE,
   apply_lead_approach_overlay,
@@ -52,6 +55,7 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   lead_approach_decel_ms2,
   lead_alead_owns_match,
   lead_is_closing,
+  lead_mpc_needs_full_authority,
   lead_owns_plan,
   lead_approach_is_rapid,
   lead_approach_need_m,
@@ -67,8 +71,10 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   nap_t_follow,
   resolve_lead_close_hold,
   slew_follow_plus_a,
+  slew_lead_acquire_a,
   slew_lead_approach_a,
   soft_limit_mpc_a_target,
+  update_lead_acquire,
   update_lead_settle,
 )
 from openpilot.selfdrive.mapd.constants import (
@@ -158,6 +164,11 @@ def test_lead_approach_keeps_early_map_brake_not_map_110m_margin():
   assert LEAD_HUNT_A_FRAC < 1.0
   assert abs(LEAD_HUNT_SLACK_SPAN_M - 25.0) < 1e-9
   assert abs(LEAD_ATARGET_SLEW_MS2 - 0.05) < 1e-9
+  assert abs(LEAD_ACQUIRE_HOLD_S - 0.75) < 1e-9
+  assert 0.5 <= LEAD_ACQUIRE_HOLD_S <= 1.0
+  assert abs(LEAD_ACQUIRE_SLEW_MS2 - LEAD_ATARGET_SLEW_MS2) < 1e-9
+  assert abs(LEAD_MPC_SOFT_NEAR_M - 12.0) < 1e-9
+  assert STOP_DISTANCE < LEAD_MPC_SOFT_NEAR_M <= LEAD_CLOSE_REMATCH_SLACK_M
   assert abs(LEAD_CLOSE_HOLD_S - 0.50) < 1e-9
   assert abs(LEAD_CLOSE_MAX_M - LEAD_APPROACH_MAX_START_M) < 1e-9
   import openpilot.selfdrive.controls.lib.lead_approach as lead_approach
@@ -688,7 +699,9 @@ def test_planner_wires_hysteresis_and_slew():
   assert "lead_approach_track_ok(" in planner
   assert "update_lead_settle(" in planner
   assert "settled=self._lead_settled" in planner
-  assert "slew_follow_plus_a(" in planner
+  assert "slew_lead_acquire_a(" in planner
+  assert "update_lead_acquire(" in planner
+  assert "acquiring=acquiring" in planner
   assert "v_cruise=v_hud_ms" in planner
   assert "allow_rapid=allow_rapid" in planner
   assert "a_lead=lead_a_k" in planner
@@ -912,6 +925,60 @@ def test_follow_plus_a_slew_rate_limits_ownership_flips_not_closing():
   assert slew_follow_plus_a(-0.22, 0.0, v_rel=0.3) == pytest.approx(-0.22)
 
 
+def test_lead_acquire_slew_kills_first_latch_yoyo():
+  """e4 09:53:19: first latch −0.46 must not punch, then rematch +0.05.
+
+  Instant −a (slew_follow_plus_a) applied the spike; rematch slewed
+  back over ~0.5 s. Acquire slews both ways so the first frame is a
+  nibble, not a regen→accel yo-yo.
+  """
+  d_rel = 118.0
+  slack = 80.0
+  v_rel = 1.2
+  punched = slew_lead_acquire_a(
+    -0.46, 0.0, v_rel, d_rel=d_rel, slack=slack, acquiring=True,
+  )
+  assert punched == pytest.approx(-LEAD_ACQUIRE_SLEW_MS2)
+  assert punched > -0.20
+  # Rematch +a also steps; no slam from −0.05 to +0.05.
+  rematch = slew_lead_acquire_a(
+    0.05, punched, 0.3, d_rel=d_rel, slack=slack, acquiring=True,
+  )
+  assert rematch == pytest.approx(0.0, abs=1e-9)
+  # After the window, −a is immediate again (established lead).
+  assert slew_lead_acquire_a(
+    -0.46, 0.0, v_rel, d_rel=d_rel, slack=slack, acquiring=False,
+  ) == pytest.approx(-0.46)
+  age, acquiring = 0.0, False
+  while True:
+    age, acquiring = update_lead_acquire(age, True, 0.05)
+    if age + 1e-9 >= LEAD_ACQUIRE_HOLD_S:
+      break
+    assert acquiring
+  age, acquiring = update_lead_acquire(age, True, 0.05)
+  assert not acquiring
+  age, acquiring = update_lead_acquire(0.4, False, 0.05)
+  assert not acquiring and age == pytest.approx(0.0)
+
+
+def test_lead_acquire_slew_keeps_rapid_and_near_bumper_authority():
+  """Dumping / near-bumper first latch must not wait on the acquire slew."""
+  assert lead_mpc_needs_full_authority(8.0, 40.0, slack=20.0, confirm_rapid=False)
+  assert slew_lead_acquire_a(
+    -2.0, 0.0, 8.0, d_rel=40.0, slack=20.0, acquiring=True,
+  ) == pytest.approx(-2.0)
+  assert lead_mpc_needs_full_authority(2.0, 10.0, slack=-4.0)
+  assert slew_lead_acquire_a(
+    -2.0, 0.0, 2.0, d_rel=10.0, slack=-4.0, acquiring=True,
+  ) == pytest.approx(-2.0)
+  assert slew_lead_acquire_a(
+    -2.0, 0.0, 3.0, d_rel=LEAD_MPC_SOFT_NEAR_M, slack=2.0, acquiring=True,
+  ) == pytest.approx(-2.0)
+  assert slew_lead_acquire_a(
+    -2.0, 0.0, 1.2, d_rel=118.0, slack=80.0, acquiring=True, fcw=True,
+  ) == pytest.approx(-2.0)
+
+
 def test_one_outlier_rapid_v_rel_does_not_commit_hard_regen():
   """One dump-shaped v_rel blip stays at 0.22; four consecutive dump samples reach 0.55."""
   t4 = nap_t_follow(4)
@@ -982,9 +1049,10 @@ def test_lead_close_hold_covers_status_flicker_and_far_bosch():
 
 
 def test_mpc_soft_limit_floors_chatter_not_match_speed():
-  """Mild floor clamps false hard bites when not closing / lead not braking.
+  """Mild floor clamps false hard bites and large-slack small adjustments.
 
-  Closing ≳ 1.5 m/s or aLead ≲ −0.3 must keep full MPC match-speed −a.
+  Closing ≳ 1.5 m/s *near the follow gap* or aLead ≲ −0.2 still keep
+  full match-speed −a. Large slack (e4 40 m / 9.5 m/s) stays floored.
   Rapid / FCW / stop still dump. Rematch (gap opening) still floors.
   """
   v_ego = 25.0
@@ -1010,10 +1078,24 @@ def test_mpc_soft_limit_floors_chatter_not_match_speed():
     -LEAD_APPROACH_MILD_A_MS2
   )
 
-  # Closing at/above the skip (incident started at 1.6 m/s): full −a.
+  # Closing at/above the skip (incident started at 1.6 m/s): full −a
+  # *near the follow gap* (unknown slack stays conservative).
   v_lead_close = v_ego - LEAD_APPROACH_SOFT_LIMIT_CLOSE_MS
   assert (v_ego - v_lead_close) < LEAD_APPROACH_RAPID_DV_MS
   assert soft_limit_mpc_a_target(-2.5, v_ego, v_lead_close, d_rel, a_lead=0.0) == pytest.approx(-2.5)
+  assert soft_limit_mpc_a_target(
+    -2.5, v_ego, v_lead_close, d_rel, a_lead=0.0, slack=8.0,
+  ) == pytest.approx(-2.5)
+  # e4 40 m / 9.5 m/s: large slack, small adjustment — do not dump −2.33.
+  v_e4 = 9.5
+  v_lead_e4 = v_e4 - 1.6
+  slack_e4 = 22.0
+  assert slack_e4 > LEAD_ALEAD_MATCH_SLACK_M
+  a_e4 = soft_limit_mpc_a_target(
+    -2.33, v_e4, v_lead_e4, 40.0, a_lead=0.0, slack=slack_e4,
+  )
+  assert a_e4 == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  assert a_e4 > -0.60
   # 10 mph-class close under the rapid gate must not pin −0.22.
   v_lead_town = v_ego - 4.4
   assert (v_ego - v_lead_town) < LEAD_APPROACH_RAPID_DV_MS

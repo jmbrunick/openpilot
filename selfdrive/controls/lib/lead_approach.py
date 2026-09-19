@@ -59,7 +59,14 @@ the cap cannot be bypassed. Vision-only far flicker does not cap
 empty-road climb. Non-rapid MPC −a is floored at MILD only as anti-chatter
 (gap opening, or small |v_rel| with the lead not braking) so min(MPC,
 overlay) cannot dump ~−2.5 on radar noise. Closing / a slowing lead keeps
-full MPC match-speed −a; rapid / FCW / emergency still own danger.
+full MPC match-speed −a *near the follow gap*; a large-slack close
+(e4 40 m / 9.5 m/s −2.33) is a small adjustment and stays floored.
+Rapid / near-bumper / FCW / emergency still own danger.
+
+First lead latch used to punch MPC regen then rematch +a in ~0.5 s
+(e4 09:53:19: −0.46 → +0.05 at 118 m, cruise/MPC source). During the
+acquire window, slew aTarget both ways so that spike cannot yo-yo.
+Rapid close / near bumper / hard kinematic need stay immediate.
 """
 from __future__ import annotations
 
@@ -182,8 +189,16 @@ LEAD_REMATCH_PULL_SLACK_M = 20.0
 LEAD_HUNT_A_FRAC = 0.35
 LEAD_HUNT_SLACK_SPAN_M = 25.0  # 15→40 m scales hunt 0→frac
 # Rate-limit +a across cruise↔lead ownership flips. Same step as the
-# accel_clip slew. Closing ≳ 1.0 / −a is immediate (do not delay #190).
+# accel_clip slew. Closing ≳ 1.0 / −a is immediate (do not delay #190)
+# *after* the first-latch window. First acquire slews both ways.
 LEAD_ATARGET_SLEW_MS2 = 0.05
+# First-latch window. e4 09:53:19 punched −0.46 then rematched +0.05 in
+# ~0.5 s at 118 m. Slew both directions for this long so the spike
+# cannot yo-yo. Rapid / near-bumper skip the window.
+LEAD_ACQUIRE_HOLD_S = 0.75
+LEAD_ACQUIRE_SLEW_MS2 = LEAD_ATARGET_SLEW_MS2
+# Inside this dRel, never soften MPC −a (near bumper).
+LEAD_MPC_SOFT_NEAR_M = 12.0
 # Brief hold of the last in-window lead when `leadOne.status` drops so
 # cruise punch cannot leak through a radar flicker. ~10 planner frames.
 LEAD_CLOSE_HOLD_S = 0.50
@@ -350,6 +365,8 @@ def slew_follow_plus_a(target, prev, v_rel, slew=LEAD_ATARGET_SLEW_MS2):
 
   Closing ≳ 1.0 or a more-negative command is immediate so #190
   match-speed −a is not delayed. Positive a slews by `slew` per frame.
+  First-latch uses slew_lead_acquire_a so a one-frame MPC punch cannot
+  yo-yo regen→accel (e4 09:53:19).
   """
   if target is None:
     return target
@@ -357,6 +374,79 @@ def slew_follow_plus_a(target, prev, v_rel, slew=LEAD_ATARGET_SLEW_MS2):
   p = t if prev is None else float(prev)
   if lead_is_closing(v_rel) or t <= 0.0:
     return t
+  if t > p:
+    return min(t, p + float(slew))
+  if t < p:
+    return max(t, p - float(slew))
+  return t
+
+
+def lead_mpc_needs_full_authority(v_rel, d_rel, slack=None, allow_rapid=False,
+                                 fcw=False, crash_cnt=0, confirm_rapid=True):
+  """True when MPC −a must not be slewed or floored.
+
+  Rapid close / near bumper / inside Follow Distance / stop kinematics
+  that already need more than comfort / FCW / crash: full authority.
+  A one-frame v_rel blip still waits on `allow_rapid` when
+  `confirm_rapid` (soft-limit anti-chatter). First-latch acquire
+  passes `confirm_rapid=False` so a dumping lock bites immediately.
+  """
+  if fcw or int(crash_cnt) > 0:
+    return True
+  if v_rel is not None and lead_approach_is_rapid(v_rel):
+    if (not confirm_rapid) or allow_rapid:
+      return True
+  if d_rel is not None and float(d_rel) <= LEAD_MPC_SOFT_NEAR_M:
+    return True
+  if slack is not None and float(slack) <= 0.0:
+    return True
+  if d_rel is None or v_rel is None or float(v_rel) <= 0.0:
+    return False
+  stop_slack = float(d_rel) - STOP_DISTANCE
+  if stop_slack <= 0.0:
+    return True
+  a_stop = -(float(v_rel) * float(v_rel)) / (2.0 * stop_slack)
+  if a_stop < -LEAD_APPROACH_A_MS2:
+    return True
+  if slack is not None and float(slack) > 0.0:
+    a_follow = -(float(v_rel) * float(v_rel)) / (2.0 * float(slack))
+    if a_follow < -LEAD_APPROACH_A_MS2:
+      return True
+  return False
+
+
+def update_lead_acquire(age, present, dt, hold_s=LEAD_ACQUIRE_HOLD_S):
+  """Track time since first in-window latch. Reset on lead loss.
+
+  Returns `(age, acquiring)`. Hold through status flicker (`present`
+  includes the close-hold) so a radar dip does not re-slew acquire.
+  """
+  if not present:
+    return 0.0, False
+  nxt = float(age) + max(0.0, float(dt))
+  return nxt, nxt <= float(hold_s)
+
+
+def slew_lead_acquire_a(target, prev, v_rel, d_rel=None, slack=None,
+                        acquiring=False, allow_rapid=False, fcw=False,
+                        crash_cnt=0, slew=LEAD_ACQUIRE_SLEW_MS2):
+  """Slew first-latch aTarget both ways so MPC cannot punch regen→accel.
+
+  e4 09:53:19: aTarget −0.46 then +0.05 in ~0.5 s at 118 m. Instant −a
+  (slew_follow_plus_a) applied the punch; rematch slewed back over
+  ~0.5 s. During the acquire window, step toward the new command.
+  Rapid close / near bumper / hard kinematic need / FCW stay immediate.
+  After the window, same as slew_follow_plus_a.
+  """
+  if target is None:
+    return target
+  t = float(target)
+  p = t if prev is None else float(prev)
+  if (not acquiring) or lead_mpc_needs_full_authority(
+    v_rel, d_rel, slack, allow_rapid=allow_rapid, fcw=fcw,
+    crash_cnt=crash_cnt, confirm_rapid=False,
+  ):
+    return slew_follow_plus_a(t, p, v_rel, slew=slew)
   if t > p:
     return min(t, p + float(slew))
   if t < p:
@@ -539,46 +629,44 @@ def lead_approach_rapid_gate(v_rel, prev_count, need_n=LEAD_APPROACH_RAPID_CONFI
 
 def soft_limit_mpc_a_target(output_a, v_ego, v_lead, d_rel, fcw=False, crash_cnt=0,
                             allow_rapid=False, a_lead=None, slack=None):
-  """Floor chatter-shaped MPC −a at mild ease. Match-speed / danger still dump.
+  """Floor chatter / small-adjust MPC −a. Match-speed / danger still dump.
 
   Overlay min(MPC, mild) cannot stop MPC commanding ~−2.5 on radar noise
   around a same-speed lead. Apply this to the MPC (and map) command
   *before* the overlay so a confirmed rapid 0.55 path is not also floored.
 
-  Keep the floor only when it is anti-chatter: gap opening, or |v_rel|
-  small *and* the lead is not decelerating. Skip it when closing
-  (≳ SOFT_LIMIT_CLOSE) or a near-gap braking lead so we can match lead
-  speed — including slightly slower than the lead to settle the gap.
-  A far / opening aLead does not skip the floor. A one-frame v_rel blip
-  below SOFT_LIMIT_CLOSE stays floored; closing or near-gap aLead skip
-  immediately so match-speed braking is not delayed. Four agreeing
-  samples pass `allow_rapid` and skip the floor. FCW / crash / stop
-  kinematics still own danger.
+  Keep the floor when it is anti-chatter or a small large-slack
+  adjustment (e4 40 m / 9.5 m/s −2.33): gap opening, small |v_rel|, or
+  closing with slack past the follow-gap rematch band. Skip it when
+  closing *near the follow gap* (slack ≲ 20 m) or a near-gap braking
+  lead so we can match lead speed. A far / opening aLead does not skip
+  the floor. Rapid / near-bumper / FCW / crash / stop kinematics that
+  already need more than comfort own danger. A one-frame v_rel blip
+  still waits on `allow_rapid`.
   """
   if output_a is None:
     return output_a
   a = float(output_a)
   if a >= -LEAD_APPROACH_MILD_A_MS2:
     return a
-  if fcw or int(crash_cnt) > 0:
-    return a
   if d_rel is None or v_lead is None or v_ego is None:
     return a
   v_rel = float(v_ego) - max(0.0, float(v_lead))
-  if allow_rapid and lead_approach_is_rapid(v_rel):
+  if lead_mpc_needs_full_authority(
+    v_rel, d_rel, slack, allow_rapid=allow_rapid, fcw=fcw,
+    crash_cnt=crash_cnt, confirm_rapid=True,
+  ):
     return a
-  # Closing onto the lead, or a near-gap braking lead: full match-speed −a.
-  # Same gate as rematch-block ownership / overlay-MILD skip.
+  # Near the follow gap, closing or a braking lead still match-speed.
+  # Large slack (e4 40 m / 9.5 m/s) is a small adjustment — floor it.
   if lead_owns_plan(v_rel, a_lead, slack):
-    return a
-  stop_slack = float(d_rel) - STOP_DISTANCE
-  if v_rel > 0.0:
-    if stop_slack <= 0.0:
+    if slack is None or float(slack) <= LEAD_ALEAD_MATCH_SLACK_M:
       return a
-    a_need = -(v_rel * v_rel) / (2.0 * stop_slack)
-    if a_need < -LEAD_APPROACH_A_MS2:
-      return a
-  return max(a, -LEAD_APPROACH_MILD_A_MS2)
+  a_floor = -LEAD_APPROACH_MILD_A_MS2
+  if v_rel > 0.0 and slack is not None and float(slack) > 0.0:
+    a_kin = -(v_rel * v_rel) / (2.0 * float(slack))
+    a_floor = min(a_floor, a_kin)
+  return max(a, a_floor)
 
 
 def lead_approach_need_m(v_ego, v_lead, a_comfort=LEAD_APPROACH_A_MS2, t_follow=None) -> float:

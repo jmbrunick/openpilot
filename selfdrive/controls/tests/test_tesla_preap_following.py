@@ -13,6 +13,7 @@ from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl
 from openpilot.selfdrive.controls.lib import longitudinal_planner
 from openpilot.selfdrive.controls.lib.lead_approach import (
+  LEAD_ACQUIRE_SLEW_MS2,
   LEAD_APPROACH_A_MS2,
   LEAD_APPROACH_MAX_START_M,
   LEAD_APPROACH_MILD_A_MS2,
@@ -23,6 +24,7 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_CLOSE_MAX_M,
   LEAD_CLOSE_OPENING_A_MS2,
   LEAD_CLOSING_MATCH_GAIN,
+  LEAD_MPC_SOFT_NEAR_M,
   LEAD_SETTLE_HOLD_S,
   lead_close_accel_ms2,
   lead_hunt_accel_ms2,
@@ -824,6 +826,54 @@ def test_planner_far_same_speed_lead_may_keep_catchup_plus_a():
   assert planner.output_a_target == pytest.approx(a_cap, abs=0.08)
 
 
+def test_planner_first_acquire_slews_yoyo_and_keeps_rapid_authority():
+  """e4 09:53:19: first 118 m latch must not punch −0.46 then rematch +0.05.
+
+  Rapid / near-bumper first latch still applies full MPC −a immediately.
+  """
+  v_ego = 25.0
+  v_lead = v_ego - 1.2
+  params = _MutablePlannerParams(nap_follow_dist=4, map_speed_accel=5)
+  planner = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
+  planner._map_speed_accel = 5
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-0.46)
+  planner.prev_accel_clip = [-1.2, 0.80]
+  planner.output_a_target = 0.0
+  inputs = _make_planner_inputs(v_ego)
+  lead = inputs["radarState"].leadOne
+  lead.status = True
+  lead.dRel = 118.0
+  lead.vLead = v_lead
+  lead.aLeadK = 0.0
+  lead.modelProb = 1.0
+  lead.radar = True
+  planner.update(inputs)
+  first = float(planner.output_a_target)
+  assert first == pytest.approx(-LEAD_ACQUIRE_SLEW_MS2, abs=0.02)
+  assert first > -0.20
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=0.05)
+  planner.update(inputs)
+  rematch = float(planner.output_a_target)
+  assert rematch > first - 1e-9
+  assert rematch < 0.08
+
+  planner_r = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
+  planner_r._map_speed_accel = 5
+  planner_r.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
+  planner_r.prev_accel_clip = [-3.5, 0.80]
+  planner_r.output_a_target = 0.0
+  inputs_r = _make_planner_inputs(v_ego)
+  lead_r = inputs_r["radarState"].leadOne
+  lead_r.status = True
+  lead_r.dRel = 40.0
+  lead_r.vLead = v_ego - 8.0
+  lead_r.aLeadK = 0.0
+  lead_r.modelProb = 1.0
+  lead_r.radar = True
+  planner_r.update(inputs_r)
+  assert planner_r.output_a_target == pytest.approx(-2.0, abs=0.08)
+
+
 def test_planner_caps_lead_close_accel_at_min_accel_and_keeps_hard_brake():
   """Accel 1 catch-up uses Mannerisms Accel. Rapid / FCW still own −2.0."""
   v_ego = 25.0
@@ -857,12 +907,14 @@ def test_planner_caps_lead_close_accel_at_min_accel_and_keeps_hard_brake():
   planner.update(inputs)
   assert planner.output_a_target == pytest.approx(-LEAD_APPROACH_MILD_A_MS2, abs=0.08)
 
-  # Closing under the rapid gate, or a near-gap braking lead: full match-speed −a.
+  # Large-slack close (e4 40 m / 9.5 m/s class): small MPC bite, not −2.0.
   lead.vLead = v_ego - 1.6
   lead.aLeadK = 0.0
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
   planner.update(inputs)
-  assert planner.output_a_target == pytest.approx(-2.0, abs=0.08)
+  assert planner.output_a_target == pytest.approx(-LEAD_APPROACH_MILD_A_MS2, abs=0.08)
+  assert planner.output_a_target > -0.60
+  # Near-gap braking lead: full match-speed −a.
   lead.vLead = v_lead
   lead.dRel = d_follow + 8.0
   lead.aLeadK = -0.4
@@ -879,6 +931,13 @@ def test_planner_caps_lead_close_accel_at_min_accel_and_keeps_hard_brake():
   for _ in range(LEAD_APPROACH_RAPID_CONFIRM_N):
     planner.update(inputs)
   assert planner.output_a_target == pytest.approx(-2.0, abs=0.08)
+  # Near bumper: full −a even on a mild close (do not delay safety).
+  lead.vLead = v_ego - 2.0
+  lead.dRel = LEAD_MPC_SOFT_NEAR_M
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
+  planner.update(inputs)
+  assert planner.output_a_target == pytest.approx(-2.0, abs=0.08)
+  lead.dRel = d_rel
   lead.vLead = v_lead
 
   # Vision-only far flicker: do not cap MAX-rise / open-road climb.
