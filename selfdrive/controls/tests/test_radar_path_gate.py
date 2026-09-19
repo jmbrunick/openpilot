@@ -129,6 +129,18 @@ def test_curve_outside_sign_is_not_an_oncoming_lead():
   assert radar_follow_ok(on_curve, v_ego, path_x, path_y)
 
 
+def test_straight_opposing_passers_are_not_follow_leads():
+  """20:58: mid-lane opposing stays off the follow set (ignored, no brake)."""
+  v_ego = 20.0
+  path_x = (0.0, 40.0, 80.0)
+  path_y = (0.0, 0.0, 0.0)
+  for y_rel, d_rel in ((3.1, 80.0), (2.9, 50.0), (3.4, 28.0)):
+    t = radar(d_rel=d_rel, y_rel=y_rel, v_rel=-(v_ego + 20.0))
+    assert track_is_oncoming(t, v_ego)
+    assert not track_is_in_path(t, path_x, path_y)
+    assert not radar_follow_ok(t, v_ego, path_x, path_y)
+
+
 def test_ep2059_near_edge_oncoming_fails_follow_ok():
   """yRel +2.23 is inside old 2.5 m; vLead oncoming + 2.0 m gate must drop it."""
   v_ego = 20.0

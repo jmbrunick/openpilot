@@ -35,7 +35,12 @@ PATH_INCUMBENT_HALF_WIDTH_M = 2.0
 # Absolute speed toward ego. Stopped: vLead ≈ 0. Oncoming: vLead < 0
 # (vRel ≈ −(v_ego + v_them)). e1 track 101 vLead ≈ −5…−6; EP_2059
 # 771/802 ≈ −22 / −19 m/s. Floor −1 m/s so stationary noise is not
-# oncoming. Do not publish oncoming as a follow lead (any size).
+# oncoming.
+#
+# This is a follow-lead publication gate only: do not make opposing
+# traffic leadOne. It does not invent regen/hesitation. 20:58 / 21:02 /
+# 21:03 mid-lane passers never associated and must stay ignored — same
+# as stock. Off-path / high-|yRel| / unassociated is the actual bug.
 ONCOMING_VLEAD_MS = -1.0
 ONCOMING_MIN_VEGO_MS = 2.0
 
@@ -175,7 +180,13 @@ def radar_follow_ok(track: Any, v_ego: float = 0.0,
                     path_x: Sequence[float] | None = None,
                     path_y: Sequence[float] | None = None,
                     max_lat: float = PATH_HALF_WIDTH_M) -> bool:
-  """True when a radar track may be a longitudinal follow lead."""
+  """True when a radar track may be a longitudinal follow lead.
+
+  Off-path / high-|yRel| / unassociated tracks fail the path gate.
+  Oncoming fails only as a follow candidate (stay ignored) — it does
+  not command a new brake. Straight opposing that never associates
+  stays leadOne=None, same as the 20:58 CT positive control.
+  """
   d_rel = _num(track, "dRel")
   if d_rel is None or d_rel <= MIN_DREL_M:
     return False

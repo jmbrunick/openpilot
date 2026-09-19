@@ -221,6 +221,35 @@ def test_ep2059_near_edge_oncoming_not_latched():
     assert pick_rain_radar_track(None, {t.identifier: t}, t.identifier, v_ego) is None
 
 
+def test_straight_opposing_passers_stay_ignored():
+  """~20:58 CT: several opposing-lane cars pass toward ego — no regen.
+
+  They never associate as leadOne. Path-gating rain-hold must not FOV-pick
+  them or invent a new oncoming-brake. Stay ignored, same as stock.
+  """
+  v_ego = 20.0
+  passers = [
+    track(1, 80.0, y_rel=3.1, v_rel=-(v_ego + 22.0)),
+    track(2, 50.0, y_rel=2.9, v_rel=-(v_ego + 18.0)),
+    track(3, 28.0, y_rel=3.4, v_rel=-(v_ego + 20.0)),
+  ]
+  tracks = {t.identifier: t for t in passers}
+  assert pick_rain_radar_track(None, tracks, None, v_ego) is None
+  for t in passers:
+    assert pick_rain_radar_track(None, tracks, t.identifier, v_ego) is None
+    assert pick_rain_radar_track(t, tracks, None, v_ego) is None
+
+
+def test_straight_opposing_does_not_steal_in_path_lead():
+  """20:58-class passers must not displace a real path-associated lead."""
+  v_ego = 20.0
+  lead = track(11, 40.0, y_rel=0.3, v_rel=-0.4)
+  passer = track(2, 50.0, y_rel=2.9, v_rel=-(v_ego + 18.0))
+  tracks = {11: lead, 2: passer}
+  assert pick_rain_radar_track(lead, tracks, 11, v_ego) is lead
+  assert pick_rain_radar_track(None, tracks, 11, v_ego) is lead
+
+
 def test_ep2059_mid_lane_opposing_never_acquired():
   """21:02 / 21:03: opposing outside 2.5 m — leadOne stayed None. Keep that."""
   v_ego = 20.0

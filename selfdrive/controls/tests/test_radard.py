@@ -308,6 +308,33 @@ def test_dry_oncoming_does_not_associate_as_radar_lead():
   assert not lead.status
 
 
+def test_straight_opposing_passers_stay_ignored_dry_and_rain():
+  """~20:58 CT: multiple opposing-lane vehicles, no leadOne / no regen.
+
+  Path-gating must not FOV-pick them. An in-path lead still associates
+  while they pass.
+  """
+  v_ego = 20.0
+  passers = [
+    (1, 80.0, 3.1, -(v_ego + 22.0)),
+    (2, 50.0, 2.9, -(v_ego + 18.0)),
+    (3, 28.0, 3.4, -(v_ego + 20.0)),
+  ]
+  for raining in (False, True):
+    scenario = RadarScenario(v_ego=v_ego)
+    scenario.set_rain_hold(raining)
+    lead = scenario.step(1.0, vision_d_rel=70.0, radar_points=passers,
+                         vision_prob=0.40, vision_v=-(v_ego + 20.0))
+    assert not lead.radar, f"rain={raining} latched a 20:58 passer"
+    assert not lead.status, f"rain={raining} published opposing as leadOne"
+
+  scenario = RadarScenario(v_ego=v_ego)
+  scenario.set_rain_hold(True)
+  lead = scenario.step(1.0, vision_d_rel=40.0, radar_points=[IN_PATH, *passers])
+  assert lead.radar
+  assert lead.radarTrackId == 11
+
+
 def test_in_path_lead_still_acquired_dry_and_rain():
   for raining in (False, True):
     scenario = RadarScenario()
