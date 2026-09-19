@@ -947,7 +947,7 @@ def test_lead_acquire_slew_kills_first_latch_yoyo():
 
 
 def test_lead_acquire_slew_keeps_rapid_and_near_bumper_authority():
-  """Dumping / near-bumper first latch must not wait on the acquire slew."""
+  """Dumping / near-bumper / near-gap aLead first latch must not wait."""
   assert lead_mpc_needs_full_authority(8.0, 40.0, slack=20.0, confirm_rapid=False)
   assert slew_lead_acquire_a(
     -2.0, 0.0, 8.0, d_rel=40.0, slack=20.0, acquiring=True,
@@ -962,6 +962,15 @@ def test_lead_acquire_slew_keeps_rapid_and_near_bumper_authority():
   assert slew_lead_acquire_a(
     -2.0, 0.0, 1.2, d_rel=118.0, slack=80.0, acquiring=True, fcw=True,
   ) == pytest.approx(-2.0)
+  # Near-gap braking lead: match-speed −a is immediate (planner2).
+  assert slew_lead_acquire_a(
+    -0.80, 0.0, 0.4, d_rel=40.0, slack=8.0, acquiring=True, a_lead=-0.80,
+  ) == pytest.approx(-0.80)
+  # Same-speed slack ≤ 0 is a too-close recovery, not a dump.
+  assert not lead_mpc_needs_full_authority(0.2, 40.0, slack=-2.0)
+  assert soft_limit_mpc_a_target(-2.5, 25.0, 24.8, 40.0, slack=-2.0) == pytest.approx(
+    -LEAD_APPROACH_MILD_A_MS2
+  )
 
 
 def test_one_outlier_rapid_v_rel_does_not_commit_hard_regen():
@@ -1198,12 +1207,17 @@ def test_alead_only_does_not_own_opening_or_far_slack():
     0.47, -1.44, a_lead=-1.46, lead_present=True,
   ) == pytest.approx(0.47)
 
-  # Real closing ≳ 1.5 still match-speed −a (even with large slack).
+  # Real closing ≳ 1.5 still never rematch +a (even with large slack).
+  # Match-speed extra −a is near-gap / rapid only so it cannot undo
+  # the large-slack MILD floor (e4 40 m / 9.5 m/s).
   a_close = cap_closing_lead_accel(
     0.47, 1.6, a_lead=-0.40, lead_present=True, slack=40.0,
   )
-  assert a_close <= 0.0
-  assert a_close == pytest.approx(-0.40 - LEAD_CLOSING_MATCH_GAIN * 1.6)
+  assert a_close == pytest.approx(0.0)
+  a_mild = cap_closing_lead_accel(
+    -LEAD_APPROACH_MILD_A_MS2, 1.6, a_lead=0.0, lead_present=True, slack=40.0,
+  )
+  assert a_mild == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
   # Large-gap catch-up still Accel while closing 1.0–1.5 (#187).
   assert cap_closing_lead_accel(
     0.47, 1.2, a_lead=0.0, lead_present=True, slack=40.0,
