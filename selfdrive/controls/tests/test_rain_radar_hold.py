@@ -295,6 +295,16 @@ def test_oncoming_rejected_even_when_yrel_is_inside_gate():
   assert pick_rain_radar_track(semi, {802: semi}, None, v_ego) is None
 
 
+def test_2100_close_semi_not_kept_as_rain_incumbent():
+  """~21:00 CT: large/close opposing semi. Rain must drop a live incumbent."""
+  v_ego = 20.0
+  close = track(802, 28.0, y_rel=2.23, v_rel=-(v_ego + 18.8))
+  tighter = track(803, 25.0, y_rel=1.0, v_rel=-(v_ego + 18.8))
+  for t in (close, tighter):
+    assert pick_rain_radar_track(None, {t.identifier: t}, t.identifier, v_ego) is None
+    assert pick_rain_radar_track(t, {t.identifier: t}, t.identifier, v_ego) is None
+
+
 def test_associated_lead_at_1_7m_still_held():
   """Don't over-tighten path-valid associations (1.5 would have dropped this)."""
   v_ego = 20.0

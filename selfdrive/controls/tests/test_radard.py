@@ -565,6 +565,36 @@ def test_ep2059_near_edge_oncoming_semi_does_not_become_lead():
     assert not lead.status, f"rain={raining} pts={pts[0][0]} published leadOne"
 
 
+def test_2100_close_opposing_semi_not_kept_by_rain_hold():
+  """~21:00 CT: large/close opposing-lane semi. Size does not matter.
+
+  Rain must not acquire it, must not switch an in-path hold to it, and
+  must drop the same track ID if it flips to oncoming. 20:58 mid-lane
+  cars stay ignored.
+  """
+  v_ego = 20.0
+  semi_edge = (802, 28.0, 2.23, -(v_ego + 18.8))
+  semi_close = (803, 25.0, 1.0, -(v_ego + 18.8))
+  for pts in (semi_edge, semi_close):
+    scenario = RadarScenario(v_ego=v_ego)
+    scenario.set_rain_hold(True)
+    lead = scenario.step(1.0, vision_d_rel=40.0, radar_points=[IN_PATH, pts])
+    assert lead.radarTrackId == 11
+    lead = scenario.step(1.1, vision_d_rel=pts[1], radar_points=[pts],
+                         vision_prob=0.40, vision_v=-(v_ego + 18.8))
+    assert not lead.radar, f"rain kept semi {pts[0]}"
+    assert not lead.status, f"rain published semi {pts[0]}"
+
+  scenario = RadarScenario(v_ego=v_ego)
+  scenario.set_rain_hold(True)
+  lead = scenario.step(1.0, vision_d_rel=28.0, radar_points=[(802, 28.0, 0.3, -0.4)])
+  assert lead.radarTrackId == 802
+  lead = scenario.step(1.1, vision_d_rel=28.0, radar_points=[semi_edge],
+                       vision_prob=0.40, vision_v=-(v_ego + 18.8))
+  assert not lead.radar
+  assert not lead.status
+
+
 def test_left_turn_straight_ahead_sign_off_path_not_lead():
   """~21:07 CT: sign dead ahead in radar (yRel≈0) but model path is turning left."""
   path_x = [0.0, 15.0, 30.0, 50.0]
