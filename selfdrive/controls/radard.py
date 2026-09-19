@@ -24,6 +24,7 @@ from openpilot.selfdrive.controls.lib.rain_radar_hold import (
   RainRadarGate,
   pick_rain_radar_track,
   rain_far_hold_ok,
+  rain_stat_hold_ok,
 )
 
 
@@ -263,7 +264,8 @@ class LeadTrackAssociation:
           self._rain_lost_frames <= RAIN_RADAR_LOST_HOLD_FRAMES and
           radar_follow_ok(self._held_radar_lead, v_ego, path_x, path_y,
                           max_lat=PATH_INCUMBENT_HALF_WIDTH_M) and
-          rain_far_hold_ok(self._held_radar_lead, None, float(lead_msg.prob))):
+          rain_far_hold_ok(self._held_radar_lead, None, float(lead_msg.prob)) and
+          rain_stat_hold_ok(self._held_radar_lead, None, float(lead_msg.prob), v_ego)):
       lead_dict = dict(self._held_radar_lead)
       lead_dict["modelProb"] = float(lead_msg.prob)
     elif (ready and lead_msg.prob > vision_prob_min and

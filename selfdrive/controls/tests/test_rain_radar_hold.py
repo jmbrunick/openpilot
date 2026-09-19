@@ -27,6 +27,7 @@ from openpilot.selfdrive.controls.lib.rain_radar_hold import (
   pick_rain_radar_track,
   radar_hold_kinematics_ok,
   rain_far_hold_ok,
+  rain_stat_hold_ok,
   rain_sensing_on,
   read_wiper_speed,
   wiper_is_auto,
@@ -342,6 +343,35 @@ def test_far_low_prob_incumbent_not_held_for_regen():
   assert phantom.dRel > RAIN_FAR_HOLD_DREL_M
   assert not rain_far_hold_ok(phantom, None, vision_prob=0.007)
   assert pick_rain_radar_track(None, {321: phantom}, 321, v_ego, vision_prob=0.007) is None
+
+
+def test_ep2106_unassociated_stat_low_mp_not_latched():
+  """EP_2106: 872/905/925/940 — STAT, mp≪0.15, rain-hold. Semi never leadOne."""
+  v_ego = 20.0
+  cases = (
+    (872, 109.0, 1.98),   # LEFT sign; oncoming semi was NOT leadOne
+    (905, 107.0, 1.23),   # "ahead" then sweeps; yRel inside 2.0
+    (906, 100.0, 2.11),
+    (907, 117.0, 2.48),
+    (913, 117.0, 1.73),
+    (925, 112.0, -0.15),  # Atlantic gas-station
+    (940, 151.0, 0.73),   # near stop; yRel inside 2.0
+    (943, 82.0, 2.11),
+  )
+  for tid, d_rel, y_rel in cases:
+    t = track(tid, d_rel, y_rel=y_rel, v_rel=-v_ego)
+    assert not rain_stat_hold_ok(t, None, vision_prob=0.01, v_ego=v_ego)
+    assert pick_rain_radar_track(None, {tid: t}, tid, v_ego, vision_prob=0.01) is None
+    assert pick_rain_radar_track(None, {tid: t}, None, v_ego, vision_prob=0.01) is None
+
+
+def test_on_path_stationary_associated_still_held():
+  """Do not blanket-reject vLead≈0. Stopped in-path lead stays readable."""
+  v_ego = 12.0
+  stopped = track(11, 28.0, y_rel=0.2, v_rel=-v_ego)
+  assert rain_stat_hold_ok(stopped, stopped, vision_prob=0.80, v_ego=v_ego)
+  assert pick_rain_radar_track(stopped, {11: stopped}, None, v_ego,
+                               vision_prob=0.80) is stopped
 
 
 def test_far_associated_rain_lead_still_held():

@@ -340,6 +340,18 @@ def test_straight_opposing_passers_stay_ignored_dry_and_rain():
   assert lead.radarTrackId == 11
 
 
+def test_on_path_stationary_still_acquired_dry_and_rain():
+  """Stopped in-path vehicle must stay a radar lead. Not a blanket STAT reject."""
+  v_ego = 12.0
+  stopped = (11, 28.0, 0.2, -v_ego)
+  for raining in (False, True):
+    scenario = RadarScenario(v_ego=v_ego)
+    scenario.set_rain_hold(raining)
+    lead = scenario.step(1.0, vision_d_rel=28.0, radar_points=[stopped], vision_v=0.0)
+    assert lead.radar, f"rain={raining} dropped on-path stationary"
+    assert lead.radarTrackId == 11
+
+
 def test_in_path_lead_still_acquired_dry_and_rain():
   for raining in (False, True):
     scenario = RadarScenario()
@@ -472,6 +484,10 @@ def test_e1_episodes_do_not_latch_off_path_or_oncoming():
     ("21:00:12", 802, 40.0,  2.48, -(16.0 + 18.7), 0.01),  # EP_2059 semi edge
     ("20:59:40", 782, 123.0, 0.86, -16.0,          0.01),  # Dip 2 far STAT
     ("20:59:42", 786, 84.0,  2.11, -16.0,          0.014), # Dip 2 far STAT
+    ("21:06:29", 872, 109.0, 1.98, -16.0,          0.005), # EP_2106 LEFT sign
+    ("21:06:46", 905, 107.0, 1.23, -16.0,          0.002), # ahead sweep
+    ("21:07:39", 925, 112.0, -0.15,-16.0,          0.002), # Atlantic gas
+    ("21:07:49", 940, 151.0, 0.73, -16.0,          0.01),  # near stop
   )
   for label, tid, d_rel, y_rel, v_rel, mp in cases:
     scenario = RadarScenario(v_ego=16.0)
