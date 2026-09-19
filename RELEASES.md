@@ -1,3 +1,7 @@
+NAP MAX is a hard ceiling on lead rematch (2026-09-19)
+========================
+* Pre-AP: if the lead is faster than MAX/set, **hold ≤ MAX and let the gap open**. Lead rematch / remaining-close no longer commands Accel-1 (+0.36) to keep up past MAX (ea 11:46: 62.2 on a 60). At/above MAX, lead-close `a_env` is 0, not Accel peak. Catch-up under MAX, #214 acquire slew, #216 slight-lift floor, and emergency −a kept. No panda flash.
+
 NAP EV slight-lift comfort path (2026-09-19)
 ========================
 * Pre-AP Model S EV: non-emergency approach/follow is **slight lift only** (MILD −0.22). Full throttle lift / deep −a is reserved for rapid close / near-bumper / FCW. Closing ≳ 1.5 and near-gap aLead no longer skip the floor or acquire slew (that still punched −0.996 at 80–130 m). #214 acquire slew kept. No panda flash.

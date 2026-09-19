@@ -281,8 +281,9 @@ class LongitudinalPlanner:
     # Cruise 1.6 / Adaptive full-profile used to punch a 160–200 m lead.
     # Near-gap rematch trickles. After match-settle, Accel-ceil rematch
     # is deadbanded (trickle / hunt, not +0.323 for 7 s while opening).
-    # Hold last in-window lead on a brief status drop. Does not change
-    # MPC danger / −a.
+    # At/above MAX the envelope is 0 — do not chase a faster lead past
+    # set. Hold last in-window lead on a brief status drop. Does not
+    # change MPC danger / −a.
     self._lead_close_a_cap = None
     if self._is_preap:
       lead_close = sm['radarState'].leadOne
@@ -300,7 +301,10 @@ class LongitudinalPlanner:
         a_grad = map_track_accel_ms2(
           v_ego, v_hud_ms, a_peak, accel_level=self._map_speed_accel,
         )
-        a_env = a_peak if a_grad is None else min(a_peak, float(a_grad))
+        # At/above MAX, map_track_accel is None (deadband). That must be
+        # a 0 ceiling, not full Accel peak — otherwise rematch +a chases
+        # a faster lead past set (ea 11:46: Accel-1 at 62 on a 60 MAX).
+        a_env = 0.0 if a_grad is None else min(a_peak, float(a_grad))
         if lead_close.status and lead_close_should_cap(
           lead_close.dRel, lead_close.modelProb, lead_close.radar, active=True,
         ):
@@ -316,7 +320,7 @@ class LongitudinalPlanner:
         )
         self._lead_close_a_cap = lead_close_accel_ms2(
           self._map_speed_accel, v_rel=v_rel_lead, slack=slack, a_personality=a_env,
-          settled=self._lead_settled,
+          settled=self._lead_settled, v_ego=v_ego, v_cruise=v_hud_ms,
         )
         if self._lead_close_hold_owned or lead_owns_plan(
           v_rel_lead, self._lead_close_hold_a, slack,
@@ -496,6 +500,7 @@ class LongitudinalPlanner:
       )
       output_a_target = lead_remaining_close_a_ms2(
         output_a_target, overlay_v_rel, overlay_slack,
+        v_ego=v_ego, v_cruise=v_hud_ms,
       )
       if live_ok or lead_held:
         output_a_target = slew_lead_acquire_a(

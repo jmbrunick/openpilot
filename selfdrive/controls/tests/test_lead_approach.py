@@ -62,6 +62,7 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   lead_approach_rapid_gate,
   lead_approach_track_ok,
   lead_approach_ttc_s,
+  lead_at_or_above_max,
   lead_close_accel_ms2,
   lead_close_should_cap,
   lead_follow_slack_m,
@@ -81,6 +82,7 @@ from openpilot.selfdrive.mapd.constants import (
   DECREASE_START_MARGIN_M,
   LOOKAHEAD_EARLY,
   LOOKAHEAD_NORMAL,
+  TRACK_DEADBAND_MS,
   map_brake_a_ms2,
 )
 
@@ -679,6 +681,8 @@ def test_planner_wires_hysteresis_and_slew():
   assert "cap_closing_lead_accel(" in planner
   assert "d_rel=overlay_d" in planner
   assert "lead_remaining_close_a_ms2(" in planner
+  assert "v_ego=v_ego, v_cruise=v_hud_ms" in planner
+  assert "a_env = 0.0 if a_grad is None else min(a_peak, float(a_grad))" in planner
   assert "live_ok = bool(lead.status) and lead_close_should_cap(" in planner
   assert "lead_owns_plan(" in planner
   assert "slack=overlay_slack" in planner
@@ -853,6 +857,72 @@ def test_remaining_close_commands_trickle_when_mpc_sits_at_zero():
   assert lead_remaining_close_a_ms2(0.0, 1.6, 3.0) == pytest.approx(0.0)
   assert lead_remaining_close_a_ms2(0.0, -0.6, 10.0) == pytest.approx(LEAD_CLOSE_A_MIN_MS2)
   assert lead_remaining_close_a_ms2(0.0, -0.3, 18.0) == pytest.approx(0.0)
+
+
+def test_max_gates_lead_rematch_and_remaining_close_plus_a():
+  """MAX is a hard ceiling: faster lead must not command +a to keep up.
+
+  ea 11:46: speed-sag rematch Accel-1 (+0.36) while already 1–2 mph over
+  a 60 MAX. Under MAX, grade sag / same-speed catch-up still rematch.
+  Overlay ease / emergency −a still win at MAX.
+  """
+  v_max = 60.0 * 0.44704
+  v_at = v_max
+  v_over = v_max + 1.0 * 0.44704
+  v_under = v_max - 5.0 * 0.44704
+  assert lead_at_or_above_max(v_at, v_max)
+  assert lead_at_or_above_max(v_over, v_max)
+  assert lead_at_or_above_max(v_max - TRACK_DEADBAND_MS, v_max)
+  assert not lead_at_or_above_max(v_under, v_max)
+  assert not lead_at_or_above_max(None, v_max)
+  assert not lead_at_or_above_max(v_at, None)
+
+  # Remaining-close: no +a for speed-sag / finish at or above MAX.
+  assert lead_remaining_close_a_ms2(
+    0.0, -0.6, 10.0, v_ego=v_at, v_cruise=v_max,
+  ) == pytest.approx(0.0)
+  assert lead_remaining_close_a_ms2(
+    0.0, -0.8, 56.0, v_ego=v_over, v_cruise=v_max,
+  ) == pytest.approx(0.0)
+  assert lead_remaining_close_a_ms2(
+    0.0, 0.0, 3.0, v_ego=v_at, v_cruise=v_max,
+  ) == pytest.approx(0.0)
+  assert lead_remaining_close_a_ms2(
+    -0.05, -0.4, 3.0, v_ego=v_over, v_cruise=v_max,
+  ) == pytest.approx(-0.05)
+  # Real ease / emergency −a still pass through at MAX.
+  assert lead_remaining_close_a_ms2(
+    -0.20, -0.6, 10.0, v_ego=v_at, v_cruise=v_max,
+  ) == pytest.approx(-0.20)
+  assert lead_remaining_close_a_ms2(
+    -2.0, 8.0, 12.0, v_ego=v_at, v_cruise=v_max,
+  ) == pytest.approx(-2.0)
+  # Under MAX, speed-sag rematch and finish trickle still arm.
+  assert lead_remaining_close_a_ms2(
+    0.0, -0.6, 10.0, v_ego=v_under, v_cruise=v_max,
+  ) == pytest.approx(LEAD_CLOSE_A_MIN_MS2)
+  assert lead_remaining_close_a_ms2(
+    0.0, 0.0, 3.0, v_ego=v_under, v_cruise=v_max,
+  ) == pytest.approx(LEAD_CLOSE_OPENING_A_MS2)
+
+  # Close-cap / settled rematch: at MAX the +a envelope is 0.
+  a2 = lead_close_accel_ms2(2)
+  assert lead_close_accel_ms2(
+    2, v_rel=-0.6, slack=10.0, settled=True, v_ego=v_at, v_cruise=v_max,
+  ) == pytest.approx(0.0)
+  assert lead_close_accel_ms2(
+    1, v_rel=-0.8, slack=40.0, settled=False, v_ego=v_over, v_cruise=v_max,
+  ) == pytest.approx(0.0)
+  assert lead_close_accel_ms2(
+    5, v_rel=0.0, slack=80.0, v_ego=v_at, v_cruise=v_max,
+  ) == pytest.approx(0.0)
+  # Under MAX, same-speed catch-up and speed-sag rematch still Accel.
+  assert lead_close_accel_ms2(
+    2, v_rel=0.0, slack=80.0, v_ego=v_under, v_cruise=v_max,
+  ) == pytest.approx(a2)
+  assert lead_close_accel_ms2(
+    2, v_rel=-0.6, slack=10.0, settled=True, v_ego=v_under, v_cruise=v_max,
+  ) == pytest.approx(a2)
 
 
 def test_settled_gap_hunt_is_small_accel_proportional_not_ceil():
