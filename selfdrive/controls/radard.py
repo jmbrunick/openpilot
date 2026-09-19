@@ -319,6 +319,7 @@ class RadarD:
     self.lead_two_association = LeadTrackAssociation(low_speed_override=False)
     self.rain_gate = rain_gate if rain_gate is not None else RainRadarGate()
     self.reliability = RadarReliability()
+    self.engaged = False
 
   def update(self, sm: messaging.SubMaster, rr: car.RadarData):
     self.ready = sm.seen['modelV2']
@@ -328,6 +329,8 @@ class RadarD:
       self.v_ego = sm['carState'].vEgo
       self.v_ego_hist.append(self.v_ego)
       self.last_v_ego_frame = sm.recv_frame['carState']
+      cruise = getattr(sm['carState'], 'cruiseState', None)
+      self.engaged = bool(getattr(cruise, 'enabled', False))
 
     radar_timed_out = False
     if sm.updated['liveTracks']:
@@ -378,13 +381,18 @@ class RadarD:
     leads_v3 = sm['modelV2'].leadsV3
     # Prefer is default (Radar Enabled + healthy). Auto wiper is not required.
     # Unhealthy / disabled → stock fusion. Path/oncoming gates still apply.
-    self.rain_gate.set_reliable(self.reliability.update(
-      tracks=self.tracks, errors=rr.errors, v_ego=self.v_ego,
-      timed_out=radar_timed_out,
-      ignore_hw_fail=self.rain_gate.read_ignore_hw_fail()))
+    self.rain_gate.set_reliable(
+      self.reliability.update(
+        tracks=self.tracks, errors=rr.errors, v_ego=self.v_ego,
+        timed_out=radar_timed_out,
+        ignore_hw_fail=self.rain_gate.read_ignore_hw_fail(),
+        engaged=self.engaged),
+      alert=self.reliability.should_alert)
     radar_prefer = bool(self.rain_gate.update())
     if hasattr(self.radar_state, "radarPreferFallback"):
       self.radar_state.radarPreferFallback = bool(self.rain_gate.fallback_alert)
+    if hasattr(self.radar_state, "radarPreferReason"):
+      self.radar_state.radarPreferReason = str(self.reliability.log_reason)
     path_x, path_y = model_path_xy(sm['modelV2'])
     if len(leads_v3) > 1:
       self.radar_state.leadOne = self.lead_one_association.update(

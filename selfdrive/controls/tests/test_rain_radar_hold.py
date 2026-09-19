@@ -23,8 +23,12 @@ from openpilot.selfdrive.controls.lib.rain_radar_hold import (
   RAIN_CUT_IN_GAP_M,
   RAIN_FAR_HOLD_DREL_M,
   RAIN_INLANE_YREL_M,
+  RELIABLE_ALERT_FRAMES,
+  RELIABLE_ENGAGE_GRACE_FRAMES,
   RELIABLE_FAIL_FRAMES,
+  RELIABLE_MIN_VEGO_MS,
   RELIABLE_OK_FRAMES,
+  RELIABLE_ONROAD_GRACE_FRAMES,
   RadarPreferGate,
   RadarReliability,
   RainRadarGate,
@@ -115,6 +119,15 @@ def test_unhealthy_radar_falls_back_and_alerts():
   assert gate.fallback_alert
 
 
+def test_soft_unhealthy_can_drop_prefer_without_hud():
+  """Soft dropout may leave prefer without flashing Radar Unreliable."""
+  params = FakeParams({NAP_RADAR_ENABLED: True})
+  gate = RadarPreferGate(params=params)
+  gate.set_reliable(False, alert=False)
+  assert not gate.update()
+  assert not gate.fallback_alert
+
+
 def test_rain_gate_override_skips_params():
   gate = RainRadarGate(params=FakeParams({NAP_RADAR_ENABLED: False}))
   gate.set_override(True)
@@ -138,15 +151,23 @@ def test_reliability_trips_on_fault_timeout_dropout_and_erratic():
   rel = RadarReliability()
   assert not rel.update(errors={"radarFault": True}, v_ego=16.0)
   assert rel.reason == "fault"
+  assert rel.should_alert
+  assert rel.log_reason == "fault"
 
   rel = RadarReliability()
   assert not rel.update(tracks={1: track(1, 40.0)}, v_ego=16.0, timed_out=True)
   assert rel.reason == "timeout"
+  assert rel.should_alert
 
   rel = RadarReliability()
   assert rel.update(tracks={1: track(1, 40.0)}, v_ego=16.0)
-  assert not rel.update(tracks={}, v_ego=16.0)
+  assert rel.update(tracks={}, v_ego=16.0)  # first empty frame is not a trip
+  assert rel.log_reason == "dropout"
+  for _ in range(RELIABLE_FAIL_FRAMES - 1):
+    rel.update(tracks={}, v_ego=16.0)
+  assert not rel.healthy
   assert rel.reason == "dropout"
+  assert not rel.should_alert  # soft + not engaged
 
   rel = RadarReliability()
   t = track(7, 40.0, y_rel=0.2)
@@ -164,6 +185,72 @@ def test_reliability_trips_on_fault_timeout_dropout_and_erratic():
   for _ in range(RELIABLE_OK_FRAMES):
     rel.update(tracks={7: stable}, v_ego=16.0)
   assert rel.healthy
+
+
+def test_brief_empty_table_at_crawl_speed_does_not_alert():
+  """e3 gravel: vEgo 5.35, empty table, radarErrors all false — no HUD."""
+  rel = RadarReliability()
+  assert rel.update(tracks={1: track(1, 20.0)}, v_ego=5.35)
+  for _ in range(RELIABLE_FAIL_FRAMES + 4):
+    ok = rel.update(tracks={}, v_ego=5.35, engaged=False)
+    assert ok
+    assert not rel.should_alert
+  assert rel.healthy
+  assert rel.log_reason == "dropout"
+  assert RELIABLE_MIN_VEGO_MS > 5.35
+
+
+def test_real_fault_still_alerts_without_engage():
+  """canError / radarFault / unavailable still fall back + alert."""
+  for errors, _name in (
+    ({"canError": True}, "canError"),
+    ({"radarFault": True}, "radarFault"),
+    ({"radarUnavailableTemporary": True}, "unavailable"),
+  ):
+    rel = RadarReliability()
+    assert not rel.update(errors=errors, v_ego=5.35, engaged=False)
+    assert not rel.healthy
+    assert rel.reason == "fault"
+    assert rel.should_alert
+    assert rel.log_reason == "fault"
+
+
+def test_reliability_recover_hysteresis():
+  """One clean frame after a trip is not enough; OK_FRAMES recovers."""
+  rel = RadarReliability()
+  assert not rel.update(errors={"radarFault": True}, v_ego=16.0)
+  assert not rel.healthy
+  assert rel.should_alert
+
+  clean = {1: track(1, 40.0)}
+  rel.update(tracks=clean, v_ego=16.0)
+  assert not rel.healthy  # one clean frame is not enough
+  for _ in range(RELIABLE_OK_FRAMES - 1):
+    rel.update(tracks=clean, v_ego=16.0)
+  assert rel.healthy
+  assert not rel.should_alert
+  assert rel.log_reason == ""
+
+
+def test_soft_dropout_alerts_only_after_engage_confirm():
+  """Highway empty-table trips prefer after FAIL_FRAMES; HUD waits."""
+  rel = RadarReliability()
+  # Expire onroad grace so engage+confirm is what gates the HUD.
+  for _ in range(RELIABLE_ONROAD_GRACE_FRAMES):
+    rel.update(tracks={1: track(1, 40.0)}, v_ego=16.0, engaged=False)
+  for _ in range(RELIABLE_FAIL_FRAMES):
+    rel.update(tracks={}, v_ego=16.0, engaged=False)
+  assert not rel.healthy
+  assert not rel.should_alert
+
+  rel.update(tracks={}, v_ego=16.0, engaged=True)
+  assert not rel.should_alert  # engage grace
+  for _ in range(RELIABLE_ENGAGE_GRACE_FRAMES):
+    rel.update(tracks={}, v_ego=16.0, engaged=True)
+  for _ in range(RELIABLE_ALERT_FRAMES):
+    rel.update(tracks={}, v_ego=16.0, engaged=True)
+  assert rel.should_alert
+  assert rel.log_reason == "dropout"
 
 
 def test_pick_holds_incumbent_through_vision_mismatch():

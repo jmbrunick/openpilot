@@ -51,15 +51,29 @@ RAIN_RADAR_LOST_HOLD_FRAMES = 8
 # Vision-only bar while path-gated prefer is active. Dig flaps were already ≥ 0.9.
 RAIN_VISION_ONLY_MIN_PROB = 0.90
 
-# Reliability: hardware / timeout trip immediately. Erratic kinematics
-# need a short streak. Recover after this many consecutive good samples
-# so a single clean frame cannot chatter the alert / prefer latch.
+# Reliability: hardware / stream timeout trip immediately. Soft reasons
+# (empty-table dropout, erratic jumps) need a short streak. Recover after
+# this many consecutive good samples so a single clean frame cannot
+# chatter the prefer latch.
+#
+# e3 gravel crawl (1c95345a3286a5db|000000e3--8b12de89d2, tip b635cc6cd7ab):
+# 09:22:24 CT ~1s radarPreferFallback, 8s before engage. radarErrors all
+# false, vEgo 5.35 (just over the old 5.0 empty-table gate), recovered in
+# RELIABLE_OK_FRAMES. Soft dropout must not flash the HUD.
 RELIABLE_FAIL_FRAMES = 4
 RELIABLE_OK_FRAMES = 16
+# Extra confirm before HUD on soft trips (~1.0 s at 20 Hz). Hard faults
+# alert immediately. Soft HUD also needs engage and is muted during
+# onroad / engage grace.
+RELIABLE_ALERT_FRAMES = 20
+RELIABLE_ONROAD_GRACE_FRAMES = 60
+RELIABLE_ENGAGE_GRACE_FRAMES = 40
 RELIABLE_DROPOUT_S = 0.50
 RELIABLE_YREL_JUMP_M = 4.0
 RELIABLE_DREL_JUMP_M = 25.0
-RELIABLE_MIN_VEGO_MS = 5.0
+# Empty-table while moving. 5.0 caught gravel crawl at 5.35 m/s (~12 mph).
+RELIABLE_MIN_VEGO_MS = 8.0
+RELIABLE_HARD_REASONS = frozenset({"fault", "timeout", "override"})
 # EP_2059 (e1 segs 13–17): #201 RAIN_INLANE=2.5 latched near-edge
 # oncoming 771/802 at |yRel| 2.23–2.48 (0.02–0.27 m inside 2.5).
 # Justin: 2.5 → 2.0 m (~6.6 ft) + reject vLead < 0. Path association
@@ -156,18 +170,29 @@ def _track_xy(track: Any) -> tuple[float, float] | None:
 class RadarReliability:
   """Practical Bosch health for path-gated prefer.
 
-  Immediate trip: CAN/fault bits, measurement timeout, empty table while
-  moving. Streak trip: same-ID |ΔyRel| / |ΔdRel| jumps that look like a
-  glitching table. Recover after RELIABLE_OK_FRAMES clean samples so the
-  HUD / prefer latch does not chatter.
+  Immediate trip: CAN/fault bits, measurement timeout. Streak trip:
+  empty table while moving above RELIABLE_MIN_VEGO_MS, or same-ID
+  |ΔyRel| / |ΔdRel| jumps. Recover after RELIABLE_OK_FRAMES clean
+  samples so the prefer latch does not chatter.
+
+  HUD (`should_alert`) is stricter than the prefer latch: hard reasons
+  alert immediately; soft reasons need engage, onroad/engage grace, and
+  RELIABLE_ALERT_FRAMES so a gravel / empty-table blip does not flash.
+  `log_reason` is published every frame for the next route dig.
   """
 
   def __init__(self):
     self.healthy = True
     self.reason = ""
+    self.sample_reason = ""
     self._bad_streak = 0
     self._good_streak = 0
+    self._unhealthy_frames = 0
+    self._frames = 0
+    self._engaged = False
+    self._engage_frame: int | None = None
     self._last_xy: dict[int, tuple[float, float]] = {}
+    self._low_speed_empty = False
     self._override: bool | None = None
 
   def set_override(self, healthy: bool | None) -> None:
@@ -176,24 +201,70 @@ class RadarReliability:
   def reset(self) -> None:
     self.healthy = True
     self.reason = ""
+    self.sample_reason = ""
     self._bad_streak = 0
     self._good_streak = 0
+    self._unhealthy_frames = 0
+    self._frames = 0
+    self._engaged = False
+    self._engage_frame = None
     self._last_xy = {}
+    self._low_speed_empty = False
+
+  @property
+  def log_reason(self) -> str:
+    """Latched trip reason, else this-frame soft reason (may not trip)."""
+    if not self.healthy and self.reason:
+      return self.reason
+    return self.sample_reason
+
+  @property
+  def should_alert(self) -> bool:
+    """HUD latch. Hard faults are immediate; soft reasons are quiet."""
+    if self._override is False:
+      return True
+    if self._override is True or self.healthy:
+      return False
+    if self.reason in RELIABLE_HARD_REASONS:
+      return True
+    if not self._engaged:
+      return False
+    if self._in_onroad_grace() or self._in_engage_grace():
+      return False
+    return self._unhealthy_frames >= RELIABLE_ALERT_FRAMES
+
+  def _in_onroad_grace(self) -> bool:
+    return self._frames < RELIABLE_ONROAD_GRACE_FRAMES
+
+  def _in_engage_grace(self) -> bool:
+    if not self._engaged or self._engage_frame is None:
+      return False
+    return (self._frames - self._engage_frame) < RELIABLE_ENGAGE_GRACE_FRAMES
 
   def update(self, tracks: dict[int, Any] | None = None,
              errors: Any = None, v_ego: float = 0.0,
-             timed_out: bool = False, ignore_hw_fail: bool = False) -> bool:
+             timed_out: bool = False, ignore_hw_fail: bool = False,
+             engaged: bool = False) -> bool:
+    self._frames += 1
+    engaged = bool(engaged)
+    if engaged and not self._engaged:
+      self._engage_frame = self._frames
+    self._engaged = engaged
+
     if self._override is not None:
       self.healthy = self._override
       self.reason = "" if self.healthy else "override"
+      self.sample_reason = self.reason
+      self._unhealthy_frames = 0 if self.healthy else self._unhealthy_frames + 1
       return self.healthy
 
     bad, reason = self._sample_bad(tracks or {}, errors, v_ego, timed_out,
                                    ignore_hw_fail)
+    self.sample_reason = reason
     if bad:
       self._bad_streak += 1
       self._good_streak = 0
-      immediate = reason in ("timeout", "fault", "dropout")
+      immediate = reason in RELIABLE_HARD_REASONS
       if immediate or self._bad_streak >= RELIABLE_FAIL_FRAMES:
         self.healthy = False
         self.reason = reason
@@ -203,6 +274,11 @@ class RadarReliability:
       if self._good_streak >= RELIABLE_OK_FRAMES:
         self.healthy = True
         self.reason = ""
+
+    if self.healthy:
+      self._unhealthy_frames = 0
+    else:
+      self._unhealthy_frames += 1
     return self.healthy
 
   def _sample_bad(self, tracks: dict[int, Any], errors: Any, v_ego: float,
@@ -223,10 +299,18 @@ class RadarReliability:
       except (TypeError, ValueError):
         continue
 
-    if (float(v_ego) >= RELIABLE_MIN_VEGO_MS and not snap and
-        self._last_xy):
-      self._last_xy = {}
-      return True, "dropout"
+    if not snap:
+      # Keep last_xy across empty frames so a dropout streak can confirm.
+      # Low-speed empty (gravel crawl / open road) is log-only.
+      if float(v_ego) >= RELIABLE_MIN_VEGO_MS and self._last_xy:
+        return True, "dropout"
+      if self._last_xy or self._low_speed_empty:
+        self._last_xy = {}
+        self._low_speed_empty = True
+        return False, "dropout"
+      return False, ""
+
+    self._low_speed_empty = False
 
     erratic = False
     for tid, (d_rel, y_rel) in snap.items():
@@ -259,6 +343,7 @@ class RadarPreferGate:
     self._params_failed = False
     self.enabled = True
     self.reliable = True
+    self._alert = False
     self.ignore_hw_fail = False
 
   def set_override(self, prefer: bool | None) -> None:
@@ -268,8 +353,9 @@ class RadarPreferGate:
   def set_enabled_override(self, enabled: bool | None) -> None:
     self._enabled_override = None if enabled is None else bool(enabled)
 
-  def set_reliable(self, ok: bool) -> None:
+  def set_reliable(self, ok: bool, alert: bool | None = None) -> None:
     self.reliable = bool(ok)
+    self._alert = (not self.reliable) if alert is None else bool(alert)
 
   def _get_params(self) -> Any:
     if self._params is not None or self._params_failed:
@@ -304,10 +390,10 @@ class RadarPreferGate:
 
   @property
   def fallback_alert(self) -> bool:
-    """Enabled but prefer dropped because radar is unhealthy. Not Off."""
+    """Enabled but prefer dropped and the HUD should flash. Not Off."""
     if self._override is False:
       return False
-    return bool(self.enabled) and not bool(self.reliable)
+    return bool(self.enabled) and not bool(self.reliable) and bool(self._alert)
 
 
 # Back-compat name used by older tests / RadarD wiring.

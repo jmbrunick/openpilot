@@ -704,6 +704,8 @@ struct RadarState @0x9a185389d6fdd05f {
   leadTwo @4 :LeadData;
   # Path-gated radar prefer dropped to stock fusion (enabled but unhealthy).
   radarPreferFallback @14 :Bool;
+  # Latched trip reason, or this-frame soft reason (dropout/erratic) for digs.
+  radarPreferReason @15 :Text;
 
   struct LeadData {
     dRel @0 :Float32;
