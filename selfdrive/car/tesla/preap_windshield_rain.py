@@ -30,12 +30,15 @@ below acquire. Light mist / film on the glass (highway streaks; ROAD
 UI looks through it) must still wipe via the near-glass haze path —
 not distant atmospheric fog alone. Then: one blade sweep →
 wipe=0 + Auto rest-cancel → wait CLEAR_WAIT_S (~2.5 s) → assess against
-the *repeat* bar (REWIPE_ON), not acquire. Heavy can rewipe after that
-holdoff. Light mist must not clock ~12.5 s pulses (pulse+wait+two idle
-looks); enforce MIN_REWIPE_GAP_LIGHT_S (~25 s) before another acquire.
-NAPWiperSensitivity (0–4, mid=2) scales acquire, repeat, and that gap.
-Park / v≈0 suppress is in body controls; scoring still runs. Off still
-leaves the real stalk.
+the *repeat* bar (REWIPE_ON), not acquire. True heavy (HEAVY_ON≈9) can
+rewipe after that holdoff. Light mist must not clock Mid at the old
+~12.5 s pulses (pulse+wait+two idle looks); Mid keeps
+MIN_REWIPE_GAP_LIGHT_S (~25 s). Drier/Dry (sens 0–1) lower acquire and
+repeat so evening film first-wipes sooner and can rewipe without
+waiting for heavy≈9; their light gap is ~8–12 s at 0, scaling toward
+Mid. NAPWiperSensitivity (0–4, mid=2) scales acquire, repeat, and that
+gap. Park / v≈0 suppress is in body controls; scoring still runs. Off
+still leaves the real stalk.
 
 Bokeh energy is an 8-bit residual (~0 dry, ~2–5 wet). A live clear-glass
 log showed bokeh=49165 — wrong Y scale or a bandpass blowup. Impossible
@@ -155,22 +158,33 @@ HOLD_ON = 1.0
 # Mist film live/offline sits ~6–8. Do not "fix" dry garage by raising
 # this past old 6.29. Heavy milky / dense beads (~10+) still enter.
 # Lower than REWIPE_ON so the first wipe is not waiting on a heavy bar.
+# Sens 0–1 scale this down further (evening mist on Drier sat below 4.5).
 ACQUIRE_ON = 4.5
-# Post-wipe re-enter and status "heavy": above light-mist film (~6–8.4).
-# Justin 48f458dd9 / 2026-09-18 mist: first wipe was late, then light mist
-# re-acquired every ~12.5 s. Repeat stays above that film; light uses the
-# min-rewipe gap, not the acquire path.
+# Status "heavy" and the unscaled gap-skip bar. Light film (~6–8.4) is
+# not heavy. 2026-09-18 Drier mist: long 125–271 s quiet gaps because
+# repeat sat at HEAVY_ON*0.80≈7.2 and the light gap was still ~20 s.
 HEAVY_ON = 9.0
+# Mid post-wipe re-enter. Sens 0–1 scale below the film band so Drier/Dry
+# can rewipe light mist without needing heavy≈9. Gap still applies unless
+# the score is truly HEAVY_ON — do not 4 s-thrash when repeat is lowered.
 REWIPE_ON = HEAVY_ON
 # 0 = wipe sooner / more often (more dry). 4 = tolerate more film (more wet).
 NAP_WIPER_SENSITIVITY = "NAPWiperSensitivity"
 WIPER_SENSITIVITY_MIN = 0
 WIPER_SENSITIVITY_MAX = 4
 WIPER_SENSITIVITY_DEFAULT = 2
-# Mid=1.00. Lower index lowers acquire/repeat (wipe sooner).
-SENSITIVITY_SCALE = (0.80, 0.90, 1.00, 1.10, 1.20)
-# Light-mist min interval between wipe *starts*. Mid=25 s (20 s at 0, 30 s at 4).
+# Mid=1.00. Sens 0–1 drop more than the old 0.80/0.90 so light mist
+# acquires sooner. Mid+ stays the previous curve.
+ACQUIRE_SENSITIVITY_SCALE = (0.58, 0.76, 1.00, 1.10, 1.20)
+# Repeat was HEAVY_ON*0.80/0.90 (7.2/8.1). Light film ~6–8 never cleared
+# that bar. Drier/Dry sit in the film band; Mid stays 9.
+REPEAT_SENSITIVITY_SCALE = (0.50, 0.65, 1.00, 1.10, 1.20)
+# Compat alias (older tests / callers). Prefer ACQUIRE_SENSITIVITY_SCALE.
+SENSITIVITY_SCALE = ACQUIRE_SENSITIVITY_SCALE
+# Light-mist min interval between wipe *starts*. Drier ~10 s; Mid 25 s
+# (do not return to the old ~12.5 s Mid pulse). Wet/Wetter stay 27.5/30.
 MIN_REWIPE_GAP_LIGHT_S = 25.0
+MIN_REWIPE_GAP_BY_SENS = (10.0, 16.0, 25.0, 27.5, 30.0)
 MIN_REWIPE_GAP_SENS_STEP = 2.5
 HOLD_OFF = 0.70
 EMA_ALPHA = 0.35
@@ -260,21 +274,20 @@ def current_sensitivity() -> int:
 def acquire_threshold(sens: int | None = None) -> float:
   if sens is None:
     sens = current_sensitivity()
-  return ACQUIRE_ON * SENSITIVITY_SCALE[clip_sensitivity(sens)]
+  return ACQUIRE_ON * ACQUIRE_SENSITIVITY_SCALE[clip_sensitivity(sens)]
 
 
 def repeat_threshold(sens: int | None = None) -> float:
   if sens is None:
     sens = current_sensitivity()
-  return REWIPE_ON * SENSITIVITY_SCALE[clip_sensitivity(sens)]
+  return REWIPE_ON * REPEAT_SENSITIVITY_SCALE[clip_sensitivity(sens)]
 
 
 def min_rewipe_gap_light_s(sens: int | None = None) -> float:
-  """Seconds between wipe starts when score is below the repeat bar."""
+  """Seconds between wipe starts when score is below HEAVY_ON."""
   if sens is None:
     sens = current_sensitivity()
-  s = clip_sensitivity(sens)
-  return MIN_REWIPE_GAP_LIGHT_S + MIN_REWIPE_GAP_SENS_STEP * (s - WIPER_SENSITIVITY_DEFAULT)
+  return MIN_REWIPE_GAP_BY_SENS[clip_sensitivity(sens)]
 
 
 def y_plane_from_nv12(buf, max_side: int = 0) -> np.ndarray | None:
@@ -733,12 +746,18 @@ class WindshieldRain:
     self._gap_light_s = gap_light
     return sens, acquire, repeat, gap_light
 
-  def _gap_ok(self, now: float, score: float, repeat: float, gap_light: float) -> bool:
-    """First wipe has no gap. Heavy may rewipe after CLEAR_WAIT_S. Light waits."""
+  def _gap_ok(self, now: float, score: float, _repeat: float, gap_light: float) -> bool:
+    """First wipe has no gap. True heavy may rewipe after CLEAR_WAIT_S.
+
+    Scaled repeat at Drier/Dry sits in the light-film band so those
+    scores can take the one-look post-wipe path. They still wait the
+    light gap — only unscaled HEAVY_ON skips it. Mid repeat is HEAVY_ON,
+    so Mid behavior is unchanged.
+    """
     last = self._last_wipe_t0
     if last <= 0.0:
       return True
-    if score >= repeat:
+    if score >= HEAVY_ON:
       return True
     return (now - last) >= gap_light
 
