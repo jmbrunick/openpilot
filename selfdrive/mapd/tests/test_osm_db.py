@@ -27,8 +27,15 @@ def test_continues_route_rejects_cross_street_fills():
   assert _heading_aligned(117.5, 310.3)
   assert _wrap_heading_delta(117.5, 310.3) > HEADING_ALIGN_DEG  # old unidirectional gate
   assert _continues_route(117.5, 310.3, "", "trunk", "Atlantic Avenue", "trunk")
+  # Ep4 Pennock: travel SE ~112°, Pacific Ave 45 digitized NW ~290°.
+  assert _heading_aligned(111.8, 289.9)
+  assert _wrap_heading_delta(111.8, 289.9) > HEADING_ALIGN_DEG
+  assert _continues_route(111.8, 289.9, "", "trunk", "Pacific Avenue Southwest", "trunk")
   # Reverse-digitized residential fill is still a fill.
   assert not _continues_route(110.0, 290.0, "US 12", "trunk", "Oak", "residential")
+  # ~90° cross street still fails heading (min(Δ, 180−Δ) = 90).
+  assert not _heading_aligned(112.0, 22.0)
+  assert not _continues_route(112.0, 22.0, "", "trunk", "County Road", "unclassified")
 
 
 def test_parse_maxspeed_units():
@@ -613,6 +620,115 @@ def test_town_entry_kerkhoven_long_reverse_digitized(tmp_path):
   assert m2 is not None
   assert abs(m2.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3
   assert abs(m2.next_speed_limit_ms - 30 * CV.MPH_TO_MS) < 0.3, m2.next_speed_limit_ms * CV.MS_TO_MPH
+  db.close()
+
+
+def test_town_entry_pennock_60_to_45_reverse_digitized(tmp_path):
+  """Ep4 ~19:32 Pennock: shorter town, 60→45, still reverse-digitized.
+
+  Same drive. US 12 60 way 18120141 then Pacific Avenue SW/SE 45
+  (719 m + 1010 m). Digitized NW (~290°) while travel is SE (~112°).
+  Do not lower MIN_ZONE — this 45 run is far past 76 m. next must publish 45
+  so Early can bleed before the sign.
+  """
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  OsmSpeedLimitDB.insert_way(
+    con, 18120141, "", "trunk", 60 * CV.MPH_TO_MS,
+    [
+      (45.1497750, -95.1859457),
+      (45.1499532, -95.1865781),
+      (45.1501123, -95.1871137),
+      (45.1506249, -95.1888123),
+      (45.1508476, -95.1895753),
+      (45.1510528, -95.1903475),
+      (45.1550563, -95.2060945),
+    ],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 18120656, "Pacific Avenue Southwest", "trunk", 45 * CV.MPH_TO_MS,
+    [
+      (45.1475731, -95.1773305),
+      (45.1479335, -95.1787404),
+      (45.1482841, -95.1801123),
+      (45.1497750, -95.1859457),
+    ],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 18120434, "Pacific Avenue Southeast", "trunk", 45 * CV.MPH_TO_MS,
+    [
+      (45.1445357, -95.1651890),
+      (45.1459258, -95.1708021),
+      (45.1465717, -95.1733621),
+      (45.1468998, -95.1746620),
+      (45.1472401, -95.1760108),
+      (45.1475731, -95.1773305),
+    ],
+  )
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  travel = 111.8
+  qlat, qlon = _offset_point(45.1497750, -95.1859457, 291.8, 400.0)
+  m = db.lookup(qlat, qlon, bearing_deg=travel)
+  assert m is not None
+  assert abs(m.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3
+  assert abs(m.next_speed_limit_ms - 45 * CV.MPH_TO_MS) < 0.3, m.next_speed_limit_ms * CV.MS_TO_MPH
+  assert 250.0 <= m.next_distance_m <= 550.0
+  q2lat, q2lon = _offset_point(45.1497750, -95.1859457, 291.8, 150.0)
+  m2 = db.lookup(q2lat, q2lon, bearing_deg=travel)
+  assert m2 is not None
+  assert abs(m2.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3
+  assert abs(m2.next_speed_limit_ms - 45 * CV.MPH_TO_MS) < 0.3, m2.next_speed_limit_ms * CV.MS_TO_MPH
+  db.close()
+
+
+def test_angled_cross_street_45_blip_still_ignored(tmp_path):
+  """Do not reintroduce aggressive look-ahead for angled side-road bleed.
+
+  SE highway vs a ~40° 45 mph fill that only lasts ~60 m along heading
+  (returns to 60). MIN_ZONE stays ~250 ft — this blip must not arm next.
+  """
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  travel = 112.0
+  start = (37.0, -122.010)
+  mid = _offset_point(start[0], start[1], travel, 400.0)
+  after = _offset_point(mid[0], mid[1], travel, 12.0)
+  end = _offset_point(start[0], start[1], travel, 900.0)
+  OsmSpeedLimitDB.insert_way(
+    con, 1, "US 12", "trunk", 60 * CV.MPH_TO_MS,
+    [start, mid],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 3, "US 12", "trunk", 60 * CV.MPH_TO_MS,
+    [after, end],
+  )
+  # ~40° off travel: long enough to be geometrically tempting, short along
+  # the highway heading so persist / returns-to-prior must reject.
+  fill_a = _offset_point(mid[0], mid[1], travel - 140.0, 80.0)
+  fill_b = _offset_point(mid[0], mid[1], travel + 40.0, 80.0)
+  OsmSpeedLimitDB.insert_way(
+    con, 2, "County Road", "unclassified", 45 * CV.MPH_TO_MS,
+    [fill_a, mid, fill_b],
+  )
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  qlat, qlon = _offset_point(mid[0], mid[1], travel + 180.0, 200.0)
+  m = db.lookup(qlat, qlon, bearing_deg=travel)
+  assert m is not None
+  assert m.way_id == 1
+  assert abs(m.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3
+  assert m.next_speed_limit_ms == 0.0, m.next_speed_limit_ms * CV.MS_TO_MPH
+  # GPS snapped onto the fill, still heading along US 12.
+  on_fill = _offset_point(mid[0], mid[1], travel + 40.0, 6.0)
+  m2 = db.lookup(on_fill[0], on_fill[1], bearing_deg=travel)
+  assert m2 is not None
+  assert abs(m2.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3
+  assert m2.next_speed_limit_ms == 0.0, m2.next_speed_limit_ms * CV.MS_TO_MPH
   db.close()
 
 
