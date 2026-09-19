@@ -6,13 +6,16 @@ radar-associated 0.48 m, often with modelProb ≥ 0.9 and a −16 to −32 m
 range error. Radar track 806 stayed smooth whenever association held.
 
 NAPWiperSpeed==3 is the Auto / rain-sensing stalk setting — not a proof
-that it is raining right now. While that mode is selected, prefer a live
-radar-associated lead (proactive while Auto can wipe). Off / Int / On
-leave stock fusion unchanged. Do not require NAPWiperRainStatus rain=1.
+that it is raining right now. While that mode is selected, hold a live
+**path-valid radar association** through wet-vision range flaps. Off /
+Int / On leave stock fusion unchanged. Do not require rain=1.
 
-Hold only tracks that still pass the travel-path / oncoming gates
-(`radar_path_gate`). Auto rain mode must not lock roadside signs or
-opposing-lane traffic as leadOne.
+This is not “prefer any Bosch track in a wide FOV.” Radar used for long
+must sit on the same model driving path vision uses for lead-in-path
+(`modelV2.position`). Rain-hold only latches a track that is (or was)
+associated to that path and still passes the path / oncoming gates.
+Do not acquire an unassociated closest-in-lane radar (left signs,
+oncoming) as leadOne.
 
 Gate (live Params):
   radar_prefer = NAPWiperSpeed == 3
@@ -128,12 +131,13 @@ def pick_rain_radar_track(associated: Any | None, tracks: dict[int, Any],
                           incumbent_id: int | None, v_ego: float = 0.0,
                           path_x: Sequence[float] | None = None,
                           path_y: Sequence[float] | None = None) -> Any | None:
-  """Prefer a live radar lead while rain-sensing is On.
+  """Hold a path-valid radar *association* while rain-sensing is On.
 
-  Hold the incumbent through vision mismatch only if it still sits on
-  the travel path and is not oncoming. Switch only for a much closer
-  in-path radar cut-in, or when the incumbent is gone. Do not latch
-  off-path signs or opposing-lane traffic.
+  Not a wide-FOV radar prefer. A track is eligible only if it is the
+  current vision-associated lead (on the OP path) or the incumbent
+  association still on that path. Unassociated closest-in-lane radar
+  is not acquired — that is how left signs / oncoming became leadOne.
+  Switch only for a much closer *associated* path cut-in.
   """
   incumbent = tracks.get(incumbent_id) if incumbent_id is not None else None
   if incumbent is not None and not radar_hold_kinematics_ok(
@@ -142,14 +146,13 @@ def pick_rain_radar_track(associated: Any | None, tracks: dict[int, Any],
   if associated is not None and not radar_hold_kinematics_ok(
       associated, RAIN_INLANE_YREL_M, v_ego, path_x, path_y):
     associated = None
-  inlane = closest_inlane_radar(tracks, v_ego, path_x, path_y)
 
-  if incumbent is not None and inlane is not None and inlane.identifier != incumbent.identifier:
-    if incumbent.dRel - inlane.dRel >= RAIN_CUT_IN_GAP_M:
-      return inlane
-
-  if incumbent is not None:
-    return incumbent
+  if associated is not None and incumbent is not None:
+    if associated.identifier != incumbent.identifier:
+      if incumbent.dRel - associated.dRel >= RAIN_CUT_IN_GAP_M:
+        return associated
+      return incumbent
+    return associated
   if associated is not None:
     return associated
-  return inlane
+  return incumbent

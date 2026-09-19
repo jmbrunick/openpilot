@@ -5,9 +5,12 @@ came from Bosch tracks of left roadside signs and opposing-lane traffic
 becoming leadOne. Rain-hold (#201, NAPWiperSpeed==3) then kept those
 phantoms through vision mismatch.
 
-Every radar follow candidate — vision association, rain incumbent, rain
-in-lane pick, and the lost-track cache — must still sit on the model
-travel path and must not be closing from ahead in the opposing sense.
+The driving path is `modelV2.position` — the same plan path the UI
+draws and vision uses for lead-in-path (`leadsV3` is the in-path lead
+head). Radar used for long, including rain-hold, must sit on that path.
+Rain-hold latches path-valid *associations* only; it does not prefer
+an unassociated Bosch track in a wide FOV.
+
 Stationary in-path objects (stopped cars) stay valid: vLead ≈ 0, not
 oncoming. Same-direction leads stay valid.
 """

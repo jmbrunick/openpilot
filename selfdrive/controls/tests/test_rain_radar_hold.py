@@ -96,16 +96,24 @@ def test_pick_holds_incumbent_through_vision_mismatch():
   assert chosen is tracks[806]
 
 
-def test_pick_switches_to_much_closer_inlane_cut_in():
+def test_pick_does_not_fov_cut_in_without_association():
+  """Closer in-lane radar without a path association must not steal the hold."""
   tracks = {806: track(806, 93.8), 12: track(12, 93.8 - RAIN_CUT_IN_GAP_M)}
   chosen = pick_rain_radar_track(None, tracks, incumbent_id=806)
+  assert chosen is tracks[806]
+
+
+def test_pick_switches_to_associated_path_cut_in():
+  tracks = {806: track(806, 93.8), 12: track(12, 93.8 - RAIN_CUT_IN_GAP_M)}
+  chosen = pick_rain_radar_track(tracks[12], tracks, incumbent_id=806)
   assert chosen is tracks[12]
 
 
-def test_pick_prefers_inlane_radar_over_unassociated_vision():
+def test_pick_does_not_acquire_unassociated_inlane_radar():
+  """Rain-hold is not a wide-FOV prefer. No association → no new latch."""
   tracks = {806: track(806, 93.8)}
   chosen = pick_rain_radar_track(None, tracks, incumbent_id=None)
-  assert chosen is tracks[806]
+  assert chosen is None
   assert closest_inlane_radar(tracks) is tracks[806]
 
 
@@ -149,4 +157,5 @@ def test_pick_does_not_let_rain_override_path_or_oncoming_rejects():
   good = track(5, 45.0, y_rel=0.2, v_rel=-0.5)
   assert pick_rain_radar_track(sign, {3: sign}, None, v_ego) is None
   assert pick_rain_radar_track(oncoming, {4: oncoming}, None, v_ego) is None
-  assert pick_rain_radar_track(None, {5: good}, None, v_ego) is good
+  assert pick_rain_radar_track(None, {5: good}, None, v_ego) is None
+  assert pick_rain_radar_track(good, {5: good}, None, v_ego) is good

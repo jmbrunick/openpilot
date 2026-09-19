@@ -335,3 +335,41 @@ def test_rain_still_holds_true_in_path_through_vision_jump():
   assert lead.radar
   assert lead.radarTrackId == 11
   assert lead.dRel == pytest.approx(40.0)
+
+
+def test_rain_does_not_acquire_unassociated_radar():
+  """#201 FOV prefer: closest in-lane radar with no path association must not latch."""
+  scenario = RadarScenario()
+  scenario.set_rain_hold(True)
+  lead = scenario.step(1.0, vision_d_rel=80.0, radar_points=[(44, 40.0, 1.2, -20.0)],
+                       vision_prob=0.40)
+  assert not lead.radar
+  assert not lead.status
+
+
+def test_rain_does_not_swap_path_lead_for_left_sign():
+  scenario = RadarScenario()
+  scenario.set_rain_hold(True)
+  both = [IN_PATH, (44, 36.0, LEFT_SIGN_YREL, -20.0)]
+  lead = scenario.step(1.0, vision_d_rel=40.0, radar_points=both)
+  assert lead.radarTrackId == 11
+  lead = scenario.step(1.1, vision_d_rel=18.0, radar_points=both, vision_prob=0.97)
+  assert lead.radar
+  assert lead.radarTrackId == 11
+
+
+def test_model_path_rejects_off_path_even_when_yrel_is_small():
+  """OP path curves right; a yRel≈0 roadside object is off the driving path."""
+  path_x = [0.0, 20.0, 40.0, 80.0]
+  path_y = [0.0, -1.5, -3.0, -4.0]
+  scenario = RadarScenario()
+  scenario.set_rain_hold(True)
+  lead = scenario.step(1.0, vision_d_rel=38.48, radar_points=[(3, 38.48, 0.0, 0.0)],
+                       path_x=path_x, path_y=path_y)
+  assert not lead.radar
+
+  # Same curve: radar on the path (device y = −3 → yRel = +3) still associates.
+  lead = scenario.step(1.1, vision_d_rel=38.48, radar_points=[(11, 38.48, 3.0, 0.0)],
+                       vision_y=-3.0, path_x=path_x, path_y=path_y)
+  assert lead.radar
+  assert lead.radarTrackId == 11
