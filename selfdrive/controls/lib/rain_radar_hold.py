@@ -5,14 +5,18 @@ flapped leadOne radar↔vision: vision-only dRel steps ~7.75 m mean vs
 radar-associated 0.48 m, often with modelProb ≥ 0.9 and a −16 to −32 m
 range error. Radar track 806 stayed smooth whenever association held.
 
-When the Auto-wiper rain gate is on, keep a live radar-associated lead
-through that vision mismatch. Dry / non-Auto fusion is unchanged.
+When the live wet signal is on, keep a live radar-associated lead
+through that vision mismatch. Dry fusion is unchanged.
+
+NAPWiperSpeed==3 is ONLY the Auto stalk setting. It is not weather and
+never means "it is raining." The camera Auto scorer updates
+NAPWiperRainStatus while Auto is selected; that is optional context
+that the line is live — not a rain gate.
 
 Rain gate (live Params — Connect qlogs often lack NAPWiperRainStatus):
-  primary: NAPWiperSpeed == 3 (Auto) and status contains rain=1
-  strengthen: acq=1, or score >= acquire for the published sens=
-  fallback if status is missing / rain=err: Auto and a recent wipe=1
-  never: vision-only wetness, collar/TX alone, or InitData-only
+  primary: status rain=1 and/or acq=1 / score >= acquire
+  fallback if status is missing / rain=err: recent wipe=1 or a recent wet score
+  never: NAPWiperSpeed==3 ⇒ raining; never collar/TX; never InitData-only
 """
 from __future__ import annotations
 
@@ -34,7 +38,7 @@ ACQUIRE_SENSITIVITY_SCALE = (0.58, 0.76, 1.00, 1.10, 1.20)
 RAIN_RADAR_LOST_HOLD_FRAMES = 8
 # Vision-only bar while raining. Secondary — dig flaps were already ≥ 0.9.
 RAIN_VISION_ONLY_MIN_PROB = 0.90
-# Fallback latch after the last wipe=1 while status is missing / err.
+# Fallback latch after the last wipe=1 / wet score while status is missing / err.
 RAIN_WIPE_HOLD_S = 8.0
 # In-lane / cut-in gates (radar frame, not vision).
 RAIN_MIN_DREL_M = 0.5
@@ -94,7 +98,7 @@ def status_has_wipe(status: str | None) -> bool:
 
 
 def status_score_at_acquire(status: str | None) -> bool:
-  """Optional strengthen: score= at/above acquire for the published sens=."""
+  """Wet strengthen: score= at/above acquire for the published sens=."""
   score = parse_status_float(status, "score")
   if score is None:
     return False
@@ -103,6 +107,10 @@ def status_score_at_acquire(status: str | None) -> bool:
     sens = 2
   sens = max(0, min(len(ACQUIRE_SENSITIVITY_SCALE) - 1, int(sens)))
   return score >= ACQUIRE_ON * ACQUIRE_SENSITIVITY_SCALE[sens]
+
+
+def status_is_wet(status: str | None) -> bool:
+  return status_has_rain(status) or status_has_acq(status) or status_score_at_acquire(status)
 
 
 def status_rain_usable(status: str | None) -> bool:
@@ -114,6 +122,7 @@ def status_rain_usable(status: str | None) -> bool:
 
 
 def wiper_is_auto(wiper_speed: Any) -> bool:
+  """Auto stalk setting. Not a rain signal."""
   try:
     return int(wiper_speed) == WIPER_SETTING_AUTO
   except (TypeError, ValueError):
@@ -122,22 +131,29 @@ def wiper_is_auto(wiper_speed: Any) -> bool:
 
 def evaluate_rain_follow_gate(wiper_speed: Any, status: str | None, now: float,
                               last_wipe_t: float | None,
-                              wipe_hold_s: float = RAIN_WIPE_HOLD_S) -> tuple[bool, float | None]:
-  """Return (rain_gate, updated_last_wipe_t).
+                              last_wet_t: float | None = None,
+                              wipe_hold_s: float = RAIN_WIPE_HOLD_S) -> tuple[bool, float | None, float | None]:
+  """Return (rain_gate, updated_last_wipe_t, updated_last_wet_t).
 
-  Primary / strengthen only fire on a usable status. Fallback is Auto plus
-  a recent wipe=1 latch — not Auto alone, not collar/TX.
+  Gate is the wet signal on NAPWiperRainStatus. NAPWiperSpeed is ignored
+  as weather — Speed==3 never means raining. Auto only hints that the
+  camera scorer is the process that writes this live line.
   """
+  # Touch the setpoint so callers can pass it; it is never the rain flag.
+  wiper_is_auto(wiper_speed)
   wipe_t = now if status_has_wipe(status) else last_wipe_t
-  if not wiper_is_auto(wiper_speed):
-    return False, wipe_t
+  wet_now = status_is_wet(status)
+  wet_t = now if wet_now else last_wet_t
+
+  if wet_now:
+    return True, wipe_t, wet_t
 
   if status_rain_usable(status):
-    wet = status_has_rain(status) or status_has_acq(status) or status_score_at_acquire(status)
-    return wet, wipe_t
+    return False, wipe_t, wet_t
 
   recent_wipe = wipe_t is not None and (now - wipe_t) <= wipe_hold_s
-  return recent_wipe, wipe_t
+  recent_wet = wet_t is not None and (now - wet_t) <= wipe_hold_s
+  return (recent_wipe or recent_wet), wipe_t, wet_t
 
 
 def read_wiper_speed(params: Any) -> int:
@@ -162,13 +178,14 @@ def read_wiper_rain_status(params: Any) -> str | None:
 
 
 class RainRadarGate:
-  """Live Params rain gate. Tests inject params or set_override()."""
+  """Live Params wet-signal gate. Tests inject params or set_override()."""
 
   def __init__(self, params: Any = None, now_fn=time.monotonic):
     self._params = params
     self._now_fn = now_fn
     self._override: bool | None = None
     self._last_wipe_t: float | None = None
+    self._last_wet_t: float | None = None
     self._params_failed = False
 
   def set_override(self, raining: bool | None) -> None:
@@ -192,11 +209,12 @@ class RainRadarGate:
     if params is None:
       return False
     now = float(self._now_fn())
-    gate, self._last_wipe_t = evaluate_rain_follow_gate(
+    gate, self._last_wipe_t, self._last_wet_t = evaluate_rain_follow_gate(
       read_wiper_speed(params),
       read_wiper_rain_status(params),
       now,
       self._last_wipe_t,
+      self._last_wet_t,
     )
     return gate
 
@@ -224,7 +242,7 @@ def closest_inlane_radar(tracks: dict[int, Any]) -> Any | None:
 
 def pick_rain_radar_track(associated: Any | None, tracks: dict[int, Any],
                           incumbent_id: int | None) -> Any | None:
-  """Prefer a live radar lead while raining.
+  """Prefer a live radar lead while the wet gate is on.
 
   Hold the incumbent through vision mismatch. Switch only for a much
   closer in-lane radar cut-in, or when the incumbent is gone.
