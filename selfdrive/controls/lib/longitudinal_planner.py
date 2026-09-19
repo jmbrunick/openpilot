@@ -587,7 +587,7 @@ class LongitudinalPlanner:
       self._lead_glide_active = update_lead_glide(
         self._lead_glide_active, overlay_v_rel, overlay_slack,
         d_rel=overlay_d, fcw=self.fcw, crash_cnt=self.mpc.crash_cnt,
-        allow_rapid=allow_rapid, acquiring=acquiring,
+        allow_rapid=allow_rapid, acquiring=acquiring, a_lead=lead_a_k,
       )
       if not acquiring:
         output_a_target = apply_lead_glide_a(output_a_target, self._lead_glide_active)

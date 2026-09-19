@@ -285,28 +285,29 @@ def lead_inside_slow_close_a_ms2(v_rel, slack):
 
 
 def lead_is_glide_sample(v_rel, slack) -> bool:
-  """True when matched or slightly slower in the last meters long of FD.
+  """True when matched or slightly slower near Follow Distance.
 
-  Still closing must keep −a so we do not coast through the gap.
-  Real speed sag (v_rel ≲ −0.5) is Accel-owned, not a deadband.
-  Far same-speed catch-up is Accel-owned. Already inside FD is a
-  too-close recovery — rematch +a / mild −a stand.
+  Last-meter closing must keep −a so we do not coast through FD1.
+  A slight close with slack still in the grade-hold band (~5–10 m)
+  may glide. Real speed sag (v_rel ≲ −0.5) is Accel-owned.
+  Already inside FD is a too-close recovery.
   """
   if v_rel is None or slack is None:
     return False
   v = float(v_rel)
-  if v > LEAD_APPROACH_DV_OFF_MS:
-    return False
-  if v <= -LEAD_SETTLE_VREL_MS:
-    return False
   s = float(slack)
   if s < 0.0 or s > LEAD_GLIDE_SLACK_M:
+    return False
+  if v <= -LEAD_SETTLE_VREL_MS or v >= LEAD_SETTLE_VREL_MS:
+    return False
+  if v > LEAD_APPROACH_DV_OFF_MS and s <= LEAD_SETTLE_FINISH_SLACK_M:
     return False
   return True
 
 
 def update_lead_glide(active, v_rel, slack, d_rel=None, fcw=False,
-                      crash_cnt=0, allow_rapid=False, acquiring=False):
+                      crash_cnt=0, allow_rapid=False, acquiring=False,
+                      a_lead=None):
   """Arm / hold matched-speed glide. Danger and first-latch skip it."""
   if acquiring or fcw or int(crash_cnt) > 0:
     return False
@@ -315,6 +316,8 @@ def update_lead_glide(active, v_rel, slack, d_rel=None, fcw=False,
   if v_rel is not None and lead_approach_is_rapid(v_rel):
     return False
   if allow_rapid and v_rel is not None and lead_approach_is_rapid(v_rel):
+    return False
+  if lead_alead_owns_match(v_rel, a_lead, slack):
     return False
   if active:
     if v_rel is None or slack is None:

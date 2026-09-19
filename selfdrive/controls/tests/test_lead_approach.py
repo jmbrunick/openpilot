@@ -742,6 +742,7 @@ def test_planner_wires_hysteresis_and_slew():
   assert "update_lead_acquire(" in planner
   assert "acquiring=acquiring" in planner
   assert "update_lead_glide(" in planner
+  assert "a_lead=lead_a_k" in planner
   assert "apply_lead_glide_a(" in planner
   assert "slew_near_gap_small_a(" in planner
   assert "apply_matched_inside_fd_a" not in planner
@@ -1428,6 +1429,8 @@ def test_matched_speed_glide_deadbands_chatter_with_hysteresis():
   assert lead_is_glide_sample(0.15, 3.0)
   # Slight sag at the gap: kill leftover −a so grade does not chew.
   assert lead_is_glide_sample(-0.30, 3.0)
+  # Slight close with room (grade-hold band) may glide.
+  assert lead_is_glide_sample(0.35, 8.0)
   # Still closing in the finish band must keep −a (do not coast through FD).
   assert not lead_is_glide_sample(0.30, 3.0)
   # Real speed sag is Accel-owned.
@@ -1453,6 +1456,7 @@ def test_matched_speed_glide_deadbands_chatter_with_hysteresis():
   assert update_lead_glide(False, 0.15, 3.0, fcw=True) is False
   assert update_lead_glide(False, 0.15, 3.0, d_rel=LEAD_MPC_SOFT_NEAR_M) is False
   assert update_lead_glide(False, 8.0, 3.0) is False
+  assert update_lead_glide(False, 0.0, 8.0, a_lead=-0.4) is False
 
   # Rematch trickle ↔ mild floor snaps to coast / slight lift.
   assert apply_lead_glide_a(-LEAD_APPROACH_MILD_A_MS2, True) == pytest.approx(0.0)
