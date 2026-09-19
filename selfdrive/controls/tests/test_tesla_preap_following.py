@@ -943,6 +943,7 @@ def test_planner_matched_inside_fd_keeps_recovery_a():
   planner = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
   planner._map_speed_accel = 5
   inputs = _make_planner_inputs(v_ego)
+  _set_v_cruise_ms(inputs, v_ego + _UNDER_MAX_HEADROOM_MS)
   lead = inputs["radarState"].leadOne
   lead.status = True
   lead.dRel = d_follow - 8.0
