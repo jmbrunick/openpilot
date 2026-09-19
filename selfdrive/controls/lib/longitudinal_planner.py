@@ -558,6 +558,7 @@ class LongitudinalPlanner:
           output_a_target, self.output_a_target, overlay_v_rel,
           d_rel=overlay_d, slack=overlay_slack, acquiring=acquiring,
           allow_rapid=allow_rapid, fcw=self.fcw, crash_cnt=self.mpc.crash_cnt,
+          a_lead=lead_a_k,
         )
 
     for idx in range(2):
