@@ -49,9 +49,9 @@ log showed bokeh=49165 — wrong Y scale or a bandpass blowup. Impossible
 magnitudes are invalid/dry (they must not latch HOLD or look like rain
 returning after a wipe). Real heavy-rain scores above ~12 are still wet.
 
-VisionIpc runs only while NAPWiperSpeed is Auto. Off/Int/On stop the
-helper, drop HOLD, and do not recv ROAD — Int/On keep working without
-the camera. The helper is SCHED_OTHER (nice 10): blocking recv, conflate
+VisionIpc runs only while NAPWiperSpeed is Auto. Off stops the
+helper, drop HOLD, and do not recv ROAD. The helper is SCHED_OTHER
+(nice 10): blocking recv, conflate
 ROAD then WIDE. Numpy scoring while idle runs once per SCORE_PERIOD_S
 (~4 s, SCORE_HZ ≈ 0.25), not every ROAD frame and not 4 Hz / 1 Hz. A
 full-res Y copy plus 20 Hz multi-blur starved card's GIL (age_ms ~30 s,

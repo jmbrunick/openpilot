@@ -181,32 +181,36 @@ query osm.org.
 
 Press START to download."""
 
-# Forwarded 0x45 STW_ACTN_RQ wiper / high-beam. 0 = off (today's stalk).
-WIPER_SPEED_VALUES = [0, 1, 2, 3]
-WIPER_SPEED_LABELS = ["Off", "Int", "On", "Auto"]
+# Forwarded 0x45 STW_ACTN_RQ wiper / high-beam. Persist 0=Off, 3=Auto
+# so flashed cars / logs stay compatible. Legacy Int(1)/On(2) coerce to Off.
+WIPER_SPEED_OFF = 0
+WIPER_SPEED_AUTO = 3
+WIPER_SPEED_VALUES = [WIPER_SPEED_OFF, WIPER_SPEED_AUTO]
+WIPER_SPEED_LABELS = ["Off", "Auto"]
+WIPER_HUD_OFF = "Wipers Off"
+WIPER_HUD_AUTO = "Wipers Auto"
+WIPER_HUD_DURATION_S = 2.5
 WIPER_SENSITIVITY_VALUES = [0, 1, 2, 3, 4]
 WIPER_SENSITIVITY_LABELS = ["Drier", "Dry", "Mid", "Wet", "Wetter"]
 WIPER_SENSITIVITY_DEFAULT = 2
 HIGH_LOW_BEAM_VALUES = [0, 1, 2]
 HIGH_LOW_BEAM_LABELS = ["Off", "Low", "High"]
 WIPER_SPEED_DESCRIPTION = (
-  "Rewrite the wiper / collar bits on the forwarded stalk (0x45 STW_ACTN_RQ). "
-  "Off leaves the driver's real stalk nibble alone unless Int/On just "
-  "turned off — then extra-forward rest to cancel latched intermittent. "
-  "Int/On set the high nibble to 1 (TIPWIPE) and hold it — they do not "
-  "spray. Auto does not use TIPWIPE: it overlays WprSw6Posn INTERVAL1 "
-  "(collar=1) and WprWashSw_Psd=0 only when the car is on, gear is "
-  "Drive or Reverse, speed is above a small creep floor, and the 3X road "
-  "camera sees a rainy or icy/frosted windshield. Hold INTERVAL1 at "
-  "~100 Hz (same last-win as high-beam) so live stalk Off (collar=0) "
-  "cannot cancel. While Auto is selected and dry (or Park/Neutral/"
-  "standstill), still extra-forward 0x45 rest with collar forced 0 "
-  "and nibble 1 cleared so Pre-AP drops intermittent; a wipe 1→0 sends "
-  "rest immediately. Park, Neutral, and standstill (v≈0) never Auto-wipe. "
-  "Default Off — Auto is opt-in, not every drive. DAS wiper fields stay 0 "
+  "NAP wipers: Off or Auto. Off leaves the driver's real stalk collar "
+  "alone. Auto overlays WprSw6Posn INTERVAL1 (collar=1) and "
+  "WprWashSw_Psd=0 only when the car is on, gear is Drive or Reverse, "
+  "speed is above a small creep floor, and the 3X road camera sees a "
+  "rainy or icy/frosted windshield. Hold INTERVAL1 at ~100 Hz (same "
+  "last-win as high-beam) so live stalk Off (collar=0) cannot cancel. "
+  "While Auto is selected and dry (or Park/Neutral/standstill), still "
+  "extra-forward 0x45 rest with collar forced 0 so Pre-AP drops "
+  "intermittent; a wipe 1→0 sends rest immediately. Park, Neutral, and "
+  "standstill (v≈0) never Auto-wipe. Default Off — Auto is opt-in, not "
+  "every drive. Double-flick the wiper collar Off→Int1→Off within 1 s "
+  "to toggle Auto on or off; the stock stalk stays Off. Sensitivity "
+  "(Drier→Wetter) sets Auto aggressiveness. DAS wiper fields stay 0 "
   "(they were ignored and caused a controls mismatch). Do not engage NAP "
-  "and do not pull the stalk. No stalk Auto required. No spray. No auto "
-  "headlights."
+  "and do not pull the stalk. No spray. No auto headlights."
 )
 WIPER_SENSITIVITY_DESCRIPTION = (
   "Auto only. More dry (Drier) ↔ more wet (Wetter). Mid is the baseline. "
@@ -471,3 +475,38 @@ def find_preset_index(presets: list, value, default: int = 0) -> int:
     return presets.index(value)
   except ValueError:
     return min(range(len(presets)), key=lambda i: abs(presets[i] - value))
+
+
+def normalize_wiper_speed(setting) -> int:
+  """UI/runtime Off or Auto. Legacy Int(1)/On(2) and unknowns are Off."""
+  try:
+    if int(setting) == WIPER_SPEED_AUTO:
+      return WIPER_SPEED_AUTO
+  except (TypeError, ValueError):
+    pass
+  return WIPER_SPEED_OFF
+
+
+def wiper_speed_button_index(setting) -> int:
+  """Index into WIPER_SPEED_VALUES / LABELS (Off=0, Auto=1)."""
+  return 1 if normalize_wiper_speed(setting) == WIPER_SPEED_AUTO else 0
+
+
+def wiper_hud_text(setting) -> str:
+  return WIPER_HUD_AUTO if normalize_wiper_speed(setting) == WIPER_SPEED_AUTO else WIPER_HUD_OFF
+
+
+def coerce_wiper_speed_param(params) -> int:
+  """Read NAPWiperSpeed, treat Int/On as Off, and persist the coercion."""
+  try:
+    raw = params.get("NAPWiperSpeed", return_default=True)
+    setting = 0 if raw is None or raw == "" else int(raw)
+  except (TypeError, ValueError, AttributeError):
+    setting = 0
+  norm = normalize_wiper_speed(setting)
+  if norm != setting:
+    try:
+      params.put("NAPWiperSpeed", norm)
+    except Exception:
+      pass
+  return norm

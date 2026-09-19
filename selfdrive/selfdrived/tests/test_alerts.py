@@ -9,7 +9,7 @@ from cereal.messaging import SubMaster
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_CTRL
-from openpilot.selfdrive.selfdrived.events import Alert, EVENTS, ET, AudibleAlert, hypermile_follow_changed_alert
+from openpilot.selfdrive.selfdrived.events import Alert, EVENTS, ET, AudibleAlert, hypermile_follow_changed_alert, nap_wiper_changed_alert
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
 from openpilot.selfdrive.test.process_replay.process_replay import CONFIGS
 
@@ -180,6 +180,22 @@ class TestAlerts:
     )
     assert alert.alert_text_1.startswith("Follow Distance:")
     assert alert.duration == int(1.5 / DT_CTRL)
+
+  def test_nap_wiper_changed_alert_is_brief_nonblocking(self):
+    wiper_evt = getattr(log.OnroadEvent.EventName, "napWiperChanged", None)
+    assert wiper_evt is not None
+    event_types = EVENTS[wiper_evt]
+    assert ET.WARNING in event_types
+    assert ET.PERMANENT in event_types
+    assert ET.SOFT_DISABLE not in event_types
+    assert ET.IMMEDIATE_DISABLE not in event_types
+    assert ET.NO_ENTRY not in event_types
+    alert = nap_wiper_changed_alert(
+      self.CP, self.CS, self.sm, False, 100, log.LongitudinalPersonality.standard,
+    )
+    assert alert.alert_text_1 in ("Wipers Off", "Wipers Auto")
+    assert alert.alert_text_2 == ""
+    assert alert.duration == int(2.5 / DT_CTRL)
 
   def test_preap_pedal_unavailable_alert_is_visible_without_disabling_lateral(self):
     event_types = EVENTS[log.OnroadEvent.EventName.pedalUnavailable]

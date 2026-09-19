@@ -163,3 +163,7 @@ def test_nap_wiper_rain_status_key_survives_onroad_for_qlog():
   assert "PERSISTENT" in wiper_sens.group(1)
   assert "INT" in wiper_sens.group(1)
   assert '"2"' in wiper_sens.group(1)
+  wiper_hud = re.search(r'\{\s*"NAPWiperHudPending"\s*,\s*\{([^}]+)\}', src)
+  assert wiper_hud, "NAPWiperHudPending missing from params_keys.h"
+  assert "CLEAR_ON_MANAGER_START" in wiper_hud.group(1)
+  assert "BOOL" in wiper_hud.group(1)

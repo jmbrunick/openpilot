@@ -143,6 +143,7 @@ struct OnroadEvent @0xc4fa6047f024e718 {
     pedalUnavailable @107;
     hypermileFollowChanged @108;
     radarPreferFallback @109;
+    napWiperChanged @110;
 
     soundsUnavailableDEPRECATED @47;
   }

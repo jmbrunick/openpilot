@@ -24,16 +24,17 @@ live-counter in-place replacement of 0x45 so the body keeps seeing
 high-beam pressed and bus-0 IDLE cannot last-win as a cancel. Off/Low
 return the real stalk. Do not pulse 4 then drop to SNA or rest.
 
-Off leaves the driver’s real stalk nibble alone (do not force 0) unless
-Int/On just dropped to Off — then extra-forward rest so the body cancels.
-Wiper On/Int holds high nibble 1 (TIPWIPE, WprWashSw_Psd=0x10). Camera
-Auto does not use TIPWIPE. Auto overlays WprSw6Posn INTERVAL1 (collar=1)
-and WprWashSw_Psd=0 only when all of: setting is Auto, the vehicle is on,
-gear is Drive or Reverse, vEgo is above a small creep floor, and the 3X
-road camera sees a rainy or icy/frosted windshield (unwarped ROAD Y).
-Park, Neutral, and standstill (v≈0) never Auto-wipe, even with the car
-on. Physical collar Off=0 Int1=1 Int2=2 Low=5 High=6;
-Int1 already timed-wipes on this BCM. No stalk Auto required.
+Off leaves the driver’s real stalk nibble alone (do not force 0).
+Settings UI is Off or Auto only (persist 0 / 3). Legacy Int(1)/On(2)
+coerce to Off at read. Camera Auto does not use TIPWIPE. Auto overlays
+WprSw6Posn INTERVAL1 (collar=1) and WprWashSw_Psd=0 only when all of:
+setting is Auto, the vehicle is on, gear is Drive or Reverse, vEgo is
+above a small creep floor, and the 3X road camera sees a rainy or
+icy/frosted windshield (unwarped ROAD Y). Park, Neutral, and standstill
+(v≈0) never Auto-wipe, even with the car on. Physical collar Off=0
+Int1=1 Int2=2 Low=5 High=6; Int1 already timed-wipes on this BCM.
+A physical collar flick Off→Int1→Off within 1.0 s toggles NAP Auto
+on/off; the stock stalk stays Off. No stalk Auto required.
 
 Live stalk Off repeats collar=0 on bus 0. A 10 Hz Int hold loses that
 last-win, so Auto wipe extra-forwards every card frame (~100 Hz) like
@@ -60,8 +61,9 @@ sends this ID while disengaged. 0x3E9 DAS_bodyControls *is* gated; that
 is why this must not use DAS. Do not bypass safety if that ever
 changes. Do not fake this through another ID.
 
-Auto is not gated on cruiseEnabled, latActive, or a stalk pull. Int/On
-do not use the camera or gear gate.
+Auto is not gated on cruiseEnabled, latActive, or a stalk pull.
+Legacy Int/On packing still maps to TIPWIPE for tests; live params
+coerce those values to Off.
 
 Known risk: pre-AP may still see the real stalk rest on bus 0. Auto
 holds INTERVAL1 at high rate so Off cannot last-win, not a pulse.
@@ -74,12 +76,19 @@ import time
 NAP_WIPER_SPEED = "NAPWiperSpeed"
 NAP_WIPER_SENSITIVITY = "NAPWiperSensitivity"
 NAP_HIGH_LOW_BEAM = "NAPHighLowBeam"
+NAP_WIPER_HUD_PENDING = "NAPWiperHudPending"
 
 WIPER_SETTING_OFF = 0
 WIPER_SETTING_INTERMITTENT = 1
 WIPER_SETTING_ON = 2
 WIPER_SETTING_AUTO = 3
 WIPER_SENSITIVITY_DEFAULT = 2
+# Physical collar Off→Int1→Off within this window toggles NAP Auto.
+STALK_FLICK_WINDOW_S = 1.0
+STALK_FLICK_COOLDOWN_S = 0.25
+WIPER_HUD_OFF = "Wipers Off"
+WIPER_HUD_AUTO = "Wipers Auto"
+WIPER_HUD_DURATION_S = 2.5
 # Garage / stopped-in-Drive: do not Auto-wipe below this (m/s). Unknown
 # speed does not suppress so Drive tests without vEgo still wipe.
 AUTO_WIPE_CREEP_MS = 0.5
@@ -146,6 +155,11 @@ _rain_mod = None
 _rain_import_started = False
 _auto_since_t = 0.0
 _GEAR_SHIFTER_ENUMS = None
+_wiper_migrated = False
+_stalk_prev_collar = None
+_stalk_flick_t0 = 0.0
+_stalk_flick_valid = False
+_stalk_cooldown_until = 0.0
 
 
 def _tesla_can():
@@ -360,6 +374,124 @@ def _param_int(key: str, default: int = 0) -> int:
     return default
 
 
+def normalize_wiper_setting(setting) -> int:
+  """Live Off or Auto. Legacy Int(1)/On(2) and unknowns are Off."""
+  try:
+    if int(setting) == WIPER_SETTING_AUTO:
+      return WIPER_SETTING_AUTO
+  except (TypeError, ValueError):
+    pass
+  return WIPER_SETTING_OFF
+
+
+def wiper_hud_text(setting=None) -> str:
+  if setting is None:
+    setting = read_wiper_setting()
+  return WIPER_HUD_AUTO if normalize_wiper_setting(setting) == WIPER_SETTING_AUTO else WIPER_HUD_OFF
+
+
+def _write_wiper_setting(setting: int, announce: bool = False) -> int:
+  setting = normalize_wiper_setting(setting)
+  try:
+    params = _get_params()
+    params.put(NAP_WIPER_SPEED, int(setting))
+    if announce:
+      try:
+        params.put_bool(NAP_WIPER_HUD_PENDING, True)
+      except Exception:
+        try:
+          params.put(NAP_WIPER_HUD_PENDING, True)
+        except Exception:
+          pass
+  except Exception:
+    pass
+  return setting
+
+
+def read_wiper_setting() -> int:
+  """NAPWiperSpeed as Off or Auto. Persist-coerces leftover Int/On once."""
+  global _wiper_migrated
+  raw = _param_int(NAP_WIPER_SPEED, WIPER_SETTING_OFF)
+  setting = normalize_wiper_setting(raw)
+  if setting != raw and not _wiper_migrated:
+    _wiper_migrated = True
+    _write_wiper_setting(setting, announce=False)
+  return setting
+
+
+def toggle_wiper_auto(announce: bool = True) -> int:
+  """Off (or any non-Auto) → Auto; Auto → Off. Same write as settings."""
+  current = read_wiper_setting()
+  nxt = WIPER_SETTING_OFF if current == WIPER_SETTING_AUTO else WIPER_SETTING_AUTO
+  return _write_wiper_setting(nxt, announce=announce)
+
+
+def reset_wiper_stalk_detector() -> None:
+  global _stalk_prev_collar, _stalk_flick_t0, _stalk_flick_valid, _stalk_cooldown_until
+  global _wiper_migrated
+  _stalk_prev_collar = None
+  _stalk_flick_t0 = 0.0
+  _stalk_flick_valid = False
+  _stalk_cooldown_until = 0.0
+  _wiper_migrated = False
+
+
+def _live_physical_collar(cs) -> tuple[int | None, int]:
+  """Raw bus-0 WprSw6Posn / wash from CS before Auto overlay."""
+  msg = getattr(cs, "msg_stw_actn_req", None) if cs is not None else None
+  if not isinstance(msg, dict):
+    return None, 0
+  try:
+    collar = int(msg.get("WprSw6Posn") or 0)
+  except (TypeError, ValueError):
+    collar = None
+  try:
+    wash = int(msg.get("WprWashSw_Psd") or 0)
+  except (TypeError, ValueError):
+    wash = 0
+  return collar, wash
+
+
+def poll_wiper_stalk_shortcut(cs, now: float | None = None) -> int | None:
+  """Physical collar 0→1→0 within 1.0 s toggles NAP Auto. Returns new setting or None.
+
+  Detects from live CS.msg_stw_actn_req (bus-0 stalk), not the Auto INTERVAL1
+  overlay. Wash, Int2+, Low, and High cancel the gesture. A held Int1 longer
+  than 1.0 s does not toggle.
+  """
+  global _stalk_prev_collar, _stalk_flick_t0, _stalk_flick_valid, _stalk_cooldown_until
+  if now is None:
+    now = time.monotonic()
+  collar, wash = _live_physical_collar(cs)
+  if collar is None:
+    return None
+  prev = _stalk_prev_collar
+  _stalk_prev_collar = collar
+
+  if wash != 0 or collar not in (0, STW_COLLAR_INTERVAL1):
+    _stalk_flick_valid = False
+    _stalk_flick_t0 = 0.0
+    return None
+
+  if now < _stalk_cooldown_until:
+    return None
+
+  toggled = None
+  if prev == 0 and collar == STW_COLLAR_INTERVAL1:
+    _stalk_flick_t0 = now
+    _stalk_flick_valid = True
+  elif prev == STW_COLLAR_INTERVAL1 and collar == 0:
+    if _stalk_flick_valid and _stalk_flick_t0 > 0.0 and (now - _stalk_flick_t0) <= STALK_FLICK_WINDOW_S:
+      toggled = toggle_wiper_auto(announce=True)
+      _stalk_cooldown_until = now + STALK_FLICK_COOLDOWN_S
+    _stalk_flick_valid = False
+    _stalk_flick_t0 = 0.0
+  elif collar == STW_COLLAR_INTERVAL1 and _stalk_flick_valid and _stalk_flick_t0 > 0.0:
+    if (now - _stalk_flick_t0) > STALK_FLICK_WINDOW_S:
+      _stalk_flick_valid = False
+  return toggled
+
+
 def set_rain_wiper_needed(needed: bool | None) -> None:
   """Tests inject the rain/ice/wiper-need signal. None returns to the camera."""
   global _rain_needed_override
@@ -406,6 +538,7 @@ def reset_auto_gates() -> None:
   _last_status_gate = None
   _status_disk_once = True
   _auto_since_t = 0.0
+  reset_wiper_stalk_detector()
 
 
 def _gear_name(gear) -> str:
@@ -739,11 +872,11 @@ def _kick_rain_import() -> None:
 
 
 def _sync_rain_helper() -> None:
-  """VisionIpc + numpy only while Wipers = Auto. Off/Int/On must not recv ROAD."""
+  """VisionIpc + numpy only while Wipers = Auto. Off must not recv ROAD."""
   global _auto_since_t
   if _rain_needed_override is not None:
     return
-  setting = _param_int(NAP_WIPER_SPEED, WIPER_SETTING_OFF)
+  setting = read_wiper_setting()
   rain = _rain_module()
   if int(setting) != WIPER_SETTING_AUTO:
     _auto_since_t = 0.0
@@ -910,7 +1043,7 @@ def wiper_rest_tx_needed(wiper_on: bool | None = None) -> bool:
     return False
   if _wiper_cancel_burst > 0:
     return True
-  return _param_int(NAP_WIPER_SPEED, WIPER_SETTING_OFF) == WIPER_SETTING_AUTO
+  return read_wiper_setting() == WIPER_SETTING_AUTO
 
 
 def _arm_wiper_cancel(prev_wiper: bool, wiper_on: bool) -> None:
@@ -929,9 +1062,9 @@ def _note_wiper_cancel_frame() -> None:
 def requested_auto_collar_posn(wiper_on: bool | None = None) -> int | None:
   """INTERVAL1 while Auto wants wipe; 0 while Auto rest-cancel; else live collar.
 
-  Int/On stay TIPWIPE and leave WprSw6Posn alone. Camera Auto is collar=1.
+  Live settings are Off or Auto. Camera Auto is collar=1.
   """
-  if int(_param_int(NAP_WIPER_SPEED, WIPER_SETTING_OFF)) != WIPER_SETTING_AUTO:
+  if int(read_wiper_setting()) != WIPER_SETTING_AUTO:
     return None
   if wiper_on is None:
     wiper_on = requested_wiper_test()
@@ -940,7 +1073,7 @@ def requested_auto_collar_posn(wiper_on: bool | None = None) -> int | None:
 
 def requested_wiper_test() -> bool:
   global _last_wiper_req
-  setting = _param_int(NAP_WIPER_SPEED, WIPER_SETTING_OFF)
+  setting = read_wiper_setting()
   _sync_rain_helper()
   if int(setting) == WIPER_SETTING_AUTO:
     on = vehicle_is_on()
@@ -994,12 +1127,14 @@ def stock_cc_update_with_overlay(self, CS, frame, tesla_can, can_bus_party):
   wipe=0 and still cancel if we had been wiping. Scoring/status keep
   running so Connect digs can see park/v0 suppress. Primes the ROAD
   VisionIpc helper only while Auto so poll() does not recv on this
-  CTRL_HIGH thread. Off/Int/On stop the helper.
+  CTRL_HIGH thread. Off stops the helper. Physical collar 0→1→0 within
+  1 s toggles NAP Auto from the live bus-0 stalk (before overlay).
   """
   orig = _ORIG_STOCK_CC_UPDATE
   if orig is None:
     orig = _stock_cc().update
   update_live_car_state(CS)
+  poll_wiper_stalk_shortcut(CS)
   _sync_rain_helper()
   prev_wiper = _last_wiper_req
   wiper = requested_wiper_test()
