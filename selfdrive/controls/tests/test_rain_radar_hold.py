@@ -269,8 +269,8 @@ def test_erratic_clutter_never_alerts():
   assert rel.log_reason == "erratic"
 
 
-def test_timeout_alerts_only_after_sustained_confirm():
-  """Stream timeout trips prefer immediately; HUD waits ~2 s engaged."""
+def test_timeout_never_alerts():
+  """Stream timeout trips prefer immediately; HUD stays quiet (41-blip dig)."""
   rel = RadarReliability()
   for _ in range(RELIABLE_ONROAD_GRACE_FRAMES):
     rel.update(tracks={1: track(1, 40.0)}, v_ego=16.0, engaged=False)
@@ -281,14 +281,15 @@ def test_timeout_alerts_only_after_sustained_confirm():
                         engaged=True)
   assert rel.reason == "timeout"
   assert not rel.should_alert
-  for _ in range(RELIABLE_TIMEOUT_ALERT_FRAMES - 1):
+  for _ in range(RELIABLE_TIMEOUT_ALERT_FRAMES + RELIABLE_ALERT_FRAMES):
     rel.update(tracks={1: track(1, 40.0)}, v_ego=16.0, timed_out=True, engaged=True)
-  assert rel.should_alert
+  assert not rel.healthy
+  assert not rel.should_alert
   assert rel.log_reason == "timeout"
 
 
-def test_path_associated_lead_suppresses_timeout_alert():
-  """Quiet with a real lead: no HUD even if the stream later looks timed out."""
+def test_path_associated_lead_suppresses_non_fault_alert():
+  """Quiet with a real lead: no HUD for leftover non-fault reasons."""
   rel = RadarReliability()
   for _ in range(RELIABLE_ONROAD_GRACE_FRAMES):
     rel.update(tracks={1: track(1, 40.0)}, v_ego=16.0, engaged=True)
@@ -299,7 +300,7 @@ def test_path_associated_lead_suppresses_timeout_alert():
   assert rel.reason == "timeout"
   assert not rel.should_alert
   rel.set_path_lead(False)
-  assert rel.should_alert
+  assert not rel.should_alert
 
 
 def test_fault_still_alerts_with_path_associated_lead():
