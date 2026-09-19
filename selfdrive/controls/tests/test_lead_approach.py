@@ -196,8 +196,8 @@ def test_lead_approach_keeps_early_map_brake_not_map_110m_margin():
   assert LEAD_GLIDE_VREL_MS < LEAD_SETTLE_VREL_MS
   assert abs(LEAD_GLIDE_VREL_OFF_MS - 0.40) < 1e-9
   assert LEAD_GLIDE_VREL_MS < LEAD_GLIDE_VREL_OFF_MS < LEAD_SLOW_CLOSE_MS
-  assert abs(LEAD_GLIDE_SLACK_M - LEAD_SETTLE_FINISH_SLACK_M) < 1e-9
-  assert abs(LEAD_GLIDE_SLACK_OFF_M - 8.0) < 1e-9
+  assert abs(LEAD_GLIDE_SLACK_M - 10.0) < 1e-9
+  assert abs(LEAD_GLIDE_SLACK_OFF_M - 14.0) < 1e-9
   assert LEAD_GLIDE_SLACK_M < LEAD_GLIDE_SLACK_OFF_M
   assert abs(LEAD_GLIDE_A_MS2 - LEAD_CLOSE_OPENING_A_MS2) < 1e-9
   assert 0.0 < LEAD_GLIDE_A_MS2 <= LEAD_CLOSE_OPENING_A_MS2

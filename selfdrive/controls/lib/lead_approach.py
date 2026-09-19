@@ -220,14 +220,15 @@ LEAD_SETTLE_GAP_BIAS_M = 3.0
 # Inside FD, still closing slowly: command the #216 MILD floor (not
 # rematch +a, not a dump). Rapid / bumper / FCW stay full −a.
 LEAD_SLOW_CLOSE_MS = 0.8
-# Matched-speed glide: kill leftover mild −a at the gap. Rematch
+# Matched-speed glide: kill leftover mild −a near the gap. Rematch
 # trickle (+0.08) still finishes the last meters / holds grade.
-# Enter only when truly matched and already in the finish band —
-# a 10 m / 0.5 m/s window coasted through Follow 1.
+# Still-closing stays off (a 0.5 m/s window coasted through Follow 1).
+# Slack covers the grade-hold band (~5–10 m long of FD), not only
+# the last 4 m — that left plant-aligned grade 0.12 m/s slow.
 LEAD_GLIDE_VREL_MS = 0.25
 LEAD_GLIDE_VREL_OFF_MS = 0.40
-LEAD_GLIDE_SLACK_M = LEAD_SETTLE_FINISH_SLACK_M
-LEAD_GLIDE_SLACK_OFF_M = 8.0
+LEAD_GLIDE_SLACK_M = 10.0
+LEAD_GLIDE_SLACK_OFF_M = 14.0
 LEAD_GLIDE_A_MS2 = LEAD_CLOSE_OPENING_A_MS2
 # Rematch trickle ↔ mild floor. Glide zeros −a in this band.
 LEAD_GLIDE_CHATTER_LO_MS2 = -(LEAD_APPROACH_MILD_A_MS2 + 0.02)
