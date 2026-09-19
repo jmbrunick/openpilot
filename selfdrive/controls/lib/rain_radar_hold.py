@@ -61,16 +61,16 @@ RAIN_VISION_ONLY_MIN_PROB = 0.90
 # false, vEgo 5.35 (just over the old 5.0 empty-table gate), recovered in
 # RELIABLE_OK_FRAMES. Soft dropout must not flash the HUD.
 #
-# Sat Sep 19 09:45–10:05 CT pavement (dongle 1c95345a3286a5db, #206 tip):
-# Radar Unreliable ~half the time. Signs / opposing correlate; quieter
-# on open road and silent with a real path lead. Soft clutter must never
-# HUD-flash. Timeout needs a long confirm. canError / radarFault stay
-# immediate. A healthy path-associated lead suppresses non-fault HUD.
+# Sat Sep 19 09:45–10:05 CT pavement (dongle 1c95345a3286a5db):
+# 41 HUD blips on the #210/#206 tip — all soft empty-table or timeout,
+# 0 radarErrors, 0/41 with a path lead. Signs / opposing correlate;
+# quieter on open road. #209 still flashed: timeout was a hard HUD
+# reason. Soft empty / timeout / erratic must never HUD. canError /
+# radarFault stay immediate. A path-associated lead also mutes non-fault.
 RELIABLE_FAIL_FRAMES = 4
 RELIABLE_OK_FRAMES = 16
-# Soft HUD leftover (~4 s at 20 Hz). Dropout / erratic never use this.
+# Soft HUD leftover (unused). Dropout / erratic / timeout never HUD.
 RELIABLE_ALERT_FRAMES = 80
-# Timeout HUD confirm (~2 s). Faults alert immediately.
 RELIABLE_TIMEOUT_ALERT_FRAMES = 40
 RELIABLE_ONROAD_GRACE_FRAMES = 60
 RELIABLE_ENGAGE_GRACE_FRAMES = 40
@@ -79,9 +79,9 @@ RELIABLE_YREL_JUMP_M = 4.0
 RELIABLE_DREL_JUMP_M = 25.0
 # Empty-table while moving. 5.0 caught gravel crawl at 5.35 m/s (~12 mph).
 RELIABLE_MIN_VEGO_MS = 8.0
-# Prefer-latch immediate trip. HUD hard reasons are a subset (fault).
+# Prefer-latch immediate trip. HUD only for real hardware / CAN faults.
 RELIABLE_HARD_REASONS = frozenset({"fault", "timeout", "override"})
-RELIABLE_SOFT_REASONS = frozenset({"dropout", "erratic"})
+RELIABLE_SOFT_REASONS = frozenset({"dropout", "erratic", "timeout"})
 RELIABLE_HUD_HARD_REASONS = frozenset({"fault", "override"})
 # EP_2059 (e1 segs 13–17): #201 RAIN_INLANE=2.5 latched near-edge
 # oncoming 771/802 at |yRel| 2.23–2.48 (0.02–0.27 m inside 2.5).
@@ -185,9 +185,9 @@ class RadarReliability:
   samples so the prefer latch does not chatter.
 
   HUD (`should_alert`) is stricter than the prefer latch: canError /
-  radarFault alert immediately; timeout needs a long engaged confirm
-  and is muted when a healthy path-associated lead exists; empty-table
-  / kinematic clutter (dropout, erratic) never flash the HUD.
+  radarFault alert immediately; empty-table / timeout / kinematic
+  clutter never flash the HUD (silent camera fallback). A healthy
+  path-associated lead also mutes any leftover non-fault reason.
   `log_reason` is published every frame for the next route dig.
   """
 
@@ -243,18 +243,14 @@ class RadarReliability:
       return False
     if self.reason in RELIABLE_HUD_HARD_REASONS:
       return True
-    # Signs / opposing / empty-table clutter: log + drop prefer, no HUD.
-    if self.reason in RELIABLE_SOFT_REASONS:
-      return False
-    # Timeout (or unknown): mute if a real path lead is still there.
-    if self._path_lead:
+    # Empty-table / timeout / signs / opposing: log + drop prefer, no HUD.
+    if self.reason in RELIABLE_SOFT_REASONS or self._path_lead:
       return False
     if not self._engaged:
       return False
     if self._in_onroad_grace() or self._in_engage_grace():
       return False
-    confirm = RELIABLE_TIMEOUT_ALERT_FRAMES if self.reason == "timeout" else RELIABLE_ALERT_FRAMES
-    return self._unhealthy_frames >= confirm
+    return self._unhealthy_frames >= RELIABLE_ALERT_FRAMES
 
   def _in_onroad_grace(self) -> bool:
     return self._frames < RELIABLE_ONROAD_GRACE_FRAMES
