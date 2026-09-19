@@ -17,9 +17,10 @@ POSTED_LIMIT_EPS_KPH = 1.0
 # Spatial match
 MAX_MATCH_DISTANCE_M = 35.0
 # Current-way snap uses this as a *penalty* so GPS heading noise still locks
-# the carriageway. Next-limit matching uses it as a *hard* gate: cross streets
-# and other off-route ways (Δheading larger than this) must not become
-# nextSpeedLimit — denser MN statutory fills made those geometrically close.
+# the carriageway. Next-limit matching uses it as a *hard* gate on the acute
+# angle min(Δ, 180−Δ): reverse-digitized along-route ways (Δ ≈ 180°) stay
+# on-route; cross streets (~90°) must not become nextSpeedLimit — denser MN
+# statutory fills made those geometrically close.
 HEADING_ALIGN_DEG = 55.0
 # Justin measured 1.5 s GNSS lag. Raises posted when v_ego * this along
 # heading is already in a higher zone. Decreases keep GPS posted and ease
@@ -29,7 +30,9 @@ OSM_SIGN_LEAD_S = 1.5
 # Ignore a lower OSM limit that only lasts ~250 ft along the travel heading.
 # Cross-street bleed and intersection stubs look like a short zone on the
 # main road; real posted drops (US 12 60→50 is hundreds of meters) are longer.
-# Additive to bearing / class route continuity — not a corridor hardcode.
+# Measured on the contiguous same-limit run, not the first OSM way_id alone
+# (a 76 m first town piece plus more 30 is a real zone). Additive to
+# bearing / class route continuity — not a corridor hardcode.
 MIN_ZONE_LENGTH_M = 76.0  # ~250 ft
 # Heading-aligned probes for nextSpeedLimit (any change). Policy uses decreases only.
 # Geodesic 40 m steps can skip a short intermediate limit (US 12 60→50 before 30);

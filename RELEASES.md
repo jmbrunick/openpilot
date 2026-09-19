@@ -1,3 +1,7 @@
+NAP town look-ahead for reverse-digitized / short first-way 30s (2026-09-19)
+========================
+* Map Lookahead Early: `nextSpeedLimit` now arms for along-route town drops when OSM digitized the street opposite travel, and when the first 30 piece is only ~250 ft but the contiguous same-limit run is the real town. Side-road / stub blips under ~250 ft still ignored. Port of nap-dev #199. No panda flash.
+
 NAP ship #192 flash tip to nap-release (2026-09-18)
 ========================
 * Tonight ship to **nap-release** of the stacked flash tip through **#192** (`c3570c957`). Twin of nap-dev #193. **No panda flash.**

@@ -4,8 +4,10 @@ Schema is NAP-owned. Data is OpenStreetMap (ODbL). Query path is GPS → nearest
 heading-aligned way. nextSpeedLimit follows that matched way (bearing + class),
 not a nearby off-route fill. A lower limit that only lasts MIN_ZONE_LENGTH_M
 (~250 ft) along heading is ignored (cross-street bleed / intersection stub).
-Tagged OSM maxspeed is authoritative; Minnesota packs may include statutory
-estimates for unmarked highways (never uploaded to OSM).
+A short first OSM piece of a longer same-limit town zone is kept. Reverse-
+digitized along-route ways (Δheading ≈ 180°) stay on-route. Tagged OSM
+maxspeed is authoritative; Minnesota packs may include statutory estimates
+for unmarked highways (never uploaded to OSM).
 """
 from __future__ import annotations
 
@@ -126,6 +128,19 @@ def _wrap_heading_delta(a: float, b: float) -> float:
   return min(d, 360.0 - d)
 
 
+def _heading_aligned(bearing_deg: float | None, seg_heading: float | None) -> bool:
+  """True if the segment is along travel, including reverse-digitized OSM ways.
+
+  OSM ways are often drawn opposite travel (Δ ≈ 180°). Use min(Δ, 180−Δ) so a
+  reverse-digitized trunk continuation stays on-route. Cross streets at ~90°
+  still fail (min(90, 90) = 90 > HEADING_ALIGN_DEG).
+  """
+  if bearing_deg is None or seg_heading is None:
+    return True
+  delta = _wrap_heading_delta(bearing_deg, seg_heading)
+  return min(delta, 180.0 - delta) <= HEADING_ALIGN_DEG
+
+
 def _bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
   phi1, phi2 = math.radians(lat1), math.radians(lat2)
   dlon = math.radians(lon2 - lon1)
@@ -183,13 +198,15 @@ def _continues_route(
 ) -> bool:
   """True if a candidate is the road ahead, not an off-route cross street / fill.
 
-  Bearing must stay within HEADING_ALIGN_DEG. A named road may change class
-  (US 12 trunk → primary in town). A major way must not jump onto an unnamed
-  residential / living_street fill just because it is geometrically closer.
+  Bearing must stay within HEADING_ALIGN_DEG of the segment or its reverse
+  (OSM often digitizes the town street opposite travel). Same name may change
+  class (US 12 trunk → primary in town) and is sufficient, not required —
+  class continuity + bidirectional heading is enough (US 12 → Atlantic).
+  A major way must not jump onto an unnamed residential / living_street fill
+  just because it is geometrically closer.
   """
-  if bearing_deg is not None and seg_heading is not None:
-    if _wrap_heading_delta(bearing_deg, seg_heading) > HEADING_ALIGN_DEG:
-      return False
+  if not _heading_aligned(bearing_deg, seg_heading):
+    return False
   fn = (from_name or "").strip().lower()
   tn = (to_name or "").strip().lower()
   if fn and tn and fn == tn:
@@ -441,28 +458,75 @@ class OsmSpeedLimitDB:
         )
     return best
 
+  def _same_limit_run_m(
+    self, lat: float, lon: float, bearing_deg: float, match: SpeedLimitMatch,
+    along_route: SpeedLimitMatch | None = None,
+  ) -> float:
+    """Meters of contiguous same maxspeed along the matched road from here.
+
+    Walks onto the next on-route same-limit way so a short first OSM piece of
+    a real town zone counts with the rest of the chain. Does not follow a
+    heading-misaligned fill (N–S cross street while traveling E–W).
+    """
+    if not match.coords:
+      return 0.0
+    _dist, seg_hdg = _point_to_polyline_m(lat, lon, list(match.coords))
+    if seg_hdg is not None and not _heading_aligned(bearing_deg, seg_hdg):
+      return 0.0
+    target_ms = float(match.speed_limit_ms)
+    traveled = 0.0
+    cur_lat, cur_lon = float(lat), float(lon)
+    cur_brg = float(bearing_deg)
+    cur_coords: list[tuple[float, float]] | tuple[tuple[float, float], ...] = match.coords
+    route = along_route if along_route is not None else match
+    seen = {int(match.way_id)}
+    for _ in range(24):
+      if not cur_coords:
+        break
+      ahead_info = _remaining_ahead(cur_lat, cur_lon, cur_brg, cur_coords)
+      if ahead_info is None:
+        break
+      rem, end_ll, end_hdg = ahead_info
+      traveled += rem
+      if traveled >= MIN_ZONE_LENGTH_M:
+        return traveled
+      nxt = None
+      plat, plon = end_ll[0], end_ll[1]
+      for step_m in (12.0, 25.0, 40.0):
+        plat, plon = _offset_point(end_ll[0], end_ll[1], end_hdg, step_m)
+        cand = self._best_match(plat, plon, end_hdg, along_route=route)
+        if cand is not None and int(cand.way_id) not in seen:
+          nxt = cand
+          break
+      if nxt is None or abs(nxt.speed_limit_ms - target_ms) > 0.3 or not nxt.coords:
+        break
+      seen.add(int(nxt.way_id))
+      cur_coords = nxt.coords
+      cur_lat, cur_lon = plat, plon
+      cur_brg = end_hdg
+    return traveled
+
   def _limit_persists_min_zone(
     self, lat: float, lon: float, bearing_deg: float, match: SpeedLimitMatch,
     along_route: SpeedLimitMatch | None = None,
   ) -> bool:
-    """True if this limit is still present MIN_ZONE_LENGTH_M along heading.
+    """True if this limit is a real along-route zone, not a cross-street blip.
 
-    Cross-street bleed matches a long side road at the intersection, but
-    MIN_ZONE_LENGTH_M along the highway heading is already back on the
-    main road. A tiny stub way fails the same way. Remaining-along-way
-    alone is not enough: a long N-S fill has lots of remaining.
+    Prefer "returns to prior" over first-way length:
+    - Probe MIN_ZONE_LENGTH_M along heading. Same limit → keep. A different
+      limit (typically back on the highway) → ignore (stub / bleed).
+    - If the probe misses (gap, or past a short first OSM piece), walk the
+      contiguous same-limit on-route chain. Keep if that run is ≥ MIN_ZONE.
+
+    Remaining-along-way alone is not enough: a long N–S fill has lots of
+    remaining. The heading-ray probe and the bidirectional heading guard on
+    the chain walk keep those out.
     """
     plat, plon = _offset_point(lat, lon, bearing_deg, MIN_ZONE_LENGTH_M)
     ahead = self._best_match(plat, plon, bearing_deg, along_route=along_route)
     if ahead is not None:
       return abs(ahead.speed_limit_ms - match.speed_limit_ms) <= 0.3
-    rem = _remaining_ahead(lat, lon, bearing_deg, match.coords or ())
-    if rem is None or rem[0] < MIN_ZONE_LENGTH_M:
-      return False
-    _dist, seg_hdg = _point_to_polyline_m(lat, lon, list(match.coords or ()))
-    if seg_hdg is None:
-      return False
-    return _wrap_heading_delta(bearing_deg, seg_hdg) <= HEADING_ALIGN_DEG
+    return self._same_limit_run_m(lat, lon, bearing_deg, match, along_route) >= MIN_ZONE_LENGTH_M
 
   def _stabilize_match(
     self, lat: float, lon: float, bearing_deg: float | None, match: SpeedLimitMatch | None,
