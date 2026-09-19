@@ -69,6 +69,12 @@ LEFT_TURN_PATH_X = (0.0, 15.0, 30.0, 50.0)
 LEFT_TURN_PATH_Y = (0.0, 1.8, 4.0, 6.5)
 LEFT_TURN_X_M = 30.0
 
+# 21:08 Atlantic left: path has already left by ~3 m at 10 m, so
+# ego-forward gas-station furniture (yRel≈0) is off path even as dRel
+# closes and the car would otherwise stop in the road.
+ATLANTIC_LEFT_PATH_X = (0.0, 5.0, 10.0, 20.0, 40.0)
+ATLANTIC_LEFT_PATH_Y = (0.0, 1.5, 3.2, 5.0, 7.0)
+
 
 def _num(obj: Any, *names: str) -> float | None:
   for name in names:

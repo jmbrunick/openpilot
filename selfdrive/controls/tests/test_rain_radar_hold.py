@@ -6,9 +6,12 @@ from openpilot.selfdrive.controls.lib.radar_path_gate import (
   CURVE_OUTSIDE_PATH_Y,
   CURVE_OUTSIDE_TWO_LANES_M,
   CURVE_OUTSIDE_X_M,
+  ATLANTIC_LEFT_PATH_X,
+  ATLANTIC_LEFT_PATH_Y,
   LEFT_TURN_PATH_X,
   LEFT_TURN_PATH_Y,
   LEFT_TURN_X_M,
+  ONCOMING_VLEAD_MS,
   RADAR_TO_CAMERA_M,
   ROUNDABOUT_EXIT_PATH_X,
   ROUNDABOUT_EXIT_PATH_Y,
@@ -213,6 +216,12 @@ def test_pick_does_not_latch_roundabout_entrant_off_exit_path():
   assert pick_rain_radar_track(None, {22: entrant}, 22, v_ego, path[0], path[1]) is None
 
 
+def test_tip_still_has_path_gate_2_0_yrel_and_oncoming_reject():
+  """Justin flash check: path gate + 2.5→2.0 yRel + vLead < 0 reject."""
+  assert RAIN_INLANE_YREL_M == 2.0
+  assert ONCOMING_VLEAD_MS < 0.0
+
+
 def test_ep2059_inlane_gate_is_2_0_not_2_5():
   """Justin: RAIN_INLANE_YREL_M 2.5 → 2.0. Rejects 2.23 and 2.48 latches."""
   assert RAIN_INLANE_YREL_M == 2.0
@@ -369,6 +378,17 @@ def test_associated_lead_at_1_7m_still_held():
   t = track(11, 40.0, y_rel=1.7, v_rel=-0.5)
   assert radar_hold_kinematics_ok(t, v_ego=v_ego)
   assert pick_rain_radar_track(t, {11: t}, None, v_ego) is t
+
+
+def test_2108_gas_station_not_held_while_closing():
+  """21:08: rain must not keep ego-forward gas-station furniture as dRel closes."""
+  v_ego = 12.5
+  path = (ATLANTIC_LEFT_PATH_X, ATLANTIC_LEFT_PATH_Y)
+  for tid, d_rel, y_rel in ((925, 40.0, 0.0), (932, 22.0, 0.15), (940, 9.0, -0.2)):
+    t = track(tid, d_rel, y_rel=y_rel, v_rel=-v_ego)
+    assert not radar_hold_kinematics_ok(t, v_ego=v_ego, path_x=path[0], path_y=path[1])
+    assert pick_rain_radar_track(None, {tid: t}, tid, v_ego, path[0], path[1]) is None
+    assert pick_rain_radar_track(t, {tid: t}, None, v_ego, path[0], path[1]) is None
 
 
 def test_left_turn_rain_does_not_latch_ego_forward_or_oncoming():

@@ -13,6 +13,8 @@ from openpilot.selfdrive.controls.lib.radar_path_gate import (
   CURVE_OUTSIDE_PATH_Y,
   CURVE_OUTSIDE_TWO_LANES_M,
   CURVE_OUTSIDE_X_M,
+  ATLANTIC_LEFT_PATH_X,
+  ATLANTIC_LEFT_PATH_Y,
   LEFT_TURN_PATH_X,
   LEFT_TURN_PATH_Y,
   LEFT_TURN_X_M,
@@ -130,6 +132,16 @@ def test_curve_outside_sign_is_not_an_oncoming_lead():
   on_curve = radar(d_rel=d_rel, y_rel=-path_at, v_rel=-1.0)
   assert track_is_in_path(on_curve, path_x, path_y)
   assert radar_follow_ok(on_curve, v_ego, path_x, path_y)
+
+
+def test_2108_gas_station_ahead_is_off_left_turn_path():
+  """21:08: gas station / signs straight ahead while the road turns left."""
+  path_x, path_y = ATLANTIC_LEFT_PATH_X, ATLANTIC_LEFT_PATH_Y
+  v_ego = 12.5  # ~28 mph into the turn
+  for d_rel, y_rel in ((40.0, 0.0), (25.0, 0.2), (12.0, -0.3), (8.0, 0.1)):
+    t = radar(d_rel=d_rel, y_rel=y_rel, v_rel=-v_ego)
+    assert not track_is_in_path(t, path_x, path_y)
+    assert not radar_follow_ok(t, v_ego, path_x, path_y)
 
 
 def test_left_turn_ego_forward_is_not_path_association():

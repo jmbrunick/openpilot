@@ -6,6 +6,8 @@ from openpilot.selfdrive.controls.lib.radar_path_gate import (
   CURVE_OUTSIDE_PATH_Y,
   CURVE_OUTSIDE_TWO_LANES_M,
   CURVE_OUTSIDE_X_M,
+  ATLANTIC_LEFT_PATH_X,
+  ATLANTIC_LEFT_PATH_Y,
   LEFT_TURN_PATH_X,
   LEFT_TURN_PATH_Y,
   LEFT_TURN_X_M,
@@ -683,3 +685,27 @@ def test_left_turn_straight_ahead_sign_off_path_not_lead():
                        vision_y=4.0, path_x=path_x, path_y=path_y)
   assert lead.radar
   assert lead.radarTrackId == 11
+
+
+def test_2108_gas_station_ahead_does_not_stop_in_the_road():
+  """~21:08 CT: left turn, gas station / signs straight ahead → must not stop.
+
+  Ego-forward radar (yRel≈0) while model path has already turned left.
+  Rain must not publish leadOne as dRel closes (28→9 mph class).
+  """
+  path_x = list(ATLANTIC_LEFT_PATH_X)
+  path_y = list(ATLANTIC_LEFT_PATH_Y)
+  frames = (
+    (12.5, 925, 40.0, 0.0),
+    (10.0, 932, 22.0, 0.15),
+    (4.1, 940, 9.0, -0.2),
+  )
+  scenario = RadarScenario(v_ego=12.5)
+  scenario.set_rain_hold(True)
+  for i, (v_ego, tid, d_rel, y_rel) in enumerate(frames):
+    scenario.v_ego = v_ego
+    lead = scenario.step(1.0 + i * 0.1, vision_d_rel=d_rel,
+                         radar_points=[(tid, d_rel, y_rel, -v_ego)],
+                         vision_prob=0.04, path_x=path_x, path_y=path_y)
+    assert not lead.radar, f"21:08 tid {tid} latched as radar lead"
+    assert not lead.status, f"21:08 tid {tid} published — would stop in the road"
