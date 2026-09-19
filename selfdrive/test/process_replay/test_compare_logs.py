@@ -1,6 +1,6 @@
 from cereal import messaging
 
-from openpilot.selfdrive.test.process_replay.compare_logs import _diff_capnp_values
+from openpilot.selfdrive.test.process_replay.compare_logs import _diff_capnp_values, remove_ignored_fields
 
 
 PATH = ("modelV2", "position", "x")
@@ -35,6 +35,13 @@ def test_grown_position_x_list_reports_indexed_additions():
   assert list(_diff_capnp_values(first, second, PATH, 0)) == [
     ("add", "modelV2.position.x", [(2, 3), (3, 4)]),
   ]
+
+
+def test_remove_ignored_text_field_clears_string():
+  message = messaging.new_message("radarState")
+  message.radarState.radarPreferReason = "dropout"
+  cleared = remove_ignored_fields(message, ["radarState.radarPreferReason"])
+  assert cleared.radarState.radarPreferReason == ""
 
 
 def test_shrunken_position_x_list_reports_reverse_indexed_removals():
