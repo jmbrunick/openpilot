@@ -137,6 +137,7 @@ RAIN_HELPER_START_DELAY_S = 2.5
 _last_auto_log_t = 0.0
 _last_status_put_t = 0.0
 _last_status_gate = None
+_status_disk_once = True
 _last_gear_src = "none"
 _last_wiper_req = False
 _wiper_cancel_burst = 0
@@ -390,7 +391,7 @@ def reset_auto_gates() -> None:
   global _live_cs, _vehicle_on_override, _gear_override, _last_gear_src, _last_wiper_req
   global _cereal_gear_override, _cereal_gear_forced, _wiper_cancel_burst
   global _last_auto_log_t, _last_status_put_t, _last_status_gate, _auto_since_t
-  global _v_ego_override
+  global _v_ego_override, _status_disk_once
   _live_cs = None
   _vehicle_on_override = None
   _gear_override = None
@@ -403,6 +404,7 @@ def reset_auto_gates() -> None:
   _last_auto_log_t = 0.0
   _last_status_put_t = 0.0
   _last_status_gate = None
+  _status_disk_once = True
   _auto_since_t = 0.0
 
 
@@ -794,8 +796,9 @@ def _auto_status_line(setting: int, on: bool, drive: bool, rain: bool, wipe: boo
       rpt = int(d.last_score >= rpt_on)
       if last_wipe > 0.0:
         gap_left = max(0.0, gap_s - (now - last_wipe))
+      hold_need = int(getattr(d, '_acquire_n', 0) or rainmod.acquire_hold_n(sens))
       rain_bits = (
-        f"hold={int(d.hold)} holdn={int(getattr(d, '_hold_n', 0))}/{int(getattr(rainmod, 'MIN_HOLD_N', 0))} "
+        f"hold={int(d.hold)} holdn={int(getattr(d, '_hold_n', 0))}/{hold_need} "
         + f"warm={int(getattr(d, '_warm_n', 0))}/{int(getattr(rainmod, 'WARMUP_N', 0))} "
         + f"ema={d.ema:.2f} score={d.last_score:.2f} bokeh={d.last_bokeh:.2f} blob={d.last_blob:.2f} "
         + f"speckle={d.last_speckle:.3f} sparse={d.last_sparse:.1f} struct={d.last_structure:.3f} sat={d.last_sat:.3f} "
@@ -832,9 +835,17 @@ def _auto_status_line(setting: int, on: bool, drive: bool, rain: bool, wipe: boo
 
 
 def _put_wiper_status(line: str) -> None:
-  """Write NAPWiperRainStatus. Callers must rate-limit — this is the expensive put."""
+  """Write NAPWiperRainStatus. Callers must rate-limit — this is the expensive put.
+
+  First write is block=True so the key lands on disk (e0 qlog InitData
+  missed it when only the async put ran after loggerd snapshot). Later
+  1 Hz writes stay non-blocking on the card RT path.
+  """
+  global _status_disk_once
+  block = bool(_status_disk_once)
+  _status_disk_once = False
   try:
-    _get_params().put("NAPWiperRainStatus", line, block=False)
+    _get_params().put("NAPWiperRainStatus", line, block=block)
   except TypeError:
     try:
       _get_params().put("NAPWiperRainStatus", line)
@@ -1022,4 +1033,7 @@ def install_body_controls_test():
     cloudlog.info("nap body controls overlay installed (0x45 wiper/beam)")
   except Exception:
     pass
-  _put_wiper_status("nap wiper auto setting=- on=0 gear=- gear_src=none raw=- drive=0 rain=0 wipe=0 collar=0 wash=0 installed=1 waiting")
+  _put_wiper_status(
+    "nap wiper auto setting=- on=0 gear=- gear_src=none raw=- drive=0 rain=0 wipe=0 "
+    "sens=- acq=0 rpt=0 gap=- park=- v0=- collar=0 wash=0 installed=1 waiting"
+  )
