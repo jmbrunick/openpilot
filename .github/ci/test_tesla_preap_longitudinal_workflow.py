@@ -53,6 +53,8 @@ def test_focused_tests_and_mutations_are_pinned():
     "selfdrive/controls/tests/test_follow_stalk.py",
     "selfdrive/controls/tests/test_follow_distance.py",
     "selfdrive/controls/tests/test_lead_approach.py",
+    "selfdrive/controls/tests/test_radard.py",
+    "selfdrive/controls/tests/test_rain_radar_hold.py",
     "selfdrive/controls/tests/test_tesla_preap_following.py",
     "selfdrive/controls/tests/test_tesla_preap_longcontrol.py",
     "selfdrive/controls/tests/test_tesla_preap_gas_lift_handoff.py",
