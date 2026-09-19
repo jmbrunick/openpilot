@@ -1851,9 +1851,10 @@ def test_drier_vs_mid_acquire_repeat_and_gap():
     mid._last_wipe_t0 = time.monotonic() - (cycle_12 + 0.05)
     assert not mid._update_score(mist)
     assert not mid.hold
+    assert not mid._update_score(mist)
+    assert not mid.hold
     _expire_min_gap(mid)
-    if not mid.hold:
-      assert mid._update_score(mist)
+    assert mid._update_score(mist)
     assert mid.hold
   finally:
     set_wiper_sensitivity(None)
