@@ -142,6 +142,7 @@ struct OnroadEvent @0xc4fa6047f024e718 {
     pedalNotCalibrated @106;
     pedalUnavailable @107;
     hypermileFollowChanged @108;
+    radarPreferFallback @109;
 
     soundsUnavailableDEPRECATED @47;
   }
@@ -701,6 +702,8 @@ struct RadarState @0x9a185389d6fdd05f {
 
   leadOne @3 :LeadData;
   leadTwo @4 :LeadData;
+  # Path-gated radar prefer dropped to stock fusion (enabled but unhealthy).
+  radarPreferFallback @14 :Bool;
 
   struct LeadData {
     dRel @0 :Float32;

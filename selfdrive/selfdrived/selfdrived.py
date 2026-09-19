@@ -426,6 +426,10 @@ class SelfdriveD:
       self.events.add(EventName.radarTempUnavailable)
     elif any(self.sm['radarState'].radarErrors.to_dict().values()):
       self.events.add(EventName.radarFault)
+    elif getattr(self.sm['radarState'], "radarPreferFallback", False):
+      fallback_evt = getattr(EventName, "radarPreferFallback", None)
+      if fallback_evt is not None:
+        self.events.add(fallback_evt)
     if not self.sm.valid['pandaStates']:
       self.events.add(EventName.usbError)
     if CS.canTimeout:
