@@ -1,8 +1,8 @@
 from openpilot.common.constants import CV
-from openpilot.selfdrive.mapd.constants import MIN_ZONE_LENGTH_M, OSM_SIGN_LEAD_S, osm_sign_lead_m
+from openpilot.selfdrive.mapd.constants import HEADING_ALIGN_DEG, MIN_ZONE_LENGTH_M, OSM_SIGN_LEAD_S, osm_sign_lead_m
 from openpilot.selfdrive.mapd.osm_db import (
   OsmSpeedLimitDB, _continues_route, _heading_aligned, _offset_point, _pack_coords,
-  _unpack_coords, simplify_coords,
+  _unpack_coords, _wrap_heading_delta, simplify_coords,
 )
 from openpilot.selfdrive.mapd.overpass import ways_from_overpass
 from openpilot.selfdrive.mapd.speed_limit import parse_maxspeed
@@ -23,6 +23,10 @@ def test_continues_route_rejects_cross_street_fills():
   assert not _heading_aligned(110.0, 20.0)
   assert _continues_route(110.0, 291.0, "US 12", "trunk", "Atlantic Avenue", "primary")
   assert _continues_route(124.0, 304.0, "US 12", "trunk", "Main Avenue", "primary")
+  # Ep3 Kerkhoven: travel SE ~117.5°, Atlantic 30 digitized NW ~310°.
+  assert _heading_aligned(117.5, 310.3)
+  assert _wrap_heading_delta(117.5, 310.3) > HEADING_ALIGN_DEG  # old unidirectional gate
+  assert _continues_route(117.5, 310.3, "", "trunk", "Atlantic Avenue", "trunk")
   # Reverse-digitized residential fill is still a fill.
   assert not _continues_route(110.0, 290.0, "US 12", "trunk", "Oak", "residential")
 
@@ -522,6 +526,90 @@ def test_town_entry_reverse_digitized_long_way(tmp_path):
   # On the Main Ave 60 lead-in (the on-car name change): still posted 60, next=30.
   on_main = _offset_point(junc[0], junc[1], travel, 100.0)
   m2 = db.lookup(on_main[0], on_main[1], bearing_deg=travel)
+  assert m2 is not None
+  assert abs(m2.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3
+  assert abs(m2.next_speed_limit_ms - 30 * CV.MPH_TO_MS) < 0.3, m2.next_speed_limit_ms * CV.MS_TO_MPH
+  db.close()
+
+
+def test_town_entry_kerkhoven_long_reverse_digitized(tmp_path):
+  """Ep3 ~19:24 Kerkhoven: even longer town than Murdock, still reverse-digitized.
+
+  Same drive as REPORT.md ep1/ep2 (`1c95345a3286a5db|000000df--467073c363`).
+  US 12 60 way 18267051 then Atlantic Avenue 30: 47 m + 68 m stubs and an
+  876 m town way (chain ~1.1 km). Digitized NW (~300°) while travel is SE
+  (~118°). Short-zone-alone cannot explain a dead next — the long way is
+  far past 76 m. The old unidirectional heading gate can.
+
+  Real corridor coords (OSM), not a corridor hardcode in matcher code.
+  """
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  # Approach 60, first ~1.4 km from the town end (digitized NW).
+  OsmSpeedLimitDB.insert_way(
+    con, 18267051, "", "trunk", 60 * CV.MPH_TO_MS,
+    [
+      (45.1934513, -95.3224471),
+      (45.1935615, -95.3227475),
+      (45.1936458, -95.3230027),
+      (45.1937388, -95.3232855),
+      (45.1938181, -95.3235502),
+      (45.1938968, -95.3238425),
+      (45.1941100, -95.3246503),
+      (45.1942096, -95.3249748),
+      (45.1943107, -95.3252671),
+      (45.1944248, -95.3255547),
+      (45.1955660, -95.3283440),
+      (45.1957940, -95.3289060),
+      (45.1997270, -95.3385890),
+    ],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 1312882771, "Atlantic Avenue", "trunk", 30 * CV.MPH_TO_MS,
+    [(45.1932411, -95.3219240), (45.1934513, -95.3224471)],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 1312882772, "Atlantic Avenue", "trunk", 30 * CV.MPH_TO_MS,
+    [(45.1929386, -95.3211712), (45.1930521, -95.3214537), (45.1932411, -95.3219240)],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 18267484, "Atlantic Avenue", "trunk", 30 * CV.MPH_TO_MS,
+    [
+      (45.1889261, -95.3115623),
+      (45.1891320, -95.3119070),
+      (45.1892753, -95.3122187),
+      (45.1893454, -95.3123712),
+      (45.1893958, -95.3124952),
+      (45.1894422, -95.3126084),
+      (45.1898958, -95.3137152),
+      (45.1904075, -95.3149739),
+      (45.1904499, -95.3150765),
+      (45.1909150, -95.3162020),
+      (45.1914230, -95.3174460),
+      (45.1919300, -95.3186970),
+      (45.1924364, -95.3199345),
+      (45.1929386, -95.3211712),
+    ],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 1227205094, "Atlantic Avenue", "trunk", 30 * CV.MPH_TO_MS,
+    [(45.1881551, -95.3101903), (45.1883478, -95.3105791), (45.1889261, -95.3115623)],
+  )
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  travel = 117.5
+  # ~400 m before the 30, still on US 12 60 (inside Early 600 m).
+  qlat, qlon = _offset_point(45.1934513, -95.3224471, 297.5, 400.0)
+  m = db.lookup(qlat, qlon, bearing_deg=travel)
+  assert m is not None
+  assert abs(m.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3
+  assert abs(m.next_speed_limit_ms - 30 * CV.MPH_TO_MS) < 0.3, m.next_speed_limit_ms * CV.MS_TO_MPH
+  assert 250.0 <= m.next_distance_m <= 550.0
+  # Closer in: still posted 60, next still the long town 30.
+  q2lat, q2lon = _offset_point(45.1934513, -95.3224471, 297.5, 150.0)
+  m2 = db.lookup(q2lat, q2lon, bearing_deg=travel)
   assert m2 is not None
   assert abs(m2.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3
   assert abs(m2.next_speed_limit_ms - 30 * CV.MPH_TO_MS) < 0.3, m2.next_speed_limit_ms * CV.MS_TO_MPH
