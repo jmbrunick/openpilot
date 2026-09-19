@@ -1,3 +1,7 @@
+NAP EV slight-lift comfort path (2026-09-19)
+========================
+* Pre-AP Model S EV: non-emergency approach/follow is **slight lift only** (MILD −0.22). Full throttle lift / deep −a is reserved for rapid close / near-bumper / FCW. Closing ≳ 1.5 and near-gap aLead no longer skip the floor or acquire slew (that still punched −0.996 at 80–130 m). #214 acquire slew kept. No panda flash.
+
 NAP lead acquire slew + small MPC bite soften (2026-09-19)
 ========================
 * First lead latch no longer punches regen then rematch +a (e4 09:53:19: aTarget −0.46 → +0.05 in ~0.5 s at 118 m). Acquire window slews both ways. Large-slack small MPC adjustments (e4 −2.33 at ~40 m / 9.5 m/s) stay at the mild floor. Rapid close / near-bumper / FCW keep full −a. No panda flash.
