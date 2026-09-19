@@ -193,14 +193,14 @@ def test_lead_approach_keeps_early_map_brake_not_map_110m_margin():
   assert 2.0 <= LEAD_SETTLE_GAP_BIAS_M <= 4.0
   assert abs(LEAD_SLOW_CLOSE_MS - 0.8) < 1e-9
   assert LEAD_GLIDE_VREL_MS < LEAD_SLOW_CLOSE_MS < LEAD_CLOSING_MATCH_MS
-  assert abs(LEAD_GLIDE_VREL_MS - LEAD_SETTLE_VREL_MS) < 1e-9
-  assert abs(LEAD_GLIDE_VREL_OFF_MS - 0.70) < 1e-9
+  assert LEAD_GLIDE_VREL_MS < LEAD_SETTLE_VREL_MS
+  assert abs(LEAD_GLIDE_VREL_OFF_MS - 0.40) < 1e-9
   assert LEAD_GLIDE_VREL_MS < LEAD_GLIDE_VREL_OFF_MS < LEAD_SLOW_CLOSE_MS
-  assert abs(LEAD_GLIDE_SLACK_M - 10.0) < 1e-9
-  assert abs(LEAD_GLIDE_SLACK_OFF_M - 14.0) < 1e-9
+  assert abs(LEAD_GLIDE_SLACK_M - LEAD_SETTLE_FINISH_SLACK_M) < 1e-9
+  assert abs(LEAD_GLIDE_SLACK_OFF_M - 8.0) < 1e-9
   assert LEAD_GLIDE_SLACK_M < LEAD_GLIDE_SLACK_OFF_M
-  assert abs(LEAD_GLIDE_A_MS2 - 0.05) < 1e-9
-  assert 0.0 < LEAD_GLIDE_A_MS2 < LEAD_CLOSE_OPENING_A_MS2
+  assert abs(LEAD_GLIDE_A_MS2 - LEAD_CLOSE_OPENING_A_MS2) < 1e-9
+  assert 0.0 < LEAD_GLIDE_A_MS2 <= LEAD_CLOSE_OPENING_A_MS2
   assert LEAD_GLIDE_CHATTER_LO_MS2 < -LEAD_APPROACH_MILD_A_MS2
   assert LEAD_GLIDE_CHATTER_HI_MS2 > LEAD_CLOSE_REMATCH_A_MS2
   assert abs(LEAD_NEAR_GAP_SLACK_M - 15.0) < 1e-9
@@ -1425,25 +1425,27 @@ def test_matched_speed_glide_deadbands_chatter_with_hysteresis():
 
   Acquire / far catch-up / rapid / bumper stay out of the deadband.
   """
-  assert lead_is_glide_sample(0.2, 3.0)
+  assert lead_is_glide_sample(0.15, 3.0)
+  # Still closing in the finish band must keep −a (do not coast through FD).
+  assert not lead_is_glide_sample(0.30, 3.0)
   # Already inside FD is a too-close recovery — rematch +a / mild −a stand.
-  assert not lead_is_glide_sample(-0.3, -8.0)
-  assert not lead_is_glide_sample(0.2, -8.0)
-  assert not lead_is_glide_sample(0.2, 20.0)
+  assert not lead_is_glide_sample(-0.15, -8.0)
+  assert not lead_is_glide_sample(0.15, -8.0)
+  assert not lead_is_glide_sample(0.15, 20.0)
   assert not lead_is_glide_sample(0.8, 3.0)
-  assert not lead_is_glide_sample(0.2, None)
+  assert not lead_is_glide_sample(0.15, None)
 
-  assert update_lead_glide(False, 0.2, 3.0) is True
-  # Hysteresis: hold through a 0.55 close that would fail enter.
-  assert 0.55 < LEAD_GLIDE_VREL_OFF_MS
-  assert update_lead_glide(True, 0.55, 3.0) is True
-  assert update_lead_glide(True, 0.75, 3.0) is False
-  assert update_lead_glide(True, 0.2, 16.0) is False
-  assert update_lead_glide(True, 0.2, -2.0) is False
+  assert update_lead_glide(False, 0.15, 3.0) is True
+  # Hysteresis: hold a slightly larger |v_rel| than enter, not a 0.55 close.
+  assert LEAD_GLIDE_VREL_MS < 0.30 < LEAD_GLIDE_VREL_OFF_MS
+  assert update_lead_glide(True, 0.30, 3.0) is True
+  assert update_lead_glide(True, 0.45, 3.0) is False
+  assert update_lead_glide(True, 0.15, 16.0) is False
+  assert update_lead_glide(True, 0.15, -2.0) is False
   # First-latch / danger never glide.
-  assert update_lead_glide(False, 0.2, 3.0, acquiring=True) is False
-  assert update_lead_glide(False, 0.2, 3.0, fcw=True) is False
-  assert update_lead_glide(False, 0.2, 3.0, d_rel=LEAD_MPC_SOFT_NEAR_M) is False
+  assert update_lead_glide(False, 0.15, 3.0, acquiring=True) is False
+  assert update_lead_glide(False, 0.15, 3.0, fcw=True) is False
+  assert update_lead_glide(False, 0.15, 3.0, d_rel=LEAD_MPC_SOFT_NEAR_M) is False
   assert update_lead_glide(False, 8.0, 3.0) is False
 
   # Rematch trickle ↔ mild floor snaps to coast / slight lift.

@@ -1,6 +1,6 @@
 NAP matched-speed glide + earlier settle (2026-09-19)
 ========================
-* After #214 acquire + #216 slight-lift: when speeds match at/long of Follow Distance, leftover mild −a glides to 0; rematch trickle still finishes / holds grade. Still closing in the last meters, or already inside FD, is not a glide. +3 m kinematic gap bias so we do not creep inside FD. Inside FD still closing slowly commands the mild floor. Rapid / near-bumper / FCW keep full −a. No panda flash.
+* After #214 acquire + #216 slight-lift + #219 MAX ceiling: when matched or slightly slower near Follow Distance, leftover mild −a glides to 0; rematch trickle still finishes / holds grade under MAX. Last-meter closing, braking lead, or already inside FD is not a glide. +3 m kinematic gap bias. Inside FD still closing slowly commands the mild floor. Rapid / near-bumper / FCW keep full −a. No panda flash.
 
 NAP MAX is a hard ceiling on lead rematch (2026-09-19)
 ========================

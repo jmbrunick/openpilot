@@ -896,7 +896,7 @@ def test_planner_first_acquire_slews_yoyo_and_keeps_rapid_authority():
 def test_planner_matched_speed_glide_deadbands_near_gap_chatter():
   """After #214 acquire, matched speeds near FD must not yo-yo rematch↔mild."""
   v_ego = 28.0
-  v_rel = 0.2
+  v_rel = 0.15
   v_lead = v_ego - v_rel
   t_follow = get_T_FOLLOW(nap_follow_dist=2)
   d_follow = t_follow * v_lead + STOP_DISTANCE_M

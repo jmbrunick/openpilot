@@ -220,14 +220,16 @@ LEAD_SETTLE_GAP_BIAS_M = 3.0
 # Inside FD, still closing slowly: command the #216 MILD floor (not
 # rematch +a, not a dump). Rapid / bumper / FCW stay full −a.
 LEAD_SLOW_CLOSE_MS = 0.8
-# Matched-speed glide: a≈0 deadband + hysteresis. EV slight lift only.
-# Do not arm on a far same-speed catch-up (slack long of the gap).
-LEAD_GLIDE_VREL_MS = LEAD_SETTLE_VREL_MS
-LEAD_GLIDE_VREL_OFF_MS = 0.70
-LEAD_GLIDE_SLACK_M = 10.0
-LEAD_GLIDE_SLACK_OFF_M = 14.0
-LEAD_GLIDE_A_MS2 = 0.05
-# Rematch trickle ↔ mild floor. Glide snaps this band to coast / lift.
+# Matched-speed glide: kill leftover mild −a at the gap. Rematch
+# trickle (+0.08) still finishes the last meters / holds grade.
+# Enter only when truly matched and already in the finish band —
+# a 10 m / 0.5 m/s window coasted through Follow 1.
+LEAD_GLIDE_VREL_MS = 0.25
+LEAD_GLIDE_VREL_OFF_MS = 0.40
+LEAD_GLIDE_SLACK_M = LEAD_SETTLE_FINISH_SLACK_M
+LEAD_GLIDE_SLACK_OFF_M = 8.0
+LEAD_GLIDE_A_MS2 = LEAD_CLOSE_OPENING_A_MS2
+# Rematch trickle ↔ mild floor. Glide zeros −a in this band.
 LEAD_GLIDE_CHATTER_LO_MS2 = -(LEAD_APPROACH_MILD_A_MS2 + 0.02)
 LEAD_GLIDE_CHATTER_HI_MS2 = LEAD_CLOSE_REMATCH_A_MS2 + 0.02
 # Near-gap small ±a slew (rematch trickle ↔ leftover mild).
@@ -282,14 +284,18 @@ def lead_inside_slow_close_a_ms2(v_rel, slack):
 
 
 def lead_is_glide_sample(v_rel, slack) -> bool:
-  """True when speeds match at/long of Follow Distance, still near the gap.
+  """True when speeds match in the last meters long of Follow Distance.
 
-  Far same-speed catch-up (slack long of the gap) is Accel-owned.
-  Already inside FD is a too-close recovery — rematch +a must stand.
+  Still closing (v_rel above overlay-exit) must keep −a so we do not
+  coast through the gap. Far same-speed catch-up is Accel-owned.
+  Already inside FD is a too-close recovery — rematch +a / mild −a stand.
   """
   if v_rel is None or slack is None:
     return False
-  if abs(float(v_rel)) >= LEAD_GLIDE_VREL_MS:
+  v = float(v_rel)
+  if abs(v) >= LEAD_GLIDE_VREL_MS:
+    return False
+  if v > LEAD_APPROACH_DV_OFF_MS:
     return False
   s = float(slack)
   if s < 0.0 or s > LEAD_GLIDE_SLACK_M:
@@ -320,11 +326,12 @@ def update_lead_glide(active, v_rel, slack, d_rel=None, fcw=False,
 
 
 def apply_lead_glide_a(output_a, gliding):
-  """Deadband rematch trickle ↔ mild floor to coast / slight EV lift.
+  """Deadband leftover mild −a to coast; rematch trickle may still finish.
 
   Accel-ceil grade hold and MPC dump sit outside the chatter band and
-  pass through. Negative chatter becomes 0 (no felt regen bite);
-  leftover rematch +a caps at the lift.
+  pass through. Negative chatter becomes 0 (no felt regen bite).
+  Positive chatter caps at the rematch trickle so last-meter finish
+  and slight grade sag still work.
   """
   if (not gliding) or output_a is None:
     return output_a
@@ -759,7 +766,7 @@ def cap_closing_lead_accel(output_a, v_rel, a_lead=None, lead_present=False,
   v = 0.0 if v_rel is None else float(v_rel)
   # Inside FD, still closing: never rematch +a. Slow close commands
   # the MILD floor; 0.5–0.8 coasts (glide owns match). Rapid dumps.
-  if slack is not None and float(slack) <= 0.0 and v >= LEAD_GLIDE_VREL_MS:
+  if slack is not None and float(slack) <= 0.0 and v >= LEAD_SETTLE_VREL_MS:
     a = min(float(output_a), 0.0)
     a_slow = lead_inside_slow_close_a_ms2(v_rel, slack)
     if a_slow is not None:
