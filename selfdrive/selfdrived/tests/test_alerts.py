@@ -187,6 +187,16 @@ class TestAlerts:
     assert alert.alert_size == AlertSize.mid
     assert alert.duration == int(3.0 / DT_CTRL)
 
+  def test_radar_prefer_fallback_alert_is_visible_without_disengaging(self):
+    event_types = EVENTS[log.OnroadEvent.EventName.radarPreferFallback]
+    assert ET.SOFT_DISABLE not in event_types
+    assert ET.IMMEDIATE_DISABLE not in event_types
+    assert ET.NO_ENTRY not in event_types
+    alert = event_types[ET.WARNING]
+    assert alert.alert_text_1 == "Radar Unreliable"
+    assert alert.alert_text_2 == "Using camera lead"
+    assert alert.alert_size == AlertSize.mid
+
   def test_offroad_alerts(self):
     params = Params()
     for a in self.offroad_alerts:

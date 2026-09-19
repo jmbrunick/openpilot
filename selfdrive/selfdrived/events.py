@@ -1132,6 +1132,15 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
       Priority.HIGH, VisualAlert.none, AudibleAlert.disengage, 3.0),
   },
 
+  EventName.radarPreferFallback: {
+    ET.PERMANENT: NormalPermanentAlert("Radar Unreliable", "Using camera lead"),
+    ET.WARNING: Alert(
+      "Radar Unreliable",
+      "Using camera lead",
+      AlertStatus.userPrompt, AlertSize.mid,
+      Priority.MID, VisualAlert.none, AudibleAlert.none, 0.2),
+  },
+
   EventName.userBookmark: {
     ET.PERMANENT: NormalPermanentAlert("Bookmark Saved", duration=1.5),
   },
