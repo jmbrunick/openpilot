@@ -284,18 +284,19 @@ def lead_inside_slow_close_a_ms2(v_rel, slack):
 
 
 def lead_is_glide_sample(v_rel, slack) -> bool:
-  """True when speeds match in the last meters long of Follow Distance.
+  """True when matched or slightly slower in the last meters long of FD.
 
-  Still closing (v_rel above overlay-exit) must keep −a so we do not
-  coast through the gap. Far same-speed catch-up is Accel-owned.
-  Already inside FD is a too-close recovery — rematch +a / mild −a stand.
+  Still closing must keep −a so we do not coast through the gap.
+  Real speed sag (v_rel ≲ −0.5) is Accel-owned, not a deadband.
+  Far same-speed catch-up is Accel-owned. Already inside FD is a
+  too-close recovery — rematch +a / mild −a stand.
   """
   if v_rel is None or slack is None:
     return False
   v = float(v_rel)
-  if abs(v) >= LEAD_GLIDE_VREL_MS:
-    return False
   if v > LEAD_APPROACH_DV_OFF_MS:
+    return False
+  if v <= -LEAD_SETTLE_VREL_MS:
     return False
   s = float(slack)
   if s < 0.0 or s > LEAD_GLIDE_SLACK_M:
@@ -317,7 +318,9 @@ def update_lead_glide(active, v_rel, slack, d_rel=None, fcw=False,
   if active:
     if v_rel is None or slack is None:
       return False
-    if abs(float(v_rel)) >= LEAD_GLIDE_VREL_OFF_MS:
+    if float(v_rel) > LEAD_GLIDE_VREL_OFF_MS:
+      return False
+    if float(v_rel) <= -LEAD_SETTLE_VREL_MS:
       return False
     if float(slack) < 0.0 or float(slack) > LEAD_GLIDE_SLACK_OFF_M:
       return False

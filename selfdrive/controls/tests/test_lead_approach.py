@@ -1426,8 +1426,12 @@ def test_matched_speed_glide_deadbands_chatter_with_hysteresis():
   Acquire / far catch-up / rapid / bumper stay out of the deadband.
   """
   assert lead_is_glide_sample(0.15, 3.0)
+  # Slight sag at the gap: kill leftover −a so grade does not chew.
+  assert lead_is_glide_sample(-0.30, 3.0)
   # Still closing in the finish band must keep −a (do not coast through FD).
   assert not lead_is_glide_sample(0.30, 3.0)
+  # Real speed sag is Accel-owned.
+  assert not lead_is_glide_sample(-0.55, 3.0)
   # Already inside FD is a too-close recovery — rematch +a / mild −a stand.
   assert not lead_is_glide_sample(-0.15, -8.0)
   assert not lead_is_glide_sample(0.15, -8.0)
@@ -1436,10 +1440,12 @@ def test_matched_speed_glide_deadbands_chatter_with_hysteresis():
   assert not lead_is_glide_sample(0.15, None)
 
   assert update_lead_glide(False, 0.15, 3.0) is True
-  # Hysteresis: hold a slightly larger |v_rel| than enter, not a 0.55 close.
+  # Hysteresis: hold a slightly larger close than enter, not a 0.55 close.
   assert LEAD_GLIDE_VREL_MS < 0.30 < LEAD_GLIDE_VREL_OFF_MS
   assert update_lead_glide(True, 0.30, 3.0) is True
+  assert update_lead_glide(True, -0.30, 3.0) is True
   assert update_lead_glide(True, 0.45, 3.0) is False
+  assert update_lead_glide(True, -0.55, 3.0) is False
   assert update_lead_glide(True, 0.15, 16.0) is False
   assert update_lead_glide(True, 0.15, -2.0) is False
   # First-latch / danger never glide.
