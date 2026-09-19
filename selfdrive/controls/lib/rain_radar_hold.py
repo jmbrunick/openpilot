@@ -51,6 +51,12 @@ RAIN_MIN_DREL_M = MIN_DREL_M
 RAIN_INLANE_YREL_M = PATH_HALF_WIDTH_M
 RAIN_INCUMBENT_MAX_YREL_M = PATH_INCUMBENT_HALF_WIDTH_M
 RAIN_CUT_IN_GAP_M = 8.0
+# Incumbent-only hold beyond this needs a confident vision lead (range may
+# flap). 20:59:40 STAT 84–123 m and 20:49:10 track 321 at 99.3 m / mp 0.007
+# must not regen. Live path association is enough at any range. Original
+# rain dig: track 806 at 93.8 m + modelProb 0.978 still holds.
+RAIN_FAR_HOLD_DREL_M = 70.0
+RAIN_FAR_HOLD_MIN_PROB = 0.50
 
 
 def _decode_param(val: Any) -> Any:
@@ -121,6 +127,58 @@ def radar_hold_kinematics_ok(track: Any, max_yrel: float = RAIN_INCUMBENT_MAX_YR
   return radar_follow_ok(track, v_ego, path_x, path_y, max_lat=max_yrel)
 
 
+def _track_id(obj: Any) -> int | None:
+  if obj is None:
+    return None
+  if isinstance(obj, dict):
+    val = obj.get("identifier", obj.get("radarTrackId"))
+  else:
+    val = getattr(obj, "identifier", None)
+    if val is None:
+      val = getattr(obj, "radarTrackId", None)
+  try:
+    return int(val)
+  except (TypeError, ValueError):
+    return None
+
+
+def _track_drel(obj: Any) -> float | None:
+  if obj is None:
+    return None
+  if isinstance(obj, dict):
+    val = obj.get("dRel")
+  else:
+    val = getattr(obj, "dRel", None)
+  try:
+    f = float(val)
+  except (TypeError, ValueError):
+    return None
+  return f
+
+
+def rain_far_hold_ok(track: Any, associated: Any | None = None,
+                     vision_prob: float = 1.0) -> bool:
+  """Far incumbent-only hold needs confident vision; live association is enough.
+
+  Does not blanket-reject on-path stationary. A path-associated stopped
+  car at 90 m stays valid. Unassociated low-prob furniture at 84–123 m does not.
+  """
+  if track is None:
+    return False
+  if _track_id(associated) is not None and _track_id(associated) == _track_id(track):
+    return True
+  d_rel = _track_drel(track)
+  if d_rel is None:
+    return False
+  try:
+    prob = float(vision_prob)
+  except (TypeError, ValueError):
+    prob = 0.0
+  if d_rel > RAIN_FAR_HOLD_DREL_M and prob < RAIN_FAR_HOLD_MIN_PROB:
+    return False
+  return True
+
+
 def closest_inlane_radar(tracks: dict[int, Any], v_ego: float = 0.0,
                          path_x: Sequence[float] | None = None,
                          path_y: Sequence[float] | None = None) -> Any | None:
@@ -136,7 +194,8 @@ def closest_inlane_radar(tracks: dict[int, Any], v_ego: float = 0.0,
 def pick_rain_radar_track(associated: Any | None, tracks: dict[int, Any],
                           incumbent_id: int | None, v_ego: float = 0.0,
                           path_x: Sequence[float] | None = None,
-                          path_y: Sequence[float] | None = None) -> Any | None:
+                          path_y: Sequence[float] | None = None,
+                          vision_prob: float = 1.0) -> Any | None:
   """Hold a path-valid radar *association* while rain-sensing is On.
 
   Not a wide-FOV radar prefer. A track is eligible only if it is the
@@ -157,10 +216,13 @@ def pick_rain_radar_track(associated: Any | None, tracks: dict[int, Any],
 
   if associated is not None and incumbent is not None:
     if associated.identifier != incumbent.identifier:
-      if incumbent.dRel - associated.dRel >= RAIN_CUT_IN_GAP_M:
-        return associated
-      return incumbent
-    return associated
-  if associated is not None:
-    return associated
-  return incumbent
+      chosen = associated if incumbent.dRel - associated.dRel >= RAIN_CUT_IN_GAP_M else incumbent
+    else:
+      chosen = associated
+  elif associated is not None:
+    chosen = associated
+  else:
+    chosen = incumbent
+  if chosen is not None and not rain_far_hold_ok(chosen, associated, vision_prob):
+    return None
+  return chosen

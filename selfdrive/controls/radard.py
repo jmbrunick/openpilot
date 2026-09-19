@@ -23,6 +23,7 @@ from openpilot.selfdrive.controls.lib.rain_radar_hold import (
   RAIN_VISION_ONLY_MIN_PROB,
   RainRadarGate,
   pick_rain_radar_track,
+  rain_far_hold_ok,
 )
 
 
@@ -237,12 +238,12 @@ class LeadTrackAssociation:
 
     if rain_hold:
       track = pick_rain_radar_track(track, tracks, self.incumbent_track_id, v_ego,
-                                    path_x, path_y)
+                                    path_x, path_y, vision_prob=float(lead_msg.prob))
       if track is not None:
         self._rain_lost_frames = 0
       elif (self.incumbent_track_id is not None and
             self.incumbent_track_id in tracks):
-        # Live track failed path/oncoming — do not keep the phantom cache.
+        # Live track failed path/oncoming / far-low-prob — do not keep the cache.
         self._held_radar_lead = None
         self._rain_lost_frames = 0
       elif self._held_radar_lead is not None:
@@ -261,7 +262,8 @@ class LeadTrackAssociation:
     elif (rain_hold and self._held_radar_lead is not None and
           self._rain_lost_frames <= RAIN_RADAR_LOST_HOLD_FRAMES and
           radar_follow_ok(self._held_radar_lead, v_ego, path_x, path_y,
-                          max_lat=PATH_INCUMBENT_HALF_WIDTH_M)):
+                          max_lat=PATH_INCUMBENT_HALF_WIDTH_M) and
+          rain_far_hold_ok(self._held_radar_lead, None, float(lead_msg.prob))):
       lead_dict = dict(self._held_radar_lead)
       lead_dict["modelProb"] = float(lead_msg.prob)
     elif (ready and lead_msg.prob > vision_prob_min and

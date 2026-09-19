@@ -14,10 +14,12 @@ from openpilot.selfdrive.controls.lib.radar_path_gate import (
 )
 from openpilot.selfdrive.controls.lib.rain_radar_hold import (
   RAIN_CUT_IN_GAP_M,
+  RAIN_FAR_HOLD_DREL_M,
   RainRadarGate,
   closest_inlane_radar,
   pick_rain_radar_track,
   radar_hold_kinematics_ok,
+  rain_far_hold_ok,
   rain_sensing_on,
   read_wiper_speed,
   wiper_is_auto,
@@ -264,6 +266,25 @@ def test_ep2059_far_stat_phantom_not_acquired():
   v_ego = 20.0
   far = track(840, 100.0, y_rel=0.8, v_rel=-v_ego)
   assert pick_rain_radar_track(None, {840: far}, None, v_ego) is None
+
+
+def test_far_low_prob_incumbent_not_held_for_regen():
+  """20:59 second slam / 20:49:10 track 321: far + mp≪0.15 must not stay leadOne."""
+  v_ego = 16.0
+  phantom = track(321, 99.3, y_rel=0.86, v_rel=-v_ego)
+  assert phantom.dRel > RAIN_FAR_HOLD_DREL_M
+  assert not rain_far_hold_ok(phantom, None, vision_prob=0.007)
+  assert pick_rain_radar_track(None, {321: phantom}, 321, v_ego, vision_prob=0.007) is None
+
+
+def test_far_associated_rain_lead_still_held():
+  """Original #201: 93.8 m path lead + confident vision flap still holds."""
+  t = track(806, 93.8, y_rel=0.0, v_rel=0.0)
+  assert rain_far_hold_ok(t, t, vision_prob=0.978)
+  assert pick_rain_radar_track(None, {806: t}, 806, vision_prob=0.978) is t
+  # Live association at 100 m (on-path STAT / distant car) is not "absurd".
+  far = track(11, 100.0, y_rel=0.2, v_rel=-0.3)
+  assert pick_rain_radar_track(far, {11: far}, None, vision_prob=0.70) is far
 
 
 def test_oncoming_rejected_even_when_yrel_is_inside_gate():

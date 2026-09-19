@@ -512,6 +512,41 @@ def test_curve_outside_sign_does_not_become_oncoming_lead():
   assert lead.radarTrackId == 11
 
 
+def test_2059_large_oncoming_truck_does_not_become_lead():
+  """~20:59 CT after clean 20:58: large oncoming truck must not be leadOne."""
+  v_ego = 20.0
+  truck = (771, 45.0, 2.23, -(v_ego + 21.9))
+  for raining in (False, True):
+    scenario = RadarScenario(v_ego=v_ego)
+    scenario.set_rain_hold(raining)
+    lead = scenario.step(1.0, vision_d_rel=45.0, radar_points=[truck],
+                         vision_prob=0.10, vision_v=-(v_ego + 21.9))
+    assert not lead.radar, f"rain={raining} latched 20:59 oncoming truck"
+    assert not lead.status, f"rain={raining} published 20:59 truck as leadOne"
+
+
+def test_far_low_prob_incumbent_does_not_hold_for_regen():
+  """Second 20:59 slam: far + mp≪0.15 must not stay a rain-hold lead.
+
+  A 99 m STAT may associate while vision is confident, then rain must drop
+  it when modelProb collapses — not keep regen on furniture / too-distant.
+  Contrast: 93.8 m + mp 0.978 through a range flap still holds (#201).
+  """
+  v_ego = 16.0
+  scenario = RadarScenario(v_ego=v_ego)
+  scenario.set_rain_hold(True)
+  pts = [(321, 99.3, 0.86, -v_ego)]
+  lead = scenario.step(1.0, vision_d_rel=99.3, radar_points=pts,
+                       vision_prob=0.90, vision_v=0.0)
+  assert lead.radar
+  assert lead.radarTrackId == 321
+
+  lead = scenario.step(1.1, vision_d_rel=99.3, radar_points=pts,
+                       vision_prob=0.007, vision_v=0.0)
+  assert not lead.radar
+  assert not lead.status
+
+
 def test_ep2059_near_edge_oncoming_semi_does_not_become_lead():
   """20:59/21:00: yRel +2.23 inside old 2.5 m + oncoming vLead → no leadOne.
 
