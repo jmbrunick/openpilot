@@ -207,6 +207,52 @@ def test_pick_does_not_latch_roundabout_entrant_off_exit_path():
   assert pick_rain_radar_track(None, {22: entrant}, 22, v_ego, path[0], path[1]) is None
 
 
+def test_ep2059_near_edge_oncoming_not_latched():
+  """20:59:33 track 771 / 21:00:12 track 802 — inside old 2.5 m, oncoming."""
+  v_ego = 20.0  # ~45 mph arterial
+  # 771: yRel +2.23→+3.98, vLead −49 mph ≈ −21.9 m/s
+  t771 = track(771, 45.0, y_rel=2.23, v_rel=-(v_ego + 21.9))
+  # 802: yRel +2.23→+2.48 (0.02–0.27 m inside old 2.5), vLead −42 mph
+  t802 = track(802, 40.0, y_rel=2.23, v_rel=-(v_ego + 18.8))
+  t802_edge = track(802, 40.0, y_rel=2.48, v_rel=-(v_ego + 18.8))
+  for t in (t771, t802, t802_edge):
+    assert not radar_hold_kinematics_ok(t, v_ego=v_ego)
+    assert pick_rain_radar_track(t, {t.identifier: t}, None, v_ego) is None
+    assert pick_rain_radar_track(None, {t.identifier: t}, t.identifier, v_ego) is None
+
+
+def test_ep2059_mid_lane_opposing_never_acquired():
+  """21:02 / 21:03: opposing outside 2.5 m — leadOne stayed None. Keep that."""
+  v_ego = 20.0
+  mid = track(900, 50.0, y_rel=3.2, v_rel=-(v_ego + 20.0))
+  assert pick_rain_radar_track(None, {900: mid}, None, v_ego) is None
+  assert pick_rain_radar_track(None, {900: mid}, 900, v_ego) is None
+  assert pick_rain_radar_track(mid, {900: mid}, None, v_ego) is None
+
+
+def test_ep2059_far_stat_phantom_not_acquired():
+  """20:59:40 far STAT 84–123 m. Rain must not FOV-latch low-prob furniture."""
+  v_ego = 20.0
+  far = track(840, 100.0, y_rel=0.8, v_rel=-v_ego)
+  assert pick_rain_radar_track(None, {840: far}, None, v_ego) is None
+
+
+def test_oncoming_rejected_even_when_yrel_is_inside_gate():
+  """Size / near-center radar return must not override vLead oncoming reject."""
+  v_ego = 20.0
+  semi = track(802, 35.0, y_rel=1.0, v_rel=-(v_ego + 18.8))
+  assert not radar_hold_kinematics_ok(semi, v_ego=v_ego)
+  assert pick_rain_radar_track(semi, {802: semi}, None, v_ego) is None
+
+
+def test_associated_lead_at_1_7m_still_held():
+  """Don't over-tighten path-valid associations (1.5 would have dropped this)."""
+  v_ego = 20.0
+  t = track(11, 40.0, y_rel=1.7, v_rel=-0.5)
+  assert radar_hold_kinematics_ok(t, v_ego=v_ego)
+  assert pick_rain_radar_track(t, {11: t}, None, v_ego) is t
+
+
 def test_pick_does_not_latch_outside_curve_sign():
   """~20:55 CT: rain must not hold a two-lane-outside static / bogus-oncoming sign."""
   v_ego = 16.0

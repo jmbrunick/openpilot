@@ -129,6 +129,17 @@ def test_curve_outside_sign_is_not_an_oncoming_lead():
   assert radar_follow_ok(on_curve, v_ego, path_x, path_y)
 
 
+def test_ep2059_near_edge_oncoming_fails_follow_ok():
+  """yRel +2.23 is inside old 2.5 m; vLead oncoming + 2.0 m gate must drop it."""
+  v_ego = 20.0
+  near = radar(d_rel=40.0, y_rel=2.23, v_rel=-(v_ego + 18.8))
+  mid = radar(d_rel=50.0, y_rel=3.2, v_rel=-(v_ego + 20.0))
+  assert track_is_oncoming(near, v_ego)
+  assert not radar_follow_ok(near, v_ego)
+  assert not radar_follow_ok(near, v_ego, max_lat=PATH_INCUMBENT_HALF_WIDTH_M)
+  assert not radar_follow_ok(mid, v_ego)
+
+
 def test_vision_lead_rejects_oncoming_and_far_lateral():
   oncoming = SimpleNamespace(x=[40.0], y=[0.0], v=[ONCOMING_VLEAD_MS - 1.0])
   assert not vision_lead_follow_ok(oncoming, v_ego=20.0)

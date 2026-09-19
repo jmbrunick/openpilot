@@ -44,7 +44,9 @@ RAIN_RADAR_LOST_HOLD_FRAMES = 8
 # Vision-only bar while rain-sensing is On. Secondary — dig flaps were already ≥ 0.9.
 RAIN_VISION_ONLY_MIN_PROB = 0.90
 # Path / oncoming gates. e1 #201 used 2.5 / 4.0 yRel and no vLead / path
-# check — LEFT STAT signs at +2.2…+3.9 m became leadOne.
+# check — LEFT STAT at +2.2…+3.9 m and EP_2059 near-edge opposing at
+# +2.23…+2.48 became leadOne. Associated / incumbent use 2.0 m (Justin
+# 2.5→~2.0). Unassociated closest-in-lane is not acquired.
 RAIN_MIN_DREL_M = MIN_DREL_M
 RAIN_INLANE_YREL_M = PATH_HALF_WIDTH_M
 RAIN_INCUMBENT_MAX_YREL_M = PATH_INCUMBENT_HALF_WIDTH_M
@@ -147,8 +149,10 @@ def pick_rain_radar_track(associated: Any | None, tracks: dict[int, Any],
   if incumbent is not None and not radar_hold_kinematics_ok(
       incumbent, RAIN_INCUMBENT_MAX_YREL_M, v_ego, path_x, path_y):
     incumbent = None
+  # Vision already path-nominated this track. Use the incumbent width so a
+  # 1.6–2.0 m associated lead is not dropped; oncoming / off-path still fail.
   if associated is not None and not radar_hold_kinematics_ok(
-      associated, RAIN_INLANE_YREL_M, v_ego, path_x, path_y):
+      associated, RAIN_INCUMBENT_MAX_YREL_M, v_ego, path_x, path_y):
     associated = None
 
   if associated is not None and incumbent is not None:

@@ -435,6 +435,9 @@ def test_e1_episodes_do_not_latch_off_path_or_oncoming():
     ("20:53:45", 573, 40.0,  3.73, -12.0,         0.04),   # Ep D roundabout LEFT
     ("20:54:53", 641, 50.0,  3.9,  -24.6,         0.022),  # Ep E curve-outside STAT
     ("20:45:47", 101, 55.0,  2.0,  -(16.0 + 5.5), 0.10),   # oncoming vLead≈−5.5
+    ("20:59:33", 771, 45.0,  2.23, -(16.0 + 21.9), 0.05),  # EP_2059 near-edge
+    ("21:00:12", 802, 40.0,  2.23, -(16.0 + 18.8), 0.04),  # EP_2059 semi
+    ("20:59:40", 840, 100.0, 0.80, -16.0,          0.01),  # far STAT phantom
   )
   for label, tid, d_rel, y_rel, v_rel, mp in cases:
     scenario = RadarScenario(v_ego=16.0)
@@ -480,3 +483,36 @@ def test_curve_outside_sign_does_not_become_oncoming_lead():
                        vision_y=path_at, path_x=path_x, path_y=path_y)
   assert lead.radar
   assert lead.radarTrackId == 11
+
+
+def test_ep2059_near_edge_oncoming_semi_does_not_become_lead():
+  """20:59/21:00: yRel +2.23 inside old 2.5 m + oncoming vLead → no leadOne.
+
+  21:02/21:03 mid-lane opposing (|yRel| > 2.5) stays leadOne=None.
+  Oncoming reject is follow-lead only — it does not invent a new brake.
+  """
+  v_ego = 20.0
+  near = (802, 40.0, 2.23, -(v_ego + 18.8))
+  mid = (900, 50.0, 3.2, -(v_ego + 20.0))
+  for raining, pts in ((True, [near]), (True, [mid]), (False, [near])):
+    scenario = RadarScenario(v_ego=v_ego)
+    scenario.set_rain_hold(raining)
+    lead = scenario.step(1.0, vision_d_rel=pts[0][1], radar_points=pts,
+                         vision_prob=0.40, vision_v=-(v_ego + 18.8))
+    assert not lead.radar, f"rain={raining} pts={pts[0][0]} latched oncoming"
+    assert not lead.status, f"rain={raining} pts={pts[0][0]} published leadOne"
+
+
+def test_left_turn_straight_ahead_sign_off_path_not_lead():
+  """~21:07 CT: sign dead ahead in radar (yRel≈0) but model path is turning left."""
+  path_x = [0.0, 15.0, 30.0, 50.0]
+  path_y = [0.0, 1.8, 4.0, 6.5]
+  v_ego = 12.0
+  sign = (55, 28.48, 0.0, -v_ego)
+  for raining in (False, True):
+    scenario = RadarScenario(v_ego=v_ego)
+    scenario.set_rain_hold(raining)
+    lead = scenario.step(1.0, vision_d_rel=28.48, radar_points=[sign],
+                         vision_prob=0.40, path_x=path_x, path_y=path_y)
+    assert not lead.radar, f"rain={raining} latched off-path ahead sign"
+    assert not lead.status, f"rain={raining} followed off-path ahead sign"

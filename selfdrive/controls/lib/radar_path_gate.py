@@ -24,14 +24,18 @@ from typing import Any, Sequence
 # of the camera / model origin. Keep in sync with radard.RADAR_TO_CAMERA.
 RADAR_TO_CAMERA_M = 1.52
 
-# e1 qlog (1c95345a3286a5db|000000e1--b993674371): #201's 2.5 / 4.0 yRel
-# windows held LEFT STAT signs at +2.2…+3.9 m. Acquire 1.5 m / incumbent
-# 2.0 m (dig recommendation). Path-relative when modelV2.position exists.
+# e1: #201's 2.5 / 4.0 yRel windows held LEFT STAT at +2.2…+3.9 m.
+# EP_2059: near-edge opposing 771/802 sat at yRel +2.23…+2.48 (inside 2.5)
+# with vLead −49 / −42 mph. Justin: pull the in-lane perimeter to ~2.0 m
+# and reject vLead < 0. Mid-lane opposing (21:02/21:03, |yRel| > 2.5)
+# never became leadOne — keep that. Path-relative when modelV2 exists.
 PATH_HALF_WIDTH_M = 1.5
 PATH_INCUMBENT_HALF_WIDTH_M = 2.0
 
 # Absolute speed toward ego. Stopped: vLead ≈ 0. Oncoming: vLead < 0
-# (vRel ≈ −(v_ego + v_them)). e1 track 101 was vLead ≈ −5…−6. Ignore at crawl.
+# (vRel ≈ −(v_ego + v_them)). e1 track 101 vLead ≈ −5…−6; EP_2059
+# 771/802 ≈ −22 / −19 m/s. Floor −1 m/s so stationary noise is not
+# oncoming. Do not publish oncoming as a follow lead (any size).
 ONCOMING_VLEAD_MS = -1.0
 ONCOMING_MIN_VEGO_MS = 2.0
 
