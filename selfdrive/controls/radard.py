@@ -11,6 +11,12 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL, Priority, config_realtime_process
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.simple_kalman import KF1D
+from openpilot.selfdrive.controls.lib.rain_radar_hold import (
+  RAIN_RADAR_LOST_HOLD_FRAMES,
+  RAIN_VISION_ONLY_MIN_PROB,
+  RainRadarGate,
+  pick_rain_radar_track,
+)
 
 
 # Default lead acceleration decay set to 50% at 1s
@@ -202,18 +208,38 @@ class LeadTrackAssociation:
   def __init__(self, low_speed_override: bool):
     self.low_speed_override = low_speed_override
     self.incumbent_track_id: int | None = None
+    self._rain_lost_frames = 0
+    self._held_radar_lead: dict[str, Any] | None = None
 
   def update(self, v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capnp._DynamicStructReader,
-             model_v_ego: float) -> dict[str, Any]:
+             model_v_ego: float, rain_hold: bool = False) -> dict[str, Any]:
     if tracks and ready and lead_msg.prob > .5:
       track = match_vision_to_track(v_ego, lead_msg, tracks, self.incumbent_track_id)
     else:
       track = None
 
+    if rain_hold:
+      track = pick_rain_radar_track(track, tracks, self.incumbent_track_id)
+      if track is not None:
+        self._rain_lost_frames = 0
+      elif self._held_radar_lead is not None:
+        self._rain_lost_frames += 1
+      else:
+        self._rain_lost_frames = 0
+    else:
+      self._rain_lost_frames = 0
+      self._held_radar_lead = None
+
+    vision_prob_min = RAIN_VISION_ONLY_MIN_PROB if rain_hold else .5
+
     lead_dict = {'status': False}
     if track is not None:
       lead_dict = track.get_RadarState(lead_msg.prob)
-    elif ready and lead_msg.prob > .5:
+    elif (rain_hold and self._held_radar_lead is not None and
+          self._rain_lost_frames <= RAIN_RADAR_LOST_HOLD_FRAMES):
+      lead_dict = dict(self._held_radar_lead)
+      lead_dict["modelProb"] = float(lead_msg.prob)
+    elif ready and lead_msg.prob > vision_prob_min:
       lead_dict = get_RadarState_from_vision(lead_msg, v_ego, model_v_ego)
 
     if self.low_speed_override:
@@ -223,12 +249,16 @@ class LeadTrackAssociation:
         if (not lead_dict['status']) or (closest_track.dRel < lead_dict['dRel']):
           lead_dict = closest_track.get_RadarState()
 
-    self.incumbent_track_id = lead_dict['radarTrackId'] if lead_dict.get('radar', False) else None
+    if lead_dict.get('radar', False):
+      self.incumbent_track_id = lead_dict['radarTrackId']
+      self._held_radar_lead = dict(lead_dict)
+    else:
+      self.incumbent_track_id = None
     return lead_dict
 
 
 class RadarD:
-  def __init__(self, delay: float = 0.0):
+  def __init__(self, delay: float = 0.0, rain_gate: RainRadarGate | None = None):
     self.current_time = 0.0
 
     self.tracks: dict[int, Track] = {}
@@ -245,6 +275,7 @@ class RadarD:
     self.ready = False
     self.lead_one_association = LeadTrackAssociation(low_speed_override=True)
     self.lead_two_association = LeadTrackAssociation(low_speed_override=False)
+    self.rain_gate = rain_gate if rain_gate is not None else RainRadarGate()
 
   def update(self, sm: messaging.SubMaster, rr: car.RadarData):
     self.ready = sm.seen['modelV2']
@@ -300,9 +331,12 @@ class RadarD:
     else:
       model_v_ego = self.v_ego
     leads_v3 = sm['modelV2'].leadsV3
+    rain_hold = bool(self.rain_gate.update())
     if len(leads_v3) > 1:
-      self.radar_state.leadOne = self.lead_one_association.update(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego)
-      self.radar_state.leadTwo = self.lead_two_association.update(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego)
+      self.radar_state.leadOne = self.lead_one_association.update(
+        self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, rain_hold=rain_hold)
+      self.radar_state.leadTwo = self.lead_two_association.update(
+        self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, rain_hold=rain_hold)
 
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None

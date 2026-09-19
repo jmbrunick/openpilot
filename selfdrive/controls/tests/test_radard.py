@@ -16,8 +16,8 @@ class RadarScenario:
     self.frame = 0
 
   def step(self, time_s: float, vision_d_rel: float, radar_points: list[tuple[int, float, float, float]] | None = None,
-           vision_v: float | None = None):
-    messages = [self._model_message(time_s, vision_d_rel, vision_v)]
+           vision_v: float | None = None, vision_prob: float | None = None):
+    messages = [self._model_message(time_s, vision_d_rel, vision_v, vision_prob)]
     if self.frame == 0:
       messages.append(self._car_state_message(time_s))
     if radar_points is not None:
@@ -28,13 +28,16 @@ class RadarScenario:
     self.frame += 1
     return self.radar.radar_state.leadOne
 
-  def _model_message(self, time_s: float, vision_d_rel: float, vision_v: float | None):
+  def set_rain_hold(self, raining: bool | None):
+    self.radar.rain_gate.set_override(raining)
+
+  def _model_message(self, time_s: float, vision_d_rel: float, vision_v: float | None, vision_prob: float | None):
     message = messaging.new_message("modelV2")
     message.logMonoTime = int(time_s * 1e9)
     message.modelV2.velocity.x = [self.v_ego]
     leads = message.modelV2.init("leadsV3", 2)
     for lead in leads:
-      lead.prob = 0.9
+      lead.prob = 0.9 if vision_prob is None else vision_prob
       lead.x = [vision_d_rel + RADAR_TO_CAMERA]
       lead.xStd = [3.0]
       lead.y = [0.0]
@@ -138,3 +141,101 @@ def test_kalman_uses_observed_radar_interval():
   scenario.step(1.08, vision_d_rel=30.0, radar_points=[(7, 30.0, 0.0, 0.0)])
 
   assert scenario.radar.tracks[7].K_A[0][1] == pytest.approx(0.08)
+
+
+# Evening rain dig (1c95345a3286a5db|000000df--467073c363, 19:39:05 CT):
+# radar track 806 at 93.8 m, vision jumps to 61.6 m with modelProb 0.978.
+DIG_RADAR_ID = 806
+DIG_RADAR_DREL = 93.8
+DIG_VISION_WRONG_DREL = 61.6
+DIG_VISION_PROB = 0.978
+
+
+def _dig_radar_point(d_rel: float = DIG_RADAR_DREL):
+  return (DIG_RADAR_ID, d_rel, 0.0, 0.0)
+
+
+def test_dry_vision_confident_wrong_range_still_drops_to_vision():
+  """Off rain gate: existing fusion. High modelProb does not keep a mismatched radar track."""
+  scenario = RadarScenario()
+  scenario.set_rain_hold(False)
+  lead = scenario.step(1.0, vision_d_rel=DIG_RADAR_DREL, radar_points=[_dig_radar_point()],
+                       vision_prob=DIG_VISION_PROB)
+  assert lead.radar
+  assert lead.radarTrackId == DIG_RADAR_ID
+
+  lead = scenario.step(1.1, vision_d_rel=DIG_VISION_WRONG_DREL, radar_points=[_dig_radar_point()],
+                       vision_prob=DIG_VISION_PROB)
+  assert not lead.radar
+  assert lead.dRel == pytest.approx(DIG_VISION_WRONG_DREL)
+  assert lead.modelProb == pytest.approx(DIG_VISION_PROB)
+
+
+def test_rain_holds_radar_through_vision_confident_wrong_range():
+  """On rain gate: keep track 806 through the dig's −32 m vision jump at modelProb 0.978."""
+  scenario = RadarScenario()
+  scenario.set_rain_hold(True)
+  lead = scenario.step(1.0, vision_d_rel=DIG_RADAR_DREL, radar_points=[_dig_radar_point()],
+                       vision_prob=DIG_VISION_PROB)
+  assert lead.radar
+  assert lead.radarTrackId == DIG_RADAR_ID
+
+  for frame, vision_d_rel in enumerate((61.6, 89.0, 65.5, 68.3, 49.4), start=1):
+    lead = scenario.step(1.0 + frame * 0.05, vision_d_rel=vision_d_rel,
+                         radar_points=[_dig_radar_point()], vision_prob=DIG_VISION_PROB)
+    assert lead.radar, f"frame {frame} dropped radar at vision {vision_d_rel}"
+    assert lead.radarTrackId == DIG_RADAR_ID
+    assert lead.dRel == pytest.approx(DIG_RADAR_DREL)
+
+
+def test_rain_raises_vision_only_modelprob_bar():
+  scenario = RadarScenario()
+  scenario.set_rain_hold(True)
+  lead = scenario.step(1.0, vision_d_rel=40.0, vision_prob=0.60)
+  assert not lead.status
+
+  lead = scenario.step(1.05, vision_d_rel=40.0, vision_prob=0.91)
+  assert lead.status
+  assert not lead.radar
+  assert lead.dRel == pytest.approx(40.0)
+
+
+def test_dry_vision_only_modelprob_bar_unchanged():
+  scenario = RadarScenario()
+  scenario.set_rain_hold(False)
+  lead = scenario.step(1.0, vision_d_rel=40.0, vision_prob=0.60)
+  assert lead.status
+  assert not lead.radar
+  assert lead.dRel == pytest.approx(40.0)
+
+
+def test_rain_hold_survives_many_mismatch_frames_while_radar_lives():
+  scenario = RadarScenario()
+  scenario.set_rain_hold(True)
+  scenario.step(1.0, vision_d_rel=DIG_RADAR_DREL, radar_points=[_dig_radar_point()],
+                vision_prob=DIG_VISION_PROB)
+  for frame in range(1, 21):
+    lead = scenario.step(1.0 + frame * 0.05, vision_d_rel=DIG_VISION_WRONG_DREL,
+                         radar_points=[_dig_radar_point()], vision_prob=DIG_VISION_PROB)
+    assert lead.radarTrackId == DIG_RADAR_ID
+    assert lead.dRel == pytest.approx(DIG_RADAR_DREL)
+
+
+def test_rain_holds_cached_radar_then_allows_vision_after_track_lost():
+  from openpilot.selfdrive.controls.lib.rain_radar_hold import RAIN_RADAR_LOST_HOLD_FRAMES
+
+  scenario = RadarScenario()
+  scenario.set_rain_hold(True)
+  lead = scenario.step(1.0, vision_d_rel=30.0, radar_points=[(7, 30.0, 0.0, 0.0)])
+  assert lead.radarTrackId == 7
+
+  for frame in range(1, RAIN_RADAR_LOST_HOLD_FRAMES + 1):
+    lead = scenario.step(1.0 + frame * 0.05, vision_d_rel=36.0, radar_points=[], vision_prob=0.95)
+    assert lead.radar, f"lost-hold dropped at frame {frame}"
+    assert lead.radarTrackId == 7
+    assert lead.dRel == pytest.approx(30.0)
+
+  lead = scenario.step(1.0 + (RAIN_RADAR_LOST_HOLD_FRAMES + 1) * 0.05, vision_d_rel=36.0,
+                       radar_points=[], vision_prob=0.95)
+  assert not lead.radar
+  assert lead.dRel == pytest.approx(36.0)
