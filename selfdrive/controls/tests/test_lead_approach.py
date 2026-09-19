@@ -744,6 +744,7 @@ def test_planner_wires_hysteresis_and_slew():
   assert "update_lead_glide(" in planner
   assert "apply_lead_glide_a(" in planner
   assert "slew_near_gap_small_a(" in planner
+  assert "apply_matched_inside_fd_a" not in planner
   assert "prev_floored=self._lead_soft_limit_floored" in planner
   assert "v_cruise=v_hud_ms" in planner
   assert "allow_rapid=allow_rapid" in planner
@@ -1425,7 +1426,9 @@ def test_matched_speed_glide_deadbands_chatter_with_hysteresis():
   Acquire / far catch-up / rapid / bumper stay out of the deadband.
   """
   assert lead_is_glide_sample(0.2, 3.0)
-  assert lead_is_glide_sample(-0.3, -8.0)
+  # Already inside FD is a too-close recovery — rematch +a / mild −a stand.
+  assert not lead_is_glide_sample(-0.3, -8.0)
+  assert not lead_is_glide_sample(0.2, -8.0)
   assert not lead_is_glide_sample(0.2, 20.0)
   assert not lead_is_glide_sample(0.8, 3.0)
   assert not lead_is_glide_sample(0.2, None)
@@ -1436,6 +1439,7 @@ def test_matched_speed_glide_deadbands_chatter_with_hysteresis():
   assert update_lead_glide(True, 0.55, 3.0) is True
   assert update_lead_glide(True, 0.75, 3.0) is False
   assert update_lead_glide(True, 0.2, 16.0) is False
+  assert update_lead_glide(True, 0.2, -2.0) is False
   # First-latch / danger never glide.
   assert update_lead_glide(False, 0.2, 3.0, acquiring=True) is False
   assert update_lead_glide(False, 0.2, 3.0, fcw=True) is False
@@ -1448,6 +1452,9 @@ def test_matched_speed_glide_deadbands_chatter_with_hysteresis():
   assert apply_lead_glide_a(LEAD_CLOSE_OPENING_A_MS2, True) == pytest.approx(LEAD_GLIDE_A_MS2)
   assert apply_lead_glide_a(0.0, True) == pytest.approx(0.0)
   assert apply_lead_glide_a(-0.22, False) == pytest.approx(-0.22)
+  assert apply_lead_glide_a(LEAD_CLOSE_OPENING_A_MS2, False) == pytest.approx(
+    LEAD_CLOSE_OPENING_A_MS2
+  )
   # Accel-ceil grade hold and MPC dump sit outside the chatter band.
   assert apply_lead_glide_a(0.32, True) == pytest.approx(0.32)
   assert apply_lead_glide_a(-2.0, True) == pytest.approx(-2.0)

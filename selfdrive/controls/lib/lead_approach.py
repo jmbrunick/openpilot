@@ -78,8 +78,9 @@ and yo-yoed ±a once speeds matched. Keep acquire slew and #216's
 MILD comfort floor. While still closing, aim a few meters long of
 the set gap so kinematics finish with leftover slack. Inside FD, a
 slow close commands that mild floor — not rematch +a, not a dump.
-When |v_rel| is small near the gap, glide: a≈0 deadband + hysteresis
-(EV slight lift only). Rapid / near-bumper / FCW still dump.
+When |v_rel| is small at/long of the gap, glide: a≈0 deadband +
+hysteresis (EV slight lift only). Already inside FD is a too-close
+recovery — rematch +a and mild −a stand. Rapid / bumper / FCW dump.
 """
 from __future__ import annotations
 
@@ -281,17 +282,17 @@ def lead_inside_slow_close_a_ms2(v_rel, slack):
 
 
 def lead_is_glide_sample(v_rel, slack) -> bool:
-  """True when speeds match near (or inside) Follow Distance.
+  """True when speeds match at/long of Follow Distance, still near the gap.
 
-  Far same-speed catch-up (slack long of the gap) is not a glide.
-  Deep inside FD with |v_rel| small still glides so leftover mild −a
-  cannot keep chewing the gap.
+  Far same-speed catch-up (slack long of the gap) is Accel-owned.
+  Already inside FD is a too-close recovery — rematch +a must stand.
   """
   if v_rel is None or slack is None:
     return False
   if abs(float(v_rel)) >= LEAD_GLIDE_VREL_MS:
     return False
-  if float(slack) > LEAD_GLIDE_SLACK_M:
+  s = float(slack)
+  if s < 0.0 or s > LEAD_GLIDE_SLACK_M:
     return False
   return True
 
@@ -312,7 +313,7 @@ def update_lead_glide(active, v_rel, slack, d_rel=None, fcw=False,
       return False
     if abs(float(v_rel)) >= LEAD_GLIDE_VREL_OFF_MS:
       return False
-    if float(slack) > LEAD_GLIDE_SLACK_OFF_M:
+    if float(slack) < 0.0 or float(slack) > LEAD_GLIDE_SLACK_OFF_M:
       return False
     return True
   return lead_is_glide_sample(v_rel, slack)
