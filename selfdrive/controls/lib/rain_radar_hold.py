@@ -16,10 +16,12 @@ Int / On leave stock fusion unchanged. Do not require rain=1.
 
 This is not “prefer any Bosch track in a wide FOV.” Radar used for long
 must sit on the same model driving path vision uses for lead-in-path
-(`modelV2.position`). Rain-hold only latches a track that is (or was)
-associated to that path and still passes the path / oncoming gates.
-Do not acquire an unassociated closest-in-lane radar (left signs,
-oncoming) as leadOne.
+(`modelV2.position`). Filter is path of travel:
+  on path + stationary → KEEP (stopped lead / pedestrian)
+  off path + stationary → REJECT (signs, gas station)
+  oncoming / opposing → REJECT
+yRel 2.5→2.0 is secondary, not a substitute for path association.
+Do not blanket-reject vLead≈0.
 
 Gate (live Params):
   radar_prefer = NAPWiperSpeed == 3
@@ -32,7 +34,6 @@ from openpilot.selfdrive.controls.lib.radar_path_gate import (
   MIN_DREL_M,
   PATH_INCUMBENT_HALF_WIDTH_M,
   radar_follow_ok,
-  track_v_lead,
 )
 
 # Keep in sync with preap_body_controls. 3 is Auto / rain-sensing On.
@@ -58,11 +59,9 @@ RAIN_CUT_IN_GAP_M = 8.0
 # rain dig: track 806 at 93.8 m + modelProb 0.978 still holds.
 RAIN_FAR_HOLD_DREL_M = 70.0
 RAIN_FAR_HOLD_MIN_PROB = 0.50
-# EP_2106: unassociated STAT + mp 0.001–0.017 became leadOne (872/905/925/940).
-# Reject that rain-prefer latch. Do NOT blanket-reject on-path stopped
-# cars / pedestrians — live path association keeps them.
-RAIN_STAT_HOLD_MIN_PROB = 0.30
-RAIN_STATIONARY_VLEAD_MS = 1.0
+# Path of travel is the filter. On-path stationary (stopped car /
+# pedestrian) is KEEP. Off-path STAT (signs, gas station) fails the
+# path gate. Do not blanket-reject vLead≈0.
 
 
 def _decode_param(val: Any) -> Any:
@@ -185,30 +184,6 @@ def rain_far_hold_ok(track: Any, associated: Any | None = None,
   return True
 
 
-def rain_stat_hold_ok(track: Any, associated: Any | None = None,
-                      vision_prob: float = 1.0, v_ego: float = 0.0) -> bool:
-  """Unassociated stationary + low modelProb is furniture, not a rain lead.
-
-  On-path stopped vehicles stay valid when vision-associated.
-  """
-  if track is None:
-    return False
-  if _track_id(associated) is not None and _track_id(associated) == _track_id(track):
-    return True
-  try:
-    prob = float(vision_prob)
-  except (TypeError, ValueError):
-    prob = 0.0
-  if prob >= RAIN_STAT_HOLD_MIN_PROB:
-    return True
-  v_lead = track_v_lead(track, v_ego)
-  if v_lead is None:
-    return True
-  if abs(v_lead) < RAIN_STATIONARY_VLEAD_MS:
-    return False
-  return True
-
-
 def closest_inlane_radar(tracks: dict[int, Any], v_ego: float = 0.0,
                          path_x: Sequence[float] | None = None,
                          path_y: Sequence[float] | None = None) -> Any | None:
@@ -254,7 +229,5 @@ def pick_rain_radar_track(associated: Any | None, tracks: dict[int, Any],
   else:
     chosen = incumbent
   if chosen is not None and not rain_far_hold_ok(chosen, associated, vision_prob):
-    return None
-  if chosen is not None and not rain_stat_hold_ok(chosen, associated, vision_prob, v_ego):
     return None
   return chosen

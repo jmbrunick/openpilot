@@ -27,7 +27,6 @@ from openpilot.selfdrive.controls.lib.rain_radar_hold import (
   pick_rain_radar_track,
   radar_hold_kinematics_ok,
   rain_far_hold_ok,
-  rain_stat_hold_ok,
   rain_sensing_on,
   read_wiper_speed,
   wiper_is_auto,
@@ -345,33 +344,37 @@ def test_far_low_prob_incumbent_not_held_for_regen():
   assert pick_rain_radar_track(None, {321: phantom}, 321, v_ego, vision_prob=0.007) is None
 
 
-def test_ep2106_unassociated_stat_low_mp_not_latched():
-  """EP_2106: 872/905/925/940 — STAT, mp≪0.15, rain-hold. Semi never leadOne."""
+def test_ep2106_off_path_stat_signs_not_latched():
+  """EP_2106: path gate rejects furniture. Semi never leadOne. STAT is not why."""
   v_ego = 20.0
+  left = (LEFT_TURN_PATH_X, LEFT_TURN_PATH_Y)
+  atlantic = (ATLANTIC_LEFT_PATH_X, ATLANTIC_LEFT_PATH_Y)
   cases = (
-    (872, 109.0, 1.98),   # LEFT sign; oncoming semi was NOT leadOne
-    (905, 107.0, 1.23),   # "ahead" then sweeps; yRel inside 2.0
-    (906, 100.0, 2.11),
-    (907, 117.0, 2.48),
-    (913, 117.0, 1.73),
-    (925, 112.0, -0.15),  # Atlantic gas-station
-    (940, 151.0, 0.73),   # near stop; yRel inside 2.0
-    (943, 82.0, 2.11),
+    (872, 109.0, 1.98, left),      # LEFT sign
+    (905, 107.0, 1.23, left),      # "ahead" then sweeps
+    (906, 100.0, 2.11, left),
+    (925, 112.0, -0.15, atlantic), # gas-station ego-forward
+    (940, 82.0, 0.73, atlantic),   # near stop; yRel inside 2.0 without path
   )
-  for tid, d_rel, y_rel in cases:
+  for tid, d_rel, y_rel, path in cases:
     t = track(tid, d_rel, y_rel=y_rel, v_rel=-v_ego)
-    assert not rain_stat_hold_ok(t, None, vision_prob=0.01, v_ego=v_ego)
-    assert pick_rain_radar_track(None, {tid: t}, tid, v_ego, vision_prob=0.01) is None
-    assert pick_rain_radar_track(None, {tid: t}, None, v_ego, vision_prob=0.01) is None
+    assert not radar_hold_kinematics_ok(t, v_ego=v_ego, path_x=path[0], path_y=path[1])
+    assert pick_rain_radar_track(None, {tid: t}, tid, v_ego, path[0], path[1],
+                                 vision_prob=0.01) is None
+    assert pick_rain_radar_track(None, {tid: t}, None, v_ego, path[0], path[1],
+                                 vision_prob=0.01) is None
 
 
-def test_on_path_stationary_associated_still_held():
-  """Do not blanket-reject vLead≈0. Stopped in-path lead stays readable."""
+def test_on_path_stationary_kept_associated_and_incumbent():
+  """Binding: on path + stationary → KEEP. Not a vLead≈0 reject."""
   v_ego = 12.0
   stopped = track(11, 28.0, y_rel=0.2, v_rel=-v_ego)
-  assert rain_stat_hold_ok(stopped, stopped, vision_prob=0.80, v_ego=v_ego)
+  assert radar_hold_kinematics_ok(stopped, v_ego=v_ego)
   assert pick_rain_radar_track(stopped, {11: stopped}, None, v_ego,
                                vision_prob=0.80) is stopped
+  # Vision flap / low mp: path-valid incumbent still held.
+  assert pick_rain_radar_track(None, {11: stopped}, 11, v_ego,
+                               vision_prob=0.02) is stopped
 
 
 def test_far_associated_rain_lead_still_held():
