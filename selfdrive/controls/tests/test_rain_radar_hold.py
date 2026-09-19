@@ -158,7 +158,9 @@ def test_reliability_trips_on_fault_timeout_dropout_and_erratic():
   assert not rel.healthy
   assert rel.reason == "erratic"
 
+  # First clean frame after a jump is still a ΔyRel; then hold still.
   stable = track(7, 40.0, y_rel=0.2)
+  rel.update(tracks={7: stable}, v_ego=16.0)
   for _ in range(RELIABLE_OK_FRAMES):
     rel.update(tracks={7: stable}, v_ego=16.0)
   assert rel.healthy
