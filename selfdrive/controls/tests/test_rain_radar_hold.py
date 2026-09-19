@@ -2,10 +2,15 @@
 from types import SimpleNamespace
 
 from openpilot.selfdrive.controls.lib.radar_path_gate import (
+  CURVE_OUTSIDE_PATH_X,
+  CURVE_OUTSIDE_PATH_Y,
+  CURVE_OUTSIDE_TWO_LANES_M,
+  CURVE_OUTSIDE_X_M,
   RADAR_TO_CAMERA_M,
   ROUNDABOUT_EXIT_PATH_X,
   ROUNDABOUT_EXIT_PATH_Y,
   ROUNDABOUT_EXIT_X_M,
+  path_y_at_x,
 )
 from openpilot.selfdrive.controls.lib.rain_radar_hold import (
   RAIN_CUT_IN_GAP_M,
@@ -175,3 +180,20 @@ def test_pick_does_not_latch_roundabout_entrant_off_exit_path():
   assert not radar_hold_kinematics_ok(entrant, v_ego=v_ego, path_x=path[0], path_y=path[1])
   assert pick_rain_radar_track(entrant, {22: entrant}, None, v_ego, path[0], path[1]) is None
   assert pick_rain_radar_track(None, {22: entrant}, 22, v_ego, path[0], path[1]) is None
+
+
+def test_pick_does_not_latch_outside_curve_sign():
+  """~20:55 CT: rain must not hold a two-lane-outside static / bogus-oncoming sign."""
+  v_ego = 16.0
+  path_at = path_y_at_x(CURVE_OUTSIDE_PATH_X, CURVE_OUTSIDE_PATH_Y, CURVE_OUTSIDE_X_M)
+  y_rel = -(path_at - CURVE_OUTSIDE_TWO_LANES_M)
+  d_rel = CURVE_OUTSIDE_X_M - RADAR_TO_CAMERA_M
+  path = (CURVE_OUTSIDE_PATH_X, CURVE_OUTSIDE_PATH_Y)
+  stationary = track(33, d_rel, y_rel=y_rel, v_rel=-v_ego)
+  bogus = track(34, d_rel, y_rel=y_rel, v_rel=-(v_ego + 18.0))
+  for phantom in (stationary, bogus):
+    assert not radar_hold_kinematics_ok(phantom, v_ego=v_ego, path_x=path[0], path_y=path[1])
+    assert pick_rain_radar_track(phantom, {phantom.identifier: phantom}, None,
+                                 v_ego, path[0], path[1]) is None
+    assert pick_rain_radar_track(None, {phantom.identifier: phantom}, phantom.identifier,
+                                 v_ego, path[0], path[1]) is None

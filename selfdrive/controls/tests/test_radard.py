@@ -2,10 +2,15 @@ import pytest
 
 from cereal import messaging
 from openpilot.selfdrive.controls.lib.radar_path_gate import (
+  CURVE_OUTSIDE_PATH_X,
+  CURVE_OUTSIDE_PATH_Y,
+  CURVE_OUTSIDE_TWO_LANES_M,
+  CURVE_OUTSIDE_X_M,
   RADAR_TO_CAMERA_M,
   ROUNDABOUT_EXIT_PATH_X,
   ROUNDABOUT_EXIT_PATH_Y,
   ROUNDABOUT_EXIT_X_M,
+  path_y_at_x,
 )
 from openpilot.selfdrive.controls.radard import KalmanParams, RADAR_TO_CAMERA, RadarD, Track
 
@@ -412,5 +417,43 @@ def test_roundabout_right_exit_does_not_follow_entering_vehicle():
   # Vision flaps toward the entrant — rain must keep the exit-path association.
   lead = scenario.step(1.1, vision_d_rel=d_rel, radar_points=[on_exit, entrant],
                        vision_prob=0.97, vision_y=0.0, path_x=path_x, path_y=path_y)
+  assert lead.radar
+  assert lead.radarTrackId == 11
+
+
+def test_curve_outside_sign_does_not_become_oncoming_lead():
+  """~20:55 CT: sign on the outside of a left curve (~two lanes off path).
+
+  Static (vLead≈0) and bogus oncoming Doppler must not become leadOne.
+  A lead on the curve still associates.
+  """
+  path_x = list(CURVE_OUTSIDE_PATH_X)
+  path_y = list(CURVE_OUTSIDE_PATH_Y)
+  path_at = path_y_at_x(path_x, path_y, CURVE_OUTSIDE_X_M)
+  d_rel = CURVE_OUTSIDE_X_M - RADAR_TO_CAMERA_M
+  y_rel = -(path_at - CURVE_OUTSIDE_TWO_LANES_M)
+  v_ego = 16.0
+  stationary = (33, d_rel, y_rel, -v_ego)
+  bogus = (34, d_rel, y_rel, -(v_ego + 18.0))
+  on_curve = (11, d_rel, -path_at, -1.0)
+
+  for raining, pts, vision_v in (
+    (False, [stationary], 0.0),
+    (True, [stationary], 0.0),
+    (False, [bogus], -18.0),
+    (True, [bogus], -18.0),
+  ):
+    scenario = RadarScenario(v_ego=v_ego)
+    scenario.set_rain_hold(raining)
+    lead = scenario.step(1.0, vision_d_rel=d_rel, radar_points=pts,
+                         vision_prob=0.92, vision_v=vision_v, vision_y=-y_rel,
+                         path_x=path_x, path_y=path_y)
+    assert not lead.radar, f"rain={raining} latched outside-curve sign"
+    assert not lead.status, f"rain={raining} followed outside-curve sign"
+
+  scenario = RadarScenario(v_ego=v_ego)
+  scenario.set_rain_hold(True)
+  lead = scenario.step(1.0, vision_d_rel=d_rel, radar_points=[on_curve, stationary],
+                       vision_y=path_at, path_x=path_x, path_y=path_y)
   assert lead.radar
   assert lead.radarTrackId == 11

@@ -9,6 +9,10 @@ from openpilot.selfdrive.controls.lib.radar_path_gate import (
   ROUNDABOUT_EXIT_PATH_X,
   ROUNDABOUT_EXIT_PATH_Y,
   ROUNDABOUT_EXIT_X_M,
+  CURVE_OUTSIDE_PATH_X,
+  CURVE_OUTSIDE_PATH_Y,
+  CURVE_OUTSIDE_TWO_LANES_M,
+  CURVE_OUTSIDE_X_M,
   path_lateral_m,
   path_y_at_x,
   radar_follow_ok,
@@ -94,6 +98,35 @@ def test_roundabout_exit_rejects_entering_cross_traffic():
   on_exit = radar(d_rel=ROUNDABOUT_ENTRANT_DREL, y_rel=4.0, v_rel=-1.0)
   assert track_is_in_path(on_exit, path_x, path_y)
   assert radar_follow_ok(on_exit, v_ego=12.0, path_x=path_x, path_y=path_y)
+
+
+def test_curve_outside_sign_is_not_an_oncoming_lead():
+  """~20:55 CT: static sign ~two lanes outside a left curve.
+
+  Stationary (vLead≈0) is not oncoming. Bosch may also report a bogus
+  closing vRel — still reject. A real lead on the curve stays valid.
+  """
+  path_x, path_y = CURVE_OUTSIDE_PATH_X, CURVE_OUTSIDE_PATH_Y
+  path_at = path_y_at_x(path_x, path_y, CURVE_OUTSIDE_X_M)
+  assert abs(path_at - 4.0) < 1e-6
+  d_rel = CURVE_OUTSIDE_X_M - RADAR_TO_CAMERA_M
+  # device y = path − two lanes (outside / right of a left turn)
+  device_y = path_at - CURVE_OUTSIDE_TWO_LANES_M
+  y_rel = -device_y
+  v_ego = 16.0
+
+  stationary = radar(d_rel=d_rel, y_rel=y_rel, v_rel=-v_ego)
+  bogus_oncoming = radar(d_rel=d_rel, y_rel=y_rel, v_rel=-(v_ego + 18.0))
+  assert not track_is_oncoming(stationary, v_ego)
+  assert track_is_oncoming(bogus_oncoming, v_ego)
+  assert abs(abs(path_lateral_m(stationary, path_x, path_y)) - CURVE_OUTSIDE_TWO_LANES_M) < 1e-6
+  assert not track_is_in_path(stationary, path_x, path_y)
+  assert not radar_follow_ok(stationary, v_ego, path_x, path_y)
+  assert not radar_follow_ok(bogus_oncoming, v_ego, path_x, path_y)
+
+  on_curve = radar(d_rel=d_rel, y_rel=-path_at, v_rel=-1.0)
+  assert track_is_in_path(on_curve, path_x, path_y)
+  assert radar_follow_ok(on_curve, v_ego, path_x, path_y)
 
 
 def test_vision_lead_rejects_oncoming_and_far_lateral():

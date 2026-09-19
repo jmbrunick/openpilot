@@ -4,7 +4,9 @@ Intersection max-regen on Scallywag (Fri 2026-09-18 ~20:49–20:52 CT)
 came from Bosch tracks of left roadside signs and opposing-lane traffic
 becoming leadOne. A second episode ~20:54 CT: exiting a roundabout
 (planned path turning right to leave) max-regenned on a vehicle
-*entering* the circle — cross traffic off the exit path. Rain-hold
+*entering* the circle — cross traffic off the exit path. A third
+~20:55 CT: in a curve, a **sign on the outside of the turn** (~two
+lanes off path) was treated as an oncoming lead. Rain-hold
 (#201, NAPWiperSpeed==3) then kept those phantoms through vision mismatch.
 
 The driving path is `modelV2.position` — the same plan path the UI
@@ -45,6 +47,14 @@ MIN_DREL_M = 0.5
 ROUNDABOUT_EXIT_PATH_X = (0.0, 10.0, 20.0, 30.0, 50.0)
 ROUNDABOUT_EXIT_PATH_Y = (0.0, -0.8, -2.2, -4.0, -6.0)
 ROUNDABOUT_EXIT_X_M = 30.0
+
+# Synthesized Fri 2026-09-18 ~20:55 CT left-hand curve. Path at 45 m is
+# +4 m left. A roadside sign on the *outside* of the turn (~two 3.7 m
+# lanes) sits ~7.4 m to the right of that path (device y ≈ −3.4).
+CURVE_OUTSIDE_PATH_X = (0.0, 15.0, 30.0, 45.0, 70.0)
+CURVE_OUTSIDE_PATH_Y = (0.0, 1.2, 2.8, 4.0, 5.5)
+CURVE_OUTSIDE_X_M = 45.0
+CURVE_OUTSIDE_TWO_LANES_M = 7.4
 
 
 def _num(obj: Any, *names: str) -> float | None:
