@@ -29,8 +29,8 @@ def nap_wiper_status(*, rain=1, wipe=1, acq=1, score=5.03):
   )
 
 
-def track(identifier: int, d_rel: float, y_rel: float = 0.0):
-  return SimpleNamespace(identifier=identifier, dRel=d_rel, yRel=y_rel)
+def track(identifier: int, d_rel: float, y_rel: float = 0.0, v_rel: float = 0.0):
+  return SimpleNamespace(identifier=identifier, dRel=d_rel, yRel=y_rel, vRel=v_rel)
 
 
 def test_auto_is_rain_sensing_mode_not_weather():
@@ -114,3 +114,39 @@ def test_pick_drops_incumbent_that_left_the_path():
   assert not radar_hold_kinematics_ok(tracks[806])
   chosen = pick_rain_radar_track(None, tracks, incumbent_id=806)
   assert chosen is None
+
+
+def test_pick_drops_left_roadside_sign_old_yrel_window():
+  """Old rain in-lane was 2.5 m / incumbent 4.0 m — a left sign at 3.2 m held."""
+  tracks = {44: track(44, 48.0, y_rel=3.2, v_rel=-20.0)}
+  assert not radar_hold_kinematics_ok(tracks[44], v_ego=20.0)
+  chosen = pick_rain_radar_track(None, tracks, incumbent_id=44, v_ego=20.0)
+  assert chosen is None
+  chosen = pick_rain_radar_track(tracks[44], tracks, incumbent_id=None, v_ego=20.0)
+  assert chosen is None
+
+
+def test_pick_rejects_oncoming_opposing_lane():
+  v_ego = 20.0
+  tracks = {9: track(9, 55.0, y_rel=-1.6, v_rel=-(v_ego + 18.0))}
+  assert not radar_hold_kinematics_ok(tracks[9], v_ego=v_ego)
+  chosen = pick_rain_radar_track(None, tracks, incumbent_id=9, v_ego=v_ego)
+  assert chosen is None
+  chosen = pick_rain_radar_track(tracks[9], tracks, incumbent_id=None, v_ego=v_ego)
+  assert chosen is None
+
+
+def test_pick_still_holds_in_path_radar_through_mismatch():
+  tracks = {806: track(806, 93.8, y_rel=0.4, v_rel=-1.0)}
+  chosen = pick_rain_radar_track(None, tracks, incumbent_id=806, v_ego=20.0)
+  assert chosen is tracks[806]
+
+
+def test_pick_does_not_let_rain_override_path_or_oncoming_rejects():
+  v_ego = 20.0
+  sign = track(3, 40.0, y_rel=3.5, v_rel=-v_ego)
+  oncoming = track(4, 42.0, y_rel=-1.4, v_rel=-(v_ego + 16.0))
+  good = track(5, 45.0, y_rel=0.2, v_rel=-0.5)
+  assert pick_rain_radar_track(sign, {3: sign}, None, v_ego) is None
+  assert pick_rain_radar_track(oncoming, {4: oncoming}, None, v_ego) is None
+  assert pick_rain_radar_track(None, {5: good}, None, v_ego) is good

@@ -11,6 +11,13 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL, Priority, config_realtime_process
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.simple_kalman import KF1D
+from openpilot.selfdrive.controls.lib.radar_path_gate import (
+  PATH_INCUMBENT_HALF_WIDTH_M,
+  model_path_xy,
+  path_lateral_m,
+  radar_follow_ok,
+  vision_lead_follow_ok,
+)
 from openpilot.selfdrive.controls.lib.rain_radar_hold import (
   RAIN_RADAR_LOST_HOLD_FRAMES,
   RAIN_VISION_ONLY_MIN_PROB,
@@ -155,7 +162,13 @@ def association_score(v_ego: float, vision_d_rel: float, lead: capnp._DynamicStr
 
 
 def is_association_candidate(v_ego: float, vision_d_rel: float, lead: capnp._DynamicStructReader,
-                             track: Track, score: float) -> bool:
+                             track: Track, score: float,
+                             path_x=None, path_y=None) -> bool:
+  # Vision already nominated this lead. Allow lane-edge / early cut-in
+  # (incumbent half-width). Rain-only pick stays on the tighter acquire gate.
+  if not radar_follow_ok(track, v_ego, path_x, path_y,
+                         max_lat=PATH_INCUMBENT_HALF_WIDTH_M):
+    return False
   distance_limit = ASSOCIATION_DISTANCE_GATE * max(lead.xStd[0], ASSOCIATION_MIN_DISTANCE_STD)
   lateral_limit = ASSOCIATION_LATERAL_GATE * max(lead.yStd[0], ASSOCIATION_MIN_LATERAL_STD)
   velocity_limit = ASSOCIATION_VELOCITY_GATE * max(lead.vStd[0], ASSOCIATION_MIN_VELOCITY_STD)
@@ -167,12 +180,14 @@ def is_association_candidate(v_ego: float, vision_d_rel: float, lead: capnp._Dyn
 
 
 def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks: dict[int, Track],
-                          incumbent_track_id: int | None = None) -> Track | None:
+                          incumbent_track_id: int | None = None,
+                          path_x=None, path_y=None) -> Track | None:
   vision_d_rel = lead.x[0] - RADAR_TO_CAMERA
   scores = {track_id: association_score(v_ego, vision_d_rel, lead, track) for track_id, track in tracks.items()}
   eligible_track_ids = [
     track_id for track_id, track in tracks.items()
-    if is_association_candidate(v_ego, vision_d_rel, lead, track, scores[track_id])
+    if is_association_candidate(v_ego, vision_d_rel, lead, track, scores[track_id],
+                                path_x=path_x, path_y=path_y)
   ]
   if not eligible_track_ids:
     return None
@@ -212,15 +227,23 @@ class LeadTrackAssociation:
     self._held_radar_lead: dict[str, Any] | None = None
 
   def update(self, v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capnp._DynamicStructReader,
-             model_v_ego: float, rain_hold: bool = False) -> dict[str, Any]:
+             model_v_ego: float, rain_hold: bool = False,
+             path_x=None, path_y=None) -> dict[str, Any]:
     if tracks and ready and lead_msg.prob > .5:
-      track = match_vision_to_track(v_ego, lead_msg, tracks, self.incumbent_track_id)
+      track = match_vision_to_track(v_ego, lead_msg, tracks, self.incumbent_track_id,
+                                    path_x=path_x, path_y=path_y)
     else:
       track = None
 
     if rain_hold:
-      track = pick_rain_radar_track(track, tracks, self.incumbent_track_id)
+      track = pick_rain_radar_track(track, tracks, self.incumbent_track_id, v_ego,
+                                    path_x, path_y)
       if track is not None:
+        self._rain_lost_frames = 0
+      elif (self.incumbent_track_id is not None and
+            self.incumbent_track_id in tracks):
+        # Live track failed path/oncoming — do not keep the phantom cache.
+        self._held_radar_lead = None
         self._rain_lost_frames = 0
       elif self._held_radar_lead is not None:
         self._rain_lost_frames += 1
@@ -236,10 +259,13 @@ class LeadTrackAssociation:
     if track is not None:
       lead_dict = track.get_RadarState(lead_msg.prob)
     elif (rain_hold and self._held_radar_lead is not None and
-          self._rain_lost_frames <= RAIN_RADAR_LOST_HOLD_FRAMES):
+          self._rain_lost_frames <= RAIN_RADAR_LOST_HOLD_FRAMES and
+          radar_follow_ok(self._held_radar_lead, v_ego, path_x, path_y,
+                          max_lat=PATH_INCUMBENT_HALF_WIDTH_M)):
       lead_dict = dict(self._held_radar_lead)
       lead_dict["modelProb"] = float(lead_msg.prob)
-    elif ready and lead_msg.prob > vision_prob_min:
+    elif (ready and lead_msg.prob > vision_prob_min and
+          vision_lead_follow_ok(lead_msg, v_ego, path_x, path_y)):
       lead_dict = get_RadarState_from_vision(lead_msg, v_ego, model_v_ego)
 
     if self.low_speed_override:
@@ -248,6 +274,11 @@ class LeadTrackAssociation:
         closest_track = min(low_speed_tracks, key=lambda candidate: candidate.dRel)
         if (not lead_dict['status']) or (closest_track.dRel < lead_dict['dRel']):
           lead_dict = closest_track.get_RadarState()
+
+    if lead_dict.get('status'):
+      lat = path_lateral_m(lead_dict, path_x, path_y)
+      if lat is not None:
+        lead_dict["dPath"] = float(lat)
 
     if lead_dict.get('radar', False):
       self.incumbent_track_id = lead_dict['radarTrackId']
@@ -332,11 +363,14 @@ class RadarD:
       model_v_ego = self.v_ego
     leads_v3 = sm['modelV2'].leadsV3
     rain_hold = bool(self.rain_gate.update())
+    path_x, path_y = model_path_xy(sm['modelV2'])
     if len(leads_v3) > 1:
       self.radar_state.leadOne = self.lead_one_association.update(
-        self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, rain_hold=rain_hold)
+        self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego,
+        rain_hold=rain_hold, path_x=path_x, path_y=path_y)
       self.radar_state.leadTwo = self.lead_two_association.update(
-        self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, rain_hold=rain_hold)
+        self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego,
+        rain_hold=rain_hold, path_x=path_x, path_y=path_y)
 
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None

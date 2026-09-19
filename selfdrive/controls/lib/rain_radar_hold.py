@@ -10,13 +10,23 @@ that it is raining right now. While that mode is selected, prefer a live
 radar-associated lead (proactive while Auto can wipe). Off / Int / On
 leave stock fusion unchanged. Do not require NAPWiperRainStatus rain=1.
 
+Hold only tracks that still pass the travel-path / oncoming gates
+(`radar_path_gate`). Auto rain mode must not lock roadside signs or
+opposing-lane traffic as leadOne.
+
 Gate (live Params):
   radar_prefer = NAPWiperSpeed == 3
 """
 from __future__ import annotations
 
-import math
-from typing import Any
+from typing import Any, Sequence
+
+from openpilot.selfdrive.controls.lib.radar_path_gate import (
+  MIN_DREL_M,
+  PATH_HALF_WIDTH_M,
+  PATH_INCUMBENT_HALF_WIDTH_M,
+  radar_follow_ok,
+)
 
 # Keep in sync with preap_body_controls. 3 is Auto / rain-sensing On.
 NAP_WIPER_SPEED = "NAPWiperSpeed"
@@ -26,10 +36,11 @@ WIPER_SETTING_AUTO = 3
 RAIN_RADAR_LOST_HOLD_FRAMES = 8
 # Vision-only bar while rain-sensing is On. Secondary — dig flaps were already ≥ 0.9.
 RAIN_VISION_ONLY_MIN_PROB = 0.90
-# In-lane / cut-in gates (radar frame, not vision).
-RAIN_MIN_DREL_M = 0.5
-RAIN_INLANE_YREL_M = 2.5
-RAIN_INCUMBENT_MAX_YREL_M = 4.0
+# Path / oncoming gates (travel path, not raw radar yRel). The old 2.5 / 4.0
+# yRel windows swallowed left roadside signs and opposing-lane traffic.
+RAIN_MIN_DREL_M = MIN_DREL_M
+RAIN_INLANE_YREL_M = PATH_HALF_WIDTH_M
+RAIN_INCUMBENT_MAX_YREL_M = PATH_INCUMBENT_HALF_WIDTH_M
 RAIN_CUT_IN_GAP_M = 8.0
 
 
@@ -93,21 +104,20 @@ class RainRadarGate:
     return rain_sensing_on(read_wiper_speed(params))
 
 
-def radar_hold_kinematics_ok(track: Any, max_yrel: float = RAIN_INCUMBENT_MAX_YREL_M) -> bool:
-  try:
-    d_rel = float(track.dRel)
-    y_rel = float(track.yRel)
-  except (TypeError, ValueError, AttributeError):
-    return False
-  if not math.isfinite(d_rel) or not math.isfinite(y_rel):
-    return False
-  return d_rel > RAIN_MIN_DREL_M and abs(y_rel) <= max_yrel
+def radar_hold_kinematics_ok(track: Any, max_yrel: float = RAIN_INCUMBENT_MAX_YREL_M,
+                             v_ego: float = 0.0,
+                             path_x: Sequence[float] | None = None,
+                             path_y: Sequence[float] | None = None) -> bool:
+  """Live rain-hold candidate. Path + oncoming; yRel-only is not enough."""
+  return radar_follow_ok(track, v_ego, path_x, path_y, max_lat=max_yrel)
 
 
-def closest_inlane_radar(tracks: dict[int, Any]) -> Any | None:
+def closest_inlane_radar(tracks: dict[int, Any], v_ego: float = 0.0,
+                         path_x: Sequence[float] | None = None,
+                         path_y: Sequence[float] | None = None) -> Any | None:
   candidates = [
     track for track in tracks.values()
-    if radar_hold_kinematics_ok(track, RAIN_INLANE_YREL_M)
+    if radar_hold_kinematics_ok(track, RAIN_INLANE_YREL_M, v_ego, path_x, path_y)
   ]
   if not candidates:
     return None
@@ -115,16 +125,24 @@ def closest_inlane_radar(tracks: dict[int, Any]) -> Any | None:
 
 
 def pick_rain_radar_track(associated: Any | None, tracks: dict[int, Any],
-                          incumbent_id: int | None) -> Any | None:
+                          incumbent_id: int | None, v_ego: float = 0.0,
+                          path_x: Sequence[float] | None = None,
+                          path_y: Sequence[float] | None = None) -> Any | None:
   """Prefer a live radar lead while rain-sensing is On.
 
-  Hold the incumbent through vision mismatch. Switch only for a much
-  closer in-lane radar cut-in, or when the incumbent is gone.
+  Hold the incumbent through vision mismatch only if it still sits on
+  the travel path and is not oncoming. Switch only for a much closer
+  in-path radar cut-in, or when the incumbent is gone. Do not latch
+  off-path signs or opposing-lane traffic.
   """
   incumbent = tracks.get(incumbent_id) if incumbent_id is not None else None
-  if incumbent is not None and not radar_hold_kinematics_ok(incumbent):
+  if incumbent is not None and not radar_hold_kinematics_ok(
+      incumbent, RAIN_INCUMBENT_MAX_YREL_M, v_ego, path_x, path_y):
     incumbent = None
-  inlane = closest_inlane_radar(tracks)
+  if associated is not None and not radar_hold_kinematics_ok(
+      associated, RAIN_INLANE_YREL_M, v_ego, path_x, path_y):
+    associated = None
+  inlane = closest_inlane_radar(tracks, v_ego, path_x, path_y)
 
   if incumbent is not None and inlane is not None and inlane.identifier != incumbent.identifier:
     if incumbent.dRel - inlane.dRel >= RAIN_CUT_IN_GAP_M:
