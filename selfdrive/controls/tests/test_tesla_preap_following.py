@@ -181,6 +181,15 @@ def _make_preap_params():
   return params
 
 
+# Catch-up tests must sit well under MAX so last-mph taper / deadband
+# do not zero lead-close +a. Accel 1 tapers over ~5 mph.
+_UNDER_MAX_HEADROOM_MS = 6.0
+
+
+def _set_v_cruise_ms(inputs, v_cruise_ms):
+  inputs["carState"].vCruise = float(v_cruise_ms) * CV.MS_TO_KPH
+
+
 def _make_planner_inputs(speed_mps):
   radar = messaging.new_message("radarState").radarState
   controls = messaging.new_message("controlsState").controlsState
@@ -757,6 +766,7 @@ def test_planner_far_opening_alead_keeps_cruise_plus_a():
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=cruise_a)
   planner.prev_accel_clip = [-1.2, a_cap]
   inputs = _make_planner_inputs(v_ego)
+  _set_v_cruise_ms(inputs, v_ego + _UNDER_MAX_HEADROOM_MS)
   lead = inputs["radarState"].leadOne
   lead.status = True
   lead.dRel = d_rel
@@ -790,6 +800,7 @@ def test_planner_far_opening_alead_keeps_cruise_plus_a():
   planner2.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=cruise_a)
   planner2.prev_accel_clip = [-1.2, a_cap]
   inputs2 = _make_planner_inputs(v_ego)
+  _set_v_cruise_ms(inputs2, v_ego + _UNDER_MAX_HEADROOM_MS)
   lead2 = inputs2["radarState"].leadOne
   lead2.status = True
   lead2.dRel = d_follow + 8.0
@@ -815,6 +826,7 @@ def test_planner_far_same_speed_lead_may_keep_catchup_plus_a():
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=1.5)
   planner.prev_accel_clip = [-1.2, a_cap]
   inputs = _make_planner_inputs(v_ego)
+  _set_v_cruise_ms(inputs, v_ego + _UNDER_MAX_HEADROOM_MS)
   lead = inputs["radarState"].leadOne
   lead.status = True
   lead.dRel = 160.0
@@ -892,6 +904,7 @@ def test_planner_caps_lead_close_accel_at_min_accel_and_keeps_hard_brake():
   a_cap = lead_close_accel_ms2(1)
   planner.prev_accel_clip = [-1.2, a_cap]
   inputs = _make_planner_inputs(v_ego)
+  _set_v_cruise_ms(inputs, v_ego + _UNDER_MAX_HEADROOM_MS)
   lead = inputs["radarState"].leadOne
   lead.status = True
   lead.dRel = d_rel
@@ -979,6 +992,7 @@ def test_planner_lead_close_accel_scales_with_accel_personality():
     planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=1.5)
     planner.prev_accel_clip = [-1.2, lead_close_accel_ms2(accel_level)]
     inputs = _make_planner_inputs(v_ego)
+    _set_v_cruise_ms(inputs, v_ego + _UNDER_MAX_HEADROOM_MS)
     lead = inputs["radarState"].leadOne
     lead.status = True
     lead.dRel = d_rel
@@ -1082,6 +1096,7 @@ def test_planner_settled_opening_gap_does_not_pin_accel_ceil():
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=a2)
   planner.prev_accel_clip = [-1.2, a2]
   inputs = _make_planner_inputs(v_ego)
+  _set_v_cruise_ms(inputs, v_ego + _UNDER_MAX_HEADROOM_MS)
   lead = inputs["radarState"].leadOne
   lead.status = True
   lead.dRel = d_follow + 8.0
@@ -1108,6 +1123,7 @@ def test_planner_settled_opening_gap_does_not_pin_accel_ceil():
   planner2.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=a2)
   planner2.prev_accel_clip = [-1.2, a2]
   inputs2 = _make_planner_inputs(v_ego)
+  _set_v_cruise_ms(inputs2, v_ego + _UNDER_MAX_HEADROOM_MS)
   lead2 = inputs2["radarState"].leadOne
   lead2.status = True
   lead2.dRel = 160.0
@@ -1133,6 +1149,7 @@ def test_planner_settled_gap_hunt_is_not_full_accel_ceil():
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=a5)
   planner.prev_accel_clip = [-1.2, a5]
   inputs = _make_planner_inputs(v_ego)
+  _set_v_cruise_ms(inputs, v_ego + _UNDER_MAX_HEADROOM_MS)
   lead = inputs["radarState"].leadOne
   lead.status = True
   lead.dRel = d_follow + 8.0
@@ -1191,4 +1208,80 @@ def test_planner_hwy_intent_applies_hwy_fd_from_30():
   planner55.update(inputs55)
   assert planner55.active_nap_follow_dist == 6
   assert planner55._follow_blend.highway is False
+
+
+def test_planner_faster_lead_at_max_does_not_overrun():
+  """ea 11:46: lead faster than a 60 MAX must not rematch Accel-1 past set.
+
+  Product: hold ≤ MAX and let the gap open. Overlay ease / emergency −a
+  still win. A slower lead under MAX still catch-up.
+  """
+  v_max = 60.0 * CV.MPH_TO_MS
+  v_ego = v_max
+  v_lead = v_max + 3.0 * CV.MPH_TO_MS
+  t_follow = get_T_FOLLOW(nap_follow_dist=4)
+  d_follow = t_follow * v_lead + STOP_DISTANCE_M
+  params = _MutablePlannerParams(nap_follow_dist=4, map_speed_accel=1)
+  planner = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
+  planner._map_speed_accel = 1
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=0.0)
+  planner.prev_accel_clip = [-1.2, LEAD_CLOSE_A_MIN_MS2]
+  inputs = _make_planner_inputs(v_ego)
+  _set_v_cruise_ms(inputs, v_max)
+  lead = inputs["radarState"].leadOne
+  lead.status = True
+  lead.dRel = d_follow + 40.0
+  lead.vLead = v_lead
+  lead.aLeadK = 0.0
+  lead.modelProb = 1.0
+  lead.radar = True
+  for _ in range(16):
+    planner.update(inputs)
+  assert planner.output_a_target <= 0.0
+  assert planner._lead_close_a_cap == pytest.approx(0.0)
+
+  # Ego already 1 mph over, lead 2 mph over: no +0.36 rematch punch.
+  v_over = v_max + 1.0 * CV.MPH_TO_MS
+  planner_over = LongitudinalPlanner(_make_preap_params(), init_v=v_over, params=params)
+  planner_over._map_speed_accel = 1
+  planner_over.mpc = _ConstantAccelerationMpc(v_over, acceleration_mps2=0.0)
+  planner_over.prev_accel_clip = [-1.2, LEAD_CLOSE_A_MIN_MS2]
+  inputs_over = _make_planner_inputs(v_over)
+  _set_v_cruise_ms(inputs_over, v_max)
+  lead_over = inputs_over["radarState"].leadOne
+  lead_over.status = True
+  lead_over.dRel = 58.0
+  lead_over.vLead = v_max + 2.0 * CV.MPH_TO_MS
+  lead_over.aLeadK = 0.0
+  lead_over.modelProb = 1.0
+  lead_over.radar = True
+  for _ in range(16):
+    planner_over.update(inputs_over)
+  assert planner_over.output_a_target <= 0.0
+  assert planner_over.output_a_target < LEAD_CLOSE_A_MIN_MS2 - 0.10
+
+  # Slower / same-speed lead under MAX still catch-up.
+  v_under = 55.0 * CV.MPH_TO_MS
+  v_cruise = 70.0 * CV.MPH_TO_MS
+  planner_u = LongitudinalPlanner(_make_preap_params(), init_v=v_under, params=params)
+  planner_u._map_speed_accel = 1
+  planner_u.mpc = _ConstantAccelerationMpc(v_under, acceleration_mps2=1.5)
+  planner_u.prev_accel_clip = [-1.2, LEAD_CLOSE_A_MIN_MS2]
+  inputs_u = _make_planner_inputs(v_under)
+  _set_v_cruise_ms(inputs_u, v_cruise)
+  lead_u = inputs_u["radarState"].leadOne
+  lead_u.status = True
+  lead_u.dRel = 160.0
+  lead_u.vLead = v_under
+  lead_u.modelProb = 1.0
+  lead_u.radar = True
+  for _ in range(16):
+    planner_u.update(inputs_u)
+  assert planner_u.output_a_target == pytest.approx(LEAD_CLOSE_A_MIN_MS2, abs=0.08)
+
+  # Emergency −a still owns at MAX (FCW / crash).
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
+  planner.mpc.crash_cnt = 3
+  planner.update(inputs)
+  assert planner.output_a_target == pytest.approx(-2.0, abs=0.08)
 

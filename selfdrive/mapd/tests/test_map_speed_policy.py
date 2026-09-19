@@ -1471,6 +1471,7 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   assert 0 <= close_at < mpc_at
   assert "map_brake_a_ms2" in planner
   assert "map_track_accel_ms2" in planner
+  assert "a_env = 0.0 if a_grad is None else min(a_peak, float(a_grad))" in planner
   assert "resolve_lead_close_hold" in planner
   assert "soft_limit_mpc_a_target" in planner
   assert "min(float(output_a_target), a_brake)" in planner
