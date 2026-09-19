@@ -366,6 +366,10 @@ def slew_near_gap_small_a(target, prev, v_rel, d_rel=None, slack=None,
   p = float(prev)
   if not (_near_gap_small_bite(t) and _near_gap_small_bite(p)):
     return t
+  # Do not delay the first onset of mild ease (0 → −0.22). Overlay
+  # already slews; this path only softens floor↔release chatter.
+  if abs(p) < 1e-6:
+    return t
   if t > p:
     return min(t, p + float(slew))
   if t < p:
