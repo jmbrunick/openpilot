@@ -28,9 +28,10 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   lead_owns_plan,
   lead_remaining_close_a_ms2,
   resolve_lead_close_hold,
-  slew_follow_plus_a,
+  slew_lead_acquire_a,
   slew_lead_approach_a,
   soft_limit_mpc_a_target,
+  update_lead_acquire,
   update_lead_settle,
 )
 from openpilot.selfdrive.controls.lib.follow_distance import FollowDistanceBlend, NAP_FOLLOW_DISTANCE_RANGE
@@ -133,6 +134,7 @@ class LongitudinalPlanner:
     self._follow_open_a = None
     self._lead_settle_age = 0.0
     self._lead_settled = False
+    self._lead_acquire_age = 0.0
 
     self.a_desired = init_a
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
@@ -217,6 +219,7 @@ class LongitudinalPlanner:
       self._follow_open_a = None
       self._lead_settle_age = 0.0
       self._lead_settled = False
+      self._lead_acquire_age = 0.0
 
     # Prevent divergence, smooth in current v_ego
     self.v_desired_filter.x = max(0.0, self.v_desired_filter.update(v_ego))
@@ -395,11 +398,13 @@ class LongitudinalPlanner:
     # same-speed nibble must not steal cruise +a; a closing lock never
     # rematches +a. Hold last in-window lead through status flicker so
     # cruise cannot reclaim +a. Near the follow gap, a nibble can mesh.
-    # MPC −a is floored at MILD only as anti-chatter (gap opening /
-    # small |v_rel|, far aLead) so min(MPC, overlay) cannot dump
-    # ~−2.5 on noise; closing or a near-gap braking lead keeps full
-    # match-speed −a. FCW / rapid / a real stop still own danger. Map
-    # MAX cannot cancel this.
+    # MPC −a is floored at MILD as anti-chatter (gap opening /
+    # small |v_rel|, far aLead) and for large-slack small adjustments
+    # (e4 40 m / 9.5 m/s −2.33). Closing *near the follow gap* or a
+    # near-gap braking lead keeps full match-speed −a. First latch
+    # slews both ways so a cruise/MPC punch cannot yo-yo regen→accel
+    # (e4 09:53:19). FCW / rapid / near-bumper / a real stop still
+    # own danger. Map MAX cannot cancel this.
     if self._is_preap:
       lead = sm['radarState'].leadOne
       allow_rapid = False
@@ -426,6 +431,9 @@ class LongitudinalPlanner:
         overlay_radar = None
         overlay_prob = None
       overlay_slack = lead_follow_slack_m(overlay_d, overlay_v, self.t_follow)
+      self._lead_acquire_age, acquiring = update_lead_acquire(
+        self._lead_acquire_age, live_ok or lead_held, self.dt,
+      )
       keep_overlay = live_ok or (
         lead_held and (self._lead_close_hold_owned or lead_owns_plan(
           overlay_v_rel, self._lead_close_hold_a, overlay_slack,
@@ -462,8 +470,9 @@ class LongitudinalPlanner:
         lead_d_hold = None
         lead_a_k = None
       # Floor MPC before overlay so a confirmed rapid 0.55 path is not
-      # also clamped. One-frame v_rel spikes stay at MILD unless we are
-      # already closing or a near-gap braking lead (match-speed −a).
+      # also clamped. One-frame v_rel spikes stay at MILD. Large-slack
+      # small adjustments (e4 −2.33) stay floored; near-gap closing /
+      # braking-lead / rapid / near-bumper keep full −a.
       output_a_target = soft_limit_mpc_a_target(
         output_a_target, v_ego, lead_v_hold, lead_d_hold,
         fcw=self.fcw, crash_cnt=self.mpc.crash_cnt, allow_rapid=allow_rapid,
@@ -489,8 +498,10 @@ class LongitudinalPlanner:
         output_a_target, overlay_v_rel, overlay_slack,
       )
       if live_ok or lead_held:
-        output_a_target = slew_follow_plus_a(
+        output_a_target = slew_lead_acquire_a(
           output_a_target, self.output_a_target, overlay_v_rel,
+          d_rel=overlay_d, slack=overlay_slack, acquiring=acquiring,
+          allow_rapid=allow_rapid, fcw=self.fcw, crash_cnt=self.mpc.crash_cnt,
         )
 
     for idx in range(2):
