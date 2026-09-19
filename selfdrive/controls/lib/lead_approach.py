@@ -72,6 +72,15 @@ First lead latch used to punch MPC regen then rematch +a in ~0.5 s
 During the acquire window, slew aTarget both ways so that spike cannot
 yo-yo. Rapid / near-bumper / FCW stay immediate. Closing ≳ 1.5 at
 range does not skip the window.
+
+After that first latch, e8 still undershot Follow Distance (~23 m)
+and yo-yoed ±a once speeds matched. Keep acquire slew and #216's
+MILD comfort floor. While still closing, aim a few meters long of
+the set gap so kinematics finish with leftover slack. Inside FD, a
+slow close commands that mild floor — not rematch +a, not a dump.
+When |v_rel| is small at/long of the gap, glide: a≈0 deadband +
+hysteresis (EV slight lift only). Already inside FD is a too-close
+recovery — rematch +a and mild −a stand. Rapid / bumper / FCW dump.
 """
 from __future__ import annotations
 
@@ -204,6 +213,29 @@ LEAD_ACQUIRE_HOLD_S = 0.75
 LEAD_ACQUIRE_SLEW_MS2 = LEAD_ATARGET_SLEW_MS2
 # Inside this dRel, never soften MPC −a (near bumper).
 LEAD_MPC_SOFT_NEAR_M = 12.0
+# Aim a few meters long of Follow Distance while still closing so
+# kinematics finish with leftover slack (e8 arrived at slack=0 still
+# closing ~1.25 m/s). HUD t_follow / dFollow unchanged.
+LEAD_SETTLE_GAP_BIAS_M = 3.0
+# Inside FD, still closing slowly: command the #216 MILD floor (not
+# rematch +a, not a dump). Rapid / bumper / FCW stay full −a.
+LEAD_SLOW_CLOSE_MS = 0.8
+# Matched-speed glide: kill leftover mild −a near the gap. Rematch
+# trickle (+0.08) still finishes the last meters / holds grade.
+# Still-closing stays off (a 0.5 m/s window coasted through Follow 1).
+# Slack covers the grade-hold band (~5–10 m long of FD), not only
+# the last 4 m — that left plant-aligned grade 0.12 m/s slow.
+LEAD_GLIDE_VREL_MS = 0.25
+LEAD_GLIDE_VREL_OFF_MS = 0.40
+LEAD_GLIDE_SLACK_M = 10.0
+LEAD_GLIDE_SLACK_OFF_M = 14.0
+LEAD_GLIDE_A_MS2 = LEAD_CLOSE_OPENING_A_MS2
+# Rematch trickle ↔ mild floor. Glide zeros −a in this band.
+LEAD_GLIDE_CHATTER_LO_MS2 = -(LEAD_APPROACH_MILD_A_MS2 + 0.02)
+LEAD_GLIDE_CHATTER_HI_MS2 = LEAD_CLOSE_REMATCH_A_MS2 + 0.02
+# Near-gap small ±a slew (rematch trickle ↔ leftover mild).
+LEAD_NEAR_GAP_SLACK_M = 15.0
+LEAD_NEAR_GAP_SLEW_MS2 = 0.02
 # Brief hold of the last in-window lead when `leadOne.status` drops so
 # cruise punch cannot leak through a radar flicker. ~10 planner frames.
 LEAD_CLOSE_HOLD_S = 0.50
@@ -221,6 +253,147 @@ def lead_follow_slack_m(d_rel, v_lead, t_follow):
     return None
   d_follow = float(t_follow) * max(0.0, float(v_lead)) + STOP_DISTANCE
   return float(d_rel) - d_follow
+
+
+def lead_kinematic_slack_m(slack, v_rel) -> float:
+  """Slack used for approach kinematics. Aim a few meters long while closing.
+
+  HUD Follow Distance is unchanged. Near the gap, never use a tinier
+  remaining than the real slack (avoids a late 1/x punch).
+  """
+  s = float(slack)
+  if v_rel is None or float(v_rel) < LEAD_APPROACH_DV_OFF_MS:
+    return s
+  return max(s - LEAD_SETTLE_GAP_BIAS_M, min(s, 0.75))
+
+
+def lead_inside_slow_close_a_ms2(v_rel, slack):
+  """Slight-lift MILD when inside FD and still closing slowly.
+
+  #216: comfort stays at −0.22. This only ensures we command that
+  floor (not rematch +a) while closing ≳ 0.8 inside FD. Rapid /
+  bumper / FCW stay dump.
+  """
+  if slack is None or float(slack) > 0.0:
+    return None
+  if v_rel is None:
+    return None
+  v = float(v_rel)
+  if v < LEAD_SLOW_CLOSE_MS or lead_approach_is_rapid(v):
+    return None
+  return -LEAD_APPROACH_MILD_A_MS2
+
+
+def lead_is_glide_sample(v_rel, slack) -> bool:
+  """True when matched or slightly slower near Follow Distance.
+
+  Last-meter closing must keep −a so we do not coast through FD1.
+  A slight close with slack still in the grade-hold band (~5–10 m)
+  may glide. Real speed sag (v_rel ≲ −0.5) is Accel-owned.
+  Already inside FD is a too-close recovery.
+  """
+  if v_rel is None or slack is None:
+    return False
+  v = float(v_rel)
+  s = float(slack)
+  if s < 0.0 or s > LEAD_GLIDE_SLACK_M:
+    return False
+  if v <= -LEAD_SETTLE_VREL_MS or v >= LEAD_SETTLE_VREL_MS:
+    return False
+  if v > LEAD_APPROACH_DV_OFF_MS and s <= LEAD_SETTLE_FINISH_SLACK_M:
+    return False
+  return True
+
+
+def update_lead_glide(active, v_rel, slack, d_rel=None, fcw=False,
+                      crash_cnt=0, allow_rapid=False, acquiring=False,
+                      a_lead=None):
+  """Arm / hold matched-speed glide. Danger and first-latch skip it."""
+  if acquiring or fcw or int(crash_cnt) > 0:
+    return False
+  if d_rel is not None and float(d_rel) <= LEAD_MPC_SOFT_NEAR_M:
+    return False
+  if v_rel is not None and lead_approach_is_rapid(v_rel):
+    return False
+  if allow_rapid and v_rel is not None and lead_approach_is_rapid(v_rel):
+    return False
+  if lead_alead_owns_match(v_rel, a_lead, slack):
+    return False
+  if active:
+    if v_rel is None or slack is None:
+      return False
+    if float(v_rel) > LEAD_GLIDE_VREL_OFF_MS:
+      return False
+    if float(v_rel) <= -LEAD_SETTLE_VREL_MS:
+      return False
+    if float(slack) < 0.0 or float(slack) > LEAD_GLIDE_SLACK_OFF_M:
+      return False
+    return True
+  return lead_is_glide_sample(v_rel, slack)
+
+
+def apply_lead_glide_a(output_a, gliding):
+  """Deadband leftover mild −a to coast; rematch trickle may still finish.
+
+  Accel-ceil grade hold and MPC dump sit outside the chatter band and
+  pass through. Negative chatter becomes 0 (no felt regen bite).
+  Positive chatter caps at the rematch trickle so last-meter finish
+  and slight grade sag still work.
+  """
+  if (not gliding) or output_a is None:
+    return output_a
+  a = float(output_a)
+  if LEAD_GLIDE_CHATTER_LO_MS2 <= a <= LEAD_GLIDE_CHATTER_HI_MS2:
+    if a <= 0.0:
+      return 0.0
+    return min(a, LEAD_GLIDE_A_MS2)
+  return a
+
+
+def _near_gap_small_bite(a) -> bool:
+  # Covers mild floor ↔ ~0.70 MPC bite and rematch trickle.
+  return (LEAD_GLIDE_CHATTER_LO_MS2 - 0.50) <= float(a) <= LEAD_GLIDE_CHATTER_HI_MS2
+
+
+def slew_near_gap_small_a(target, prev, v_rel, d_rel=None, slack=None,
+                          allow_rapid=False, fcw=False, crash_cnt=0,
+                          slew=LEAD_NEAR_GAP_SLEW_MS2):
+  """Slew small near-gap ±a so floor↔release cannot step 0.3 in one frame.
+
+  Full authority (rapid / bumper / FCW / hard kinematics) is immediate.
+  Far slack and bites outside the small band pass through. First-latch
+  acquire slew is a separate path and must stay unchanged.
+  """
+  if target is None:
+    return target
+  t = float(target)
+  if lead_mpc_needs_full_authority(
+    v_rel, d_rel, slack, allow_rapid=allow_rapid, fcw=fcw,
+    crash_cnt=crash_cnt, confirm_rapid=True,
+  ):
+    return t
+  # Inside FD progressive −a must not wait on this slew. Chatter to
+  # soften is the near-gap floor↔release band (slack > 0).
+  if slack is None or float(slack) <= 0.0 or float(slack) > LEAD_NEAR_GAP_SLACK_M:
+    return t
+  if prev is None:
+    return t
+  p = float(prev)
+  if not (_near_gap_small_bite(t) and _near_gap_small_bite(p)):
+    return t
+  # Do not delay the first onset of mild ease (0 → −0.22). Overlay
+  # already slews; this path only softens floor↔release chatter.
+  if abs(p) < 1e-6:
+    return t
+  # Do not delay rematch / grade +a. Plant-aligned hold sat 0.12 m/s
+  # slow when −0.22 → +0.08 walked 0.02 / frame.
+  if t >= 0.0:
+    return t
+  if t > p:
+    return min(t, p + float(slew))
+  if t < p:
+    return max(t, p - float(slew))
+  return t
 
 
 def lead_is_settled_sample(v_rel, slack) -> bool:
@@ -594,15 +767,25 @@ def cap_closing_lead_accel(output_a, v_rel, a_lead=None, lead_present=False,
   match-speed −a (`aLead − k·v_rel`). aLead ≲ −0.2 matches only near
   the follow gap — not when the gap is opening or slack is large.
   Same-speed far catch-up +a is unchanged. Past Bosch, do not apply
-  match-speed −a (no extra crawl on a 215 m lock).
+  match-speed −a (no extra crawl on a 215 m lock). Inside FD, a slow
+  close commands the MILD floor, not rematch +a.
   """
   if output_a is None or not (lead_present or owned):
     return output_a
   if d_rel is not None and float(d_rel) > LEAD_CLOSE_MAX_M + LEAD_APPROACH_MAX_HOLD_M:
     return float(output_a)
+  v = 0.0 if v_rel is None else float(v_rel)
+  # Inside FD, still closing: never rematch +a. Slow close commands
+  # the MILD floor; 0.5–0.8 coasts (glide owns match). Rapid dumps.
+  if slack is not None and float(slack) <= 0.0 and v >= LEAD_SETTLE_VREL_MS:
+    a = min(float(output_a), 0.0)
+    a_slow = lead_inside_slow_close_a_ms2(v_rel, slack)
+    if a_slow is not None:
+      a = min(a, a_slow)
+    if not lead_approach_is_rapid(v):
+      return a
   if not (owned or lead_is_closing(v_rel, a_lead, slack=slack)):
     return float(output_a)
-  v = 0.0 if v_rel is None else float(v_rel)
   near_finish = slack is not None and 0.0 < float(slack) <= LEAD_SETTLE_FINISH_SLACK_M
   large_gap = slack is not None and float(slack) > LEAD_CLOSE_REMATCH_SLACK_M
   if (near_finish or large_gap) and (not owned) and v < LEAD_CLOSING_MATCH_MS:
@@ -656,7 +839,8 @@ def lead_approach_rapid_gate(v_rel, prev_count, need_n=LEAD_APPROACH_RAPID_CONFI
 
 
 def soft_limit_mpc_a_target(output_a, v_ego, v_lead, d_rel, fcw=False, crash_cnt=0,
-                            allow_rapid=False, a_lead=None, slack=None):
+                            allow_rapid=False, a_lead=None, slack=None,
+                            prev_floored=False):
   """Floor non-emergency MPC −a to slight-lift MILD.
 
   Overlay min(MPC, mild) cannot stop MPC commanding ~−2.5 on radar noise
@@ -669,6 +853,7 @@ def soft_limit_mpc_a_target(output_a, v_ego, v_lead, d_rel, fcw=False, crash_cnt
   one-frame v_rel blip still waits on `allow_rapid`.
   """
   _ = a_lead
+  _ = prev_floored
   if output_a is None:
     return output_a
   a = float(output_a)
@@ -804,7 +989,10 @@ def lead_approach_decel_ms2(v_ego, v_lead, d_rel, t_follow, a_comfort=LEAD_APPRO
     need_gate = need_m + (LEAD_APPROACH_NEED_HOLD_M if active else 0.0)
     if slack > need_gate:
       return None
-  a_needed = -(v_rel * v_rel) / (2.0 * slack)
+  kin_slack = lead_kinematic_slack_m(slack, v_rel)
+  if kin_slack <= 0.0:
+    return None
+  a_needed = -(v_rel * v_rel) / (2.0 * kin_slack)
   ttc = lead_approach_ttc_s(slack, v_rel)
   rapid = bool(allow_rapid) and lead_approach_is_rapid(v_rel, ttc)
   a_cap = float(a_comfort) if rapid else LEAD_APPROACH_MILD_A_MS2
