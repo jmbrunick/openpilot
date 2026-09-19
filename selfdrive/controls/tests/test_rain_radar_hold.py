@@ -29,6 +29,7 @@ from openpilot.selfdrive.controls.lib.rain_radar_hold import (
   RELIABLE_MIN_VEGO_MS,
   RELIABLE_OK_FRAMES,
   RELIABLE_ONROAD_GRACE_FRAMES,
+  RELIABLE_TIMEOUT_ALERT_FRAMES,
   RadarPreferGate,
   RadarReliability,
   RainRadarGate,
@@ -157,7 +158,7 @@ def test_reliability_trips_on_fault_timeout_dropout_and_erratic():
   rel = RadarReliability()
   assert not rel.update(tracks={1: track(1, 40.0)}, v_ego=16.0, timed_out=True)
   assert rel.reason == "timeout"
-  assert rel.should_alert
+  assert not rel.should_alert  # timeout HUD needs a sustained confirm
 
   rel = RadarReliability()
   assert rel.update(tracks={1: track(1, 40.0)}, v_ego=16.0)
@@ -232,10 +233,9 @@ def test_reliability_recover_hysteresis():
   assert rel.log_reason == ""
 
 
-def test_soft_dropout_alerts_only_after_engage_confirm():
-  """Highway empty-table trips prefer after FAIL_FRAMES; HUD waits."""
+def test_soft_dropout_never_alerts_even_after_engage_confirm():
+  """Pavement empty-table (signs / open road) trips prefer; no HUD."""
   rel = RadarReliability()
-  # Expire onroad grace so engage+confirm is what gates the HUD.
   for _ in range(RELIABLE_ONROAD_GRACE_FRAMES):
     rel.update(tracks={1: track(1, 40.0)}, v_ego=16.0, engaged=False)
   for _ in range(RELIABLE_FAIL_FRAMES):
@@ -244,13 +244,72 @@ def test_soft_dropout_alerts_only_after_engage_confirm():
   assert not rel.should_alert
 
   rel.update(tracks={}, v_ego=16.0, engaged=True)
-  assert not rel.should_alert  # engage grace
+  assert not rel.should_alert
   for _ in range(RELIABLE_ENGAGE_GRACE_FRAMES):
     rel.update(tracks={}, v_ego=16.0, engaged=True)
   for _ in range(RELIABLE_ALERT_FRAMES):
     rel.update(tracks={}, v_ego=16.0, engaged=True)
-  assert rel.should_alert
+  assert not rel.healthy
+  assert not rel.should_alert
   assert rel.log_reason == "dropout"
+
+
+def test_erratic_clutter_never_alerts():
+  """Signs / opposing kinematic streaks trip prefer silently."""
+  rel = RadarReliability()
+  for _ in range(RELIABLE_ONROAD_GRACE_FRAMES):
+    rel.update(tracks={7: track(7, 40.0, y_rel=0.2)}, v_ego=16.0, engaged=True)
+  jumpy = track(7, 40.0, y_rel=5.0)
+  for _ in range(RELIABLE_FAIL_FRAMES + RELIABLE_ALERT_FRAMES):
+    rel.update(tracks={7: jumpy}, v_ego=16.0, engaged=True)
+    jumpy = track(7, 40.0, y_rel=jumpy.yRel + 5.0)
+  assert not rel.healthy
+  assert rel.reason == "erratic"
+  assert not rel.should_alert
+  assert rel.log_reason == "erratic"
+
+
+def test_timeout_never_alerts():
+  """Stream timeout trips prefer immediately; HUD stays quiet (41-blip dig)."""
+  rel = RadarReliability()
+  for _ in range(RELIABLE_ONROAD_GRACE_FRAMES):
+    rel.update(tracks={1: track(1, 40.0)}, v_ego=16.0, engaged=False)
+  for _ in range(RELIABLE_ENGAGE_GRACE_FRAMES):
+    rel.update(tracks={1: track(1, 40.0)}, v_ego=16.0, engaged=True)
+  assert rel.healthy
+  assert not rel.update(tracks={1: track(1, 40.0)}, v_ego=16.0, timed_out=True,
+                        engaged=True)
+  assert rel.reason == "timeout"
+  assert not rel.should_alert
+  for _ in range(RELIABLE_TIMEOUT_ALERT_FRAMES + RELIABLE_ALERT_FRAMES):
+    rel.update(tracks={1: track(1, 40.0)}, v_ego=16.0, timed_out=True, engaged=True)
+  assert not rel.healthy
+  assert not rel.should_alert
+  assert rel.log_reason == "timeout"
+
+
+def test_path_associated_lead_suppresses_non_fault_alert():
+  """Quiet with a real lead: no HUD for leftover non-fault reasons."""
+  rel = RadarReliability()
+  for _ in range(RELIABLE_ONROAD_GRACE_FRAMES):
+    rel.update(tracks={1: track(1, 40.0)}, v_ego=16.0, engaged=True)
+  rel.set_path_lead(True)
+  for _ in range(RELIABLE_ENGAGE_GRACE_FRAMES + RELIABLE_TIMEOUT_ALERT_FRAMES + 4):
+    rel.update(tracks={1: track(1, 40.0)}, v_ego=16.0, timed_out=True, engaged=True)
+  assert not rel.healthy
+  assert rel.reason == "timeout"
+  assert not rel.should_alert
+  rel.set_path_lead(False)
+  assert not rel.should_alert
+
+
+def test_fault_still_alerts_with_path_associated_lead():
+  """canError / radarFault keep the HUD even when a lead is still published."""
+  rel = RadarReliability()
+  rel.set_path_lead(True)
+  assert not rel.update(errors={"canError": True}, v_ego=16.0, engaged=True)
+  assert rel.reason == "fault"
+  assert rel.should_alert
 
 
 def test_pick_holds_incumbent_through_vision_mismatch():

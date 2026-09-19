@@ -51,21 +51,27 @@ RAIN_RADAR_LOST_HOLD_FRAMES = 8
 # Vision-only bar while path-gated prefer is active. Dig flaps were already ≥ 0.9.
 RAIN_VISION_ONLY_MIN_PROB = 0.90
 
-# Reliability: hardware / stream timeout trip immediately. Soft reasons
-# (empty-table dropout, erratic jumps) need a short streak. Recover after
-# this many consecutive good samples so a single clean frame cannot
-# chatter the prefer latch.
+# Reliability: hardware / stream timeout trip prefer immediately. Soft
+# reasons (empty-table dropout, erratic jumps) need a short streak.
+# Recover after this many consecutive good samples so a single clean
+# frame cannot chatter the prefer latch.
 #
 # e3 gravel crawl (1c95345a3286a5db|000000e3--8b12de89d2, tip b635cc6cd7ab):
 # 09:22:24 CT ~1s radarPreferFallback, 8s before engage. radarErrors all
 # false, vEgo 5.35 (just over the old 5.0 empty-table gate), recovered in
 # RELIABLE_OK_FRAMES. Soft dropout must not flash the HUD.
+#
+# Sat Sep 19 09:45–10:05 CT pavement (dongle 1c95345a3286a5db):
+# 41 HUD blips on the #210/#206 tip — all soft empty-table or timeout,
+# 0 radarErrors, 0/41 with a path lead. Signs / opposing correlate;
+# quieter on open road. #209 still flashed: timeout was a hard HUD
+# reason. Soft empty / timeout / erratic must never HUD. canError /
+# radarFault stay immediate. A path-associated lead also mutes non-fault.
 RELIABLE_FAIL_FRAMES = 4
 RELIABLE_OK_FRAMES = 16
-# Extra confirm before HUD on soft trips (~1.0 s at 20 Hz). Hard faults
-# alert immediately. Soft HUD also needs engage and is muted during
-# onroad / engage grace.
-RELIABLE_ALERT_FRAMES = 20
+# Soft HUD leftover (unused). Dropout / erratic / timeout never HUD.
+RELIABLE_ALERT_FRAMES = 80
+RELIABLE_TIMEOUT_ALERT_FRAMES = 40
 RELIABLE_ONROAD_GRACE_FRAMES = 60
 RELIABLE_ENGAGE_GRACE_FRAMES = 40
 RELIABLE_DROPOUT_S = 0.50
@@ -73,7 +79,10 @@ RELIABLE_YREL_JUMP_M = 4.0
 RELIABLE_DREL_JUMP_M = 25.0
 # Empty-table while moving. 5.0 caught gravel crawl at 5.35 m/s (~12 mph).
 RELIABLE_MIN_VEGO_MS = 8.0
+# Prefer-latch immediate trip. HUD only for real hardware / CAN faults.
 RELIABLE_HARD_REASONS = frozenset({"fault", "timeout", "override"})
+RELIABLE_SOFT_REASONS = frozenset({"dropout", "erratic", "timeout"})
+RELIABLE_HUD_HARD_REASONS = frozenset({"fault", "override"})
 # EP_2059 (e1 segs 13–17): #201 RAIN_INLANE=2.5 latched near-edge
 # oncoming 771/802 at |yRel| 2.23–2.48 (0.02–0.27 m inside 2.5).
 # Justin: 2.5 → 2.0 m (~6.6 ft) + reject vLead < 0. Path association
@@ -175,9 +184,10 @@ class RadarReliability:
   |ΔyRel| / |ΔdRel| jumps. Recover after RELIABLE_OK_FRAMES clean
   samples so the prefer latch does not chatter.
 
-  HUD (`should_alert`) is stricter than the prefer latch: hard reasons
-  alert immediately; soft reasons need engage, onroad/engage grace, and
-  RELIABLE_ALERT_FRAMES so a gravel / empty-table blip does not flash.
+  HUD (`should_alert`) is stricter than the prefer latch: canError /
+  radarFault alert immediately; empty-table / timeout / kinematic
+  clutter never flash the HUD (silent camera fallback). A healthy
+  path-associated lead also mutes any leftover non-fault reason.
   `log_reason` is published every frame for the next route dig.
   """
 
@@ -194,9 +204,14 @@ class RadarReliability:
     self._last_xy: dict[int, tuple[float, float]] = {}
     self._low_speed_empty = False
     self._override: bool | None = None
+    self._path_lead = False
 
   def set_override(self, healthy: bool | None) -> None:
     self._override = None if healthy is None else bool(healthy)
+
+  def set_path_lead(self, ok: bool) -> None:
+    """True when a healthy path-associated radar lead is published."""
+    self._path_lead = bool(ok)
 
   def reset(self) -> None:
     self.healthy = True
@@ -210,6 +225,7 @@ class RadarReliability:
     self._engage_frame = None
     self._last_xy = {}
     self._low_speed_empty = False
+    self._path_lead = False
 
   @property
   def log_reason(self) -> str:
@@ -220,13 +236,16 @@ class RadarReliability:
 
   @property
   def should_alert(self) -> bool:
-    """HUD latch. Hard faults are immediate; soft reasons are quiet."""
+    """HUD latch. Faults are immediate; soft clutter never flashes."""
     if self._override is False:
       return True
     if self._override is True or self.healthy:
       return False
-    if self.reason in RELIABLE_HARD_REASONS:
+    if self.reason in RELIABLE_HUD_HARD_REASONS:
       return True
+    # Empty-table / timeout / signs / opposing: log + drop prefer, no HUD.
+    if self.reason in RELIABLE_SOFT_REASONS or self._path_lead:
+      return False
     if not self._engaged:
       return False
     if self._in_onroad_grace() or self._in_engage_grace():

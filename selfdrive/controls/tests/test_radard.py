@@ -290,6 +290,39 @@ def test_crawl_empty_table_does_not_set_fallback_alert():
   assert scenario.radar.radar_state.radarPreferReason == "dropout"
 
 
+def test_highway_empty_table_trips_prefer_without_hud():
+  """Pavement empty-table above 8 m/s drops prefer; no Radar Unreliable."""
+  scenario = RadarScenario(v_ego=16.0)
+  scenario.set_radar_enabled(True)
+  scenario.step(1.0, vision_d_rel=40.0, radar_points=[(1, 40.0, 0.0, 0.0)])
+  for frame in range(1, 12):
+    scenario.step(1.0 + frame * 0.05, vision_d_rel=40.0, radar_points=[])
+    assert not scenario.radar.radar_state.radarPreferFallback
+  assert not scenario.radar.reliability.healthy
+  assert scenario.radar.radar_state.radarPreferReason == "dropout"
+  assert not scenario.radar.rain_gate.update()
+
+
+def test_erratic_clutter_with_path_lead_does_not_set_fallback():
+  """Signs / opposing jumps trip reliability; path lead stays, no HUD."""
+  scenario = RadarScenario(v_ego=16.0)
+  scenario.set_radar_enabled(True)
+  lead = scenario.step(1.0, vision_d_rel=40.0,
+                       radar_points=[(1, 40.0, 0.0, 0.0), (7, 50.0, 0.2, -32.0)])
+  assert lead.radar
+  y = 5.0
+  for frame in range(1, 12):
+    lead = scenario.step(
+      1.0 + frame * 0.05, vision_d_rel=40.0,
+      radar_points=[(1, 40.0, 0.0, 0.0), (7, 50.0, y, -32.0)])
+    y += 5.0
+    assert not scenario.radar.radar_state.radarPreferFallback
+  assert not scenario.radar.reliability.healthy
+  assert scenario.radar.radar_state.radarPreferReason == "erratic"
+  assert lead.radar
+  assert lead.radarTrackId == 1
+
+
 def test_radar_disabled_does_not_set_fallback_alert():
   scenario = RadarScenario()
   scenario.set_radar_enabled(False)
