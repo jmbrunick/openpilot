@@ -275,6 +275,19 @@ def test_unhealthy_radar_uses_stock_fusion_and_sets_fallback():
   assert not lead.radar
   assert lead.dRel == pytest.approx(DIG_VISION_WRONG_DREL)
   assert scenario.radar.radar_state.radarPreferFallback
+  assert scenario.radar.radar_state.radarPreferReason == "override"
+
+
+def test_crawl_empty_table_does_not_set_fallback_alert():
+  """e3 gravel: empty table at ~5 m/s must not flash Radar Unreliable."""
+  scenario = RadarScenario(v_ego=5.35)
+  scenario.set_radar_enabled(True)
+  scenario.step(1.0, vision_d_rel=20.0, radar_points=[(1, 20.0, 0.0, 0.0)])
+  for frame in range(1, 9):
+    scenario.step(1.0 + frame * 0.05, vision_d_rel=20.0, radar_points=[])
+    assert not scenario.radar.radar_state.radarPreferFallback
+  assert scenario.radar.reliability.healthy
+  assert scenario.radar.radar_state.radarPreferReason == "dropout"
 
 
 def test_radar_disabled_does_not_set_fallback_alert():

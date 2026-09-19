@@ -36,6 +36,8 @@ def remove_ignored_fields(msg, ignore):
       val = 0
     elif isinstance(v, (list, capnp.lib.capnp._DynamicListBuilder)):
       val = []
+    elif isinstance(v, (str, bytes)):
+      val = ""
     else:
       raise NotImplementedError(f"Unknown type: {type(v)}")
     setattr(attr, keys[-1], val)
