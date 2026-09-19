@@ -547,6 +547,34 @@ def test_far_low_prob_incumbent_does_not_hold_for_regen():
   assert not lead.status
 
 
+def test_2102_farther_over_opposing_pack_stays_ignored():
+  """Justin 21:02: several opposing + a semi farther over — no leadOne.
+
+  Near-edge 802-class still rejected. In-path lead still associates.
+  """
+  v_ego = 20.0
+  pack = [
+    (1, 70.0, 3.0, -(v_ego + 20.0)),
+    (2, 55.0, 3.2, -(v_ego + 18.0)),
+    (3, 40.0, 3.5, -(v_ego + 22.0)),
+    (4, 28.0, 2.9, -(v_ego + 19.0)),
+    (5, 20.0, 3.3, -(v_ego + 21.0)),
+  ]
+  for raining in (False, True):
+    scenario = RadarScenario(v_ego=v_ego)
+    scenario.set_rain_hold(raining)
+    lead = scenario.step(1.0, vision_d_rel=60.0, radar_points=pack,
+                         vision_prob=0.40, vision_v=-(v_ego + 20.0))
+    assert not lead.radar, f"rain={raining} latched 21:02 farther-over pack"
+    assert not lead.status, f"rain={raining} published 21:02 opposing as leadOne"
+
+  scenario = RadarScenario(v_ego=v_ego)
+  scenario.set_rain_hold(True)
+  lead = scenario.step(1.0, vision_d_rel=40.0, radar_points=[IN_PATH, *pack])
+  assert lead.radar
+  assert lead.radarTrackId == 11
+
+
 def test_ep2059_near_edge_oncoming_semi_does_not_become_lead():
   """20:59/21:00: yRel +2.23 inside old 2.5 m + oncoming vLead → no leadOne.
 

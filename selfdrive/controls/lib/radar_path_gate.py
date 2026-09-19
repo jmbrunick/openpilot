@@ -24,11 +24,13 @@ from typing import Any, Sequence
 # of the camera / model origin. Keep in sync with radard.RADAR_TO_CAMERA.
 RADAR_TO_CAMERA_M = 1.52
 
-# e1: #201's 2.5 / 4.0 yRel windows held LEFT STAT at +2.2…+3.9 m.
-# EP_2059: near-edge opposing 771/802 sat at yRel +2.23…+2.48 (inside 2.5)
-# with vLead −49 / −42 mph. Justin: pull the in-lane perimeter to ~2.0 m
-# and reject vLead < 0. Mid-lane opposing (21:02/21:03, |yRel| > 2.5)
-# never became leadOne — keep that. Path-relative when modelV2 exists.
+# #201's 2.5 / 4.0 yRel windows (~8.2 / 13.1 ft) held LEFT STAT and
+# near-edge opposing. 20:59/21:00 semis sat at yRel +2.23…+2.48 (inside
+# 2.5). Justin 21:02: move the rain-hold perimeter in a few feet so
+# those near-edge latches stop, while a semi farther over in its lane
+# stays clean. 2.0 m ≈ 6.6 ft is ~1.6 ft inside 2.5 and inside 2.23.
+# Do not nuke mid-lane opposing (21:02/21:03, |yRel| > 2.5). Path-
+# relative when modelV2 exists; 4.0 incumbent is gone.
 PATH_HALF_WIDTH_M = 1.5
 PATH_INCUMBENT_HALF_WIDTH_M = 2.0
 

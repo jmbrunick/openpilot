@@ -261,6 +261,32 @@ def test_ep2059_mid_lane_opposing_never_acquired():
   assert pick_rain_radar_track(mid, {900: mid}, None, v_ego) is None
 
 
+def test_2102_farther_over_semi_stays_clean():
+  """Justin 21:02: 4–5 opposing including a semi farther over — no regen.
+
+  Near-edge 2.23 m (20:59/21:00) is outside the 2.0 m perimeter.
+  Farther-over ~3.0–3.5 m must stay ignored; do not nuke all opposing.
+  """
+  v_ego = 20.0
+  near_edge = track(802, 40.0, y_rel=2.23, v_rel=-(v_ego + 18.8))
+  pack = [
+    track(1, 70.0, y_rel=3.0, v_rel=-(v_ego + 20.0)),
+    track(2, 55.0, y_rel=3.2, v_rel=-(v_ego + 18.0)),
+    track(3, 40.0, y_rel=3.5, v_rel=-(v_ego + 22.0)),  # semi farther over
+    track(4, 28.0, y_rel=2.9, v_rel=-(v_ego + 19.0)),
+    track(5, 20.0, y_rel=3.3, v_rel=-(v_ego + 21.0)),
+  ]
+  tracks = {t.identifier: t for t in pack}
+  assert not radar_hold_kinematics_ok(near_edge, v_ego=v_ego)
+  assert pick_rain_radar_track(None, tracks, None, v_ego) is None
+  for t in pack:
+    assert pick_rain_radar_track(None, tracks, t.identifier, v_ego) is None
+    assert pick_rain_radar_track(t, {t.identifier: t}, None, v_ego) is None
+  lead = track(11, 38.0, y_rel=0.3, v_rel=-0.4)
+  tracks[11] = lead
+  assert pick_rain_radar_track(lead, tracks, 11, v_ego) is lead
+
+
 def test_ep2059_far_stat_phantom_not_acquired():
   """20:59:40 far STAT 84–123 m. Rain must not FOV-latch low-prob furniture."""
   v_ego = 20.0

@@ -129,6 +129,17 @@ def test_curve_outside_sign_is_not_an_oncoming_lead():
   assert radar_follow_ok(on_curve, v_ego, path_x, path_y)
 
 
+def test_2102_perimeter_splits_near_edge_and_farther_over():
+  """2.0 m perimeter: 2.23 near-edge fails; 3.2 farther-over stays off-path."""
+  v_ego = 20.0
+  near = radar(d_rel=40.0, y_rel=2.23, v_rel=-(v_ego + 18.8))
+  far = radar(d_rel=40.0, y_rel=3.2, v_rel=-(v_ego + 20.0))
+  assert not radar_follow_ok(near, v_ego, max_lat=PATH_INCUMBENT_HALF_WIDTH_M)
+  assert not radar_follow_ok(far, v_ego, max_lat=PATH_INCUMBENT_HALF_WIDTH_M)
+  assert abs(path_lateral_m(near)) > PATH_INCUMBENT_HALF_WIDTH_M
+  assert abs(path_lateral_m(far)) > PATH_INCUMBENT_HALF_WIDTH_M
+
+
 def test_straight_opposing_passers_are_not_follow_leads():
   """20:58: mid-lane opposing stays off the follow set (ignored, no brake)."""
   v_ego = 20.0
