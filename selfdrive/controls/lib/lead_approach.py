@@ -382,6 +382,10 @@ def slew_near_gap_small_a(target, prev, v_rel, d_rel=None, slack=None,
   # already slews; this path only softens floor↔release chatter.
   if abs(p) < 1e-6:
     return t
+  # Do not delay rematch / grade +a. Plant-aligned hold sat 0.12 m/s
+  # slow when −0.22 → +0.08 walked 0.02 / frame.
+  if t >= 0.0:
+    return t
   if t > p:
     return min(t, p + float(slew))
   if t < p:

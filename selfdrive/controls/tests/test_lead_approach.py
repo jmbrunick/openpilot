@@ -1503,6 +1503,10 @@ def test_near_gap_small_a_slews_chatter_not_authority():
     -0.17, LEAD_CLOSE_OPENING_A_MS2, 0.2, d_rel=40.0, slack=4.0,
   )
   assert flip == pytest.approx(LEAD_CLOSE_OPENING_A_MS2 - LEAD_NEAR_GAP_SLEW_MS2)
+  # Rematch / grade +a is immediate (do not walk −0.22 → +0.08).
+  assert slew_near_gap_small_a(
+    LEAD_CLOSE_OPENING_A_MS2, -LEAD_APPROACH_MILD_A_MS2, 0.1, d_rel=40.0, slack=4.0,
+  ) == pytest.approx(LEAD_CLOSE_OPENING_A_MS2)
   # First onset of mild ease is immediate (do not delay earlier settle).
   assert slew_near_gap_small_a(
     -LEAD_APPROACH_MILD_A_MS2, 0.0, 1.4, d_rel=40.0, slack=8.0,
