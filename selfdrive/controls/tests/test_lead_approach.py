@@ -48,13 +48,28 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_ACQUIRE_SLEW_MS2,
   LEAD_ATARGET_SLEW_MS2,
   LEAD_MPC_SOFT_NEAR_M,
+  LEAD_SETTLE_GAP_BIAS_M,
+  LEAD_SLOW_CLOSE_MS,
+  LEAD_GLIDE_VREL_MS,
+  LEAD_GLIDE_VREL_OFF_MS,
+  LEAD_GLIDE_SLACK_M,
+  LEAD_GLIDE_SLACK_OFF_M,
+  LEAD_GLIDE_A_MS2,
+  LEAD_GLIDE_CHATTER_LO_MS2,
+  LEAD_GLIDE_CHATTER_HI_MS2,
+  LEAD_NEAR_GAP_SLACK_M,
+  LEAD_NEAR_GAP_SLEW_MS2,
   NAP_T_FOLLOW,
   STOP_DISTANCE,
   apply_lead_approach_overlay,
+  apply_lead_glide_a,
   cap_closing_lead_accel,
   lead_approach_decel_ms2,
   lead_alead_owns_match,
+  lead_inside_slow_close_a_ms2,
   lead_is_closing,
+  lead_is_glide_sample,
+  lead_kinematic_slack_m,
   lead_mpc_needs_full_authority,
   lead_owns_plan,
   lead_approach_is_rapid,
@@ -74,8 +89,10 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   slew_follow_plus_a,
   slew_lead_acquire_a,
   slew_lead_approach_a,
+  slew_near_gap_small_a,
   soft_limit_mpc_a_target,
   update_lead_acquire,
+  update_lead_glide,
   update_lead_settle,
 )
 from openpilot.selfdrive.mapd.constants import (
@@ -171,6 +188,24 @@ def test_lead_approach_keeps_early_map_brake_not_map_110m_margin():
   assert abs(LEAD_ACQUIRE_SLEW_MS2 - LEAD_ATARGET_SLEW_MS2) < 1e-9
   assert abs(LEAD_MPC_SOFT_NEAR_M - 12.0) < 1e-9
   assert STOP_DISTANCE < LEAD_MPC_SOFT_NEAR_M <= LEAD_CLOSE_REMATCH_SLACK_M
+  # e8 settle / glide: keep acquire, add gap bias + matched-speed deadband.
+  assert abs(LEAD_SETTLE_GAP_BIAS_M - 3.0) < 1e-9
+  assert 2.0 <= LEAD_SETTLE_GAP_BIAS_M <= 4.0
+  assert abs(LEAD_SLOW_CLOSE_MS - 0.8) < 1e-9
+  assert LEAD_GLIDE_VREL_MS < LEAD_SLOW_CLOSE_MS < LEAD_CLOSING_MATCH_MS
+  assert abs(LEAD_GLIDE_VREL_MS - LEAD_SETTLE_VREL_MS) < 1e-9
+  assert abs(LEAD_GLIDE_VREL_OFF_MS - 0.70) < 1e-9
+  assert LEAD_GLIDE_VREL_MS < LEAD_GLIDE_VREL_OFF_MS < LEAD_SLOW_CLOSE_MS
+  assert abs(LEAD_GLIDE_SLACK_M - 10.0) < 1e-9
+  assert abs(LEAD_GLIDE_SLACK_OFF_M - 14.0) < 1e-9
+  assert LEAD_GLIDE_SLACK_M < LEAD_GLIDE_SLACK_OFF_M
+  assert abs(LEAD_GLIDE_A_MS2 - 0.05) < 1e-9
+  assert 0.0 < LEAD_GLIDE_A_MS2 < LEAD_CLOSE_OPENING_A_MS2
+  assert LEAD_GLIDE_CHATTER_LO_MS2 < -LEAD_APPROACH_MILD_A_MS2
+  assert LEAD_GLIDE_CHATTER_HI_MS2 > LEAD_CLOSE_REMATCH_A_MS2
+  assert abs(LEAD_NEAR_GAP_SLACK_M - 15.0) < 1e-9
+  assert abs(LEAD_NEAR_GAP_SLEW_MS2 - 0.02) < 1e-9
+  assert LEAD_NEAR_GAP_SLEW_MS2 < LEAD_ATARGET_SLEW_MS2
   assert abs(LEAD_CLOSE_HOLD_S - 0.50) < 1e-9
   assert abs(LEAD_CLOSE_MAX_M - LEAD_APPROACH_MAX_START_M) < 1e-9
   import openpilot.selfdrive.controls.lib.lead_approach as lead_approach
@@ -706,6 +741,10 @@ def test_planner_wires_hysteresis_and_slew():
   assert "slew_lead_acquire_a(" in planner
   assert "update_lead_acquire(" in planner
   assert "acquiring=acquiring" in planner
+  assert "update_lead_glide(" in planner
+  assert "apply_lead_glide_a(" in planner
+  assert "slew_near_gap_small_a(" in planner
+  assert "prev_floored=self._lead_soft_limit_floored" in planner
   assert "v_cruise=v_hud_ms" in planner
   assert "allow_rapid=allow_rapid" in planner
   assert "a_lead=lead_a_k" in planner
@@ -744,10 +783,14 @@ def test_mild_close_stays_light_regen():
   v_slow = v_lead + 2.24
   slack = 8.0
   a_slow = lead_approach_decel_ms2(v_slow, v_lead, d_follow + slack, t4)
-  a_kin = -(2.24 * 2.24) / (2.0 * slack)
+  a_kin = -(2.24 * 2.24) / (2.0 * lead_kinematic_slack_m(slack, 2.24))
   assert a_slow is not None
   assert a_slow == pytest.approx(max(a_kin, -LEAD_APPROACH_MILD_A_MS2), abs=1e-6)
   assert abs(a_slow) < LEAD_APPROACH_A_MS2 - 0.20
+  # Gap bias makes the last meters firmer than raw slack, still mild.
+  a_raw = -(2.24 * 2.24) / (2.0 * slack)
+  assert lead_kinematic_slack_m(slack, 2.24) < slack
+  assert a_kin <= a_raw + 1e-9
 
 
 def test_rapid_close_allows_stronger_early_decel():
@@ -762,7 +805,7 @@ def test_rapid_close_allows_stronger_early_decel():
 
   a_far = lead_approach_decel_ms2(v_ego, v_lead, 180.0, t4, model_prob=1.0, radar=True, allow_rapid=True)
   slack_far = 180.0 - d_follow
-  a_kin = -(v_rel * v_rel) / (2.0 * slack_far)
+  a_kin = -(v_rel * v_rel) / (2.0 * lead_kinematic_slack_m(slack_far, v_rel))
   assert a_far == pytest.approx(max(a_kin, -LEAD_APPROACH_A_MS2), abs=1e-6)
   assert abs(a_far) > LEAD_APPROACH_MILD_A_MS2 or abs(a_kin) <= LEAD_APPROACH_MILD_A_MS2
 
@@ -1374,3 +1417,128 @@ def test_far_radar_lead_eases_without_model_prob():
     assert a is not None and a < 0.0
     assert lead_approach_track_ok(d_rel, model_prob=0.15, radar=True)
     assert not lead_approach_track_ok(d_rel, model_prob=0.9, radar=False)
+
+
+def test_matched_speed_glide_deadbands_chatter_with_hysteresis():
+  """e8 settle yo-yo: |v_rel| small near the gap → a≈0, no rematch↔mild flip.
+
+  Acquire / far catch-up / rapid / bumper stay out of the deadband.
+  """
+  assert lead_is_glide_sample(0.2, 3.0)
+  assert lead_is_glide_sample(-0.3, -8.0)
+  assert not lead_is_glide_sample(0.2, 20.0)
+  assert not lead_is_glide_sample(0.8, 3.0)
+  assert not lead_is_glide_sample(0.2, None)
+
+  assert update_lead_glide(False, 0.2, 3.0) is True
+  # Hysteresis: hold through a 0.55 close that would fail enter.
+  assert 0.55 < LEAD_GLIDE_VREL_OFF_MS
+  assert update_lead_glide(True, 0.55, 3.0) is True
+  assert update_lead_glide(True, 0.75, 3.0) is False
+  assert update_lead_glide(True, 0.2, 16.0) is False
+  # First-latch / danger never glide.
+  assert update_lead_glide(False, 0.2, 3.0, acquiring=True) is False
+  assert update_lead_glide(False, 0.2, 3.0, fcw=True) is False
+  assert update_lead_glide(False, 0.2, 3.0, d_rel=LEAD_MPC_SOFT_NEAR_M) is False
+  assert update_lead_glide(False, 8.0, 3.0) is False
+
+  # Rematch trickle ↔ mild floor snaps to coast / slight lift.
+  assert apply_lead_glide_a(-LEAD_APPROACH_MILD_A_MS2, True) == pytest.approx(0.0)
+  assert apply_lead_glide_a(-0.17, True) == pytest.approx(0.0)
+  assert apply_lead_glide_a(LEAD_CLOSE_OPENING_A_MS2, True) == pytest.approx(LEAD_GLIDE_A_MS2)
+  assert apply_lead_glide_a(0.0, True) == pytest.approx(0.0)
+  assert apply_lead_glide_a(-0.22, False) == pytest.approx(-0.22)
+  # Accel-ceil grade hold and MPC dump sit outside the chatter band.
+  assert apply_lead_glide_a(0.32, True) == pytest.approx(0.32)
+  assert apply_lead_glide_a(-2.0, True) == pytest.approx(-2.0)
+
+
+def test_inside_fd_slow_close_commands_mild_not_dump():
+  """e8 gap-cross: closing ~1.25 m/s inside FD commands MILD, not rematch or dump."""
+  # Same-speed inside FD is still a too-close recovery, not a dump.
+  assert not lead_mpc_needs_full_authority(0.2, 40.0, slack=-2.0)
+  assert lead_inside_slow_close_a_ms2(0.2, -2.0) is None
+  # Below the slow-close gate: coast, no rematch +a.
+  a_coast = cap_closing_lead_accel(
+    0.20, 0.6, a_lead=0.0, lead_present=True, slack=-2.0,
+  )
+  assert a_coast == pytest.approx(0.0)
+
+  a_e8 = lead_inside_slow_close_a_ms2(1.25, -2.0)
+  assert a_e8 == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  assert cap_closing_lead_accel(
+    0.20, 1.25, a_lead=0.0, lead_present=True, slack=-2.0,
+  ) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  # Closing ≳ 1.5 inside FD is still slight-lift (#216), not dump.
+  assert lead_inside_slow_close_a_ms2(1.6, -2.0) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  assert not lead_mpc_needs_full_authority(1.6, 30.0, slack=-2.0)
+  assert lead_mpc_needs_full_authority(8.0, 40.0, slack=20.0, confirm_rapid=False)
+  assert lead_mpc_needs_full_authority(2.0, LEAD_MPC_SOFT_NEAR_M, slack=2.0)
+
+
+def test_near_gap_small_a_slews_chatter_not_authority():
+  """Soft-limit −0.22 ↔ −0.55 near the gap must not step in one frame."""
+  stepped = slew_near_gap_small_a(
+    -0.55, -LEAD_APPROACH_MILD_A_MS2, 1.4, d_rel=40.0, slack=8.0,
+  )
+  assert stepped == pytest.approx(-LEAD_APPROACH_MILD_A_MS2 - LEAD_NEAR_GAP_SLEW_MS2)
+  assert stepped > -0.40
+  # Sign flip rematch → mild also slews through 0.
+  flip = slew_near_gap_small_a(
+    -0.17, LEAD_CLOSE_OPENING_A_MS2, 0.2, d_rel=40.0, slack=4.0,
+  )
+  assert flip == pytest.approx(LEAD_CLOSE_OPENING_A_MS2 - LEAD_NEAR_GAP_SLEW_MS2)
+  # First onset of mild ease is immediate (do not delay earlier settle).
+  assert slew_near_gap_small_a(
+    -LEAD_APPROACH_MILD_A_MS2, 0.0, 1.4, d_rel=40.0, slack=8.0,
+  ) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  # Inside FD mild command is immediate (do not delay the settle).
+  assert slew_near_gap_small_a(
+    -LEAD_APPROACH_MILD_A_MS2, 0.0, 1.25, d_rel=30.0, slack=-2.0,
+  ) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  # Rapid / bumper / FCW stay immediate.
+  assert slew_near_gap_small_a(
+    -2.0, 0.0, 8.0, d_rel=40.0, slack=8.0, allow_rapid=True,
+  ) == pytest.approx(-2.0)
+  assert slew_near_gap_small_a(
+    -2.0, 0.0, 1.2, d_rel=LEAD_MPC_SOFT_NEAR_M, slack=2.0,
+  ) == pytest.approx(-2.0)
+  assert slew_near_gap_small_a(
+    -2.0, 0.0, 0.2, d_rel=40.0, slack=4.0, fcw=True,
+  ) == pytest.approx(-2.0)
+  # Far slack: no extra slew (acquire / large-gap path unchanged).
+  assert slew_near_gap_small_a(
+    -0.46, 0.0, 1.2, d_rel=118.0, slack=80.0,
+  ) == pytest.approx(-0.46)
+
+
+def test_soft_limit_always_mild_on_non_emergency():
+  """#216: 1.4↔1.6 flicker near the gap stays at the mild floor."""
+  v_ego = 25.0
+  d_rel = 40.0
+  v_flicker = v_ego - 1.6
+  assert soft_limit_mpc_a_target(
+    -0.55, v_ego, v_flicker, d_rel, a_lead=0.0, slack=8.0,
+  ) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  assert soft_limit_mpc_a_target(
+    -0.55, v_ego, v_ego - 2.0, d_rel, a_lead=0.0, slack=8.0, prev_floored=True,
+  ) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+
+
+def test_settle_gap_bias_firms_last_meters_not_hud_follow():
+  """Aim ~3 m long while closing so we are not still at −1.2 m/s at slack=0."""
+  assert lead_kinematic_slack_m(20.0, 1.25) == pytest.approx(17.0)
+  assert lead_kinematic_slack_m(6.0, 1.25) == pytest.approx(3.0)
+  assert lead_kinematic_slack_m(2.0, 1.25) == pytest.approx(0.75)
+  # Speeds matched: no bias (glide owns).
+  assert lead_kinematic_slack_m(6.0, 0.10) == pytest.approx(6.0)
+  t2 = nap_t_follow(2)
+  v_lead = 30.0
+  d_follow = t2 * v_lead + STOP_DISTANCE
+  slack = 6.0
+  v_rel = 1.25
+  a = lead_approach_decel_ms2(v_lead + v_rel, v_lead, d_follow + slack, t2)
+  a_raw = -(v_rel * v_rel) / (2.0 * slack)
+  assert a is not None
+  assert a <= a_raw + 1e-9
+  assert a >= -LEAD_APPROACH_MILD_A_MS2 - 1e-9
