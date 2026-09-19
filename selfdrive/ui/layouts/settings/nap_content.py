@@ -212,8 +212,8 @@ WIPER_SENSITIVITY_DESCRIPTION = (
   "Auto only. More dry (Drier) ↔ more wet (Wetter). Mid is the baseline. "
   "Lower wipes sooner / more often; higher tolerates more film before a "
   "repeat wipe. Scales the first-wipe bar, the post-wipe repeat bar, and "
-  "the light-mist minimum rewipe gap (Drier ~8–12 s, Mid ~20–25 s). Does "
-  "not spray."
+  "the light-mist minimum rewipe gap (Drier ~5–8 s, Dry ~8–12 s, Mid "
+  "~20–25 s). Does not spray."
 )
 HIGH_LOW_BEAM_DESCRIPTION = (
   "Pre-AP Model S only, for on-car testing. Default Off. Low is the same as "

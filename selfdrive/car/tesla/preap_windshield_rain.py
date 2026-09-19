@@ -34,11 +34,12 @@ the *repeat* bar (REWIPE_ON), not acquire. True heavy (HEAVY_ON≈9) can
 rewipe after that holdoff. Light mist must not clock Mid at the old
 ~12.5 s pulses (pulse+wait+two idle looks); Mid keeps
 MIN_REWIPE_GAP_LIGHT_S (~25 s). Drier/Dry (sens 0–1) lower acquire and
-repeat so evening film first-wipes sooner and can rewipe without
-waiting for heavy≈9; their light gap is ~8–12 s at 0, scaling toward
-Mid. NAPWiperSensitivity (0–4, mid=2) scales acquire, repeat, and that
-gap. Park / v≈0 suppress is in body controls; scoring still runs. Off
-still leaves the real stalk.
+repeat further so evening film (~2.15 highway mist) first-wipes and
+can rewipe without waiting for heavy≈9; Drier light gap is ~5–8 s,
+Dry ~8–12 s. Drier acquires on one wet look (park / v≈0 still
+suppress TX). NAPWiperSensitivity (0–4, mid=2) scales acquire, repeat,
+looks, and that gap. Park / v≈0 suppress is in body controls; scoring
+still runs. Off still leaves the real stalk.
 
 Bokeh energy is an 8-bit residual (~0 dry, ~2–5 wet). A live clear-glass
 log showed bokeh=49165 — wrong Y scale or a bandpass blowup. Impossible
@@ -154,37 +155,40 @@ MIST_FILM_SPARSE = (1.8, 5.25)
 MIST_FILM_SPECKLE = 0.008
 # Combined obstruction: 1.0 is looks_rainy / wetness floor (rain/frost/ice).
 HOLD_ON = 1.0
-# First wipe: two consecutive idle scores at/above this *after* warmup.
-# Mist film live/offline sits ~6–8. Do not "fix" dry garage by raising
-# this past old 6.29. Heavy milky / dense beads (~10+) still enter.
-# Lower than REWIPE_ON so the first wipe is not waiting on a heavy bar.
-# Sens 0–1 scale this down further (evening mist on Drier sat below 4.5).
+# First wipe: Mid+ needs two consecutive idle scores at/above this
+# *after* warmup. Drier (sens 0) needs one. Mist film live/offline sits
+# ~6–8. Do not "fix" dry garage by raising this past old 6.29. Heavy
+# milky / dense beads (~10+) still enter. Lower than REWIPE_ON so the
+# first wipe is not waiting on a heavy bar. Sens 0–1 scale this down
+# further: 2db9e6c30 highway mist was ~2.15; #200 Drier acquire (~2.61)
+# still missed e0 000000e0--68791b5c92 (one wipe in ~7 min).
 ACQUIRE_ON = 4.5
 # Status "heavy" and the unscaled gap-skip bar. Light film (~6–8.4) is
 # not heavy. 2026-09-18 Drier mist: long 125–271 s quiet gaps because
 # repeat sat at HEAVY_ON*0.80≈7.2 and the light gap was still ~20 s.
+# #200 dropped Drier repeat to 4.5; e0 still under-wiped.
 HEAVY_ON = 9.0
-# Mid post-wipe re-enter. Sens 0–1 scale below the film band so Drier/Dry
-# can rewipe light mist without needing heavy≈9. Gap still applies unless
-# the score is truly HEAVY_ON — do not 4 s-thrash when repeat is lowered.
+# Mid post-wipe re-enter. Sens 0–1 scale below the film / highway-mist
+# band so Drier/Dry can rewipe without needing heavy≈9. Gap still
+# applies unless the score is truly HEAVY_ON — do not 4 s-thrash.
 REWIPE_ON = HEAVY_ON
 # 0 = wipe sooner / more often (more dry). 4 = tolerate more film (more wet).
 NAP_WIPER_SENSITIVITY = "NAPWiperSensitivity"
 WIPER_SENSITIVITY_MIN = 0
 WIPER_SENSITIVITY_MAX = 4
 WIPER_SENSITIVITY_DEFAULT = 2
-# Mid=1.00. Sens 0–1 drop more than the old 0.80/0.90 so light mist
-# acquires sooner. Mid+ stays the previous curve.
-ACQUIRE_SENSITIVITY_SCALE = (0.58, 0.76, 1.00, 1.10, 1.20)
-# Repeat was HEAVY_ON*0.80/0.90 (7.2/8.1). Light film ~6–8 never cleared
-# that bar. Drier/Dry sit in the film band; Mid stays 9.
-REPEAT_SENSITIVITY_SCALE = (0.50, 0.65, 1.00, 1.10, 1.20)
+# Mid=1.00. Sens 0–1 drop more than #200 (0.58/0.76) so ~2.15 mist
+# acquires. Mid+ stays the previous curve.
+ACQUIRE_SENSITIVITY_SCALE = (0.36, 0.46, 1.00, 1.10, 1.20)
+# #200 Drier/Dry repeat was 4.5/5.85 — still above highway mist ~2.15.
+# Drier/Dry now sit in that band; Mid stays 9.
+REPEAT_SENSITIVITY_SCALE = (0.18, 0.22, 1.00, 1.10, 1.20)
 # Compat alias (older tests / callers). Prefer ACQUIRE_SENSITIVITY_SCALE.
 SENSITIVITY_SCALE = ACQUIRE_SENSITIVITY_SCALE
-# Light-mist min interval between wipe *starts*. Drier ~10 s; Mid 25 s
-# (do not return to the old ~12.5 s Mid pulse). Wet/Wetter stay 27.5/30.
+# Light-mist min interval between wipe *starts*. Drier ~6.5 s; Dry ~10 s;
+# Mid 25 s (do not return to the old ~12.5 s Mid pulse). Wet/Wetter 27.5/30.
 MIN_REWIPE_GAP_LIGHT_S = 25.0
-MIN_REWIPE_GAP_BY_SENS = (10.0, 16.0, 25.0, 27.5, 30.0)
+MIN_REWIPE_GAP_BY_SENS = (6.5, 10.0, 25.0, 27.5, 30.0)
 MIN_REWIPE_GAP_SENS_STEP = 2.5
 HOLD_OFF = 0.70
 EMA_ALPHA = 0.35
@@ -288,6 +292,16 @@ def min_rewipe_gap_light_s(sens: int | None = None) -> float:
   if sens is None:
     sens = current_sensitivity()
   return MIN_REWIPE_GAP_BY_SENS[clip_sensitivity(sens)]
+
+
+def acquire_hold_n(sens: int | None = None) -> int:
+  """Idle looks needed to first-wipe. Drier is 1; Dry+ stay MIN_HOLD_N.
+
+  Park / v≈0 still suppress TX, so one Drier look cannot garage-wipe.
+  """
+  if sens is None:
+    sens = current_sensitivity()
+  return 1 if clip_sensitivity(sens) <= 0 else MIN_HOLD_N
 
 
 def y_plane_from_nv12(buf, max_side: int = 0) -> np.ndarray | None:
@@ -717,6 +731,7 @@ class WindshieldRain:
     self._acquire_on = ACQUIRE_ON
     self._repeat_on = REWIPE_ON
     self._gap_light_s = MIN_REWIPE_GAP_LIGHT_S
+    self._acquire_n = MIN_HOLD_N
     self._owns_client = False
     self._need_flush = False
 
@@ -744,6 +759,7 @@ class WindshieldRain:
     self._acquire_on = acquire
     self._repeat_on = repeat
     self._gap_light_s = gap_light
+    self._acquire_n = acquire_hold_n(sens)
     return sens, acquire, repeat, gap_light
 
   def _gap_ok(self, now: float, score: float, _repeat: float, gap_light: float) -> bool:
@@ -767,7 +783,7 @@ class WindshieldRain:
     self._last_wipe_t0 = now
     self._wait_t0 = 0.0
     self._post_wipe = False
-    self._hold_n = MIN_HOLD_N
+    self._hold_n = self._acquire_n
     self._clear_n = 0
 
   def _finish_wipe(self) -> None:
@@ -812,7 +828,7 @@ class WindshieldRain:
           self._hold_n = 0
         elif self.last_score >= acquire:
           self._hold_n += 1
-          if (self._hold_n >= MIN_HOLD_N
+          if (self._hold_n >= int(self._acquire_n)
               and self._gap_ok(now, self.last_score, repeat, gap_light)):
             self._start_wipe(now)
         else:
@@ -931,7 +947,7 @@ class WindshieldRain:
       f"nap wiper rain hold={int(self.hold)} ema={self.ema:.2f} score={self.last_score:.2f} "
       + f"bokeh={self.last_bokeh:.2f} blob={self.last_blob:.2f} speckle={self.last_speckle:.3f} "
       + f"sparse={self.last_sparse:.1f} sat={self.last_sat:.3f} struct={self.last_structure:.3f} "
-      + f"holdn={int(self._hold_n)}/{int(MIN_HOLD_N)} warm={int(self._warm_n)}/{int(WARMUP_N)} "
+      + f"holdn={int(self._hold_n)}/{int(self._acquire_n)} warm={int(self._warm_n)}/{int(WARMUP_N)} "
       + f"clear={int(self._clear_n)}/{int(CLEAR_RELEASE_N)} "
       + f"sens={int(self._sens)} acq={int(self.last_score >= float(self._acquire_on))} "
       + f"rpt={int(self.last_score >= float(self._repeat_on))} "
