@@ -2,8 +2,10 @@
 
 Intersection max-regen on Scallywag (Fri 2026-09-18 ~20:49–20:52 CT)
 came from Bosch tracks of left roadside signs and opposing-lane traffic
-becoming leadOne. Rain-hold (#201, NAPWiperSpeed==3) then kept those
-phantoms through vision mismatch.
+becoming leadOne. A second episode ~20:54 CT: exiting a roundabout
+(planned path turning right to leave) max-regenned on a vehicle
+*entering* the circle — cross traffic off the exit path. Rain-hold
+(#201, NAPWiperSpeed==3) then kept those phantoms through vision mismatch.
 
 The driving path is `modelV2.position` — the same plan path the UI
 draws and vision uses for lead-in-path (`leadsV3` is the in-path lead
@@ -36,6 +38,13 @@ ONCOMING_MIN_VEGO_MS = 2.0
 
 # Radar-frame glitch floor (same as rain hold).
 MIN_DREL_M = 0.5
+
+# Synthesized Fri 2026-09-18 ~20:54 CT right-exit from a roundabout
+# (device +left). Dig will pin the live segment; these numbers are the
+# path-vs-off-path geometry: exit ~4 m right at 30 m, entrant at yRel≈0.
+ROUNDABOUT_EXIT_PATH_X = (0.0, 10.0, 20.0, 30.0, 50.0)
+ROUNDABOUT_EXIT_PATH_Y = (0.0, -0.8, -2.2, -4.0, -6.0)
+ROUNDABOUT_EXIT_X_M = 30.0
 
 
 def _num(obj: Any, *names: str) -> float | None:

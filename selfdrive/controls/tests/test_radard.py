@@ -1,6 +1,12 @@
 import pytest
 
 from cereal import messaging
+from openpilot.selfdrive.controls.lib.radar_path_gate import (
+  RADAR_TO_CAMERA_M,
+  ROUNDABOUT_EXIT_PATH_X,
+  ROUNDABOUT_EXIT_PATH_Y,
+  ROUNDABOUT_EXIT_X_M,
+)
 from openpilot.selfdrive.controls.radard import KalmanParams, RADAR_TO_CAMERA, RadarD, Track
 
 
@@ -371,5 +377,40 @@ def test_model_path_rejects_off_path_even_when_yrel_is_small():
   # Same curve: radar on the path (device y = −3 → yRel = +3) still associates.
   lead = scenario.step(1.1, vision_d_rel=38.48, radar_points=[(11, 38.48, 3.0, 0.0)],
                        vision_y=-3.0, path_x=path_x, path_y=path_y)
+  assert lead.radar
+  assert lead.radarTrackId == 11
+
+
+def test_roundabout_right_exit_does_not_follow_entering_vehicle():
+  """~20:54 CT: path turns right to leave; entering / cross traffic is off-path.
+
+  Entrant is not oncoming (circulating, vRel≈−2). yRel≈0 looks like an
+  in-path lead in a wide FOV. Dry and rain must not make it leadOne.
+  A vehicle already on the exit path still associates.
+  """
+  path_x = list(ROUNDABOUT_EXIT_PATH_X)
+  path_y = list(ROUNDABOUT_EXIT_PATH_Y)
+  d_rel = ROUNDABOUT_EXIT_X_M - RADAR_TO_CAMERA_M
+  entrant = (22, d_rel, 0.0, -2.0)
+  on_exit = (11, d_rel, 4.0, -1.0)
+
+  for raining in (False, True):
+    scenario = RadarScenario(v_ego=12.0)
+    scenario.set_rain_hold(raining)
+    lead = scenario.step(1.0, vision_d_rel=d_rel, radar_points=[entrant],
+                         vision_prob=0.92, vision_y=0.0,
+                         path_x=path_x, path_y=path_y)
+    assert not lead.radar, f"rain={raining} latched roundabout entrant"
+    assert not lead.status, f"rain={raining} vision-only followed entrant"
+
+  scenario = RadarScenario(v_ego=12.0)
+  scenario.set_rain_hold(True)
+  lead = scenario.step(1.0, vision_d_rel=d_rel, radar_points=[on_exit, entrant],
+                       vision_y=-4.0, path_x=path_x, path_y=path_y)
+  assert lead.radar
+  assert lead.radarTrackId == 11
+  # Vision flaps toward the entrant — rain must keep the exit-path association.
+  lead = scenario.step(1.1, vision_d_rel=d_rel, radar_points=[on_exit, entrant],
+                       vision_prob=0.97, vision_y=0.0, path_x=path_x, path_y=path_y)
   assert lead.radar
   assert lead.radarTrackId == 11

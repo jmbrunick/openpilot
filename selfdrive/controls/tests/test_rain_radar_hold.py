@@ -1,6 +1,12 @@
 """Rain-sensing mode gate / radar-hold policy. No cereal — dry fusion stays in test_radard."""
 from types import SimpleNamespace
 
+from openpilot.selfdrive.controls.lib.radar_path_gate import (
+  RADAR_TO_CAMERA_M,
+  ROUNDABOUT_EXIT_PATH_X,
+  ROUNDABOUT_EXIT_PATH_Y,
+  ROUNDABOUT_EXIT_X_M,
+)
 from openpilot.selfdrive.controls.lib.rain_radar_hold import (
   RAIN_CUT_IN_GAP_M,
   RainRadarGate,
@@ -159,3 +165,13 @@ def test_pick_does_not_let_rain_override_path_or_oncoming_rejects():
   assert pick_rain_radar_track(oncoming, {4: oncoming}, None, v_ego) is None
   assert pick_rain_radar_track(None, {5: good}, None, v_ego) is None
   assert pick_rain_radar_track(good, {5: good}, None, v_ego) is good
+
+
+def test_pick_does_not_latch_roundabout_entrant_off_exit_path():
+  """~20:54 CT: rain must not hold the entering vehicle on a right-exit path."""
+  v_ego = 12.0
+  entrant = track(22, ROUNDABOUT_EXIT_X_M - RADAR_TO_CAMERA_M, y_rel=0.0, v_rel=-2.0)
+  path = (ROUNDABOUT_EXIT_PATH_X, ROUNDABOUT_EXIT_PATH_Y)
+  assert not radar_hold_kinematics_ok(entrant, v_ego=v_ego, path_x=path[0], path_y=path[1])
+  assert pick_rain_radar_track(entrant, {22: entrant}, None, v_ego, path[0], path[1]) is None
+  assert pick_rain_radar_track(None, {22: entrant}, 22, v_ego, path[0], path[1]) is None

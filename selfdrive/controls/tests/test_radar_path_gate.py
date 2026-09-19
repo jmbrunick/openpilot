@@ -5,6 +5,10 @@ from openpilot.selfdrive.controls.lib.radar_path_gate import (
   ONCOMING_VLEAD_MS,
   PATH_HALF_WIDTH_M,
   PATH_INCUMBENT_HALF_WIDTH_M,
+  RADAR_TO_CAMERA_M,
+  ROUNDABOUT_EXIT_PATH_X,
+  ROUNDABOUT_EXIT_PATH_Y,
+  ROUNDABOUT_EXIT_X_M,
   path_lateral_m,
   path_y_at_x,
   radar_follow_ok,
@@ -12,6 +16,8 @@ from openpilot.selfdrive.controls.lib.radar_path_gate import (
   track_is_oncoming,
   vision_lead_follow_ok,
 )
+
+ROUNDABOUT_ENTRANT_DREL = ROUNDABOUT_EXIT_X_M - RADAR_TO_CAMERA_M
 
 
 def radar(d_rel=40.0, y_rel=0.0, v_rel=0.0, v_lead=None):
@@ -70,6 +76,24 @@ def test_incumbent_half_width_is_wider_than_acquire():
   edge = radar(d_rel=40.0, y_rel=PATH_HALF_WIDTH_M + 0.2)
   assert not radar_follow_ok(edge, v_ego=20.0, max_lat=PATH_HALF_WIDTH_M)
   assert radar_follow_ok(edge, v_ego=20.0, max_lat=PATH_INCUMBENT_HALF_WIDTH_M)
+
+
+def test_roundabout_exit_rejects_entering_cross_traffic():
+  """Right-exit path; entering vehicle is not oncoming and not on the path."""
+  path_x, path_y = ROUNDABOUT_EXIT_PATH_X, ROUNDABOUT_EXIT_PATH_Y
+  assert abs(path_y_at_x(path_x, path_y, ROUNDABOUT_EXIT_X_M) - (-4.0)) < 1e-6
+
+  # Looks ahead (yRel≈0), circulating ~same speed — the 20:54 max-regen lock.
+  entrant = radar(d_rel=ROUNDABOUT_ENTRANT_DREL, y_rel=0.0, v_rel=-2.0)
+  assert not track_is_oncoming(entrant, v_ego=12.0)
+  assert not track_is_in_path(entrant, path_x, path_y)
+  assert not radar_follow_ok(entrant, v_ego=12.0, path_x=path_x, path_y=path_y)
+  assert abs(path_lateral_m(entrant, path_x, path_y)) >= 3.5
+
+  # Lead already on the exit (device y = −4 → yRel = +4) stays valid.
+  on_exit = radar(d_rel=ROUNDABOUT_ENTRANT_DREL, y_rel=4.0, v_rel=-1.0)
+  assert track_is_in_path(on_exit, path_x, path_y)
+  assert radar_follow_ok(on_exit, v_ego=12.0, path_x=path_x, path_y=path_y)
 
 
 def test_vision_lead_rejects_oncoming_and_far_lateral():
