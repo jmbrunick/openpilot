@@ -1,3 +1,7 @@
+NAP lead acquire slew + small MPC bite soften (2026-09-19)
+========================
+* First lead latch no longer punches regen then rematch +a (e4 09:53:19: aTarget −0.46 → +0.05 in ~0.5 s at 118 m). Acquire window slews both ways. Large-slack small MPC adjustments (e4 −2.33 at ~40 m / 9.5 m/s) stay at the mild floor. Rapid close / near-bumper / FCW keep full −a. No panda flash.
+
 NAP town look-ahead for reverse-digitized / short first-way 30s (2026-09-19)
 ========================
 * Map Lookahead Early: `nextSpeedLimit` now arms for along-route town drops when OSM digitized the street opposite travel, and when the first 30 piece is only ~250 ft but the contiguous same-limit run is the real town. Side-road / stub blips under ~250 ft still ignored. Port of nap-dev #199. No panda flash.
