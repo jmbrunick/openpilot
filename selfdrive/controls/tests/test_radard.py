@@ -6,6 +6,9 @@ from openpilot.selfdrive.controls.lib.radar_path_gate import (
   CURVE_OUTSIDE_PATH_Y,
   CURVE_OUTSIDE_TWO_LANES_M,
   CURVE_OUTSIDE_X_M,
+  LEFT_TURN_PATH_X,
+  LEFT_TURN_PATH_Y,
+  LEFT_TURN_X_M,
   RADAR_TO_CAMERA_M,
   ROUNDABOUT_EXIT_PATH_X,
   ROUNDABOUT_EXIT_PATH_Y,
@@ -648,15 +651,35 @@ def test_2100_close_opposing_semi_not_kept_by_rain_hold():
 
 
 def test_left_turn_straight_ahead_sign_off_path_not_lead():
-  """~21:07 CT: sign dead ahead in radar (yRel≈0) but model path is turning left."""
-  path_x = [0.0, 15.0, 30.0, 50.0]
-  path_y = [0.0, 1.8, 4.0, 6.5]
+  """21:06–21:07: left turn. Ego-forward / left signs / oncoming semi off path.
+
+  yRel-only is not enough — the model path has already turned left.
+  """
+  path_x = list(LEFT_TURN_PATH_X)
+  path_y = list(LEFT_TURN_PATH_Y)
   v_ego = 12.0
-  sign = (55, 28.48, 0.0, -v_ego)
-  for raining in (False, True):
+  d_rel = LEFT_TURN_X_M - RADAR_TO_CAMERA_M
+  ahead = (905, d_rel, 0.0, -v_ego)
+  left_sign = (872, d_rel, 2.0, -v_ego)
+  semi = (880, d_rel, 0.4, -(v_ego + 16.0))
+  on_path = (11, d_rel, -4.0, -1.0)
+  for raining, pts, vision_v in (
+    (False, [ahead], 0.0),
+    (True, [ahead], 0.0),
+    (True, [left_sign], 0.0),
+    (True, [semi], -(v_ego + 16.0)),
+  ):
     scenario = RadarScenario(v_ego=v_ego)
     scenario.set_rain_hold(raining)
-    lead = scenario.step(1.0, vision_d_rel=28.48, radar_points=[sign],
-                         vision_prob=0.40, path_x=path_x, path_y=path_y)
-    assert not lead.radar, f"rain={raining} latched off-path ahead sign"
-    assert not lead.status, f"rain={raining} followed off-path ahead sign"
+    lead = scenario.step(1.0, vision_d_rel=d_rel, radar_points=pts,
+                         vision_prob=0.40, vision_v=vision_v,
+                         path_x=path_x, path_y=path_y)
+    assert not lead.radar, f"rain={raining} latched left-turn off-path {pts[0][0]}"
+    assert not lead.status, f"rain={raining} followed left-turn off-path {pts[0][0]}"
+
+  scenario = RadarScenario(v_ego=v_ego)
+  scenario.set_rain_hold(True)
+  lead = scenario.step(1.0, vision_d_rel=d_rel, radar_points=[on_path, ahead, semi],
+                       vision_y=4.0, path_x=path_x, path_y=path_y)
+  assert lead.radar
+  assert lead.radarTrackId == 11

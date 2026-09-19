@@ -13,6 +13,9 @@ from openpilot.selfdrive.controls.lib.radar_path_gate import (
   CURVE_OUTSIDE_PATH_Y,
   CURVE_OUTSIDE_TWO_LANES_M,
   CURVE_OUTSIDE_X_M,
+  LEFT_TURN_PATH_X,
+  LEFT_TURN_PATH_Y,
+  LEFT_TURN_X_M,
   path_lateral_m,
   path_y_at_x,
   radar_follow_ok,
@@ -127,6 +130,23 @@ def test_curve_outside_sign_is_not_an_oncoming_lead():
   on_curve = radar(d_rel=d_rel, y_rel=-path_at, v_rel=-1.0)
   assert track_is_in_path(on_curve, path_x, path_y)
   assert radar_follow_ok(on_curve, v_ego, path_x, path_y)
+
+
+def test_left_turn_ego_forward_is_not_path_association():
+  """21:06–21:07: yRel≈0 / left signs / oncoming semi are off the left-turn path."""
+  path_x, path_y = LEFT_TURN_PATH_X, LEFT_TURN_PATH_Y
+  d_rel = LEFT_TURN_X_M - RADAR_TO_CAMERA_M
+  v_ego = 12.0
+  ahead = radar(d_rel=d_rel, y_rel=0.0, v_rel=-v_ego)  # 21:07 sign
+  left_sign = radar(d_rel=d_rel, y_rel=2.0, v_rel=-v_ego)  # 21:06 tid 872 class
+  semi = radar(d_rel=d_rel, y_rel=0.4, v_rel=-(v_ego + 16.0))
+  assert abs(path_y_at_x(path_x, path_y, LEFT_TURN_X_M) - 4.0) < 1e-6
+  for t in (ahead, left_sign, semi):
+    assert not track_is_in_path(t, path_x, path_y)
+    assert not radar_follow_ok(t, v_ego, path_x, path_y)
+  on_path = radar(d_rel=d_rel, y_rel=-4.0, v_rel=-1.0)
+  assert track_is_in_path(on_path, path_x, path_y)
+  assert radar_follow_ok(on_path, v_ego, path_x, path_y)
 
 
 def test_2102_perimeter_splits_near_edge_and_farther_over():

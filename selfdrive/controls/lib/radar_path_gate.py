@@ -62,6 +62,13 @@ CURVE_OUTSIDE_PATH_Y = (0.0, 1.2, 2.8, 4.0, 5.5)
 CURVE_OUTSIDE_X_M = 45.0
 CURVE_OUTSIDE_TWO_LANES_M = 7.4
 
+# Synthesized Fri 2026-09-18 ~21:06–21:07 CT left turn. Path is already
+# +4 m left at 30 m. Ego-forward radar (yRel≈0) is furniture / an
+# oncoming semi that is NOT on the travel path. yRel-only is not enough.
+LEFT_TURN_PATH_X = (0.0, 15.0, 30.0, 50.0)
+LEFT_TURN_PATH_Y = (0.0, 1.8, 4.0, 6.5)
+LEFT_TURN_X_M = 30.0
+
 
 def _num(obj: Any, *names: str) -> float | None:
   for name in names:
