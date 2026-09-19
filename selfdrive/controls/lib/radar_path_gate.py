@@ -29,7 +29,8 @@ RADAR_TO_CAMERA_M = 1.52
 # 2.5). Justin 21:02: move the rain-hold perimeter in a few feet so
 # those near-edge latches stop, while a semi farther over in its lane
 # stays clean. 2.0 m ≈ 6.6 ft is ~1.6 ft inside 2.5 and inside 2.23.
-# Do not nuke mid-lane opposing (21:02/21:03, |yRel| > 2.5). Path-
+# Do not nuke mid-lane opposing (21:02 farther-over semi / 21:03
+# middle-of-lane truck, |yRel| > 2.5). Path-
 # relative when modelV2 exists; 4.0 incumbent is gone.
 PATH_HALF_WIDTH_M = 1.5
 PATH_INCUMBENT_HALF_WIDTH_M = 2.0

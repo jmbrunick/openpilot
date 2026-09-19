@@ -575,6 +575,28 @@ def test_2102_farther_over_opposing_pack_stays_ignored():
   assert lead.radarTrackId == 11
 
 
+def test_2103_mid_lane_oncoming_truck_stays_ignored():
+  """~21:03 CT: oncoming truck middle of opposing lane — no regen.
+
+  Keep with 21:02 as pass cases. Fail set is near-edge / off-path.
+  """
+  v_ego = 20.0
+  truck = (910, 45.0, 3.7, -(v_ego + 22.0))
+  for raining in (False, True):
+    scenario = RadarScenario(v_ego=v_ego)
+    scenario.set_rain_hold(raining)
+    lead = scenario.step(1.0, vision_d_rel=45.0, radar_points=[truck],
+                         vision_prob=0.40, vision_v=-(v_ego + 22.0))
+    assert not lead.radar, f"rain={raining} latched 21:03 mid-lane truck"
+    assert not lead.status, f"rain={raining} published 21:03 truck as leadOne"
+
+  scenario = RadarScenario(v_ego=v_ego)
+  scenario.set_rain_hold(True)
+  lead = scenario.step(1.0, vision_d_rel=40.0, radar_points=[IN_PATH, truck])
+  assert lead.radar
+  assert lead.radarTrackId == 11
+
+
 def test_ep2059_near_edge_oncoming_semi_does_not_become_lead():
   """20:59/21:00: yRel +2.23 inside old 2.5 m + oncoming vLead → no leadOne.
 

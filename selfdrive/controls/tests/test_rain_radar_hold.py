@@ -287,6 +287,21 @@ def test_2102_farther_over_semi_stays_clean():
   assert pick_rain_radar_track(lead, tracks, 11, v_ego) is lead
 
 
+def test_2103_mid_lane_oncoming_truck_stays_clean():
+  """~21:03 CT: oncoming truck in the middle of the opposing lane — no regen.
+
+  Pass with 21:02. Fail cases stay near-edge / off-path (20:59–21:00).
+  """
+  v_ego = 20.0
+  truck = track(910, 45.0, y_rel=3.7, v_rel=-(v_ego + 22.0))
+  assert not radar_hold_kinematics_ok(truck, v_ego=v_ego)
+  assert pick_rain_radar_track(None, {910: truck}, None, v_ego) is None
+  assert pick_rain_radar_track(None, {910: truck}, 910, v_ego) is None
+  assert pick_rain_radar_track(truck, {910: truck}, None, v_ego) is None
+  lead = track(11, 40.0, y_rel=0.2, v_rel=-0.4)
+  assert pick_rain_radar_track(lead, {11: lead, 910: truck}, 11, v_ego) is lead
+
+
 def test_ep2059_far_stat_phantom_not_acquired():
   """20:59:40 far STAT 84–123 m. Rain must not FOV-latch low-prob furniture."""
   v_ego = 20.0

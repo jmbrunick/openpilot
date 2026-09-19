@@ -134,10 +134,13 @@ def test_2102_perimeter_splits_near_edge_and_farther_over():
   v_ego = 20.0
   near = radar(d_rel=40.0, y_rel=2.23, v_rel=-(v_ego + 18.8))
   far = radar(d_rel=40.0, y_rel=3.2, v_rel=-(v_ego + 20.0))
+  mid_truck = radar(d_rel=45.0, y_rel=3.7, v_rel=-(v_ego + 22.0))
   assert not radar_follow_ok(near, v_ego, max_lat=PATH_INCUMBENT_HALF_WIDTH_M)
   assert not radar_follow_ok(far, v_ego, max_lat=PATH_INCUMBENT_HALF_WIDTH_M)
+  assert not radar_follow_ok(mid_truck, v_ego, max_lat=PATH_INCUMBENT_HALF_WIDTH_M)
   assert abs(path_lateral_m(near)) > PATH_INCUMBENT_HALF_WIDTH_M
   assert abs(path_lateral_m(far)) > PATH_INCUMBENT_HALF_WIDTH_M
+  assert abs(path_lateral_m(mid_truck)) > PATH_INCUMBENT_HALF_WIDTH_M
 
 
 def test_straight_opposing_passers_are_not_follow_leads():
