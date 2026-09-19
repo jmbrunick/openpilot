@@ -381,28 +381,34 @@ class RadarD:
     leads_v3 = sm['modelV2'].leadsV3
     # Prefer is default (Radar Enabled + healthy). Auto wiper is not required.
     # Unhealthy / disabled → stock fusion. Path/oncoming gates still apply.
-    self.rain_gate.set_reliable(
-      self.reliability.update(
-        tracks=self.tracks, errors=rr.errors, v_ego=self.v_ego,
-        timed_out=radar_timed_out,
-        ignore_hw_fail=self.rain_gate.read_ignore_hw_fail(),
-        engaged=self.engaged),
-      alert=self.reliability.should_alert)
+    # Health first so association uses the new prefer; HUD after so a
+    # path-associated lead can suppress clutter / timeout flashes.
+    healthy = self.reliability.update(
+      tracks=self.tracks, errors=rr.errors, v_ego=self.v_ego,
+      timed_out=radar_timed_out,
+      ignore_hw_fail=self.rain_gate.read_ignore_hw_fail(),
+      engaged=self.engaged)
+    self.rain_gate.set_reliable(healthy, alert=False)
     radar_prefer = bool(self.rain_gate.update())
-    if hasattr(self.radar_state, "radarPreferFallback"):
-      self.radar_state.radarPreferFallback = bool(self.rain_gate.fallback_alert)
-    if hasattr(self.radar_state, "radarPreferReason"):
-      self.radar_state.radarPreferReason = str(self.reliability.log_reason)
     path_x, path_y = model_path_xy(sm['modelV2'])
+    lead_one: dict[str, Any] = {'status': False}
     if len(leads_v3) > 1:
-      self.radar_state.leadOne = self.lead_one_association.update(
+      lead_one = self.lead_one_association.update(
         self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego,
         rain_hold=radar_prefer, radar_prefer=radar_prefer,
         path_x=path_x, path_y=path_y)
+      self.radar_state.leadOne = lead_one
       self.radar_state.leadTwo = self.lead_two_association.update(
         self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego,
         rain_hold=radar_prefer, radar_prefer=radar_prefer,
         path_x=path_x, path_y=path_y)
+    path_lead = bool(lead_one.get('status') and lead_one.get('radar'))
+    self.reliability.set_path_lead(path_lead)
+    self.rain_gate.set_reliable(healthy, alert=self.reliability.should_alert)
+    if hasattr(self.radar_state, "radarPreferFallback"):
+      self.radar_state.radarPreferFallback = bool(self.rain_gate.fallback_alert)
+    if hasattr(self.radar_state, "radarPreferReason"):
+      self.radar_state.radarPreferReason = str(self.reliability.log_reason)
 
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None
