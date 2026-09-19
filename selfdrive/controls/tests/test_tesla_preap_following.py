@@ -661,15 +661,14 @@ def test_planner_eases_for_slower_lead_before_mpc_and_lead_can_brake_harder():
   lead.vLead = v_lead
   for _ in range(16):
     planner.update(inputs)
-  # Closing ≥ 1.5: never rematch +a; match-speed −a unpins overlay-MILD −0.22.
+  # Closing ≥ 1.5: never rematch +a. Comfort path stays slight-lift MILD.
   assert planner.output_a_target <= 0.0
-  assert planner.output_a_target == pytest.approx(-LEAD_CLOSING_MATCH_GAIN * v_rel, abs=0.08)
+  assert planner.output_a_target >= -LEAD_APPROACH_MILD_A_MS2 - 0.08
 
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
   planner.update(inputs)
-  # 4.4 m/s close is under the rapid gate but must not pin −0.22 — match-speed −a.
-  assert planner.output_a_target == pytest.approx(-2.0, abs=0.08)
-  assert planner.output_a_target < -LEAD_APPROACH_MILD_A_MS2 - 0.50
+  # 4.4 m/s close is under the rapid gate: EV slight lift, not −2.0.
+  assert planner.output_a_target == pytest.approx(-LEAD_APPROACH_MILD_A_MS2, abs=0.08)
 
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
   planner.mpc.crash_cnt = 3
@@ -779,7 +778,7 @@ def test_planner_far_opening_alead_keeps_cruise_plus_a():
     planner.update(inputs)
   assert planner.output_a_target <= 0.0
 
-  # Near-gap braking lead still matches aLeadK.
+  # Near-gap braking lead: block rematch +a, stay slight-lift (not aLeadK).
   planner2 = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
   planner2._map_speed_accel = 5
   planner2.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=cruise_a)
@@ -796,7 +795,7 @@ def test_planner_far_opening_alead_keeps_cruise_plus_a():
     planner2.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=cruise_a)
     planner2.update(inputs2)
   assert planner2.output_a_target <= 0.0
-  assert planner2.output_a_target <= -0.70
+  assert planner2.output_a_target >= -LEAD_APPROACH_MILD_A_MS2 - 0.08
 
 
 def test_planner_far_same_speed_lead_may_keep_catchup_plus_a():
@@ -912,13 +911,13 @@ def test_planner_caps_lead_close_accel_at_min_accel_and_keeps_hard_brake():
   planner.update(inputs)
   assert planner.output_a_target == pytest.approx(-LEAD_APPROACH_MILD_A_MS2, abs=0.08)
   assert planner.output_a_target > -0.60
-  # Near-gap braking lead: full match-speed −a.
+  # Near-gap braking lead: slight-lift floor, not −2.0.
   lead.vLead = v_lead
   lead.dRel = d_follow + 8.0
   lead.aLeadK = -0.4
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
   planner.update(inputs)
-  assert planner.output_a_target == pytest.approx(-2.0, abs=0.08)
+  assert planner.output_a_target == pytest.approx(-LEAD_APPROACH_MILD_A_MS2, abs=0.08)
   lead.dRel = d_rel
   lead.aLeadK = 0.0
 
