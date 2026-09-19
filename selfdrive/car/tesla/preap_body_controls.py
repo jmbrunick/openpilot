@@ -797,6 +797,21 @@ def _auto_status_line(setting: int, on: bool, drive: bool, rain: bool, wipe: boo
       if last_wipe > 0.0:
         gap_left = max(0.0, gap_s - (now - last_wipe))
       hold_need = int(getattr(d, '_acquire_n', 0) or rainmod.acquire_hold_n(sens))
+      thin_s = 0.0
+      try:
+        thin_s = float(rainmod.thin_gap_s(sens))
+      except Exception:
+        thin_s = float(getattr(d, '_thin_gap_s', 0.0) or 0.0)
+      thin_t0 = float(getattr(d, '_thin_t0', 0.0) or 0.0)
+      thin_left = 0.0
+      if thin_s > 0.0:
+        if last_wipe > 0.0:
+          thin_left = max(0.0, thin_s - (now - last_wipe))
+        elif thin_t0 > 0.0:
+          thin_left = max(0.0, thin_s - (now - thin_t0))
+        else:
+          thin_left = thin_s
+      thin = int(getattr(d, '_thin', False) or getattr(d, '_thin_wipe', False))
       rain_bits = (
         f"hold={int(d.hold)} holdn={int(getattr(d, '_hold_n', 0))}/{hold_need} "
         + f"warm={int(getattr(d, '_warm_n', 0))}/{int(getattr(rainmod, 'WARMUP_N', 0))} "
@@ -807,6 +822,7 @@ def _auto_status_line(setting: int, on: bool, drive: bool, rain: bool, wipe: boo
         + f"heavy={int(d.last_score >= float(getattr(rainmod, 'HEAVY_ON', 2.2)))} "
         + f"pulse={pulse_left:.1f}/{pulse_s:.1f} wait={wait_left:.1f}/{wait_s:.1f} "
         + f"gap={gap_left:.1f}/{gap_s:.1f} "
+        + f"thin={thin} thin_gap={thin_left:.1f}/{thin_s:.1f} "
         + f"connected={int(d.connected)} failed={int(d._failed)} frames={d.n_frames} stream={d.stream} "
         + f"helper={int(d.helper_alive)} period_s={float(getattr(rainmod, 'SCORE_PERIOD_S', 0)):.1f} "
         + f"hz={float(getattr(rainmod, 'SCORE_HZ', 0)):.1f} age_ms={age_ms:.0f} err={d.last_err or '-'}"
@@ -837,20 +853,29 @@ def _auto_status_line(setting: int, on: bool, drive: bool, rain: bool, wipe: boo
 def _put_wiper_status(line: str) -> None:
   """Write NAPWiperRainStatus. Callers must rate-limit — this is the expensive put.
 
-  First write is block=True so the key lands on disk (e0 qlog InitData
-  missed it when only the async put ran after loggerd snapshot). Later
-  1 Hz writes stay non-blocking on the card RT path.
+  First write is block=True so the key lands on disk (e0/e1 qlog InitData
+  missed it when only the async put ran after loggerd snapshot, or when
+  CLEAR_ON_MANAGER_START wiped the install stub). Do not clear the once
+  flag before a successful put. If the key is empty later, block again.
+  Later 1 Hz writes stay non-blocking on the card RT path.
   """
   global _status_disk_once
-  block = bool(_status_disk_once)
-  _status_disk_once = False
   try:
-    _get_params().put("NAPWiperRainStatus", line, block=block)
-  except TypeError:
+    params = _get_params()
+    block = bool(_status_disk_once)
+    if not block:
+      try:
+        cur = params.get("NAPWiperRainStatus")
+        if cur is None or cur == b"" or cur == "":
+          block = True
+      except Exception:
+        block = True
     try:
-      _get_params().put("NAPWiperRainStatus", line)
-    except Exception:
-      pass
+      params.put("NAPWiperRainStatus", line, block=block)
+      _status_disk_once = False
+    except TypeError:
+      params.put("NAPWiperRainStatus", line)
+      _status_disk_once = False
   except Exception:
     pass
 
@@ -1035,5 +1060,5 @@ def install_body_controls_test():
     pass
   _put_wiper_status(
     "nap wiper auto setting=- on=0 gear=- gear_src=none raw=- drive=0 rain=0 wipe=0 "
-    "sens=- acq=0 rpt=0 gap=- park=- v0=- collar=0 wash=0 installed=1 waiting"
+    "sens=- acq=0 rpt=0 gap=- thin=0 thin_gap=- park=- v0=- collar=0 wash=0 installed=1 waiting"
   )

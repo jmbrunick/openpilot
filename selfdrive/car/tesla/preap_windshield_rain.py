@@ -36,10 +36,13 @@ rewipe after that holdoff. Light mist must not clock Mid at the old
 MIN_REWIPE_GAP_LIGHT_S (~25 s). Drier/Dry (sens 0–1) lower acquire and
 repeat further so evening film (~2.15 highway mist) first-wipes and
 can rewipe without waiting for heavy≈9; Drier light gap is ~5–8 s,
-Dry ~8–12 s. Drier acquires on one wet look (park / v≈0 still
-suppress TX). NAPWiperSensitivity (0–4, mid=2) scales acquire, repeat,
-looks, and that gap. Park / v≈0 suppress is in body controls; scoring
-still runs. Off still leaves the real stalk.
+Dry ~8–12 s. Below acquire, a thin-rain floor (THIN_ON≈HOLD_ON) still
+fires an occasional INTERVAL1 after thin_gap_s (Drier ~18 s, Dry ~22 s,
+Mid ~36 s) so light mist does not sit quiet for minutes. Drier acquires
+on one wet look (park / v≈0 still suppress TX). NAPWiperSensitivity
+(0–4, mid=2) scales acquire, repeat, looks, the light gap, and the
+thin gap. Park / v≈0 suppress is in body controls; scoring still runs.
+Off still leaves the real stalk.
 
 Bokeh energy is an 8-bit residual (~0 dry, ~2–5 wet). A live clear-glass
 log showed bokeh=49165 — wrong Y scale or a bandpass blowup. Impossible
@@ -155,6 +158,11 @@ MIST_FILM_SPARSE = (1.8, 5.25)
 MIST_FILM_SPECKLE = 0.008
 # Combined obstruction: 1.0 is looks_rainy / wetness floor (rain/frost/ice).
 HOLD_ON = 1.0
+# Thin-mist maintenance: some wetness, below acquire. e1 Drier Auto On
+# showed rain but sat 76–240 s between wipes on light film. Same INTERVAL1
+# pulse as acquire; do not wait hold_n. First thin wipe waits thin_gap
+# from the first sustained look (last_wipe=0 must not fire immediately).
+THIN_ON = HOLD_ON
 # First wipe: Mid+ needs two consecutive idle scores at/above this
 # *after* warmup. Drier (sens 0) needs one. Mist film live/offline sits
 # ~6–8. Do not "fix" dry garage by raising this past old 6.29. Heavy
@@ -190,6 +198,10 @@ SENSITIVITY_SCALE = ACQUIRE_SENSITIVITY_SCALE
 MIN_REWIPE_GAP_LIGHT_S = 25.0
 MIN_REWIPE_GAP_BY_SENS = (6.5, 10.0, 25.0, 27.5, 30.0)
 MIN_REWIPE_GAP_SENS_STEP = 2.5
+# Below-acquire occasional wipe. Drier/Dry keep mist moving; Mid is calmer;
+# Wet/Wetter rare (0 = off). Longer than the acquire light gap so Mid/Wetter
+# do not thrash on film that never reaches ACQUIRE_ON.
+THIN_GAP_BY_SENS = (18.0, 22.0, 36.0, 48.0, 0.0)
 HOLD_OFF = 0.70
 EMA_ALPHA = 0.35
 EMA_HOLD_ALPHA = 0.35
@@ -292,6 +304,13 @@ def min_rewipe_gap_light_s(sens: int | None = None) -> float:
   if sens is None:
     sens = current_sensitivity()
   return MIN_REWIPE_GAP_BY_SENS[clip_sensitivity(sens)]
+
+
+def thin_gap_s(sens: int | None = None) -> float:
+  """Seconds between below-acquire thin-mist maintenance wipes. 0 = off."""
+  if sens is None:
+    sens = current_sensitivity()
+  return THIN_GAP_BY_SENS[clip_sensitivity(sens)]
 
 
 def acquire_hold_n(sens: int | None = None) -> int:
@@ -731,6 +750,10 @@ class WindshieldRain:
     self._acquire_on = ACQUIRE_ON
     self._repeat_on = REWIPE_ON
     self._gap_light_s = MIN_REWIPE_GAP_LIGHT_S
+    self._thin_gap_s = THIN_GAP_BY_SENS[WIPER_SENSITIVITY_DEFAULT]
+    self._thin_t0 = 0.0
+    self._thin = False
+    self._thin_wipe = False
     self._acquire_n = MIN_HOLD_N
     self._owns_client = False
     self._need_flush = False
@@ -749,18 +772,20 @@ class WindshieldRain:
     self._store_feats(feats)
     return self._update_score(obs)
 
-  def _thresholds(self) -> tuple[int, float, float, float]:
-    """sens, acquire, repeat, light min-rewipe gap."""
+  def _thresholds(self) -> tuple[int, float, float, float, float]:
+    """sens, acquire, repeat, light min-rewipe gap, thin maintenance gap."""
     sens = current_sensitivity()
     acquire = acquire_threshold(sens)
     repeat = repeat_threshold(sens)
     gap_light = min_rewipe_gap_light_s(sens)
+    gap_thin = thin_gap_s(sens)
     self._sens = sens
     self._acquire_on = acquire
     self._repeat_on = repeat
     self._gap_light_s = gap_light
+    self._thin_gap_s = gap_thin
     self._acquire_n = acquire_hold_n(sens)
-    return sens, acquire, repeat, gap_light
+    return sens, acquire, repeat, gap_light, gap_thin
 
   def _gap_ok(self, now: float, score: float, _repeat: float, gap_light: float) -> bool:
     """First wipe has no gap. True heavy may rewipe after CLEAR_WAIT_S.
@@ -777,7 +802,7 @@ class WindshieldRain:
       return True
     return (now - last) >= gap_light
 
-  def _start_wipe(self, now: float) -> None:
+  def _start_wipe(self, now: float, thin: bool = False) -> None:
     self.hold = True
     self._wipe_t0 = now
     self._last_wipe_t0 = now
@@ -785,6 +810,9 @@ class WindshieldRain:
     self._post_wipe = False
     self._hold_n = self._acquire_n
     self._clear_n = 0
+    self._thin_t0 = 0.0
+    self._thin_wipe = bool(thin)
+    self._thin = bool(thin)
 
   def _finish_wipe(self) -> None:
     """End the one-sweep pulse. Auto rest-cancels; wait CLEAR_WAIT_S then assess."""
@@ -795,13 +823,40 @@ class WindshieldRain:
     # Do not prime hold_n. One dry/marginal post-wipe look must exit to idle.
     self._hold_n = 0
     self._post_wipe = True
+    self._thin_t0 = 0.0
+
+  def _thin_wet(self) -> bool:
+    """Some wetness at/above the thin floor. EMA covers a one-tick dip."""
+    return max(self.last_score, self.ema) >= float(THIN_ON)
+
+  def _maybe_thin_wipe(self, now: float, acquire: float, gap_thin: float) -> None:
+    """Occasional INTERVAL1 while below acquire. First wipe waits thin_gap.
+
+    last_wipe=0 must not fire on the first thin look — that would thrash
+    Mid on 2.15 film. After a real wipe, one thin look past thin_gap is
+    enough (no acquire hold_n). gap_thin<=0 disables the path (Wetter).
+    """
+    in_band = self._thin_wet() and self.last_score < float(acquire)
+    self._thin = in_band
+    if (not in_band) or gap_thin <= 0.0:
+      self._thin_t0 = 0.0
+      return
+    if self._thin_t0 <= 0.0:
+      self._thin_t0 = now
+    last = self._last_wipe_t0
+    if last <= 0.0:
+      ready = (now - self._thin_t0) >= float(gap_thin)
+    else:
+      ready = (now - last) >= float(gap_thin)
+    if ready:
+      self._start_wipe(now, thin=True)
 
   def _update_score(self, score: float) -> bool:
     """Latch from an obstruction score. Tests inject residual/dry scores here."""
     with self._lock:
       now = time.monotonic()
       self.last_score = _finite_score(score)
-      _sens, acquire, repeat, gap_light = self._thresholds()
+      _sens, acquire, repeat, gap_light, gap_thin = self._thresholds()
       alpha = EMA_HOLD_ALPHA if self.hold else EMA_ALPHA
       self.ema = alpha * self.last_score + (1.0 - alpha) * self.ema
       waiting = self._wait_t0 > 0.0 and (now - self._wait_t0) < CLEAR_WAIT_S
@@ -821,19 +876,28 @@ class WindshieldRain:
             self._start_wipe(now)
           else:
             # Dry / light mist / marginal → idle. Light needs min rewipe gap.
+            # Do not thin-wipe on this assess tick (same as not priming hold_n).
             self._hold_n = 0
+            self._thin_t0 = 0.0
+            self._thin = self._thin_wet() and self.last_score < float(acquire)
         elif self._warm_n < WARMUP_N:
           # First ROAD looks after helper start. Do not acquire.
           self._warm_n += 1
           self._hold_n = 0
+          self._thin_t0 = 0.0
+          self._thin = False
         elif self.last_score >= acquire:
           self._hold_n += 1
+          self._thin = False
+          self._thin_t0 = 0.0
           if (self._hold_n >= int(self._acquire_n)
               and self._gap_ok(now, self.last_score, repeat, gap_light)):
             self._start_wipe(now)
         else:
-          # Consecutive idle wet looks only. One below-wet resets.
+          # Consecutive idle wet looks only. One below-wet resets acquire.
+          # Thin maintenance may still INTERVAL1 after thin_gap_s.
           self._hold_n = 0
+          self._maybe_thin_wipe(now, acquire, gap_thin)
       self._last_frame_t = now
       self.n_frames += 1
       hold = self.hold
@@ -940,6 +1004,15 @@ class WindshieldRain:
     gap_left = 0.0
     if self._last_wipe_t0 > 0.0:
       gap_left = max(0.0, float(self._gap_light_s) - (now - self._last_wipe_t0))
+    thin_left = 0.0
+    thin_s = float(self._thin_gap_s)
+    if thin_s > 0.0:
+      if self._last_wipe_t0 > 0.0:
+        thin_left = max(0.0, thin_s - (now - self._last_wipe_t0))
+      elif self._thin_t0 > 0.0:
+        thin_left = max(0.0, thin_s - (now - self._thin_t0))
+      else:
+        thin_left = thin_s
     age_ms = (now - self._last_frame_t) * 1000.0 if self._last_frame_t else -1.0
     err = f" err={self.last_err}" if self.last_err else ""
     why = f" {reason}" if reason else ""
@@ -953,6 +1026,7 @@ class WindshieldRain:
       + f"rpt={int(self.last_score >= float(self._repeat_on))} "
       + f"heavy={int(self.last_score >= HEAVY_ON)} pulse={pulse_left:.1f}/{WIPE_PULSE_S:.1f} "
       + f"wait={wait_left:.1f}/{CLEAR_WAIT_S:.1f} gap={gap_left:.1f}/{self._gap_light_s:.1f} "
+      + f"thin={int(self._thin)} thin_gap={thin_left:.1f}/{thin_s:.1f} "
       + f"connected={int(self.connected)} "
       + f"failed={int(self._failed)} frames={self.n_frames} stream={self.stream} "
       + f"helper={int(self.helper_alive)} period_s={SCORE_PERIOD_S:.1f} hz={SCORE_HZ:.1f} age_ms={age_ms:.0f}{err}{why}"
@@ -980,6 +1054,9 @@ class WindshieldRain:
       self._wait_t0 = 0.0
       self._post_wipe = False
       self._warm_n = 0
+      self._thin_t0 = 0.0
+      self._thin = False
+      self._thin_wipe = False
 
   def _release_vision(self) -> None:
     """Drop the live ROAD client (helper stop / thread exit). Tests inject _client."""
