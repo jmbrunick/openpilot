@@ -1,7 +1,8 @@
 from openpilot.common.constants import CV
 from openpilot.selfdrive.mapd.constants import MIN_ZONE_LENGTH_M, OSM_SIGN_LEAD_S, osm_sign_lead_m
 from openpilot.selfdrive.mapd.osm_db import (
-  OsmSpeedLimitDB, _continues_route, _offset_point, _pack_coords, _unpack_coords, simplify_coords,
+  OsmSpeedLimitDB, _continues_route, _heading_aligned, _offset_point, _pack_coords,
+  _unpack_coords, simplify_coords,
 )
 from openpilot.selfdrive.mapd.overpass import ways_from_overpass
 from openpilot.selfdrive.mapd.speed_limit import parse_maxspeed
@@ -14,6 +15,16 @@ def test_continues_route_rejects_cross_street_fills():
   assert not _continues_route(90.0, 90.0, "US 12", "trunk", "Oak", "residential")
   # Same name may change class in town.
   assert _continues_route(90.0, 90.0, "US 12", "trunk", "US 12", "residential")
+  # Reverse-digitized along-route town ways (Δ ≈ 180°) must stay on-route.
+  # Name change is normal (US 12 → Atlantic / Main Avenue); class continuity
+  # + bidirectional heading is enough.
+  assert _heading_aligned(110.0, 291.0)
+  assert _heading_aligned(124.0, 304.0)
+  assert not _heading_aligned(110.0, 20.0)
+  assert _continues_route(110.0, 291.0, "US 12", "trunk", "Atlantic Avenue", "primary")
+  assert _continues_route(124.0, 304.0, "US 12", "trunk", "Main Avenue", "primary")
+  # Reverse-digitized residential fill is still a fill.
+  assert not _continues_route(110.0, 290.0, "US 12", "trunk", "Oak", "residential")
 
 
 def test_parse_maxspeed_units():
@@ -416,6 +427,172 @@ def test_next_limit_keeps_real_drop_longer_than_min_length(tmp_path):
   assert m is not None
   assert abs(m.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3
   assert abs(m.next_speed_limit_ms - 30 * CV.MPH_TO_MS) < 0.3, m.next_speed_limit_ms * CV.MS_TO_MPH
+  db.close()
+
+
+def _reverse(coords: list[tuple[float, float]]) -> list[tuple[float, float]]:
+  return list(reversed(coords))
+
+
+def test_town_entry_short_first_way_long_contiguous_run(tmp_path):
+  """Ep1 Benson / Atlantic: first 30 way is ~76 m (the old first-way gate),
+  but the contiguous same-limit chain is hundreds of meters.
+
+  Ways are reverse-digitized (Δheading ≈ 180°) and rename US 12 → Atlantic.
+  Early look-ahead must publish next=30 before GPS is on the town way.
+  """
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  travel = 90.0
+  us12_start = (37.0, -122.012)
+  junc = _offset_point(us12_start[0], us12_start[1], travel, 550.0)
+  a1_end = _offset_point(junc[0], junc[1], travel, 76.1)
+  a2_end = _offset_point(a1_end[0], a1_end[1], travel, 200.0)
+  a3_end = _offset_point(a2_end[0], a2_end[1], travel, 200.0)
+  OsmSpeedLimitDB.insert_way(
+    con, 18267060, "US 12", "trunk", 60 * CV.MPH_TO_MS,
+    [us12_start, junc],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 1227205098, "Atlantic Avenue", "primary", 30 * CV.MPH_TO_MS,
+    _reverse([junc, a1_end]),
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 18267487, "Atlantic Avenue", "primary", 30 * CV.MPH_TO_MS,
+    _reverse([a1_end, a2_end]),
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 1227205097, "Atlantic Avenue", "primary", 30 * CV.MPH_TO_MS,
+    _reverse([a2_end, a3_end]),
+  )
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  # ~400 m before the junction — inside Early 600 m, still posted 60.
+  qlat, qlon = _offset_point(junc[0], junc[1], travel + 180.0, 400.0)
+  m = db.lookup(qlat, qlon, bearing_deg=travel)
+  assert m is not None
+  assert m.way_id == 18267060
+  assert abs(m.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3
+  assert abs(m.next_speed_limit_ms - 30 * CV.MPH_TO_MS) < 0.3, m.next_speed_limit_ms * CV.MS_TO_MPH
+  assert 300.0 <= m.next_distance_m <= 500.0
+  db.close()
+
+
+def test_town_entry_reverse_digitized_long_way(tmp_path):
+  """Ep2 Main Ave: the town 30 is long (~400 m here; on-car 1149 m) but
+  reverse-digitized. Short 60 stubs sit in front. next must still publish 30.
+  """
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  travel = 90.0
+  us12_start = (37.0, -122.012)
+  junc = _offset_point(us12_start[0], us12_start[1], travel, 550.0)
+  main60_end = _offset_point(junc[0], junc[1], travel, 250.0)
+  stub60_end = _offset_point(main60_end[0], main60_end[1], travel, 23.0)
+  town30_end = _offset_point(stub60_end[0], stub60_end[1], travel, 400.0)
+  OsmSpeedLimitDB.insert_way(
+    con, 18267048, "US 12", "trunk", 60 * CV.MPH_TO_MS,
+    [us12_start, junc],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 1227205096, "Main Avenue", "primary", 60 * CV.MPH_TO_MS,
+    _reverse([junc, main60_end]),
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 1557241354, "Main Avenue", "primary", 60 * CV.MPH_TO_MS,
+    _reverse([main60_end, stub60_end]),
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 18267827, "Main Avenue", "primary", 30 * CV.MPH_TO_MS,
+    _reverse([stub60_end, town30_end]),
+  )
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  # On the highway ~150 m before the name change: 150+250+23 ≈ 423 m to the 30.
+  qlat, qlon = _offset_point(junc[0], junc[1], travel + 180.0, 150.0)
+  m = db.lookup(qlat, qlon, bearing_deg=travel)
+  assert m is not None
+  assert abs(m.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3
+  assert abs(m.next_speed_limit_ms - 30 * CV.MPH_TO_MS) < 0.3, m.next_speed_limit_ms * CV.MS_TO_MPH
+  assert m.next_distance_m > 200.0
+  # On the Main Ave 60 lead-in (the on-car name change): still posted 60, next=30.
+  on_main = _offset_point(junc[0], junc[1], travel, 100.0)
+  m2 = db.lookup(on_main[0], on_main[1], bearing_deg=travel)
+  assert m2 is not None
+  assert abs(m2.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3
+  assert abs(m2.next_speed_limit_ms - 30 * CV.MPH_TO_MS) < 0.3, m2.next_speed_limit_ms * CV.MS_TO_MPH
+  db.close()
+
+
+def test_town_entry_short_first_piece_under_min_zone_still_publishes(tmp_path):
+  """First town 30 piece is well under ~250 ft; the same-limit run is not."""
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  travel = 90.0
+  us12_start = (37.0, -122.010)
+  junc = _offset_point(us12_start[0], us12_start[1], travel, 400.0)
+  first_end = _offset_point(junc[0], junc[1], travel, 40.0)
+  rest_end = _offset_point(first_end[0], first_end[1], travel, 250.0)
+  OsmSpeedLimitDB.insert_way(
+    con, 1, "US 12", "trunk", 60 * CV.MPH_TO_MS,
+    [us12_start, junc],
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 2, "Atlantic Avenue", "primary", 30 * CV.MPH_TO_MS,
+    _reverse([junc, first_end]),
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 3, "Atlantic Avenue", "primary", 30 * CV.MPH_TO_MS,
+    _reverse([first_end, rest_end]),
+  )
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  qlat, qlon = _offset_point(junc[0], junc[1], travel + 180.0, 200.0)
+  m = db.lookup(qlat, qlon, bearing_deg=travel)
+  assert m is not None
+  assert abs(m.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3
+  assert abs(m.next_speed_limit_ms - 30 * CV.MPH_TO_MS) < 0.3, m.next_speed_limit_ms * CV.MS_TO_MPH
+  db.close()
+
+
+def test_side_road_bleed_blip_still_ignored_with_reverse_town_ways(tmp_path):
+  """Standing rule: N–S residential / unclassified fill must not arm next.
+
+  Same highway as the town-entry fixtures (eastbound 60) plus a long N–S 30
+  fill. Reverse-digitized heading tolerance must not open this hole.
+  """
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  travel = 90.0
+  start = (37.0, -122.010)
+  mid = _offset_point(start[0], start[1], travel, 400.0)
+  end = _offset_point(start[0], start[1], travel, 900.0)
+  OsmSpeedLimitDB.insert_way(
+    con, 1, "US 12", "trunk", 60 * CV.MPH_TO_MS,
+    [start, mid, end],
+  )
+  cross_n = _offset_point(mid[0], mid[1], 0.0, 200.0)
+  cross_s = _offset_point(mid[0], mid[1], 180.0, 200.0)
+  OsmSpeedLimitDB.insert_way(
+    con, 2, "Oak", "residential", 30 * CV.MPH_TO_MS,
+    [cross_s, mid, cross_n],
+  )
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  qlat, qlon = _offset_point(mid[0], mid[1], travel + 180.0, 200.0)
+  m = db.lookup(qlat, qlon, bearing_deg=travel)
+  assert m is not None
+  assert m.way_id == 1
+  assert abs(m.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.3
+  assert m.next_speed_limit_ms == 0.0, m.next_speed_limit_ms * CV.MS_TO_MPH
   db.close()
 
 
