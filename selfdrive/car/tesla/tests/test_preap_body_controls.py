@@ -75,11 +75,13 @@ from openpilot.selfdrive.car.tesla.preap_windshield_rain import (
   WARMUP_N,
   Y_COPY_SIDE,
   MIN_REWIPE_GAP_LIGHT_S,
+  THIN_ON,
   WindshieldRain,
   acquire_hold_n,
   acquire_threshold,
   min_rewipe_gap_light_s,
   repeat_threshold,
+  thin_gap_s,
   reset_windshield_rain,
   set_wiper_sensitivity,
   windshield_frost_score,
@@ -933,6 +935,20 @@ def _expire_min_gap(det) -> None:
     det._last_wipe_t0 = time.monotonic() - gap - 0.05
 
 
+def _expire_thin_gap(det) -> None:
+  """Skip the below-acquire thin maintenance gap so the next thin look may wipe."""
+  from openpilot.selfdrive.car.tesla import preap_windshield_rain as rain
+
+  gap = float(rain.thin_gap_s())
+  now = time.monotonic()
+  if det._last_wipe_t0 > 0.0:
+    det._last_wipe_t0 = now - gap - 0.05
+  if det._thin_t0 > 0.0:
+    det._thin_t0 = now - gap - 0.05
+  elif det._last_wipe_t0 <= 0.0:
+    det._thin_t0 = now - gap - 0.05
+
+
 def test_helper_holds_soft_bokeh_and_poll_does_not_recv(monkeypatch):
   """stock_cc / card is CTRL_HIGH: poll must not drain VisionIpc. Heavy bokeh HOLD."""
   import time as time_mod
@@ -1300,7 +1316,10 @@ def test_elevated_residual_below_rewipe_exits_loop():
 
 
 def test_light_sprinkle_never_enters_wipe_loop():
-  """Very little sprinkles / residual beads: idle 4 s watch, no nibble-1."""
+  """Very little sprinkles / residual beads: idle 4 s watch, no acquire wipe.
+
+  Thin maintenance waits thin_gap_s — these immediate looks must stay quiet.
+  """
   for s in (HOLD_ON, 1.7, 3.16, 4.42, ACQUIRE_ON - 0.05):
     assert s < ACQUIRE_ON
     det = WindshieldRain()
@@ -1576,6 +1595,8 @@ def test_helper_score_period_is_every_few_seconds():
   assert WIPE_CLEAR_N == 1
   assert MIN_HOLD_N * SCORE_PERIOD_S <= 8.0
   assert HOLD_ON < ACQUIRE_ON
+  assert THIN_ON == HOLD_ON
+  assert THIN_ON < ACQUIRE_ON
   assert ACQUIRE_ON < REWIPE_ON
   assert REWIPE_ON == HEAVY_ON
   assert 1.0 <= WIPE_PULSE_S <= 2.0
@@ -1875,6 +1896,127 @@ def test_drier_vs_mid_acquire_repeat_and_gap():
     assert mid.hold
   finally:
     set_wiper_sensitivity(None)
+
+
+def test_thin_mist_below_acquire_wipes_after_thin_gap():
+  """e1 Drier light mist: below acquire, above THIN_ON, occasional INTERVAL1."""
+  try:
+    set_wiper_sensitivity(0)
+    acq = acquire_threshold(0)
+    thin = (THIN_ON + acq) * 0.5
+    assert THIN_ON <= thin < acq
+    assert 16.0 <= thin_gap_s(0) <= 20.0
+    det = WindshieldRain()
+    _skip_warmup(det)
+    for _ in range(MIN_HOLD_N + 4):
+      assert not det._update_score(thin), thin
+    assert not det.hold
+    assert det._thin
+    assert det._wipe_t0 == 0.0
+    _expire_thin_gap(det)
+    assert det._update_score(thin)
+    assert det.hold
+    assert det._thin_wipe
+    assert det._wipe_t0 > 0.0
+  finally:
+    set_wiper_sensitivity(None)
+
+
+def test_dry_below_thin_stays_quiet():
+  """Bone-dry / below THIN_ON must not take the maintenance path."""
+  det = WindshieldRain()
+  _skip_warmup(det)
+  dry = THIN_ON - 0.25
+  assert dry < THIN_ON
+  for _ in range(MIN_HOLD_N + 6):
+    assert not det._update_score(dry)
+  assert not det.hold
+  assert not det._thin
+  det._thin_t0 = time.monotonic() - 120.0
+  det._last_wipe_t0 = time.monotonic() - 120.0
+  assert not det._update_score(dry)
+  assert not det.hold
+  assert not det._thin
+  assert det._wipe_t0 == 0.0
+
+
+def test_thin_gap_mid_longer_than_drier():
+  """Mid thin maintenance is calmer than Drier. Wetter may be off."""
+  assert 16.0 <= thin_gap_s(0) <= 20.0
+  assert 20.0 <= thin_gap_s(1) <= 24.0
+  assert 32.0 <= thin_gap_s(2) <= 40.0
+  assert thin_gap_s(2) > thin_gap_s(0)
+  assert thin_gap_s(2) > thin_gap_s(1)
+  assert thin_gap_s(3) == 0.0 or thin_gap_s(3) >= thin_gap_s(2)
+  assert thin_gap_s(4) == 0.0 or thin_gap_s(4) >= 48.0
+
+  # Below Drier acquire so both sens 0 and 2 take the thin path, not acquire.
+  score = (THIN_ON + acquire_threshold(0)) * 0.5
+  assert THIN_ON <= score < acquire_threshold(0) < acquire_threshold(2)
+  try:
+    set_wiper_sensitivity(0)
+    drier = WindshieldRain()
+    _skip_warmup(drier)
+    assert not drier._update_score(score)
+    assert drier._thin
+    drier._thin_t0 = time.monotonic() - thin_gap_s(0) - 0.05
+    assert drier._update_score(score)
+    assert drier.hold
+
+    set_wiper_sensitivity(2)
+    mid = WindshieldRain()
+    _skip_warmup(mid)
+    assert not mid._update_score(score)
+    assert mid._thin
+    mid._thin_t0 = time.monotonic() - thin_gap_s(0) - 0.05
+    assert not mid._update_score(score)
+    assert not mid.hold
+    mid._thin_t0 = time.monotonic() - thin_gap_s(2) - 0.05
+    assert mid._update_score(score)
+    assert mid.hold
+
+    set_wiper_sensitivity(4)
+    if thin_gap_s(4) <= 0.0:
+      wetter = WindshieldRain()
+      _skip_warmup(wetter)
+      wetter._thin_t0 = time.monotonic() - 120.0
+      for _ in range(4):
+        assert not wetter._update_score(score)
+      assert not wetter.hold
+  finally:
+    set_wiper_sensitivity(None)
+
+
+def test_thin_hold_still_park_and_v0_suppressed(monkeypatch):
+  """Thin INTERVAL1 still dies at body park / v≈0. Drive+moving still wipes."""
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+  from openpilot.selfdrive.car.tesla import preap_windshield_rain as rain
+
+  monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
+    WIPER_SETTING_AUTO if key == NAP_WIPER_SPEED else default
+  ))
+  reset_windshield_rain()
+  reset_auto_gates()
+  det = WindshieldRain()
+  det.hold = True
+  det._thin = True
+  det._thin_wipe = True
+  det._helper_started = True
+  rain._detector = det
+  try:
+    set_auto_gates(True, "park", v_ego=12.0)
+    assert not body.requested_wiper_test()
+    set_auto_gates(True, "neutral", v_ego=12.0)
+    assert not body.requested_wiper_test()
+    set_auto_gates(True, "drive", v_ego=0.0)
+    assert not body.requested_wiper_test()
+    set_auto_gates(True, "drive", v_ego=12.0)
+    assert body.rain_wiper_needed()
+    assert body.requested_wiper_test()
+  finally:
+    set_rain_wiper_needed(None)
+    reset_auto_gates()
+    reset_windshield_rain()
 
 
 def test_clearly_wet_still_wipes_and_rewipes():
@@ -2432,6 +2574,8 @@ def test_auto_status_param_is_full_gate_line_not_short_rain(monkeypatch):
     assert "acq=" in line
     assert "rpt=" in line
     assert "gap=" in line
+    assert "thin=" in line
+    assert "thin_gap=" in line
     assert "park=" in line
     assert "v0=" in line
     assert "moving=" in line
@@ -2468,6 +2612,8 @@ def test_auto_status_sens0_vs_mid_acq_rpt_gap(monkeypatch):
     assert "acq=1" in line0
     assert "rpt=1" in line0
     assert "gap=" in line0
+    assert "thin=" in line0
+    assert "thin_gap=" in line0
     assert "holdn=" in line0
 
     monkeypatch.setattr(body, "_param_int", _param_for(2))
@@ -2476,6 +2622,17 @@ def test_auto_status_sens0_vs_mid_acq_rpt_gap(monkeypatch):
     assert "acq=1" in line2
     assert "rpt=0" in line2
     assert "gap=" in line2
+    assert "thin=" in line2
+    assert "thin_gap=" in line2
+
+    det.last_score = (THIN_ON + acquire_threshold(2)) * 0.5
+    det._thin = True
+    det._thin_gap_s = thin_gap_s(2)
+    det._thin_t0 = time.monotonic()
+    monkeypatch.setattr(body, "_param_int", _param_for(2))
+    line_thin = body._auto_status_line(3, True, True, True, False)
+    assert "thin=1" in line_thin
+    assert "thin_gap=" in line_thin
   finally:
     reset_windshield_rain()
 
@@ -2534,6 +2691,38 @@ def test_put_wiper_status_uses_exact_nap_wiper_rain_status_key():
   # First write must block so the key exists for Connect / qlog digs.
   assert "block=block" in src or "block=True" in src
   assert "_status_disk_once" in src
+  assert "NAPWiperRainStatus" in src
+  assert "get(" in src
+
+
+def test_put_wiper_status_blocks_again_when_key_missing(monkeypatch):
+  """e1 InitData missed status after CLEAR_ON_MANAGER_START wiped the stub."""
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  class FakeParams:
+    def __init__(self):
+      self.store = {}
+      self.blocks = []
+
+    def get(self, key, return_default=False):
+      return self.store.get(key)
+
+    def put(self, key, dat, block=False):
+      self.blocks.append(bool(block))
+      self.store[key] = dat
+
+  fake = FakeParams()
+  monkeypatch.setattr(body, "_get_params", lambda: fake)
+  body._status_disk_once = True
+  body._put_wiper_status("first")
+  assert fake.blocks == [True]
+  assert body._status_disk_once is False
+  body._put_wiper_status("second")
+  assert fake.blocks == [True, False]
+  fake.store.clear()
+  body._put_wiper_status("third")
+  assert fake.blocks[-1] is True
+  assert fake.store["NAPWiperRainStatus"] == "third"
 
 
 def test_int_on_ignore_gear_and_camera(monkeypatch):
