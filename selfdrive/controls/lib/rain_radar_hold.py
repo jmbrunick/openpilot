@@ -30,7 +30,6 @@ from typing import Any, Sequence
 
 from openpilot.selfdrive.controls.lib.radar_path_gate import (
   MIN_DREL_M,
-  PATH_HALF_WIDTH_M,
   PATH_INCUMBENT_HALF_WIDTH_M,
   radar_follow_ok,
 )
@@ -43,12 +42,13 @@ WIPER_SETTING_AUTO = 3
 RAIN_RADAR_LOST_HOLD_FRAMES = 8
 # Vision-only bar while rain-sensing is On. Secondary — dig flaps were already ≥ 0.9.
 RAIN_VISION_ONLY_MIN_PROB = 0.90
-# Path / oncoming gates. e1 #201 used 2.5 / 4.0 yRel and no vLead / path
-# check — LEFT STAT at +2.2…+3.9 m and EP_2059 near-edge opposing at
-# +2.23…+2.48 became leadOne. Associated / incumbent use 2.0 m (Justin
-# 2.5→~2.0). Unassociated closest-in-lane is not acquired.
+# EP_2059 (e1 segs 13–17): #201 RAIN_INLANE=2.5 latched near-edge
+# oncoming 771/802 at |yRel| 2.23–2.48 (0.02–0.27 m inside 2.5).
+# Justin: 2.5 → 2.0 m (~6.6 ft) + reject vLead < 0. Path association
+# still required. Clean 21:02/21:03 stayed |yRel| > 2.5. Incumbent
+# 2.0 (not 4.0) so a latched near-edge cannot walk to y=3.98.
 RAIN_MIN_DREL_M = MIN_DREL_M
-RAIN_INLANE_YREL_M = PATH_HALF_WIDTH_M
+RAIN_INLANE_YREL_M = 2.0
 RAIN_INCUMBENT_MAX_YREL_M = PATH_INCUMBENT_HALF_WIDTH_M
 RAIN_CUT_IN_GAP_M = 8.0
 # Incumbent-only hold beyond this needs a confident vision lead (range may

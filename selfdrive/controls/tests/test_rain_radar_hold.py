@@ -15,6 +15,7 @@ from openpilot.selfdrive.controls.lib.radar_path_gate import (
 from openpilot.selfdrive.controls.lib.rain_radar_hold import (
   RAIN_CUT_IN_GAP_M,
   RAIN_FAR_HOLD_DREL_M,
+  RAIN_INLANE_YREL_M,
   RainRadarGate,
   closest_inlane_radar,
   pick_rain_radar_track,
@@ -209,15 +210,26 @@ def test_pick_does_not_latch_roundabout_entrant_off_exit_path():
   assert pick_rain_radar_track(None, {22: entrant}, 22, v_ego, path[0], path[1]) is None
 
 
+def test_ep2059_inlane_gate_is_2_0_not_2_5():
+  """Justin: RAIN_INLANE_YREL_M 2.5 → 2.0. Rejects 2.23 and 2.48 latches."""
+  assert RAIN_INLANE_YREL_M == 2.0
+  v_ego = 20.0
+  assert not radar_hold_kinematics_ok(track(771, 45.0, 2.23, -(v_ego + 22.0)),
+                                      RAIN_INLANE_YREL_M, v_ego)
+  assert not radar_hold_kinematics_ok(track(802, 40.0, 2.48, -(v_ego + 18.7)),
+                                      RAIN_INLANE_YREL_M, v_ego)
+
+
 def test_ep2059_near_edge_oncoming_not_latched():
   """20:59:33 track 771 / 21:00:12 track 802 — inside old 2.5 m, oncoming."""
   v_ego = 20.0  # ~45 mph arterial
-  # 771: yRel +2.23→+3.98, vLead −49 mph ≈ −21.9 m/s
-  t771 = track(771, 45.0, y_rel=2.23, v_rel=-(v_ego + 21.9))
-  # 802: yRel +2.23→+2.48 (0.02–0.27 m inside old 2.5), vLead −42 mph
-  t802 = track(802, 40.0, y_rel=2.23, v_rel=-(v_ego + 18.8))
-  t802_edge = track(802, 40.0, y_rel=2.48, v_rel=-(v_ego + 18.8))
-  for t in (t771, t802, t802_edge):
+  # 771: yRel +2.23→+3.98, vLead −22 m/s (−49 mph)
+  t771 = track(771, 45.0, y_rel=2.23, v_rel=-(v_ego + 22.0))
+  t771_walk = track(771, 20.0, y_rel=3.98, v_rel=-(v_ego + 22.0))
+  # 802: yRel +2.23→+2.48 (0.02 m INSIDE old 2.5), vLead −18.7 m/s
+  t802 = track(802, 40.0, y_rel=2.23, v_rel=-(v_ego + 18.7))
+  t802_edge = track(802, 28.0, y_rel=2.48, v_rel=-(v_ego + 18.7))
+  for t in (t771, t771_walk, t802, t802_edge):
     assert not radar_hold_kinematics_ok(t, v_ego=v_ego)
     assert pick_rain_radar_track(t, {t.identifier: t}, None, v_ego) is None
     assert pick_rain_radar_track(None, {t.identifier: t}, t.identifier, v_ego) is None
@@ -303,10 +315,12 @@ def test_2103_mid_lane_oncoming_truck_stays_clean():
 
 
 def test_ep2059_far_stat_phantom_not_acquired():
-  """20:59:40 far STAT 84–123 m. Rain must not FOV-latch low-prob furniture."""
+  """20:59:40 Dip 2: tids 782/784/786, vLead≈0, dRel 84–123 m, mp≤0.014."""
   v_ego = 20.0
-  far = track(840, 100.0, y_rel=0.8, v_rel=-v_ego)
-  assert pick_rain_radar_track(None, {840: far}, None, v_ego) is None
+  for tid, d_rel, y_rel in ((782, 123.0, 0.86), (784, 100.0, 1.4), (786, 84.0, 2.11)):
+    far = track(tid, d_rel, y_rel=y_rel, v_rel=-v_ego)
+    assert pick_rain_radar_track(None, {tid: far}, None, v_ego, vision_prob=0.01) is None
+    assert pick_rain_radar_track(None, {tid: far}, tid, v_ego, vision_prob=0.01) is None
 
 
 def test_far_low_prob_incumbent_not_held_for_regen():

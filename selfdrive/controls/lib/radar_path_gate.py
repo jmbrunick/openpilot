@@ -24,14 +24,11 @@ from typing import Any, Sequence
 # of the camera / model origin. Keep in sync with radard.RADAR_TO_CAMERA.
 RADAR_TO_CAMERA_M = 1.52
 
-# #201's 2.5 / 4.0 yRel windows (~8.2 / 13.1 ft) held LEFT STAT and
-# near-edge opposing. 20:59/21:00 semis sat at yRel +2.23…+2.48 (inside
-# 2.5). Justin 21:02: move the rain-hold perimeter in a few feet so
-# those near-edge latches stop, while a semi farther over in its lane
-# stays clean. 2.0 m ≈ 6.6 ft is ~1.6 ft inside 2.5 and inside 2.23.
-# Do not nuke mid-lane opposing (21:02 farther-over semi / 21:03
-# middle-of-lane truck, |yRel| > 2.5). Path-
-# relative when modelV2 exists; 4.0 incumbent is gone.
+# EP_2059: #201's 2.5 / 4.0 yRel windows latched 771/802 at
+# +2.23…+2.48 (0.02–0.27 m inside 2.5) → aTarget=−3.5. Justin:
+# RAIN_INLANE 2.5 → 2.0 m (~6.6 ft, ~1.6 ft tighter) + vLead < 0.
+# Clean 21:02/21:03 never acquired (|yRel| > 2.5). Path-relative
+# when modelV2 exists. Incumbent 2.0 so a latch cannot walk to 3.98.
 PATH_HALF_WIDTH_M = 1.5
 PATH_INCUMBENT_HALF_WIDTH_M = 2.0
 
