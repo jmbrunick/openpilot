@@ -1,13 +1,10 @@
 """Travel-path and oncoming gates for radar follow-lead selection.
 
-Intersection max-regen on Scallywag (Fri 2026-09-18 ~20:49–20:52 CT)
-came from Bosch tracks of left roadside signs and opposing-lane traffic
-becoming leadOne. A second episode ~20:54 CT: exiting a roundabout
-(planned path turning right to leave) max-regenned on a vehicle
-*entering* the circle — cross traffic off the exit path. A third
-~20:55 CT: in a curve, a **sign on the outside of the turn** (~two
-lanes off path) was treated as an oncoming lead. Rain-hold
-(#201, NAPWiperSpeed==3) then kept those phantoms through vision mismatch.
+e1 qlog `1c95345a3286a5db|000000e1--b993674371` (tip `638f5f7d4`,
+NAPWiperSpeed==3) confirmed #201 rain-hold latched off-path STAT /
+oncoming tracks as leadOne (modelProb ≪ 0.15 → aTarget=−3.5).
+Episodes: 20:46:45, 20:49:10, 20:51:52, 20:53:45, 20:54:53 CT.
+#199 look-ahead exonerated.
 
 The driving path is `modelV2.position` — the same plan path the UI
 draws and vision uses for lead-in-path (`leadsV3` is the in-path lead
@@ -27,15 +24,15 @@ from typing import Any, Sequence
 # of the camera / model origin. Keep in sync with radard.RADAR_TO_CAMERA.
 RADAR_TO_CAMERA_M = 1.52
 
-# Half a US lane (~3.7 m). In-path cars stay inside; adjacent / shoulder
-# objects (signs, opposing lane) sit ~3–4 m off. Incumbent is a little
-# wider so a real lead at the lane edge does not chatter off.
-PATH_HALF_WIDTH_M = 1.8
-PATH_INCUMBENT_HALF_WIDTH_M = 2.2
+# e1 qlog (1c95345a3286a5db|000000e1--b993674371): #201's 2.5 / 4.0 yRel
+# windows held LEFT STAT signs at +2.2…+3.9 m. Acquire 1.5 m / incumbent
+# 2.0 m (dig recommendation). Path-relative when modelV2.position exists.
+PATH_HALF_WIDTH_M = 1.5
+PATH_INCUMBENT_HALF_WIDTH_M = 2.0
 
 # Absolute speed toward ego. Stopped: vLead ≈ 0. Oncoming: vLead < 0
-# (vRel ≈ −(v_ego + v_them)). Ignore at a crawl — vRel noise.
-ONCOMING_VLEAD_MS = -1.5
+# (vRel ≈ −(v_ego + v_them)). e1 track 101 was vLead ≈ −5…−6. Ignore at crawl.
+ONCOMING_VLEAD_MS = -1.0
 ONCOMING_MIN_VEGO_MS = 2.0
 
 # Radar-frame glitch floor (same as rain hold).

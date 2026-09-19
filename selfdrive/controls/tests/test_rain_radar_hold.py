@@ -135,6 +135,31 @@ def test_pick_drops_incumbent_that_left_the_path():
   assert chosen is None
 
 
+def test_e1_hold_drops_incumbent_at_yrel_2_8_stationary():
+  """Dig: drop incumbent at yRel=2.8 STAT (old 4.0 window held it)."""
+  v_ego = 16.0  # ~36 mph, ep B band
+  t = track(318, 40.8, y_rel=2.8, v_rel=-v_ego)
+  assert not radar_hold_kinematics_ok(t, v_ego=v_ego)
+  assert pick_rain_radar_track(None, {318: t}, 318, v_ego) is None
+
+
+def test_e1_does_not_pick_opposing_vlead_minus_8():
+  """Dig: must not pick opposing vLead=−8."""
+  v_ego = 16.0
+  t = track(101, 50.0, y_rel=1.2, v_rel=-(v_ego + 8.0))  # vLead = −8
+  assert t.vRel + v_ego == -8.0
+  assert not radar_hold_kinematics_ok(t, v_ego=v_ego)
+  assert pick_rain_radar_track(t, {101: t}, None, v_ego) is None
+  assert pick_rain_radar_track(None, {101: t}, 101, v_ego) is None
+
+
+def test_e1_ep_b_does_not_acquire_low_prob_stationary_at_yrel_0_86():
+  """20:49:10 track 321: dRel=99.3, yRel=+0.86, vLead≈0, mp=0.007."""
+  v_ego = 16.05
+  t = track(321, 99.3, y_rel=0.86, v_rel=-v_ego)
+  assert pick_rain_radar_track(None, {321: t}, None, v_ego) is None
+
+
 def test_pick_drops_left_roadside_sign_old_yrel_window():
   """Old rain in-lane was 2.5 m / incumbent 4.0 m — a left sign at 3.2 m held."""
   tracks = {44: track(44, 48.0, y_rel=3.2, v_rel=-20.0)}

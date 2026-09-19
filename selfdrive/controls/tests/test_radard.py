@@ -421,6 +421,29 @@ def test_roundabout_right_exit_does_not_follow_entering_vehicle():
   assert lead.radarTrackId == 11
 
 
+def test_e1_episodes_do_not_latch_off_path_or_oncoming():
+  """Pinned e1 kinematics (1c95345a3286a5db|000000e1--b993674371).
+
+  Rain Auto On. Stock #201 published these as leadOne with mp≪0.15.
+  """
+  cases = (
+    # CT          id   dRel   yRel   vRel          vision_prob
+    ("20:46:45", 224, 50.0,  3.4,  -16.0,         0.02),   # Ep A LEFT STAT sweep
+    ("20:49:10", 321, 99.3,  0.86, -16.05,        0.007),  # Ep B far STAT
+    ("20:49:11", 318, 40.8,  3.36, -16.0,         0.008),  # Ep B LEFT OFFPATH
+    ("20:51:52", 471, 45.0,  2.5,  -20.6,         0.05),   # Ep C LEFT STAT
+    ("20:53:45", 573, 40.0,  3.73, -12.0,         0.04),   # Ep D roundabout LEFT
+    ("20:54:53", 641, 50.0,  3.9,  -24.6,         0.022),  # Ep E curve-outside STAT
+    ("20:45:47", 101, 55.0,  2.0,  -(16.0 + 5.5), 0.10),   # oncoming vLead≈−5.5
+  )
+  for label, tid, d_rel, y_rel, v_rel, mp in cases:
+    scenario = RadarScenario(v_ego=16.0)
+    scenario.set_rain_hold(True)
+    lead = scenario.step(1.0, vision_d_rel=d_rel, radar_points=[(tid, d_rel, y_rel, v_rel)],
+                         vision_prob=mp)
+    assert not lead.radar, f"{label} track {tid} latched as radar leadOne"
+
+
 def test_curve_outside_sign_does_not_become_oncoming_lead():
   """~20:55 CT: sign on the outside of a left curve (~two lanes off path).
 

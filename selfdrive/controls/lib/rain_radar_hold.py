@@ -5,6 +5,10 @@ flapped leadOne radar↔vision: vision-only dRel steps ~7.75 m mean vs
 radar-associated 0.48 m, often with modelProb ≥ 0.9 and a −16 to −32 m
 range error. Radar track 806 stayed smooth whenever association held.
 
+e1 `1c95345a3286a5db|000000e1--b993674371` (tip 638f5f7d4, Auto=3)
+then showed the hold latching off-path STAT / oncoming as leadOne
+(mp ≪ 0.15, aTarget=−3.5). #199 look-ahead is not implicated.
+
 NAPWiperSpeed==3 is the Auto / rain-sensing stalk setting — not a proof
 that it is raining right now. While that mode is selected, hold a live
 **path-valid radar association** through wet-vision range flaps. Off /
@@ -39,8 +43,8 @@ WIPER_SETTING_AUTO = 3
 RAIN_RADAR_LOST_HOLD_FRAMES = 8
 # Vision-only bar while rain-sensing is On. Secondary — dig flaps were already ≥ 0.9.
 RAIN_VISION_ONLY_MIN_PROB = 0.90
-# Path / oncoming gates (travel path, not raw radar yRel). The old 2.5 / 4.0
-# yRel windows swallowed left roadside signs and opposing-lane traffic.
+# Path / oncoming gates. e1 #201 used 2.5 / 4.0 yRel and no vLead / path
+# check — LEFT STAT signs at +2.2…+3.9 m became leadOne.
 RAIN_MIN_DREL_M = MIN_DREL_M
 RAIN_INLANE_YREL_M = PATH_HALF_WIDTH_M
 RAIN_INCUMBENT_MAX_YREL_M = PATH_INCUMBENT_HALF_WIDTH_M
