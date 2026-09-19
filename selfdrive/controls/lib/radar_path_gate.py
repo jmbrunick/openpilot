@@ -19,7 +19,8 @@ stock fusion.
 from __future__ import annotations
 
 import math
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 # Device-frame x: radar dRel is measured from the radar, ~1.52 m ahead
 # of the camera / model origin. Keep in sync with radard.RADAR_TO_CAMERA.

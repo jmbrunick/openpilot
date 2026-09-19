@@ -250,6 +250,11 @@ class LeadTrackAssociation:
         # Live track failed path/oncoming / far-low-prob — do not keep the cache.
         self._held_radar_lead = None
         self._rain_lost_frames = 0
+      elif tracks:
+        # Incumbent gone; live table has other tracks that did not qualify.
+        # Do not ghost-hold a disappeared lead over oncoming / off-path clutter.
+        self._held_radar_lead = None
+        self._rain_lost_frames = 0
       elif self._held_radar_lead is not None:
         self._rain_lost_frames += 1
       else:

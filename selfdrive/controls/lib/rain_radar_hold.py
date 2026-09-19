@@ -31,7 +31,8 @@ must sit on the same model driving path vision uses for lead-in-path
 """
 from __future__ import annotations
 
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from openpilot.selfdrive.controls.lib.radar_path_gate import (
   MIN_DREL_M,

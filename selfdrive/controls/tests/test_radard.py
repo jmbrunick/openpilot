@@ -28,9 +28,9 @@ class RadarScenario:
     services = ["modelV2", "carState", "liveTracks"]
     self.sm = messaging.SubMaster(services, ignore_alive=services, ignore_avg_freq=services)
     self.radar = RadarD()
-    # Unit tests have no NAP settings. Product default is path-gated prefer
-    # when Radar Enabled is On — do not require Auto wipers.
-    self.radar.rain_gate.set_enabled_override(True)
+    # Stock-fusion tests stay Off unless a case opts into Radar Enabled.
+    # Prefer-without-Auto tests call set_radar_enabled(True).
+    self.radar.rain_gate.set_enabled_override(False)
     self.v_ego = v_ego
     self.frame = 0
 
@@ -208,7 +208,8 @@ def test_stock_fusion_drops_to_vision_when_prefer_off():
 def test_prefer_without_auto_holds_radar_through_vision_confident_wrong_range():
   """Default prefer (no Auto wiper): keep track 806 through the −32 m vision jump."""
   scenario = RadarScenario()
-  # No set_rain_hold(True) — prefer is the default operating mode.
+  scenario.set_radar_enabled(True)
+  # No set_rain_hold(True) — prefer is Radar Enabled, not Auto wipers.
   lead = scenario.step(1.0, vision_d_rel=DIG_RADAR_DREL, radar_points=[_dig_radar_point()],
                        vision_prob=DIG_VISION_PROB)
   assert lead.radar
@@ -264,6 +265,7 @@ def test_stock_fusion_vision_only_modelprob_bar_unchanged():
 def test_unhealthy_radar_uses_stock_fusion_and_sets_fallback():
   """Enabled but erratic/faulted radar → stock fusion + radarPreferFallback."""
   scenario = RadarScenario()
+  scenario.set_radar_enabled(True)
   scenario.set_radar_reliable(False)
   lead = scenario.step(1.0, vision_d_rel=DIG_RADAR_DREL, radar_points=[_dig_radar_point()],
                        vision_prob=DIG_VISION_PROB)
@@ -405,6 +407,7 @@ def test_on_path_stationary_still_acquired_dry_and_rain():
 def test_prefer_without_auto_path_oncoming_stationary():
   """Binding: prefer (no Auto) — path on/off, oncoming reject, on-path STAT keep."""
   scenario = RadarScenario()
+  scenario.set_radar_enabled(True)
   path_x = [0.0, 20.0, 40.0, 80.0]
   path_y = [0.0, 0.0, 0.0, 0.0]
   off = scenario.step(1.0, vision_d_rel=40.0, radar_points=[(3, 40.0, 2.8, 0.0)],
@@ -412,18 +415,21 @@ def test_prefer_without_auto_path_oncoming_stationary():
   assert not off.radar
 
   oncoming = RadarScenario()
+  oncoming.set_radar_enabled(True)
   lead = oncoming.step(1.0, vision_d_rel=50.0, radar_points=[(9, 50.0, -1.2, ONCOMING_VREL)],
                        vision_v=-18.0)
   assert not lead.radar
   assert not lead.status
 
   stopped = RadarScenario(v_ego=12.0)
+  stopped.set_radar_enabled(True)
   lead = stopped.step(1.0, vision_d_rel=28.0, radar_points=[(11, 28.0, 0.2, -12.0)],
                       vision_v=0.0)
   assert lead.radar
   assert lead.radarTrackId == 11
 
   on_path = RadarScenario()
+  on_path.set_radar_enabled(True)
   lead = on_path.step(1.0, vision_d_rel=40.0, radar_points=[IN_PATH])
   assert lead.radar
   assert lead.radarTrackId == 11
