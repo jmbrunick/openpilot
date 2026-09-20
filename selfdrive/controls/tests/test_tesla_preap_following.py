@@ -680,14 +680,15 @@ def test_planner_eases_for_slower_lead_before_mpc_and_lead_can_brake_harder():
   lead.vLead = v_lead
   for _ in range(16):
     planner.update(inputs)
-  # Closing ≥ 1.5: never rematch +a. Comfort path stays slight-lift MILD.
+  # Closing ≥ 1.5: never rematch +a. Overlay ease stays slight-lift
+  # while MPC is 0; a deeper MPC bite must leave the MILD floor.
   assert planner.output_a_target <= 0.0
   assert planner.output_a_target >= -LEAD_APPROACH_MILD_A_MS2 - 0.08
 
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
   planner.update(inputs)
-  # 4.4 m/s close is under the rapid gate: EV slight lift, not −2.0.
-  assert planner.output_a_target == pytest.approx(-LEAD_APPROACH_MILD_A_MS2, abs=0.08)
+  # 4.4 m/s close is under rapid 6 but past the soft-limit skip: leave −0.22.
+  assert planner.output_a_target == pytest.approx(-2.0, abs=0.08)
 
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
   planner.mpc.crash_cnt = 3
@@ -798,7 +799,8 @@ def test_planner_far_opening_alead_keeps_cruise_plus_a():
     planner.update(inputs)
   assert planner.output_a_target <= 0.0
 
-  # Near-gap braking lead: block rematch +a, stay slight-lift (not aLeadK).
+  # Near-gap braking lead: block rematch +a. Cruise +a is not aLeadK
+  # (cap zeros +a); a deeper MPC bite would skip the mild floor.
   planner2 = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
   planner2._map_speed_accel = 5
   planner2.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=cruise_a)
@@ -817,6 +819,10 @@ def test_planner_far_opening_alead_keeps_cruise_plus_a():
     planner2.update(inputs2)
   assert planner2.output_a_target <= 0.0
   assert planner2.output_a_target >= -LEAD_APPROACH_MILD_A_MS2 - 0.08
+  planner2.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
+  planner2.prev_accel_clip = [-3.5, a_cap]
+  planner2.update(inputs2)
+  assert planner2.output_a_target == pytest.approx(-2.0, abs=0.08)
 
 
 def test_planner_far_same_speed_lead_may_keep_catchup_plus_a():
@@ -1078,13 +1084,13 @@ def test_planner_caps_lead_close_accel_at_min_accel_and_keeps_hard_brake():
   planner.update(inputs)
   assert planner.output_a_target == pytest.approx(-LEAD_APPROACH_MILD_A_MS2, abs=0.08)
   assert planner.output_a_target > -0.60
-  # Near-gap braking lead: slight-lift floor, not −2.0.
+  # Near-gap braking lead: skip the mild floor so MPC −2.0 can match.
   lead.vLead = v_lead
   lead.dRel = d_follow + 8.0
   lead.aLeadK = -0.4
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
   planner.update(inputs)
-  assert planner.output_a_target == pytest.approx(-LEAD_APPROACH_MILD_A_MS2, abs=0.08)
+  assert planner.output_a_target == pytest.approx(-2.0, abs=0.08)
   lead.dRel = d_rel
   lead.aLeadK = 0.0
 

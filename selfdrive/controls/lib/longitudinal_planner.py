@@ -541,9 +541,9 @@ class LongitudinalPlanner:
         lead_a_k = None
       # Floor MPC before overlay so a confirmed rapid 0.55 path is not
       # also clamped. One-frame v_rel spikes stay at MILD. Large-slack
-      # small adjustments (e4 −2.33) stay floored; near-gap closing /
-      # braking-lead / rapid / near-bumper keep full −a. Floor hold
-      # stops −0.22 ↔ −0.55 chatter when v_rel flickers around 1.5.
+      # small adjustments (e4 −2.33) stay floored; near-gap closing
+      # ≳ 1.5 / braking-lead / rapid / near-bumper keep full −a. Firm
+      # 0.55 / hard dump still waits on the rapid confirm.
       raw_mpc_a = float(output_a_target)
       output_a_target = soft_limit_mpc_a_target(
         output_a_target, v_ego, lead_v_hold, lead_d_hold,

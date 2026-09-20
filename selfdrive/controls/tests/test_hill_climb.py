@@ -485,7 +485,8 @@ def test_planner_lead_still_wins_on_uphill():
 
   planner.mpc = h["_ConstantAccelerationMpc"](v_ego, acceleration_mps2=-2.0)
   planner.update(inputs)
-  assert planner.output_a_target == pytest.approx(-LEAD_APPROACH_MILD_A_MS2, abs=0.08)
+  # Closing 4.4 is under rapid 6 but past the soft-limit skip.
+  assert planner.output_a_target == pytest.approx(-2.0, abs=0.08)
 
 
 def test_planner_crest_ease_near_max():
