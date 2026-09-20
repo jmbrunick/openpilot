@@ -60,13 +60,13 @@ Rate-limit +a across cruise↔lead flips when not
 rapidly closing. A brief `leadOne` drop holds the last in-window lead so
 the cap cannot be bypassed. Vision-only far flicker does not cap
 empty-road climb. Non-rapid MPC −a is floored at MILD (slight lift)
-when matched or slow-close. Closing ≳ 1.5 or a near-gap braking
-lead (slack ≲ 20 m) skips that floor immediately so a sub-rapid
-hard close cannot pin −0.22 (07:55: closing 1.8→4.4, aLead ~−1,
-dRel 38→25 under the 6 m/s rapid gate). Large-slack small
-adjustments (e4 −2.33) and far / opening aLead stay floored.
-Firm 0.55 / full hard-brake still wait on confirmed rapid /
-near-bumper / FCW.
+when matched or slow-close. On an owned / path-synced lead,
+rising close ≳ 1.5 or near-gap aLead (slack ≲ 20 m) skips that
+floor immediately so residual close cannot pin −0.22 (07:55:
+closing 1.8→4.4, aLead ~−1, dRel 38→25 under the 6 m/s rapid
+gate). Large-slack small adjustments (e4 −2.33) and far /
+opening aLead stay floored. Firm 0.55 / full hard-brake still
+wait on confirmed rapid / near-bumper / FCW.
 
 First lead latch used to punch MPC regen then rematch +a in ~0.5 s
 (e4 09:53:19: −0.46 → +0.05 at 118 m; 10:48 −0.996 at 80–130 m).
@@ -594,10 +594,12 @@ def lead_mpc_needs_full_authority(v_rel, d_rel, slack=None, allow_rapid=False,
   (or already inside the stop gap). Acquire and near-gap slew use this
   path so a one-off radar blip cannot dump hard regen.
 
-  Soft-limit may pass `skip_mild_floor=True` so a closing ≥ 1.5 or
-  near-gap braking lead (slack ≲ 20 m) releases the MILD comfort
-  floor without waiting for rapid ≥ 6. That does not skip acquire
-  slew or promote the 0.55 path.
+  Soft-limit may pass `skip_mild_floor=True` so an owned / path-synced
+  lead that is clearly closing (≳ 1.5) or braking (near-gap aLead,
+  slack ≲ 20 m) releases the MILD comfort floor without waiting for
+  rapid ≥ 6. Rising close on a held lead *is* the brake signal;
+  measured aLead reinforces it. That does not skip acquire slew or
+  promote the 0.55 path — firm / full still waits on confirm.
   """
   if fcw or int(crash_cnt) > 0:
     return True
@@ -854,13 +856,14 @@ def soft_limit_mpc_a_target(output_a, v_ego, v_lead, d_rel, fcw=False, crash_cnt
   also floored.
 
   Comfort path stays MILD when matched or slow-close (lead not
-  braking, closing < 1.5). Skip the floor immediately when closing
-  ≳ 1.5 or a near-gap braking lead (slack ≲ 20 m) so a sub-rapid
-  hard close cannot pin −0.22 (07:55 class: closing 1.8→4.4,
-  aLead ~−1, dRel 38→25). Large-slack small adjustments (e4 −2.33)
-  and far / opening aLead stay floored. Rapid / near-bumper / FCW /
-  crash own danger. A one-frame rapid blip still waits on
-  `allow_rapid`.
+  braking, closing < 1.5). Skip the floor immediately when an
+  owned / path-synced lead's closing rises ≳ 1.5 or near-gap aLead
+  shows brake (slack ≲ 20 m). That is residual close on a held
+  lead — do not wait for rapid ≥ 6 (07:55 class: closing 1.8→4.4,
+  aLead ~−1, dRel 38→25 while aTarget sat at −0.22). Large-slack
+  small adjustments (e4 −2.33) and far / opening aLead stay
+  floored. Rapid / near-bumper / FCW / crash own danger. A
+  one-frame rapid blip still waits on `allow_rapid`.
   """
   _ = prev_floored
   if output_a is None:

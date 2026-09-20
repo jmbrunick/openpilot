@@ -1535,11 +1535,12 @@ def test_near_gap_small_a_slews_chatter_not_authority():
 
 
 def test_soft_limit_releases_under_rapid_hard_close():
-  """07:55 class: closing 1.8→4.4 / aLead ~−1 / dRel 38→25 must leave −0.22.
+  """07:55 class: owned lead, rising close, aLead ~−1 must leave −0.22.
 
-  This gate failed on #216: peak closing 4.44 < rapid 6 and dRel 25 > 12
-  kept aTarget pinned at MILD. Soft skip is immediate; firm/full
-  authority stays confirm-gated.
+  Held / path-synced follow: speeds were matched, then closing rose
+  1.8→4.4 while aLead went to −1 (residual close = lead brake).
+  #216 waited for rapid ≥ 6 / dRel ≤ 12 and stayed at MILD. Soft
+  skip is immediate; firm/full stays confirm-gated.
   """
   mph = 0.44704
   # 07:55:09.7 — first moment closing ≥ 1.5 and aLead ~−0.8.
