@@ -1558,10 +1558,10 @@ def test_soft_limit_releases_under_rapid_hard_close():
     closing_early, 38.0, slack=7.0, a_lead=-0.79, skip_mild_floor=True,
   )
 
-  # 07:55:13.7 — user brake: closing ~4.4, aLead ~−1, dRel ~25.
+  # 07:55:13.7 — user brake: radar closing 4.44, aLead ~−1, dRel ~25.
   v_ego_brk = 62.5 * mph
-  v_lead_brk = 53.2 * mph
-  closing_brk = v_ego_brk - v_lead_brk
+  closing_brk = 4.44
+  v_lead_brk = v_ego_brk - closing_brk
   assert 4.0 <= closing_brk < LEAD_APPROACH_RAPID_DV_MS
   a_brk = soft_limit_mpc_a_target(
     -1.2, v_ego_brk, v_lead_brk, 25.2, a_lead=-1.04, slack=-2.2,
