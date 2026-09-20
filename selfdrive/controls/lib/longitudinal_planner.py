@@ -26,6 +26,7 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   lead_approach_track_ok,
   lead_close_accel_ms2,
   lead_close_should_cap,
+  lead_mid_gap_catchup_latch,
   lead_follow_slack_m,
   lead_owns_plan,
   lead_remaining_close_a_ms2,
@@ -149,6 +150,7 @@ class LongitudinalPlanner:
     self._lead_close_hold_age = 0.0
     self._lead_close_hold_owned = False
     self._lead_close_a_cap = None
+    self._lead_mid_gap_catchup = False
     self._follow_open_a = None
     self._lead_settle_age = 0.0
     self._lead_settled = False
@@ -240,6 +242,7 @@ class LongitudinalPlanner:
       self._lead_close_hold_age = 0.0
       self._lead_close_hold_owned = False
       self._lead_close_a_cap = None
+      self._lead_mid_gap_catchup = False
       self._follow_open_a = None
       self._lead_settle_age = 0.0
       self._lead_settled = False
@@ -343,9 +346,13 @@ class LongitudinalPlanner:
             v_rel_lead, self._lead_close_hold_a, slack,
           ),
         )
+        self._lead_mid_gap_catchup = lead_mid_gap_catchup_latch(
+          self._lead_mid_gap_catchup, v_rel_lead, slack,
+        )
         self._lead_close_a_cap = lead_close_accel_ms2(
           self._map_speed_accel, v_rel=v_rel_lead, slack=slack, a_personality=a_env,
           settled=self._lead_settled, v_ego=v_ego, v_cruise=v_hud_ms,
+          catchup=self._lead_mid_gap_catchup,
         )
         if self._lead_close_hold_owned or lead_owns_plan(
           v_rel_lead, self._lead_close_hold_a, slack,
@@ -357,6 +364,7 @@ class LongitudinalPlanner:
         self._lead_close_hold_owned = False
         self._lead_settle_age = 0.0
         self._lead_settled = False
+        self._lead_mid_gap_catchup = False
         self._lead_glide_active = False
         self._lead_soft_limit_floored = False
         self._lead_soft_limit_v_rel = None

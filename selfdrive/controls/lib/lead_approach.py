@@ -611,7 +611,8 @@ def lead_mid_gap_slow_close(v_rel, slack) -> bool:
   Slack in the 12–50 m rematch band and still closing ~0.8–2.0 m/s
   (ef 10:18 yo-yo). Same-speed / opening, or slack > 50 (large-gap
   rematch / follow recovery), stay Accel catch-up. Closing ≥ 2.0 is
-  ownership, not rematch.
+  ownership, not rematch. A latched same-speed / opening catch-up
+  (`lead_mid_gap_catchup_latch`) also keeps Accel through this band.
   """
   if v_rel is None or slack is None:
     return False
@@ -622,9 +623,30 @@ def lead_mid_gap_slow_close(v_rel, slack) -> bool:
   return LEAD_MID_GAP_CLOSE_LO_MS <= v < LEAD_MID_GAP_CLOSE_HI_MS
 
 
+def lead_mid_gap_catchup_latch(prev, v_rel, slack) -> bool:
+  """Hold Accel catch-up through the 12–50 m slow-close rematch band.
+
+  Same-speed / opening / barely-closing with slack > 12 latches so a
+  100 m start or too-close recovery can finish Follow Distance. Already
+  closing 0.8–2.0 in-band without that latch (ef 10:18) stays trickle.
+  Drop the latch inside the near-gap rematch band or when closing ≥ 2.0.
+  """
+  if v_rel is None or slack is None:
+    return False
+  v = float(v_rel)
+  s = float(slack)
+  if s <= LEAD_CLOSE_REMATCH_SLACK_M:
+    return False
+  if v < LEAD_MID_GAP_CLOSE_LO_MS:
+    return True
+  if v >= LEAD_MID_GAP_CLOSE_HI_MS:
+    return False
+  return bool(prev)
+
+
 def lead_close_accel_ms2(accel_level: int = 5, v_rel=None, slack=None,
                          a_personality=None, settled=False, v_ego=None,
-                         v_cruise=None) -> float:
+                         v_cruise=None, catchup=False) -> float:
   """Max positive a (m/s²) when closing the gap on a radar lead.
 
   Same Accel 1–10 envelope as open-road / MAX climb — not a separate
@@ -661,7 +683,7 @@ def lead_close_accel_ms2(accel_level: int = 5, v_rel=None, slack=None,
   if settled:
     return lead_settled_rematch_a_ms2(a, v_rel, slack)
   if slack is None or float(slack) > LEAD_CLOSE_REMATCH_SLACK_M:
-    if (not settled) and lead_mid_gap_slow_close(v_rel, slack):
+    if (not settled) and (not catchup) and lead_mid_gap_slow_close(v_rel, slack):
       return min(a, LEAD_MID_GAP_REMATCH_A_MS2)
     return a
   if v_rel is not None and float(v_rel) <= 0.0:

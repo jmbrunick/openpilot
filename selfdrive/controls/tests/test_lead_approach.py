@@ -99,6 +99,7 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   guard_follow_actuator_regen,
   lead_close_accel_ms2,
   lead_close_should_cap,
+  lead_mid_gap_catchup_latch,
   lead_mid_gap_slow_close,
   lead_follow_slack_m,
   lead_hunt_accel_ms2,
@@ -766,6 +767,8 @@ def test_planner_wires_hysteresis_and_slew():
   assert "lead_follow_slack_m(" in planner
   assert "resolve_lead_close_hold(" in planner
   assert "lead_close_accel_ms2(" in planner
+  assert "lead_mid_gap_catchup_latch(" in planner
+  assert "catchup=self._lead_mid_gap_catchup" in planner
   assert "lead_approach_rapid_gate(" in planner
   assert "soft_limit_mpc_a_target(" in planner
   assert "cap_closing_lead_accel(" in planner
@@ -1821,6 +1824,22 @@ def test_mid_gap_slow_close_soft_caps_accel_rematch():
   assert lead_close_accel_ms2(1, v_rel=1.2, slack=80.0, settled=False) == pytest.approx(
     LEAD_CLOSE_A_MIN_MS2
   )
+  # Same-speed / opening latch keeps Accel through the 12–50 m band so a
+  # 100 m start / too-close recovery can finish FD. 10:18 already closing
+  # in-band does not latch.
+  assert lead_mid_gap_catchup_latch(False, 0.0, 40.0)
+  assert lead_mid_gap_catchup_latch(False, -0.4, 20.0)
+  assert lead_mid_gap_catchup_latch(False, 0.5, 46.0)
+  assert not lead_mid_gap_catchup_latch(False, 1.4, 40.0)
+  assert lead_mid_gap_catchup_latch(True, 1.4, 40.0)
+  assert not lead_mid_gap_catchup_latch(True, 1.4, 10.0)
+  assert not lead_mid_gap_catchup_latch(True, 2.0, 40.0)
+  assert lead_close_accel_ms2(
+    5, v_rel=1.4, slack=40.0, settled=False, catchup=True,
+  ) == pytest.approx(a5)
+  assert lead_close_accel_ms2(
+    5, v_rel=1.4, slack=40.0, settled=False, catchup=False,
+  ) == pytest.approx(LEAD_MID_GAP_REMATCH_A_MS2)
   # Slack ≫ 50 with close < 0.8 is still Accel.
   assert lead_close_accel_ms2(2, v_rel=0.5, slack=80.0) == pytest.approx(a2)
   # Near-gap rematch-block still zeros a hard close.
