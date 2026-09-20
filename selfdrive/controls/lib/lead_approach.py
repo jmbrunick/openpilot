@@ -468,6 +468,21 @@ def lead_at_or_above_max(v_ego, v_cruise) -> bool:
   return float(v_ego) >= float(v_cruise) - TRACK_DEADBAND_MS
 
 
+def lead_map_decel_above_max(v_ego, v_cruise) -> bool:
+  """True when map is commanding over-MAX decel (past the deadband).
+
+  lead_at_or_above_max includes sitting *at* MAX. First-latch acquire
+  slew and the MILD floor must still apply there (e4 09:53:19). Map
+  brake only starts once ego is faster than MAX by TRACK_DEADBAND —
+  same edge as map_track_decel_ms2.
+  """
+  if v_ego is None or v_cruise is None:
+    return False
+  if float(v_ego) <= 0.0 or float(v_cruise) <= 0.0:
+    return False
+  return float(v_ego) > float(v_cruise) + TRACK_DEADBAND_MS
+
+
 def lead_settled_rematch_a_ms2(a, v_rel, slack) -> float:
   """After match: no Accel-ceil rematch while the gap is OK or opening.
 
@@ -650,17 +665,18 @@ def slew_lead_acquire_a(target, prev, v_rel, d_rel=None, slack=None,
   ~0.5 s. During the acquire window, step toward the new command.
   Rapid / near-bumper / FCW stay immediate. Closing ≳ 1.5 or a
   near-gap aLead does *not* skip the window — that punched −0.996
-  at 80–130 m (10:48) and delayed only the comfort path. Above MAX,
-  map decel still mins in even with a same-speed lead — do not
-  hold that brake behind acquire slew. After the window, same as
-  slew_follow_plus_a.
+  at 80–130 m (10:48) and delayed only the comfort path. Over MAX
+  (past the deadband), map decel still mins in even with a
+  same-speed lead — do not hold that brake behind acquire slew.
+  Sitting *at* MAX still slews (e4 first latch). After the window,
+  same as slew_follow_plus_a.
   """
   _ = a_lead
   if target is None:
     return target
   t = float(target)
   p = t if prev is None else float(prev)
-  if ((not acquiring) or lead_at_or_above_max(v_ego, v_cruise)
+  if ((not acquiring) or lead_map_decel_above_max(v_ego, v_cruise)
       or lead_mpc_needs_full_authority(
         v_rel, d_rel, slack, allow_rapid=allow_rapid, fcw=fcw,
         crash_cnt=crash_cnt, confirm_rapid=False,
@@ -957,8 +973,9 @@ def soft_limit_mpc_a_target(output_a, v_ego, v_lead, d_rel, fcw=False, crash_cnt
   ≥ 6 (07:55 class: held lead, closing 1.8→4.4, aLead ~−1, dRel
   38→25 while aTarget sat at −0.22). Cut-ins may still skip once
   closing ≥ 1.5. Large-slack e4 and far / opening aLead stay
-  floored. Above MAX, map decel still mins in on a same-speed lead.
-  Firm / full still waits on confirm.
+  floored. Over MAX (past the deadband), map decel still mins in
+  on a same-speed lead. Sitting at MAX still floors. Firm / full
+  still waits on confirm.
   """
   _ = prev_floored
   if output_a is None:
@@ -969,7 +986,7 @@ def soft_limit_mpc_a_target(output_a, v_ego, v_lead, d_rel, fcw=False, crash_cnt
   if d_rel is None or v_lead is None or v_ego is None:
     return a
   v_rel = float(v_ego) - max(0.0, float(v_lead))
-  if (lead_at_or_above_max(v_ego, v_cruise)
+  if (lead_map_decel_above_max(v_ego, v_cruise)
       and not lead_is_closing(v_rel, a_lead, slack=slack)):
     return a
   if lead_mpc_needs_full_authority(

@@ -545,9 +545,9 @@ class LongitudinalPlanner:
       # Floor MPC before overlay so a confirmed rapid 0.55 path is not
       # also clamped. Owned / path-synced lead: residual close (beyond
       # ego a) or aLead skips MILD. One-frame v_rel spikes stay at MILD.
-      # Large-slack e4 stays floored. Above MAX, map decel still mins
-      # in on a same-speed lead. Firm 0.55 / hard dump still waits on
-      # the rapid confirm.
+      # Large-slack e4 stays floored. Over MAX (past the deadband),
+      # map decel still mins in on a same-speed lead. Firm 0.55 /
+      # hard dump still waits on the rapid confirm.
       raw_mpc_a = float(output_a_target)
       prev_close_v_rel = self._lead_soft_limit_v_rel
       output_a_target = soft_limit_mpc_a_target(

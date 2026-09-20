@@ -864,6 +864,7 @@ def test_planner_first_acquire_slews_yoyo_and_keeps_rapid_authority():
   planner.prev_accel_clip = [-1.2, 0.80]
   planner.output_a_target = 0.0
   inputs = _make_planner_inputs(v_ego)
+  _set_v_cruise_ms(inputs, v_ego + _UNDER_MAX_HEADROOM_MS)
   lead = inputs["radarState"].leadOne
   lead.status = True
   lead.dRel = 118.0
@@ -887,6 +888,7 @@ def test_planner_first_acquire_slews_yoyo_and_keeps_rapid_authority():
   planner_r.prev_accel_clip = [-3.5, 0.80]
   planner_r.output_a_target = 0.0
   inputs_r = _make_planner_inputs(v_ego)
+  _set_v_cruise_ms(inputs_r, v_ego + _UNDER_MAX_HEADROOM_MS)
   lead_r = inputs_r["radarState"].leadOne
   lead_r.status = True
   lead_r.dRel = 40.0

@@ -84,6 +84,7 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   lead_approach_track_ok,
   lead_approach_ttc_s,
   lead_at_or_above_max,
+  lead_map_decel_above_max,
   lead_close_accel_ms2,
   lead_close_should_cap,
   lead_follow_slack_m,
@@ -1120,10 +1121,13 @@ def test_lead_acquire_slew_keeps_rapid_and_near_bumper_authority():
   assert soft_limit_mpc_a_target(-2.5, 25.0, 24.8, 40.0, slack=-2.0) == pytest.approx(
     -LEAD_APPROACH_MILD_A_MS2
   )
-  # Above MAX: map decel still mins in on a same-speed lead. Do not
-  # floor to MILD or hide the brake behind first-latch acquire slew.
+  # Over MAX (past the deadband): map decel still mins in on a
+  # same-speed lead. Do not floor to MILD or hide the brake behind
+  # first-latch acquire slew.
   v_cruise = 22.0
   v_over = v_cruise + 2.5
+  assert lead_map_decel_above_max(v_over, v_cruise)
+  assert not lead_map_decel_above_max(25.0, 25.0)
   assert soft_limit_mpc_a_target(
     -0.80, v_over, v_over, 80.0, slack=40.0, v_cruise=v_cruise,
   ) == pytest.approx(-0.80)
@@ -1131,6 +1135,11 @@ def test_lead_acquire_slew_keeps_rapid_and_near_bumper_authority():
     -0.80, 0.0, 0.0, d_rel=80.0, slack=40.0, acquiring=True,
     v_ego=v_over, v_cruise=v_cruise,
   ) == pytest.approx(-0.80)
+  # Sitting at MAX is not map brake: first latch still slews (e4).
+  assert slew_lead_acquire_a(
+    -0.46, 0.0, 1.2, d_rel=118.0, slack=80.0, acquiring=True,
+    v_ego=25.0, v_cruise=25.0,
+  ) == pytest.approx(-LEAD_ACQUIRE_SLEW_MS2)
 
 
 def test_one_outlier_rapid_v_rel_does_not_commit_hard_regen():
