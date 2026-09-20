@@ -17,6 +17,8 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_APPROACH_RAPID_TTC_S,
   LEAD_APPROACH_SOFT_LIMIT_ALEAD_MS2,
   LEAD_APPROACH_SOFT_LIMIT_CLOSE_MS,
+  LEAD_SOFT_LIMIT_RESIDUAL_MS2,
+  LEAD_SOFT_LIMIT_RISE_MS,
   LEAD_CLOSING_ALEAD_MS2,
   LEAD_CLOSING_MATCH_GAIN,
   LEAD_CLOSING_MATCH_MS,
@@ -67,11 +69,14 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   lead_approach_decel_ms2,
   lead_alead_owns_match,
   lead_inside_slow_close_a_ms2,
+  lead_close_is_rising,
   lead_is_closing,
   lead_is_glide_sample,
   lead_kinematic_slack_m,
   lead_mpc_needs_full_authority,
   lead_owns_plan,
+  lead_residual_close_ms2,
+  lead_soft_limit_skip,
   lead_approach_is_rapid,
   lead_approach_need_m,
   lead_approach_rapid_gate,
@@ -157,6 +162,9 @@ def test_lead_approach_keeps_early_map_brake_not_map_110m_margin():
   assert LEAD_APPROACH_DV_MS < LEAD_APPROACH_SOFT_LIMIT_CLOSE_MS < LEAD_APPROACH_RAPID_DV_MS
   assert abs(LEAD_APPROACH_SOFT_LIMIT_ALEAD_MS2 + 0.2) < 1e-9
   assert LEAD_APPROACH_SOFT_LIMIT_ALEAD_MS2 < 0.0
+  assert abs(LEAD_SOFT_LIMIT_RISE_MS - 0.15) < 1e-9
+  assert LEAD_SOFT_LIMIT_RISE_MS < LEAD_APPROACH_DV_MS
+  assert abs(LEAD_SOFT_LIMIT_RESIDUAL_MS2 - 0.2) < 1e-9
   assert abs(LEAD_CLOSING_REMATCH_BLOCK_MS - 1.0) < 1e-9
   assert abs(LEAD_CLOSING_MATCH_MS - 1.5) < 1e-9
   assert abs(LEAD_CLOSING_ALEAD_MS2 + 0.2) < 1e-9
@@ -747,6 +755,8 @@ def test_planner_wires_hysteresis_and_slew():
   assert "slew_near_gap_small_a(" in planner
   assert "apply_matched_inside_fd_a" not in planner
   assert "prev_floored=self._lead_soft_limit_floored" in planner
+  assert "prev_v_rel=self._lead_soft_limit_v_rel" in planner
+  assert "a_ego=self.output_a_target" in planner
   assert "v_cruise=v_hud_ms" in planner
   assert "allow_rapid=allow_rapid" in planner
   assert "a_lead=lead_a_k" in planner
@@ -1572,6 +1582,56 @@ def test_soft_limit_releases_under_rapid_hard_close():
   assert a_brk != pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
   assert not lead_mpc_needs_full_authority(closing_brk, 25.2, slack=-2.2)
   assert not lead_approach_is_rapid(closing_brk)
+
+  # Same held lead, earlier: closing rose 1.00→1.38 while aTarget sat at −0.22.
+  # Rising / residual / aLead must skip before the static 1.5 gate.
+  v_ego_rise = 67.0 * mph
+  closing_rise = 1.38
+  assert closing_rise < LEAD_APPROACH_SOFT_LIMIT_CLOSE_MS
+  assert lead_close_is_rising(closing_rise, 1.00)
+  residual = lead_residual_close_ms2(closing_rise, 1.00, -0.22, 1.0)
+  assert residual is not None and residual >= LEAD_SOFT_LIMIT_RESIDUAL_MS2
+  a_rise = soft_limit_mpc_a_target(
+    -1.2, v_ego_rise, v_ego_rise - closing_rise, 39.0, a_lead=-0.61, slack=8.0,
+    owned=True, prev_v_rel=1.00, a_ego=-0.22, dt=1.0,
+  )
+  assert a_rise == pytest.approx(-1.2)
+  assert lead_soft_limit_skip(
+    closing_rise, a_lead=0.0, slack=8.0, owned=True, prev_v_rel=1.00,
+    a_ego=-0.22, dt=1.0,
+  )
+
+
+def test_soft_limit_owned_rising_close_skips_before_static_gate():
+  """Held lead: closing starts climbing → skip MILD. Cut-in under 1.5 does not."""
+  v_ego = 25.0
+  d_rel = 40.0
+  # Owned + rising 0.80→1.20, even with aLead ~0.
+  assert lead_close_is_rising(1.20, 0.80)
+  assert soft_limit_mpc_a_target(
+    -2.5, v_ego, v_ego - 1.20, d_rel, a_lead=0.0, slack=8.0,
+    owned=True, prev_v_rel=0.80, a_ego=-0.22, dt=0.50,
+  ) == pytest.approx(-2.5)
+  # Matched / not rising: stay MILD.
+  assert not lead_close_is_rising(0.25, 0.20)
+  assert soft_limit_mpc_a_target(
+    -2.5, v_ego, v_ego - 0.25, d_rel, a_lead=0.0, slack=8.0,
+    owned=True, prev_v_rel=0.20, a_ego=-0.22, dt=0.05,
+  ) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  # Brand-new cut-in (acquiring): under 1.5 stays floored; ≥ 1.5 may react.
+  assert soft_limit_mpc_a_target(
+    -2.5, v_ego, v_ego - 1.20, d_rel, a_lead=0.0, slack=8.0, acquiring=True,
+  ) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  assert soft_limit_mpc_a_target(
+    -2.5, v_ego, v_ego - 1.60, d_rel, a_lead=0.0, slack=8.0, acquiring=True,
+  ) == pytest.approx(-2.5)
+  # Residual close on a held lead (ego commanded −0.22, closing still rose).
+  assert lead_residual_close_ms2(1.10, 0.70, -0.22, 0.50) > LEAD_SOFT_LIMIT_RESIDUAL_MS2
+  assert lead_soft_limit_skip(
+    1.10, a_lead=0.0, slack=8.0, owned=True, prev_v_rel=0.70, a_ego=-0.22, dt=0.50,
+  )
+  # Firm / full still off — only the mild floor skips.
+  assert not lead_mpc_needs_full_authority(1.20, d_rel, slack=8.0, owned=True)
 
 
 def test_soft_limit_keeps_mild_and_glide_on_matched_slow_close():

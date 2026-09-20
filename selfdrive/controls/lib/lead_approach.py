@@ -133,6 +133,13 @@ LEAD_APPROACH_RAPID_TTC_S = 8.0
 LEAD_APPROACH_SOFT_LIMIT_CLOSE_MS = 1.5
 # Lead clearly braking. −0.2 is a real coast/brake, not aLeadK noise at 0.
 LEAD_APPROACH_SOFT_LIMIT_ALEAD_MS2 = -0.2
+# Owned-lead rising close. Above rematch-enter jitter (0.55) so a
+# matched follow whose closing starts climbing is the brake signal
+# before 1.5. One-frame radar chatter must not count as a rise.
+LEAD_SOFT_LIMIT_RISE_MS = 0.15
+# Unexplained closing accel after subtracting ego's own a. Same
+# spirit as aLead ≤ −0.2: residual ≥ 0.2 means the lead is braking.
+LEAD_SOFT_LIMIT_RESIDUAL_MS2 = 0.2
 # Never rematch / cruise +a into a live or held closing gap. 1.0 m/s
 # (~2.2 mph) is above rematch-enter jitter; 1.5 is match-speed / ownership.
 LEAD_CLOSING_REMATCH_BLOCK_MS = 1.0
@@ -587,19 +594,20 @@ def slew_follow_plus_a(target, prev, v_rel, slew=LEAD_ATARGET_SLEW_MS2):
 
 def lead_mpc_needs_full_authority(v_rel, d_rel, slack=None, allow_rapid=False,
                                  fcw=False, crash_cnt=0, confirm_rapid=True,
-                                 a_lead=None, skip_mild_floor=False):
+                                 a_lead=None, skip_mild_floor=False,
+                                 owned=False, acquiring=False, prev_v_rel=None,
+                                 a_ego=None, dt=None):
   """True when MPC −a must not be slewed or floored.
 
   Firm / emergency: FCW / crash / confirmed rapid close / near bumper
   (or already inside the stop gap). Acquire and near-gap slew use this
   path so a one-off radar blip cannot dump hard regen.
 
-  Soft-limit may pass `skip_mild_floor=True` so an owned / path-synced
-  lead that is clearly closing (≳ 1.5) or braking (near-gap aLead,
-  slack ≲ 20 m) releases the MILD comfort floor without waiting for
-  rapid ≥ 6. Rising close on a held lead *is* the brake signal;
-  measured aLead reinforces it. That does not skip acquire slew or
-  promote the 0.55 path — firm / full still waits on confirm.
+  Soft-limit may pass `skip_mild_floor=True` so an already-owned /
+  path-synced lead whose closing is rising (or residual close / aLead
+  shows brake) releases the MILD floor without waiting for rapid ≥ 6.
+  That does not skip acquire slew or promote the 0.55 path — firm /
+  full still waits on confirm.
   """
   if fcw or int(crash_cnt) > 0:
     return True
@@ -610,9 +618,11 @@ def lead_mpc_needs_full_authority(v_rel, d_rel, slack=None, allow_rapid=False,
     return True
   if d_rel is not None and (float(d_rel) - STOP_DISTANCE) <= 0.0:
     return True
-  if skip_mild_floor and lead_owns_plan(v_rel, a_lead, slack):
-    if slack is None or float(slack) <= LEAD_ALEAD_MATCH_SLACK_M:
-      return True
+  if skip_mild_floor and lead_soft_limit_skip(
+    v_rel, a_lead, slack, owned=owned, acquiring=acquiring,
+    prev_v_rel=prev_v_rel, a_ego=a_ego, dt=dt,
+  ):
+    return True
   return False
 
 
@@ -765,6 +775,55 @@ def lead_owns_plan(v_rel, a_lead=None, slack=None) -> bool:
   return lead_is_closing(v_rel, a_lead, close_ms=LEAD_CLOSING_MATCH_MS, slack=slack)
 
 
+def lead_close_is_rising(v_rel, prev_v_rel, rise_ms=LEAD_SOFT_LIMIT_RISE_MS) -> bool:
+  """True when closing rate increased vs the last owned-lead sample."""
+  if v_rel is None or prev_v_rel is None:
+    return False
+  return float(v_rel) > float(prev_v_rel) + float(rise_ms)
+
+
+def lead_residual_close_ms2(v_rel, prev_v_rel, a_ego, dt):
+  """Unexplained closing accel after subtracting ego's own a.
+
+  Δv_rel = a_ego·dt − a_lead·dt. Residual (Δv_rel − a_ego·dt) / dt
+  is −a_lead: positive means the lead is braking harder than ego's
+  command accounts for. None when a pair of samples is missing.
+  """
+  if v_rel is None or prev_v_rel is None or dt is None or float(dt) <= 1e-6:
+    return None
+  expected = 0.0 if a_ego is None else float(a_ego) * float(dt)
+  return (float(v_rel) - float(prev_v_rel) - expected) / float(dt)
+
+
+def lead_soft_limit_skip(v_rel, a_lead=None, slack=None, owned=False,
+                         acquiring=False, prev_v_rel=None, a_ego=None, dt=None) -> bool:
+  """True when the MILD floor should release on this lead sample.
+
+  Primary: an already-owned / path-synced lead (past first latch, or
+  hold-owned) whose closing is rising, residual close shows brake,
+  or near-gap aLead is negative. Closing ≥ 1.5 also skips so a
+  finished rise — and a cut-in that is already closing hard — can
+  still react. Large slack (e4) stays floored.
+  """
+  if slack is not None and float(slack) > LEAD_ALEAD_MATCH_SLACK_M:
+    return False
+  if v_rel is not None and float(v_rel) >= LEAD_APPROACH_SOFT_LIMIT_CLOSE_MS:
+    return True
+  if acquiring and not owned:
+    return False
+  if lead_alead_owns_match(v_rel, a_lead, slack):
+    return True
+  if (v_rel is not None and float(v_rel) >= LEAD_CLOSING_REMATCH_BLOCK_MS
+      and lead_close_is_rising(v_rel, prev_v_rel)):
+    return True
+  residual = lead_residual_close_ms2(v_rel, prev_v_rel, a_ego, dt)
+  if residual is not None and residual >= LEAD_SOFT_LIMIT_RESIDUAL_MS2:
+    if (v_rel is not None and float(v_rel) >= LEAD_APPROACH_DV_MS
+        and lead_close_is_rising(v_rel, prev_v_rel)):
+      return True
+  return False
+
+
 def cap_closing_lead_accel(output_a, v_rel, a_lead=None, lead_present=False,
                            owned=False, slack=None, d_rel=None):
   """Never rematch +a into a closing / near-gap braking live or held lead.
@@ -847,7 +906,8 @@ def lead_approach_rapid_gate(v_rel, prev_count, need_n=LEAD_APPROACH_RAPID_CONFI
 
 def soft_limit_mpc_a_target(output_a, v_ego, v_lead, d_rel, fcw=False, crash_cnt=0,
                             allow_rapid=False, a_lead=None, slack=None,
-                            prev_floored=False):
+                            prev_floored=False, owned=False, acquiring=False,
+                            prev_v_rel=None, a_ego=None, dt=None):
   """Floor non-emergency MPC −a to slight-lift MILD.
 
   Overlay min(MPC, mild) cannot stop MPC commanding ~−2.5 on radar noise
@@ -855,15 +915,13 @@ def soft_limit_mpc_a_target(output_a, v_ego, v_lead, d_rel, fcw=False, crash_cnt
   command *before* the overlay so a confirmed rapid 0.55 path is not
   also floored.
 
-  Comfort path stays MILD when matched or slow-close (lead not
-  braking, closing < 1.5). Skip the floor immediately when an
-  owned / path-synced lead's closing rises ≳ 1.5 or near-gap aLead
-  shows brake (slack ≲ 20 m). That is residual close on a held
-  lead — do not wait for rapid ≥ 6 (07:55 class: closing 1.8→4.4,
-  aLead ~−1, dRel 38→25 while aTarget sat at −0.22). Large-slack
-  small adjustments (e4 −2.33) and far / opening aLead stay
-  floored. Rapid / near-bumper / FCW / crash own danger. A
-  one-frame rapid blip still waits on `allow_rapid`.
+  Comfort path stays MILD when matched or slow-close. Skip the floor
+  when an already-owned / path-synced lead's closing starts rising
+  (residual close beyond ego's own a, or measured aLead). Do not
+  wait for rapid ≥ 6 (07:55 class: held lead, closing 1.8→4.4,
+  aLead ~−1, dRel 38→25 while aTarget sat at −0.22). Cut-ins may
+  still skip once closing ≥ 1.5. Large-slack e4 and far / opening
+  aLead stay floored. Firm / full still waits on confirm.
   """
   _ = prev_floored
   if output_a is None:
@@ -877,7 +935,8 @@ def soft_limit_mpc_a_target(output_a, v_ego, v_lead, d_rel, fcw=False, crash_cnt
   if lead_mpc_needs_full_authority(
     v_rel, d_rel, slack, allow_rapid=allow_rapid, fcw=fcw,
     crash_cnt=crash_cnt, confirm_rapid=True,
-    a_lead=a_lead, skip_mild_floor=True,
+    a_lead=a_lead, skip_mild_floor=True, owned=owned,
+    acquiring=acquiring, prev_v_rel=prev_v_rel, a_ego=a_ego, dt=dt,
   ):
     return a
   return -LEAD_APPROACH_MILD_A_MS2
