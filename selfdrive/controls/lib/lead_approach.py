@@ -83,6 +83,15 @@ slow close commands that mild floor — not rematch +a, not a dump.
 When |v_rel| is small at/long of the gap, glide: a≈0 deadband +
 hysteresis (EV slight lift only). Already inside FD is a too-close
 recovery — rematch +a and mild −a stand. Rapid / bumper / FCW dump.
+
+After acquire, a mid-gap cruise rematch still pulsed Accel +a while
+slowly closing (ef 10:18: slack 15–90 m, v_rel ≈ 1.4, +0.25 ↔ −0.02
+every 2–4 s). Soft-cap that rematch to a trickle. Keep Accel for
+true catch-up (opening / same-speed, or slack ≫ 50 with close < 0.8).
+Post-acquire, slew small ±a both ways so tiny cruise bites cannot
+flip gas↔regen. When planner aTarget is ~0, do not let the plant
+dump firm regen (ef 10:18:42: act −1.23 then rematch +0.40). Rapid /
+near-bumper / FCW / planner ≤ −0.5 stay full authority.
 """
 from __future__ import annotations
 
@@ -193,6 +202,14 @@ LEAD_CLOSE_A_MAX_MS2 = map_accel_a_ms2(LOOKAHEAD_NORMAL, 10)
 LEAD_CLOSE_OPENING_A_MS2 = 0.08
 LEAD_CLOSE_REMATCH_A_MS2 = 0.12
 LEAD_CLOSE_REMATCH_SLACK_M = 12.0
+# Mid-gap rematch while still slowly closing (ef 10:18). Slack above
+# the near-gap rematch band, closing ~0.8–2.0 m/s: trickle, not Accel
+# ceil. Slack ≫ 50 with close < 0.8 is still Accel catch-up. Opening
+# / same-speed is Accel. Rapid / match-speed ≥ 1.5 still owns −a.
+LEAD_MID_GAP_SLACK_M = 50.0
+LEAD_MID_GAP_CLOSE_LO_MS = 0.8
+LEAD_MID_GAP_CLOSE_HI_MS = 2.0
+LEAD_MID_GAP_REMATCH_A_MS2 = 0.10
 # After |v_rel| < 0.5 for 0.5–1 s near the follow gap, Accel-ceil rematch
 # is deadbanded. Arm settle only while slack is still follow-like so a
 # 160 m same-speed catch-up stays Accel-owned. Do not arm while still
@@ -245,6 +262,17 @@ LEAD_GLIDE_CHATTER_HI_MS2 = LEAD_CLOSE_REMATCH_A_MS2 + 0.02
 # Near-gap small ±a slew (rematch trickle ↔ leftover mild).
 LEAD_NEAR_GAP_SLACK_M = 15.0
 LEAD_NEAR_GAP_SLEW_MS2 = 0.02
+# Post-acquire small ±a chatter (ef 10:18 rematch ↔ ~0). Wider than
+# the 0.75 s first-latch window. Firm −a / rematch ceil sit outside.
+LEAD_FOLLOW_CHATTER_LO_MS2 = -0.08
+LEAD_FOLLOW_CHATTER_HI_MS2 = 0.32
+LEAD_FOLLOW_CHATTER_SLEW_MS2 = LEAD_NEAR_GAP_SLEW_MS2
+LEAD_FOLLOW_CHATTER_DEADBAND_MS2 = 0.03
+# Plant regen dump while planner is coasting. Clip actuator to MILD
+# when |aTarget| is ~0. Planner ≤ −0.5 / FCW / rapid pass through.
+LEAD_FOLLOW_STEADY_A_MS2 = 0.08
+LEAD_FOLLOW_ACT_REGEN_FLOOR_MS2 = -LEAD_APPROACH_MILD_A_MS2
+LEAD_FOLLOW_ACT_REGEN_CMD_MS2 = -0.50
 # Brief hold of the last in-window lead when `leadOne.status` drops so
 # cruise punch cannot leak through a radar flicker. ~10 planner frames.
 LEAD_CLOSE_HOLD_S = 0.50
@@ -405,6 +433,66 @@ def slew_near_gap_small_a(target, prev, v_rel, d_rel=None, slack=None,
   return t
 
 
+def _follow_chatter_bite(a) -> bool:
+  return LEAD_FOLLOW_CHATTER_LO_MS2 <= float(a) <= LEAD_FOLLOW_CHATTER_HI_MS2
+
+
+def slew_follow_chatter_a(target, prev, v_rel, d_rel=None, slack=None,
+                          allow_rapid=False, fcw=False, crash_cnt=0,
+                          slew=LEAD_FOLLOW_CHATTER_SLEW_MS2):
+  """Slew small post-acquire ±a so rematch ↔ ~0 cannot flip gas↔regen.
+
+  After the 0.75 s first-latch window, cruise still bit +0.15…+0.27
+  then dropped to −0.02 every few seconds (ef 10:18). Both-ways step
+  plus a tiny deadband around 0 hold aTarget. Rapid / bumper / FCW /
+  bites outside the chatter band are immediate. First-latch acquire
+  slew is a separate, faster path.
+  """
+  if target is None:
+    return target
+  t = float(target)
+  if lead_mpc_needs_full_authority(
+    v_rel, d_rel, slack, allow_rapid=allow_rapid, fcw=fcw,
+    crash_cnt=crash_cnt, confirm_rapid=True,
+  ):
+    return t
+  if prev is None:
+    return t
+  p = float(prev)
+  if not (_follow_chatter_bite(t) and _follow_chatter_bite(p)):
+    return t
+  if (abs(t) <= LEAD_FOLLOW_CHATTER_DEADBAND_MS2
+      and abs(p) <= LEAD_FOLLOW_CHATTER_DEADBAND_MS2):
+    return p
+  if t > p:
+    return min(t, p + float(slew))
+  if t < p:
+    return max(t, p - float(slew))
+  return t
+
+
+def guard_follow_actuator_regen(actuator_a, planner_a):
+  """Do not dump firm plant regen when the planner is coasting.
+
+  ef 10:18:42: aTarget ≈ 0 while actuators.accel hit −1.23, the gap
+  opened, then rematch punched +0.36. Comfort only: when |aTarget|
+  is ~0, clip actuator to the MILD slight-lift floor. Planner
+  commanded ≤ −0.5 (or any firm −a) passes through. Rapid / FCW
+  reach the plant because the planner already asked for them.
+  """
+  if actuator_a is None or planner_a is None:
+    return actuator_a
+  a = float(actuator_a)
+  p = float(planner_a)
+  if p <= LEAD_FOLLOW_ACT_REGEN_CMD_MS2:
+    return a
+  if abs(p) > LEAD_FOLLOW_STEADY_A_MS2:
+    return a
+  if a >= LEAD_FOLLOW_ACT_REGEN_FLOOR_MS2:
+    return a
+  return LEAD_FOLLOW_ACT_REGEN_FLOOR_MS2
+
+
 def lead_is_settled_sample(v_rel, slack) -> bool:
   """True when this frame can count toward match-settle.
 
@@ -513,6 +601,24 @@ def lead_settled_rematch_a_ms2(a, v_rel, slack) -> float:
   return lead_hunt_accel_ms2(a, s)
 
 
+def lead_mid_gap_slow_close(v_rel, slack) -> bool:
+  """True when mid-gap rematch should trickle, not Accel-ceil.
+
+  Slack above the near-gap rematch band and still closing ~0.8–2.0 m/s
+  (ef 10:18: 111→68 m @ ~1.4 m/s). Same-speed / opening, or slack ≫ 50
+  with close < 0.8, stay Accel catch-up. Closing ≥ 2.0 is ownership,
+  not rematch. Slack upper bound is not applied while still closing
+  in-band — 70 m slack was the yo-yo, not a far hang.
+  """
+  if v_rel is None or slack is None:
+    return False
+  v = float(v_rel)
+  s = float(slack)
+  if s <= LEAD_CLOSE_REMATCH_SLACK_M:
+    return False
+  return LEAD_MID_GAP_CLOSE_LO_MS <= v < LEAD_MID_GAP_CLOSE_HI_MS
+
+
 def lead_close_accel_ms2(accel_level: int = 5, v_rel=None, slack=None,
                          a_personality=None, settled=False, v_ego=None,
                          v_cruise=None) -> float:
@@ -527,7 +633,8 @@ def lead_close_accel_ms2(accel_level: int = 5, v_rel=None, slack=None,
   Near the follow gap, a lead pulling away / slow rematch trickles +a
   so ease→Accel does not surge. After settle, Accel-ceil rematch is
   deadbanded; large same-speed gaps that never matched still use Accel
-  *under MAX*.
+  *under MAX*. Mid-gap slack while still slowly closing trickles
+  (not Accel ceil) so cruise rematch cannot pulse.
   """
   a = map_accel_a_ms2(LOOKAHEAD_NORMAL, int(accel_level))
   if a_personality is not None:
@@ -535,7 +642,9 @@ def lead_close_accel_ms2(accel_level: int = 5, v_rel=None, slack=None,
   if lead_at_or_above_max(v_ego, v_cruise):
     a = 0.0
   if v_rel is not None and float(v_rel) >= LEAD_CLOSING_REMATCH_BLOCK_MS:
-    # Large-gap catch-up still uses Accel (#187) even while closing ≳ 1.0.
+    # Large-gap catch-up still uses Accel (#187) even while closing ≳ 1.0
+    # *when same-speed / opening or only barely closing*. Mid-gap slack
+    # that is still closing ~1–2 m/s trickles instead (ef 10:18).
     # #190 is near-gap rematch-block; last meters may trickle; ≳ 1.5 owns.
     large_unsettled = (
       (not settled) and slack is not None and float(slack) > LEAD_CLOSE_REMATCH_SLACK_M
@@ -547,6 +656,8 @@ def lead_close_accel_ms2(accel_level: int = 5, v_rel=None, slack=None,
   if settled:
     return lead_settled_rematch_a_ms2(a, v_rel, slack)
   if slack is None or float(slack) > LEAD_CLOSE_REMATCH_SLACK_M:
+    if (not settled) and lead_mid_gap_slow_close(v_rel, slack):
+      return min(a, LEAD_MID_GAP_REMATCH_A_MS2)
     return a
   if v_rel is not None and float(v_rel) <= 0.0:
     return min(a, LEAD_CLOSE_OPENING_A_MS2)

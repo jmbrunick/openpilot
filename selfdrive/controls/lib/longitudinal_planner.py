@@ -30,6 +30,7 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   lead_owns_plan,
   lead_remaining_close_a_ms2,
   resolve_lead_close_hold,
+  slew_follow_chatter_a,
   slew_lead_acquire_a,
   slew_lead_approach_a,
   slew_near_gap_small_a,
@@ -597,8 +598,9 @@ class LongitudinalPlanner:
           allow_rapid=allow_rapid, fcw=self.fcw, crash_cnt=self.mpc.crash_cnt,
           a_lead=lead_a_k, v_ego=v_ego, v_cruise=v_hud_ms,
         )
-      # After acquire: matched-speed glide (no felt ±a) and slower
-      # near-gap small-bite slew. First-latch smoothness stays #214.
+      # After acquire: matched-speed glide (no felt ±a), slower
+      # near-gap small-bite slew, and mid-gap rematch↔~0 chatter
+      # slew. First-latch smoothness stays #214.
       self._lead_glide_active = update_lead_glide(
         self._lead_glide_active, overlay_v_rel, overlay_slack,
         d_rel=overlay_d, fcw=self.fcw, crash_cnt=self.mpc.crash_cnt,
@@ -607,6 +609,11 @@ class LongitudinalPlanner:
       if not acquiring:
         output_a_target = apply_lead_glide_a(output_a_target, self._lead_glide_active)
         output_a_target = slew_near_gap_small_a(
+          output_a_target, self.output_a_target, overlay_v_rel,
+          d_rel=overlay_d, slack=overlay_slack, allow_rapid=allow_rapid,
+          fcw=self.fcw, crash_cnt=self.mpc.crash_cnt,
+        )
+        output_a_target = slew_follow_chatter_a(
           output_a_target, self.output_a_target, overlay_v_rel,
           d_rel=overlay_d, slack=overlay_slack, allow_rapid=allow_rapid,
           fcw=self.fcw, crash_cnt=self.mpc.crash_cnt,
