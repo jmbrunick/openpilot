@@ -137,7 +137,10 @@ def merge_ways_into_db(
     deleted = OsmSpeedLimitDB.delete_ways_intersecting_bbox(con, *bbox)
     inserted = 0
     for w in ways:
-      OsmSpeedLimitDB.insert_way(con, w["way_id"], w["name"], w["highway"], w["maxspeed_ms"], w["coords"])
+      OsmSpeedLimitDB.insert_way(
+        con, w["way_id"], w["name"], w["highway"], w["maxspeed_ms"], w["coords"],
+        junction=w.get("junction") or "",
+      )
       inserted += 1
     OsmSpeedLimitDB.recount_ways(con)
     if extra_meta:

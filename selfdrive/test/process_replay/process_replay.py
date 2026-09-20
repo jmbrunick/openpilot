@@ -451,7 +451,7 @@ CONFIGS = [
     proc_name="controlsd",
     pubs=["liveParameters", "liveTorqueParameters", "modelV2", "selfdriveState",
           "liveCalibration", "livePose", "longitudinalPlan", "carState", "carOutput",
-          "driverMonitoringState", "onroadEvents", "driverAssistance"],
+          "driverMonitoringState", "onroadEvents", "driverAssistance", "liveMapDataNAP"],
     subs=["carControl", "controlsState"],
     ignore=["logMonoTime", ],
     init_callback=get_car_params_callback,

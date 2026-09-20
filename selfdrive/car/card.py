@@ -24,6 +24,7 @@ from openpilot.selfdrive.mapd.map_speed_policy import (
   MapCruiseHold, apply_map_speed_kph, decide_map_cruise, effective_map_limit_ms,
   map_slew_a_ms2, read_map_speed_params, should_write_preap_pedal, slew_map_speed_ms,
 )
+from openpilot.selfdrive.mapd.roundabout import live_map_roundabout_hint, roundabout_ease_v_ms
 from openpilot.selfdrive.controls.lib.curve_max_hold import CurveMaxHold
 from openpilot.selfdrive.controls.lib.hypermile import (
   FollowStalkGesture, button_event_closer, button_event_released,
@@ -330,7 +331,27 @@ class Car:
             self._map_speed_accel,
             sticky=False,
           )
-          if lim is not None and lim > 0:
+        else:
+          lim = None
+        # RB funnel is geometry, not a posted rebase. Ease even on a sticky
+        # hold so aTarget cannot stay +a into the ring (Willmar 49→17).
+        rb_lim = None
+        if map_valid and md is not None:
+          rb_lim = roundabout_ease_v_ms(
+            live_map_roundabout_hint(md),
+            float(CS.vEgo),
+            float(md.speedLimit) if md.speedLimit > 0 else float(CS.vEgo),
+            self._map_speed_lookahead,
+          )
+          if rb_lim is not None:
+            lim = rb_lim if lim is None else min(float(lim), rb_lim)
+        if map_valid and md is not None and lim is not None and lim > 0:
+          if rb_lim is not None:
+            # Instant RB latch: MAX is the ring target now. Do not Accel-5
+            # slew over another 100 m after long enables in the funnel.
+            self._map_slew_ms = float(lim)
+            map_kph = float(lim) * CV.MS_TO_KPH
+          else:
             if self._map_slew_ms is None:
               prev_kph = float(self.v_cruise_helper.v_cruise_kph)
               prev_ms = prev_kph * CV.KPH_TO_MS
@@ -343,8 +364,8 @@ class Car:
             )
             self._map_slew_ms = slew_map_speed_ms(self._map_slew_ms, lim, DT_CTRL, a)
             map_kph = self._map_slew_ms * CV.MS_TO_KPH
-          else:
-            self._map_slew_ms = None
+        elif map_valid and md is not None:
+          self._map_slew_ms = None
         elif not map_valid:
           self._map_slew_ms = None
         # seed_kph is a one-shot write (engage, posted raise, stalk step).
@@ -363,6 +384,10 @@ class Car:
             op_long_software_cruise=True,
             driver_override=dec.follow_override,
           )
+        if rb_lim is not None:
+          rb_kph = float(rb_lim) * CV.MS_TO_KPH
+          preap_v_cruise_kph = min(float(preap_v_cruise_kph), rb_kph)
+          self._map_slew_ms = float(rb_lim)
         # Temporary curve cap may lower HUD MAX. Restore seed puts pre-curve
         # MAX back after the bend. Do not let that cap rebase sticky / held.
         curve_out = self._curve_max.finish(
