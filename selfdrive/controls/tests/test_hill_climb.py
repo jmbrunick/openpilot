@@ -12,7 +12,6 @@ from openpilot.selfdrive.controls.lib.hill_climb import (
   PARAM_HILL_CLIMB,
   PITCH_CLIMB_RAD,
   PITCH_CREST_RAD,
-  PITCH_DOWN_RAD,
   apply_hill_climb,
   climb_authority_ms2,
   downhill_ease_ms2,
@@ -535,7 +534,12 @@ def test_settings_and_docs_wire_hill_climb():
   assert "maps-elevation lookahead" in docs.lower() or "not included" in docs.lower()
   assert "IMU pitch" in docs or "IMU-pitch" in docs
   assert "hill climb" in readme.lower() or "Hill Climb" in readme
-  hm = next(p for p in releases.split("\n\n") if "Hill Climb" in p)
-  assert "not included" in hm.lower() or "NOT included" in hm or "no maps-elevation" in hm.lower()
+  # Dedicated Hill Climb notes, not a later "Hill Climb kept" mention (#192).
+  hm = next(
+    p for p in releases.split("\n\n")
+    if "Hill Climb" in p and (
+      "not included" in p.lower() or "NOT included" in p or "no maps-elevation" in p.lower()
+    )
+  )
   assert "nap-release" in hm.lower()
   assert "Hill Climb" in arch or "hill climb" in arch
