@@ -791,6 +791,8 @@ def test_planner_wires_hysteresis_and_slew():
   assert "apply_lead_glide_a(" in planner
   assert "slew_near_gap_small_a(" in planner
   assert "slew_follow_chatter_a(" in planner
+  assert "catchup=self._lead_mid_gap_catchup" in planner
+  assert "if self._lead_mid_gap_catchup:" in planner
   assert "apply_matched_inside_fd_a" not in planner
   assert "prev_floored=self._lead_soft_limit_floored" in planner
   assert "prev_v_rel=prev_close_v_rel" in planner
@@ -1832,7 +1834,11 @@ def test_mid_gap_slow_close_soft_caps_accel_rematch():
   assert lead_mid_gap_catchup_latch(False, 0.5, 46.0)
   assert not lead_mid_gap_catchup_latch(False, 1.4, 40.0)
   assert lead_mid_gap_catchup_latch(True, 1.4, 40.0)
-  assert not lead_mid_gap_catchup_latch(True, 1.4, 10.0)
+  assert lead_mid_gap_catchup_latch(True, 1.4, 10.0)
+  assert lead_mid_gap_catchup_latch(False, 0.2, -10.0)
+  assert lead_mid_gap_catchup_latch(False, 1.4, -20.0)
+  assert lead_mid_gap_catchup_latch(True, 0.2, 8.0)
+  assert not lead_mid_gap_catchup_latch(False, 1.4, 8.0)
   # Keep Accel after a hard catch-up burst (v_rel ≥ 2) so the 12–50 m
   # band does not re-cap once close eases back to 1.4.
   assert lead_mid_gap_catchup_latch(True, 2.4, 40.0)
@@ -1859,6 +1865,13 @@ def test_mid_gap_slow_close_soft_caps_accel_rematch():
 
 def test_post_acquire_chatter_slews_small_plus_minus_a():
   """After lead lock, +0.25 ↔ −0.02 must slew; firm −a stays immediate."""
+  # Catch-up / too-close recovery is immediate (do not settle-hold).
+  assert slew_follow_chatter_a(
+    0.80, 0.0, 0.2, d_rel=40.0, slack=-10.0,
+  ) == pytest.approx(0.80)
+  assert slew_follow_chatter_a(
+    0.25, -0.02, 1.4, d_rel=90.0, slack=40.0, catchup=True,
+  ) == pytest.approx(0.25)
   # Rematch rise from a coast trough.
   up = slew_follow_chatter_a(0.25, -0.02, 1.4, d_rel=90.0, slack=50.0)
   assert up == pytest.approx(-0.02 + LEAD_FOLLOW_CHATTER_SLEW_MS2)

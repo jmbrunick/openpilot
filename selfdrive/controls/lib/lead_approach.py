@@ -441,18 +441,21 @@ def _follow_chatter_bite(a) -> bool:
 
 def slew_follow_chatter_a(target, prev, v_rel, d_rel=None, slack=None,
                           allow_rapid=False, fcw=False, crash_cnt=0,
-                          slew=LEAD_FOLLOW_CHATTER_SLEW_MS2):
+                          slew=LEAD_FOLLOW_CHATTER_SLEW_MS2, catchup=False):
   """Slew small post-acquire ±a so rematch ↔ ~0 cannot flip gas↔regen.
 
   After the 0.75 s first-latch window, cruise still bit +0.15…+0.27
   then dropped to −0.02 every few seconds (ef 10:18). Both-ways step
   plus a tiny deadband around 0 hold aTarget. Rapid / bumper / FCW /
   bites outside the chatter band are immediate. First-latch acquire
-  slew is a separate, faster path.
+  slew is a separate, faster path. Latched catch-up / too-close
+  recovery is immediate so settle cannot hold a wrong gap.
   """
   if target is None:
     return target
   t = float(target)
+  if catchup or (slack is not None and float(slack) < 0.0):
+    return t
   if lead_mpc_needs_full_authority(
     v_rel, d_rel, slack, allow_rapid=allow_rapid, fcw=fcw,
     crash_cnt=crash_cnt, confirm_rapid=True,
@@ -627,18 +630,19 @@ def lead_mid_gap_catchup_latch(prev, v_rel, slack, prev_slack=None) -> bool:
   """Hold Accel catch-up through the 12–50 m slow-close rematch band.
 
   Same-speed / opening / barely-closing with slack > 12 latches so a
-  100 m start can finish Follow Distance. Emerging from slack ≤ 12
-  (too-close recovery) also latches. Already closing 0.8–2.0 in-band
-  without that latch (ef 10:18) stays trickle. Drop only inside the
-  near-gap rematch band — do not drop just because close exceeded 2.0
-  (ownership already zeros +a).
+  100 m start can finish Follow Distance. Inside FD (too-close) also
+  latches so recovery cannot settle-and-hold while the gap is wrong.
+  Already closing 0.8–2.0 in-band without that latch (ef 10:18) stays
+  trickle. Drop only after leaving the recovery / catch-up path.
   """
   if v_rel is None or slack is None:
     return False
   v = float(v_rel)
   s = float(slack)
+  if s < 0.0:
+    return True
   if s <= LEAD_CLOSE_REMATCH_SLACK_M:
-    return False
+    return bool(prev)
   if (prev_slack is not None
       and float(prev_slack) <= LEAD_CLOSE_REMATCH_SLACK_M):
     return True

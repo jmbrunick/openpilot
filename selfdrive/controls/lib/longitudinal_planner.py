@@ -353,6 +353,9 @@ class LongitudinalPlanner:
           prev_slack=self._lead_mid_gap_slack,
         )
         self._lead_mid_gap_slack = slack
+        if self._lead_mid_gap_catchup:
+          self._lead_settled = False
+          self._lead_settle_age = 0.0
         self._lead_close_a_cap = lead_close_accel_ms2(
           self._map_speed_accel, v_rel=v_rel_lead, slack=slack, a_personality=a_env,
           settled=self._lead_settled, v_ego=v_ego, v_cruise=v_hud_ms,
@@ -630,6 +633,7 @@ class LongitudinalPlanner:
           output_a_target, self.output_a_target, overlay_v_rel,
           d_rel=overlay_d, slack=overlay_slack, allow_rapid=allow_rapid,
           fcw=self.fcw, crash_cnt=self.mpc.crash_cnt,
+          catchup=self._lead_mid_gap_catchup,
         )
 
     for idx in range(2):
