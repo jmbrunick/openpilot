@@ -351,6 +351,7 @@ class LongitudinalPlanner:
         self._lead_mid_gap_catchup = lead_mid_gap_catchup_latch(
           self._lead_mid_gap_catchup, v_rel_lead, slack,
           prev_slack=self._lead_mid_gap_slack,
+          settled=self._lead_settled,
         )
         self._lead_mid_gap_slack = slack
         if self._lead_mid_gap_catchup:

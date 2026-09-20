@@ -626,14 +626,18 @@ def lead_mid_gap_slow_close(v_rel, slack) -> bool:
   return LEAD_MID_GAP_CLOSE_LO_MS <= v < LEAD_MID_GAP_CLOSE_HI_MS
 
 
-def lead_mid_gap_catchup_latch(prev, v_rel, slack, prev_slack=None) -> bool:
+def lead_mid_gap_catchup_latch(prev, v_rel, slack, prev_slack=None,
+                               settled=False) -> bool:
   """Hold Accel catch-up through the 12–50 m slow-close rematch band.
 
   Same-speed / opening / barely-closing with slack > 12 latches so a
   100 m start can finish Follow Distance. Inside FD (too-close) also
   latches so recovery cannot settle-and-hold while the gap is wrong.
   Already closing 0.8–2.0 in-band without that latch (ef 10:18) stays
-  trickle. Drop only after leaving the recovery / catch-up path.
+  trickle. A *settled* follow that opens or hunts is not catch-up —
+  keep the rematch deadband (d7 20:25:33). Keep the latch through
+  slack ≤ 12 after too-close / large-gap catch-up so settle cannot
+  freeze rematch while the gap is still wrong.
   """
   if v_rel is None or slack is None:
     return False
@@ -643,8 +647,9 @@ def lead_mid_gap_catchup_latch(prev, v_rel, slack, prev_slack=None) -> bool:
     return True
   if s <= LEAD_CLOSE_REMATCH_SLACK_M:
     return bool(prev)
-  if (prev_slack is not None
-      and float(prev_slack) <= LEAD_CLOSE_REMATCH_SLACK_M):
+  if settled:
+    return False
+  if prev_slack is not None and float(prev_slack) < 0.0:
     return True
   if v < LEAD_MID_GAP_CLOSE_LO_MS:
     return True

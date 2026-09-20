@@ -768,6 +768,7 @@ def test_planner_wires_hysteresis_and_slew():
   assert "resolve_lead_close_hold(" in planner
   assert "lead_close_accel_ms2(" in planner
   assert "lead_mid_gap_catchup_latch(" in planner
+  assert "settled=self._lead_settled" in planner
   assert "catchup=self._lead_mid_gap_catchup" in planner
   assert "lead_approach_rapid_gate(" in planner
   assert "soft_limit_mpc_a_target(" in planner
@@ -1837,13 +1838,21 @@ def test_mid_gap_slow_close_soft_caps_accel_rematch():
   assert lead_mid_gap_catchup_latch(True, 1.4, 10.0)
   assert lead_mid_gap_catchup_latch(False, 0.2, -10.0)
   assert lead_mid_gap_catchup_latch(False, 1.4, -20.0)
+  # Keep a live recovery latch through the near-gap band; do not arm
+  # one from a 10:18-like close that was never latched.
   assert lead_mid_gap_catchup_latch(True, 0.2, 8.0)
   assert not lead_mid_gap_catchup_latch(False, 1.4, 8.0)
+  # Settled follow opening / hunt is not catch-up.
+  assert not lead_mid_gap_catchup_latch(False, -0.4, 18.0, settled=True)
+  assert not lead_mid_gap_catchup_latch(False, 0.2, 30.0, settled=True)
   # Keep Accel after a hard catch-up burst (v_rel ≥ 2) so the 12–50 m
   # band does not re-cap once close eases back to 1.4.
   assert lead_mid_gap_catchup_latch(True, 2.4, 40.0)
-  # Too-close recovery: crossing slack 12 while already closing latches.
-  assert lead_mid_gap_catchup_latch(False, 1.4, 15.0, prev_slack=10.0)
+  # Crossing slack 12 while already closing is 10:18 unless we came
+  # from inside FD (too-close recovery) or already had the latch.
+  assert not lead_mid_gap_catchup_latch(False, 1.4, 15.0, prev_slack=10.0)
+  assert lead_mid_gap_catchup_latch(True, 1.4, 15.0, prev_slack=10.0)
+  assert lead_mid_gap_catchup_latch(False, 1.4, 15.0, prev_slack=-5.0)
   assert not lead_mid_gap_catchup_latch(False, 1.4, 40.0, prev_slack=45.0)
   assert lead_close_accel_ms2(
     5, v_rel=1.4, slack=40.0, settled=False, catchup=True,
@@ -1872,7 +1881,7 @@ def test_post_acquire_chatter_slews_small_plus_minus_a():
   assert slew_follow_chatter_a(
     0.25, -0.02, 1.4, d_rel=90.0, slack=40.0, catchup=True,
   ) == pytest.approx(0.25)
-  # Rematch rise from a coast trough.
+  # Rematch rise from a coast dip.
   up = slew_follow_chatter_a(0.25, -0.02, 1.4, d_rel=90.0, slack=50.0)
   assert up == pytest.approx(-0.02 + LEAD_FOLLOW_CHATTER_SLEW_MS2)
   assert up < 0.05

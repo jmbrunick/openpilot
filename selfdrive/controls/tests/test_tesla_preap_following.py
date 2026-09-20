@@ -1003,14 +1003,16 @@ def test_planner_post_acquire_chatter_slews_mid_gap_rematch():
   assert dropped == pytest.approx(LEAD_MID_GAP_REMATCH_A_MS2, abs=0.02)
   assert dropped < 0.16
 
-  # Same leftover +0.25 outside the rematch band must slew, not step.
+  # Same leftover +0.25 outside the rematch *and* catch-up gates must
+  # slew, not step. Same-speed slack 40 is Accel catch-up (immediate).
+  # Slack > 50 while still closing 1.4 is large-gap rematch, not 10:18.
   planner_slew = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
   planner_slew._map_speed_accel = 5
   planner_slew.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=0.0)
   planner_slew.prev_accel_clip = [-1.2, 0.80]
   planner_slew.output_a_target = 0.25
-  lead.vLead = v_ego
-  lead.dRel = d_follow + 40.0
+  lead.vLead = v_ego - v_rel
+  lead.dRel = d_follow + 70.0
   planner_slew._lead_acquire_age = LEAD_ACQUIRE_HOLD_S + 0.05
   planner_slew.update(inputs)
   slewed = float(planner_slew.output_a_target)
