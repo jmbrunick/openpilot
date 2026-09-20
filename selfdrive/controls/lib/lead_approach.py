@@ -623,13 +623,15 @@ def lead_mid_gap_slow_close(v_rel, slack) -> bool:
   return LEAD_MID_GAP_CLOSE_LO_MS <= v < LEAD_MID_GAP_CLOSE_HI_MS
 
 
-def lead_mid_gap_catchup_latch(prev, v_rel, slack) -> bool:
+def lead_mid_gap_catchup_latch(prev, v_rel, slack, prev_slack=None) -> bool:
   """Hold Accel catch-up through the 12–50 m slow-close rematch band.
 
   Same-speed / opening / barely-closing with slack > 12 latches so a
-  100 m start or too-close recovery can finish Follow Distance. Already
-  closing 0.8–2.0 in-band without that latch (ef 10:18) stays trickle.
-  Drop the latch inside the near-gap rematch band or when closing ≥ 2.0.
+  100 m start can finish Follow Distance. Emerging from slack ≤ 12
+  (too-close recovery) also latches. Already closing 0.8–2.0 in-band
+  without that latch (ef 10:18) stays trickle. Drop only inside the
+  near-gap rematch band — do not drop just because close exceeded 2.0
+  (ownership already zeros +a).
   """
   if v_rel is None or slack is None:
     return False
@@ -637,10 +639,11 @@ def lead_mid_gap_catchup_latch(prev, v_rel, slack) -> bool:
   s = float(slack)
   if s <= LEAD_CLOSE_REMATCH_SLACK_M:
     return False
+  if (prev_slack is not None
+      and float(prev_slack) <= LEAD_CLOSE_REMATCH_SLACK_M):
+    return True
   if v < LEAD_MID_GAP_CLOSE_LO_MS:
     return True
-  if v >= LEAD_MID_GAP_CLOSE_HI_MS:
-    return False
   return bool(prev)
 
 

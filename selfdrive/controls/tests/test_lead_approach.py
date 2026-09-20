@@ -1833,7 +1833,12 @@ def test_mid_gap_slow_close_soft_caps_accel_rematch():
   assert not lead_mid_gap_catchup_latch(False, 1.4, 40.0)
   assert lead_mid_gap_catchup_latch(True, 1.4, 40.0)
   assert not lead_mid_gap_catchup_latch(True, 1.4, 10.0)
-  assert not lead_mid_gap_catchup_latch(True, 2.0, 40.0)
+  # Keep Accel after a hard catch-up burst (v_rel ≥ 2) so the 12–50 m
+  # band does not re-cap once close eases back to 1.4.
+  assert lead_mid_gap_catchup_latch(True, 2.4, 40.0)
+  # Too-close recovery: crossing slack 12 while already closing latches.
+  assert lead_mid_gap_catchup_latch(False, 1.4, 15.0, prev_slack=10.0)
+  assert not lead_mid_gap_catchup_latch(False, 1.4, 40.0, prev_slack=45.0)
   assert lead_close_accel_ms2(
     5, v_rel=1.4, slack=40.0, settled=False, catchup=True,
   ) == pytest.approx(a5)
