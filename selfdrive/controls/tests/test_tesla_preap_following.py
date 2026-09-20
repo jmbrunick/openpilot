@@ -799,12 +799,13 @@ def test_planner_far_opening_alead_keeps_cruise_plus_a():
     planner.update(inputs)
   assert planner.output_a_target <= 0.0
 
-  # Near-gap braking lead: block rematch +a. Cruise +a is not aLeadK
-  # (cap zeros +a); a deeper MPC bite would skip the mild floor.
+  # Near-gap braking lead: match aLead (not k·v_rel). Past acquire so
+  # first-latch slew is not the story.
   planner2 = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
   planner2._map_speed_accel = 5
   planner2.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=cruise_a)
   planner2.prev_accel_clip = [-1.2, a_cap]
+  planner2._lead_acquire_age = LEAD_ACQUIRE_HOLD_S + 0.05
   inputs2 = _make_planner_inputs(v_ego)
   _set_v_cruise_ms(inputs2, v_ego + _UNDER_MAX_HEADROOM_MS)
   lead2 = inputs2["radarState"].leadOne
@@ -817,8 +818,7 @@ def test_planner_far_opening_alead_keeps_cruise_plus_a():
   for _ in range(6):
     planner2.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=cruise_a)
     planner2.update(inputs2)
-  assert planner2.output_a_target <= 0.0
-  assert planner2.output_a_target >= -LEAD_APPROACH_MILD_A_MS2 - 0.08
+  assert planner2.output_a_target == pytest.approx(-0.80, abs=0.08)
   planner2.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
   planner2.prev_accel_clip = [-3.5, a_cap]
   planner2.update(inputs2)

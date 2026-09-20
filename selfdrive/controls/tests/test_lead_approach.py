@@ -75,6 +75,7 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   lead_kinematic_slack_m,
   lead_mpc_needs_full_authority,
   lead_owns_plan,
+  lead_inferred_decel_ms2,
   lead_residual_close_ms2,
   lead_soft_limit_skip,
   lead_approach_is_rapid,
@@ -755,7 +756,7 @@ def test_planner_wires_hysteresis_and_slew():
   assert "slew_near_gap_small_a(" in planner
   assert "apply_matched_inside_fd_a" not in planner
   assert "prev_floored=self._lead_soft_limit_floored" in planner
-  assert "prev_v_rel=self._lead_soft_limit_v_rel" in planner
+  assert "prev_v_rel=prev_close_v_rel" in planner
   assert "a_ego=self.output_a_target" in planner
   assert "v_cruise=v_hud_ms" in planner
   assert "allow_rapid=allow_rapid" in planner
@@ -1301,12 +1302,12 @@ def test_closing_lead_hard_blocks_rematch_plus_a():
   assert cap_closing_lead_accel(0.20, 0.8, a_lead=0.0, lead_present=True) == pytest.approx(0.20)
   # Closing 1.0–1.5: coast ≤0, no match-speed yet.
   assert cap_closing_lead_accel(0.20, 1.2, a_lead=0.0, lead_present=True) == pytest.approx(0.0)
-  # Closing ≥ 1.5: never rematch +a. Extra match-speed −a is emergency only.
+  # Closing ≥ 1.5: never rematch +a. Match measured aLead; k·v_rel is rapid only.
   a_match = cap_closing_lead_accel(0.201, 2.68, a_lead=-0.20, lead_present=True)
-  assert a_match == pytest.approx(0.0)
-  # Route-shaped rematch: +0.20 while closing 2.2–3.8 at ~85 m → coast.
+  assert a_match == pytest.approx(-0.20)
+  # Route-shaped rematch: +0.20 while closing 2.2–3.8 → match aLead, not +a.
   a_d7 = cap_closing_lead_accel(0.215, 3.79, a_lead=-0.29, lead_present=True)
-  assert a_d7 == pytest.approx(0.0)
+  assert a_d7 == pytest.approx(-0.29)
   # Overlay-MILD pin while closing: match-speed wins (secondary −0.22 path).
   assert cap_closing_lead_accel(-0.22, 6.8, a_lead=0.0, lead_present=True) == pytest.approx(
     -LEAD_CLOSING_MATCH_GAIN * 6.8
@@ -1378,17 +1379,17 @@ def test_alead_only_does_not_own_opening_or_far_slack():
     0.47, 1.2, a_lead=0.0, lead_present=True, slack=8.0,
   ) == pytest.approx(0.0)
 
-  # Near-gap braking lead: block +a, no match-speed dump (EV slight lift).
+  # Near-gap braking lead: match aLead (not k·v_rel dump).
   assert lead_alead_owns_match(-0.20, -0.80, slack=8.0)
   assert lead_owns_plan(0.4, a_lead=-0.25, slack=8.0)
   a_near = cap_closing_lead_accel(
     0.47, 0.4, a_lead=-0.80, lead_present=True, slack=8.0,
   )
-  assert a_near == pytest.approx(0.0)
+  assert a_near == pytest.approx(-0.80)
   a_open_near = cap_closing_lead_accel(
     0.47, -0.20, a_lead=-0.80, lead_present=True, slack=8.0,
   )
-  assert a_open_near == pytest.approx(0.0)
+  assert a_open_near == pytest.approx(-0.80)
 
 
 def test_lead_flicker_hold_still_blocks_plus_a():
@@ -1632,6 +1633,17 @@ def test_soft_limit_owned_rising_close_skips_before_static_gate():
   )
   # Firm / full still off — only the mild floor skips.
   assert not lead_mpc_needs_full_authority(1.20, d_rel, slack=8.0, owned=True)
+  # Residual unlocks match-aLead (not k·v_rel). 07:55: aTarget −0.22, aLead −1.
+  inferred = lead_inferred_decel_ms2(4.44, 1.38, -0.22, 4.5, a_lead=-1.04)
+  assert inferred == pytest.approx(-1.04)
+  a_0755 = cap_closing_lead_accel(
+    -LEAD_APPROACH_MILD_A_MS2, 4.44, a_lead=-1.04, lead_present=True,
+    owned=True, slack=-2.2, d_rel=25.2, prev_v_rel=1.38, a_ego=-0.22, dt=4.5,
+  )
+  assert a_0755 == pytest.approx(-1.04)
+  assert a_0755 < -LEAD_APPROACH_MILD_A_MS2 - 0.50
+  # k·v_rel dump still waits on rapid.
+  assert a_0755 > -LEAD_CLOSING_MATCH_GAIN * 4.44
 
 
 def test_soft_limit_keeps_mild_and_glide_on_matched_slow_close():

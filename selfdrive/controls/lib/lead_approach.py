@@ -824,32 +824,66 @@ def lead_soft_limit_skip(v_rel, a_lead=None, slack=None, owned=False,
   return False
 
 
+def lead_inferred_decel_ms2(v_rel, prev_v_rel, a_ego, dt, a_lead=None):
+  """Measured aLead and/or residual-inferred lead decel. More negative wins.
+
+  Residual ≈ −a_lead: closing that worsens beyond ego's own a is lead
+  brake. None when neither signal is present.
+  """
+  cands = []
+  if a_lead is not None:
+    cands.append(float(a_lead))
+  residual = lead_residual_close_ms2(v_rel, prev_v_rel, a_ego, dt)
+  if residual is not None and residual >= LEAD_SOFT_LIMIT_RESIDUAL_MS2:
+    cands.append(-float(residual))
+  if not cands:
+    return None
+  return min(cands)
+
+
 def cap_closing_lead_accel(output_a, v_rel, a_lead=None, lead_present=False,
-                           owned=False, slack=None, d_rel=None):
+                           owned=False, slack=None, d_rel=None,
+                           acquiring=False, prev_v_rel=None, a_ego=None, dt=None):
   """Never rematch +a into a closing / near-gap braking live or held lead.
 
   Closing ≳ 1.0 m/s (or hold-owned) hard-caps a at 0, except large-gap
-  catch-up (#187) while closing 1.0–1.5. Closing ≳ 1.5 prefers
-  match-speed −a (`aLead − k·v_rel`). aLead ≲ −0.2 matches only near
-  the follow gap — not when the gap is opening or slack is large.
-  Same-speed far catch-up +a is unchanged. Past Bosch, do not apply
-  match-speed −a (no extra crawl on a 215 m lock). Inside FD, a slow
-  close commands the MILD floor, not rematch +a.
+  catch-up (#187) while closing 1.0–1.5. On an owned lead, residual
+  close / measured aLead matches that decel (MPC authority after the
+  mild floor skips). `aLead − k·v_rel` extra is still rapid / near
+  bumper only — firm dump waits on confirm. Far / opening aLead and
+  large slack stay off. Inside FD, a slow close without residual
+  brake stays MILD.
   """
   if output_a is None or not (lead_present or owned):
     return output_a
   if d_rel is not None and float(d_rel) > LEAD_CLOSE_MAX_M + LEAD_APPROACH_MAX_HOLD_M:
     return float(output_a)
   v = 0.0 if v_rel is None else float(v_rel)
+  skip = lead_soft_limit_skip(
+    v_rel, a_lead, slack, owned=owned, acquiring=acquiring,
+    prev_v_rel=prev_v_rel, a_ego=a_ego, dt=dt,
+  )
+  a_brake = lead_inferred_decel_ms2(v_rel, prev_v_rel, a_ego, dt, a_lead=a_lead)
+  rapid = v >= LEAD_APPROACH_RAPID_DV_MS
+  near_bumper = d_rel is not None and float(d_rel) <= LEAD_MPC_SOFT_NEAR_M
+
+  def _apply_match(a):
+    if rapid or near_bumper:
+      a_k = 0.0 if a_lead is None else float(a_lead)
+      return min(a, a_k - LEAD_CLOSING_MATCH_GAIN * max(0.0, v), 0.0)
+    if skip and a_brake is not None:
+      return min(a, a_brake)
+    return a
+
   # Inside FD, still closing: never rematch +a. Slow close commands
-  # the MILD floor; 0.5–0.8 coasts (glide owns match). Rapid dumps.
+  # the MILD floor unless residual / aLead already unlocked match.
   if slack is not None and float(slack) <= 0.0 and v >= LEAD_SETTLE_VREL_MS:
     a = min(float(output_a), 0.0)
-    a_slow = lead_inside_slow_close_a_ms2(v_rel, slack)
-    if a_slow is not None:
-      a = min(a, a_slow)
-    if not lead_approach_is_rapid(v):
-      return a
+    if not skip:
+      a_slow = lead_inside_slow_close_a_ms2(v_rel, slack)
+      if a_slow is not None:
+        a = min(a, a_slow)
+    return _apply_match(a)
   if not (owned or lead_is_closing(v_rel, a_lead, slack=slack)):
     return float(output_a)
   near_finish = slack is not None and 0.0 < float(slack) <= LEAD_SETTLE_FINISH_SLACK_M
@@ -857,17 +891,7 @@ def cap_closing_lead_accel(output_a, v_rel, a_lead=None, lead_present=False,
   if (near_finish or large_gap) and (not owned) and v < LEAD_CLOSING_MATCH_MS:
     return float(output_a)
   a = min(float(output_a), 0.0)
-  # Extra match-speed −a is emergency only (rapid / near bumper).
-  # Mild closing ≳ 1.5 or near-gap aLead must not undo the MILD
-  # slight-lift floor. Still cap +a at 0 so rematch cannot punch
-  # into a shrinking gap.
-  rapid = v >= LEAD_APPROACH_RAPID_DV_MS
-  near_bumper = d_rel is not None and float(d_rel) <= LEAD_MPC_SOFT_NEAR_M
-  match_speed = rapid or near_bumper
-  if match_speed:
-    a_k = 0.0 if a_lead is None else float(a_lead)
-    a = min(a, a_k - LEAD_CLOSING_MATCH_GAIN * max(0.0, v), 0.0)
-  return a
+  return _apply_match(a)
 
 
 def lead_approach_ttc_s(slack, v_rel) -> float:

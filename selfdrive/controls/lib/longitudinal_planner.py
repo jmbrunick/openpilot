@@ -548,6 +548,7 @@ class LongitudinalPlanner:
       # Large-slack e4 stays floored. Firm 0.55 / hard dump still waits
       # on the rapid confirm.
       raw_mpc_a = float(output_a_target)
+      prev_close_v_rel = self._lead_soft_limit_v_rel
       output_a_target = soft_limit_mpc_a_target(
         output_a_target, v_ego, lead_v_hold, lead_d_hold,
         fcw=self.fcw, crash_cnt=self.mpc.crash_cnt, allow_rapid=allow_rapid,
@@ -557,7 +558,7 @@ class LongitudinalPlanner:
           (not acquiring) and (live_ok or lead_held)
         ),
         acquiring=acquiring,
-        prev_v_rel=self._lead_soft_limit_v_rel,
+        prev_v_rel=prev_close_v_rel,
         a_ego=self.output_a_target,
         dt=self.dt,
       )
@@ -580,7 +581,8 @@ class LongitudinalPlanner:
       output_a_target = cap_closing_lead_accel(
         output_a_target, overlay_v_rel, a_lead=lead_a_k,
         lead_present=live_ok or lead_held, owned=self._lead_close_hold_owned,
-        slack=overlay_slack, d_rel=overlay_d,
+        slack=overlay_slack, d_rel=overlay_d, acquiring=acquiring,
+        prev_v_rel=prev_close_v_rel, a_ego=self.output_a_target, dt=self.dt,
       )
       output_a_target = lead_remaining_close_a_ms2(
         output_a_target, overlay_v_rel, overlay_slack,
