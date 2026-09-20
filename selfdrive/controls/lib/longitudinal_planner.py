@@ -543,10 +543,11 @@ class LongitudinalPlanner:
         lead_d_hold = None
         lead_a_k = None
       # Floor MPC before overlay so a confirmed rapid 0.55 path is not
-      # also clamped. Owned / path-synced lead: rising close or residual
-      # close / aLead skips MILD. One-frame v_rel spikes stay at MILD.
-      # Large-slack e4 stays floored. Firm 0.55 / hard dump still waits
-      # on the rapid confirm.
+      # also clamped. Owned / path-synced lead: residual close (beyond
+      # ego a) or aLead skips MILD. One-frame v_rel spikes stay at MILD.
+      # Large-slack e4 stays floored. Above MAX, map decel still mins
+      # in on a same-speed lead. Firm 0.55 / hard dump still waits on
+      # the rapid confirm.
       raw_mpc_a = float(output_a_target)
       prev_close_v_rel = self._lead_soft_limit_v_rel
       output_a_target = soft_limit_mpc_a_target(
@@ -561,6 +562,7 @@ class LongitudinalPlanner:
         prev_v_rel=prev_close_v_rel,
         a_ego=self.output_a_target,
         dt=self.dt,
+        v_cruise=v_hud_ms,
       )
       self._lead_soft_limit_floored = (
         raw_mpc_a < -LEAD_APPROACH_MILD_A_MS2
@@ -593,7 +595,7 @@ class LongitudinalPlanner:
           output_a_target, self.output_a_target, overlay_v_rel,
           d_rel=overlay_d, slack=overlay_slack, acquiring=acquiring,
           allow_rapid=allow_rapid, fcw=self.fcw, crash_cnt=self.mpc.crash_cnt,
-          a_lead=lead_a_k,
+          a_lead=lead_a_k, v_ego=v_ego, v_cruise=v_hud_ms,
         )
       # After acquire: matched-speed glide (no felt ±a) and slower
       # near-gap small-bite slew. First-latch smoothness stays #214.

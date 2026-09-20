@@ -1,6 +1,6 @@
 NAP skip mild floor on closing / near-gap braking lead (2026-09-20)
 ========================
-* Pre-AP: `#216` kept the MILD −0.22 floor until confirmed rapid ≥ 6 / near-bumper / FCW, so a held lead that hard-braked (closing 1.8→4.4, aLead ~−1, dRel 38→25) never escaped slight-lift. Soft-limit now skips when residual close (worsened beyond ego a) or measured aLead shows brake on an owned / path-synced lead. That also unlocks match-aLead (not `k·v_rel` dump). Closing ≥ 1.5 still reacts, including a cut-in. Matched / slow-close and large-slack e4 stay MILD / #218 glide. Firm 0.55 / full hard-brake still wait on the rapid confirm. Rapid gate stays 6. No panda flash.
+* Pre-AP: `#216` kept the MILD −0.22 floor until confirmed rapid ≥ 6 / near-bumper / FCW, so a held lead that hard-braked (closing 1.8→4.4, aLead ~−1, dRel 38→25) never escaped slight-lift. Soft-limit now skips when residual close (worsened beyond ego a, including a planner-frame Δv that is smaller than the 0.15 rise gate) or measured aLead shows brake on an owned / path-synced lead. That also unlocks match-aLead (not `k·v_rel` dump). Closing ≥ 1.5 still reacts, including a cut-in. Matched / slow-close and large-slack e4 stay MILD / #218 glide. Map decel above MAX still mins in on a same-speed lead. Firm 0.55 / full hard-brake still wait on the rapid confirm. Rapid gate stays 6. No panda flash.
 
 NAP matched-speed glide + earlier settle (2026-09-19)
 ========================

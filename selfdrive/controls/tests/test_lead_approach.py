@@ -759,6 +759,7 @@ def test_planner_wires_hysteresis_and_slew():
   assert "prev_v_rel=prev_close_v_rel" in planner
   assert "a_ego=self.output_a_target" in planner
   assert "v_cruise=v_hud_ms" in planner
+  assert "v_ego=v_ego, v_cruise=v_hud_ms" in planner
   assert "allow_rapid=allow_rapid" in planner
   assert "a_lead=lead_a_k" in planner
   assert "self._lead_approach_active = a_lead is not None" in planner
@@ -1119,6 +1120,17 @@ def test_lead_acquire_slew_keeps_rapid_and_near_bumper_authority():
   assert soft_limit_mpc_a_target(-2.5, 25.0, 24.8, 40.0, slack=-2.0) == pytest.approx(
     -LEAD_APPROACH_MILD_A_MS2
   )
+  # Above MAX: map decel still mins in on a same-speed lead. Do not
+  # floor to MILD or hide the brake behind first-latch acquire slew.
+  v_cruise = 22.0
+  v_over = v_cruise + 2.5
+  assert soft_limit_mpc_a_target(
+    -0.80, v_over, v_over, 80.0, slack=40.0, v_cruise=v_cruise,
+  ) == pytest.approx(-0.80)
+  assert slew_lead_acquire_a(
+    -0.80, 0.0, 0.0, d_rel=80.0, slack=40.0, acquiring=True,
+    v_ego=v_over, v_cruise=v_cruise,
+  ) == pytest.approx(-0.80)
 
 
 def test_one_outlier_rapid_v_rel_does_not_commit_hard_regen():
@@ -1585,7 +1597,7 @@ def test_soft_limit_releases_under_rapid_hard_close():
   assert not lead_approach_is_rapid(closing_brk)
 
   # Same held lead, earlier: closing rose 1.00→1.38 while aTarget sat at −0.22.
-  # Rising / residual / aLead must skip before the static 1.5 gate.
+  # Residual close (beyond ego a) / aLead must skip before the static 1.5 gate.
   v_ego_rise = 67.0 * mph
   closing_rise = 1.38
   assert closing_rise < LEAD_APPROACH_SOFT_LIMIT_CLOSE_MS
@@ -1631,6 +1643,27 @@ def test_soft_limit_owned_rising_close_skips_before_static_gate():
   assert lead_soft_limit_skip(
     1.10, a_lead=0.0, slack=8.0, owned=True, prev_v_rel=0.70, a_ego=-0.22, dt=0.50,
   )
+  # Planner-frame 07:55: Δv ~0.03 in 0.05 s while aTarget sat at −0.22.
+  # Residual ~0.8 is inferred lead brake. The 0.15 rise gate must not hide it.
+  v_frame = 1.80
+  prev_frame = 1.771
+  dt_mdl = 0.05
+  assert not lead_close_is_rising(v_frame, prev_frame)
+  residual_frame = lead_residual_close_ms2(v_frame, prev_frame, -0.22, dt_mdl)
+  assert residual_frame is not None and residual_frame >= LEAD_SOFT_LIMIT_RESIDUAL_MS2
+  assert lead_soft_limit_skip(
+    v_frame, a_lead=0.0, slack=8.0, owned=True, prev_v_rel=prev_frame,
+    a_ego=-0.22, dt=dt_mdl,
+  )
+  assert soft_limit_mpc_a_target(
+    -1.2, v_ego, v_ego - v_frame, d_rel, a_lead=0.0, slack=8.0,
+    owned=True, prev_v_rel=prev_frame, a_ego=-0.22, dt=dt_mdl,
+  ) == pytest.approx(-1.2)
+  # Matched decel (Δv=0): residual ≈ −a_ego, but closing did not worsen.
+  assert lead_residual_close_ms2(1.20, 1.20, -0.22, dt_mdl) >= LEAD_SOFT_LIMIT_RESIDUAL_MS2
+  assert not lead_soft_limit_skip(
+    1.20, a_lead=0.0, slack=8.0, owned=True, prev_v_rel=1.20, a_ego=-0.22, dt=dt_mdl,
+  )
   # Firm / full still off — only the mild floor skips.
   assert not lead_mpc_needs_full_authority(1.20, d_rel, slack=8.0, owned=True)
   # Residual unlocks match-aLead (not k·v_rel). 07:55: aTarget −0.22, aLead −1.
@@ -1644,6 +1677,16 @@ def test_soft_limit_owned_rising_close_skips_before_static_gate():
   assert a_0755 < -LEAD_APPROACH_MILD_A_MS2 - 0.50
   # k·v_rel dump still waits on rapid.
   assert a_0755 > -LEAD_CLOSING_MATCH_GAIN * 4.44
+  # aLead stuck / missing: residual still matches inferred lead decel.
+  inferred_res = lead_inferred_decel_ms2(v_frame, prev_frame, -0.22, dt_mdl, a_lead=0.0)
+  assert inferred_res == pytest.approx(-residual_frame)
+  a_res = cap_closing_lead_accel(
+    -LEAD_APPROACH_MILD_A_MS2, v_frame, a_lead=0.0, lead_present=True,
+    owned=False, slack=8.0, d_rel=38.0, prev_v_rel=prev_frame, a_ego=-0.22,
+    dt=dt_mdl,
+  )
+  assert a_res == pytest.approx(inferred_res)
+  assert a_res < -LEAD_APPROACH_MILD_A_MS2
 
 
 def test_soft_limit_keeps_mild_and_glide_on_matched_slow_close():

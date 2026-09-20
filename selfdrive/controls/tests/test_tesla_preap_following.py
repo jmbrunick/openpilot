@@ -24,7 +24,6 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_CLOSE_HOLD_S,
   LEAD_CLOSE_MAX_M,
   LEAD_CLOSE_OPENING_A_MS2,
-  LEAD_CLOSING_MATCH_GAIN,
   LEAD_GLIDE_A_MS2,
   LEAD_MPC_SOFT_NEAR_M,
   LEAD_SETTLE_HOLD_S,
