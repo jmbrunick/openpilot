@@ -15,6 +15,7 @@ from openpilot.selfdrive.mapd.roundabout import (
   RB_V_MAX_MS,
   RB_V_MIN_MS,
   RoundaboutHint,
+  apply_roundabout_plan,
   junction_is_roundabout,
   live_map_roundabout_hint,
   roundabout_ease_v_ms,
@@ -123,6 +124,17 @@ def test_funnel_eases_speed():
 def test_no_hint_does_not_ease():
   assert roundabout_ease_v_ms(None, 22.0, 22.0) is None
   assert roundabout_ease_v_ms(RoundaboutHint(), 22.0, 22.0) is None
+
+
+def test_plan_funnel_cuts_plus_a():
+  """Willmar failure: aTarget ~+0.4 at 49 mph must become comfort −a."""
+  v49 = 49.0 * CV.MPH_TO_MS
+  v50 = 50.0 * CV.MPH_TO_MS
+  hint = RoundaboutHint(approaching=True, distance_m=90.0, speed_limit_ms=20.0 * CV.MPH_TO_MS)
+  _vc, _vh, a, rb = apply_roundabout_plan(v49, v50, v50, 0.4, hint)
+  assert rb is not None and a < -0.15
+  _vc, _vh, a0, rb0 = apply_roundabout_plan(v49, v50, v50, 0.4, None)
+  assert rb0 is None and a0 == 0.4
 
 
 def test_outer_bias_sign_and_magnitude():

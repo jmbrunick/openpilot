@@ -47,7 +47,7 @@ from openpilot.selfdrive.mapd.map_speed_policy import (
   cap_planner_v_cruise_ms, map_climb_replaces_mpc, map_in_track_deadband, map_track_accel_ms2,
   map_track_decel_ms2, read_map_speed_params,
 )
-from openpilot.selfdrive.mapd.roundabout import live_map_roundabout_hint, roundabout_ease_v_ms
+from openpilot.selfdrive.mapd.roundabout import apply_roundabout_plan, live_map_roundabout_hint
 from openpilot.selfdrive.controls.lib.hill_climb import (
   apply_hill_climb, read_hypermile_hill_climb,
 )
@@ -267,23 +267,21 @@ class LongitudinalPlanner:
     # Lead still wins via mpc.update(radarState, v_cruise).
     # Roundabout funnel is a soft vEgo target: cap cruise + track-decel so
     # aTarget cannot stay +a while the ring needs 15–20 mph.
-    rb_v = None
+    rb_hint = None
     if self._is_preap:
       try:
         md = sm['liveMapDataNAP']
       except Exception:
         md = None
-      rb_v = roundabout_ease_v_ms(
-        live_map_roundabout_hint(md),
-        float(v_ego),
-        float(v_hud_ms),
-        self._map_speed_lookahead,
-      )
+      rb_hint = live_map_roundabout_hint(md)
     if (not force_slow_decel) and self._is_preap and self._map_speed_mode in (MODE_CAP, MODE_FOLLOW):
       v_cruise = cap_planner_v_cruise_ms(v_hud_ms, None, mode=self._map_speed_mode)
-    if (not force_slow_decel) and rb_v is not None:
-      v_cruise = min(float(v_cruise), float(rb_v))
-      v_hud_ms = min(float(v_hud_ms), float(rb_v))
+    if not force_slow_decel:
+      v_cruise, v_hud_ms, _, rb_v = apply_roundabout_plan(
+        v_ego, v_cruise, v_hud_ms, 0.0, rb_hint, self._map_speed_lookahead,
+      )
+    else:
+      rb_v = None
 
     self.active_nap_follow_dist = effective_nap_follow_dist(self._is_preap, self.nap_follow_dist)
     self.t_follow = get_T_FOLLOW(sm['selfdriveState'].personality, self.active_nap_follow_dist)

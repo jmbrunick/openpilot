@@ -14,8 +14,8 @@ import math
 from dataclasses import dataclass
 
 from openpilot.common.constants import CV
-from openpilot.selfdrive.mapd.constants import LOOKAHEAD_NORMAL
-from openpilot.selfdrive.mapd.map_speed_policy import anticipatory_limit_ms
+from openpilot.selfdrive.mapd.constants import LOOKAHEAD_NORMAL, map_brake_a_ms2
+from openpilot.selfdrive.mapd.map_speed_policy import anticipatory_limit_ms, map_track_decel_ms2
 
 # Detect by this distance — do not wait for a big steer. Comfort ease may
 # start as soon as the walk sees the ring; tests pin the 80–100 m funnel.
@@ -143,6 +143,31 @@ def roundabout_ease_v_ms(
     # Inside the funnel we still ease — do not wait for a posted next-limit.
     return target if float(hint.distance_m) <= RB_FUNNEL_M else None
   return max(target, min(v0, float(eased)))
+
+
+def apply_roundabout_plan(
+  v_ego_ms: float,
+  v_cruise_ms: float,
+  v_hud_ms: float,
+  output_a_target: float,
+  hint: RoundaboutHint | None,
+  lookahead: int = LOOKAHEAD_NORMAL,
+) -> tuple[float, float, float, float | None]:
+  """Cap cruise / HUD and min comfort −a toward the ring. No-op if no hint.
+
+  Returns (v_cruise, v_hud, a_target, rb_v or None).
+  """
+  rb_v = roundabout_ease_v_ms(hint, v_ego_ms, v_hud_ms, lookahead)
+  if rb_v is None:
+    return float(v_cruise_ms), float(v_hud_ms), float(output_a_target), None
+  v_cruise_ms = min(float(v_cruise_ms), float(rb_v))
+  v_hud_ms = min(float(v_hud_ms), float(rb_v))
+  a_rb = map_track_decel_ms2(v_ego_ms, float(rb_v), map_brake_a_ms2(lookahead))
+  if a_rb is not None:
+    output_a_target = min(float(output_a_target), a_rb)
+  elif float(output_a_target) > 0.0:
+    output_a_target = 0.0
+  return v_cruise_ms, v_hud_ms, float(output_a_target), float(rb_v)
 
 
 def live_map_roundabout_hint(md) -> RoundaboutHint | None:
