@@ -12,7 +12,6 @@ from openpilot.selfdrive.controls.lib.hill_climb import (
   PARAM_HILL_CLIMB,
   PITCH_CLIMB_RAD,
   PITCH_CREST_RAD,
-  PITCH_DOWN_RAD,
   apply_hill_climb,
   climb_authority_ms2,
   downhill_ease_ms2,
@@ -485,7 +484,8 @@ def test_planner_lead_still_wins_on_uphill():
 
   planner.mpc = h["_ConstantAccelerationMpc"](v_ego, acceleration_mps2=-2.0)
   planner.update(inputs)
-  assert planner.output_a_target == pytest.approx(-LEAD_APPROACH_MILD_A_MS2, abs=0.08)
+  # Closing 4.4 is under rapid 6 but past the soft-limit skip.
+  assert planner.output_a_target == pytest.approx(-2.0, abs=0.08)
 
 
 def test_planner_crest_ease_near_max():
@@ -534,7 +534,12 @@ def test_settings_and_docs_wire_hill_climb():
   assert "maps-elevation lookahead" in docs.lower() or "not included" in docs.lower()
   assert "IMU pitch" in docs or "IMU-pitch" in docs
   assert "hill climb" in readme.lower() or "Hill Climb" in readme
-  hm = next(p for p in releases.split("\n\n") if "Hill Climb" in p)
-  assert "not included" in hm.lower() or "NOT included" in hm or "no maps-elevation" in hm.lower()
+  # Dedicated Hill Climb notes, not a later "Hill Climb kept" mention (#192).
+  hm = next(
+    p for p in releases.split("\n\n")
+    if "Hill Climb" in p and (
+      "not included" in p.lower() or "NOT included" in p or "no maps-elevation" in p.lower()
+    )
+  )
   assert "nap-release" in hm.lower()
   assert "Hill Climb" in arch or "hill climb" in arch
