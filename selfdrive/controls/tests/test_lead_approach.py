@@ -937,10 +937,10 @@ def test_settled_rematch_deadbands_accel_ceil_while_gap_ok_or_opening():
   # At Follow Distance, matched / slight sag: Accel so grade can hold speed.
   assert lead_close_accel_ms2(2, v_rel=-0.1, slack=0.0, settled=True) == pytest.approx(a2)
   assert lead_close_accel_ms2(2, v_rel=0.0, slack=0.3, settled=True) == pytest.approx(a2)
-  # Mid-gap still-closing rematch trickles (ef 10:18). Same-speed /
-  # opening far gaps stay Accel catch-up (#187).
+  # Large-gap still-closing rematch stays Accel catch-up (#187).
+  # Mid-gap (12–50 m) is the yo-yo band; slack 80 is recovery.
   assert lead_close_accel_ms2(1, v_rel=1.2, slack=80.0, settled=False) == pytest.approx(
-    LEAD_MID_GAP_REMATCH_A_MS2
+    LEAD_CLOSE_A_MIN_MS2
   )
   # Large same-speed gap that never matched: Accel-owned catch-up.
   assert lead_close_accel_ms2(2, v_rel=0.0, slack=40.0, settled=False) == pytest.approx(a2)
@@ -1785,17 +1785,17 @@ def test_settle_gap_bias_firms_last_meters_not_hud_follow():
 
 
 def test_mid_gap_slow_close_soft_caps_accel_rematch():
-  """ef 10:18: slack 12–90 m, closing ~1.4 m/s must not rematch Accel ceil.
+  """ef 10:18: slack 12–50 m, closing ~1.4 m/s must not rematch Accel ceil.
 
-  Same-speed / opening far gaps stay Accel. Rapid / last-meter / #222
-  residual close are unchanged.
+  Same-speed / opening / slack > 50 stay Accel. Rapid / last-meter /
+  #222 residual close are unchanged.
   """
   a5 = lead_close_accel_ms2(5)
   a2 = lead_close_accel_ms2(2)
   assert a5 > 0.50
   assert a2 > 0.20
-  # Primary 10:18 shape: slack 30 / 70 / 90, v_rel 1.4.
-  for slack in (18.0, 30.0, 40.0, 70.0, 90.0):
+  # Primary 10:18 yo-yo band: slack 18–50, v_rel 1.4.
+  for slack in (18.0, 30.0, 40.0, 50.0):
     assert lead_mid_gap_slow_close(1.4, slack)
     a_cap = lead_close_accel_ms2(5, v_rel=1.4, slack=slack, settled=False)
     assert a_cap == pytest.approx(LEAD_MID_GAP_REMATCH_A_MS2)
@@ -1806,13 +1806,21 @@ def test_mid_gap_slow_close_soft_caps_accel_rematch():
   assert lead_close_accel_ms2(1, v_rel=1.0, slack=15.0, settled=False) == pytest.approx(
     LEAD_MID_GAP_REMATCH_A_MS2
   )
-  # True catch-up: opening / same-speed, including slack ≫ 50.
+  # True catch-up: opening / same-speed, including slack > 50.
   assert not lead_mid_gap_slow_close(0.0, 40.0)
   assert not lead_mid_gap_slow_close(-0.4, 70.0)
   assert not lead_mid_gap_slow_close(0.3, 80.0)
   assert lead_close_accel_ms2(5, v_rel=0.0, slack=80.0) == pytest.approx(LEAD_CLOSE_A_BASE_MS2)
   assert lead_close_accel_ms2(2, v_rel=-0.3, slack=70.0) == pytest.approx(a2)
   assert lead_close_accel_ms2(5, v_rel=0.3, slack=40.0) == pytest.approx(LEAD_CLOSE_A_BASE_MS2)
+  # Slack > 50 is large-gap rematch / recovery: Accel, even at 1.4.
+  assert not lead_mid_gap_slow_close(1.4, 50.01)
+  assert not lead_mid_gap_slow_close(1.4, 70.0)
+  assert not lead_mid_gap_slow_close(1.4, 90.0)
+  assert lead_close_accel_ms2(5, v_rel=1.4, slack=70.0, settled=False) == pytest.approx(a5)
+  assert lead_close_accel_ms2(1, v_rel=1.2, slack=80.0, settled=False) == pytest.approx(
+    LEAD_CLOSE_A_MIN_MS2
+  )
   # Slack ≫ 50 with close < 0.8 is still Accel.
   assert lead_close_accel_ms2(2, v_rel=0.5, slack=80.0) == pytest.approx(a2)
   # Near-gap rematch-block still zeros a hard close.

@@ -903,7 +903,7 @@ def test_planner_first_acquire_slews_yoyo_and_keeps_rapid_authority():
 
 
 def test_planner_mid_gap_slow_close_does_not_rematch_accel_ceil():
-  """ef 10:18: 111→68 m @ ~1.4 m/s must trickle, not pulse Accel +0.25."""
+  """ef 10:18: slack 12–50 m @ ~1.4 m/s must trickle, not pulse Accel +0.25."""
   v_ego = 30.0
   v_rel = 1.4
   v_lead = v_ego - v_rel
@@ -919,7 +919,7 @@ def test_planner_mid_gap_slow_close_does_not_rematch_accel_ceil():
   _set_v_cruise_ms(inputs, v_ego + _UNDER_MAX_HEADROOM_MS)
   lead = inputs["radarState"].leadOne
   lead.status = True
-  lead.dRel = d_follow + 70.0
+  lead.dRel = d_follow + 40.0
   lead.vLead = v_lead
   lead.aLeadK = 0.0
   lead.modelProb = 1.0
@@ -944,6 +944,16 @@ def test_planner_mid_gap_slow_close_does_not_rematch_accel_ceil():
     planner.update(inputs)
   assert planner.output_a_target <= LEAD_MID_GAP_REMATCH_A_MS2 + 0.04
   assert planner.output_a_target < 0.16
+  # Slack > 50 while still closing is large-gap rematch: Accel.
+  lead.dRel = d_follow + 70.0
+  planner_far = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
+  planner_far._map_speed_accel = 5
+  planner_far.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=0.80)
+  planner_far.prev_accel_clip = [-1.2, 0.80]
+  planner_far._lead_acquire_age = LEAD_ACQUIRE_HOLD_S + 0.05
+  for _ in range(16):
+    planner_far.update(inputs)
+  assert planner_far.output_a_target > 0.20
   # Same-speed far gap still Accel catch-up.
   lead.vLead = v_ego
   lead.dRel = 160.0
@@ -965,7 +975,7 @@ def test_planner_mid_gap_slow_close_does_not_rematch_accel_ceil():
 
 
 def test_planner_post_acquire_chatter_slews_mid_gap_rematch():
-  """Post-acquire +0.25 ↔ −0.02 must not step in one frame."""
+  """10:18 mid-gap rematch soft-caps; chatter slew still holds out-of-band."""
   v_ego = 30.0
   v_rel = 1.4
   v_lead = v_ego - v_rel
@@ -981,7 +991,7 @@ def test_planner_post_acquire_chatter_slews_mid_gap_rematch():
   _set_v_cruise_ms(inputs, v_ego + _UNDER_MAX_HEADROOM_MS)
   lead = inputs["radarState"].leadOne
   lead.status = True
-  lead.dRel = d_follow + 50.0
+  lead.dRel = d_follow + 40.0
   lead.vLead = v_lead
   lead.aLeadK = 0.0
   lead.modelProb = 1.0
@@ -989,8 +999,23 @@ def test_planner_post_acquire_chatter_slews_mid_gap_rematch():
   planner._lead_acquire_age = LEAD_ACQUIRE_HOLD_S + 0.05
   planner.update(inputs)
   dropped = float(planner.output_a_target)
-  assert dropped == pytest.approx(0.25 - LEAD_FOLLOW_CHATTER_SLEW_MS2, abs=0.02)
-  assert dropped > 0.18
+  # Soft-cap wins in the 12–50 m / 0.8–2.0 m/s band (accel_clip ceiling).
+  assert dropped == pytest.approx(LEAD_MID_GAP_REMATCH_A_MS2, abs=0.02)
+  assert dropped < 0.16
+
+  # Same leftover +0.25 outside the rematch band must slew, not step.
+  planner_slew = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
+  planner_slew._map_speed_accel = 5
+  planner_slew.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=0.0)
+  planner_slew.prev_accel_clip = [-1.2, 0.80]
+  planner_slew.output_a_target = 0.25
+  lead.vLead = v_ego
+  lead.dRel = d_follow + 40.0
+  planner_slew._lead_acquire_age = LEAD_ACQUIRE_HOLD_S + 0.05
+  planner_slew.update(inputs)
+  slewed = float(planner_slew.output_a_target)
+  assert slewed == pytest.approx(0.25 - LEAD_FOLLOW_CHATTER_SLEW_MS2, abs=0.02)
+  assert slewed > 0.18
 
 
 def test_planner_matched_speed_glide_deadbands_near_gap_chatter():

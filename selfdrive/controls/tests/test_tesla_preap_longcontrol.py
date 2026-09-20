@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from types import SimpleNamespace
 
+import pytest
 from cereal import car
 from opendbc.car.tesla.preap.constants import (
   PEDAL_LONG_K_BP,
