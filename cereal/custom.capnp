@@ -25,6 +25,11 @@ struct LiveMapDataNAP @0x81c2f05a394cf4af {
   source @10 :Text;                  # "osm"
   dbLoaded @11 :Bool;
   matchDistance @12 :Float32;        # m, distance to matched way
+  onRoundabout @13 :Bool;
+  approachingRoundabout @14 :Bool;
+  roundaboutDistance @15 :Float32;   # m to circulating way; 0 if on
+  roundaboutSpeedLimit @16 :Float32; # m/s, OSM maxspeed on the RB way
+  roundaboutWayId @17 :UInt64;
 }
 
 # NAP on-drive MUTCD camera speed-sign sample. Display/log only. mph in the field name.

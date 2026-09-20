@@ -107,6 +107,13 @@ def main():
       d.highway = match.highway
       d.wayId = int(match.way_id)
       d.matchDistance = float(match.distance_m)
+    rb = db.find_roundabout(lat, lon, bearing) if gps_ok and db.loaded else None
+    if rb is not None and (rb.on_roundabout or rb.approaching):
+      d.onRoundabout = bool(rb.on_roundabout)
+      d.approachingRoundabout = bool(rb.approaching)
+      d.roundaboutDistance = float(rb.distance_m)
+      d.roundaboutSpeedLimit = float(rb.speed_limit_ms)
+      d.roundaboutWayId = int(rb.way_id)
     pm.send("liveMapDataNAP", msg)
     rk.keep_time()
 

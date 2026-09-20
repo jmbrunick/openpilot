@@ -145,5 +145,6 @@ def ways_from_overpass(payload: dict, *, fill_unmarked: bool = False) -> list[di
       "maxspeed_ms": ms,
       "coords": coords,
       "source": source,
+      "junction": tags.get("junction") or "",
     })
   return out

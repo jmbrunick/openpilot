@@ -19,6 +19,9 @@ from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   pin_desired_curvature_to_measured)
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature
+from openpilot.selfdrive.mapd.roundabout import (
+  live_map_roundabout_hint, roundabout_outer_curvature_bias, roundabout_outer_path_offset_m,
+)
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, STEER_ANGLE_SATURATION_THRESHOLD
@@ -44,7 +47,7 @@ class Controls:
 
     self.sm = messaging.SubMaster(['liveDelay', 'liveParameters', 'liveTorqueParameters', 'modelV2', 'selfdriveState',
                                    'liveCalibration', 'livePose', 'longitudinalPlan', 'lateralManeuverPlan', 'carState', 'carOutput',
-                                   'driverMonitoringState', 'onroadEvents', 'driverAssistance'], poll='selfdriveState')
+                                   'driverMonitoringState', 'onroadEvents', 'driverAssistance', 'liveMapDataNAP'], poll='selfdriveState')
     self.pm = messaging.PubMaster(['carControl', 'controlsState'])
 
     self.steer_limited_by_safety = False
@@ -194,6 +197,14 @@ class Controls:
       model_or_plan_curvature = self.sm['lateralManeuverPlan'].desiredCurvature
     else:
       model_or_plan_curvature = model_v2.action.desiredCurvature
+    rb_hint = live_map_roundabout_hint(self.sm['liveMapDataNAP'] if self.sm.valid.get('liveMapDataNAP', False) else None)
+    is_rhd = bool(self.sm['driverMonitoringState'].isRHD) if self.sm.valid.get('driverMonitoringState', False) else False
+    model_or_plan_curvature = float(model_or_plan_curvature) + roundabout_outer_curvature_bias(
+      roundabout_outer_path_offset_m(
+        on_roundabout=bool(rb_hint.on_roundabout) if rb_hint is not None else False,
+        is_rhd=is_rhd,
+      ),
+    )
     new_desired_curvature = handoff_new_desired_curvature(
       yielded=bool(self._lat_handoff.yielded),
       lat_active=bool(CC.latActive),

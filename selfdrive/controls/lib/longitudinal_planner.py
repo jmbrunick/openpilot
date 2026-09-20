@@ -47,6 +47,7 @@ from openpilot.selfdrive.mapd.map_speed_policy import (
   cap_planner_v_cruise_ms, map_climb_replaces_mpc, map_in_track_deadband, map_track_accel_ms2,
   map_track_decel_ms2, read_map_speed_params,
 )
+from openpilot.selfdrive.mapd.roundabout import live_map_roundabout_hint, roundabout_ease_v_ms
 from openpilot.selfdrive.controls.lib.hill_climb import (
   apply_hill_climb, read_hypermile_hill_climb,
 )
@@ -264,8 +265,25 @@ class LongitudinalPlanner:
     # OSM map speed: trust card HUD MAX (eased decreases, lag-corrected raises).
     # Do not min() with posted — that snapped when GPS entered a lower zone.
     # Lead still wins via mpc.update(radarState, v_cruise).
+    # Roundabout funnel is a soft vEgo target: cap cruise + track-decel so
+    # aTarget cannot stay +a while the ring needs 15–20 mph.
+    rb_v = None
+    if self._is_preap:
+      try:
+        md = sm['liveMapDataNAP']
+      except Exception:
+        md = None
+      rb_v = roundabout_ease_v_ms(
+        live_map_roundabout_hint(md),
+        float(v_ego),
+        float(v_hud_ms),
+        self._map_speed_lookahead,
+      )
     if (not force_slow_decel) and self._is_preap and self._map_speed_mode in (MODE_CAP, MODE_FOLLOW):
       v_cruise = cap_planner_v_cruise_ms(v_hud_ms, None, mode=self._map_speed_mode)
+    if (not force_slow_decel) and rb_v is not None:
+      v_cruise = min(float(v_cruise), float(rb_v))
+      v_hud_ms = min(float(v_hud_ms), float(rb_v))
 
     self.active_nap_follow_dist = effective_nap_follow_dist(self._is_preap, self.nap_follow_dist)
     self.t_follow = get_T_FOLLOW(sm['selfdriveState'].personality, self.active_nap_follow_dist)
@@ -456,6 +474,14 @@ class LongitudinalPlanner:
           # Do not add +g·sin punch toward MAX while a lead constrains.
           output_a_target = pre_hill
     self._hill_pitch = hill_pitch
+
+    # Maps-off / display still eases into an RB (card may not have dropped MAX).
+    if rb_v is not None:
+      a_rb = map_track_decel_ms2(v_ego, float(rb_v), map_brake_a_ms2(self._map_speed_lookahead))
+      if a_rb is not None:
+        output_a_target = min(float(output_a_target), a_rb)
+      elif float(output_a_target) > 0.0:
+        output_a_target = 0.0
 
     # Slower radar lead: early light ease as soon as radar feedback is
     # reasonable (200 m Bosch ceiling, 24 s head-start, clear-close skips

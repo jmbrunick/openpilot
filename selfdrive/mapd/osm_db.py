@@ -26,6 +26,12 @@ from openpilot.selfdrive.mapd.constants import (
   SEARCH_PAD_DEG,
   osm_sign_lead_m,
 )
+from openpilot.selfdrive.mapd.roundabout import (
+  RB_FUNNEL_M,
+  RB_ON_WAY_M,
+  RoundaboutHint,
+  way_is_roundabout,
+)
 
 # Functional class for route continuity. Residential fills next to a trunk
 # must not count as the "next limit ahead" even when a heading ray hits them.
@@ -224,6 +230,42 @@ def _seg_len_m(a: tuple[float, float], b: tuple[float, float]) -> float:
   return math.hypot(x, y)
 
 
+def _row_junction(row: sqlite3.Row) -> str:
+  try:
+    return str(row["junction"] or "")
+  except (IndexError, KeyError):
+    return ""
+
+
+def _closest_xy_on_polyline(
+  lat: float, lon: float, coords: list[tuple[float, float]],
+) -> tuple[float, float, float]:
+  """Local east/north of the closest point on the polyline, plus distance m."""
+  if len(coords) < 2:
+    return 0.0, 0.0, 1e9
+  best = 1e9
+  best_x = 0.0
+  best_y = 0.0
+  px, py = 0.0, 0.0
+  for i in range(len(coords) - 1):
+    ax, ay = _local_xy(coords[i][0], coords[i][1], lat, lon)
+    bx, by = _local_xy(coords[i + 1][0], coords[i + 1][1], lat, lon)
+    abx, aby = bx - ax, by - ay
+    ab2 = abx * abx + aby * aby
+    t = 0.0 if ab2 < 1e-6 else max(0.0, min(1.0, ((px - ax) * abx + (py - ay) * aby) / ab2))
+    dx, dy = ax + t * abx - px, ay + t * aby - py
+    dist = math.hypot(dx, dy)
+    if dist < best:
+      best = dist
+      best_x, best_y = ax + t * abx, ay + t * aby
+  return best_x, best_y, best
+
+
+def _along_heading_m(east_m: float, north_m: float, bearing_deg: float) -> float:
+  br = math.radians(bearing_deg)
+  return east_m * math.sin(br) + north_m * math.cos(br)
+
+
 def _remaining_ahead(
   lat: float, lon: float, bearing_deg: float, coords: list[tuple[float, float]] | tuple[tuple[float, float], ...],
 ) -> tuple[float, tuple[float, float], float] | None:
@@ -291,6 +333,10 @@ class OsmSpeedLimitDB:
     except sqlite3.Error:
       con.close()
       return False
+    try:
+      OsmSpeedLimitDB.ensure_junction_column(con)
+    except sqlite3.Error:
+      pass
     self._con = con
     return True
 
@@ -319,7 +365,8 @@ class OsmSpeedLimitDB:
         max_lat REAL NOT NULL,
         min_lon REAL NOT NULL,
         max_lon REAL NOT NULL,
-        coords BLOB NOT NULL
+        coords BLOB NOT NULL,
+        junction TEXT
       );
       CREATE VIRTUAL TABLE ways_rtree USING rtree(
         way_id, min_lat, max_lat, min_lon, max_lon
@@ -362,8 +409,17 @@ class OsmSpeedLimitDB:
       return None
 
   @staticmethod
+  def ensure_junction_column(con: sqlite3.Connection) -> None:
+    """Published v1 packs omit junction. Refresh / new DBs store the OSM tag."""
+    cols = {str(r[1]) for r in con.execute("PRAGMA table_info(ways)")}
+    if "junction" not in cols:
+      con.execute("ALTER TABLE ways ADD COLUMN junction TEXT")
+
+  @staticmethod
   def insert_way(con: sqlite3.Connection, way_id: int, name: str, highway: str,
-                 maxspeed_ms: float, coords: list[tuple[float, float]]) -> None:
+                 maxspeed_ms: float, coords: list[tuple[float, float]],
+                 junction: str = "") -> None:
+    OsmSpeedLimitDB.ensure_junction_column(con)
     coords = simplify_coords(coords)
     if len(coords) < 2 or maxspeed_ms <= 0:
       return
@@ -373,8 +429,8 @@ class OsmSpeedLimitDB:
     min_lon, max_lon = min(lons), max(lons)
     blob = _pack_coords(coords)
     con.execute(
-      "INSERT OR REPLACE INTO ways(way_id, name, highway, maxspeed_ms, min_lat, max_lat, min_lon, max_lon, coords) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      (int(way_id), name or "", highway or "", float(maxspeed_ms), min_lat, max_lat, min_lon, max_lon, blob),
+      "INSERT OR REPLACE INTO ways(way_id, name, highway, maxspeed_ms, min_lat, max_lat, min_lon, max_lon, coords, junction) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      (int(way_id), name or "", highway or "", float(maxspeed_ms), min_lat, max_lat, min_lon, max_lon, blob, junction or ""),
     )
     con.execute(
       "INSERT OR REPLACE INTO ways_rtree(way_id, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?)",
@@ -404,10 +460,10 @@ class OsmSpeedLimitDB:
     con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", ("way_count", str(n)))
     return n
 
-  def _candidates(self, lat: float, lon: float) -> list[sqlite3.Row]:
+  def _candidates(self, lat: float, lon: float, pad_deg: float | None = None) -> list[sqlite3.Row]:
     if self._con is None:
       return []
-    pad = SEARCH_PAD_DEG
+    pad = SEARCH_PAD_DEG if pad_deg is None else float(pad_deg)
     ids = [
       int(r[0]) for r in self._con.execute(
         "SELECT way_id FROM ways_rtree WHERE max_lat >= ? AND min_lat <= ? AND max_lon >= ? AND min_lon <= ?",
@@ -641,6 +697,48 @@ class OsmSpeedLimitDB:
     if resolved:
       return None
     return self._geodesic_next(lat, lon, bearing_deg, match)
+
+  def find_roundabout(
+    self, lat: float, lon: float, bearing_deg: float | None = None,
+  ) -> RoundaboutHint:
+    """Upcoming / current OSM circulating ring within the 80–100 m funnel.
+
+    Does not apply MIN_ZONE_LENGTH_M — a typical RB is a short along-heading
+    stub and would otherwise be dropped as cross-street bleed. Sharp corners
+    and signalized crossings are not closed/tagged circulating ways.
+    """
+    if self._con is None:
+      return RoundaboutHint()
+    # SEARCH_PAD is ~110 m; ring center can sit past that at the funnel edge.
+    rows = self._candidates(float(lat), float(lon), pad_deg=0.002)
+
+    best: RoundaboutHint | None = None
+    best_dist = 1e12
+    for row in rows:
+      coords = _unpack_coords(row["coords"])
+      if not way_is_roundabout(coords, _row_junction(row), row["highway"] or ""):
+        continue
+      east_m, north_m, dist = _closest_xy_on_polyline(float(lat), float(lon), coords)
+      if dist > RB_FUNNEL_M:
+        continue
+      if bearing_deg is not None and dist > RB_ON_WAY_M:
+        if _along_heading_m(east_m, north_m, float(bearing_deg)) < -12.0:
+          continue
+      on_rb = dist <= RB_ON_WAY_M
+      hint = RoundaboutHint(
+        on_roundabout=on_rb,
+        approaching=(not on_rb),
+        distance_m=0.0 if on_rb else float(dist),
+        speed_limit_ms=float(row["maxspeed_ms"]),
+        way_id=int(row["way_id"]),
+      )
+      # Prefer on-ring, then nearer ahead.
+      rank = (0 if on_rb else 1, dist)
+      best_rank = (0 if (best and best.on_roundabout) else 1, best_dist)
+      if best is None or rank < best_rank:
+        best = hint
+        best_dist = dist
+    return best if best is not None else RoundaboutHint()
 
   def lookup(self, lat: float, lon: float, bearing_deg: float | None = None,
              v_ego_ms: float = 0.0) -> SpeedLimitMatch | None:

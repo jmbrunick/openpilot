@@ -24,6 +24,7 @@ from openpilot.selfdrive.mapd.map_speed_policy import (
   MapCruiseHold, apply_map_speed_kph, decide_map_cruise, effective_map_limit_ms,
   map_slew_a_ms2, read_map_speed_params, should_write_preap_pedal, slew_map_speed_ms,
 )
+from openpilot.selfdrive.mapd.roundabout import live_map_roundabout_hint, roundabout_ease_v_ms
 from openpilot.selfdrive.controls.lib.curve_max_hold import CurveMaxHold
 from openpilot.selfdrive.controls.lib.hypermile import (
   FollowStalkGesture, button_event_closer, button_event_released,
@@ -330,21 +331,34 @@ class Car:
             self._map_speed_accel,
             sticky=False,
           )
-          if lim is not None and lim > 0:
-            if self._map_slew_ms is None:
-              prev_kph = float(self.v_cruise_helper.v_cruise_kph)
-              prev_ms = prev_kph * CV.KPH_TO_MS
-              if 0.0 < prev_kph < V_CRUISE_UNSET and prev_ms > lim + 0.3:
-                self._map_slew_ms = prev_ms
-              else:
-                self._map_slew_ms = lim
-            a = map_slew_a_ms2(
-              self._map_slew_ms, lim, self._map_speed_lookahead, self._map_speed_accel,
-            )
-            self._map_slew_ms = slew_map_speed_ms(self._map_slew_ms, lim, DT_CTRL, a)
-            map_kph = self._map_slew_ms * CV.MS_TO_KPH
-          else:
-            self._map_slew_ms = None
+        else:
+          lim = None
+        # RB funnel is geometry, not a posted rebase. Ease even on a sticky
+        # hold so aTarget cannot stay +a into the ring (Willmar 49→17).
+        if map_valid and md is not None:
+          rb_lim = roundabout_ease_v_ms(
+            live_map_roundabout_hint(md),
+            float(CS.vEgo),
+            float(md.speedLimit) if md.speedLimit > 0 else float(CS.vEgo),
+            self._map_speed_lookahead,
+          )
+          if rb_lim is not None:
+            lim = rb_lim if lim is None else min(float(lim), rb_lim)
+        if map_valid and md is not None and lim is not None and lim > 0:
+          if self._map_slew_ms is None:
+            prev_kph = float(self.v_cruise_helper.v_cruise_kph)
+            prev_ms = prev_kph * CV.KPH_TO_MS
+            if 0.0 < prev_kph < V_CRUISE_UNSET and prev_ms > lim + 0.3:
+              self._map_slew_ms = prev_ms
+            else:
+              self._map_slew_ms = lim
+          a = map_slew_a_ms2(
+            self._map_slew_ms, lim, self._map_speed_lookahead, self._map_speed_accel,
+          )
+          self._map_slew_ms = slew_map_speed_ms(self._map_slew_ms, lim, DT_CTRL, a)
+          map_kph = self._map_slew_ms * CV.MS_TO_KPH
+        elif map_valid and md is not None:
+          self._map_slew_ms = None
         elif not map_valid:
           self._map_slew_ms = None
         # seed_kph is a one-shot write (engage, posted raise, stalk step).
