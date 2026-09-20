@@ -1,6 +1,6 @@
 NAP follow-smooth mid-gap rematch (2026-09-20)
 ========================
-* Pre-AP comfort on a held radar lead: mid-gap Accel rematch no longer pulses while still slowly closing (~0.8–2.0 m/s, slack above the 12 m rematch band). Ceiling is a trickle (~0.10), not Accel 1–10. Same-speed / opening far gaps still Accel catch-up. After acquire, small ±a chatter slews both ways so +0.25 ↔ −0.02 cannot flip gas↔regen. When planner aTarget is ~0, the plant cannot dump firm regen (ef 10:18:42: act −1.23 then rematch +0.40). Rapid / near-bumper / FCW / #222 residual-close / planner ≤ −0.5 stay full −a. No panda flash.
+* Pre-AP comfort on a held radar lead: mid-gap Accel rematch no longer pulses while still slowly closing (~0.8–2.0 m/s, slack above the 12 m rematch band). Ceiling is a trickle (~0.10), not Accel 1–10. Same-speed / opening far gaps still Accel catch-up. After acquire, small ±a chatter slews both ways so +0.25 ↔ −0.02 cannot flip gas↔regen. When planner aTarget is ~0, VirtualDAS cannot dump firm regen (ef 10:18:42: plant −1.23 then rematch +0.40) — effort floor is MILD −0.22. Rapid / near-bumper / FCW / #222 residual-close / planner ≤ −0.5 stay full −a. No panda flash.
 
 NAP skip mild floor on closing / near-gap braking lead (2026-09-20)
 ========================
