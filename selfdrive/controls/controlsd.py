@@ -202,6 +202,8 @@ class Controls:
     model_or_plan_curvature = float(model_or_plan_curvature) + roundabout_outer_curvature_bias(
       roundabout_outer_path_offset_m(
         on_roundabout=bool(rb_hint.on_roundabout) if rb_hint is not None else False,
+        approaching=bool(rb_hint.approaching) if rb_hint is not None else False,
+        distance_m=float(rb_hint.distance_m) if rb_hint is not None else 0.0,
         is_rhd=is_rhd,
       ),
     )

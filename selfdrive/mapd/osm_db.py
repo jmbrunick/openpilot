@@ -28,7 +28,9 @@ from openpilot.selfdrive.mapd.constants import (
 )
 from openpilot.selfdrive.mapd.roundabout import (
   RB_FUNNEL_M,
+  RB_FUNNEL_MIN_M,
   RB_ON_WAY_M,
+  RB_SEARCH_PAD_DEG,
   RoundaboutHint,
   way_is_roundabout,
 )
@@ -701,7 +703,7 @@ class OsmSpeedLimitDB:
   def find_roundabout(
     self, lat: float, lon: float, bearing_deg: float | None = None,
   ) -> RoundaboutHint:
-    """Upcoming / current OSM circulating ring within the 80–100 m funnel.
+    """Upcoming / current OSM circulating ring within the ~200 m funnel.
 
     Does not apply MIN_ZONE_LENGTH_M — a typical RB is a short along-heading
     stub and would otherwise be dropped as cross-street bleed. Sharp corners
@@ -709,8 +711,8 @@ class OsmSpeedLimitDB:
     """
     if self._con is None:
       return RoundaboutHint()
-    # SEARCH_PAD is ~110 m; ring center can sit past that at the funnel edge.
-    rows = self._candidates(float(lat), float(lon), pad_deg=0.002)
+    # Default SEARCH_PAD is ~110 m; 200 m westbound at 45°N needs more.
+    rows = self._candidates(float(lat), float(lon), pad_deg=RB_SEARCH_PAD_DEG)
 
     best: RoundaboutHint | None = None
     best_dist = 1e12
@@ -722,7 +724,11 @@ class OsmSpeedLimitDB:
       if dist > RB_FUNNEL_M:
         continue
       if bearing_deg is not None and dist > RB_ON_WAY_M:
-        if _along_heading_m(east_m, north_m, float(bearing_deg)) < -12.0:
+        along = _along_heading_m(east_m, north_m, float(bearing_deg))
+        if along < -12.0:
+          continue
+        # Far funnel only: skip rings well off the travel heading.
+        if dist > RB_FUNNEL_MIN_M and along < (0.5 * dist):
           continue
       on_rb = dist <= RB_ON_WAY_M
       hint = RoundaboutHint(

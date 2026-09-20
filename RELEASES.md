@@ -4,7 +4,7 @@ NAP skip mild floor on closing / near-gap braking lead (2026-09-20)
 
 NAP roundabout detect + speed ease + outer bias (2026-09-20)
 ========================
-* Map `junction=roundabout` (or a compact closed circulating way already in the OSM pack) ~80–100 m out — not a big steer, and not every sharp town corner / signalized cross. Soft comfort decel toward **15–20 mph** (OSM ring maxspeed when present, often 20) so aTarget cannot stay ~+0.4 while the driver brakes 49→17. While circulating, ~0.45 m outer in-lane path bias (right in RHT / US). Yield-before-merge / continue-circulate / UI chip are later. No panda flash.
+* Map `junction=roundabout` (or a compact closed circulating way already in the OSM pack) ~200 m out — not a big steer, and not every sharp town corner / signalized cross. Kinematic decel toward **15–20 mph** (OSM ring maxspeed when present, often 20) so 40–45 mph plans **a ≤ −1.0** until near ring speed; `aTarget` stays ≤ 0 in the funnel (no +a after a lead clears). Long enable inside the funnel applies full ease immediately. ~3.2 m outer path bias on entry + circulating (right in RHT / US) to counter a ~3 m inside cut. Yield-before-merge / continue-circulate / UI chip are later. No panda flash.
 
 NAP matched-speed glide + earlier settle (2026-09-19)
 ========================

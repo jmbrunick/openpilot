@@ -1,11 +1,12 @@
-"""Roundabout detect, speed ease, and outer in-lane path bias.
+"""Roundabout detect, speed ease, and outer path bias.
 
-First slice (Justin): map `junction=roundabout` (or a closed circulating
-way already in the OSM pack) — not steer. Funnel ~80–100 m. Soft comfort
-decel toward 15–20 mph (OSM maxspeed on the ring when present). ~0.45 m
-outer bias while circulating (right in RHT / US).
+Map `junction=roundabout` (or a closed circulating way already in the OSM
+pack) — not steer. Funnel starts ~200 m so 40–45 mph can hit 15–20 by the
+ring. Kinematic a (not Lookahead comfort −0.55) toward OSM maxspeed when
+present. Clamp aTarget ≤ 0 while approaching / on the ring. ~3.2 m outer
+path bias on entry + circulating (right in RHT / US) so a ~3 m inside cut
+does not own lat.
 
-Do not treat a sharp town corner or signalized intersection as an RB.
 Yield-before-merge, continue-circulate desire, and UI chip are later tips.
 """
 from __future__ import annotations
@@ -14,25 +15,39 @@ import math
 from dataclasses import dataclass
 
 from openpilot.common.constants import CV
-from openpilot.selfdrive.mapd.constants import LOOKAHEAD_NORMAL, map_brake_a_ms2
-from openpilot.selfdrive.mapd.map_speed_policy import anticipatory_limit_ms, map_track_decel_ms2
+from openpilot.selfdrive.mapd.constants import LOOKAHEAD_NORMAL
 
-# Detect by this distance — do not wait for a big steer. Comfort ease may
-# start as soon as the walk sees the ring; tests pin the 80–100 m funnel.
-RB_FUNNEL_M = 100.0
+# Detect / start ease by this distance. Must still have fired by MIN.
+# 45→20 at −1.0 needs ~180 m; 100 m was too late (Willmar 10:11 / 10:14).
+RB_FUNNEL_M = 200.0
 RB_FUNNEL_MIN_M = 80.0
+# ~0.0035° ≈ 280 m EW at 45°N so a 200 m westbound approach is in the rtree.
+RB_SEARCH_PAD_DEG = 0.0035
 
 # Circulating target. OSM maxspeed on the RB way wins when present (often 20).
 RB_V_MIN_MS = 15.0 * CV.MPH_TO_MS
 RB_V_MAX_MS = 20.0 * CV.MPH_TO_MS
 RB_V_DEFAULT_MS = 20.0 * CV.MPH_TO_MS
 
-# In-lane outer bias while circulating. openpilot +y is left.
-RB_OUTER_OFFSET_M = 0.45
-RB_OUTER_OFFSET_MIN_M = 0.30
-RB_OUTER_OFFSET_MAX_M = 0.60
+# Kinematic ease. Lookahead Early comfort is only 0.55 — that is why tip
+# aTarget sat at −0.55 at 37–45 mph. Plan to ring speed from remaining d.
+RB_A_MIN_MS2 = -2.0
+RB_A_FLOOR_MS2 = -1.0
+RB_A_FLOOR_V_MS = 40.0 * CV.MPH_TO_MS
+RB_NEAR_SPEED_MS = 2.5 * CV.MPH_TO_MS
+RB_ON_RING_DECEL_M = 28.0
+RB_DECEL_D_MIN_M = 12.0
+
+# Outer path bias. openpilot +y is left. EP1: OP lat R=14.9 vs OSM 18.2
+# (−3.3 m inside); 0.45 m was far too small. 3.2 m counters that cut and
+# sits near the outer half of the circulating lane / ring, not the island.
+RB_OUTER_OFFSET_M = 3.2
+RB_OUTER_OFFSET_MIN_M = 2.8
+RB_OUTER_OFFSET_MAX_M = 3.6
 # Preview length for a parallel-path curvature offset (κ ≈ 2 y / L²).
 RB_PATH_LOOKAHEAD_M = 18.0
+# Apply the same outer bias on the last stretch of approach (not 200 m out).
+RB_ENTRY_BIAS_M = 50.0
 
 # Closed-loop geometry for published packs that do not store `junction`.
 RB_RADIUS_MIN_M = 6.0
@@ -117,32 +132,50 @@ def roundabout_target_ms(speed_limit_ms: float = 0.0) -> float:
   return RB_V_DEFAULT_MS
 
 
+def roundabout_hint_active(hint: RoundaboutHint | None) -> bool:
+  return hint is not None and (hint.on_roundabout or hint.approaching)
+
+
 def roundabout_ease_v_ms(
   hint: RoundaboutHint | None,
   v_ego_ms: float,
   current_ms: float = 0.0,
   lookahead: int = LOOKAHEAD_NORMAL,
 ) -> float | None:
-  """Decrease-only soft v toward the ring, or None if no RB in the funnel."""
-  if hint is None or not (hint.on_roundabout or hint.approaching):
+  """Ring target as soon as the funnel is live. None if no RB.
+
+  Do not interpolative-ease MAX over another 100 m — that left aTarget at
+  Lookahead comfort (−0.55) after long enabled inside the funnel. `_` args
+  kept so card / planner call sites stay unchanged.
+  """
+  _ = v_ego_ms, current_ms, lookahead
+  if not roundabout_hint_active(hint):
+    return None
+  return roundabout_target_ms(hint.speed_limit_ms)
+
+
+def roundabout_decel_ms2(hint: RoundaboutHint | None, v_ego_ms: float) -> float | None:
+  """Kinematic −a to hit ring speed by remaining d, or 0 to clamp +a.
+
+  None if no RB hint. While approaching / on-ring, never returns +a.
+  From ≥40 mph, |a| is at least 1.0 until near ring speed (Willmar 10:11
+  / 10:14: −0.55 at 37–45 mph was about half of 37→20 over 80–95 m).
+  """
+  if not roundabout_hint_active(hint):
     return None
   target = roundabout_target_ms(hint.speed_limit_ms)
+  v0 = max(float(v_ego_ms), 0.0)
   if hint.on_roundabout or float(hint.distance_m) <= 0.0:
-    return target
-  v0 = max(float(v_ego_ms), float(current_ms), 0.0)
-  if v0 <= target + 0.3:
-    return target
-  eased = anticipatory_limit_ms(
-    max(float(current_ms), v0, target),
-    target,
-    float(hint.distance_m),
-    v0,
-    lookahead,
-  )
-  if eased is None:
-    # Inside the funnel we still ease — do not wait for a posted next-limit.
-    return target if float(hint.distance_m) <= RB_FUNNEL_M else None
-  return max(target, min(v0, float(eased)))
+    d = RB_ON_RING_DECEL_M
+  else:
+    d = max(float(hint.distance_m), RB_DECEL_D_MIN_M)
+  if v0 <= target + RB_NEAR_SPEED_MS:
+    return 0.0
+  a_kin = (target * target - v0 * v0) / (2.0 * d)
+  a = max(RB_A_MIN_MS2, min(0.0, a_kin))
+  if v0 >= RB_A_FLOOR_V_MS:
+    a = min(a, RB_A_FLOOR_MS2)
+  return a
 
 
 def apply_roundabout_plan(
@@ -153,20 +186,21 @@ def apply_roundabout_plan(
   hint: RoundaboutHint | None,
   lookahead: int = LOOKAHEAD_NORMAL,
 ) -> tuple[float, float, float, float | None]:
-  """Cap cruise / HUD and min comfort −a toward the ring. No-op if no hint.
+  """Cap cruise / HUD to ring speed and min kinematic −a. No-op if no hint.
 
-  Returns (v_cruise, v_hud, a_target, rb_v or None).
+  Returns (v_cruise, v_hud, a_target, rb_v or None). a_target is ≤ 0 while
+  the funnel is live (no +a rebound after a lead clears). Long-enable in
+  the funnel is the same call — full ease on the first frame.
   """
   rb_v = roundabout_ease_v_ms(hint, v_ego_ms, v_hud_ms, lookahead)
   if rb_v is None:
     return float(v_cruise_ms), float(v_hud_ms), float(output_a_target), None
   v_cruise_ms = min(float(v_cruise_ms), float(rb_v))
   v_hud_ms = min(float(v_hud_ms), float(rb_v))
-  a_rb = map_track_decel_ms2(v_ego_ms, float(rb_v), map_brake_a_ms2(lookahead))
+  a_rb = roundabout_decel_ms2(hint, v_ego_ms)
   if a_rb is not None:
     output_a_target = min(float(output_a_target), a_rb)
-  elif float(output_a_target) > 0.0:
-    output_a_target = 0.0
+  output_a_target = min(float(output_a_target), 0.0)
   return v_cruise_ms, v_hud_ms, float(output_a_target), float(rb_v)
 
 
@@ -190,13 +224,29 @@ def live_map_roundabout_hint(md) -> RoundaboutHint | None:
     return None
 
 
-def roundabout_outer_path_offset_m(*, on_roundabout: bool, is_rhd: bool = False) -> float:
-  """In-lane outer bias in openpilot y (left +). 0 off the ring.
+def _outer_bias_active(*, on_roundabout: bool, approaching: bool, distance_m: float) -> bool:
+  if on_roundabout:
+    return True
+  return bool(approaching) and 0.0 < float(distance_m) <= RB_ENTRY_BIAS_M
+
+
+def roundabout_outer_path_offset_m(
+  *,
+  on_roundabout: bool,
+  approaching: bool = False,
+  distance_m: float = 0.0,
+  is_rhd: bool = False,
+) -> float:
+  """Outer-lane path offset in openpilot y (left +). 0 off the ring / far approach.
 
   RHT / US: outer is right → negative y. RHD: outer is left → positive y.
-  Magnitude is mid of the 0.3–0.6 m band.
+  Magnitude counters an EP1-class ~3 m inside cut and holds the outer half
+  of the circulating lane. Applied on-ring and in the last 50 m of approach
+  (not 200 m out on a straight).
   """
-  if not on_roundabout:
+  if not _outer_bias_active(
+    on_roundabout=on_roundabout, approaching=approaching, distance_m=distance_m,
+  ):
     return 0.0
   mag = max(RB_OUTER_OFFSET_MIN_M, min(RB_OUTER_OFFSET_MAX_M, RB_OUTER_OFFSET_M))
   return mag if is_rhd else -mag
@@ -205,8 +255,9 @@ def roundabout_outer_path_offset_m(*, on_roundabout: bool, is_rhd: bool = False)
 def roundabout_outer_curvature_bias(offset_m: float, lookahead_m: float = RB_PATH_LOOKAHEAD_M) -> float:
   """Curvature add-on that tracks a parallel path offset_m to the left.
 
-  Positive offset (left) → positive curvature. 0.45 m right ≈ −0.0028 /m
-  at the 18 m preview — a small in-lane nudge, not a lane change.
+  Positive offset (left) → positive curvature. 3.2 m right ≈ −0.020 /m at
+  the 18 m preview — enough to walk a 3 m inside model path back to the
+  OSM ring / outer half of the lane.
   """
   if abs(float(offset_m)) < 1e-6:
     return 0.0

@@ -6,6 +6,8 @@ from openpilot.selfdrive.mapd.constants import LOOKAHEAD_NORMAL
 from openpilot.selfdrive.mapd.osm_db import EARTH_R, OsmSpeedLimitDB
 from openpilot.selfdrive.mapd.overpass import ways_from_overpass
 from openpilot.selfdrive.mapd.roundabout import (
+  RB_A_FLOOR_MS2,
+  RB_ENTRY_BIAS_M,
   RB_FUNNEL_M,
   RB_FUNNEL_MIN_M,
   RB_OUTER_OFFSET_M,
@@ -18,6 +20,7 @@ from openpilot.selfdrive.mapd.roundabout import (
   apply_roundabout_plan,
   junction_is_roundabout,
   live_map_roundabout_hint,
+  roundabout_decel_ms2,
   roundabout_ease_v_ms,
   roundabout_outer_curvature_bias,
   roundabout_outer_path_offset_m,
@@ -118,7 +121,9 @@ def test_funnel_eases_speed():
   assert eased >= RB_V_MIN_MS - 1e-6
   on_ring = RoundaboutHint(on_roundabout=True, speed_limit_ms=20.0 * CV.MPH_TO_MS)
   assert abs(roundabout_ease_v_ms(on_ring, v49, v49) - 20.0 * CV.MPH_TO_MS) < 1e-6
-  assert 80.0 <= RB_FUNNEL_MIN_M <= RB_FUNNEL_M <= 100.0
+  # Funnel starts farther out so 40–45 mph can hit 15–20 by the ring.
+  assert 80.0 <= RB_FUNNEL_MIN_M <= 100.0
+  assert 180.0 <= RB_FUNNEL_M <= 220.0
 
 
 def test_no_hint_does_not_ease():
@@ -127,12 +132,12 @@ def test_no_hint_does_not_ease():
 
 
 def test_plan_funnel_cuts_plus_a():
-  """Willmar failure: aTarget ~+0.4 at 49 mph must become comfort −a."""
+  """Willmar: aTarget ~+0.4 at 45–49 mph must become kinematic −a, not −0.55."""
   v49 = 49.0 * CV.MPH_TO_MS
   v50 = 50.0 * CV.MPH_TO_MS
   hint = RoundaboutHint(approaching=True, distance_m=90.0, speed_limit_ms=20.0 * CV.MPH_TO_MS)
   _vc, _vh, a, rb = apply_roundabout_plan(v49, v50, v50, 0.4, hint)
-  assert rb is not None and a < -0.15
+  assert rb is not None and a <= RB_A_FLOOR_MS2
   _vc, _vh, a0, rb0 = apply_roundabout_plan(v49, v50, v50, 0.4, None)
   assert rb0 is None and a0 == 0.4
 
@@ -144,10 +149,52 @@ def test_outer_bias_sign_and_magnitude():
   assert lhd > 0.0
   assert RB_OUTER_OFFSET_MIN_M <= abs(rht) <= RB_OUTER_OFFSET_MAX_M
   assert abs(abs(rht) - RB_OUTER_OFFSET_M) < 1e-6
+  assert abs(rht) >= 2.8  # EP1 cut was 3.3 m inside; 0.45 m was not enough
   assert roundabout_outer_path_offset_m(on_roundabout=False) == 0.0
+  # Far approach: do not drift to the shoulder 180 m out.
+  assert roundabout_outer_path_offset_m(
+    on_roundabout=False, approaching=True, distance_m=180.0,
+  ) == 0.0
+  entry = roundabout_outer_path_offset_m(
+    on_roundabout=False, approaching=True, distance_m=RB_ENTRY_BIAS_M - 1.0,
+  )
+  assert abs(entry - rht) < 1e-6
   kappa = roundabout_outer_curvature_bias(rht)
-  assert kappa < 0.0
-  assert abs(kappa) < 0.01  # in-lane nudge, not a lane change
+  assert kappa < 0.0  # less left / larger R on a CCW US ring
+  assert abs(kappa) >= 0.015  # counters ~3 m inside at 18 m preview
+  assert abs(kappa) < 0.05
+
+
+def test_kinematic_a_from_40_45_in_funnel():
+  """40–45 mph in the funnel must plan a ≤ −1.0 until near ring speed."""
+  target = 20.0 * CV.MPH_TO_MS
+  for v_mph, dist in ((40.0, 90.0), (45.0, 90.0), (45.0, 160.0), (37.0, 90.0)):
+    hint = RoundaboutHint(approaching=True, distance_m=dist, speed_limit_ms=target)
+    v = v_mph * CV.MPH_TO_MS
+    a = roundabout_decel_ms2(hint, v)
+    assert a is not None and a <= 0.0
+    if v_mph >= 40.0:
+      assert a <= RB_A_FLOOR_MS2, (v_mph, dist, a)
+  # Already near ring speed: clamp +a only, do not keep −1.0.
+  slow = RoundaboutHint(approaching=True, distance_m=40.0, speed_limit_ms=target)
+  assert abs(roundabout_decel_ms2(slow, 21.0 * CV.MPH_TO_MS)) < 1e-6
+
+
+def test_no_plus_a_while_approaching():
+  """EP0 hole: after lead ease, aTarget +0.399 before/inside detect."""
+  hint = RoundaboutHint(
+    approaching=True, distance_m=95.0, speed_limit_ms=20.0 * CV.MPH_TO_MS,
+  )
+  v37 = 37.0 * CV.MPH_TO_MS
+  v50 = 50.0 * CV.MPH_TO_MS
+  _vc, _vh, a, rb = apply_roundabout_plan(v37, v50, v50, 0.399, hint)
+  assert rb is not None and a <= 0.0
+  # At ring speed, still no +a rebound.
+  _vc, _vh, a0, _rb = apply_roundabout_plan(20.0 * CV.MPH_TO_MS, v50, v50, 0.399, hint)
+  assert a0 <= 0.0
+  on = RoundaboutHint(on_roundabout=True, speed_limit_ms=20.0 * CV.MPH_TO_MS)
+  _vc, _vh, a_on, _rb = apply_roundabout_plan(18.0 * CV.MPH_TO_MS, v50, v50, 0.4, on)
+  assert a_on <= 0.0
 
 
 def test_live_map_hint_reads_capnp_fields():
@@ -220,6 +267,16 @@ def test_tagged_ring_detects_in_funnel(tmp_path):
   hint = db.find_roundabout(qlat, qlon, bearing_deg=90.0)
   assert hint.approaching
   assert hint.distance_m <= RB_FUNNEL_M
+  db.close()
+
+
+def test_funnel_detects_farther_out(tmp_path):
+  """45→20 needs ~180 m at −1.0; detect must be live before 100 m."""
+  db, west_lat, west_lon = _db_with_ring_and_approach(tmp_path, tagged=True)
+  qlat, qlon = _offset(west_lat, west_lon, 270.0, 180.0)
+  hint = db.find_roundabout(qlat, qlon, bearing_deg=90.0)
+  assert hint.approaching
+  assert 150.0 <= hint.distance_m <= RB_FUNNEL_M
   db.close()
 
 

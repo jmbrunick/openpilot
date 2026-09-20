@@ -265,9 +265,10 @@ class LongitudinalPlanner:
     # OSM map speed: trust card HUD MAX (eased decreases, lag-corrected raises).
     # Do not min() with posted — that snapped when GPS entered a lower zone.
     # Lead still wins via mpc.update(radarState, v_cruise).
-    # Roundabout funnel is a soft vEgo target: cap cruise + track-decel so
-    # aTarget cannot stay +a while the ring needs 15–20 mph.
+    # Roundabout funnel: cap cruise to ring speed and command kinematic −a
+    # (not Lookahead comfort). aTarget stays ≤ 0 until the ring is exited.
     rb_hint = None
+    a_rb_plan = 0.0
     if self._is_preap:
       try:
         md = sm['liveMapDataNAP']
@@ -277,7 +278,7 @@ class LongitudinalPlanner:
     if (not force_slow_decel) and self._is_preap and self._map_speed_mode in (MODE_CAP, MODE_FOLLOW):
       v_cruise = cap_planner_v_cruise_ms(v_hud_ms, None, mode=self._map_speed_mode)
     if not force_slow_decel:
-      v_cruise, v_hud_ms, _, rb_v = apply_roundabout_plan(
+      v_cruise, v_hud_ms, a_rb_plan, rb_v = apply_roundabout_plan(
         v_ego, v_cruise, v_hud_ms, 0.0, rb_hint, self._map_speed_lookahead,
       )
     else:
@@ -474,12 +475,9 @@ class LongitudinalPlanner:
     self._hill_pitch = hill_pitch
 
     # Maps-off / display still eases into an RB (card may not have dropped MAX).
+    # Kinematic a from apply_roundabout_plan — not map_track_decel comfort.
     if rb_v is not None:
-      a_rb = map_track_decel_ms2(v_ego, float(rb_v), map_brake_a_ms2(self._map_speed_lookahead))
-      if a_rb is not None:
-        output_a_target = min(float(output_a_target), a_rb)
-      elif float(output_a_target) > 0.0:
-        output_a_target = 0.0
+      output_a_target = min(float(output_a_target), float(a_rb_plan))
 
     # Slower radar lead: early light ease as soon as radar feedback is
     # reasonable (200 m Bosch ceiling, 24 s head-start, clear-close skips
