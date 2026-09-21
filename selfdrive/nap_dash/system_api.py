@@ -14,7 +14,7 @@ BLOCKED_ACTIONS = {
     "reset_longitudinal",
     "force_onroad",
 }
-SOFTWARE_ACTIONS = {"set_branch", "fetch", "set_offline"}
+SOFTWARE_ACTIONS = {"set_branch", "fetch", "download", "set_offline"}
 UPDATED_PATTERNS = (
     "openpilot.system.updated.updated",
     "system.updated.updated",
