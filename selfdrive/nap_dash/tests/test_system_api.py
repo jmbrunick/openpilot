@@ -32,6 +32,10 @@ class FakeParams:
     self.writes.append((key, value))
     self.values[key] = value
 
+  def put_bool(self, key, value):
+    self.writes.append((key, bool(value)))
+    self.bools[key] = bool(value)
+
 
 def test_sanitize_branch_matches_hub_rules():
   assert sanitize_branch("nap-release") == "nap-release"
@@ -65,6 +69,24 @@ def test_fetch_pings_without_writing_branch():
   assert pings == ["USR1"]
 
 
+def test_set_offline_writes_disable_updates():
+  params = FakeParams()
+  snap = handle_software(
+    {"action": "set_offline", "offline": True},
+    params,
+    pinger=lambda *_a: None,
+  )
+  assert ("DisableUpdates", True) in params.writes
+  assert snap["disable_updates"] is True
+  assert snap["offline"] is True
+  snap = handle_software(
+    {"action": "set_offline", "offline": False},
+    params,
+    pinger=lambda *_a: None,
+  )
+  assert snap["offline"] is False
+
+
 def test_rejects_engage_and_uninstall():
   params = FakeParams()
   for payload in ({"action": "engage"}, {"action": "uninstall"}, {"action": "set_branch", "branch": "engage"}):
@@ -81,12 +103,13 @@ def test_read_software_lists_available_branches():
       "UpdaterAvailableBranches": "nap-release,nap-dev,cursor/nap-dash-dev-e946",
       "UpdaterState": "idle",
     },
-    bools={"UpdaterFetchAvailable": True},
+    bools={"UpdaterFetchAvailable": True, "DisableUpdates": True},
   )
   snap = read_software(params)
   assert snap["git_branch"] == "nap-dev"
   assert snap["available_branches"] == ["nap-release", "nap-dev", "cursor/nap-dash-dev-e946"]
   assert snap["fetch_available"] is True
+  assert snap["offline"] is True
 
 
 def test_http_software_round_trip(monkeypatch):
