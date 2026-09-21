@@ -39,6 +39,11 @@ from openpilot.selfdrive.nap_dash.settings import (
   setting_catalog,
   write_setting,
 )
+from openpilot.selfdrive.nap_dash.system_api import (
+  SoftwareError,
+  handle_software,
+  read_software,
+)
 
 HOST = os.environ.get("NAP_DASH_HOST", "0.0.0.0")
 PORT = int(os.environ.get("NAP_DASH_PORT", "7070"))
@@ -640,6 +645,11 @@ class Handler(BaseHTTPRequestHandler):
       return self.send_json(state_snapshot())
     if path == "/api/settings":
       return self.send_json({"settings": locked_settings(), "catalog": setting_catalog()})
+    if path == "/api/software":
+      try:
+        return self.send_json(read_software(_params()))
+      except Exception as exc:
+        return self.send_json({"error": str(exc)}, 500)
     if path == "/api/routes":
       return self.send_json(get_routes())
     if path.startswith("/api/log/"):
@@ -776,6 +786,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
       if n < 0 or n > 16 * 1024:
         return self.send_json({"error": "payload too large"}, 413)
       payload = json.loads(self.rfile.read(n).decode() or "{}")
+      if path == "/api/software":
+        return self.send_json(handle_software(payload, _params()))
       if path != "/api/set":
         return self.send_json({"error": "not found"}, 404)
       settings = locked_write(str(payload.get("name") or payload.get("param") or ""), payload.get("value"))
@@ -784,6 +796,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
       snap = state_snapshot()
       snap["settings"] = settings
       return self.send_json(snap)
+    except SoftwareError as exc:
+      return self.send_json({"error": str(exc)}, 400)
     except SettingError as exc:
       return self.send_json({"error": str(exc)}, 400)
     except Exception as exc:
