@@ -115,6 +115,8 @@ def test_server_source_has_no_nav_write_or_settings_file():
   assert "def update_navigation" not in src
   assert "def bind_http_server" in src
   assert "idle_until_stop" in src
+  assert "/api/software" in src
+  assert "handle_software" in src
 
 
 def test_nap_dash_is_optional_and_ignored_by_process_not_running():
