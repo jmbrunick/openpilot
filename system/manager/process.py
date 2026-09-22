@@ -68,6 +68,7 @@ class ManagerProcess(ABC):
   name = ""
   shutting_down = False
   restart_if_crash = False
+  optional = False
 
   @abstractmethod
   def prepare(self) -> None:
@@ -133,7 +134,11 @@ class ManagerProcess(ABC):
     state.name = self.name
     if self.proc:
       state.running = self.proc.is_alive()
-      state.shouldBeRunning = self.proc is not None and not self.shutting_down
+      # Optional companions stay out of processNotRunning if they die.
+      if self.optional and not state.running:
+        state.shouldBeRunning = False
+      else:
+        state.shouldBeRunning = self.proc is not None and not self.shutting_down
       state.pid = self.proc.pid or 0
       state.exitCode = self.proc.exitcode or 0
     return state
@@ -168,7 +173,7 @@ class NativeProcess(ManagerProcess):
 
 
 class PythonProcess(ManagerProcess):
-  def __init__(self, name, module, should_run, enabled=True, sigkill=False, restart_if_crash=False):
+  def __init__(self, name, module, should_run, enabled=True, sigkill=False, restart_if_crash=False, optional=False):
     self.name = name
     self.module = module
     self.should_run = should_run
@@ -176,11 +181,18 @@ class PythonProcess(ManagerProcess):
     self.sigkill = sigkill
     self.launcher = launcher
     self.restart_if_crash = restart_if_crash
+    self.optional = optional
 
   def prepare(self) -> None:
     if self.enabled:
       cloudlog.info(f"preimporting {self.module}")
-      importlib.import_module(self.module)
+      try:
+        importlib.import_module(self.module)
+      except Exception:
+        if self.optional:
+          cloudlog.exception(f"optional process {self.name} failed to preimport")
+          return
+        raise
 
   def start(self) -> None:
     # In case we only tried a non blocking stop we need to stop it before restarting

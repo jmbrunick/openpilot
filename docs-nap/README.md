@@ -12,6 +12,7 @@ Documentation for contributors working on NotAutopilot. These are NAP-specific �
 - **[speed-sign-log.md](speed-sign-log.md)** — on-drive MUTCD speed-sign JSONL logger (log-only, default off)
 - **[engagement.md](engagement.md)** — stalk FSM, pedal-vs-no-pedal engagement paths, brake behavior, driver-wheel lateral handoff (default On; intent-to-steer yield; emergency hard-brake full cancel; Settings can disable)
 - **[hypermile.md](hypermile.md)** — Hypermile eco snap + Hill Climb (nap-dev experimental, default Off). Stock Follow Distance 1–7 is shared; Hypermile does not own follow.
+- **[nap-dash.md](nap-dash.md)** — lean companion Dash on `:7070` (Params + `/api/software` only; no high-rate sockets). Optional process. Flash `cursor/nap-dash-lite-36e3`. Do not merge until Justin confirms.
 
 ## Layout
 

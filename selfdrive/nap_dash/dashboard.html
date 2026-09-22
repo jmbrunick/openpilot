@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>NAP Dash</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; font: 18px/1.35 system-ui, sans-serif;
+    background: #111; color: #eee;
+  }
+  main { max-width: 32rem; margin: 0 auto; padding: 1rem 1rem 3rem; }
+  h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
+  h2 { font-size: 1.05rem; margin: 1.4rem 0 .6rem; }
+  p.note { color: #aaa; margin: 0 0 1rem; font-size: .9rem; }
+  label, .row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: .75rem; padding: .7rem 0; border-bottom: 1px solid #2a2a2a;
+  }
+  input[type="number"], input[type="text"], select {
+    font: inherit; background: #1c1c1c; color: #fff;
+    border: 1px solid #444; border-radius: 8px; padding: .45rem .6rem;
+    min-width: 7rem;
+  }
+  button {
+    font: inherit; background: #2a4a7a; color: #fff; border: 0;
+    border-radius: 10px; padding: .7rem 1rem; margin: .35rem .35rem 0 0;
+  }
+  button.on { background: #1f7a3a; }
+  #status { min-height: 1.4rem; color: #9cf; font-size: .9rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>NAP Dash</h1>
+  <p class="note">Params and software only. Join the comma hotspot, then use this page.</p>
+  <p id="status"></p>
+
+  <h2>Driving Mannerisms</h2>
+  <label>Acceleration <input id="accel" type="number" min="1" max="10" step="1"></label>
+  <label>Adaptive Accel <input id="adaptive_accel" type="checkbox"></label>
+  <label>Follow Distance <input id="follow_distance" type="number" min="1" max="7" step="1"></label>
+  <label>Soft Lateral Handoff <input id="driver_lat_handoff" type="checkbox"></label>
+  <label>One-Pedal Long <input id="one_pedal_long" type="checkbox"></label>
+
+  <h2>Map Speed</h2>
+  <label>Map Speed (MAX)
+    <select id="map_speed_mode">
+      <option value="0">Off</option>
+      <option value="1">Display</option>
+      <option value="2">Cap</option>
+      <option value="3">Follow</option>
+    </select>
+  </label>
+  <label>Map Speed Offset
+    <select id="map_speed_offset_mph">
+      <option value="-5">-5 mph</option>
+      <option value="0">0</option>
+      <option value="5">+5 mph</option>
+    </select>
+  </label>
+  <label>Lookahead
+    <select id="map_speed_lookahead">
+      <option value="0">Off</option>
+      <option value="1">Late</option>
+      <option value="2">Normal</option>
+      <option value="3">Early</option>
+    </select>
+  </label>
+
+  <h2>Stock</h2>
+  <label>Driving Personality
+    <select id="personality">
+      <option value="0">Aggressive</option>
+      <option value="1">Standard</option>
+      <option value="2">Chill</option>
+    </select>
+  </label>
+  <label>Experimental Mode <input id="experimental" type="checkbox"></label>
+  <div class="row">
+    <span>Driver monitoring</span>
+    <span>
+      <button type="button" id="sl">SL</button>
+      <button type="button" id="fai">FAI</button>
+    </span>
+  </div>
+
+  <h2>Software</h2>
+  <p id="sw" class="note">Loading…</p>
+  <label>Target branch <input id="branch" type="text" autocomplete="off" spellcheck="false"></label>
+  <div>
+    <button type="button" id="set-branch">Set branch</button>
+    <button type="button" id="fetch">Check</button>
+    <button type="button" id="download">Download</button>
+  </div>
+  <label>Go offline <input id="offline" type="checkbox"></label>
+</main>
+<script>
+const BOOLS = ["adaptive_accel", "driver_lat_handoff", "one_pedal_long", "experimental"];
+const INTS = ["accel", "follow_distance", "map_speed_mode", "map_speed_offset_mph", "map_speed_lookahead", "personality"];
+const statusEl = document.getElementById("status");
+
+function setStatus(text) { statusEl.textContent = text || ""; }
+
+async function postSet(name, value) {
+  const res = await fetch("/api/set", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({name, value}),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  applySettings(data.settings || {});
+  setStatus("Saved " + name);
+}
+
+function applySettings(s) {
+  for (const name of INTS) {
+    const el = document.getElementById(name);
+    if (el && s[name] != null) el.value = String(s[name]);
+  }
+  for (const name of BOOLS) {
+    const el = document.getElementById(name);
+    if (el) el.checked = !!s[name];
+  }
+  document.getElementById("sl").classList.toggle("on", !!s.sl);
+  document.getElementById("fai").classList.toggle("on", !!s.fai);
+}
+
+function applySoftware(sw) {
+  const branch = sw.target_branch || sw.git_branch || "";
+  document.getElementById("branch").value = branch;
+  document.getElementById("offline").checked = !!(sw.offline || sw.disable_updates);
+  const bits = [
+    sw.git_branch ? ("on " + sw.git_branch) : "",
+    sw.updater_state || "",
+    sw.update_available ? "update ready" : "",
+    (sw.offline || sw.disable_updates) ? "offline" : "",
+  ].filter(Boolean);
+  document.getElementById("sw").textContent = bits.join(" · ") || "Software";
+}
+
+async function load() {
+  const settings = await fetch("/api/settings").then(r => r.json());
+  applySettings(settings.settings || {});
+  const sw = await fetch("/api/software").then(r => r.json());
+  applySoftware(sw);
+}
+
+for (const name of INTS.concat(BOOLS)) {
+  const el = document.getElementById(name);
+  el.addEventListener("change", () => {
+    const value = BOOLS.includes(name) ? el.checked : el.value;
+    postSet(name, value).catch(err => setStatus(err.message));
+  });
+}
+document.getElementById("sl").addEventListener("click", () => postSet("sl", true).catch(err => setStatus(err.message)));
+document.getElementById("fai").addEventListener("click", () => postSet("fai", true).catch(err => setStatus(err.message)));
+
+async function software(action, extra) {
+  const res = await fetch("/api/software", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(Object.assign({action}, extra || {})),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  applySoftware(data);
+  setStatus(action);
+}
+
+document.getElementById("set-branch").addEventListener("click", () => {
+  software("set_branch", {branch: document.getElementById("branch").value}).catch(err => setStatus(err.message));
+});
+document.getElementById("fetch").addEventListener("click", () => software("fetch").catch(err => setStatus(err.message)));
+document.getElementById("download").addEventListener("click", () => software("download").catch(err => setStatus(err.message)));
+document.getElementById("offline").addEventListener("change", (ev) => {
+  software("set_offline", {offline: ev.target.checked}).catch(err => setStatus(err.message));
+});
+
+load().catch(err => setStatus(err.message));
+</script>
+</body>
+</html>
