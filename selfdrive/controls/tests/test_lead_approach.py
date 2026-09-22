@@ -38,6 +38,17 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_CLOSE_OPENING_A_MS2,
   LEAD_CLOSE_REMATCH_A_MS2,
   LEAD_CLOSE_REMATCH_SLACK_M,
+  LEAD_MID_GAP_CLOSE_HI_MS,
+  LEAD_MID_GAP_CLOSE_LO_MS,
+  LEAD_MID_GAP_REMATCH_A_MS2,
+  LEAD_MID_GAP_SLACK_M,
+  LEAD_FOLLOW_ACT_REGEN_CMD_MS2,
+  LEAD_FOLLOW_ACT_REGEN_FLOOR_MS2,
+  LEAD_FOLLOW_CHATTER_DEADBAND_MS2,
+  LEAD_FOLLOW_CHATTER_HI_MS2,
+  LEAD_FOLLOW_CHATTER_LO_MS2,
+  LEAD_FOLLOW_CHATTER_SLEW_MS2,
+  LEAD_FOLLOW_STEADY_A_MS2,
   LEAD_SETTLE_FINISH_SLACK_M,
   LEAD_SETTLE_HOLD_S,
   LEAD_SETTLE_SLACK_M,
@@ -85,14 +96,18 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   lead_approach_ttc_s,
   lead_at_or_above_max,
   lead_map_decel_above_max,
+  guard_follow_actuator_regen,
   lead_close_accel_ms2,
   lead_close_should_cap,
+  lead_mid_gap_catchup_latch,
+  lead_mid_gap_slow_close,
   lead_follow_slack_m,
   lead_hunt_accel_ms2,
   lead_is_settled_sample,
   lead_remaining_close_a_ms2,
   nap_t_follow,
   resolve_lead_close_hold,
+  slew_follow_chatter_a,
   slew_follow_plus_a,
   slew_lead_acquire_a,
   slew_lead_approach_a,
@@ -216,6 +231,24 @@ def test_lead_approach_keeps_early_map_brake_not_map_110m_margin():
   assert abs(LEAD_NEAR_GAP_SLACK_M - 15.0) < 1e-9
   assert abs(LEAD_NEAR_GAP_SLEW_MS2 - 0.02) < 1e-9
   assert LEAD_NEAR_GAP_SLEW_MS2 < LEAD_ATARGET_SLEW_MS2
+  assert abs(LEAD_MID_GAP_SLACK_M - 50.0) < 1e-9
+  assert LEAD_CLOSE_REMATCH_SLACK_M < LEAD_MID_GAP_SLACK_M
+  assert abs(LEAD_MID_GAP_CLOSE_LO_MS - LEAD_SLOW_CLOSE_MS) < 1e-9
+  assert abs(LEAD_MID_GAP_CLOSE_HI_MS - 2.0) < 1e-9
+  assert LEAD_MID_GAP_CLOSE_LO_MS < LEAD_CLOSING_REMATCH_BLOCK_MS
+  assert LEAD_CLOSING_MATCH_MS < LEAD_MID_GAP_CLOSE_HI_MS < LEAD_APPROACH_RAPID_DV_MS
+  assert abs(LEAD_MID_GAP_REMATCH_A_MS2 - 0.10) < 1e-9
+  assert LEAD_CLOSE_OPENING_A_MS2 < LEAD_MID_GAP_REMATCH_A_MS2 < LEAD_CLOSE_REMATCH_A_MS2
+  assert abs(LEAD_FOLLOW_CHATTER_LO_MS2 + 0.08) < 1e-9
+  assert abs(LEAD_FOLLOW_CHATTER_HI_MS2 - 0.32) < 1e-9
+  assert LEAD_FOLLOW_CHATTER_LO_MS2 < 0.0 < LEAD_FOLLOW_CHATTER_HI_MS2
+  assert LEAD_FOLLOW_CHATTER_HI_MS2 > LEAD_MID_GAP_REMATCH_A_MS2
+  assert abs(LEAD_FOLLOW_CHATTER_SLEW_MS2 - LEAD_NEAR_GAP_SLEW_MS2) < 1e-9
+  assert abs(LEAD_FOLLOW_CHATTER_DEADBAND_MS2 - 0.03) < 1e-9
+  assert abs(LEAD_FOLLOW_STEADY_A_MS2 - 0.08) < 1e-9
+  assert abs(LEAD_FOLLOW_ACT_REGEN_FLOOR_MS2 + LEAD_APPROACH_MILD_A_MS2) < 1e-9
+  assert abs(LEAD_FOLLOW_ACT_REGEN_CMD_MS2 + 0.50) < 1e-9
+  assert LEAD_FOLLOW_ACT_REGEN_CMD_MS2 < LEAD_FOLLOW_ACT_REGEN_FLOOR_MS2
   assert abs(LEAD_CLOSE_HOLD_S - 0.50) < 1e-9
   assert abs(LEAD_CLOSE_MAX_M - LEAD_APPROACH_MAX_START_M) < 1e-9
   import openpilot.selfdrive.controls.lib.lead_approach as lead_approach
@@ -734,6 +767,9 @@ def test_planner_wires_hysteresis_and_slew():
   assert "lead_follow_slack_m(" in planner
   assert "resolve_lead_close_hold(" in planner
   assert "lead_close_accel_ms2(" in planner
+  assert "lead_mid_gap_catchup_latch(" in planner
+  assert "settled=self._lead_settled" in planner
+  assert "catchup=self._lead_mid_gap_catchup" in planner
   assert "lead_approach_rapid_gate(" in planner
   assert "soft_limit_mpc_a_target(" in planner
   assert "cap_closing_lead_accel(" in planner
@@ -755,6 +791,9 @@ def test_planner_wires_hysteresis_and_slew():
   assert "a_lead=lead_a_k" in planner
   assert "apply_lead_glide_a(" in planner
   assert "slew_near_gap_small_a(" in planner
+  assert "slew_follow_chatter_a(" in planner
+  assert "catchup=self._lead_mid_gap_catchup" in planner
+  assert "if self._lead_mid_gap_catchup:" in planner
   assert "apply_matched_inside_fd_a" not in planner
   assert "prev_floored=self._lead_soft_limit_floored" in planner
   assert "prev_v_rel=prev_close_v_rel" in planner
@@ -904,7 +943,8 @@ def test_settled_rematch_deadbands_accel_ceil_while_gap_ok_or_opening():
   # At Follow Distance, matched / slight sag: Accel so grade can hold speed.
   assert lead_close_accel_ms2(2, v_rel=-0.1, slack=0.0, settled=True) == pytest.approx(a2)
   assert lead_close_accel_ms2(2, v_rel=0.0, slack=0.3, settled=True) == pytest.approx(a2)
-  # Large-gap unsettled catch-up still Accel while closing ≳ 1.0 (#187).
+  # Large-gap still-closing rematch stays Accel catch-up (#187).
+  # Mid-gap (12–50 m) is the yo-yo band; slack 80 is recovery.
   assert lead_close_accel_ms2(1, v_rel=1.2, slack=80.0, settled=False) == pytest.approx(
     LEAD_CLOSE_A_MIN_MS2
   )
@@ -1748,3 +1788,153 @@ def test_settle_gap_bias_firms_last_meters_not_hud_follow():
   assert a is not None
   assert a <= a_raw + 1e-9
   assert a >= -LEAD_APPROACH_MILD_A_MS2 - 1e-9
+
+
+def test_mid_gap_slow_close_soft_caps_accel_rematch():
+  """ef 10:18: slack 12–50 m, closing ~1.4 m/s must not rematch Accel ceil.
+
+  Same-speed / opening / slack > 50 stay Accel. Rapid / last-meter /
+  #222 residual close are unchanged.
+  """
+  a5 = lead_close_accel_ms2(5)
+  a2 = lead_close_accel_ms2(2)
+  assert a5 > 0.50
+  assert a2 > 0.20
+  # Primary 10:18 yo-yo band: slack 18–50, v_rel 1.4.
+  for slack in (18.0, 30.0, 40.0, 50.0):
+    assert lead_mid_gap_slow_close(1.4, slack)
+    a_cap = lead_close_accel_ms2(5, v_rel=1.4, slack=slack, settled=False)
+    assert a_cap == pytest.approx(LEAD_MID_GAP_REMATCH_A_MS2)
+    assert a_cap < 0.13
+    assert a_cap < a5 - 0.30
+    assert a_cap < a2 - 0.10
+  # Just above the near-gap rematch band, still slowly closing.
+  assert lead_close_accel_ms2(1, v_rel=1.0, slack=15.0, settled=False) == pytest.approx(
+    LEAD_MID_GAP_REMATCH_A_MS2
+  )
+  # True catch-up: opening / same-speed, including slack > 50.
+  assert not lead_mid_gap_slow_close(0.0, 40.0)
+  assert not lead_mid_gap_slow_close(-0.4, 70.0)
+  assert not lead_mid_gap_slow_close(0.3, 80.0)
+  assert lead_close_accel_ms2(5, v_rel=0.0, slack=80.0) == pytest.approx(LEAD_CLOSE_A_BASE_MS2)
+  assert lead_close_accel_ms2(2, v_rel=-0.3, slack=70.0) == pytest.approx(a2)
+  assert lead_close_accel_ms2(5, v_rel=0.3, slack=40.0) == pytest.approx(LEAD_CLOSE_A_BASE_MS2)
+  # Slack > 50 is large-gap rematch / recovery: Accel, even at 1.4.
+  assert not lead_mid_gap_slow_close(1.4, 50.01)
+  assert not lead_mid_gap_slow_close(1.4, 70.0)
+  assert not lead_mid_gap_slow_close(1.4, 90.0)
+  assert lead_close_accel_ms2(5, v_rel=1.4, slack=70.0, settled=False) == pytest.approx(a5)
+  assert lead_close_accel_ms2(1, v_rel=1.2, slack=80.0, settled=False) == pytest.approx(
+    LEAD_CLOSE_A_MIN_MS2
+  )
+  # Same-speed / opening latch keeps Accel through the 12–50 m band so a
+  # 100 m start / too-close recovery can finish FD. 10:18 already closing
+  # in-band does not latch.
+  assert lead_mid_gap_catchup_latch(False, 0.0, 40.0)
+  assert lead_mid_gap_catchup_latch(False, -0.4, 20.0)
+  assert lead_mid_gap_catchup_latch(False, 0.5, 46.0)
+  assert not lead_mid_gap_catchup_latch(False, 1.4, 40.0)
+  assert lead_mid_gap_catchup_latch(True, 1.4, 40.0)
+  assert lead_mid_gap_catchup_latch(True, 1.4, 10.0)
+  assert lead_mid_gap_catchup_latch(False, 0.2, -10.0)
+  assert lead_mid_gap_catchup_latch(False, 1.4, -20.0)
+  # Keep a live recovery latch through the near-gap band; do not arm
+  # one from a 10:18-like close that was never latched.
+  assert lead_mid_gap_catchup_latch(True, 0.2, 8.0)
+  assert not lead_mid_gap_catchup_latch(False, 1.4, 8.0)
+  # Settled follow opening / hunt is not catch-up.
+  assert not lead_mid_gap_catchup_latch(False, -0.4, 18.0, settled=True)
+  assert not lead_mid_gap_catchup_latch(False, 0.2, 30.0, settled=True)
+  # Keep Accel after a hard catch-up burst (v_rel ≥ 2) so the 12–50 m
+  # band does not re-cap once close eases back to 1.4.
+  assert lead_mid_gap_catchup_latch(True, 2.4, 40.0)
+  # Crossing slack 12 while already closing is 10:18 unless we came
+  # from inside FD (too-close recovery) or already had the latch.
+  assert not lead_mid_gap_catchup_latch(False, 1.4, 15.0, prev_slack=10.0)
+  assert lead_mid_gap_catchup_latch(True, 1.4, 15.0, prev_slack=10.0)
+  assert lead_mid_gap_catchup_latch(False, 1.4, 15.0, prev_slack=-5.0)
+  assert not lead_mid_gap_catchup_latch(False, 1.4, 40.0, prev_slack=45.0)
+  assert lead_close_accel_ms2(
+    5, v_rel=1.4, slack=40.0, settled=False, catchup=True,
+  ) == pytest.approx(a5)
+  assert lead_close_accel_ms2(
+    5, v_rel=1.4, slack=40.0, settled=False, catchup=False,
+  ) == pytest.approx(LEAD_MID_GAP_REMATCH_A_MS2)
+  # Slack ≫ 50 with close < 0.8 is still Accel.
+  assert lead_close_accel_ms2(2, v_rel=0.5, slack=80.0) == pytest.approx(a2)
+  # Near-gap rematch-block still zeros a hard close.
+  assert lead_close_accel_ms2(5, v_rel=2.0, slack=4.0) == pytest.approx(0.0)
+  # Closing ≥ 1.5 after settle still 0 (match-speed, not rematch).
+  assert lead_close_accel_ms2(2, v_rel=1.6, slack=40.0, settled=True) == pytest.approx(0.0)
+  # Last meters may still trickle while closing ≳ 1.0.
+  assert lead_close_accel_ms2(2, v_rel=1.2, slack=3.0, settled=True) == pytest.approx(
+    LEAD_CLOSE_OPENING_A_MS2
+  )
+
+
+def test_post_acquire_chatter_slews_small_plus_minus_a():
+  """After lead lock, +0.25 ↔ −0.02 must slew; firm −a stays immediate."""
+  # Catch-up / too-close recovery is immediate (do not settle-hold).
+  assert slew_follow_chatter_a(
+    0.80, 0.0, 0.2, d_rel=40.0, slack=-10.0,
+  ) == pytest.approx(0.80)
+  assert slew_follow_chatter_a(
+    0.25, -0.02, 1.4, d_rel=90.0, slack=40.0, catchup=True,
+  ) == pytest.approx(0.25)
+  # Rematch rise from a coast dip.
+  up = slew_follow_chatter_a(0.25, -0.02, 1.4, d_rel=90.0, slack=50.0)
+  assert up == pytest.approx(-0.02 + LEAD_FOLLOW_CHATTER_SLEW_MS2)
+  assert up < 0.05
+  # Drop from rematch pulse toward ~0.
+  down = slew_follow_chatter_a(-0.02, 0.25, 1.4, d_rel=90.0, slack=50.0)
+  assert down == pytest.approx(0.25 - LEAD_FOLLOW_CHATTER_SLEW_MS2)
+  assert down > 0.20
+  # Tiny ±a around 0 stays put (no gas↔regen flip).
+  hold = slew_follow_chatter_a(-0.02, 0.02, 1.2, d_rel=80.0, slack=40.0)
+  assert hold == pytest.approx(0.02)
+  # Outside the chatter band / danger: immediate.
+  assert slew_follow_chatter_a(
+    -0.46, 0.0, 1.2, d_rel=118.0, slack=80.0,
+  ) == pytest.approx(-0.46)
+  assert slew_follow_chatter_a(
+    -LEAD_APPROACH_MILD_A_MS2, 0.08, 1.4, d_rel=40.0, slack=8.0,
+  ) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  assert slew_follow_chatter_a(
+    -2.0, 0.0, 8.0, d_rel=40.0, slack=8.0, allow_rapid=True,
+  ) == pytest.approx(-2.0)
+  assert slew_follow_chatter_a(
+    -2.0, 0.0, 1.2, d_rel=LEAD_MPC_SOFT_NEAR_M, slack=2.0,
+  ) == pytest.approx(-2.0)
+  assert slew_follow_chatter_a(
+    -2.0, 0.0, 0.2, d_rel=90.0, slack=50.0, fcw=True,
+  ) == pytest.approx(-2.0)
+  # First-latch acquire slew is unchanged (faster, both ways).
+  assert slew_lead_acquire_a(
+    -0.46, 0.0, 1.2, d_rel=118.0, slack=80.0, acquiring=True,
+  ) == pytest.approx(-LEAD_ACQUIRE_SLEW_MS2)
+
+
+def test_guard_follow_actuator_regen_when_planner_near_zero():
+  """ef 10:18:42: aTarget ≈ 0 must not dump plant regen to −1.2."""
+  # Planner coasting / rematch chatter: clip firm regen.
+  assert guard_follow_actuator_regen(-1.23, 0.0) == pytest.approx(
+    LEAD_FOLLOW_ACT_REGEN_FLOOR_MS2
+  )
+  assert guard_follow_actuator_regen(-1.50, 0.02) == pytest.approx(
+    -LEAD_APPROACH_MILD_A_MS2
+  )
+  assert guard_follow_actuator_regen(-0.10, 0.0) == pytest.approx(-0.10)
+  assert guard_follow_actuator_regen(0.0, 0.0) == pytest.approx(0.0)
+  # Planner asked for firm / rapid / FCW −a: full authority.
+  assert guard_follow_actuator_regen(-1.23, -0.50) == pytest.approx(-1.23)
+  assert guard_follow_actuator_regen(-2.0, -2.0) == pytest.approx(-2.0)
+  assert guard_follow_actuator_regen(-1.50, -0.80) == pytest.approx(-1.50)
+  # Real mild command is not the ~0 band; plant may track it.
+  assert guard_follow_actuator_regen(-0.22, -0.22) == pytest.approx(-0.22)
+  assert guard_follow_actuator_regen(-0.40, -0.22) == pytest.approx(-0.40)
+  # LongControl only applies this on Pre-AP PID, not stopping.
+  from pathlib import Path
+  longcontrol = (Path(__file__).resolve().parents[1] / "lib/longcontrol.py").read_text()
+  assert "guard_follow_actuator_regen(" in longcontrol
+  assert "LongCtrlState.pid" in longcontrol
+  assert "TESLA_MODEL_S_PREAP" in longcontrol

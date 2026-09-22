@@ -2,12 +2,21 @@ import numpy as np
 from cereal import car
 from openpilot.common.realtime import DT_CTRL
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
+from openpilot.selfdrive.controls.lib.lead_approach import guard_follow_actuator_regen
 from openpilot.common.pid import PIDController
 from openpilot.selfdrive.modeld.constants import ModelConstants
 
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 
 LongCtrlState = car.CarControl.Actuators.LongControlState
+PREAP_FINGERPRINT = "TESLA_MODEL_S_PREAP"
+
+
+def _is_tesla_preap_long(CP) -> bool:
+  return (getattr(CP, "brand", None) == "tesla"
+          and getattr(CP, "carFingerprint", None) == PREAP_FINGERPRINT
+          and bool(getattr(CP, "openpilotLongitudinalControl", False))
+          and not bool(getattr(CP, "pcmCruise", True)))
 
 
 def long_control_state_trans(CP, active, long_control_state, v_ego,
@@ -85,4 +94,12 @@ class LongControl:
                                      feedforward=a_target)
 
     self.last_output_accel = np.clip(output_accel, accel_limits[0], accel_limits[1])
+    # Pre-AP follow comfort: do not dump firm regen when planner ~0.
+    # Stopping / starting / off keep stock authority. Planner ≤ −0.5
+    # (rapid / FCW / hard close) still reaches the plant.
+    if (self.long_control_state == LongCtrlState.pid
+        and _is_tesla_preap_long(self.CP)):
+      self.last_output_accel = float(guard_follow_actuator_regen(
+        self.last_output_accel, a_target,
+      ))
     return self.last_output_accel
