@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from types import SimpleNamespace
 
+import pytest
 from cereal import car
 from opendbc.car.tesla.preap.constants import (
   PEDAL_LONG_K_BP,
@@ -16,7 +17,11 @@ from opendbc.car.tesla.preap.virtual_das import VirtualDAS
 from opendbc.car.tesla.preap import virtual_das
 
 from openpilot.common.realtime import DT_CTRL
-from openpilot.selfdrive.controls.lib.longcontrol import LongControl
+from openpilot.selfdrive.controls.lib.lead_approach import (
+  LEAD_FOLLOW_ACT_REGEN_FLOOR_MS2,
+  guard_follow_actuator_regen,
+)
+from openpilot.selfdrive.controls.lib.longcontrol import LongControl, LongCtrlState
 
 
 ACCEL_LIMITS_MPS2 = (-1.5, 0.8)
@@ -245,3 +250,42 @@ def test_negative_planner_target_reaches_regen_side_of_coast_anchor(monkeypatch)
     f"settled negative planner window reached {max(pedal_di for _, pedal_di in settled_pedal_samples):.3f} DI, "
     + f"without moving meaningfully below the {coast_pedal_di:.3f} DI coast anchor"
   )
+
+
+def test_preap_longcontrol_does_not_dump_regen_when_planner_near_zero():
+  """ef 10:18:42: aTarget ≈ 0 + leftover +aEgo must not command −1.2."""
+  long_control = LongControl(_make_preap_params())
+  state = _make_car_state(speed_mps=30.0)
+  state.aEgo = 1.20
+  # Prime PID state so the first update is LongCtrlState.pid.
+  long_control.long_control_state = LongCtrlState.pid
+  long_control.last_output_accel = 0.0
+  commanded = long_control.update(
+    active=True,
+    CS=state,
+    a_target=0.0,
+    should_stop=False,
+    accel_limits=ACCEL_LIMITS_MPS2,
+  )
+  assert commanded >= LEAD_FOLLOW_ACT_REGEN_FLOOR_MS2 - 1e-9
+  assert commanded > -1.00
+  # Pre-AP LongControl is passthrough (kp=0, kf=1): a_target≈0 stays ~0.
+  # The plant dump is VirtualDAS inner-PID; this seam only clips if the
+  # actuator would go below MILD.
+  assert commanded == pytest.approx(0.0, abs=0.05)
+  assert guard_follow_actuator_regen(-1.23, 0.0) == pytest.approx(
+    LEAD_FOLLOW_ACT_REGEN_FLOOR_MS2
+  )
+
+  # Planner asked for firm regen: do not clip.
+  state.aEgo = 0.0
+  long_control.last_output_accel = 0.0
+  dumped = long_control.update(
+    active=True,
+    CS=state,
+    a_target=-1.20,
+    should_stop=False,
+    accel_limits=ACCEL_LIMITS_MPS2,
+  )
+  assert dumped <= -1.00
+  assert dumped == pytest.approx(-1.20, abs=0.05)
