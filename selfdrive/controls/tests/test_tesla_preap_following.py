@@ -1119,6 +1119,51 @@ def test_planner_mid_gap_above_max_floors_dump_and_holds_rematch():
   assert planner_empty.output_a_target > 0.20
 
 
+def test_planner_under_map_midgap_coast_does_not_cliff():
+  """18:10 under 70 mph: plan accels ~0 must not publish −1.4…−3.5.
+
+  aLead noise in the mid-gap band used to match straight through after
+  the MILD soft-limit. Floor at slight lift and hold the rematch cap.
+  """
+  v_map = 70.0 * CV.MPH_TO_MS
+  v_ego = v_map - 1.4 * CV.MPH_TO_MS
+  v_rel = 1.13
+  v_lead = v_ego - v_rel
+  t_follow = get_T_FOLLOW(nap_follow_dist=3)
+  slack = 19.5
+  params = _MutablePlannerParams(nap_follow_dist=3, map_speed_accel=5)
+  planner = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
+  planner._map_speed_accel = 5
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=0.01)
+  planner.prev_accel_clip = [-3.5, 0.80]
+  planner.output_a_target = 0.02
+  planner._lead_acquire_age = LEAD_ACQUIRE_HOLD_S + 0.05
+  inputs = _make_planner_inputs(v_ego)
+  _set_v_cruise_ms(inputs, v_map)
+  lead = inputs["radarState"].leadOne
+  lead.status = True
+  lead.dRel = t_follow * v_lead + STOP_DISTANCE_M + slack
+  lead.vLead = v_lead
+  lead.aLeadK = -3.36
+  lead.modelProb = 1.0
+  lead.radar = True
+  planner.update(inputs)
+  assert planner.output_a_target == pytest.approx(-LEAD_APPROACH_MILD_A_MS2, abs=0.05)
+  assert planner.output_a_target >= -0.25
+  assert planner._lead_post_dump_hold == pytest.approx(LEAD_POST_DUMP_HOLD_S)
+
+  # Opening re-catch after the cliff stays on the 0.10 trickle.
+  lead.aLeadK = 0.0
+  lead.vLead = v_ego + 0.4
+  lead.dRel = t_follow * lead.vLead + STOP_DISTANCE_M + slack
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=0.80)
+  seen = []
+  for _ in range(8):
+    planner.update(inputs)
+    seen.append(float(planner.output_a_target))
+  assert max(seen) <= LEAD_MID_GAP_REMATCH_A_MS2 + 0.02
+
+
 def test_planner_matched_speed_glide_deadbands_near_gap_chatter():
   """After #214 acquire, matched speeds near FD must not yo-yo rematch↔mild."""
   v_ego = 28.0

@@ -101,7 +101,10 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   lead_approach_ttc_s,
   lead_at_or_above_max,
   lead_map_decel_above_max,
+  floor_midgap_coast_a_target,
   guard_follow_actuator_regen,
+  plan_horizon_is_coasting,
+  plant_regen_effort_limits,
   lead_close_accel_ms2,
   lead_close_should_cap,
   lead_mid_gap_catchup_latch,
@@ -251,7 +254,8 @@ def test_lead_approach_keeps_early_map_brake_not_map_110m_margin():
   assert LEAD_FOLLOW_CHATTER_HI_MS2 > LEAD_MID_GAP_REMATCH_A_MS2
   assert abs(LEAD_FOLLOW_CHATTER_SLEW_MS2 - LEAD_NEAR_GAP_SLEW_MS2) < 1e-9
   assert abs(LEAD_FOLLOW_CHATTER_DEADBAND_MS2 - 0.03) < 1e-9
-  assert abs(LEAD_FOLLOW_STEADY_A_MS2 - 0.08) < 1e-9
+  assert abs(LEAD_FOLLOW_STEADY_A_MS2 - (LEAD_APPROACH_MILD_A_MS2 + 0.03)) < 1e-9
+  assert LEAD_FOLLOW_STEADY_A_MS2 >= LEAD_APPROACH_MILD_A_MS2
   assert abs(LEAD_FOLLOW_ACT_REGEN_FLOOR_MS2 + LEAD_APPROACH_MILD_A_MS2) < 1e-9
   assert abs(LEAD_FOLLOW_ACT_REGEN_CMD_MS2 + 0.50) < 1e-9
   assert LEAD_FOLLOW_ACT_REGEN_CMD_MS2 < LEAD_FOLLOW_ACT_REGEN_FLOOR_MS2
@@ -2046,12 +2050,102 @@ def test_guard_follow_actuator_regen_when_planner_near_zero():
   assert guard_follow_actuator_regen(-1.23, -0.50) == pytest.approx(-1.23)
   assert guard_follow_actuator_regen(-2.0, -2.0) == pytest.approx(-2.0)
   assert guard_follow_actuator_regen(-1.50, -0.80) == pytest.approx(-1.50)
-  # Real mild command is not the ~0 band; plant may track it.
+  # Commanded MILD is inside the steady band: plant cannot full-lift.
   assert guard_follow_actuator_regen(-0.22, -0.22) == pytest.approx(-0.22)
-  assert guard_follow_actuator_regen(-0.40, -0.22) == pytest.approx(-0.40)
+  assert guard_follow_actuator_regen(-0.40, -0.22) == pytest.approx(
+    LEAD_FOLLOW_ACT_REGEN_FLOOR_MS2
+  )
+  assert guard_follow_actuator_regen(-1.32, -0.218) == pytest.approx(
+    LEAD_FOLLOW_ACT_REGEN_FLOOR_MS2
+  )
   # LongControl only applies this on Pre-AP PID, not stopping.
   from pathlib import Path
   longcontrol = (Path(__file__).resolve().parents[1] / "lib/longcontrol.py").read_text()
   assert "guard_follow_actuator_regen(" in longcontrol
   assert "LongCtrlState.pid" in longcontrol
   assert "TESLA_MODEL_S_PREAP" in longcontrol
+
+
+def test_scallywag_1809_midgap_plant_and_coast_floor():
+  """18:09:23 / 18:10:27.44: coasting aTarget must not reach the regen rail.
+
+  Mid-gap slack ~19 m, closing ~1 m/s, under the map. A post-MPC cliff
+  while plan accels stay ~0 floors at MILD. The same geometry over the
+  map floors at map comfort. Match-speed ≥ 1.5, FCW, and a real plan
+  brake stay raw.
+  """
+  # Ep1 plant seam and the 18:10:27.44 sample before the planner cliff.
+  assert guard_follow_actuator_regen(-1.50, -0.039) >= -0.25
+  assert guard_follow_actuator_regen(-1.50, 0.008) == pytest.approx(
+    -LEAD_APPROACH_MILD_A_MS2
+  )
+  assert guard_follow_actuator_regen(-1.50, 0.008) >= -0.25
+  # Mid-gap slow close hard-caps even when the planner already cliffed.
+  capped = guard_follow_actuator_regen(
+    -1.50, -1.411, v_rel=1.13, d_rel=58.0, slack=19.5,
+  )
+  assert capped == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  assert capped >= -0.25
+  # Exclusions stay raw.
+  assert guard_follow_actuator_regen(
+    -1.50, -1.411, v_rel=1.6, d_rel=40.0, slack=10.0,
+  ) == pytest.approx(-1.50)
+  assert guard_follow_actuator_regen(
+    -1.50, -0.03, v_rel=1.1, d_rel=58.0, slack=19.5, fcw=True,
+  ) == pytest.approx(-1.50)
+  assert guard_follow_actuator_regen(
+    -1.50, -1.411, v_rel=1.1, d_rel=LEAD_MPC_SOFT_NEAR_M, slack=2.0,
+  ) == pytest.approx(-1.50)
+  assert guard_follow_actuator_regen(
+    -2.0, -2.0, v_rel=7.0, d_rel=40.0, slack=12.0, allow_rapid=True,
+  ) == pytest.approx(-2.0)
+
+  assert plan_horizon_is_coasting([0.01, 0.07, -0.02])
+  assert not plan_horizon_is_coasting([0.0, -0.4])
+  under = floor_midgap_coast_a_target(
+    -3.36, True, 0.81, 58.0, 19.9, v_ego=30.0, v_cruise=31.3,
+  )
+  assert under == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  assert under >= -0.25
+  # 18:10:27 planner cliff, plan still coasting.
+  ep2 = floor_midgap_coast_a_target(
+    -1.411, True, 1.19, 57.8, 19.3, v_ego=30.0, v_cruise=31.3,
+  )
+  assert ep2 == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  v_map = 70.0 * 0.44704
+  over = floor_midgap_coast_a_target(
+    -3.45, True, 0.5, 60.0, 19.0, v_ego=v_map + 1.3, v_cruise=v_map,
+  )
+  assert over == pytest.approx(-LEAD_MAP_MIDGAP_FLOOR_MS2)
+  # Real plan brake is not the coast floor.
+  assert floor_midgap_coast_a_target(
+    -1.411, False, 1.19, 57.8, 19.3, v_ego=30.0, v_cruise=31.3,
+  ) == pytest.approx(-1.411)
+  # Match-speed close stays raw.
+  assert floor_midgap_coast_a_target(
+    -1.411, True, LEAD_APPROACH_SOFT_LIMIT_CLOSE_MS, 40.0, 12.0,
+    v_ego=30.0, v_cruise=31.3,
+  ) == pytest.approx(-1.411)
+  # Mild command does not raise the pedal effort bound into a firm brake,
+  # and a firm command leaves the regen rail available.
+  mild_limits = plant_regen_effort_limits(0.008, (-1.5, 2.5))
+  assert mild_limits[0] == pytest.approx(LEAD_FOLLOW_ACT_REGEN_FLOOR_MS2)
+  assert mild_limits[0] >= -0.25
+  assert mild_limits[1] == pytest.approx(2.5)
+  assert plant_regen_effort_limits(-1.20, (-1.5, 2.5)) == (-1.5, 2.5)
+  assert plant_regen_effort_limits(-0.22, (-1.5, 2.0))[0] == pytest.approx(
+    LEAD_FOLLOW_ACT_REGEN_FLOOR_MS2
+  )
+  # Map comfort is tracked. It does not open the regen rail, and the
+  # over-map actuator cap does not lift it back to MILD.
+  assert plant_regen_effort_limits(-LEAD_MAP_MIDGAP_FLOOR_MS2, (-1.5, 2.5))[0] == pytest.approx(
+    -LEAD_MAP_MIDGAP_FLOOR_MS2
+  )
+  assert plant_regen_effort_limits(0.40, (-1.5, 2.5))[0] == pytest.approx(
+    LEAD_FOLLOW_ACT_REGEN_FLOOR_MS2
+  )
+  v_map = 70.0 * 0.44704
+  assert guard_follow_actuator_regen(
+    -1.50, -LEAD_MAP_MIDGAP_FLOOR_MS2, v_rel=0.5, d_rel=60.0, slack=19.0,
+    v_ego=v_map + 1.3, v_cruise=v_map,
+  ) == pytest.approx(-LEAD_MAP_MIDGAP_FLOOR_MS2)

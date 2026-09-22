@@ -37,6 +37,8 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   slew_lead_acquire_a,
   slew_lead_approach_a,
   slew_near_gap_small_a,
+  floor_midgap_coast_a_target,
+  plan_horizon_is_coasting,
   soft_limit_mpc_a_target,
   update_lead_acquire,
   update_lead_glide,
@@ -670,6 +672,21 @@ class LongitudinalPlanner:
           fcw=self.fcw, crash_cnt=self.mpc.crash_cnt,
           catchup=self._lead_mid_gap_catchup,
         )
+      # Coasting mid-gap: do not publish an ACCEL_MIN-region cliff while
+      # plan accels stay ~0 (18:10 under the map, and the same geometry
+      # over the map). Arm the rematch trickle if that cliff was real
+      # so Accel cannot relight the next plant bite.
+      pre_coast_floor = float(output_a_target)
+      output_a_target = floor_midgap_coast_a_target(
+        output_a_target, plan_horizon_is_coasting(self.a_desired_trajectory),
+        overlay_v_rel, overlay_d, overlay_slack,
+        v_ego=v_ego, v_cruise=v_hud_ms,
+        fcw=self.fcw, crash_cnt=self.mpc.crash_cnt, allow_rapid=allow_rapid,
+      )
+      if ((live_ok or lead_held)
+          and pre_coast_floor <= -LEAD_POST_DUMP_A_MS2
+          and float(output_a_target) > pre_coast_floor + 1e-9):
+        self._lead_post_dump_hold = LEAD_POST_DUMP_HOLD_S
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
