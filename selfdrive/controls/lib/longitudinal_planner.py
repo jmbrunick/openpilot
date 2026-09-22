@@ -26,10 +26,12 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   lead_approach_track_ok,
   lead_close_accel_ms2,
   lead_close_should_cap,
+  lead_mid_gap_catchup_latch,
   lead_follow_slack_m,
   lead_owns_plan,
   lead_remaining_close_a_ms2,
   resolve_lead_close_hold,
+  slew_follow_chatter_a,
   slew_lead_acquire_a,
   slew_lead_approach_a,
   slew_near_gap_small_a,
@@ -135,6 +137,8 @@ class LongitudinalPlanner:
     self._lead_close_hold_age = 0.0
     self._lead_close_hold_owned = False
     self._lead_close_a_cap = None
+    self._lead_mid_gap_catchup = False
+    self._lead_mid_gap_slack = None
     self._follow_open_a = None
     self._lead_settle_age = 0.0
     self._lead_settled = False
@@ -223,6 +227,8 @@ class LongitudinalPlanner:
       self._lead_close_hold_age = 0.0
       self._lead_close_hold_owned = False
       self._lead_close_a_cap = None
+      self._lead_mid_gap_catchup = False
+      self._lead_mid_gap_slack = None
       self._follow_open_a = None
       self._lead_settle_age = 0.0
       self._lead_settled = False
@@ -326,9 +332,19 @@ class LongitudinalPlanner:
             v_rel_lead, self._lead_close_hold_a, slack,
           ),
         )
+        self._lead_mid_gap_catchup = lead_mid_gap_catchup_latch(
+          self._lead_mid_gap_catchup, v_rel_lead, slack,
+          prev_slack=self._lead_mid_gap_slack,
+          settled=self._lead_settled,
+        )
+        self._lead_mid_gap_slack = slack
+        if self._lead_mid_gap_catchup:
+          self._lead_settled = False
+          self._lead_settle_age = 0.0
         self._lead_close_a_cap = lead_close_accel_ms2(
           self._map_speed_accel, v_rel=v_rel_lead, slack=slack, a_personality=a_env,
           settled=self._lead_settled, v_ego=v_ego, v_cruise=v_hud_ms,
+          catchup=self._lead_mid_gap_catchup,
         )
         if self._lead_close_hold_owned or lead_owns_plan(
           v_rel_lead, self._lead_close_hold_a, slack,
@@ -340,6 +356,8 @@ class LongitudinalPlanner:
         self._lead_close_hold_owned = False
         self._lead_settle_age = 0.0
         self._lead_settled = False
+        self._lead_mid_gap_catchup = False
+        self._lead_mid_gap_slack = None
         self._lead_glide_active = False
         self._lead_soft_limit_floored = False
         self._lead_soft_limit_v_rel = None
@@ -541,8 +559,9 @@ class LongitudinalPlanner:
           allow_rapid=allow_rapid, fcw=self.fcw, crash_cnt=self.mpc.crash_cnt,
           a_lead=lead_a_k, v_ego=v_ego, v_cruise=v_hud_ms,
         )
-      # After acquire: matched-speed glide (no felt ±a) and slower
-      # near-gap small-bite slew. First-latch smoothness stays #214.
+      # After acquire: matched-speed glide (no felt ±a), slower
+      # near-gap small-bite slew, and mid-gap rematch↔~0 chatter
+      # slew. First-latch smoothness stays #214.
       self._lead_glide_active = update_lead_glide(
         self._lead_glide_active, overlay_v_rel, overlay_slack,
         d_rel=overlay_d, fcw=self.fcw, crash_cnt=self.mpc.crash_cnt,
@@ -554,6 +573,12 @@ class LongitudinalPlanner:
           output_a_target, self.output_a_target, overlay_v_rel,
           d_rel=overlay_d, slack=overlay_slack, allow_rapid=allow_rapid,
           fcw=self.fcw, crash_cnt=self.mpc.crash_cnt,
+        )
+        output_a_target = slew_follow_chatter_a(
+          output_a_target, self.output_a_target, overlay_v_rel,
+          d_rel=overlay_d, slack=overlay_slack, allow_rapid=allow_rapid,
+          fcw=self.fcw, crash_cnt=self.mpc.crash_cnt,
+          catchup=self._lead_mid_gap_catchup,
         )
 
     for idx in range(2):
