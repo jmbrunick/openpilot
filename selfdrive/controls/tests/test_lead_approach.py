@@ -42,6 +42,11 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_MID_GAP_CLOSE_LO_MS,
   LEAD_MID_GAP_REMATCH_A_MS2,
   LEAD_MID_GAP_SLACK_M,
+  LEAD_MAP_MIDGAP_DREL_HI_M,
+  LEAD_MAP_MIDGAP_FLOOR_MS2,
+  LEAD_MAP_MIDGAP_SLACK_LO_M,
+  LEAD_POST_DUMP_A_MS2,
+  LEAD_POST_DUMP_HOLD_S,
   LEAD_FOLLOW_ACT_REGEN_CMD_MS2,
   LEAD_FOLLOW_ACT_REGEN_FLOOR_MS2,
   LEAD_FOLLOW_CHATTER_DEADBAND_MS2,
@@ -100,6 +105,7 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   lead_close_accel_ms2,
   lead_close_should_cap,
   lead_mid_gap_catchup_latch,
+  lead_mid_gap_map_band,
   lead_mid_gap_slow_close,
   lead_follow_slack_m,
   lead_hunt_accel_ms2,
@@ -1161,16 +1167,19 @@ def test_lead_acquire_slew_keeps_rapid_and_near_bumper_authority():
   assert soft_limit_mpc_a_target(-2.5, 25.0, 24.8, 40.0, slack=-2.0) == pytest.approx(
     -LEAD_APPROACH_MILD_A_MS2
   )
-  # Over MAX (past the deadband): map decel still mins in on a
-  # same-speed lead. Do not floor to MILD or hide the brake behind
-  # first-latch acquire slew.
+  # Over MAX (past the deadband): a far / large-slack same-speed lead
+  # still passes map decel. Mid-gap slack is comfort-floored. Do not
+  # hide either brake behind first-latch acquire slew.
   v_cruise = 22.0
   v_over = v_cruise + 2.5
   assert lead_map_decel_above_max(v_over, v_cruise)
   assert not lead_map_decel_above_max(25.0, 25.0)
   assert soft_limit_mpc_a_target(
-    -0.80, v_over, v_over, 80.0, slack=40.0, v_cruise=v_cruise,
+    -0.80, v_over, v_over, 140.0, slack=80.0, v_cruise=v_cruise,
   ) == pytest.approx(-0.80)
+  assert soft_limit_mpc_a_target(
+    -0.80, v_over, v_over, 80.0, slack=40.0, v_cruise=v_cruise,
+  ) == pytest.approx(-LEAD_MAP_MIDGAP_FLOOR_MS2)
   assert slew_lead_acquire_a(
     -0.80, 0.0, 0.0, d_rel=80.0, slack=40.0, acquiring=True,
     v_ego=v_over, v_cruise=v_cruise,
@@ -1788,6 +1797,114 @@ def test_settle_gap_bias_firms_last_meters_not_hud_follow():
   assert a is not None
   assert a <= a_raw + 1e-9
   assert a >= -LEAD_APPROACH_MILD_A_MS2 - 1e-9
+
+
+def test_above_max_mid_gap_soft_limit_floors_map_cliff():
+  """Scallywag 16:22: above-max + dRel ~60 + closing ~0.5 must not pass −3.45.
+
+  Rapid / FCW / near-bumper stay raw. Large-gap map decel still mins in.
+  """
+  v_map = 70.0 * 0.44704
+  v_ego = v_map + 1.3
+  assert lead_map_decel_above_max(v_ego, v_map)
+  assert LEAD_MAP_MIDGAP_SLACK_LO_M <= 19.0 <= LEAD_MID_GAP_SLACK_M
+  assert 60.0 <= LEAD_MAP_MIDGAP_DREL_HI_M
+  assert -0.60 <= -LEAD_MAP_MIDGAP_FLOOR_MS2 <= -0.40
+  floored = soft_limit_mpc_a_target(
+    -3.45, v_ego, v_ego - 0.5, 60.0, slack=19.0, a_lead=0.0, v_cruise=v_map,
+  )
+  assert floored == pytest.approx(-LEAD_MAP_MIDGAP_FLOOR_MS2)
+  assert floored > -1.0
+  # Slack omitted: dRel ~60 still qualifies.
+  assert soft_limit_mpc_a_target(
+    -3.45, v_ego, v_ego - 0.5, 60.0, a_lead=0.0, v_cruise=v_map,
+  ) == pytest.approx(-LEAD_MAP_MIDGAP_FLOOR_MS2)
+  # Already milder than the comfort floor passes through.
+  assert soft_limit_mpc_a_target(
+    -0.40, v_ego, v_ego - 0.5, 60.0, slack=19.0, v_cruise=v_map,
+  ) == pytest.approx(-0.40)
+  # Confirmed rapid / FCW / near-bumper unchanged.
+  assert soft_limit_mpc_a_target(
+    -3.45, v_ego, v_ego - (LEAD_APPROACH_RAPID_DV_MS + 0.5), 60.0,
+    slack=19.0, allow_rapid=True, v_cruise=v_map,
+  ) == pytest.approx(-3.45)
+  assert soft_limit_mpc_a_target(
+    -3.45, v_ego, v_ego - 0.5, 60.0, slack=19.0, fcw=True, v_cruise=v_map,
+  ) == pytest.approx(-3.45)
+  assert soft_limit_mpc_a_target(
+    -3.45, v_ego, v_ego - 0.5, 60.0, slack=19.0, crash_cnt=1, v_cruise=v_map,
+  ) == pytest.approx(-3.45)
+  assert soft_limit_mpc_a_target(
+    -3.45, v_ego, v_ego - 0.5, LEAD_MPC_SOFT_NEAR_M, slack=2.0, v_cruise=v_map,
+  ) == pytest.approx(-3.45)
+  # Match-speed close still skips the floor.
+  assert soft_limit_mpc_a_target(
+    -2.5, v_ego, v_ego - LEAD_APPROACH_SOFT_LIMIT_CLOSE_MS, 40.0,
+    slack=8.0, a_lead=0.0, v_cruise=v_map,
+  ) == pytest.approx(-2.5)
+  # Far / large slack: map decel still passes.
+  assert not lead_mid_gap_map_band(80.0, 140.0)
+  assert soft_limit_mpc_a_target(
+    -1.97, v_ego, v_ego - 0.5, 140.0, slack=80.0, a_lead=0.0, v_cruise=v_map,
+  ) == pytest.approx(-1.97)
+  # Under the limit, the same mid-gap sample is the MILD floor.
+  assert soft_limit_mpc_a_target(
+    -3.45, v_map - 2.0, v_map - 2.5, 60.0, slack=19.0, a_lead=0.0, v_cruise=v_map,
+  ) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+
+
+def test_post_dump_mid_gap_rematch_holds_soft_cap():
+  """After a dump, opening mid-gap rematch stays 0.10 — not Accel ceil.
+
+  The catch-up latch used to Accel once closing fell under 0.8. Hold
+  through that re-catch, and while over map. Large-gap catch-up stays
+  Accel. No-lead climb is not this cap.
+  """
+  a5 = lead_close_accel_ms2(5)
+  v_map = 70.0 * 0.44704
+  v_under = v_map - 2.0
+  v_over = v_map + 1.5
+  assert a5 > 0.50
+  assert LEAD_POST_DUMP_A_MS2 >= 1.0
+  assert LEAD_POST_DUMP_HOLD_S >= 8.0
+  # Under map, opening, catch-up latched: #224 still Accel.
+  assert not lead_mid_gap_slow_close(-0.4, 19.0)
+  assert lead_close_accel_ms2(
+    5, v_rel=-0.4, slack=19.0, settled=False, catchup=True,
+    v_ego=v_under, v_cruise=v_map,
+  ) == pytest.approx(a5)
+  # Same sample after a dump: trickle.
+  held = lead_close_accel_ms2(
+    5, v_rel=-0.4, slack=19.0, settled=False, catchup=True,
+    v_ego=v_under, v_cruise=v_map, post_dump=True,
+  )
+  assert held == pytest.approx(LEAD_MID_GAP_REMATCH_A_MS2)
+  assert held <= 0.10 + 1e-9
+  # Still over map: no Accel climb through the limit.
+  over = lead_close_accel_ms2(
+    5, v_rel=0.5, slack=19.0, settled=False, catchup=True,
+    v_ego=v_over, v_cruise=v_map, post_dump=True,
+  )
+  assert over <= LEAD_MID_GAP_REMATCH_A_MS2 + 1e-9
+  assert lead_close_accel_ms2(
+    5, v_rel=-0.4, slack=19.0, settled=False, catchup=True,
+    v_ego=v_over, v_cruise=v_map,
+  ) <= LEAD_MID_GAP_REMATCH_A_MS2 + 1e-9
+  # Slack settled into the near-gap band: post-dump does not own it.
+  assert not lead_mid_gap_map_band(4.0)
+  assert lead_close_accel_ms2(
+    5, v_rel=-0.6, slack=4.0, settled=True, v_ego=v_under, v_cruise=v_map,
+    post_dump=True,
+  ) == pytest.approx(a5)
+  # Large-gap catch-up, including with the dump hold set, stays Accel.
+  assert lead_close_accel_ms2(
+    5, v_rel=0.0, slack=80.0, settled=False, catchup=True,
+    v_ego=v_under, v_cruise=v_map, post_dump=True,
+  ) == pytest.approx(a5)
+  assert lead_close_accel_ms2(
+    5, v_rel=-0.4, slack=70.0, settled=False, catchup=False,
+    v_ego=v_under, v_cruise=v_map, post_dump=True,
+  ) == pytest.approx(a5)
 
 
 def test_mid_gap_slow_close_soft_caps_accel_rematch():

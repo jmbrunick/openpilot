@@ -18,6 +18,8 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
 )
 from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_APPROACH_MILD_A_MS2,
+  LEAD_POST_DUMP_A_MS2,
+  LEAD_POST_DUMP_HOLD_S,
   apply_lead_approach_overlay,
   apply_lead_glide_a,
   cap_closing_lead_accel,
@@ -153,6 +155,7 @@ class LongitudinalPlanner:
     self._lead_close_a_cap = None
     self._lead_mid_gap_catchup = False
     self._lead_mid_gap_slack = None
+    self._lead_post_dump_hold = 0.0
     self._follow_open_a = None
     self._lead_settle_age = 0.0
     self._lead_settled = False
@@ -246,6 +249,7 @@ class LongitudinalPlanner:
       self._lead_close_a_cap = None
       self._lead_mid_gap_catchup = False
       self._lead_mid_gap_slack = None
+      self._lead_post_dump_hold = 0.0
       self._follow_open_a = None
       self._lead_settle_age = 0.0
       self._lead_settled = False
@@ -378,6 +382,7 @@ class LongitudinalPlanner:
           self._map_speed_accel, v_rel=v_rel_lead, slack=slack, a_personality=a_env,
           settled=self._lead_settled, v_ego=v_ego, v_cruise=v_hud_ms,
           catchup=self._lead_mid_gap_catchup,
+          post_dump=self._lead_post_dump_hold > 0.0,
         )
         if self._lead_close_hold_owned or lead_owns_plan(
           v_rel_lead, self._lead_close_hold_a, slack,
@@ -391,6 +396,7 @@ class LongitudinalPlanner:
         self._lead_settled = False
         self._lead_mid_gap_catchup = False
         self._lead_mid_gap_slack = None
+        self._lead_post_dump_hold = 0.0
         self._lead_glide_active = False
         self._lead_soft_limit_floored = False
         self._lead_soft_limit_v_rel = None
@@ -517,7 +523,8 @@ class LongitudinalPlanner:
     # (e4 09:53:19). After acquire, matched-speed near the gap glides
     # (a≈0) and inside-FD slow close commands the MILD floor.
     # FCW / rapid / near-bumper / a real stop still own danger.
-    # Map MAX cannot cancel this.
+    # Above MAX, a far lead still passes map decel; a steady mid-gap
+    # lead is comfort-floored so a cruise cliff cannot punch.
     if self._is_preap:
       lead = sm['radarState'].leadOne
       allow_rapid = False
@@ -585,9 +592,10 @@ class LongitudinalPlanner:
       # Floor MPC before overlay so a confirmed rapid 0.55 path is not
       # also clamped. Owned / path-synced lead: residual close (beyond
       # ego a) or aLead skips MILD. One-frame v_rel spikes stay at MILD.
-      # Large-slack e4 stays floored. Over MAX (past the deadband),
-      # map decel still mins in on a same-speed lead. Firm 0.55 /
-      # hard dump still waits on the rapid confirm.
+      # Large-slack e4 stays floored. Over MAX, a far lead still
+      # passes map decel; a steady mid-gap lead is comfort-floored.
+      # Firm 0.55 / hard dump still waits on the rapid confirm.
+      # A raw cliff arms the mid-gap rematch trickle for the re-catch.
       raw_mpc_a = float(output_a_target)
       prev_close_v_rel = self._lead_soft_limit_v_rel
       output_a_target = soft_limit_mpc_a_target(
@@ -608,6 +616,10 @@ class LongitudinalPlanner:
         raw_mpc_a < -LEAD_APPROACH_MILD_A_MS2
         and float(output_a_target) > raw_mpc_a + 1e-9
       )
+      if (live_ok or lead_held) and raw_mpc_a <= -LEAD_POST_DUMP_A_MS2:
+        self._lead_post_dump_hold = LEAD_POST_DUMP_HOLD_S
+      elif self._lead_post_dump_hold > 0.0:
+        self._lead_post_dump_hold = max(0.0, self._lead_post_dump_hold - float(self.dt))
       self._lead_soft_limit_v_rel = overlay_v_rel if (live_ok or lead_held) else None
       a_lead = slew_lead_approach_a(a_lead, self._lead_approach_a)
       self._lead_approach_a = a_lead
