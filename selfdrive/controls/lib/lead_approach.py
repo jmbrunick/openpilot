@@ -93,6 +93,14 @@ cruise bites cannot flip gas↔regen. When planner aTarget is ~0, do
 not let the plant dump firm regen (ef 10:18:42: act −1.23 then
 rematch +0.40). Grade / pitch hold and planner ≤ −0.5 / rapid / FCW
 keep full −a/+a.
+
+Map FOLLOW above MAX used to skip that MILD floor when the lead was
+not classified closing, so a steady mid-gap radar lead (slack ~19 m,
+closing ~0.5) took the raw cruise cliff (−1.4…−3.5) and then Accel
+climbed back through the limit. Comfort-floor that mid-gap sample.
+After the cliff, hold the 0.10 rematch cap through the opening
+re-catch so Accel cannot relight the next dump. Large-gap / no-lead
+catch-up stays Accel. FCW, confirmed rapid, and near-bumper stay raw.
 """
 from __future__ import annotations
 
@@ -212,6 +220,19 @@ LEAD_MID_GAP_SLACK_M = 50.0
 LEAD_MID_GAP_CLOSE_LO_MS = 0.8
 LEAD_MID_GAP_CLOSE_HI_MS = 2.0
 LEAD_MID_GAP_REMATCH_A_MS2 = 0.10
+# Map FOLLOW above MAX with a steady mid-gap lead (Scallywag 16:22:
+# slack ~19 m, dRel ~60 m, closing ~0.5). Do not pass a −1.4…−3.5
+# cruise/map cliff through. Comfort floor is the early map brake
+# (−0.55), inside −0.4…−0.6, so the limit still comes back.
+# Slack ~8–50 m. Farther than that, map decel still mins in.
+LEAD_MAP_MIDGAP_SLACK_LO_M = 8.0
+LEAD_MAP_MIDGAP_FLOOR_MS2 = 0.55
+LEAD_MAP_MIDGAP_DREL_HI_M = 80.0
+# After a cliff, hold the 0.10 rematch cap through the opening
+# re-catch so Accel cannot climb back through the limit. Raw |a|
+# at or below this arms the hold; MILD and the comfort floor do not.
+LEAD_POST_DUMP_A_MS2 = 1.0
+LEAD_POST_DUMP_HOLD_S = 12.0
 # After |v_rel| < 0.5 for 0.5–1 s near the follow gap, Accel-ceil rematch
 # is deadbanded. Arm settle only while slack is still follow-like so a
 # 160 m same-speed catch-up stays Accel-owned. Do not arm while still
@@ -608,6 +629,22 @@ def lead_settled_rematch_a_ms2(a, v_rel, slack) -> float:
   return lead_hunt_accel_ms2(a, s)
 
 
+def lead_mid_gap_map_band(slack, d_rel=None) -> bool:
+  """True when a live lead is in the mid-gap band for map comfort.
+
+  Slack ~8–50 m when known (dig slack ~19 m). Without slack, dRel
+  past the bumper and not a far lock (dig ~60 m) still qualifies.
+  Near-bumper and large-gap catch-up stay out.
+  """
+  if slack is not None:
+    s = float(slack)
+    return LEAD_MAP_MIDGAP_SLACK_LO_M <= s <= LEAD_MID_GAP_SLACK_M
+  if d_rel is None:
+    return False
+  d = float(d_rel)
+  return LEAD_MPC_SOFT_NEAR_M < d <= LEAD_MAP_MIDGAP_DREL_HI_M
+
+
 def lead_mid_gap_slow_close(v_rel, slack) -> bool:
   """True when mid-gap rematch should trickle, not Accel-ceil.
 
@@ -658,7 +695,7 @@ def lead_mid_gap_catchup_latch(prev, v_rel, slack, prev_slack=None,
 
 def lead_close_accel_ms2(accel_level: int = 5, v_rel=None, slack=None,
                          a_personality=None, settled=False, v_ego=None,
-                         v_cruise=None, catchup=False) -> float:
+                         v_cruise=None, catchup=False, post_dump=False) -> float:
   """Max positive a (m/s²) when closing the gap on a radar lead.
 
   Same Accel 1–10 envelope as open-road / MAX climb — not a separate
@@ -672,7 +709,10 @@ def lead_close_accel_ms2(accel_level: int = 5, v_rel=None, slack=None,
   deadbanded; large same-speed gaps that never matched still use Accel
   *under MAX*. Mid-gap slack (12–50 m) while still slowly closing
   trickles (not Accel ceil) so cruise rematch cannot pulse. Slack
-  > 50 stays Accel catch-up.
+  > 50 stays Accel catch-up. After a dump, and while over map with a
+  live mid-gap lead, that same 0.10 cap holds through opening /
+  re-catch so the catch-up latch cannot Accel-ceil back through the
+  limit. Large-gap slack stays Accel.
   """
   a = map_accel_a_ms2(LOOKAHEAD_NORMAL, int(accel_level))
   if a_personality is not None:
@@ -695,7 +735,17 @@ def lead_close_accel_ms2(accel_level: int = 5, v_rel=None, slack=None,
   if settled:
     return lead_settled_rematch_a_ms2(a, v_rel, slack)
   if slack is None or float(slack) > LEAD_CLOSE_REMATCH_SLACK_M:
-    if (not settled) and (not catchup) and lead_mid_gap_slow_close(v_rel, slack):
+    slow_close = (
+      (not settled) and (not catchup) and lead_mid_gap_slow_close(v_rel, slack)
+    )
+    # Opening after a dump, or any rematch while over map: the catch-up
+    # latch must not Accel-ceil a live mid-gap lead back through the limit.
+    hold_trickle = (
+      (not settled)
+      and (post_dump or lead_map_decel_above_max(v_ego, v_cruise))
+      and lead_mid_gap_map_band(slack)
+    )
+    if slow_close or hold_trickle:
       return min(a, LEAD_MID_GAP_REMATCH_A_MS2)
     return a
   if v_rel is not None and float(v_rel) <= 0.0:
@@ -1123,8 +1173,10 @@ def soft_limit_mpc_a_target(output_a, v_ego, v_lead, d_rel, fcw=False, crash_cnt
   ≥ 6 (07:55 class: held lead, closing 1.8→4.4, aLead ~−1, dRel
   38→25 while aTarget sat at −0.22). Cut-ins may still skip once
   closing ≥ 1.5. Large-slack e4 and far / opening aLead stay
-  floored. Over MAX (past the deadband), map decel still mins in
-  on a same-speed lead. Sitting at MAX still floors. Firm / full
+  floored. Over MAX (past the deadband), a far / large-slack
+  same-speed lead still passes map decel. A mid-gap lead that is
+  not rapid / FCW / near-bumper is comfort-floored so a cruise cliff
+  cannot punch at ~60 m. Sitting at MAX still uses MILD. Firm / full
   still waits on confirm.
   """
   _ = prev_floored
@@ -1136,15 +1188,21 @@ def soft_limit_mpc_a_target(output_a, v_ego, v_lead, d_rel, fcw=False, crash_cnt
   if d_rel is None or v_lead is None or v_ego is None:
     return a
   v_rel = float(v_ego) - max(0.0, float(v_lead))
-  if (lead_map_decel_above_max(v_ego, v_cruise)
-      and not lead_is_closing(v_rel, a_lead, slack=slack)):
-    return a
+  # FCW / confirmed rapid / near-bumper / match-speed skip stay raw.
   if lead_mpc_needs_full_authority(
     v_rel, d_rel, slack, allow_rapid=allow_rapid, fcw=fcw,
     crash_cnt=crash_cnt, confirm_rapid=True,
     a_lead=a_lead, skip_mild_floor=True, owned=owned,
     acquiring=acquiring, prev_v_rel=prev_v_rel, a_ego=a_ego, dt=dt,
   ):
+    return a
+  if (lead_map_decel_above_max(v_ego, v_cruise)
+      and not lead_is_closing(v_rel, a_lead, slack=slack)):
+    # Steady mid-gap: comfort floor, not the raw cruise/map cliff.
+    # Large-gap / far same-speed still passes map decel through.
+    if (lead_mid_gap_map_band(slack, d_rel)
+        and not lead_approach_is_rapid(v_rel)):
+      return max(a, -LEAD_MAP_MIDGAP_FLOOR_MS2)
     return a
   return -LEAD_APPROACH_MILD_A_MS2
 

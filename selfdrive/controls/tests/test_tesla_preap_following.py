@@ -26,8 +26,10 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_CLOSE_OPENING_A_MS2,
   LEAD_FOLLOW_CHATTER_SLEW_MS2,
   LEAD_GLIDE_A_MS2,
+  LEAD_MAP_MIDGAP_FLOOR_MS2,
   LEAD_MID_GAP_REMATCH_A_MS2,
   LEAD_MPC_SOFT_NEAR_M,
+  LEAD_POST_DUMP_HOLD_S,
   LEAD_SETTLE_HOLD_S,
   lead_close_accel_ms2,
   lead_hunt_accel_ms2,
@@ -1018,6 +1020,103 @@ def test_planner_post_acquire_chatter_slews_mid_gap_rematch():
   slewed = float(planner_slew.output_a_target)
   assert slewed == pytest.approx(0.25 - LEAD_FOLLOW_CHATTER_SLEW_MS2, abs=0.02)
   assert slewed > 0.18
+
+
+def test_planner_mid_gap_above_max_floors_dump_and_holds_rematch():
+  """Map above-max mid-gap: floor the cruise cliff, then trickle the re-catch.
+
+  Large-gap catch-up and a plan with no lead still use Accel.
+  """
+  v_map = 70.0 * CV.MPH_TO_MS
+  v_ego = v_map + 1.3
+  v_lead = v_ego - 0.5
+  t_follow = get_T_FOLLOW(nap_follow_dist=3)
+  d_rel = t_follow * v_lead + STOP_DISTANCE_M + 19.0
+  params = _MutablePlannerParams(nap_follow_dist=3, map_speed_accel=5)
+  planner = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
+  planner._map_speed_accel = 5
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-3.45)
+  planner.prev_accel_clip = [-3.5, 0.80]
+  planner.output_a_target = 0.0
+  inputs = _make_planner_inputs(v_ego)
+  _set_v_cruise_ms(inputs, v_map)
+  lead = inputs["radarState"].leadOne
+  lead.status = True
+  lead.dRel = d_rel
+  lead.vLead = v_lead
+  lead.aLeadK = 0.0
+  lead.modelProb = 1.0
+  lead.radar = True
+  for _ in range(int(LEAD_ACQUIRE_HOLD_S / 0.05) + 2):
+    planner.update(inputs)
+  assert planner.output_a_target == pytest.approx(-LEAD_MAP_MIDGAP_FLOOR_MS2, abs=0.05)
+  assert planner.output_a_target > -0.70
+  assert planner._lead_post_dump_hold == pytest.approx(LEAD_POST_DUMP_HOLD_S)
+
+  v_under = v_map - 2.0
+  v_lead_open = v_under + 0.4
+  inputs["carState"].vEgo = v_under
+  _set_v_cruise_ms(inputs, v_map)
+  lead.vLead = v_lead_open
+  lead.dRel = t_follow * v_lead_open + STOP_DISTANCE_M + 19.0
+  planner.mpc = _ConstantAccelerationMpc(v_under, acceleration_mps2=0.80)
+  planner.prev_accel_clip = [-3.5, 0.80]
+  seen = []
+  for _ in range(8):
+    planner.update(inputs)
+    seen.append(float(planner.output_a_target))
+  assert max(seen) <= LEAD_MID_GAP_REMATCH_A_MS2 + 0.02
+  assert max(seen) < 0.16
+
+  # No prior dump: opening mid-gap under the map is still Accel catch-up.
+  planner_open = LongitudinalPlanner(_make_preap_params(), init_v=v_under, params=params)
+  planner_open._map_speed_accel = 5
+  planner_open.mpc = _ConstantAccelerationMpc(v_under, acceleration_mps2=0.80)
+  planner_open.prev_accel_clip = [-1.2, 0.80]
+  planner_open._lead_acquire_age = LEAD_ACQUIRE_HOLD_S + 0.05
+  inputs_open = _make_planner_inputs(v_under)
+  _set_v_cruise_ms(inputs_open, v_map)
+  lead_open = inputs_open["radarState"].leadOne
+  lead_open.status = True
+  lead_open.dRel = t_follow * v_lead_open + STOP_DISTANCE_M + 19.0
+  lead_open.vLead = v_lead_open
+  lead_open.aLeadK = 0.0
+  lead_open.modelProb = 1.0
+  lead_open.radar = True
+  for _ in range(12):
+    planner_open.update(inputs_open)
+  assert planner_open.output_a_target > 0.20
+
+  # Large-gap catch-up stays Accel even if a dump hold is latched.
+  planner_far = LongitudinalPlanner(_make_preap_params(), init_v=v_under, params=params)
+  planner_far._map_speed_accel = 5
+  planner_far.mpc = _ConstantAccelerationMpc(v_under, acceleration_mps2=0.80)
+  planner_far.prev_accel_clip = [-1.2, 0.80]
+  planner_far._lead_acquire_age = LEAD_ACQUIRE_HOLD_S + 0.05
+  planner_far._lead_post_dump_hold = LEAD_POST_DUMP_HOLD_S
+  inputs_far = _make_planner_inputs(v_under)
+  _set_v_cruise_ms(inputs_far, v_map)
+  lead_far = inputs_far["radarState"].leadOne
+  lead_far.status = True
+  lead_far.dRel = t_follow * v_under + STOP_DISTANCE_M + 80.0
+  lead_far.vLead = v_under
+  lead_far.aLeadK = 0.0
+  lead_far.modelProb = 1.0
+  lead_far.radar = True
+  for _ in range(12):
+    planner_far.update(inputs_far)
+  assert planner_far.output_a_target > 0.20
+
+  # No lead: positive plan is not the mid-gap trickle.
+  planner_empty = LongitudinalPlanner(_make_preap_params(), init_v=v_under, params=params)
+  planner_empty._map_speed_accel = 5
+  planner_empty.mpc = _ConstantAccelerationMpc(v_under, acceleration_mps2=0.80)
+  planner_empty.prev_accel_clip = [-1.2, 0.80]
+  inputs_empty = _make_planner_inputs(v_under)
+  _set_v_cruise_ms(inputs_empty, v_map)
+  for _ in range(8):
+    planner_empty.update(inputs_empty)
+  assert planner_empty.output_a_target > 0.20
 
 
 def test_planner_matched_speed_glide_deadbands_near_gap_chatter():
