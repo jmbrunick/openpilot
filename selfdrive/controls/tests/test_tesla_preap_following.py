@@ -1767,3 +1767,81 @@ def test_planner_faster_lead_at_max_does_not_overrun():
   planner.update(inputs)
   assert planner.output_a_target == pytest.approx(-2.0, abs=0.08)
 
+
+def _planner_past_acquire(v_ego, nap_follow_dist=1):
+  """Pre-AP planner with the first-latch window already expired."""
+  params = _MutablePlannerParams(nap_follow_dist=nap_follow_dist, map_speed_accel=5)
+  planner = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
+  planner._map_speed_accel = 5
+  planner.prev_accel_clip = [-3.5, 1.6]
+  planner.output_a_target = 0.0
+  planner._lead_acquire_age = LEAD_ACQUIRE_HOLD_S + 0.05
+  inputs = _make_planner_inputs(v_ego)
+  _set_v_cruise_ms(inputs, v_ego + 8.0)
+  return planner, inputs
+
+
+def test_planner_opening_lead_does_not_hold_firm_brake():
+  """10:05 / 09:57: opening on-path lead with a slightly negative aLeadK.
+
+  MPC asking −3.5 must publish the mild floor, not the firm hold.
+  """
+  v_ego = 71.3 * CV.MPH_TO_MS
+  v_lead = v_ego + 0.56
+  t_follow = get_T_FOLLOW(nap_follow_dist=1)
+  slack = 9.0
+  planner, inputs = _planner_past_acquire(v_ego, nap_follow_dist=1)
+  lead = inputs["radarState"].leadOne
+  lead.status = True
+  lead.dRel = t_follow * v_lead + STOP_DISTANCE_M + slack
+  lead.vLead = v_lead
+  lead.aLeadK = -0.32
+  lead.yRel = 0.36
+  lead.modelProb = 1.0
+  lead.radar = True
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=0.0)
+  for _ in range(3):
+    lead.dRel += 0.05
+    planner.update(inputs)
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-3.5)
+  planner.prev_accel_clip = [-3.5, 1.6]
+  for _ in range(4):
+    lead.dRel += 0.08
+    planner.update(inputs)
+  assert float(planner.output_a_target) > -1.0
+  assert float(planner.output_a_target) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2, abs=0.08)
+
+
+def test_planner_on_path_close_stays_firm_and_departing_releases():
+  """08:57:50 on-path close stays firm; |yRel| past ~2.25 m with slack releases it."""
+  v_ego = 36.0 * CV.MPH_TO_MS
+  v_close = 4.2
+  v_lead = v_ego - v_close
+  t_follow = get_T_FOLLOW(nap_follow_dist=1)
+  slack = 12.0
+  planner, inputs = _planner_past_acquire(v_ego, nap_follow_dist=1)
+  lead = inputs["radarState"].leadOne
+  lead.status = True
+  lead.vLead = v_lead
+  lead.dRel = t_follow * v_lead + STOP_DISTANCE_M + slack
+  lead.aLeadK = -2.06
+  lead.yRel = 0.48
+  lead.modelProb = 1.0
+  lead.radar = True
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-3.5)
+  planner.update(inputs)
+  assert float(planner.output_a_target) < -2.0
+
+  released = False
+  for i in range(16):
+    lead.yRel = 0.48 + (i + 1) * 0.35
+    planner.update(inputs)
+    if abs(float(lead.yRel)) <= 1.5:
+      assert float(planner.output_a_target) < -2.0
+    if planner._lead_depart_release:
+      released = True
+      break
+  assert released
+  assert float(planner.output_a_target) > -1.0
+  assert float(planner.output_a_target) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2, abs=0.15)
+

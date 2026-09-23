@@ -13,8 +13,10 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.common.simple_kalman import KF1D
 from openpilot.selfdrive.controls.lib.radar_path_gate import (
   PATH_INCUMBENT_HALF_WIDTH_M,
+  collapse_blocks_new_lead,
   model_path_xy,
   path_lateral_m,
+  path_model_collapsed,
   radar_follow_ok,
   vision_lead_follow_ok,
 )
@@ -165,10 +167,15 @@ def association_score(v_ego: float, vision_d_rel: float, lead: capnp._DynamicStr
 
 def is_association_candidate(v_ego: float, vision_d_rel: float, lead: capnp._DynamicStructReader,
                              track: Track, score: float,
-                             path_x=None, path_y=None) -> bool:
+                             path_x=None, path_y=None, collapsed=False,
+                             incumbent=False) -> bool:
   # Vision already nominated this lead. Allow lane-edge / early cut-in
   # (incumbent half-width). Unassociated prefer pick stays on the tighter
   # acquire gate and still requires a path association.
+  # A collapsed path raises the bar for a *new* |yRel| ≳ 2 association
+  # (construction right-side blip). The incumbent track is unchanged.
+  if collapse_blocks_new_lead(track.yRel, collapsed, incumbent=incumbent):
+    return False
   if not radar_follow_ok(track, v_ego, path_x, path_y,
                          max_lat=PATH_INCUMBENT_HALF_WIDTH_M):
     return False
@@ -184,13 +191,16 @@ def is_association_candidate(v_ego: float, vision_d_rel: float, lead: capnp._Dyn
 
 def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks: dict[int, Track],
                           incumbent_track_id: int | None = None,
-                          path_x=None, path_y=None) -> Track | None:
+                          path_x=None, path_y=None, collapsed=False) -> Track | None:
   vision_d_rel = lead.x[0] - RADAR_TO_CAMERA
   scores = {track_id: association_score(v_ego, vision_d_rel, lead, track) for track_id, track in tracks.items()}
   eligible_track_ids = [
     track_id for track_id, track in tracks.items()
-    if is_association_candidate(v_ego, vision_d_rel, lead, track, scores[track_id],
-                                path_x=path_x, path_y=path_y)
+    if is_association_candidate(
+      v_ego, vision_d_rel, lead, track, scores[track_id],
+      path_x=path_x, path_y=path_y, collapsed=collapsed,
+      incumbent=track_id == incumbent_track_id,
+    )
   ]
   if not eligible_track_ids:
     return None
@@ -231,12 +241,12 @@ class LeadTrackAssociation:
 
   def update(self, v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capnp._DynamicStructReader,
              model_v_ego: float, rain_hold: bool = False, radar_prefer: bool | None = None,
-             path_x=None, path_y=None) -> dict[str, Any]:
+             path_x=None, path_y=None, collapsed=False) -> dict[str, Any]:
     if radar_prefer is None:
       radar_prefer = rain_hold
     if tracks and ready and lead_msg.prob > .5:
       track = match_vision_to_track(v_ego, lead_msg, tracks, self.incumbent_track_id,
-                                    path_x=path_x, path_y=path_y)
+                                    path_x=path_x, path_y=path_y, collapsed=collapsed)
     else:
       track = None
 
@@ -278,6 +288,10 @@ class LeadTrackAssociation:
     elif (ready and lead_msg.prob >= vision_prob_min and
           vision_lead_follow_ok(lead_msg, v_ego, path_x, path_y)):
       lead_dict = get_RadarState_from_vision(lead_msg, v_ego, model_v_ego)
+      # Vision-only at |yRel| ≳ 2 is a new association. Do not start one
+      # while the path model is collapsed (right-side construction blip).
+      if collapse_blocks_new_lead(lead_dict.get("yRel"), collapsed, incumbent=False):
+        lead_dict = {'status': False}
 
     if self.low_speed_override:
       low_speed_tracks = [candidate for candidate in tracks.values() if candidate.potential_low_speed_lead(v_ego)]
@@ -391,17 +405,22 @@ class RadarD:
     self.rain_gate.set_reliable(healthy, alert=False)
     radar_prefer = bool(self.rain_gate.update())
     path_x, path_y = model_path_xy(sm['modelV2'])
+    try:
+      lane_probs = list(sm['modelV2'].laneLineProbs)
+    except (TypeError, AttributeError):
+      lane_probs = None
+    collapsed = path_model_collapsed(lane_probs, path_x, path_y)
     lead_one: dict[str, Any] = {'status': False}
     if len(leads_v3) > 1:
       lead_one = self.lead_one_association.update(
         self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego,
         rain_hold=radar_prefer, radar_prefer=radar_prefer,
-        path_x=path_x, path_y=path_y)
+        path_x=path_x, path_y=path_y, collapsed=collapsed)
       self.radar_state.leadOne = lead_one
       self.radar_state.leadTwo = self.lead_two_association.update(
         self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego,
         rain_hold=radar_prefer, radar_prefer=radar_prefer,
-        path_x=path_x, path_y=path_y)
+        path_x=path_x, path_y=path_y, collapsed=collapsed)
     path_lead = bool(lead_one.get('status') and lead_one.get('radar'))
     self.reliability.set_path_lead(path_lead)
     self.rain_gate.set_reliable(healthy, alert=self.reliability.should_alert)

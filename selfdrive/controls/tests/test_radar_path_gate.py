@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from openpilot.selfdrive.controls.lib.radar_path_gate import (
   ONCOMING_VLEAD_MS,
+  PATH_COLLAPSE_NEW_YREL_M,
   PATH_HALF_WIDTH_M,
   PATH_INCUMBENT_HALF_WIDTH_M,
   RADAR_TO_CAMERA_M,
@@ -18,7 +19,9 @@ from openpilot.selfdrive.controls.lib.radar_path_gate import (
   LEFT_TURN_PATH_X,
   LEFT_TURN_PATH_Y,
   LEFT_TURN_X_M,
+  collapse_blocks_new_lead,
   path_lateral_m,
+  path_model_collapsed,
   path_y_at_x,
   radar_follow_ok,
   track_is_in_path,
@@ -196,6 +199,23 @@ def test_ep2059_near_edge_oncoming_fails_follow_ok():
   assert not radar_follow_ok(near, v_ego)
   assert not radar_follow_ok(near, v_ego, max_lat=PATH_INCUMBENT_HALF_WIDTH_M)
   assert not radar_follow_ok(mid, v_ego)
+
+
+def test_path_collapse_raises_bar_for_new_wide_lead():
+  """Absurd pathY at 15–30 m plus dead lane lines blocks a new |yRel|≳2."""
+  path_x = [0.0, 10.0, 15.0, 22.0, 30.0]
+  path_y = [0.0, -2.0, -55.0, 2.9, -70.0]
+  dead = [0.01, 0.02, 0.02, 0.01]
+  healthy = [0.9, 0.96, 0.95, 0.9]
+  assert path_model_collapsed(dead, path_x, path_y)
+  assert not path_model_collapsed(healthy, path_x, path_y)
+  assert not path_model_collapsed(dead, [0.0, 30.0], [0.0, 0.2])
+  assert PATH_COLLAPSE_NEW_YREL_M <= 2.0
+  assert collapse_blocks_new_lead(-2.9, True, incumbent=False)
+  assert collapse_blocks_new_lead(2.4, True, incumbent=False)
+  assert not collapse_blocks_new_lead(-2.9, True, incumbent=True)
+  assert not collapse_blocks_new_lead(0.4, True, incumbent=False)
+  assert not collapse_blocks_new_lead(-2.9, False, incumbent=False)
 
 
 def test_vision_lead_rejects_oncoming_and_far_lateral():

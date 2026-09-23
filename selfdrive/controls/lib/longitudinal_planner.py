@@ -41,9 +41,11 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   floor_near_fd_coast_a_target,
   plan_horizon_is_coasting,
   soft_limit_mpc_a_target,
+  update_depart_release,
   update_lead_acquire,
   update_lead_glide,
   update_lead_settle,
+  update_opening_release,
 )
 from openpilot.selfdrive.controls.lib.follow_distance import FollowDistanceBlend, NAP_FOLLOW_DISTANCE_RANGE
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
@@ -166,6 +168,13 @@ class LongitudinalPlanner:
     self._lead_glide_active = False
     self._lead_soft_limit_floored = False
     self._lead_soft_limit_v_rel = None
+    self._lead_y_rel = None
+    self._lead_opening_age = 0.0
+    self._lead_opening_release = False
+    self._lead_opening_d = None
+    self._lead_depart_age = 0.0
+    self._lead_depart_release = False
+    self._lead_depart_abs_y = None
 
     self.a_desired = init_a
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
@@ -258,6 +267,13 @@ class LongitudinalPlanner:
       self._lead_settled = False
       self._lead_acquire_age = 0.0
       self._lead_soft_limit_v_rel = None
+      self._lead_y_rel = None
+      self._lead_opening_age = 0.0
+      self._lead_opening_release = False
+      self._lead_opening_d = None
+      self._lead_depart_age = 0.0
+      self._lead_depart_release = False
+      self._lead_depart_abs_y = None
 
     # Prevent divergence, smooth in current v_ego
     self.v_desired_filter.x = max(0.0, self.v_desired_filter.update(v_ego))
@@ -406,6 +422,13 @@ class LongitudinalPlanner:
         self._lead_glide_active = False
         self._lead_soft_limit_floored = False
         self._lead_soft_limit_v_rel = None
+        self._lead_y_rel = None
+        self._lead_opening_age = 0.0
+        self._lead_opening_release = False
+        self._lead_opening_d = None
+        self._lead_depart_age = 0.0
+        self._lead_depart_release = False
+        self._lead_depart_abs_y = None
 
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
@@ -604,6 +627,41 @@ class LongitudinalPlanner:
       # A raw cliff arms the mid-gap rematch trickle for the re-catch.
       raw_mpc_a = float(output_a_target)
       prev_close_v_rel = self._lead_soft_limit_v_rel
+      # Opening gap (09:57 / 10:05) and a lead walking off path
+      # (08:57:50–52). aLeadK alone must not keep firm −a, and a
+      # departing |yRel| fades the same authority. On-path close stays.
+      if live_ok:
+        lead_y = float(lead.yRel)
+        self._lead_y_rel = lead_y
+      elif lead_held:
+        lead_y = self._lead_y_rel
+      else:
+        lead_y = None
+        self._lead_y_rel = None
+      if live_ok or lead_held:
+        (
+          self._lead_opening_age,
+          self._lead_opening_release,
+          self._lead_opening_d,
+        ) = update_opening_release(
+          self._lead_opening_age, self._lead_opening_release,
+          overlay_v_rel, overlay_d, self._lead_opening_d, overlay_slack, self.dt,
+        )
+        (
+          self._lead_depart_age,
+          self._lead_depart_release,
+          self._lead_depart_abs_y,
+        ) = update_depart_release(
+          self._lead_depart_age, self._lead_depart_release,
+          lead_y, self._lead_depart_abs_y, overlay_slack, overlay_v_rel, self.dt,
+        )
+      else:
+        self._lead_opening_age = 0.0
+        self._lead_opening_release = False
+        self._lead_opening_d = None
+        self._lead_depart_age = 0.0
+        self._lead_depart_release = False
+        self._lead_depart_abs_y = None
       output_a_target = soft_limit_mpc_a_target(
         output_a_target, v_ego, lead_v_hold, lead_d_hold,
         fcw=self.fcw, crash_cnt=self.mpc.crash_cnt, allow_rapid=allow_rapid,
@@ -617,6 +675,8 @@ class LongitudinalPlanner:
         a_ego=self.output_a_target,
         dt=self.dt,
         v_cruise=v_hud_ms,
+        opening_release=self._lead_opening_release,
+        depart_release=self._lead_depart_release,
       )
       self._lead_soft_limit_floored = (
         raw_mpc_a < -LEAD_APPROACH_MILD_A_MS2
@@ -643,6 +703,8 @@ class LongitudinalPlanner:
         lead_present=live_ok or lead_held, owned=self._lead_close_hold_owned,
         slack=overlay_slack, d_rel=overlay_d, acquiring=acquiring,
         prev_v_rel=prev_close_v_rel, a_ego=self.output_a_target, dt=self.dt,
+        opening_release=self._lead_opening_release,
+        depart_release=self._lead_depart_release,
       )
       output_a_target = lead_remaining_close_a_ms2(
         output_a_target, overlay_v_rel, overlay_slack,
@@ -702,6 +764,8 @@ class LongitudinalPlanner:
         a_lead=lead_a_k, owned=near_fd_owned,
         should_stop=bool(self.output_should_stop),
         prev_v_rel=prev_close_v_rel, a_ego=self.output_a_target, dt=self.dt,
+        opening_release=self._lead_opening_release,
+        depart_release=self._lead_depart_release,
       )
       if ((live_ok or lead_held)
           and pre_coast_floor <= -LEAD_POST_DUMP_A_MS2
