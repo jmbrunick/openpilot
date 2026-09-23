@@ -513,11 +513,12 @@ def persist_follow_distance(params, closer: bool, v_ego=None, v_cruise=None,
                             has_lead=False, engaged=False) -> int:
   """Step city or highway Follow Distance (and HUD NAPFollowDistance).
 
-  With v_ego, the stalk band is stepped: Highway when ego or MAX is above
-  50 mph, City when ego is at or under 50 and MAX is not above 50. Lead /
-  engaged do not pick the param — that is the live-follow blend (48/52).
-  Without speed (tests), all three keys stay in sync. Always request the
-  HUD (including at 1/7). HUD `NAPFollowDistance` is the level just written.
+  With v_ego, the stalk band is stepped from MAX: Highway when set speed
+  is 50 mph or higher, City when it is under 50. Traveled speed is the
+  fallback only when MAX is unset, invalid, or 0. Lead / engaged do not
+  pick the param. Without speed (tests), all three keys stay in sync.
+  Always request the HUD (including at 1/7). HUD `NAPFollowDistance` is
+  the level just written.
   """
   from openpilot.selfdrive.controls.lib.follow_distance import (
     PARAM_FOLLOW_CITY,

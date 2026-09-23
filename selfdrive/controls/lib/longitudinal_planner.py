@@ -38,6 +38,7 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   slew_lead_approach_a,
   slew_near_gap_small_a,
   floor_midgap_coast_a_target,
+  floor_near_fd_coast_a_target,
   plan_horizon_is_coasting,
   soft_limit_mpc_a_target,
   update_lead_acquire,
@@ -303,12 +304,15 @@ class LongitudinalPlanner:
     has_lead_status = bool(sm['radarState'].leadOne.status)
     if self._is_preap:
       lead_tf = sm['radarState'].leadOne
+      # Unset (255) is clamped to V_CRUISE_MAX above, which would look
+      # like a highway MAX. 0 is not a city set speed. Ego is the fallback.
+      follow_max_ms = v_hud_ms if v_cruise_initialized and float(v_hud_ms) > 0.0 else None
       t_blended, active_dist, self._follow_open_a = self._follow_blend.update(
         v_ego, self.dt,
         engaged=long_engaged,
         has_lead=has_lead_status,
         v_lead=float(lead_tf.vLead) if has_lead_status else None,
-        v_cruise=v_hud_ms,
+        v_cruise=follow_max_ms,
       )
       if active_dist in NAP_FOLLOW_DISTANCE_RANGE:
         self.active_nap_follow_dist = active_dist
@@ -674,16 +678,30 @@ class LongitudinalPlanner:
         )
       # Coasting mid-gap: do not publish an ACCEL_MIN-region cliff while
       # plan accels stay ~0 (18:10 under the map, and the same geometry
-      # over the map). Near-gap match-aLead stays raw. Arm the rematch
-      # trickle if that cliff was real so Accel cannot relight the next
-      # plant bite.
+      # over the map). Near-gap match-aLead stays raw. Near Follow
+      # Distance (slack under that mid-gap floor) gets the same coast
+      # floor only when the lead is not braking and #222 is not armed.
+      # Arm the rematch trickle if that cliff was real so Accel cannot
+      # relight the next plant bite.
       pre_coast_floor = float(output_a_target)
+      plan_coasting = plan_horizon_is_coasting(self.a_desired_trajectory)
       output_a_target = floor_midgap_coast_a_target(
-        output_a_target, plan_horizon_is_coasting(self.a_desired_trajectory),
+        output_a_target, plan_coasting,
         overlay_v_rel, overlay_d, overlay_slack,
         v_ego=v_ego, v_cruise=v_hud_ms,
         fcw=self.fcw, crash_cnt=self.mpc.crash_cnt, allow_rapid=allow_rapid,
         a_lead=lead_a_k, owned=bool(self._lead_close_hold_owned),
+      )
+      near_fd_owned = bool(self._lead_close_hold_owned) or (
+        (not acquiring) and (live_ok or lead_held)
+      )
+      output_a_target = floor_near_fd_coast_a_target(
+        output_a_target, plan_coasting,
+        overlay_v_rel, overlay_d, overlay_slack,
+        fcw=self.fcw, crash_cnt=self.mpc.crash_cnt, allow_rapid=allow_rapid,
+        a_lead=lead_a_k, owned=near_fd_owned,
+        should_stop=bool(self.output_should_stop),
+        prev_v_rel=prev_close_v_rel, a_ego=self.output_a_target, dt=self.dt,
       )
       if ((live_ok or lead_held)
           and pre_coast_floor <= -LEAD_POST_DUMP_A_MS2

@@ -112,6 +112,14 @@ aLead ≲ −0.2, including a hold-owned brake) stays raw while the plan
 horizon is still cruise — that is lead braking, not the slack-~19 m
 cliff. Expand the plant steady band through MILD so a commanded slight
 lift cannot unlock the regen rail.
+
+Near Follow Distance the same coasting-plan cliff still fired under the
+mid-gap floor (Scallywag 23:16–23:22: slack ~2–8 m, closing ≲ 0.7,
+aLead ~0, plan_min ~0, aTarget −2.9…−3.5 for a frame). Floor that to
+MILD. Do not floor when the lead is actually braking: closing ≳ 1 m/s,
+aLead ≲ −0.25, #222 residual / rapid already armed, FCW, shouldStop,
+or near-bumper. The 23:31 hard brake (aLead ~−1.2, closing ~1.1) stays
+raw.
 """
 from __future__ import annotations
 
@@ -314,6 +322,13 @@ LEAD_FOLLOW_ACT_REGEN_CMD_MS2 = -0.50
 # Plan accels at or above this (less negative) are "≈0" for the
 # mid-gap coast floor. A real MPC brake below it stays raw.
 LEAD_PLAN_COAST_A_MS2 = 0.15
+# Near-FD settle, under the #232 mid-gap floor (slack ≳ 8 m).
+# Scallywag 23:16–23:22: slack ~2–8 m, closing ≲ 0.7, aLead ~0,
+# plan still coasting, aTarget steps to ACCEL_MIN for a frame.
+# Closing at or above ~1 m/s, or aLead at or below ~−0.25, is a
+# real brake (23:31 KEEP) and stays raw.
+LEAD_NEAR_FD_COAST_CLOSE_MS = 1.0
+LEAD_NEAR_FD_COAST_ALEAD_MS2 = -0.25
 # Brief hold of the last in-window lead when `leadOne.status` drops so
 # cruise punch cannot leak through a radar flicker. ~10 planner frames.
 LEAD_CLOSE_HOLD_S = 0.50
@@ -644,6 +659,81 @@ def floor_midgap_coast_a_target(a, plan_coasting, v_rel, d_rel, slack,
     floor = -LEAD_MAP_MIDGAP_FLOOR_MS2
   else:
     floor = -LEAD_APPROACH_MILD_A_MS2
+  if out >= floor:
+    return out
+  return floor
+
+
+def lead_near_fd_settle_band(slack) -> bool:
+  """True for slack inside Follow Distance's settle, under the mid-gap floor.
+
+  0 m up to but not including the #232 mid-gap start (8 m). That band
+  already has its own coast floor. Negative slack is a too-close
+  recovery and stays on that path.
+  """
+  if slack is None:
+    return False
+  s = float(slack)
+  return 0.0 <= s < LEAD_MAP_MIDGAP_SLACK_LO_M
+
+
+def near_fd_coast_floor_applies(plan_coasting, v_rel, d_rel, slack, *,
+                                fcw=False, crash_cnt=0, allow_rapid=False,
+                                a_lead=None, owned=False, should_stop=False,
+                                prev_v_rel=None, a_ego=None, dt=None) -> bool:
+  """True only for a coasting near-FD settle, not a #222 firm match.
+
+  All of: plan horizon coasting, owned lead, slack in the near-FD
+  band, closing under ~1 m/s, aLead milder than ~−0.25, and none of
+  FCW / crash / shouldStop / near-bumper / confirmed rapid / the
+  existing residual-close skip. A braking lead (23:31: aLead ~−1.2,
+  closing ~1.1) does not match.
+  """
+  if not plan_coasting or not owned or should_stop:
+    return False
+  if fcw or int(crash_cnt) > 0:
+    return False
+  if not lead_near_fd_settle_band(slack):
+    return False
+  if d_rel is not None and float(d_rel) <= LEAD_MPC_SOFT_NEAR_M:
+    return False
+  if allow_rapid:
+    return False
+  if v_rel is None:
+    return False
+  v = float(v_rel)
+  if lead_approach_is_rapid(v) or v >= LEAD_NEAR_FD_COAST_CLOSE_MS:
+    return False
+  if a_lead is None or float(a_lead) <= LEAD_NEAR_FD_COAST_ALEAD_MS2:
+    return False
+  # #222 residual / rising close / near-gap aLead match. Do not put
+  # the mild floor back on a path that already released it.
+  if lead_soft_limit_skip(
+    v, a_lead, slack, owned=True, acquiring=False,
+    prev_v_rel=prev_v_rel, a_ego=a_ego, dt=dt,
+  ):
+    return False
+  return True
+
+
+def floor_near_fd_coast_a_target(a, plan_coasting, v_rel, d_rel, slack, *,
+                                 fcw=False, crash_cnt=0, allow_rapid=False,
+                                 a_lead=None, owned=False, should_stop=False,
+                                 prev_v_rel=None, a_ego=None, dt=None):
+  """Floor a one-frame ACCEL_MIN cliff while near-FD settle is coasting.
+
+  Publishes MILD this frame. Slewing down from ACCEL_MIN would still
+  command a firm brake on the frame the cliff appears. Anything already
+  milder than MILD is left alone. #222 geometry stays raw.
+  """
+  if a is None or not near_fd_coast_floor_applies(
+    plan_coasting, v_rel, d_rel, slack, fcw=fcw, crash_cnt=crash_cnt,
+    allow_rapid=allow_rapid, a_lead=a_lead, owned=owned,
+    should_stop=should_stop, prev_v_rel=prev_v_rel, a_ego=a_ego, dt=dt,
+  ):
+    return a
+  out = float(a)
+  floor = -LEAD_APPROACH_MILD_A_MS2
   if out >= floor:
     return out
   return floor

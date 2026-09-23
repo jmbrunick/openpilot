@@ -1592,7 +1592,7 @@ def test_planner_settled_gap_hunt_is_not_full_accel_ceil():
 
 
 def test_planner_hwy_intent_applies_hwy_fd_from_30():
-  """MAX 65 + lead + long: hwy FD while accelerating through 35, not 48/52."""
+  """MAX ≥ 50 selects highway follow even while ego is still at 35."""
   v_ego = 35.0 * CV.MPH_TO_MS
   v_max_kph = 65.0 * CV.MPH_TO_KPH
   params = _MutablePlannerParams(nap_follow_dist=6, city=6, hwy=2)
@@ -1627,6 +1627,69 @@ def test_planner_hwy_intent_applies_hwy_fd_from_30():
   planner55.update(inputs55)
   assert planner55.active_nap_follow_dist == 6
   assert planner55._follow_blend.highway is False
+  # ego 60 + MAX 45 stays city. MAX exactly 50 is highway.
+  # Decel to ~48 under MAX 75 stays highway (do not open the city gap).
+  v60 = 60.0 * CV.MPH_TO_MS
+  planner60 = LongitudinalPlanner(_make_preap_params(), init_v=v60, params=params)
+  planner60.mpc = _ConstantAccelerationMpc(v60, acceleration_mps2=0.0)
+  inputs60 = _make_planner_inputs(v60)
+  inputs60["carState"].vCruise = 45.0 * CV.MPH_TO_KPH
+  lead60 = inputs60["radarState"].leadOne
+  lead60.status = True
+  lead60.dRel = 40.0
+  lead60.vLead = v60
+  lead60.modelProb = 1.0
+  lead60.radar = True
+  planner60._follow_blend.highway = True
+  planner60._follow_blend.t_follow = get_T_FOLLOW(nap_follow_dist=2)
+  planner60.update(inputs60)
+  assert planner60.active_nap_follow_dist == 6
+  assert planner60._follow_blend.highway is False
+
+  v48 = 47.7 * CV.MPH_TO_MS
+  planner48 = LongitudinalPlanner(_make_preap_params(), init_v=v48, params=params)
+  planner48.mpc = _ConstantAccelerationMpc(v48, acceleration_mps2=0.0)
+  inputs48 = _make_planner_inputs(v48)
+  inputs48["carState"].vCruise = 75.0 * CV.MPH_TO_KPH
+  lead48 = inputs48["radarState"].leadOne
+  lead48.status = True
+  lead48.dRel = 35.0
+  lead48.vLead = v48
+  lead48.modelProb = 1.0
+  lead48.radar = True
+  planner48.update(inputs48)
+  assert planner48._follow_blend.highway is True
+  assert planner48.active_nap_follow_dist == 2
+
+  planner50 = LongitudinalPlanner(_make_preap_params(), init_v=v48, params=params)
+  planner50.mpc = _ConstantAccelerationMpc(v48, acceleration_mps2=0.0)
+  inputs50 = _make_planner_inputs(v48)
+  inputs50["carState"].vCruise = 50.0 * CV.MPH_TO_KPH
+  lead50 = inputs50["radarState"].leadOne
+  lead50.status = True
+  lead50.dRel = 35.0
+  lead50.vLead = v48
+  lead50.modelProb = 1.0
+  lead50.radar = True
+  planner50.update(inputs50)
+  assert planner50._follow_blend.highway is True
+  assert planner50.active_nap_follow_dist == 2
+
+  # Unset cruise (255) must not look like a highway MAX after the 145 kph clamp.
+  v30 = 30.0 * CV.MPH_TO_MS
+  planner_unset = LongitudinalPlanner(_make_preap_params(), init_v=v30, params=params)
+  planner_unset.mpc = _ConstantAccelerationMpc(v30, acceleration_mps2=0.0)
+  inputs_unset = _make_planner_inputs(v30)
+  inputs_unset["carState"].vCruise = 255.0
+  lead_unset = inputs_unset["radarState"].leadOne
+  lead_unset.status = True
+  lead_unset.dRel = 30.0
+  lead_unset.vLead = v30
+  lead_unset.modelProb = 1.0
+  lead_unset.radar = True
+  planner_unset.update(inputs_unset)
+  assert planner_unset._follow_blend.highway is False
+  assert planner_unset.active_nap_follow_dist == 6
 
 
 def test_planner_faster_lead_at_max_does_not_overrun():

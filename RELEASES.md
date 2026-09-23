@@ -1,3 +1,8 @@
+NAP City/Hwy follow follows MAX, near-FD coast cliffs floor (2026-09-23)
+========================
+* City vs highway Follow Distance now follows **MAX**, for both the stalk bump and the live gap. **City** when MAX is under 50 mph. **Highway** when MAX is 50 or higher (exactly 50 is highway), including while the car is still coming up to that set speed and while it slows under a highway MAX. Traveled speed is used only when MAX is unset. A first-detent bump steps that band. A full press still nudges MAX. Slowing from highway speed under MAX 75 no longer opens the larger city gap.
+* Near Follow Distance, a one-frame hard brake while the plan is still coasting (gap only a few meters long of the set follow, closing under about 1 m/s, lead not braking) is held to the mild ease instead of a full dump. A real brake for a slowing lead ahead — closing up, lead braking, or the firm-match path — stays firm. Near-bumper, forward collision warning, and a stop request stay firm. No panda flash.
+
 NAP stalk tip writes the matching City or Highway Follow Distance (2026-09-23)
 ========================
 * Pre-AP stalk **bump** (first detent, 1 mph) steps Follow Distance 1–7 on the matching band. **Highway** when ego is above 50 mph, or whenever MAX is above 50 (a bump while still accelerating up to a highway set speed stays on Highway, even under 50). **City** only when ego is at or under 50 mph and MAX is also at or under 50. HUD **Follow Distance: N** shows that band. Full press (2nd detent / 5 mph) still nudges MAX. Live follow blend (hysteresis around 50, highway follow from about 30 mph with a lead and MAX above 50) is unchanged. No panda flash.
