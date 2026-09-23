@@ -77,6 +77,12 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_GLIDE_CHATTER_HI_MS2,
   LEAD_NEAR_GAP_SLACK_M,
   LEAD_NEAR_GAP_SLEW_MS2,
+  LEAD_OPENING_RELEASE_S,
+  LEAD_OPENING_VREL_MS,
+  LEAD_DEPART_RELEASE_S,
+  LEAD_DEPART_SLACK_M,
+  LEAD_DEPART_YREL_FIRM_M,
+  LEAD_DEPART_YREL_M,
   NAP_T_FOLLOW,
   STOP_DISTANCE,
   apply_lead_approach_overlay,
@@ -84,6 +90,8 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   cap_closing_lead_accel,
   lead_approach_decel_ms2,
   lead_alead_owns_match,
+  lead_kinematics_opening,
+  lead_lateral_departing,
   lead_inside_slow_close_a_ms2,
   lead_close_is_rising,
   lead_is_closing,
@@ -124,9 +132,11 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   slew_lead_approach_a,
   slew_near_gap_small_a,
   soft_limit_mpc_a_target,
+  update_depart_release,
   update_lead_acquire,
   update_lead_glide,
   update_lead_settle,
+  update_opening_release,
 )
 from openpilot.selfdrive.mapd.constants import (
   DECREASE_START_MARGIN_M,
@@ -786,6 +796,10 @@ def test_planner_wires_hysteresis_and_slew():
   assert "soft_limit_mpc_a_target(" in planner
   assert "floor_near_fd_coast_a_target(" in planner
   assert "should_stop=bool(self.output_should_stop)" in planner
+  assert "update_opening_release(" in planner
+  assert "update_depart_release(" in planner
+  assert "opening_release=self._lead_opening_release" in planner
+  assert "depart_release=self._lead_depart_release" in planner
   assert "cap_closing_lead_accel(" in planner
   assert "d_rel=overlay_d" in planner
   assert "lead_remaining_close_a_ms2(" in planner
@@ -1468,6 +1482,13 @@ def test_alead_only_does_not_own_opening_or_far_slack():
     0.47, -0.20, a_lead=-0.80, lead_present=True, slack=8.0,
   )
   assert a_open_near == pytest.approx(-0.80)
+  # Clearly opening (10:05 radar vRel +0.56) does not aLead-own.
+  assert LEAD_OPENING_VREL_MS < -0.20
+  assert lead_kinematics_opening(-0.56, 9.0)
+  assert not lead_alead_owns_match(-0.56, -0.32, slack=9.0)
+  assert not lead_alead_owns_match(-1.31, -0.41, slack=3.3)
+  # Inside the gap, a braking lead still matches while opening.
+  assert lead_alead_owns_match(-1.31, -0.80, slack=-1.0)
 
 
 def test_lead_flicker_hold_still_blocks_plus_a():
@@ -1621,6 +1642,43 @@ def test_near_gap_small_a_slews_chatter_not_authority():
   assert slew_near_gap_small_a(
     -0.46, 0.0, 1.2, d_rel=118.0, slack=80.0,
   ) == pytest.approx(-0.46)
+
+
+def test_opening_release_publishes_mild_floor_not_zero_coast():
+  """10:05: opening lead must land on the mild floor, not a held ~0.
+
+  Near-gap slew of −0.22 from a small +a steps onto 0. Follow-chatter
+  then deadbands that 0 against the previous ~0.02 and holds it. An
+  opening or departing release publishes −0.22 on this frame. On-path
+  rapid close is still the raw firm command.
+  """
+  mild = -LEAD_APPROACH_MILD_A_MS2
+  prev = 0.02
+  opened = slew_near_gap_small_a(
+    mild, prev, -0.56, d_rel=40.0, slack=9.0, opening_release=True,
+  )
+  opened = slew_follow_chatter_a(
+    opened, prev, -0.56, d_rel=40.0, slack=9.0, opening_release=True,
+  )
+  assert opened == pytest.approx(mild)
+  departed = slew_near_gap_small_a(
+    mild, prev, 2.0, d_rel=30.0, slack=12.0, depart_release=True,
+  )
+  departed = slew_follow_chatter_a(
+    departed, prev, 2.0, d_rel=30.0, slack=12.0, depart_release=True,
+  )
+  assert departed == pytest.approx(mild)
+  # Without the latch, tiny ±a around 0 still holds (no gas↔regen flip).
+  assert slew_follow_chatter_a(
+    -0.02, prev, -0.56, d_rel=40.0, slack=9.0,
+  ) == pytest.approx(prev)
+  # On-path #222 close (aLead brake, not the opening latch) stays firm.
+  assert lead_mpc_needs_full_authority(
+    4.2, 28.0, slack=12.0, a_lead=-2.06, skip_mild_floor=True, owned=True,
+  )
+  assert slew_near_gap_small_a(
+    -3.5, 0.02, 4.2, d_rel=28.0, slack=12.0,
+  ) == pytest.approx(-3.5)
 
 
 def test_soft_limit_releases_under_rapid_hard_close():
@@ -2287,4 +2345,131 @@ def test_near_fd_coast_floor_settles_and_keeps_hard_brake():
   # Mid-gap slack is the other floor, not this one.
   assert floor_near_fd_coast_a_target(
     -3.5, True, 0.44, 58.0, 19.0, a_lead=-0.04, owned=True,
+  ) == pytest.approx(-3.5)
+
+
+def test_opening_lead_does_not_hold_firm_and_departing_releases():
+  """09:57 / 10:05 opening lead must not hold −3.5. 08:57 on-path close stays.
+
+  Clearly opening + positive slack + slightly negative aLeadK floors
+  to MILD on the first sample. A run of milder opening latches the
+  same release within ~0.35 s. On-path rapid/close (yRel ~0.5, closing
+  ~4 m/s, aLead ~−2) stays firm. After |yRel| leaves the lane with
+  slack ≳ 8 m, firmness fades within ~0.4 s. Inside the gap still
+  matches a braking lead.
+  """
+  assert 0.30 <= LEAD_OPENING_RELEASE_S <= 0.50
+  assert 0.30 <= LEAD_DEPART_RELEASE_S <= 0.50
+  assert LEAD_DEPART_YREL_FIRM_M <= 1.5
+  assert 2.0 <= LEAD_DEPART_YREL_M <= 2.5
+  assert LEAD_DEPART_SLACK_M <= 8.0
+
+  v_ego = 31.9  # ~71 mph, 10:05
+  v_lead_open = v_ego + 0.56  # radar vRel +0.56 → internal −0.56
+  d_open = 36.4
+  # (a) opening lead, aLeadK −0.32, positive slack: not −3.5.
+  a_open = soft_limit_mpc_a_target(
+    -3.5, v_ego, v_lead_open, d_open, a_lead=-0.32, slack=9.0, owned=True,
+  )
+  assert a_open == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  assert a_open > -1.0
+  assert not lead_mpc_needs_full_authority(
+    -0.56, d_open, slack=9.0, a_lead=-0.32, skip_mild_floor=True, owned=True,
+  )
+  # 09:57 peak: dRel growing, vRel +1.31, aLeadK −0.41, slack ~3 m.
+  a_0957 = soft_limit_mpc_a_target(
+    -3.5, 24.7, 24.7 + 1.31, 27.5, a_lead=-0.41, slack=3.3, owned=True,
+  )
+  assert a_0957 == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  # Coasting near-FD plan with the same aLeadK also floors.
+  assert floor_near_fd_coast_a_target(
+    -3.5, True, -1.31, 27.5, 3.3, a_lead=-0.41, owned=True,
+  ) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  # Inside / near-gap bite (slack ≤ 0) still firm.
+  assert soft_limit_mpc_a_target(
+    -2.52, 24.7, 24.7 + 0.40, 22.5, a_lead=-0.80, slack=-1.0, owned=True,
+  ) == pytest.approx(-2.52)
+
+  # Mild opening for several samples, dRel growing: latch, then no −3.5.
+  age = 0.0
+  released = False
+  prev_d = None
+  d_rel = 30.0
+  dt = 0.05
+  v_mild = -0.10  # above the clear-opening line; aLead would still own
+  assert not lead_kinematics_opening(v_mild, 9.0)
+  assert lead_alead_owns_match(v_mild, -0.40, slack=9.0)
+  frames = 0
+  while not released and frames < 20:
+    d_rel += 0.05
+    age, released, prev_d = update_opening_release(
+      age, released, v_mild, d_rel, prev_d, 9.0, dt,
+    )
+    frames += 1
+  assert released
+  assert frames * dt <= 0.50
+  assert soft_limit_mpc_a_target(
+    -3.5, v_ego, v_ego - v_mild, d_rel, a_lead=-0.40, slack=9.0, owned=True,
+    opening_release=True,
+  ) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  # A real close clears the latch.
+  age, released, prev_d = update_opening_release(
+    age, released, 1.6, d_rel, prev_d, 9.0, dt,
+  )
+  assert not released
+
+  # (b) on-path close stays firm. 08:57:50.583: yRel +0.48, closing ~4.2, aLead −2.
+  v_close = 4.2
+  assert v_close < LEAD_APPROACH_RAPID_DV_MS
+  assert not lead_lateral_departing(0.48, None, 12.0)
+  a_keep = soft_limit_mpc_a_target(
+    -3.5, 16.0, 16.0 - v_close, 27.7, a_lead=-2.06, slack=15.0, owned=True,
+  )
+  assert a_keep == pytest.approx(-3.5)
+  assert lead_mpc_needs_full_authority(
+    v_close, 27.7, slack=15.0, a_lead=-2.06, skip_mild_floor=True, owned=True,
+  )
+  # #222 residual on path, not opening, stays raw.
+  assert soft_limit_mpc_a_target(
+    -1.2, 25.0, 25.0 - 1.38, 39.0, a_lead=-0.61, slack=8.0,
+    owned=True, prev_v_rel=1.00, a_ego=-0.22, dt=1.0,
+  ) == pytest.approx(-1.2)
+
+  # (c) |yRel| grows past ~2.25 with slack ~12: firm, then release ≤ 0.5 s.
+  age = 0.0
+  released = False
+  prev_y = None
+  y = 0.48
+  firm_while_on_path = True
+  release_y = None
+  for _ in range(30):
+    y += 0.28
+    age, released, prev_y = update_depart_release(
+      age, released, y, prev_y, 12.0, v_close, dt,
+    )
+    a_step = soft_limit_mpc_a_target(
+      -3.5, 16.0, 16.0 - v_close, 28.0, a_lead=-2.06, slack=12.0, owned=True,
+      depart_release=released,
+    )
+    if abs(y) <= LEAD_DEPART_YREL_FIRM_M:
+      firm_while_on_path = firm_while_on_path and a_step == pytest.approx(-3.5)
+      assert not released
+    if released and release_y is None:
+      release_y = y
+      break
+  assert firm_while_on_path
+  assert released and release_y is not None
+  assert release_y > LEAD_DEPART_YREL_FIRM_M
+  assert soft_limit_mpc_a_target(
+    -3.5, 16.0, 16.0 - v_close, 28.0, a_lead=-2.06, slack=12.0, owned=True,
+    depart_release=True,
+  ) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  # Back on path and closing: firmness returns.
+  age, released, prev_y = update_depart_release(
+    age, True, 0.4, prev_y, 12.0, v_close, dt,
+  )
+  assert not released
+  assert soft_limit_mpc_a_target(
+    -3.5, 16.0, 16.0 - v_close, 28.0, a_lead=-2.06, slack=12.0, owned=True,
+    depart_release=released,
   ) == pytest.approx(-3.5)

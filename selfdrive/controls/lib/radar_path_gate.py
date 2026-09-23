@@ -77,6 +77,16 @@ LEFT_TURN_X_M = 30.0
 ATLANTIC_LEFT_PATH_X = (0.0, 5.0, 10.0, 20.0, 40.0)
 ATLANTIC_LEFT_PATH_Y = (0.0, 1.5, 3.2, 5.0, 7.0)
 
+# Construction path collapse (Scallywag 08:57:58). Adjacent lane-line
+# probs gone and |path y| at 15–30 m is not a lane. Raise the bar for
+# a *new* association at |yRel| ≳ 2 (the right-side blip was ~−2.9).
+# An already-owned lead is the planner's departing-release problem.
+PATH_COLLAPSE_LANE_PROB = 0.15
+PATH_COLLAPSE_X_LO_M = 15.0
+PATH_COLLAPSE_X_HI_M = 30.0
+PATH_COLLAPSE_ABS_Y_M = 20.0
+PATH_COLLAPSE_NEW_YREL_M = 2.0
+
 
 def _num(obj: Any, *names: str) -> float | None:
   for name in names:
@@ -208,6 +218,81 @@ def radar_follow_ok(track: Any, v_ego: float = 0.0,
   if track_is_oncoming(track, v_ego):
     return False
   return track_is_in_path(track, path_x, path_y, max_lat=max_lat)
+
+
+def lane_lines_collapsed(probs) -> bool:
+  """True when both adjacent lane lines have collapsed probability.
+
+  Index 1 is the left line, index 2 the right (same as LDW). A short
+  or missing list is not collapse — do not invent a gate.
+  """
+  if probs is None:
+    return False
+  try:
+    vals = [float(p) for p in list(probs)]
+  except (TypeError, ValueError):
+    return False
+  if len(vals) < 3:
+    return False
+  if not all(math.isfinite(v) for v in vals[1:3]):
+    return False
+  return (
+    vals[1] < PATH_COLLAPSE_LANE_PROB and vals[2] < PATH_COLLAPSE_LANE_PROB
+  )
+
+
+def path_y_absurd(path_x: Sequence[float] | None,
+                  path_y: Sequence[float] | None) -> bool:
+  """True when travel-path y at 15–30 m is not a drivable lane offset."""
+  if path_x is None or path_y is None:
+    return False
+  try:
+    n = min(len(path_x), len(path_y))
+  except TypeError:
+    return False
+  if n < 2:
+    return False
+  xs = [PATH_COLLAPSE_X_LO_M, 22.0, PATH_COLLAPSE_X_HI_M]
+  for i in range(n):
+    try:
+      x = float(path_x[i])
+    except (TypeError, ValueError):
+      continue
+    if PATH_COLLAPSE_X_LO_M <= x <= PATH_COLLAPSE_X_HI_M and x not in xs:
+      xs.append(x)
+  peak = 0.0
+  saw = False
+  for x in xs:
+    y = path_y_at_x(path_x, path_y, x)
+    if y is None:
+      continue
+    saw = True
+    peak = max(peak, abs(float(y)))
+  return saw and peak >= PATH_COLLAPSE_ABS_Y_M
+
+
+def path_model_collapsed(lane_probs, path_x: Sequence[float] | None = None,
+                         path_y: Sequence[float] | None = None) -> bool:
+  """Lane lines down and the near path is absurd. Both are required."""
+  return lane_lines_collapsed(lane_probs) and path_y_absurd(path_x, path_y)
+
+
+def collapse_blocks_new_lead(y_rel, collapsed, incumbent=False) -> bool:
+  """Block a new lead at |yRel| ≳ 2 while the path model has collapsed.
+
+  Right-side (negative yRel) is the construction blip; either side
+  past the bar is the same new-association gate. An incumbent track
+  stays so a real cut-in can walk off without a hard drop.
+  """
+  if not collapsed or incumbent or y_rel is None:
+    return False
+  try:
+    y = float(y_rel)
+  except (TypeError, ValueError):
+    return False
+  if not math.isfinite(y):
+    return False
+  return abs(y) >= PATH_COLLAPSE_NEW_YREL_M
 
 
 def vision_lead_follow_ok(lead: Any, v_ego: float = 0.0,
