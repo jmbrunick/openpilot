@@ -103,7 +103,7 @@ Normally stalk up/down is RES+/RES− and steps MAX / `pedal_speed` 1 or 5 mph.
 
 With a **radar lead present** (Hypermile On **or** Off):
 
-- Stalk **tip / bump** (Tesla first detent, **1 mph** / 1 kph) = Follow Distance 1–7 only. Stalk **up** = closer (toward stock 1). Stalk **down** = farther (toward stock 7). That frame’s MAX / `pedal_speed` step is undone immediately. Follow commits when the lever returns to IDLE after a first-detent tip that never hit 2nd detent. HUD **Follow Distance: N**.
+- Stalk **tip / bump** (Tesla first detent, **1 mph** / 1 kph) = Follow Distance 1–7 only. Stalk **up** = closer (toward stock 1). Stalk **down** = farther (toward stock 7). The tip steps **Highway** when ego is above 50 mph, or whenever MAX is above 50 (including while still accelerating up to that MAX). It steps **City** only when ego is at or under 50 mph and MAX is also at or under 50. That frame’s MAX / `pedal_speed` step is undone immediately. Follow commits when the lever returns to IDLE after a first-detent tip that never hit 2nd detent. HUD **Follow Distance: N** shows the band that was stepped.
 - Stalk **full press** (Tesla 2nd detent, **5 mph** / 5 kph) = keep MAX +5/−5. Do **not** remap Follow Distance, even though a physical full press always walks through first detent.
 
 card.py writes `NAPFollowDistance` on tip-release so the Driving Mannerisms indicator/slider updates live. Cooldown 0.25 s so press+release cannot double-step. Raw `SpdCtrlLvr_Stat` / CruiseButtons (UP_1ST vs UP_2ND, DN_1ST vs DN_2ND) distinguish tip vs hold. Pre-AP `buttonEvents` map both detents to the same `accelCruise`/`decelCruise` and must not be treated as a completed tip.

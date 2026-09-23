@@ -684,6 +684,8 @@ def test_settings_and_docs_wire_hypermile():
   assert "_preap_cruise_detent" in card
   assert "persist_follow_distance" in card
   assert "v_cruise=v_cruise_ms" in card
+  assert "published_cruise_ms(self.v_cruise_helper.v_cruise_kph" in card
+  assert 'getattr(CS, "vCruise"' not in card
   assert "has_lead=has_lead" in card
   assert "radarState" in card
   assert "hypermileFollowChanged" in events
