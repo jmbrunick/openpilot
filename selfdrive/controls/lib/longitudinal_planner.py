@@ -731,12 +731,16 @@ class LongitudinalPlanner:
           output_a_target, self.output_a_target, overlay_v_rel,
           d_rel=overlay_d, slack=overlay_slack, allow_rapid=allow_rapid,
           fcw=self.fcw, crash_cnt=self.mpc.crash_cnt,
+          opening_release=self._lead_opening_release,
+          depart_release=self._lead_depart_release,
         )
         output_a_target = slew_follow_chatter_a(
           output_a_target, self.output_a_target, overlay_v_rel,
           d_rel=overlay_d, slack=overlay_slack, allow_rapid=allow_rapid,
           fcw=self.fcw, crash_cnt=self.mpc.crash_cnt,
           catchup=self._lead_mid_gap_catchup,
+          opening_release=self._lead_opening_release,
+          depart_release=self._lead_depart_release,
         )
       # Coasting mid-gap: do not publish an ACCEL_MIN-region cliff while
       # plan accels stay ~0 (18:10 under the map, and the same geometry

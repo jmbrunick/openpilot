@@ -1644,6 +1644,43 @@ def test_near_gap_small_a_slews_chatter_not_authority():
   ) == pytest.approx(-0.46)
 
 
+def test_opening_release_publishes_mild_floor_not_zero_coast():
+  """10:05: opening lead must land on the mild floor, not a held ~0.
+
+  Near-gap slew of −0.22 from a small +a steps onto 0. Follow-chatter
+  then deadbands that 0 against the previous ~0.02 and holds it. An
+  opening or departing release publishes −0.22 on this frame. On-path
+  rapid close is still the raw firm command.
+  """
+  mild = -LEAD_APPROACH_MILD_A_MS2
+  prev = 0.02
+  opened = slew_near_gap_small_a(
+    mild, prev, -0.56, d_rel=40.0, slack=9.0, opening_release=True,
+  )
+  opened = slew_follow_chatter_a(
+    opened, prev, -0.56, d_rel=40.0, slack=9.0, opening_release=True,
+  )
+  assert opened == pytest.approx(mild)
+  departed = slew_near_gap_small_a(
+    mild, prev, 2.0, d_rel=30.0, slack=12.0, depart_release=True,
+  )
+  departed = slew_follow_chatter_a(
+    departed, prev, 2.0, d_rel=30.0, slack=12.0, depart_release=True,
+  )
+  assert departed == pytest.approx(mild)
+  # Without the latch, tiny ±a around 0 still holds (no gas↔regen flip).
+  assert slew_follow_chatter_a(
+    -0.02, prev, -0.56, d_rel=40.0, slack=9.0,
+  ) == pytest.approx(prev)
+  # On-path #222 close (aLead brake, not the opening latch) stays firm.
+  assert lead_mpc_needs_full_authority(
+    4.2, 28.0, slack=12.0, a_lead=-2.06, skip_mild_floor=True, owned=True,
+  )
+  assert slew_near_gap_small_a(
+    -3.5, 0.02, 4.2, d_rel=28.0, slack=12.0,
+  ) == pytest.approx(-3.5)
+
+
 def test_soft_limit_releases_under_rapid_hard_close():
   """07:55 class: owned lead, rising close, aLead ~−1 must leave −0.22.
 

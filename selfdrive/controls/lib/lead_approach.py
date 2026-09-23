@@ -485,16 +485,24 @@ def _near_gap_small_bite(a) -> bool:
 
 def slew_near_gap_small_a(target, prev, v_rel, d_rel=None, slack=None,
                           allow_rapid=False, fcw=False, crash_cnt=0,
-                          slew=LEAD_NEAR_GAP_SLEW_MS2):
+                          slew=LEAD_NEAR_GAP_SLEW_MS2, opening_release=False,
+                          depart_release=False):
   """Slew small near-gap ±a so floor↔release cannot step 0.3 in one frame.
 
   Full authority (rapid / bumper / FCW / hard kinematics) is immediate.
   Far slack and bites outside the small band pass through. First-latch
   acquire slew is a separate path and must stay unchanged.
+
+  An opening or departing release must publish the mild floor on this
+  frame. A 0.02 step from a small +a lands on 0, and the follow-chatter
+  deadband then holds that previous ~0 forever (10:05 published 0.02
+  instead of −0.22). On-path close does not set these latches.
   """
   if target is None:
     return target
   t = float(target)
+  if opening_release or depart_release:
+    return t
   if lead_mpc_needs_full_authority(
     v_rel, d_rel, slack, allow_rapid=allow_rapid, fcw=fcw,
     crash_cnt=crash_cnt, confirm_rapid=True,
@@ -530,7 +538,8 @@ def _follow_chatter_bite(a) -> bool:
 
 def slew_follow_chatter_a(target, prev, v_rel, d_rel=None, slack=None,
                           allow_rapid=False, fcw=False, crash_cnt=0,
-                          slew=LEAD_FOLLOW_CHATTER_SLEW_MS2, catchup=False):
+                          slew=LEAD_FOLLOW_CHATTER_SLEW_MS2, catchup=False,
+                          opening_release=False, depart_release=False):
   """Slew small post-acquire ±a so rematch ↔ ~0 cannot flip gas↔regen.
 
   After the 0.75 s first-latch window, cruise still bit +0.15…+0.27
@@ -539,10 +548,15 @@ def slew_follow_chatter_a(target, prev, v_rel, d_rel=None, slack=None,
   bites outside the chatter band are immediate. First-latch acquire
   slew is a separate, faster path. Latched catch-up / too-close
   recovery is immediate so settle cannot hold a wrong gap.
+
+  Opening / departing release is also immediate. The deadband must
+  not keep a ~0 coast once firm authority has faded to the mild floor.
   """
   if target is None:
     return target
   t = float(target)
+  if opening_release or depart_release:
+    return t
   if catchup or (slack is not None and float(slack) < 0.0):
     return t
   if lead_mpc_needs_full_authority(
