@@ -3,7 +3,7 @@ import math
 
 from openpilot.common.constants import CV
 from openpilot.selfdrive.mapd.constants import LOOKAHEAD_NORMAL
-from openpilot.selfdrive.mapd.osm_db import EARTH_R, OsmSpeedLimitDB
+from openpilot.selfdrive.mapd.osm_db import EARTH_R, OsmSpeedLimitDB, _unpack_coords
 from openpilot.selfdrive.mapd.overpass import ways_from_overpass
 from openpilot.selfdrive.mapd.roundabout import (
   RB_A_FLOOR_MS2,
@@ -24,6 +24,7 @@ from openpilot.selfdrive.mapd.roundabout import (
   roundabout_ease_v_ms,
   roundabout_outer_curvature_bias,
   roundabout_outer_path_offset_m,
+  roundabout_suppressed_for_highway,
   roundabout_target_ms,
   way_is_closed_loop,
   way_is_roundabout,
@@ -100,6 +101,24 @@ def test_service_bulb_without_tag_is_not_roundabout():
   bulb = _circle(RB_LAT, RB_LON, r_m=10.0)
   assert not way_is_roundabout(bulb, junction="", highway="service")
   assert way_is_roundabout(bulb, junction="roundabout", highway="service")
+
+
+def test_untagged_residential_loop_is_not_roundabout():
+  """Cul-de-sac / Maritime-style bulbs are not RBs unless junction-tagged."""
+  bulb = _circle(RB_LAT, RB_LON, r_m=20.0)
+  assert way_is_closed_loop(bulb)
+  assert way_is_roundabout(bulb, junction="", highway="unclassified")
+  assert not way_is_roundabout(bulb, junction="", highway="residential")
+  assert not way_is_roundabout(bulb, junction="", highway="living_street")
+  assert way_is_roundabout(bulb, junction="roundabout", highway="residential")
+  assert way_is_roundabout(bulb, junction="circular", highway="living_street")
+
+
+def test_motorway_and_trunk_suppress_roundabout_hints():
+  for hw in ("motorway", "motorway_link", "trunk", "trunk_link", " Motorway "):
+    assert roundabout_suppressed_for_highway(hw)
+  for hw in ("", "residential", "primary", "unclassified", "secondary", "tertiary"):
+    assert not roundabout_suppressed_for_highway(hw)
 
 
 def test_target_clamps_osm_to_15_20():
@@ -216,7 +235,7 @@ def test_live_map_hint_reads_capnp_fields():
   assert live_map_roundabout_hint(_Empty()) is None
 
 
-def _db_with_ring_and_approach(tmp_path, *, tagged=False, corner=False):
+def _db_with_ring_and_approach(tmp_path, *, tagged=False, corner=False, ring_highway="unclassified"):
   path = str(tmp_path / "speed_limits.sqlite")
   con = OsmSpeedLimitDB.create(path)
   west_lat, west_lon = _offset(RB_LAT, RB_LON, 270.0, RB_R_M)
@@ -236,7 +255,7 @@ def _db_with_ring_and_approach(tmp_path, *, tagged=False, corner=False):
     )
   else:
     OsmSpeedLimitDB.insert_way(
-      con, 2, "", "unclassified", 20.0 * CV.MPH_TO_MS,
+      con, 2, "", ring_highway, 20.0 * CV.MPH_TO_MS,
       _circle(RB_LAT, RB_LON),
       junction="roundabout" if tagged else "",
     )
@@ -286,6 +305,119 @@ def test_sharp_corner_does_not_trigger_funnel(tmp_path):
   hint = db.find_roundabout(qlat, qlon, bearing_deg=90.0)
   assert not hint.approaching
   assert not hint.on_roundabout
+  db.close()
+
+
+def test_tagged_residential_ring_still_funnels(tmp_path):
+  """junction=roundabout on a residential way is still a town roundabout."""
+  db, west_lat, west_lon = _db_with_ring_and_approach(
+    tmp_path, tagged=True, ring_highway="residential",
+  )
+  qlat, qlon = _offset(west_lat, west_lon, 270.0, 90.0)
+  hint = db.find_roundabout(qlat, qlon, bearing_deg=90.0)
+  assert hint.approaching
+  assert hint.distance_m <= RB_FUNNEL_M
+  db.close()
+
+
+def test_untagged_residential_ring_does_not_funnel(tmp_path):
+  db, west_lat, west_lon = _db_with_ring_and_approach(
+    tmp_path, tagged=False, ring_highway="residential",
+  )
+  qlat, qlon = _offset(west_lat, west_lon, 270.0, 90.0)
+  hint = db.find_roundabout(qlat, qlon, bearing_deg=90.0)
+  assert not hint.approaching
+  assert not hint.on_roundabout
+  db.close()
+
+
+# I-74 eastbound, Indianapolis. Residential loops beside the motorway
+# (Maritime Dr 17493053, Seaway Dr 17497242) published approachingRoundabout
+# and latched MAX 65→20.
+I74_LAT = 39.81706
+I74_LON = -86.30076
+
+
+def _east_line(lat, lon, start_m, end_m, step_m):
+  origin = _offset(lat, lon, 270.0, abs(start_m)) if start_m < 0 else _offset(lat, lon, 90.0, start_m)
+  n = max(1, int(round((end_m - start_m) / step_m)))
+  return [_offset(origin[0], origin[1], 90.0, step_m * i) for i in range(n + 1)]
+
+
+def test_residential_loops_beside_motorway_do_not_approach(tmp_path):
+  """Maritime / Seaway shape: closed residential ways within the 200 m funnel."""
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  OsmSpeedLimitDB.insert_way(
+    con, 99449506, "I 74", "motorway", 65.0 * CV.MPH_TO_MS,
+    _east_line(I74_LAT, I74_LON, -400.0, 400.0, 40.0),
+  )
+  maritime_c = _offset(*_offset(I74_LAT, I74_LON, 90.0, 160.0), 0.0, 30.0)
+  seaway_c = _offset(*_offset(I74_LAT, I74_LON, 90.0, 175.0), 180.0, 35.0)
+  maritime = _circle(*maritime_c, r_m=20.0)
+  seaway = _circle(*seaway_c, r_m=18.0)
+  # Same geometry would be an untagged RB on a town class; residential is not.
+  assert way_is_roundabout(maritime, junction="", highway="unclassified")
+  assert not way_is_roundabout(maritime, junction="", highway="residential")
+  assert not way_is_roundabout(seaway, junction="", highway="residential")
+  OsmSpeedLimitDB.insert_way(
+    con, 17493053, "Maritime Drive", "residential", 25.0 * CV.MPH_TO_MS, maritime,
+  )
+  OsmSpeedLimitDB.insert_way(
+    con, 17497242, "Seaway Drive", "residential", 25.0 * CV.MPH_TO_MS, seaway,
+  )
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  hint = db.find_roundabout(I74_LAT, I74_LON, bearing_deg=90.0)
+  assert not hint.approaching
+  assert not hint.on_roundabout
+  assert hint.way_id == 0
+  # Stored bulbs are still closed loops the untagged fallback would accept
+  # on a town class. Residential / living_street stay skipped without a tag,
+  # and the motorway match suppresses the hint on its own.
+  for way_id in (17493053, 17497242):
+    row = db._con.execute("SELECT coords, highway FROM ways WHERE way_id=?", (way_id,)).fetchone()
+    stored = _unpack_coords(row["coords"])
+    assert way_is_roundabout(stored, junction="", highway="unclassified")
+    assert not way_is_roundabout(stored, junction="", highway=row["highway"])
+  off_gate = db.find_roundabout(I74_LAT, I74_LON, bearing_deg=90.0, current_highway="residential")
+  assert not off_gate.approaching
+  assert not off_gate.on_roundabout
+  db.close()
+
+
+def test_motorway_suppresses_nearby_closed_ring(tmp_path):
+  """An unclassified closed ring beside a motorway match must not approach.
+
+  The same ring still funnels when the ego match is a town street.
+  """
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  OsmSpeedLimitDB.insert_way(
+    con, 99449506, "I 74", "motorway", 65.0 * CV.MPH_TO_MS,
+    _east_line(I74_LAT, I74_LON, -400.0, 400.0, 40.0),
+  )
+  center = _offset(*_offset(I74_LAT, I74_LON, 90.0, 150.0), 0.0, 40.0)
+  ring = _circle(*center, r_m=RB_R_M)
+  OsmSpeedLimitDB.insert_way(
+    con, 2, "", "unclassified", 20.0 * CV.MPH_TO_MS, ring,
+  )
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  on_motorway = db.find_roundabout(I74_LAT, I74_LON, bearing_deg=90.0)
+  assert not on_motorway.approaching
+  assert not on_motorway.on_roundabout
+  for hw in ("motorway", "motorway_link", "trunk", "trunk_link"):
+    gated = db.find_roundabout(I74_LAT, I74_LON, bearing_deg=90.0, current_highway=hw)
+    assert not gated.approaching and not gated.on_roundabout
+  town = db.find_roundabout(I74_LAT, I74_LON, bearing_deg=90.0, current_highway="residential")
+  assert town.approaching
+  assert 0.0 < town.distance_m <= RB_FUNNEL_M
+  assert town.way_id == 2
   db.close()
 
 
