@@ -17,9 +17,10 @@ stays on city FD. If MAX drops below 48, blend back toward city FD.
 t_follow slew (not a step) holds the band change.
 
 A stalk bump does not use that live band. `follow_stalk_band_is_highway`
-picks which param the tip writes: City below 30 mph, Highway above 50 mph,
-and 30–50 mph follows MAX (above 50 → Highway, so a bump while still
-accelerating under a highway set speed stays on Highway).
+picks which param the tip writes: Highway when ego is above 50 mph or
+MAX is above 50 mph (including while ego is still coming up to a highway
+set speed). City only when ego is at or under 50 mph and MAX is not above
+50. The 48/52 live-follow hysteresis stays on `follow_band_is_highway`.
 """
 from __future__ import annotations
 
@@ -50,9 +51,8 @@ FOLLOW_HWY_INTENT_MPH = 50.0
 FOLLOW_HWY_INTENT_EXIT_MPH = 48.0
 FOLLOW_HWY_INTENT_EGO_MPH = 30.0
 FOLLOW_HWY_INTENT_EGO_EXIT_MPH = 28.0
-# Stalk-write gates. Not the 48/52 live-follow hysteresis above.
-# City only below 30. Highway above 50, or in 30–50 when MAX is above 50.
-STALK_CITY_BELOW_MPH = 30.0
+# Stalk-write gate. Not the 48/52 live-follow hysteresis above.
+# Highway when ego or MAX is above 50. City only when both are at or under 50.
 STALK_HWY_ABOVE_MPH = 50.0
 # While opening to a farther city FD: ~3% slower than lead (small % more slowing).
 FOLLOW_OPEN_SLOW_FRAC = 0.03
@@ -161,23 +161,20 @@ def follow_ego_highway_intent(v_ego, prev_highway=None) -> bool:
 def follow_stalk_band_is_highway(v_ego, v_cruise=None) -> bool:
   """True when a stalk bump should step Highway Follow Distance.
 
-  Highway when ego is above 50 mph, or when ego is in 30–50 mph and
-  MAX / set speed is above 50 mph (still coming up to a highway MAX).
-  City when ego is below 30 mph, and in the 30–50 band when MAX is at
-  or under 50 or unknown. A non-positive cruise reading is unknown, so
-  it cannot force City at highway speed.
+  Highway when ego is above 50 mph, or when MAX / set speed is above
+  50 mph — including while ego is still under 50 on the way up to a
+  highway MAX. City when ego is at or under 50 mph and MAX is at or
+  under 50 (or unknown). A non-positive cruise reading is not a highway
+  MAX, so it cannot force City once ego is above 50.
 
-  Live follow (48/52, and hwy-from-~30 with a lead and MAX > 50) stays
-  on `follow_band_is_highway`.
+  Live follow keeps its own 48/52 hysteresis (and hwy-from-~30 with a
+  lead and MAX > 50) on `follow_band_is_highway`.
   """
-  city_below = STALK_CITY_BELOW_MPH * CV.MPH_TO_MS
   hwy_above = STALK_HWY_ABOVE_MPH * CV.MPH_TO_MS
   try:
     v = 0.0 if v_ego is None else float(v_ego)
   except (TypeError, ValueError):
     v = 0.0
-  if v < city_below:
-    return False
   if v > hwy_above:
     return True
   try:

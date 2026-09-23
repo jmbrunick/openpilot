@@ -503,9 +503,9 @@ class Car:
 
     Same whether Hypermile is On or Off. A first-detent tip undoes that
     frame's 1 mph MAX and, after the lever returns to IDLE without a
-    2nd detent, steps the matching 1–7: Highway above 50 mph (and between
-    30 and 50 when MAX is above 50), City below 30 mph (and in that mid
-    band when MAX is 50 or under). HUD NAPFollowDistance tracks the band
+    2nd detent, steps the matching 1–7: Highway when ego or MAX is above
+    50 mph (including while still accelerating up to a highway MAX), City
+    when ego is at or under 50 and MAX is not above 50. HUD NAPFollowDistance tracks the band
     just stepped. A full press (2nd detent / 5 mph) keeps MAX +5/−5 and
     does not remap Follow, even if the lever passed through first detent.
     No lead: leave stalk as MAX adjust. During a long pause,

@@ -51,14 +51,14 @@ NAP_FOLLOW_DISTANCE_HWY = "NAPFollowDistanceHwy"
 FOLLOW_DISTANCE_CITY_DESCRIPTION = (
   "City follow (<~50 mph). 1 closest, 7 farthest. Below ~50 behind a "
   + "lead, gap opens gradually to this (ego a bit slower than the lead), "
-  + "then holds. Not a step at 50. A stalk tip steps this 1–7 below 30 mph, "
-  + "and between 30 and 50 mph when MAX is 50 or under. Not Hypermile."
+  + "then holds. Not a step at 50. A stalk tip steps this 1–7 at or under "
+  + "50 mph when MAX is also 50 or under. Not Hypermile."
 )
 FOLLOW_DISTANCE_HWY_DESCRIPTION = (
   "Highway follow (>~50 mph). 1 closest, 7 farthest. Rising above ~50 "
   + "behind a lead, gap creeps toward this. Hysteresis around 50. A stalk "
-  + "tip steps this above 50 mph, and between 30 and 50 mph when MAX is "
-  + "above 50. Not Hypermile."
+  + "tip steps this above 50 mph, and whenever MAX is above 50 (including "
+  + "while still accelerating up to that MAX). Not Hypermile."
 )
 NAP_ONE_PEDAL_LONG = "NAPOnePedalLong"
 ONE_PEDAL_LONG_DESCRIPTION = (

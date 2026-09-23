@@ -1,6 +1,6 @@
 NAP stalk tip writes the matching City or Highway Follow Distance (2026-09-23)
 ========================
-* Pre-AP stalk **bump** (first detent, 1 mph) steps Follow Distance 1–7 on the matching band. **Highway** when ego is above 50 mph, or between 30 and 50 mph while MAX is above 50 (a bump while still accelerating up to a highway set speed stays on Highway). **City** below 30 mph, and between 30 and 50 mph when MAX is 50 or under. HUD **Follow Distance: N** shows that band. Full press (2nd detent / 5 mph) still nudges MAX. Live follow blend (hysteresis around 50, highway follow from about 30 mph with a lead and MAX above 50) is unchanged. No panda flash.
+* Pre-AP stalk **bump** (first detent, 1 mph) steps Follow Distance 1–7 on the matching band. **Highway** when ego is above 50 mph, or whenever MAX is above 50 (a bump while still accelerating up to a highway set speed stays on Highway, even under 50). **City** only when ego is at or under 50 mph and MAX is also at or under 50. HUD **Follow Distance: N** shows that band. Full press (2nd detent / 5 mph) still nudges MAX. Live follow blend (hysteresis around 50, highway follow from about 30 mph with a lead and MAX above 50) is unchanged. No panda flash.
 
 NAP follow-smooth mid-gap rematch (2026-09-20)
 ========================

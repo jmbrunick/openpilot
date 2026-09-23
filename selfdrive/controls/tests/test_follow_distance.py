@@ -268,7 +268,7 @@ def test_persist_steps_city_or_hwy_band_by_speed():
 
 
 def test_stalk_band_selects_city_or_hwy():
-  """Stalk bump band: ego 60→hwy, 25→city, 40/MAX 70→hwy, 40/MAX 45→city, 55→hwy."""
+  """Stalk bump: hwy if ego > 50 or MAX > 50; city only when both are ≤ 50."""
   def v(mph):
     return mph * CV.MPH_TO_MS
 
@@ -277,11 +277,12 @@ def test_stalk_band_selects_city_or_hwy():
   assert follow_stalk_band_is_highway(v(40), v(70)) is True
   assert follow_stalk_band_is_highway(v(40), v(45)) is False
   assert follow_stalk_band_is_highway(v(55)) is True
-  # Below 30 stays city even with a highway MAX. Mid band with no MAX is city.
-  assert follow_stalk_band_is_highway(v(25), v(70)) is False
+  # Highway MAX forces Highway even while ego is still under 50.
+  assert follow_stalk_band_is_highway(v(25), v(70)) is True
   assert follow_stalk_band_is_highway(v(40)) is False
-  assert follow_stalk_band_is_highway(v(30), v(70)) is True
   assert follow_stalk_band_is_highway(v(50), v(45)) is False
+  assert follow_stalk_band_is_highway(v(50)) is False
+  assert follow_stalk_band_is_highway(v(50), v(50)) is False
   assert follow_stalk_band_is_highway(v(50), v(70)) is True
   # CarState.vCruise is 0 until published. That must not force City at 60.
   assert follow_stalk_band_is_highway(v(60), 0.0) is True
@@ -321,7 +322,13 @@ def test_persist_stalk_writes_matching_band_and_hud():
   assert hwy.get(PARAM_FOLLOW_CITY) == 3
   assert hwy.get(PARAM_FOLLOW) == 2
 
-  city = bump(25, max_mph=70)
+  # Under 50 with a highway MAX still steps Highway (accelerating up to it).
+  climbing = bump(25, max_mph=70)
+  assert climbing.get(PARAM_FOLLOW_HWY) == 2
+  assert climbing.get(PARAM_FOLLOW_CITY) == 3
+  assert climbing.get(PARAM_FOLLOW) == 2
+
+  city = bump(25, max_mph=45)
   assert city.get(PARAM_FOLLOW_CITY) == 2
   assert city.get(PARAM_FOLLOW_HWY) == 3
   assert city.get(PARAM_FOLLOW) == 2
