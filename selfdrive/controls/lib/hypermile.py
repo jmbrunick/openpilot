@@ -513,20 +513,22 @@ def persist_follow_distance(params, closer: bool, v_ego=None, v_cruise=None,
                             has_lead=False, engaged=False) -> int:
   """Step city or highway Follow Distance (and HUD NAPFollowDistance).
 
-  With v_ego, the active band is stepped (48/52 ego, or hwy-from-30 when
-  MAX > 50 with a lead). Without speed (tests), all three keys stay in
-  sync. Always request the HUD (including at 1/7).
+  With v_ego, the stalk band is stepped: City below 30 mph, Highway above
+  50 mph, and 30–50 mph follows MAX (above 50 → Highway). Lead / engaged
+  do not pick the param — that is the live-follow blend. Without speed
+  (tests), all three keys stay in sync. Always request the HUD (including
+  at 1/7). HUD `NAPFollowDistance` is the level just written.
   """
   from openpilot.selfdrive.controls.lib.follow_distance import (
     PARAM_FOLLOW_CITY,
     PARAM_FOLLOW_HWY,
-    follow_band_is_highway,
+    follow_stalk_band_is_highway,
     migrate_follow_distance_params,
   )
   migrate_follow_distance_params(params)
   if v_ego is not None:
-    key = PARAM_FOLLOW_HWY if follow_band_is_highway(
-      v_ego, v_cruise=v_cruise, engaged=engaged, has_lead=has_lead,
+    key = PARAM_FOLLOW_HWY if follow_stalk_band_is_highway(
+      v_ego, v_cruise,
     ) else PARAM_FOLLOW_CITY
     try:
       raw = params.get(key, return_default=True)
@@ -566,6 +568,7 @@ def consume_follow_stalk(
   button_released: bool = False,
   gesture: FollowStalkGesture | None = None,
   v_ego=None,
+  v_cruise=None,
 ) -> tuple[int | None, float | None]:
   """If this stalk edge completes a Follow Distance tip, persist it.
 
@@ -587,7 +590,7 @@ def consume_follow_stalk(
   if not is_stalk:
     return None, undo
   if apply:
-    return persist_follow_distance(params, bool(closer), v_ego=v_ego), undo
+    return persist_follow_distance(params, bool(closer), v_ego=v_ego, v_cruise=v_cruise), undo
   return read_follow_distance(params), undo
 
 

@@ -26,6 +26,7 @@ from openpilot.selfdrive.mapd.map_speed_policy import (
 )
 from openpilot.selfdrive.mapd.roundabout import live_map_roundabout_hint, roundabout_ease_v_ms
 from openpilot.selfdrive.controls.lib.curve_max_hold import CurveMaxHold
+from openpilot.selfdrive.controls.lib.follow_distance import published_cruise_ms
 from openpilot.selfdrive.controls.lib.hypermile import (
   FollowStalkGesture, button_event_closer, button_event_released,
   map_target_offset_kph, persist_follow_distance, read_hypermile_params,
@@ -498,15 +499,18 @@ class Car:
     return None
 
   def _maybe_follow_stalk(self, CS, raw_kph: float) -> tuple[float, bool]:
-    """Route Pre-AP stalk tip to stock Follow Distance 1–7 when a lead is present.
+    """Route Pre-AP stalk tip to City or Highway Follow Distance with a lead.
 
     Same whether Hypermile is On or Off. A first-detent tip undoes that
-    frame's 1 mph MAX and writes NAPFollowDistance only after the lever
-    returns to IDLE without a 2nd detent. A full press (2nd detent /
-    5 mph) keeps MAX +5/−5 and does not remap Follow, even if the
-    lever passed through first detent. No lead: leave stalk as MAX
-    adjust. During a long pause, cruiseState.speed is ego — detent
-    still distinguishes tip vs hold; buttonEvents alone do not.
+    frame's 1 mph MAX and, after the lever returns to IDLE without a
+    2nd detent, steps the matching 1–7: Highway above 50 mph (and between
+    30 and 50 when MAX is above 50), City below 30 mph (and in that mid
+    band when MAX is 50 or under). HUD NAPFollowDistance tracks the band
+    just stepped. A full press (2nd detent / 5 mph) keeps MAX +5/−5 and
+    does not remap Follow, even if the lever passed through first detent.
+    No lead: leave stalk as MAX adjust. During a long pause,
+    cruiseState.speed is ego — detent still distinguishes tip vs hold;
+    buttonEvents alone do not.
     """
     has_lead = bool(
       self.sm.valid.get("radarState", False)
@@ -529,13 +533,9 @@ class Car:
     )
     routed = commit or self._follow_gesture.is_pending or undo is not None
     if commit and closer is not None and (time.monotonic() - self._follow_stalk_mono) >= 0.25:
-      v_cruise_ms = None
-      try:
-        v_kph = float(getattr(CS, "vCruise", V_CRUISE_UNSET))
-        if v_kph != V_CRUISE_UNSET:
-          v_cruise_ms = v_kph * CV.KPH_TO_MS
-      except (TypeError, ValueError):
-        v_cruise_ms = None
+      # CarState.vCruise is still 0 here — card publishes it at the end of
+      # the frame. Read the HUD MAX already on the helper.
+      v_cruise_ms = published_cruise_ms(self.v_cruise_helper.v_cruise_kph, V_CRUISE_UNSET)
       persist_follow_distance(
         self.params, bool(closer),
         v_ego=getattr(CS, "vEgo", None),

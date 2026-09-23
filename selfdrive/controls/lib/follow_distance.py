@@ -15,6 +15,11 @@ engaged, and MAX / set cruise speed is > 50 mph, apply highway FD once
 ego > ~30 mph (enter > 30, exit < 28) — do not wait for 48/52. MAX ≤ 50
 stays on city FD. If MAX drops below 48, blend back toward city FD.
 t_follow slew (not a step) holds the band change.
+
+A stalk bump does not use that live band. `follow_stalk_band_is_highway`
+picks which param the tip writes: City below 30 mph, Highway above 50 mph,
+and 30–50 mph follows MAX (above 50 → Highway, so a bump while still
+accelerating under a highway set speed stays on Highway).
 """
 from __future__ import annotations
 
@@ -45,6 +50,10 @@ FOLLOW_HWY_INTENT_MPH = 50.0
 FOLLOW_HWY_INTENT_EXIT_MPH = 48.0
 FOLLOW_HWY_INTENT_EGO_MPH = 30.0
 FOLLOW_HWY_INTENT_EGO_EXIT_MPH = 28.0
+# Stalk-write gates. Not the 48/52 live-follow hysteresis above.
+# City only below 30. Highway above 50, or in 30–50 when MAX is above 50.
+STALK_CITY_BELOW_MPH = 30.0
+STALK_HWY_ABOVE_MPH = 50.0
 # While opening to a farther city FD: ~3% slower than lead (small % more slowing).
 FOLLOW_OPEN_SLOW_FRAC = 0.03
 # t_follow slew (seconds of headway per second). Opening is a bit faster
@@ -147,6 +156,55 @@ def follow_ego_highway_intent(v_ego, prev_highway=None) -> bool:
   if (not prev_highway) and v > enter:
     return True
   return bool(prev_highway)
+
+
+def follow_stalk_band_is_highway(v_ego, v_cruise=None) -> bool:
+  """True when a stalk bump should step Highway Follow Distance.
+
+  Highway when ego is above 50 mph, or when ego is in 30–50 mph and
+  MAX / set speed is above 50 mph (still coming up to a highway MAX).
+  City when ego is below 30 mph, and in the 30–50 band when MAX is at
+  or under 50 or unknown. A non-positive cruise reading is unknown, so
+  it cannot force City at highway speed.
+
+  Live follow (48/52, and hwy-from-~30 with a lead and MAX > 50) stays
+  on `follow_band_is_highway`.
+  """
+  city_below = STALK_CITY_BELOW_MPH * CV.MPH_TO_MS
+  hwy_above = STALK_HWY_ABOVE_MPH * CV.MPH_TO_MS
+  try:
+    v = 0.0 if v_ego is None else float(v_ego)
+  except (TypeError, ValueError):
+    v = 0.0
+  if v < city_below:
+    return False
+  if v > hwy_above:
+    return True
+  try:
+    if v_cruise is None:
+      return False
+    vmax = float(v_cruise)
+  except (TypeError, ValueError):
+    return False
+  if vmax <= 0.0:
+    return False
+  return vmax > hwy_above
+
+
+def published_cruise_ms(v_cruise_kph, unset_kph: float = 255.0) -> float | None:
+  """HUD MAX in kph → m/s for the stalk band, or None if it is not a set speed.
+
+  0 and the unset sentinel are not a city MAX. CarState.vCruise is 0 until
+  card publishes the helper at the end of the frame.
+  """
+  try:
+    v_kph = float(v_cruise_kph)
+    unset = float(unset_kph)
+  except (TypeError, ValueError):
+    return None
+  if not (0.0 < v_kph < unset):
+    return None
+  return v_kph * CV.KPH_TO_MS
 
 
 def follow_band_is_highway(v_ego, prev_highway=None, *, v_cruise=None,
