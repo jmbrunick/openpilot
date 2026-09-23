@@ -26,6 +26,7 @@ from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, STEER_ANGLE_SATURATION_THRESHOLD
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
+from openpilot.selfdrive.controls.lib.lead_approach import lead_follow_slack_m
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl
 from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
@@ -47,7 +48,7 @@ class Controls:
 
     self.sm = messaging.SubMaster(['liveDelay', 'liveParameters', 'liveTorqueParameters', 'modelV2', 'selfdriveState',
                                    'liveCalibration', 'livePose', 'longitudinalPlan', 'lateralManeuverPlan', 'carState', 'carOutput',
-                                   'driverMonitoringState', 'onroadEvents', 'driverAssistance', 'liveMapDataNAP'], poll='selfdriveState')
+                                   'driverMonitoringState', 'onroadEvents', 'driverAssistance', 'liveMapDataNAP', 'radarState'], poll='selfdriveState')
     self.pm = messaging.PubMaster(['carControl', 'controlsState'])
 
     self.steer_limited_by_safety = False
@@ -184,7 +185,20 @@ class Controls:
 
     # accel PID loop
     pid_accel_limits = self.CI.get_pid_accel_limits(self.CP, CS.vEgo, CS.vCruise * CV.KPH_TO_MS)
-    actuators.accel = float(self.LoC.update(CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop, pid_accel_limits))
+    lead_v_rel = lead_d_rel = lead_slack = lead_a_lead = None
+    if self.sm.valid['radarState'] and self.sm['radarState'].leadOne.status:
+      lead = self.sm['radarState'].leadOne
+      lead_d_rel = float(lead.dRel)
+      lead_v_rel = float(CS.vEgo) - float(lead.vLead)
+      lead_slack = lead_follow_slack_m(lead_d_rel, float(lead.vLead), float(long_plan.tFollow))
+      lead_a_lead = float(lead.aLeadK)
+    actuators.accel = float(self.LoC.update(
+      CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop, pid_accel_limits,
+      lead_v_rel=lead_v_rel, lead_d_rel=lead_d_rel, lead_slack=lead_slack,
+      lead_fcw=bool(long_plan.fcw),
+      lead_v_ego=float(CS.vEgo), lead_v_cruise=float(CS.vCruise) * CV.KPH_TO_MS,
+      lead_a_lead=lead_a_lead,
+    ))
 
     # Steering PID loop and lateral MPC
     # Reset desired curvature to current to avoid violating the limits on engage.

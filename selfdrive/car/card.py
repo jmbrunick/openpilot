@@ -189,9 +189,12 @@ class Car:
       from opendbc.car.tesla.preap.nap_conf import nap_conf
       from opendbc.car.tesla.preap.radar_donor_vin import RadarDonorVinCommissioner
 
+      from openpilot.selfdrive.controls.lib.lead_approach import install_preap_plant_regen_guard
+
       install_blinker_lat_pause()
       install_body_controls_test()
       install_force_offroad_handoff()
+      install_preap_plant_regen_guard()
 
       def store_donor_vin(vin: str) -> None:
         nap_conf.radar_donor_vin = vin
