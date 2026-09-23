@@ -2149,3 +2149,51 @@ def test_scallywag_1809_midgap_plant_and_coast_floor():
     -1.50, -LEAD_MAP_MIDGAP_FLOOR_MS2, v_rel=0.5, d_rel=60.0, slack=19.0,
     v_ego=v_map + 1.3, v_cruise=v_map,
   ) == pytest.approx(-LEAD_MAP_MIDGAP_FLOOR_MS2)
+
+
+def test_near_gap_alead_match_not_coast_floored():
+  """Near-gap braking lead stays on aLead while the plan is still cruise.
+
+  The Pre-AP case sets dRel from follow distance of a faster lead plus
+  8 m, then closes at ~0.4 m/s with aLeadK −0.80. Slack lands near 10 m:
+  inside the mid-gap band and inside the near-gap band. That match must
+  stay ≈ −0.80 under and over the map. A slack-~19 m owned cliff still
+  floors, and a coasting command in this near-gap still cannot reach
+  the regen rail.
+  """
+  v_ego = 22.8 * 0.44704
+  v_lead_open = v_ego - (-1.44)
+  t_follow = nap_t_follow(4)
+  d_rel = t_follow * v_lead_open + STOP_DISTANCE + 8.0
+  v_lead = v_ego - 0.4
+  slack = lead_follow_slack_m(d_rel, v_lead, t_follow)
+  v_rel = v_ego - v_lead
+  assert LEAD_MAP_MIDGAP_SLACK_LO_M <= slack <= LEAD_NEAR_GAP_SLACK_M
+  assert v_rel == pytest.approx(0.4)
+
+  matched = floor_midgap_coast_a_target(
+    -0.80, True, v_rel, d_rel, slack, a_lead=-0.80, owned=True,
+  )
+  assert matched == pytest.approx(-0.80, abs=0.08)
+  v_map = 70.0 * 0.44704
+  over = floor_midgap_coast_a_target(
+    -0.80, True, v_rel, d_rel, slack,
+    v_ego=v_map + 1.3, v_cruise=v_map, a_lead=-0.80, owned=True,
+  )
+  assert over == pytest.approx(-0.80, abs=0.08)
+
+  cliff = floor_midgap_coast_a_target(
+    -3.36, True, 1.13, 58.0, 19.5, v_ego=30.0, v_cruise=31.3,
+    a_lead=-3.36, owned=True,
+  )
+  assert cliff == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  assert cliff >= -0.25
+
+  assert guard_follow_actuator_regen(
+    -0.80, -0.80, v_rel=v_rel, d_rel=d_rel, slack=slack, a_lead=-0.80,
+  ) == pytest.approx(-0.80, abs=0.08)
+  coast = guard_follow_actuator_regen(
+    -1.50, 0.008, v_rel=v_rel, d_rel=d_rel, slack=slack, a_lead=-0.80,
+  )
+  assert coast == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  assert coast >= -0.25

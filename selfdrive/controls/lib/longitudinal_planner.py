@@ -674,14 +674,16 @@ class LongitudinalPlanner:
         )
       # Coasting mid-gap: do not publish an ACCEL_MIN-region cliff while
       # plan accels stay ~0 (18:10 under the map, and the same geometry
-      # over the map). Arm the rematch trickle if that cliff was real
-      # so Accel cannot relight the next plant bite.
+      # over the map). Near-gap match-aLead stays raw. Arm the rematch
+      # trickle if that cliff was real so Accel cannot relight the next
+      # plant bite.
       pre_coast_floor = float(output_a_target)
       output_a_target = floor_midgap_coast_a_target(
         output_a_target, plan_horizon_is_coasting(self.a_desired_trajectory),
         overlay_v_rel, overlay_d, overlay_slack,
         v_ego=v_ego, v_cruise=v_hud_ms,
         fcw=self.fcw, crash_cnt=self.mpc.crash_cnt, allow_rapid=allow_rapid,
+        a_lead=lead_a_k, owned=bool(self._lead_close_hold_owned),
       )
       if ((live_ok or lead_held)
           and pre_coast_floor <= -LEAD_POST_DUMP_A_MS2

@@ -185,17 +185,19 @@ class Controls:
 
     # accel PID loop
     pid_accel_limits = self.CI.get_pid_accel_limits(self.CP, CS.vEgo, CS.vCruise * CV.KPH_TO_MS)
-    lead_v_rel = lead_d_rel = lead_slack = None
+    lead_v_rel = lead_d_rel = lead_slack = lead_a_lead = None
     if self.sm.valid['radarState'] and self.sm['radarState'].leadOne.status:
       lead = self.sm['radarState'].leadOne
       lead_d_rel = float(lead.dRel)
       lead_v_rel = float(CS.vEgo) - float(lead.vLead)
       lead_slack = lead_follow_slack_m(lead_d_rel, float(lead.vLead), float(long_plan.tFollow))
+      lead_a_lead = float(lead.aLeadK)
     actuators.accel = float(self.LoC.update(
       CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop, pid_accel_limits,
       lead_v_rel=lead_v_rel, lead_d_rel=lead_d_rel, lead_slack=lead_slack,
       lead_fcw=bool(long_plan.fcw),
       lead_v_ego=float(CS.vEgo), lead_v_cruise=float(CS.vCruise) * CV.KPH_TO_MS,
+      lead_a_lead=lead_a_lead,
     ))
 
     # Steering PID loop and lateral MPC

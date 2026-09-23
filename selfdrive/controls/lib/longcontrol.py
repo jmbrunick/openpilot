@@ -67,7 +67,7 @@ class LongControl:
 
   def update(self, active, CS, a_target, should_stop, accel_limits,
              lead_v_rel=None, lead_d_rel=None, lead_slack=None, lead_fcw=False,
-             lead_v_ego=None, lead_v_cruise=None):
+             lead_v_ego=None, lead_v_cruise=None, lead_a_lead=None):
     """Update longitudinal control. This updates the state machine and runs a PID loop"""
     self.pid.neg_limit = accel_limits[0]
     self.pid.pos_limit = accel_limits[1]
@@ -105,6 +105,6 @@ class LongControl:
       self.last_output_accel = float(guard_follow_actuator_regen(
         self.last_output_accel, a_target,
         v_rel=lead_v_rel, d_rel=lead_d_rel, slack=lead_slack, fcw=lead_fcw,
-        v_ego=lead_v_ego, v_cruise=lead_v_cruise,
+        v_ego=lead_v_ego, v_cruise=lead_v_cruise, a_lead=lead_a_lead,
       ))
     return self.last_output_accel

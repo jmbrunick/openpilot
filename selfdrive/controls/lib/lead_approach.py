@@ -107,8 +107,11 @@ mph under 70) still cliffed: post-MPC aTarget went to −1.4…−3.5 while
 plan accels stayed ~0, and the Pre-AP pedal plant full-lifted to the
 regen rail on a coasting / MILD command. Floor that coasting mid-gap
 sample under or over the map (MILD under, map comfort −0.55 over).
-Match-speed close ≥ 1.5 stays raw. Expand the plant steady band
-through MILD so a commanded slight lift cannot unlock the regen rail.
+Match-speed close ≥ 1.5 stays raw. Near-gap match-aLead (slack ≲ 15 m,
+aLead ≲ −0.2, including a hold-owned brake) stays raw while the plan
+horizon is still cruise — that is lead braking, not the slack-~19 m
+cliff. Expand the plant steady band through MILD so a commanded slight
+lift cannot unlock the regen rail.
 """
 from __future__ import annotations
 
@@ -541,9 +544,28 @@ def lead_midgap_comfort_excluded(v_rel, d_rel, slack, fcw=False, crash_cnt=0,
   return False
 
 
+def lead_near_gap_alead_raw(v_rel, a_lead, slack, owned=False) -> bool:
+  """True when near-gap lead braking must stay raw.
+
+  Slack at or under the near-gap band with a meaningful negative aLead
+  is match-aLead (dRel = follow + 8 m, closing ~0.4 m/s, aLeadK −0.80)
+  even while the MPC horizon is still cruise. Hold-owned is the same
+  brake. A slack-~19 m cliff (−1.4…−3.5) with a coasting plan is not
+  this path.
+  """
+  if slack is None or float(slack) > LEAD_NEAR_GAP_SLACK_M:
+    return False
+  if lead_alead_owns_match(v_rel, a_lead, slack):
+    return True
+  if not owned or a_lead is None:
+    return False
+  return float(a_lead) <= LEAD_CLOSING_ALEAD_MS2
+
+
 def guard_follow_actuator_regen(actuator_a, planner_a, v_rel=None, d_rel=None,
                                 slack=None, fcw=False, crash_cnt=0,
-                                allow_rapid=False, v_ego=None, v_cruise=None):
+                                allow_rapid=False, v_ego=None, v_cruise=None,
+                                a_lead=None, owned=False):
   """Do not dump firm plant regen on a coast or a mild ease.
 
   ef 10:18:42: aTarget ≈ 0 while actuators.accel hit −1.23. 18:09 /
@@ -552,6 +574,7 @@ def guard_follow_actuator_regen(actuator_a, planner_a, v_rel=None, d_rel=None,
   the actuator to the MILD slight-lift floor. Mid-gap slow close /
   settle hard-caps to that floor even if the planner command is
   already a cliff — PID / feedforward windup must not full-lift.
+  Near-gap match-aLead is a real brake and is not that hard cap.
   Planner ≤ −0.5 outside that settle, FCW, confirmed rapid, and
   near-bumper pass through.
   """
@@ -567,9 +590,10 @@ def guard_follow_actuator_regen(actuator_a, planner_a, v_rel=None, d_rel=None,
   )
   if emergency:
     return a
-  if not lead_midgap_comfort_excluded(
-    v_rel, d_rel, slack, fcw=False, crash_cnt=0, allow_rapid=False,
-  ):
+  if (not lead_near_gap_alead_raw(v_rel, a_lead, slack, owned=owned)
+      and not lead_midgap_comfort_excluded(
+        v_rel, d_rel, slack, fcw=False, crash_cnt=0, allow_rapid=False,
+      )):
     # Under the map, slight lift. Over the map, keep the #231 comfort
     # brake (−0.55) so a limit return is not lifted back to MILD.
     if lead_map_decel_above_max(v_ego, v_cruise):
@@ -597,15 +621,19 @@ def plan_horizon_is_coasting(accels, coast_ms2=LEAD_PLAN_COAST_A_MS2) -> bool:
 
 def floor_midgap_coast_a_target(a, plan_coasting, v_rel, d_rel, slack,
                                 v_ego=None, v_cruise=None, fcw=False,
-                                crash_cnt=0, allow_rapid=False):
+                                crash_cnt=0, allow_rapid=False,
+                                a_lead=None, owned=False):
   """Floor a post-MPC cliff while the plan itself is coasting.
 
   Under the map the floor is MILD (slight lift). Over the map it is
   the #231 comfort brake (−0.55) so the limit can still come back.
   FCW, confirmed rapid, near-bumper, and match-speed close ≥ 1.5 stay
-  raw. A plan horizon that is already braking is not this path.
+  raw. Near-gap aLead match / hold-owned lead braking stays raw too.
+  A plan horizon that is already braking is not this path.
   """
   if a is None or not plan_coasting:
+    return a
+  if lead_near_gap_alead_raw(v_rel, a_lead, slack, owned=owned):
     return a
   if lead_midgap_comfort_excluded(
     v_rel, d_rel, slack, fcw=fcw, crash_cnt=crash_cnt, allow_rapid=allow_rapid,
