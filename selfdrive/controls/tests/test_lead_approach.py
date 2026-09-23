@@ -102,7 +102,9 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   lead_at_or_above_max,
   lead_map_decel_above_max,
   floor_midgap_coast_a_target,
+  floor_near_fd_coast_a_target,
   guard_follow_actuator_regen,
+  near_fd_coast_floor_applies,
   plan_horizon_is_coasting,
   plant_regen_effort_limits,
   lead_close_accel_ms2,
@@ -782,6 +784,8 @@ def test_planner_wires_hysteresis_and_slew():
   assert "catchup=self._lead_mid_gap_catchup" in planner
   assert "lead_approach_rapid_gate(" in planner
   assert "soft_limit_mpc_a_target(" in planner
+  assert "floor_near_fd_coast_a_target(" in planner
+  assert "should_stop=bool(self.output_should_stop)" in planner
   assert "cap_closing_lead_accel(" in planner
   assert "d_rel=overlay_d" in planner
   assert "lead_remaining_close_a_ms2(" in planner
@@ -2197,3 +2201,90 @@ def test_near_gap_alead_match_not_coast_floored():
   )
   assert coast == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
   assert coast >= -0.25
+
+
+def test_near_fd_coast_floor_settles_and_keeps_hard_brake():
+  """23:16 near-FD coast cliff floors. 23:31 #222 geometry stays firm.
+
+  B1: plan coasting, slack ~3 m (under the mid-gap floor), closing ~0.4,
+  aLead ~0, owned lead. KEEP: closing ~1.1 and aLead ~−1.2, or residual
+  / rapid already armed. A real plan brake stays raw either way.
+  """
+  # 23:16:41 — slack 3.0, close 0.44, aLead −0.04, plan_min −0.02.
+  b1 = floor_near_fd_coast_a_target(
+    -3.5, True, 0.44, 30.1, 3.0, a_lead=-0.04, owned=True,
+  )
+  assert b1 == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  assert b1 >= -0.25
+  assert near_fd_coast_floor_applies(
+    True, 0.44, 30.1, 3.0, a_lead=-0.04, owned=True,
+  )
+  # Other settle samples in the same cluster, still under 8 m.
+  for close, alead, slack in (
+    (0.56, -0.14, 2.1),
+    (0.69, -0.11, 4.8),
+    (0.63, -0.03, 7.5),
+  ):
+    floored = floor_near_fd_coast_a_target(
+      -3.5, True, close, 30.0, slack, a_lead=alead, owned=True,
+    )
+    assert floored == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  # Already mild: do not pull it down.
+  assert floor_near_fd_coast_a_target(
+    -0.05, True, 0.44, 30.1, 3.0, a_lead=-0.04, owned=True,
+  ) == pytest.approx(-0.05)
+
+  # 23:31 KEEP — closing up and aLead negative. Firm dump stays, even
+  # if someone marks the plan as still coasting and slack is near-FD.
+  keep = floor_near_fd_coast_a_target(
+    -3.5, True, 1.13, 35.0, 6.0, a_lead=-1.18, owned=True,
+  )
+  assert keep == pytest.approx(-3.5)
+  # Same kinematics in the mid-gap band (slack ~9 m) stay raw too.
+  assert floor_midgap_coast_a_target(
+    -3.5, True, 1.13, 38.0, 9.0, a_lead=-1.18, owned=True,
+  ) == pytest.approx(-3.5)
+  # Closing up alone, before aLead has gone hard, is not a settle floor.
+  assert floor_near_fd_coast_a_target(
+    -3.5, True, 1.10, 35.0, 4.0, a_lead=0.0, owned=True,
+  ) == pytest.approx(-3.5)
+  # aLead at the brake line stays raw. Near-gap match (≤ −0.2) stays raw too.
+  assert floor_near_fd_coast_a_target(
+    -3.5, True, 0.44, 30.0, 3.0, a_lead=-0.25, owned=True,
+  ) == pytest.approx(-3.5)
+  assert floor_near_fd_coast_a_target(
+    -3.5, True, 0.44, 30.0, 3.0, a_lead=-0.22, owned=True,
+  ) == pytest.approx(-3.5)
+  # Residual close armed (closing worsened past ego a) stays raw.
+  residual = floor_near_fd_coast_a_target(
+    -3.5, True, 0.70, 30.0, 4.0, a_lead=-0.05, owned=True,
+    prev_v_rel=0.50, a_ego=0.0, dt=0.05,
+  )
+  assert residual == pytest.approx(-3.5)
+  assert not near_fd_coast_floor_applies(
+    True, 0.70, 30.0, 4.0, a_lead=-0.05, owned=True,
+    prev_v_rel=0.50, a_ego=0.0, dt=0.05,
+  )
+  # Rapid confirm, FCW, shouldStop, near-bumper, not owned, plan braking.
+  assert floor_near_fd_coast_a_target(
+    -3.5, True, 0.44, 30.0, 3.0, a_lead=-0.04, owned=True, allow_rapid=True,
+  ) == pytest.approx(-3.5)
+  assert floor_near_fd_coast_a_target(
+    -3.5, True, 0.44, 30.0, 3.0, a_lead=-0.04, owned=True, fcw=True,
+  ) == pytest.approx(-3.5)
+  assert floor_near_fd_coast_a_target(
+    -3.5, True, 0.44, 30.0, 3.0, a_lead=-0.04, owned=True, should_stop=True,
+  ) == pytest.approx(-3.5)
+  assert floor_near_fd_coast_a_target(
+    -3.5, True, 0.44, 10.0, 3.0, a_lead=-0.04, owned=True,
+  ) == pytest.approx(-3.5)
+  assert floor_near_fd_coast_a_target(
+    -3.5, True, 0.44, 30.0, 3.0, a_lead=-0.04, owned=False,
+  ) == pytest.approx(-3.5)
+  assert floor_near_fd_coast_a_target(
+    -3.5, False, 0.44, 30.0, 3.0, a_lead=-0.04, owned=True,
+  ) == pytest.approx(-3.5)
+  # Mid-gap slack is the other floor, not this one.
+  assert floor_near_fd_coast_a_target(
+    -3.5, True, 0.44, 58.0, 19.0, a_lead=-0.04, owned=True,
+  ) == pytest.approx(-3.5)

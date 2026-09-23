@@ -1,26 +1,27 @@
 """City vs highway Follow Distance (Mannerisms 1–7 setpoints).
 
-Two params: NAPFollowDistanceCity (<~50 mph) and NAPFollowDistanceHwy
-(>~50 mph). Migrates from the single NAPFollowDistance slider. Available
-whenever Mannerisms FD is used — not gated on Hypermile.
+Two params: NAPFollowDistanceCity and NAPFollowDistanceHwy. Migrates
+from the single NAPFollowDistance slider. Available whenever Mannerisms
+FD is used — not gated on Hypermile.
 
-While long is engaged and a radar lead is valid, t_follow slews between
-the two setpoints (no step at 50). Dropping into city, ego is slightly
-slower than the lead so the gap *opens* to city FD. Rising onto highway,
-t_follow creeps toward hwy FD.
+Band selection is MAX-primary, for both the live blend and a stalk bump:
 
-Default band is ego-speed hysteresis around 50 mph (enter hwy > 52,
-return to city < 48). Highway intent: when a lead is present, long is
-engaged, and MAX / set cruise speed is > 50 mph, apply highway FD once
-ego > ~30 mph (enter > 30, exit < 28) — do not wait for 48/52. MAX ≤ 50
-stays on city FD. If MAX drops below 48, blend back toward city FD.
-t_follow slew (not a step) holds the band change.
+- City when MAX / set cruise speed is under 50 mph
+- Highway when MAX is 50 mph or higher (exactly 50 is Highway)
+- Traveled speed only when MAX is unset, invalid, or 0
 
-A stalk bump does not use that live band. `follow_stalk_band_is_highway`
-picks which param the tip writes: Highway when ego is above 50 mph or
-MAX is above 50 mph (including while ego is still coming up to a highway
-set speed). City only when ego is at or under 50 mph and MAX is not above
-50. The 48/52 live-follow hysteresis stays on `follow_band_is_highway`.
+A hard brake that drops ego under 50 while MAX stays at 75 stays on
+Highway follow. Ego speed does not open the city gap under a highway MAX.
+
+While long is engaged and a radar lead is valid, t_follow still slews
+between the two setpoints (no step when the band changes). Dropping into
+city, ego is slightly slower than the lead so the gap *opens* to city FD.
+Rising onto highway, t_follow creeps toward hwy FD.
+
+Ego hysteresis (enter hwy above 52, return to city below 48) remains
+only for that no-MAX fallback. Ego speed chatters through 49–51; a set
+MAX does not, so the MAX cut is a hard 50 with no extra hold. The slew
+above is what smooths a real band change — it does not pick the band.
 """
 from __future__ import annotations
 
@@ -40,20 +41,12 @@ FOLLOW_MAX = 7
 FOLLOW_DEFAULT = 4
 NAP_FOLLOW_DISTANCE_RANGE = range(FOLLOW_MIN, FOLLOW_MAX + 1)
 
-# ~50 mph split with hysteresis so chatter at 49–51 does not flip setpoints.
+# MAX / set speed cut. Highway at 50 mph and above. City under 50.
+# Ego fallback (no MAX) still uses 48/52 so 49–51 mph of traveled
+# speed does not flap the setpoint. A set MAX is not that noisy.
 FOLLOW_SPLIT_MPH = 50.0
 FOLLOW_CITY_ENTER_MPH = 48.0
 FOLLOW_HWY_ENTER_MPH = 52.0
-# MAX / set speed > 50 mph is highway intent. Drop intent below 48 so a
-# 49–51 MAX does not chatter city↔hwy. Once intent is on (lead + long
-# engaged), start hwy FD from ~30 mph — not the 48/52 ego gate.
-FOLLOW_HWY_INTENT_MPH = 50.0
-FOLLOW_HWY_INTENT_EXIT_MPH = 48.0
-FOLLOW_HWY_INTENT_EGO_MPH = 30.0
-FOLLOW_HWY_INTENT_EGO_EXIT_MPH = 28.0
-# Stalk-write gate. Not the 48/52 live-follow hysteresis above.
-# Highway when ego or MAX is above 50. City only when both are at or under 50.
-STALK_HWY_ABOVE_MPH = 50.0
 # While opening to a farther city FD: ~3% slower than lead (small % more slowing).
 FOLLOW_OPEN_SLOW_FRAC = 0.03
 # t_follow slew (seconds of headway per second). Opening is a bit faster
@@ -123,37 +116,53 @@ def migrate_follow_distance_params(params) -> tuple[int | None, int | None]:
   return city, hwy
 
 
-def follow_highway_intent(v_cruise, prev_intent=None):
-  """MAX / set speed highway intent.
+def follow_set_max_ms(v_cruise) -> float | None:
+  """MAX in m/s, or None when it is unset, invalid, or not positive.
 
-  True when MAX > 50 mph, False when MAX ≤ 50 (exit below 48). None when
-  MAX is unknown so callers keep the ego 48/52 band. Compare in m/s so a
-  50 mph set speed does not flip True via mph round-trip float.
+  0 is not a city set speed. Callers that already filtered the 255 kph
+  unset sentinel (`published_cruise_ms`) pass None.
   """
-  if v_cruise is None:
-    return prev_intent
-  v = float(v_cruise)
-  enter = FOLLOW_HWY_INTENT_MPH * CV.MPH_TO_MS
-  exit_v = FOLLOW_HWY_INTENT_EXIT_MPH * CV.MPH_TO_MS
-  if prev_intent is None:
-    return v > enter
-  if prev_intent and v < exit_v:
-    return False
-  if (not prev_intent) and v > enter:
-    return True
-  return bool(prev_intent)
+  try:
+    if v_cruise is None:
+      return None
+    v = float(v_cruise)
+  except (TypeError, ValueError):
+    return None
+  if not (v > 0.0):
+    return None
+  return v
 
 
-def follow_ego_highway_intent(v_ego, prev_highway=None) -> bool:
-  """Hwy FD once ego > ~30 mph. Exit below 28 so 29–31 does not chatter."""
-  v = 0.0 if v_ego is None else float(v_ego)
-  enter = FOLLOW_HWY_INTENT_EGO_MPH * CV.MPH_TO_MS
-  exit_v = FOLLOW_HWY_INTENT_EGO_EXIT_MPH * CV.MPH_TO_MS
+def follow_max_is_highway(v_cruise) -> bool | None:
+  """Highway when MAX ≥ 50 mph, City when MAX < 50, None when no MAX.
+
+  Exactly 50 mph is Highway. Compare in m/s so a 50 mph set does not
+  miss the cut on a kph round-trip. No extra hold under 50: a 49 mph
+  MAX is City even if the previous band was Highway.
+  """
+  v = follow_set_max_ms(v_cruise)
+  if v is None:
+    return None
+  return v >= FOLLOW_SPLIT_MPH * CV.MPH_TO_MS
+
+
+def follow_ego_band_is_highway(v_ego, prev_highway=None) -> bool:
+  """Traveled-speed band. Only used when MAX is not available.
+
+  No previous band: Highway at 50 mph and above. With a previous band,
+  hold Highway down through 49 and City up through 51 (drop below 48,
+  rise above 52) so ego chatter at the cut does not flap setpoints.
+  """
+  try:
+    v = 0.0 if v_ego is None else float(v_ego)
+  except (TypeError, ValueError):
+    v = 0.0
+  mph = v * CV.MS_TO_MPH
   if prev_highway is None:
-    return v > enter
-  if prev_highway and v < exit_v:
+    return mph >= FOLLOW_SPLIT_MPH
+  if prev_highway and mph < FOLLOW_CITY_ENTER_MPH:
     return False
-  if (not prev_highway) and v > enter:
+  if (not prev_highway) and mph > FOLLOW_HWY_ENTER_MPH:
     return True
   return bool(prev_highway)
 
@@ -161,31 +170,17 @@ def follow_ego_highway_intent(v_ego, prev_highway=None) -> bool:
 def follow_stalk_band_is_highway(v_ego, v_cruise=None) -> bool:
   """True when a stalk bump should step Highway Follow Distance.
 
-  Highway when ego is above 50 mph, or when MAX / set speed is above
-  50 mph — including while ego is still under 50 on the way up to a
-  highway MAX. City when ego is at or under 50 mph and MAX is at or
-  under 50 (or unknown). A non-positive cruise reading is not a highway
-  MAX, so it cannot force City once ego is above 50.
-
-  Live follow keeps its own 48/52 hysteresis (and hwy-from-~30 with a
-  lead and MAX > 50) on `follow_band_is_highway`.
+  Same MAX-primary cut as live follow: Highway when MAX ≥ 50 mph
+  (including while ego is still coming up to that set speed, and
+  including exactly 50). City when MAX is under 50, even if ego is
+  already above 50. Traveled speed is the fallback only when MAX is
+  unset, invalid, or 0 — a zero cruise reading must not force City
+  once ego is on the highway side of the fallback cut.
   """
-  hwy_above = STALK_HWY_ABOVE_MPH * CV.MPH_TO_MS
-  try:
-    v = 0.0 if v_ego is None else float(v_ego)
-  except (TypeError, ValueError):
-    v = 0.0
-  if v > hwy_above:
-    return True
-  try:
-    if v_cruise is None:
-      return False
-    vmax = float(v_cruise)
-  except (TypeError, ValueError):
-    return False
-  if vmax <= 0.0:
-    return False
-  return vmax > hwy_above
+  band = follow_max_is_highway(v_cruise)
+  if band is not None:
+    return band
+  return follow_ego_band_is_highway(v_ego, prev_highway=None)
 
 
 def published_cruise_ms(v_cruise_kph, unset_kph: float = 255.0) -> float | None:
@@ -209,26 +204,22 @@ def follow_band_is_highway(v_ego, prev_highway=None, *, v_cruise=None,
                           prev_intent=None) -> bool:
   """City vs hwy Follow Distance band.
 
-  Default: ego-speed hysteresis around 50 mph (48/52). When long is
-  engaged, a lead is present, and MAX > 50 mph, apply hwy FD once ego
-  > ~30 mph (28/30 hysteresis) — do not wait for 48/52. MAX ≤ 50 stays
-  on city FD; unknown MAX keeps 48/52.
+  MAX-primary: Highway when set speed ≥ 50 mph, City when it is under
+  50, whether or not a lead is present and whether or not long is
+  engaged. Ego speed is not part of that choice — decelerating under a
+  highway MAX stays Highway. `engaged` / `has_lead` / `intent` are
+  accepted so older callers keep working; they do not pick the band.
+  The t_follow slew in `FollowDistanceBlend` still runs only while long
+  is engaged with a lead.
+
+  No MAX (unset / invalid / 0): ego fallback, with 48/52 hysteresis
+  when a previous band is known.
   """
-  if intent is None:
-    intent = follow_highway_intent(v_cruise, prev_intent)
-  if engaged and has_lead:
-    if intent is True:
-      return follow_ego_highway_intent(v_ego, prev_highway)
-    if intent is False:
-      return False
-  mph = float(v_ego) * CV.MS_TO_MPH if v_ego is not None else FOLLOW_SPLIT_MPH
-  if prev_highway is None:
-    return mph >= FOLLOW_SPLIT_MPH
-  if prev_highway and mph < FOLLOW_CITY_ENTER_MPH:
-    return False
-  if (not prev_highway) and mph > FOLLOW_HWY_ENTER_MPH:
-    return True
-  return bool(prev_highway)
+  _ = (engaged, has_lead, intent, prev_intent)
+  band = follow_max_is_highway(v_cruise)
+  if band is not None:
+    return band
+  return follow_ego_band_is_highway(v_ego, prev_highway)
 
 
 def follow_open_a_ms2(v_ego, v_lead):
@@ -250,7 +241,6 @@ class FollowDistanceBlend:
 
   def __init__(self):
     self.highway = None
-    self.intent = None
     self.t_follow = None
     self.city = FOLLOW_DEFAULT
     self.hwy = FOLLOW_DEFAULT
@@ -260,11 +250,7 @@ class FollowDistanceBlend:
     self.city, self.hwy = migrate_follow_distance_params(params)
 
   def update(self, v_ego, dt, *, engaged, has_lead, v_lead=None, v_cruise=None):
-    self.intent = follow_highway_intent(v_cruise, self.intent)
-    self.highway = follow_band_is_highway(
-      v_ego, self.highway, v_cruise=v_cruise, engaged=engaged,
-      has_lead=has_lead, intent=self.intent,
-    )
+    self.highway = follow_band_is_highway(v_ego, self.highway, v_cruise=v_cruise)
     target_dist = self.hwy if self.highway else self.city
     if target_dist not in NAP_FOLLOW_DISTANCE_RANGE:
       self.active_dist = None

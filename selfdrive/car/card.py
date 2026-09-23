@@ -503,11 +503,13 @@ class Car:
 
     Same whether Hypermile is On or Off. A first-detent tip undoes that
     frame's 1 mph MAX and, after the lever returns to IDLE without a
-    2nd detent, steps the matching 1–7: Highway when ego or MAX is above
-    50 mph (including while still accelerating up to a highway MAX), City
-    when ego is at or under 50 and MAX is not above 50. HUD NAPFollowDistance tracks the band
-    just stepped. A full press (2nd detent / 5 mph) keeps MAX +5/−5 and
-    does not remap Follow, even if the lever passed through first detent.
+    2nd detent, steps the matching 1–7: Highway when MAX is 50 mph or
+    higher (including while ego is still coming up to that set speed),
+    City when MAX is under 50 even if ego is already faster. Traveled
+    speed picks the band only when MAX is unset. HUD NAPFollowDistance
+    tracks the band just stepped. A full press (2nd detent / 5 mph)
+    keeps MAX +5/−5 and does not remap Follow, even if the lever passed
+    through first detent.
     No lead: leave stalk as MAX adjust. During a long pause,
     cruiseState.speed is ego — detent still distinguishes tip vs hold;
     buttonEvents alone do not.

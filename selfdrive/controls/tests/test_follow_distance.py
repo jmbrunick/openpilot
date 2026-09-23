@@ -6,10 +6,6 @@ from openpilot.selfdrive.controls.lib.follow_distance import (
   FOLLOW_CITY_ENTER_MPH,
   FOLLOW_DEFAULT,
   FOLLOW_HWY_ENTER_MPH,
-  FOLLOW_HWY_INTENT_EGO_EXIT_MPH,
-  FOLLOW_HWY_INTENT_EGO_MPH,
-  FOLLOW_HWY_INTENT_EXIT_MPH,
-  FOLLOW_HWY_INTENT_MPH,
   FOLLOW_OPEN_SLOW_FRAC,
   FOLLOW_SPLIT_MPH,
   FOLLOW_T_SLEW_CREEP_PER_S,
@@ -20,8 +16,7 @@ from openpilot.selfdrive.controls.lib.follow_distance import (
   PARAM_FOLLOW_HWY,
   PARAM_FOLLOW_MIGRATED,
   follow_band_is_highway,
-  follow_ego_highway_intent,
-  follow_highway_intent,
+  follow_max_is_highway,
   follow_open_a_ms2,
   follow_stalk_band_is_highway,
   migrate_follow_distance_params,
@@ -84,45 +79,43 @@ def test_follow_band_hysteresis_around_50():
   assert follow_band_is_highway(v52 + 0.05, prev_highway=False) is True
 
 
-def test_highway_intent_starts_hwy_fd_from_30_not_48_52():
-  """Lead + long + MAX > 50: hwy FD once ego > ~30. MAX ≤ 50 stays city."""
-  v30 = FOLLOW_HWY_INTENT_EGO_MPH * CV.MPH_TO_MS
-  v28 = FOLLOW_HWY_INTENT_EGO_EXIT_MPH * CV.MPH_TO_MS
-  v35 = 35.0 * CV.MPH_TO_MS
-  v29 = 29.0 * CV.MPH_TO_MS
-  v55 = 55.0 * CV.MPH_TO_MS
-  v_max65 = 65.0 * CV.MPH_TO_MS
-  v_max50 = FOLLOW_HWY_INTENT_MPH * CV.MPH_TO_MS
-  v_max45 = 45.0 * CV.MPH_TO_MS
-  kw = dict(engaged=True, has_lead=True)
+def test_max_primary_city_hwy_band():
+  """City when MAX < 50. Highway when MAX ≥ 50. Ego only if MAX is missing."""
+  def v(mph):
+    return mph * CV.MPH_TO_MS
 
-  assert abs(FOLLOW_HWY_INTENT_MPH - 50.0) < 1e-9
-  assert abs(FOLLOW_HWY_INTENT_EXIT_MPH - 48.0) < 1e-9
-  assert abs(FOLLOW_HWY_INTENT_EGO_MPH - 30.0) < 1e-9
-  assert abs(FOLLOW_HWY_INTENT_EGO_EXIT_MPH - 28.0) < 1e-9
-  assert FOLLOW_HWY_INTENT_EGO_EXIT_MPH < FOLLOW_HWY_INTENT_EGO_MPH < FOLLOW_CITY_ENTER_MPH
-  assert follow_highway_intent(v_max65) is True
-  assert follow_highway_intent(v_max50) is False
-  assert follow_highway_intent(v_max45) is False
-  assert follow_highway_intent(49.0 * CV.MPH_TO_MS, prev_intent=True) is True
-  assert follow_highway_intent(47.5 * CV.MPH_TO_MS, prev_intent=True) is False
+  assert follow_max_is_highway(v(70)) is True
+  assert follow_max_is_highway(v(50)) is True
+  assert follow_max_is_highway(v(49)) is False
+  assert follow_max_is_highway(v(45)) is False
+  assert follow_max_is_highway(None) is None
+  assert follow_max_is_highway(0.0) is None
 
-  # Climbing out of town toward MAX 65: hwy from ~30, not 48/52.
-  assert follow_band_is_highway(v35, v_cruise=v_max65, **kw) is True
-  assert follow_band_is_highway(v30 + 0.05, v_cruise=v_max65, **kw) is True
-  assert follow_band_is_highway(v29, v_cruise=v_max65, **kw) is False
-  # Chatter at 30: hold hwy down through 29; drop only below 28.
-  assert follow_ego_highway_intent(v29, prev_highway=True) is True
-  assert follow_ego_highway_intent(v28 - 0.05, prev_highway=True) is False
-  # MAX ≤ 50: city even at 55 (blend back toward city FD).
-  assert follow_band_is_highway(v55, v_cruise=v_max45, **kw) is False
-  assert follow_band_is_highway(v55, v_cruise=v_max50, **kw) is False
-  # Unknown MAX keeps 48/52 (no silent city flip at 60).
-  assert follow_band_is_highway(v55, engaged=True, has_lead=True) is True
-  assert follow_band_is_highway(v35, engaged=True, has_lead=True) is False
-  # No lead / not engaged: still 48/52 even with MAX 65.
-  assert follow_band_is_highway(v35, v_cruise=v_max65, engaged=True, has_lead=False) is False
-  assert follow_band_is_highway(v55, v_cruise=v_max65, engaged=False, has_lead=True) is True
+  # ego 25 + MAX 70 → Hwy, even from a city band and with no lead.
+  assert follow_band_is_highway(v(25), prev_highway=False, v_cruise=v(70)) is True
+  assert follow_band_is_highway(
+    v(25), v_cruise=v(70), engaged=False, has_lead=False,
+  ) is True
+  # ego 60 + MAX 45 → City. Do not hold highway just because ego is fast.
+  assert follow_band_is_highway(v(60), prev_highway=True, v_cruise=v(45)) is False
+  assert follow_stalk_band_is_highway(v(60), v(45)) is False
+  # ego 25 + no MAX → city. ego 60 + no MAX (including cruise 0) → hwy.
+  assert follow_band_is_highway(v(25)) is False
+  assert follow_stalk_band_is_highway(v(25)) is False
+  assert follow_band_is_highway(v(60)) is True
+  assert follow_stalk_band_is_highway(v(60), 0.0) is True
+  assert follow_stalk_band_is_highway(v(25), 0.0) is False
+  # MAX exactly 50 → Hwy, whatever ego is doing.
+  assert follow_band_is_highway(v(25), v_cruise=v(50)) is True
+  assert follow_band_is_highway(v(60), v_cruise=v(50)) is True
+  assert follow_stalk_band_is_highway(v(25), v(50)) is True
+  assert follow_stalk_band_is_highway(v(50), v(50)) is True
+  # Decel under a highway MAX (23:32: ego ~48, MAX still 75) stays Hwy.
+  assert follow_band_is_highway(v(47.7), prev_highway=True, v_cruise=v(75)) is True
+  assert follow_band_is_highway(v(47.7), prev_highway=False, v_cruise=v(75)) is True
+  # No MAX: 48/52 ego hysteresis still holds. A set MAX does not.
+  assert follow_band_is_highway(v(49), prev_highway=True) is True
+  assert follow_band_is_highway(v(49), prev_highway=True, v_cruise=v(49)) is False
 
 
 def test_blend_creeps_to_hwy_from_30_when_max_is_highway_intent():
@@ -159,7 +152,6 @@ def test_blend_returns_to_city_when_max_drops_below_50():
   b = FollowDistanceBlend()
   b.city, b.hwy = 6, 2
   b.highway = True
-  b.intent = True
   b.t_follow = nap_t_follow(2)
   v_ego = 55.0 * CV.MPH_TO_MS
   t_city = nap_t_follow(6)
@@ -268,7 +260,7 @@ def test_persist_steps_city_or_hwy_band_by_speed():
 
 
 def test_stalk_band_selects_city_or_hwy():
-  """Stalk bump: hwy if ego > 50 or MAX > 50; city only when both are ≤ 50."""
+  """Stalk bump uses the same MAX-primary cut as live follow."""
   def v(mph):
     return mph * CV.MPH_TO_MS
 
@@ -277,17 +269,17 @@ def test_stalk_band_selects_city_or_hwy():
   assert follow_stalk_band_is_highway(v(40), v(70)) is True
   assert follow_stalk_band_is_highway(v(40), v(45)) is False
   assert follow_stalk_band_is_highway(v(55)) is True
-  # Highway MAX forces Highway even while ego is still under 50.
+  # Highway MAX, including exactly 50, even while ego is still under 50.
   assert follow_stalk_band_is_highway(v(25), v(70)) is True
   assert follow_stalk_band_is_highway(v(40)) is False
   assert follow_stalk_band_is_highway(v(50), v(45)) is False
-  assert follow_stalk_band_is_highway(v(50)) is False
-  assert follow_stalk_band_is_highway(v(50), v(50)) is False
+  assert follow_stalk_band_is_highway(v(50)) is True
+  assert follow_stalk_band_is_highway(v(50), v(50)) is True
   assert follow_stalk_band_is_highway(v(50), v(70)) is True
   # CarState.vCruise is 0 until published. That must not force City at 60.
   assert follow_stalk_band_is_highway(v(60), 0.0) is True
-  assert follow_stalk_band_is_highway(v(60), v(45)) is True
-  # Live follow still uses 48/52 and MAX≤50 → city even at 55. Do not merge.
+  # City MAX wins over a highway ego speed.
+  assert follow_stalk_band_is_highway(v(60), v(45)) is False
   assert follow_band_is_highway(
     v(55), v_cruise=v(45), engaged=True, has_lead=True,
   ) is False
@@ -302,7 +294,7 @@ def test_published_cruise_ignores_unset_and_zero():
 
 
 def test_persist_stalk_writes_matching_band_and_hud():
-  """Highway speed and highway MAX write Hwy; city speed and city MAX write City."""
+  """MAX picks the param the bump writes. Full press is not this path."""
   from openpilot.selfdrive.controls.lib.hypermile import persist_follow_distance
 
   def bump(ego_mph, max_mph=None, *, closer=True, cruise_ms=None):
@@ -343,10 +335,48 @@ def test_persist_stalk_writes_matching_band_and_hud():
   assert mid_city.get(PARAM_FOLLOW_HWY) == 3
   assert mid_city.get(PARAM_FOLLOW) == 2
 
+  # Highway ego under a city MAX writes City, not Highway.
+  fast_city = bump(60, max_mph=45)
+  assert fast_city.get(PARAM_FOLLOW_CITY) == 2
+  assert fast_city.get(PARAM_FOLLOW_HWY) == 3
+  assert fast_city.get(PARAM_FOLLOW) == 2
+
+  # No MAX: ego 25 writes City.
+  slow = bump(25)
+  assert slow.get(PARAM_FOLLOW_CITY) == 2
+  assert slow.get(PARAM_FOLLOW_HWY) == 3
+  assert slow.get(PARAM_FOLLOW) == 2
+
+  # MAX exactly 50 writes Highway.
+  at_50 = bump(25, max_mph=50)
+  assert at_50.get(PARAM_FOLLOW_HWY) == 2
+  assert at_50.get(PARAM_FOLLOW_CITY) == 3
+  assert at_50.get(PARAM_FOLLOW) == 2
+
   fast = bump(55, closer=False)
   assert fast.get(PARAM_FOLLOW_HWY) == 4
   assert fast.get(PARAM_FOLLOW_CITY) == 3
   assert fast.get(PARAM_FOLLOW) == 4
+
+
+def test_full_press_does_not_step_follow():
+  """2nd detent still nudges MAX. It does not write City or Highway follow."""
+  from openpilot.selfdrive.controls.lib.hypermile import (
+    CRUISE_STALK_UP_2ND,
+    consume_follow_stalk,
+  )
+
+  params = FakeParams(follow=4, city=3, hwy=5, migrated=True)
+  level, undo = consume_follow_stalk(
+    params, has_lead=True, button_closer=True,
+    raw_kph=80.0, prev_raw_kph=70.0,
+    detent=CRUISE_STALK_UP_2ND,
+    v_ego=25.0 * CV.MPH_TO_MS, v_cruise=70.0 * CV.MPH_TO_MS,
+  )
+  assert level is None and undo is None
+  assert params.get(PARAM_FOLLOW_CITY) == 3
+  assert params.get(PARAM_FOLLOW_HWY) == 5
+  assert params.get(PARAM_FOLLOW) == 4
 
 
 def test_invalid_setpoints_do_not_blend():
