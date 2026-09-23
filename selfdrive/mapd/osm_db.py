@@ -32,6 +32,7 @@ from openpilot.selfdrive.mapd.roundabout import (
   RB_ON_WAY_M,
   RB_SEARCH_PAD_DEG,
   RoundaboutHint,
+  roundabout_suppressed_for_highway,
   way_is_roundabout,
 )
 
@@ -702,14 +703,22 @@ class OsmSpeedLimitDB:
 
   def find_roundabout(
     self, lat: float, lon: float, bearing_deg: float | None = None,
+    current_highway: str | None = None,
   ) -> RoundaboutHint:
     """Upcoming / current OSM circulating ring within the ~200 m funnel.
 
     Does not apply MIN_ZONE_LENGTH_M — a typical RB is a short along-heading
     stub and would otherwise be dropped as cross-street bleed. Sharp corners
     and signalized crossings are not closed/tagged circulating ways.
+    Motorway / trunk matches suppress the hint (a residential loop beside
+    the carriageway is not the road ahead).
     """
     if self._con is None:
+      return RoundaboutHint()
+    if current_highway is None:
+      matched = self._best_match(float(lat), float(lon), bearing_deg)
+      current_highway = matched.highway if matched is not None else ""
+    if roundabout_suppressed_for_highway(current_highway):
       return RoundaboutHint()
     # Default SEARCH_PAD is ~110 m; 200 m westbound at 45°N needs more.
     rows = self._candidates(float(lat), float(lon), pad_deg=RB_SEARCH_PAD_DEG)

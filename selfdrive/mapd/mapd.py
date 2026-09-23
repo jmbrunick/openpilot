@@ -107,7 +107,10 @@ def main():
       d.highway = match.highway
       d.wayId = int(match.way_id)
       d.matchDistance = float(match.distance_m)
-    rb = db.find_roundabout(lat, lon, bearing) if gps_ok and db.loaded else None
+    # Same road as the published speed limit. Freeway / trunk matches drop
+    # nearby residential loops (I-74 Maritime / Seaway false RB).
+    current_hw = match.highway if match is not None else None
+    rb = db.find_roundabout(lat, lon, bearing, current_highway=current_hw) if gps_ok and db.loaded else None
     if rb is not None and (rb.on_roundabout or rb.approaching):
       d.onRoundabout = bool(rb.on_roundabout)
       d.approachingRoundabout = bool(rb.approaching)

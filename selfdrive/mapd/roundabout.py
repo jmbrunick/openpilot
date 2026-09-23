@@ -54,11 +54,18 @@ RB_RADIUS_MIN_M = 6.0
 RB_RADIUS_MAX_M = 55.0
 RB_CLOSED_GAP_M = 8.0
 RB_ON_WAY_M = 25.0
-# Service / path loops (cul-de-sac bulbs) are not circulating RBs unless tagged.
+# Service / path / residential loops (cul-de-sac bulbs, Maritime/Seaway) are
+# not circulating RBs unless tagged junction=roundabout|circular.
 _UNTAGGED_SKIP_HIGHWAY = frozenset({
   "service", "footway", "path", "cycleway", "pedestrian", "steps", "track",
+  "residential", "living_street",
 })
 _RB_JUNCTIONS = frozenset({"roundabout", "circular"})
+# Freeway / trunk mainline. A side-street loop beside I-74 is not an upcoming
+# roundabout. Town rings are not on these classes (Willmar stays on residential).
+_RB_SUPPRESS_HIGHWAY = frozenset({
+  "motorway", "motorway_link", "trunk", "trunk_link",
+})
 
 EARTH_R = 6371000.0
 
@@ -74,6 +81,16 @@ class RoundaboutHint:
 
 def junction_is_roundabout(junction: str | None) -> bool:
   return (junction or "").strip().lower() in _RB_JUNCTIONS
+
+
+def roundabout_suppressed_for_highway(highway: str | None) -> bool:
+  """True when the ego match is freeway / trunk, so RB hints must not publish.
+
+  I-74 (highway=motorway, posted 65) latched MAX to 20 mph off untagged
+  residential loops beside the carriageway. Real town roundabouts are not
+  matched onto these classes.
+  """
+  return (highway or "").strip().lower() in _RB_SUPPRESS_HIGHWAY
 
 
 def _local_xy(lat: float, lon: float, lat0: float, lon0: float) -> tuple[float, float]:
