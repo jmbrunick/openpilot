@@ -744,9 +744,12 @@ class LongitudinalPlanner:
         )
       # Coasting mid-gap: do not publish an ACCEL_MIN-region cliff while
       # plan accels stay ~0 (18:10 under the map, and the same geometry
-      # over the map). Near-gap match-aLead stays raw. Near Follow
-      # Distance (slack under that mid-gap floor) gets the same coast
-      # floor only when the lead is not braking and #222 is not armed.
+      # over the map). Near-gap match-aLead stays raw, except a weak
+      # aLead cruise / lead0 cliff in the slack ~8–15 m overlap
+      # (0000010e 20:10 / 20:11 / 20:18) which still floors to MILD.
+      # Residual / rising close stays firm. Near Follow Distance
+      # (slack under that mid-gap floor) gets the same coast floor
+      # only when the lead is not braking and #222 is not armed.
       # Arm the rematch trickle if that cliff was real so Accel cannot
       # relight the next plant bite.
       pre_coast_floor = float(output_a_target)
@@ -757,6 +760,8 @@ class LongitudinalPlanner:
         v_ego=v_ego, v_cruise=v_hud_ms,
         fcw=self.fcw, crash_cnt=self.mpc.crash_cnt, allow_rapid=allow_rapid,
         a_lead=lead_a_k, owned=bool(self._lead_close_hold_owned),
+        prev_v_rel=prev_close_v_rel, a_ego=self.output_a_target, dt=self.dt,
+        should_stop=bool(self.output_should_stop),
       )
       near_fd_owned = bool(self._lead_close_hold_owned) or (
         (not acquiring) and (live_ok or lead_held)

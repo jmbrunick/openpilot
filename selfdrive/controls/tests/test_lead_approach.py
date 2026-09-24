@@ -42,6 +42,7 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_MID_GAP_CLOSE_LO_MS,
   LEAD_MID_GAP_REMATCH_A_MS2,
   LEAD_MID_GAP_SLACK_M,
+  LEAD_CRUISE_CLIFF_ALEAD_MS2,
   LEAD_MAP_MIDGAP_DREL_HI_M,
   LEAD_MAP_MIDGAP_FLOOR_MS2,
   LEAD_MAP_MIDGAP_SLACK_LO_M,
@@ -111,6 +112,7 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   lead_map_decel_above_max,
   floor_midgap_coast_a_target,
   floor_near_fd_coast_a_target,
+  lead_cruise_midgap_cliff,
   guard_follow_actuator_regen,
   near_fd_coast_floor_applies,
   plan_horizon_is_coasting,
@@ -2259,6 +2261,100 @@ def test_near_gap_alead_match_not_coast_floored():
   )
   assert coast == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
   assert coast >= -0.25
+
+
+def test_cruise_midgap_accel_min_cliff_floors_mild():
+  """0000010e cruise ACCEL_MIN in mid-gap floors. Firm #222 still dumps.
+
+  20:10:48 / 20:11:30 / 20:18:23 / 20:19:38: source cruise, slack ~12 m,
+  close ≲ 0.7, aLead ~−0.25, plan horizon still ≥ 0, aTarget −3.
+  Near-gap match owns aLead ≤ −0.2, so the coast floor used to bail.
+  That aLead is not a firm brake. Close ≥ 1.5, residual close, rapid
+  confirm, and aLead below −0.35 stay raw.
+  """
+  assert LEAD_CRUISE_CLIFF_ALEAD_MS2 == pytest.approx(-0.35)
+  # 20:10:48 — aT −3.28, slack ~12, close ~0.7, aLead ~−0.25, plan +.
+  a_2010 = floor_midgap_coast_a_target(
+    -3.28, True, 0.7, 50.0, 12.0, a_lead=-0.25, owned=True,
+  )
+  assert a_2010 == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  assert a_2010 >= -0.25
+  assert lead_cruise_midgap_cliff(0.7, -0.25, 12.0)
+  # 20:11:30 — slack ~14, same family.
+  assert floor_midgap_coast_a_target(
+    -3.32, True, 0.7, 52.0, 14.0, a_lead=-0.25,
+  ) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  # 20:18:23 — slack ~12, close ~0.6.
+  assert floor_midgap_coast_a_target(
+    -3.07, True, 0.6, 50.0, 12.0, a_lead=-0.25,
+  ) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  # 20:19:38 — close ~0.2 after a brief open; source stayed cruise.
+  assert floor_midgap_coast_a_target(
+    -3.5, True, 0.2, 50.0, 12.0, a_lead=-0.25,
+  ) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  # Weak lead0 kinematics, not only an MPC source of cruise.
+  assert floor_midgap_coast_a_target(
+    -3.5, True, 0.7, 48.0, 9.0, a_lead=LEAD_CRUISE_CLIFF_ALEAD_MS2,
+  ) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  # Already mild: do not pull it down.
+  assert floor_midgap_coast_a_target(
+    -0.05, True, 0.7, 50.0, 12.0, a_lead=-0.25,
+  ) == pytest.approx(-0.05)
+
+  # Firm #222: close ≥ 1.5 still dumps, even with a weak aLead.
+  assert floor_midgap_coast_a_target(
+    -3.5, True, LEAD_APPROACH_SOFT_LIMIT_CLOSE_MS, 40.0, 12.0, a_lead=-0.25,
+  ) == pytest.approx(-3.5)
+  # Firm braking lead (aLead below −0.35) with a slow close stays raw.
+  assert floor_midgap_coast_a_target(
+    -3.5, True, 0.7, 40.0, 12.0, a_lead=-0.80,
+  ) == pytest.approx(-3.5)
+  assert floor_midgap_coast_a_target(
+    -3.5, True, 0.4, 40.0, 12.0, a_lead=-0.40, owned=True,
+  ) == pytest.approx(-3.5)
+  # Residual close (closing worsened past ego a) stays raw.
+  residual = floor_midgap_coast_a_target(
+    -3.5, True, 0.70, 40.0, 12.0, a_lead=-0.25, owned=True,
+    prev_v_rel=0.50, a_ego=0.0, dt=0.05,
+  )
+  assert residual == pytest.approx(-3.5)
+  assert not lead_cruise_midgap_cliff(
+    0.70, -0.25, 12.0, prev_v_rel=0.50, a_ego=0.0, dt=0.05,
+  )
+  # Rising close in the #222 band stays raw.
+  assert floor_midgap_coast_a_target(
+    -3.5, True, 1.20, 40.0, 12.0, a_lead=-0.25,
+    prev_v_rel=1.00,
+  ) == pytest.approx(-3.5)
+  # Rapid confirm, FCW, shouldStop, near-bumper, real plan brake.
+  assert floor_midgap_coast_a_target(
+    -3.5, True, 6.5, 30.0, 12.0, a_lead=-0.25, allow_rapid=True,
+  ) == pytest.approx(-3.5)
+  assert floor_midgap_coast_a_target(
+    -3.5, True, 0.7, 50.0, 12.0, a_lead=-0.25, fcw=True,
+  ) == pytest.approx(-3.5)
+  assert floor_midgap_coast_a_target(
+    -3.5, True, 0.7, 50.0, 12.0, a_lead=-0.25, should_stop=True,
+  ) == pytest.approx(-3.5)
+  assert floor_midgap_coast_a_target(
+    -3.5, True, 0.7, LEAD_MPC_SOFT_NEAR_M, 12.0, a_lead=-0.25,
+  ) == pytest.approx(-3.5)
+  assert floor_midgap_coast_a_target(
+    -3.5, False, 0.7, 50.0, 12.0, a_lead=-0.25,
+  ) == pytest.approx(-3.5)
+  # Opening release still floors (#235). A firm on-path close does not.
+  assert floor_midgap_coast_a_target(
+    -3.5, True, -0.56, 36.4, 9.0, a_lead=-0.32, owned=True,
+  ) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  assert floor_midgap_coast_a_target(
+    -3.5, True, 4.2, 27.7, 12.0, a_lead=-2.06, owned=True,
+  ) == pytest.approx(-3.5)
+
+  from pathlib import Path
+  planner = (Path(__file__).resolve().parents[1] / "lib/longitudinal_planner.py").read_text()
+  assert "floor_midgap_coast_a_target(" in planner
+  assert planner.count("prev_v_rel=prev_close_v_rel") >= 4
+  assert planner.count("should_stop=bool(self.output_should_stop)") >= 2
 
 
 def test_near_fd_coast_floor_settles_and_keeps_hard_brake():
