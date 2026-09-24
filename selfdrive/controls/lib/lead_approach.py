@@ -344,6 +344,13 @@ LEAD_PLAN_COAST_A_MS2 = 0.15
 # real brake (23:31 KEEP) and stays raw.
 LEAD_NEAR_FD_COAST_CLOSE_MS = 1.0
 LEAD_NEAR_FD_COAST_ALEAD_MS2 = -0.25
+# Cruise / weak-lead0 ACCEL_MIN where mid-gap and near-gap overlap.
+# 0000010e 20:10:48 / 20:11:30 / 20:18:23: source cruise, slack ~12 m,
+# close ~0.7, aLead ~−0.25, plan_min ≥ 0, aTarget −3. Near-gap match
+# owns aLead ≤ −0.2, so the coast floor bailed. That aLead is not a
+# firm brake (≲ −0.4 with a real close). aLead at or above this still
+# floors; anything firmer stays on the raw near-gap path.
+LEAD_CRUISE_CLIFF_ALEAD_MS2 = -0.35
 # Internal v_rel = v_ego − v_lead (positive closes). Radar vRel is the
 # opposite sign. Clearly opening, past match noise: 10:05 onset was
 # about −0.56 (radar +0.56) with slack ~9 m and aLeadK only −0.32.
@@ -686,21 +693,68 @@ def plan_horizon_is_coasting(accels, coast_ms2=LEAD_PLAN_COAST_A_MS2) -> bool:
   return min(vals) >= -float(coast_ms2)
 
 
+def lead_cruise_midgap_cliff(v_rel, a_lead, slack, *,
+                             prev_v_rel=None, a_ego=None, dt=None,
+                             should_stop=False) -> bool:
+  """True when near-gap aLead match is only a weak cruise cliff.
+
+  0000010e 20:10:48 / 20:11:30 / 20:18:23 (and 20:19:38): plan source
+  stays cruise, slack ~12 m (inside both the mid-gap floor and the
+  near-gap match), close ~0.7, aLead ~−0.25, plan horizon still ≥ 0,
+  aTarget at ACCEL_MIN. aLead ≤ −0.2 owns near-gap match, so the coast
+  floor used to bail. That sample is not a firm brake. The same
+  kinematics on a weak lead0 publish take this path too.
+
+  #222 residual / rising close / close ≥ 1.5, shouldStop, and aLead
+  below −0.35 stay off this path. Slack outside the existing mid-gap
+  band (about 8–50 m) does too — the 8–40 m sketch sits inside it,
+  and the hole is the slack ≲ 15 m overlap.
+  """
+  if should_stop:
+    return False
+  if not lead_mid_gap_map_band(slack):
+    return False
+  if a_lead is not None and float(a_lead) < LEAD_CRUISE_CLIFF_ALEAD_MS2:
+    return False
+  if v_rel is not None and float(v_rel) >= LEAD_APPROACH_SOFT_LIMIT_CLOSE_MS:
+    return False
+  if (v_rel is not None and float(v_rel) >= LEAD_CLOSING_REMATCH_BLOCK_MS
+      and lead_close_is_rising(v_rel, prev_v_rel)):
+    return False
+  residual = lead_residual_close_ms2(v_rel, prev_v_rel, a_ego, dt)
+  if residual is not None and residual >= LEAD_SOFT_LIMIT_RESIDUAL_MS2:
+    # Same worsening test as the #222 mild-floor skip. A steady close
+    # (v_rel not rising) is not residual brake.
+    if (v_rel is not None and prev_v_rel is not None
+        and float(v_rel) >= LEAD_APPROACH_DV_MS
+        and float(v_rel) > float(prev_v_rel)):
+      return False
+  return True
+
+
 def floor_midgap_coast_a_target(a, plan_coasting, v_rel, d_rel, slack,
                                 v_ego=None, v_cruise=None, fcw=False,
                                 crash_cnt=0, allow_rapid=False,
-                                a_lead=None, owned=False):
+                                a_lead=None, owned=False,
+                                prev_v_rel=None, a_ego=None, dt=None,
+                                should_stop=False):
   """Floor a post-MPC cliff while the plan itself is coasting.
 
   Under the map the floor is MILD (slight lift). Over the map it is
   the #231 comfort brake (−0.55) so the limit can still come back.
   FCW, confirmed rapid, near-bumper, and match-speed close ≥ 1.5 stay
-  raw. Near-gap aLead match / hold-owned lead braking stays raw too.
+  raw. Near-gap aLead match / hold-owned lead braking stays raw too,
+  except a weak aLead (≳ −0.35) with no real close: that is the
+  cruise / weak-lead0 ACCEL_MIN cliff and still floors to MILD.
   A plan horizon that is already braking is not this path.
   """
   if a is None or not plan_coasting:
     return a
-  if lead_near_gap_alead_raw(v_rel, a_lead, slack, owned=owned):
+  if (lead_near_gap_alead_raw(v_rel, a_lead, slack, owned=owned)
+      and not lead_cruise_midgap_cliff(
+        v_rel, a_lead, slack, prev_v_rel=prev_v_rel, a_ego=a_ego, dt=dt,
+        should_stop=should_stop,
+      )):
     return a
   if lead_midgap_comfort_excluded(
     v_rel, d_rel, slack, fcw=fcw, crash_cnt=crash_cnt, allow_rapid=allow_rapid,
