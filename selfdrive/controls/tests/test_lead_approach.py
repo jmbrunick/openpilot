@@ -19,6 +19,12 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_APPROACH_SOFT_LIMIT_CLOSE_MS,
   LEAD_SOFT_LIMIT_RESIDUAL_MS2,
   LEAD_SOFT_LIMIT_RISE_MS,
+  LEAD_RESIDUAL_SUSTAIN_MS2,
+  LEAD_RESIDUAL_SUSTAIN_N,
+  LEAD_RESIDUAL_WINDOW_S,
+  LEAD_KIN_APPROACH_CAP_MS2,
+  LEAD_FIRM_EARLY_CAP_MS2,
+  LEAD_POST_CURVE_CATCHUP_S,
   LEAD_CLOSING_ALEAD_MS2,
   LEAD_CLOSING_MATCH_GAIN,
   LEAD_CLOSING_MATCH_MS,
@@ -99,9 +105,16 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   lead_is_glide_sample,
   lead_kinematic_slack_m,
   lead_mpc_needs_full_authority,
+  lead_near_gap_alead_raw,
   lead_owns_plan,
   lead_inferred_decel_ms2,
   lead_residual_close_ms2,
+  lead_residual_window_hit,
+  lead_weak_alead_line,
+  lead_kinematic_approach_a,
+  lead_firm_large_slack_a,
+  lead_path_offset_m,
+  LeadResidualWindow,
   lead_soft_limit_skip,
   lead_approach_is_rapid,
   lead_approach_need_m,
@@ -827,7 +840,8 @@ def test_planner_wires_hysteresis_and_slew():
   assert "apply_matched_inside_fd_a" not in planner
   assert "prev_floored=self._lead_soft_limit_floored" in planner
   assert "prev_v_rel=prev_close_v_rel" in planner
-  assert "a_ego=self.output_a_target" in planner
+  assert "a_ego=residual_a" in planner
+  assert "LeadResidualWindow" in planner
   assert "v_cruise=v_hud_ms" in planner
   assert "v_ego=v_ego, v_cruise=v_hud_ms" in planner
   assert "allow_rapid=allow_rapid" in planner
@@ -1348,10 +1362,11 @@ def test_mpc_soft_limit_floors_chatter_not_match_speed():
     -1.5, v_ego, v_lead_town, 17.0, a_lead=-0.80,
   ) == pytest.approx(-1.5)
   # Lead braking / near-gap aLead: skip the floor (match-speed).
+  # Closing under 1 m/s uses the −0.35 weak line, so −0.2 stays mild.
   assert LEAD_APPROACH_SOFT_LIMIT_ALEAD_MS2 <= -0.2
   assert soft_limit_mpc_a_target(
     -2.5, v_ego, v_ego - 0.4, d_rel, a_lead=LEAD_APPROACH_SOFT_LIMIT_ALEAD_MS2,
-  ) == pytest.approx(-2.5)
+  ) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
   assert soft_limit_mpc_a_target(
     -2.5, v_ego, v_ego - 0.4, d_rel, a_lead=-0.4, slack=8.0,
   ) == pytest.approx(-2.5)
@@ -2718,3 +2733,186 @@ def test_nonbraking_close_stays_mild_and_near_fd_weak_alead_floors():
   assert floor_midgap_coast_a_target(
     -3.5, True, 0.0, 40.0, 15.0, a_lead=-0.72, owned=True,
   ) == pytest.approx(-3.5)
+
+
+def test_residual_window_ignores_one_radar_lsb():
+  """One vRel quantum over 0.05 s is 1.25 m/s² and must not arm #222.
+
+  Radar vRel steps by 1/16 m/s. Over a planner frame that reads as a
+  residual well above 0.2 and used to cancel every comfort floor.
+  The 0.5 s window, measured aEgo, and two-frame sustain do not.
+  The legacy two-sample helper stays so the Sep 23 fixtures still pass.
+  """
+  assert LEAD_SOFT_LIMIT_RESIDUAL_MS2 == pytest.approx(0.2)
+  assert LEAD_SOFT_LIMIT_RISE_MS == pytest.approx(0.15)
+  assert LEAD_CLOSING_ALEAD_MS2 == pytest.approx(-0.2)
+  assert LEAD_RESIDUAL_WINDOW_S == pytest.approx(0.50)
+  assert LEAD_RESIDUAL_SUSTAIN_MS2 == pytest.approx(0.45)
+  assert LEAD_RESIDUAL_SUSTAIN_N == 2
+  lsb = 1.0 / 16.0
+  one_frame = lead_residual_close_ms2(1.0 + lsb, 1.0, -0.22, 0.05)
+  assert one_frame is not None and one_frame > 1.0
+  assert not lead_residual_window_hit(1.0 + lsb, 1.0, -0.22, 0.05)
+  slow = lead_residual_close_ms2(1.0 + lsb, 1.0, -0.22, 0.50)
+  assert slow is not None and slow < LEAD_RESIDUAL_SUSTAIN_MS2
+  assert not lead_residual_window_hit(1.0 + lsb, 1.0, -0.22, 0.50)
+
+  window = LeadResidualWindow()
+  v = 1.20
+  armed_prev = None
+  for _ in range(40):
+    prev, _dt, _a = window.update(v, -0.22, 0.05)
+    if prev is not None:
+      armed_prev = prev
+    v = 1.20 + lsb
+  assert armed_prev is None
+
+  # 07:55-shaped: +0.4 m/s over 0.5 s while ego is on mild. Two frames arm.
+  window = LeadResidualWindow()
+  prev = None
+  dt_w = 0.05
+  a_w = -0.22
+  v0 = 1.40
+  for i in range(14):
+    v_i = v0 + 0.04 * i
+    prev, dt_w, a_w = window.update(v_i, -0.22, 0.05)
+  assert prev is not None
+  assert dt_w == pytest.approx(0.50, abs=0.02)
+  assert lead_soft_limit_skip(
+    v0 + 0.04 * 13, a_lead=0.0, slack=8.0, owned=True,
+    prev_v_rel=prev, a_ego=a_w, dt=dt_w,
+  )
+  assert soft_limit_mpc_a_target(
+    -1.2, 25.0, 25.0 - (v0 + 0.04 * 13), 38.0, a_lead=-0.8, slack=8.0,
+    owned=True, prev_v_rel=prev, a_ego=a_w, dt=dt_w,
+  ) == pytest.approx(-1.2)
+  # Firm aLead exemplars do not need the window.
+  assert soft_limit_mpc_a_target(
+    -1.2, 25.0, 25.0 - 1.8, 38.0, a_lead=-0.8, slack=7.0, owned=True,
+  ) == pytest.approx(-1.2)
+  assert lead_soft_limit_skip(4.44, a_lead=-0.6, slack=-2.0, owned=True)
+  assert lead_soft_limit_skip(1.1, a_lead=-1.2, slack=8.0, owned=True)
+
+
+def test_weak_alead_line_only_when_slow_and_not_rising():
+  """−0.35 below 1 m/s and not rising. At/above 1 m/s, or rising, keep −0.2."""
+  assert lead_weak_alead_line(0.6) == pytest.approx(LEAD_CRUISE_CLIFF_ALEAD_MS2)
+  assert lead_weak_alead_line(0.6, prev_v_rel=0.20) == pytest.approx(-0.2)
+  assert lead_weak_alead_line(1.2) == pytest.approx(-0.2)
+  assert not lead_soft_limit_skip(0.6, a_lead=-0.27, slack=8.0, owned=True)
+  assert lead_soft_limit_skip(0.6, a_lead=-0.50, slack=8.0, owned=True)
+  assert lead_soft_limit_skip(1.2, a_lead=-0.25, slack=8.0, owned=True)
+  assert not lead_near_gap_alead_raw(0.6, -0.27, 10.0, owned=True)
+  assert lead_near_gap_alead_raw(0.6, -0.50, 10.0, owned=True)
+  assert lead_near_gap_alead_raw(1.2, -0.25, 10.0, owned=True)
+  assert LEAD_CLOSING_ALEAD_MS2 == pytest.approx(-0.2)
+  assert lead_alead_owns_match(0.4, -0.25, slack=8.0)
+
+
+def test_kinematic_approach_deepens_mild_not_the_rail():
+  """17:19:44 cut-in and 17:29 slow lead. Mild is not enough; −0.6 is the cap.
+
+  22:12 non-braking close (2.81 m/s, slack 17.9) stays exactly mild.
+  Close ≥ 1.5 without brake evidence still does not open the rail.
+  """
+  cut = soft_limit_mpc_a_target(
+    -0.13, 20.0, 20.0 - 3.3, 36.6, a_lead=0.10, slack=10.0, owned=True,
+  )
+  assert -LEAD_KIN_APPROACH_CAP_MS2 - 1e-6 <= cut <= -0.45
+  assert cut > -1.0
+  kin = lead_kinematic_approach_a(3.3, 10.0, a_lead=0.10)
+  assert kin == pytest.approx(cut)
+  far = soft_limit_mpc_a_target(
+    -1.5, 20.0, 20.0 - 1.9, 50.0, a_lead=0.05, slack=24.0, owned=True,
+  )
+  assert far == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  near = soft_limit_mpc_a_target(
+    -0.13, 20.0, 20.0 - 1.9, 20.0, a_lead=0.05, slack=4.0, owned=True,
+  )
+  assert -0.60 - 1e-6 <= near <= -0.40
+  assert lead_kinematic_approach_a(2.81, 17.9, a_lead=0.10) is None
+  assert soft_limit_mpc_a_target(
+    -1.62, 27.3, 27.3 - 2.81, 41.0, a_lead=0.10, slack=17.9, owned=True,
+  ) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  assert guard_follow_actuator_regen(
+    -1.50, -0.13, v_rel=3.3, d_rel=36.6, slack=10.0, a_lead=0.10,
+  ) == pytest.approx(cut)
+  assert guard_follow_actuator_regen(
+    -1.50, -1.62, v_rel=2.81, d_rel=41.0, slack=17.9, a_lead=0.10,
+  ) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+
+
+def test_firm_lead_large_slack_brakes_early_without_dropping_222():
+  """17:13 / 09:09: firm lead, 20–50 m, closing ≥ 1.5. Do not sit on mild.
+
+  Kinematic need, capped near −1.0. Slack ≤ 20, confirmed rapid, and
+  the Sep 23 firm-aLead exemplars keep full authority.
+  """
+  early = soft_limit_mpc_a_target(
+    -0.22, 30.0, 30.0 - 4.0, 60.0, a_lead=-2.0, slack=40.0, owned=True,
+  )
+  assert early == pytest.approx(max(-2.0 - (4.0 ** 2) / (2.0 * 40.0), -LEAD_FIRM_EARLY_CAP_MS2))
+  assert -LEAD_FIRM_EARLY_CAP_MS2 - 1e-6 <= early <= -0.60
+  assert early != pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  cliff = soft_limit_mpc_a_target(
+    -3.5, 30.0, 30.0 - 4.0, 60.0, a_lead=-2.0, slack=40.0, owned=True,
+  )
+  assert cliff == pytest.approx(early)
+  assert cliff > -1.5
+  inside = soft_limit_mpc_a_target(
+    -3.5, 30.0, 30.0 - 4.0, 35.0, a_lead=-2.0, slack=15.0, owned=True,
+  )
+  assert inside == pytest.approx(-3.5)
+  rapid = soft_limit_mpc_a_target(
+    -3.5, 30.0, 30.0 - 6.5, 60.0, a_lead=-2.0, slack=40.0, owned=True,
+    allow_rapid=True,
+  )
+  assert rapid == pytest.approx(-3.5)
+  assert guard_follow_actuator_regen(
+    -1.50, -1.0, v_rel=4.0, d_rel=60.0, slack=40.0, a_lead=-2.0,
+  ) == pytest.approx(lead_firm_large_slack_a(4.0, 40.0, -2.0))
+  assert guard_follow_actuator_regen(
+    -1.50, -1.62, v_rel=2.81, d_rel=41.0, slack=17.9, a_lead=-0.70,
+  ) == pytest.approx(-1.50)
+  # 07:55 / 22:14 / 23:31 still firm on aLead, without the early cap.
+  assert soft_limit_mpc_a_target(
+    -1.2, 25.0, 25.0 - 1.8, 38.0, a_lead=-0.79, slack=7.0,
+  ) == pytest.approx(-1.2)
+  assert soft_limit_mpc_a_target(
+    -1.2, 25.0, 25.0 - 4.44, 25.2, a_lead=-0.65, slack=-2.2,
+  ) == pytest.approx(-1.2)
+  assert soft_limit_mpc_a_target(
+    -3.5, 16.0, 16.0 - 1.1, 28.0, a_lead=-1.2, slack=8.0, owned=True,
+  ) == pytest.approx(-3.5)
+
+
+def test_depart_release_uses_path_curvature():
+  """#235: straight-ahead yRel in a bend is the lane, not a departure.
+
+  Subtract |½·κ·d²|. The check can only get less eager.
+  """
+  d = 45.0
+  y_curve = -2.6
+  geom = 1.6
+  kappa = (2.0 * geom) / (d * d)
+  assert abs(lead_path_offset_m(kappa, d)) == pytest.approx(geom)
+  assert not lead_lateral_departing(y_curve, None, 12.0, curvature=kappa, d_rel=d)
+  assert lead_lateral_departing(y_curve, None, 12.0)
+  assert lead_lateral_departing(-4.5, None, 12.0, curvature=kappa, d_rel=d)
+  age, released, abs_y = update_depart_release(
+    0.0, False, y_curve, None, 12.0, 1.0, 0.05, curvature=kappa, d_rel=d,
+  )
+  assert abs_y == pytest.approx(abs(y_curve))
+  assert age == pytest.approx(0.0)
+  assert not released
+
+
+def test_post_curve_catchup_trickles():
+  """Right after a bend, do not lunge +0.40 to rejoin an opening lead."""
+  assert LEAD_POST_CURVE_CATCHUP_S >= 3.0
+  capped = lead_close_accel_ms2(5, v_rel=-0.5, slack=30.0, post_curve=True)
+  assert capped <= LEAD_MID_GAP_REMATCH_A_MS2 + 1e-9
+  open_road = lead_close_accel_ms2(5, v_rel=-0.5, slack=30.0, post_curve=False)
+  assert open_road > LEAD_MID_GAP_REMATCH_A_MS2
+  # Closing / #222 −a is not this ceiling.
+  assert lead_close_accel_ms2(5, v_rel=2.0, slack=8.0, post_curve=True) == pytest.approx(0.0)

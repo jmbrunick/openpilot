@@ -35,6 +35,17 @@ CURVE_COMFORT_LAT_MS2 = 2.00
 CURVE_MIN_V_EGO_MS = 5.0
 # Do not invent a crawl MAX in a hairpin.
 CURVE_SPEED_FLOOR_MS = 6.0
+# Light smoothing so the cap is not a raw frame of curvature / yaw.
+CURVE_LAT_TAU_S = 0.40
+# Mid-curve the cap may drop when the bend actually tightens, but it
+# must not rise. Steering jitter used to pump MAX both ways. The first
+# fraction of a second still tracks the smoothed estimate so one noisy
+# frame is not frozen in.
+CURVE_CAP_TIGHTEN_KPH = 2.0
+CURVE_CAP_SETTLE_S = 0.45
+# Exit raises MAX toward the snapshot at about an Accel-3 rate unless
+# card passes the live map Accel envelope.
+CURVE_RESTORE_A_DEFAULT_MS2 = 0.40
 
 
 def steer_lat_accel_ms2(v_ego_ms: float, angle_steers_deg: float,
@@ -44,6 +55,40 @@ def steer_lat_accel_ms2(v_ego_ms: float, angle_steers_deg: float,
   wb = float(wheelbase) if wheelbase and wheelbase > 1e-3 else 2.959
   a_y = (float(v_ego_ms) ** 2) * float(angle_steers_deg) * CV.DEG_TO_RAD / (sr * wb)
   return abs(a_y)
+
+
+def cornering_lat_accel_ms2(v_ego_ms: float, angle_steers_deg: float,
+                            steer_ratio: float, wheelbase: float, *,
+                            curvature: float | None = None,
+                            yaw_rate: float | None = None) -> float:
+  """Unsigned lateral accel from real cornering, else the steer model.
+
+  Curvature is the vehicle-model / desired path curvature (learned steer
+  ratio, tire stiffness, angle offset). Yaw rate × v is the same quantity
+  when that curvature is not available. Raw steering angle skips the angle
+  offset, uses the stock steer ratio, and ignores understeer, so it reads
+  high. The steer model remains only when both signals are missing.
+  """
+  v = float(v_ego_ms)
+  if curvature is not None and math.isfinite(float(curvature)):
+    return abs(float(curvature)) * v * v
+  if yaw_rate is not None and math.isfinite(float(yaw_rate)):
+    return abs(float(yaw_rate) * v)
+  return steer_lat_accel_ms2(v, angle_steers_deg, steer_ratio, wheelbase)
+
+
+def curve_speed_from_lat(v_ego_ms: float, a_y: float | None,
+                         a_lat: float = CURVE_COMFORT_LAT_MS2) -> float | None:
+  """Comfort speed for a measured lateral accel. None when not a bend."""
+  if a_y is None or v_ego_ms < CURVE_MIN_V_EGO_MS or a_lat <= 0:
+    return None
+  ay = float(a_y)
+  if ay < 0.05:
+    return None
+  v = float(v_ego_ms) * math.sqrt(float(a_lat) / ay)
+  if v < CURVE_SPEED_FLOOR_MS:
+    return CURVE_SPEED_FLOOR_MS
+  return v
 
 
 def curve_speed_ms(v_ego_ms: float, angle_steers_deg: float,
@@ -68,11 +113,14 @@ def curve_speed_ms(v_ego_ms: float, angle_steers_deg: float,
 
 def is_sharp_curve(v_ego_ms: float, angle_steers_deg: float,
                    steer_ratio: float, wheelbase: float, *,
-                   active: bool) -> bool:
+                   active: bool, lat_override: float | None = None) -> bool:
   """Hysteresis: enter on lat accel or steer; stay until both are quiet."""
   if v_ego_ms < CURVE_MIN_V_EGO_MS:
     return False
-  a_y = steer_lat_accel_ms2(v_ego_ms, angle_steers_deg, steer_ratio, wheelbase)
+  if lat_override is None:
+    a_y = steer_lat_accel_ms2(v_ego_ms, angle_steers_deg, steer_ratio, wheelbase)
+  else:
+    a_y = float(lat_override)
   steer = abs(float(angle_steers_deg))
   if active:
     return a_y >= CURVE_EXIT_LAT_MS2 or steer >= CURVE_EXIT_STEER_DEG
@@ -109,17 +157,83 @@ class CurveMaxHold:
     self.snapshot: CurveMaxSnapshot | None = None
     self.active: bool = False
     self._exit_s: float = 0.0
+    self._ay_raw: float | None = None
+    self._ay_s: float | None = None
+    self._begin_ran: bool = False
+    self._cap_kph: float | None = None
+    self._cap_age: float = 0.0
+    self._release_kph: float | None = None
+    self._restore_a: float = CURVE_RESTORE_A_DEFAULT_MS2
+    self._last_dt: float = 0.01
 
   def reset(self) -> None:
     self.snapshot = None
     self.active = False
     self._exit_s = 0.0
+    self._ay_raw = None
+    self._ay_s = None
+    self._begin_ran = False
+    self._cap_kph = None
+    self._cap_age = 0.0
+    self._release_kph = None
+
+  def _observe(self, v_ego_ms: float, angle_steers_deg: float,
+               steer_ratio: float, wheelbase: float, dt: float, *,
+               curvature: float | None, yaw_rate: float | None,
+               update: bool) -> None:
+    """Sample cornering once per card cycle and smooth it for the cap."""
+    if not update and self._ay_raw is not None:
+      return
+    raw = cornering_lat_accel_ms2(
+      v_ego_ms, angle_steers_deg, steer_ratio, wheelbase,
+      curvature=curvature, yaw_rate=yaw_rate,
+    )
+    self._ay_raw = raw
+    self._last_dt = max(0.0, float(dt))
+    if self._ay_s is None:
+      self._ay_s = raw
+      return
+    tau = CURVE_LAT_TAU_S
+    alpha = self._last_dt / (tau + self._last_dt) if tau > 0.0 else 1.0
+    self._ay_s = self._ay_s + alpha * (raw - self._ay_s)
 
   def lat_curving(self, v_ego_ms: float, angle_steers_deg: float,
                   steer_ratio: float, wheelbase: float) -> bool:
     return is_sharp_curve(
       v_ego_ms, angle_steers_deg, steer_ratio, wheelbase, active=self.active,
+      lat_override=self._ay_raw,
     )
+
+  def _held_cap_kph(self, hud_kph: float, v_ego_ms: float) -> float:
+    """Cap from smoothed cornering. May drop; does not rise mid-bend."""
+    v_curve = curve_speed_from_lat(v_ego_ms, self._ay_s)
+    if v_curve is None:
+      proposed = float(hud_kph)
+    else:
+      proposed = min(float(hud_kph), float(v_curve) * CV.MS_TO_KPH)
+    if self._cap_kph is None:
+      self._cap_kph = proposed
+      self._cap_age = 0.0
+    else:
+      self._cap_age += self._last_dt
+      if self._cap_age < CURVE_CAP_SETTLE_S:
+        self._cap_kph = proposed
+      elif proposed < self._cap_kph - CURVE_CAP_TIGHTEN_KPH:
+        self._cap_kph = proposed
+    return min(float(hud_kph), float(self._cap_kph))
+
+  def _step_release(self, target_kph: float, dt: float) -> tuple[float, bool]:
+    """Ramp HUD MAX up toward the pre-curve snapshot. Returns (kph, done)."""
+    target = float(target_kph)
+    if self._release_kph is None:
+      start = self._cap_kph if self._cap_kph is not None else target
+      self._release_kph = min(float(start), target)
+    rate = self._restore_a if self._restore_a > 0.0 else CURVE_RESTORE_A_DEFAULT_MS2
+    step = rate * CV.MS_TO_KPH * max(0.0, float(dt))
+    nxt = min(target, float(self._release_kph) + step)
+    done = nxt >= target - 0.05
+    self._release_kph = target if done else nxt
+    return float(self._release_kph), done
 
   def should_freeze_posted(self, v_ego_ms: float, angle_steers_deg: float,
                            steer_ratio: float, wheelbase: float) -> bool:
@@ -157,6 +271,8 @@ class CurveMaxHold:
     engaged: bool,
     take_speed_now: bool = False,
     dt: float = 0.01,
+    curvature: float | None = None,
+    yaw_rate: float | None = None,
   ) -> tuple[float | None, bool]:
     """Before decide_map_cruise: snapshot pre-curve MAX, freeze posted flicker.
 
@@ -168,6 +284,11 @@ class CurveMaxHold:
     if not engaged or take_speed_now:
       self.reset()
       return posted_kph, False
+    self._observe(
+      v_ego_ms, angle_steers_deg, steer_ratio, wheelbase, dt,
+      curvature=curvature, yaw_rate=yaw_rate, update=True,
+    )
+    self._begin_ran = True
     lat_now = self.lat_curving(v_ego_ms, angle_steers_deg, steer_ratio, wheelbase)
     if self.active and not lat_now and (self._exit_s + float(dt)) + 1e-9 >= CURVE_EXIT_HOLD_S:
       return posted_kph, False
@@ -232,12 +353,22 @@ class CurveMaxHold:
     stalk_pressed: bool = False,
     take_speed_now: bool = False,
     dt: float,
+    curvature: float | None = None,
+    yaw_rate: float | None = None,
+    restore_a_ms2: float | None = None,
   ) -> CurveMaxDecision:
     """Apply temp curve cap or restore. Call after decide_map_cruise + overlay."""
     if not engaged or take_speed_now:
       self.reset()
       return CurveMaxDecision(float(hud_kph), None, False, False)
 
+    if restore_a_ms2 is not None and float(restore_a_ms2) > 0.0:
+      self._restore_a = float(restore_a_ms2)
+    self._observe(
+      v_ego_ms, angle_steers_deg, steer_ratio, wheelbase, dt,
+      curvature=curvature, yaw_rate=yaw_rate, update=not self._begin_ran,
+    )
+    self._begin_ran = False
     lat_now = self.lat_curving(v_ego_ms, angle_steers_deg, steer_ratio, wheelbase)
 
     if lat_now and not self.active:
@@ -276,20 +407,17 @@ class CurveMaxHold:
 
     if lat_now:
       self._exit_s = 0.0
-      capped = _temp_curve_hud(
-        float(hud_kph), v_ego_ms, angle_steers_deg, steer_ratio, wheelbase,
-      )
+      self._release_kph = None
+      capped = self._held_cap_kph(float(hud_kph), v_ego_ms)
       return CurveMaxDecision(capped, None, True, True)
 
     self._exit_s += float(dt)
     if not will_exit:
-      capped = _temp_curve_hud(
-        float(hud_kph), v_ego_ms, angle_steers_deg, steer_ratio, wheelbase,
-      )
+      capped = self._held_cap_kph(float(hud_kph), v_ego_ms)
       return CurveMaxDecision(capped, None, True, True)
 
-    # Straight-ish long enough. Same posted zone → restore pre-curve MAX.
-    # A new posted that persisted through the bend is a real rebase.
+    # Straight-ish long enough. Same posted zone → ramp MAX back to the
+    # snapshot. A new posted that persisted through the bend is a real rebase.
     same_zone = (
       self.snapshot is not None
       and (
@@ -298,7 +426,12 @@ class CurveMaxHold:
         or posted_limits_same(self.snapshot.posted_kph, posted_kph)
       )
     )
-    if same_zone:
+    if same_zone and self.snapshot is not None:
+      target = float(self.snapshot.hud_max_kph)
+      ramped, done = self._step_release(target, dt)
+      if not done:
+        self.protect_hold(hold)
+        return CurveMaxDecision(ramped, None, False, True)
       restored = self.restore_hold(hold)
       self.reset()
       if restored is not None:
