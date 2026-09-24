@@ -107,19 +107,27 @@ mph under 70) still cliffed: post-MPC aTarget went to −1.4…−3.5 while
 plan accels stayed ~0, and the Pre-AP pedal plant full-lifted to the
 regen rail on a coasting / MILD command. Floor that coasting mid-gap
 sample under or over the map (MILD under, map comfort −0.55 over).
-Match-speed close ≥ 1.5 stays raw. Near-gap match-aLead (slack ≲ 15 m,
-aLead ≲ −0.2, including a hold-owned brake) stays raw while the plan
-horizon is still cruise — that is lead braking, not the slack-~19 m
-cliff. Expand the plant steady band through MILD so a commanded slight
-lift cannot unlock the regen rail.
+Close ≥ 1.5 alone is a catch-up, not a brake (22:12:04: close ~2.8,
+aLead ≈ 0, plan still ~−0.3, aTarget cliffed to −1.6). Full regen on
+that close needs a firm lead brake (aLead below −0.35), #222 residual
+or rising close, confirmed rapid, FCW, shouldStop, or near-bumper.
+Near-gap match-aLead (slack ≲ 15 m, aLead below −0.35, including a
+hold-owned brake) stays raw while the plan horizon is still cruise —
+that is lead braking, not the slack-~19 m cliff. A weaker aLead in
+that overlap is the #237 cruise cliff and still floors. Expand the
+plant steady band through MILD so a commanded slight lift cannot
+unlock the regen rail.
 
 Near Follow Distance the same coasting-plan cliff still fired under the
 mid-gap floor (Scallywag 23:16–23:22: slack ~2–8 m, closing ≲ 0.7,
 aLead ~0, plan_min ~0, aTarget −2.9…−3.5 for a frame). Floor that to
-MILD. Do not floor when the lead is actually braking: closing ≳ 1 m/s,
-aLead ≲ −0.25, #222 residual / rapid already armed, FCW, shouldStop,
-or near-bumper. The 23:31 hard brake (aLead ~−1.2, closing ~1.1) stays
-raw.
+MILD. 22:12:50 / 22:13:01 were the same settle with aLead only −0.23…
+−0.34: lead_alead_owns_match(−0.2) vetoed the floor. Use the #237 line
+(aLead below −0.35 stays raw). Do not floor when the lead is actually
+braking: closing ≳ 1 m/s, #222 residual / rising close, confirmed
+rapid, FCW, shouldStop, or near-bumper. The 23:31 hard brake
+(aLead ~−1.2, closing ~1.1) stays raw. Exemplar H (aLead −0.6…−0.7,
+aTarget −3.5) stays raw.
 
 Scallywag 09:57 / 10:05: an owned on-path lead with positive slack was
 opening (radar vRel > 0) while filtered aLeadK sat slightly negative,
@@ -179,10 +187,10 @@ LEAD_APPROACH_TTC_START_S = 20.0
 # promote that to 0.55.
 LEAD_APPROACH_RAPID_DV_MS = 6.0
 LEAD_APPROACH_RAPID_TTC_S = 8.0
-# Skip the non-rapid −MILD MPC floor when matching a slowing lead. 1.5 m/s
-# (~3.4 mph) is above overlay-enter jitter (0.55) so rematch chatter still
-# floors, and at/below the town-entry log that pinned aTarget at −0.22
-# while closing rose 1.6→4.4 m/s under the 6 m/s rapid gate.
+# Closing this fast can release the MILD floor, but only with brake
+# evidence: firm aLead (below −0.35), #222 residual / rising close,
+# confirmed rapid, FCW, shouldStop, or near-bumper. 1.5 m/s alone is
+# a non-braking catch-up (22:12:04) and stays on MILD.
 LEAD_APPROACH_SOFT_LIMIT_CLOSE_MS = 1.5
 # Lead clearly braking. −0.2 is a real coast/brake, not aLeadK noise at 0.
 LEAD_APPROACH_SOFT_LIMIT_ALEAD_MS2 = -0.2
@@ -340,10 +348,12 @@ LEAD_PLAN_COAST_A_MS2 = 0.15
 # Near-FD settle, under the #232 mid-gap floor (slack ≳ 8 m).
 # Scallywag 23:16–23:22: slack ~2–8 m, closing ≲ 0.7, aLead ~0,
 # plan still coasting, aTarget steps to ACCEL_MIN for a frame.
-# Closing at or above ~1 m/s, or aLead at or below ~−0.25, is a
-# real brake (23:31 KEEP) and stays raw.
+# Closing at or above ~1 m/s stays raw (23:31 KEEP). aLead below
+# −0.35 is a firm brake and stays raw — same line as the #237
+# cruise cliff. aLead −0.23…−0.34 (22:12:50 / 22:13:01) still floors;
+# lead_alead_owns_match(−0.2) must not veto that.
 LEAD_NEAR_FD_COAST_CLOSE_MS = 1.0
-LEAD_NEAR_FD_COAST_ALEAD_MS2 = -0.25
+LEAD_NEAR_FD_COAST_ALEAD_MS2 = -0.35
 # Cruise / weak-lead0 ACCEL_MIN where mid-gap and near-gap overlap.
 # 0000010e 20:10:48 / 20:11:30 / 20:18:23: source cruise, slack ~12 m,
 # close ~0.7, aLead ~−0.25, plan_min ≥ 0, aTarget −3. Near-gap match
@@ -587,21 +597,25 @@ def slew_follow_chatter_a(target, prev, v_rel, d_rel=None, slack=None,
 
 
 def lead_midgap_comfort_excluded(v_rel, d_rel, slack, fcw=False, crash_cnt=0,
-                                allow_rapid=False) -> bool:
+                                allow_rapid=False, a_lead=None,
+                                prev_v_rel=None, a_ego=None, dt=None,
+                                should_stop=False) -> bool:
   """True when a mid-gap comfort cap must not apply.
 
-  FCW, confirmed rapid, near-bumper, and match-speed close ≥ 1.5 stay
-  raw. Outside the slack ~8–50 m band (or the dRel stand-in) is not
-  this settle. |v_rel| ≥ ~2 m/s is not a slow close.
+  FCW, shouldStop, rapid close, and near-bumper stay raw. Close ≥ 1.5
+  alone does not: a non-braking catch-up stays in the cap. Firm aLead
+  (below −0.35) or #222 residual / rising close still excludes.
+  Outside the slack ~8–50 m band (or the dRel stand-in) is not this
+  settle. Fast opening (|v_rel| ≥ ~2 m/s) is not a slow close.
   """
-  if fcw or int(crash_cnt) > 0:
+  _ = allow_rapid
+  if should_stop or fcw or int(crash_cnt) > 0:
     return True
   if d_rel is not None and float(d_rel) <= LEAD_MPC_SOFT_NEAR_M:
     return True
   if d_rel is not None and (float(d_rel) - STOP_DISTANCE) <= 0.0:
     return True
-  if (allow_rapid and v_rel is not None
-      and lead_approach_is_rapid(float(v_rel))):
+  if v_rel is not None and lead_approach_is_rapid(float(v_rel)):
     return True
   if not lead_mid_gap_map_band(slack, d_rel):
     return True
@@ -609,7 +623,11 @@ def lead_midgap_comfort_excluded(v_rel, d_rel, slack, fcw=False, crash_cnt=0,
     return False
   v = float(v_rel)
   if v >= LEAD_APPROACH_SOFT_LIMIT_CLOSE_MS:
-    return True
+    # Catch-up speed is not a brake. 22:12:04 stayed on MILD until
+    # slack crossed 20 m, then this gate unlocked the regen rail.
+    return lead_firm_alead(a_lead) or lead_rising_or_residual_brake(
+      v, prev_v_rel, a_ego, dt,
+    )
   if abs(v) >= LEAD_MID_GAP_CLOSE_HI_MS:
     return True
   return False
@@ -639,7 +657,8 @@ def lead_near_gap_alead_raw(v_rel, a_lead, slack, owned=False) -> bool:
 def guard_follow_actuator_regen(actuator_a, planner_a, v_rel=None, d_rel=None,
                                 slack=None, fcw=False, crash_cnt=0,
                                 allow_rapid=False, v_ego=None, v_cruise=None,
-                                a_lead=None, owned=False):
+                                a_lead=None, owned=False, prev_v_rel=None,
+                                a_ego=None, dt=None, should_stop=False):
   """Do not dump firm plant regen on a coast or a mild ease.
 
   ef 10:18:42: aTarget ≈ 0 while actuators.accel hit −1.23. 18:09 /
@@ -667,6 +686,8 @@ def guard_follow_actuator_regen(actuator_a, planner_a, v_rel=None, d_rel=None,
   if (not lead_near_gap_alead_raw(v_rel, a_lead, slack, owned=owned)
       and not lead_midgap_comfort_excluded(
         v_rel, d_rel, slack, fcw=False, crash_cnt=0, allow_rapid=False,
+        a_lead=a_lead, prev_v_rel=prev_v_rel, a_ego=a_ego, dt=dt,
+        should_stop=should_stop,
       )):
     # Under the map, slight lift. Over the map, keep the #231 comfort
     # brake (−0.55) so a limit return is not lifted back to MILD.
@@ -705,8 +726,9 @@ def lead_cruise_midgap_cliff(v_rel, a_lead, slack, *,
   floor used to bail. That sample is not a firm brake. The same
   kinematics on a weak lead0 publish take this path too.
 
-  #222 residual / rising close / close ≥ 1.5, shouldStop, and aLead
-  below −0.35 stay off this path. Slack outside the existing mid-gap
+  #222 residual / rising close, shouldStop, and aLead below −0.35
+  stay off this path. Close ≥ 1.5 alone does not — that was a
+  non-braking catch-up (22:12:04). Slack outside the existing mid-gap
   band (about 8–50 m) does too — the 8–40 m sketch sits inside it,
   and the hole is the slack ≲ 15 m overlap.
   """
@@ -715,8 +737,6 @@ def lead_cruise_midgap_cliff(v_rel, a_lead, slack, *,
   if not lead_mid_gap_map_band(slack):
     return False
   if a_lead is not None and float(a_lead) < LEAD_CRUISE_CLIFF_ALEAD_MS2:
-    return False
-  if v_rel is not None and float(v_rel) >= LEAD_APPROACH_SOFT_LIMIT_CLOSE_MS:
     return False
   if (v_rel is not None and float(v_rel) >= LEAD_CLOSING_REMATCH_BLOCK_MS
       and lead_close_is_rising(v_rel, prev_v_rel)):
@@ -742,10 +762,11 @@ def floor_midgap_coast_a_target(a, plan_coasting, v_rel, d_rel, slack,
 
   Under the map the floor is MILD (slight lift). Over the map it is
   the #231 comfort brake (−0.55) so the limit can still come back.
-  FCW, confirmed rapid, near-bumper, and match-speed close ≥ 1.5 stay
-  raw. Near-gap aLead match / hold-owned lead braking stays raw too,
-  except a weak aLead (≳ −0.35) with no real close: that is the
-  cruise / weak-lead0 ACCEL_MIN cliff and still floors to MILD.
+  FCW, confirmed rapid, near-bumper, firm aLead, and #222 residual /
+  rising close stay raw. Close ≥ 1.5 without that evidence floors.
+  Near-gap aLead match / hold-owned lead braking stays raw too,
+  except a weak aLead (at or above −0.35) with no real close: that is
+  the cruise / weak-lead0 ACCEL_MIN cliff and still floors to MILD.
   A plan horizon that is already braking is not this path.
   """
   if a is None or not plan_coasting:
@@ -758,6 +779,8 @@ def floor_midgap_coast_a_target(a, plan_coasting, v_rel, d_rel, slack,
     return a
   if lead_midgap_comfort_excluded(
     v_rel, d_rel, slack, fcw=fcw, crash_cnt=crash_cnt, allow_rapid=allow_rapid,
+    a_lead=a_lead, prev_v_rel=prev_v_rel, a_ego=a_ego, dt=dt,
+    should_stop=should_stop,
   ):
     return a
   out = float(a)
@@ -791,11 +814,13 @@ def near_fd_coast_floor_applies(plan_coasting, v_rel, d_rel, slack, *,
   """True only for a coasting near-FD settle, not a #222 firm match.
 
   All of: plan horizon coasting, owned lead, slack in the near-FD
-  band, closing under ~1 m/s, aLead milder than ~−0.25, and none of
-  FCW / crash / shouldStop / near-bumper / confirmed rapid / the
-  existing residual-close skip. A braking lead (23:31: aLead ~−1.2,
-  closing ~1.1) does not match.
+  band, closing under ~1 m/s, aLead at or above −0.35, and none of
+  FCW / crash / shouldStop / near-bumper / confirmed rapid / residual
+  or rising close. A braking lead (23:31: aLead ~−1.2, closing ~1.1)
+  does not match. lead_alead_owns_match(−0.2) must not veto this:
+  22:12:50 / 22:13:01 were aLead −0.23…−0.34 on a coasting plan.
   """
+  _ = (opening_release, depart_release)
   if not plan_coasting or not owned or should_stop:
     return False
   if fcw or int(crash_cnt) > 0:
@@ -813,19 +838,14 @@ def near_fd_coast_floor_applies(plan_coasting, v_rel, d_rel, slack, *,
     return False
   if a_lead is None:
     return False
-  # Slightly negative aLeadK on an opening gap is not a brake. A
-  # closing lead at the brake line (23:31) still stays raw.
-  if (float(a_lead) <= LEAD_NEAR_FD_COAST_ALEAD_MS2
+  # Slightly negative aLeadK on an opening gap is not a brake.
+  # aLead below −0.35 on a closing gap stays raw (#237 line).
+  if (float(a_lead) < LEAD_NEAR_FD_COAST_ALEAD_MS2
       and not lead_kinematics_opening(v, slack)):
     return False
-  # #222 residual / rising close / near-gap aLead match. Do not put
-  # the mild floor back on a path that already released it. An
-  # opening or departing release is the opposite: the floor stays.
-  if lead_soft_limit_skip(
-    v, a_lead, slack, owned=True, acquiring=False,
-    prev_v_rel=prev_v_rel, a_ego=a_ego, dt=dt,
-    opening_release=opening_release, depart_release=depart_release,
-  ):
+  # #222 residual / rising close stays raw. Do not call
+  # lead_soft_limit_skip: its −0.2 aLead match is the veto.
+  if lead_rising_or_residual_brake(v, prev_v_rel, a_ego, dt):
     return False
   return True
 
@@ -1204,7 +1224,7 @@ def lead_mpc_needs_full_authority(v_rel, d_rel, slack=None, allow_rapid=False,
                                  a_lead=None, skip_mild_floor=False,
                                  owned=False, acquiring=False, prev_v_rel=None,
                                  a_ego=None, dt=None, depart_release=False,
-                                 opening_release=False):
+                                 opening_release=False, should_stop=False):
   """True when MPC −a must not be slewed or floored.
 
   Firm / emergency: FCW / crash / confirmed rapid close / near bumper
@@ -1220,9 +1240,10 @@ def lead_mpc_needs_full_authority(v_rel, d_rel, slack=None, allow_rapid=False,
   A departing-lead release drops firmness even if closing is still
   high, once |yRel| has left the lane with slack left. Near-bumper /
   FCW stay firm. An opening release drops aLead-only firmness while
-  the gap is still opening; a real close ≥ 1.5 is not that release.
+  the gap is still opening; a close ≥ 1.5 with brake evidence is
+  not that release. Close ≥ 1.5 alone is not full authority.
   """
-  if fcw or int(crash_cnt) > 0:
+  if should_stop or fcw or int(crash_cnt) > 0:
     return True
   if d_rel is not None and float(d_rel) <= LEAD_MPC_SOFT_NEAR_M:
     return True
@@ -1521,6 +1542,32 @@ def lead_residual_close_ms2(v_rel, prev_v_rel, a_ego, dt):
   return (float(v_rel) - float(prev_v_rel) - expected) / float(dt)
 
 
+def lead_firm_alead(a_lead, firm_ms2=LEAD_CRUISE_CLIFF_ALEAD_MS2) -> bool:
+  """True when measured aLead is below the #237 firm-brake line.
+
+  Equal to −0.35 is not firm. 22:14:14 (aLead −0.6…−0.7) is.
+  """
+  return a_lead is not None and float(a_lead) < float(firm_ms2)
+
+
+def lead_rising_or_residual_brake(v_rel, prev_v_rel=None, a_ego=None, dt=None) -> bool:
+  """#222: closing rate rose, or residual close beyond ego's own a.
+
+  A steady close (v_rel not rising) is not residual brake. Same tests
+  the mild-floor skip uses after the static close gate.
+  """
+  if (v_rel is not None and float(v_rel) >= LEAD_CLOSING_REMATCH_BLOCK_MS
+      and lead_close_is_rising(v_rel, prev_v_rel)):
+    return True
+  residual = lead_residual_close_ms2(v_rel, prev_v_rel, a_ego, dt)
+  if residual is not None and residual >= LEAD_SOFT_LIMIT_RESIDUAL_MS2:
+    if (v_rel is not None and prev_v_rel is not None
+        and float(v_rel) >= LEAD_APPROACH_DV_MS
+        and float(v_rel) > float(prev_v_rel)):
+      return True
+  return False
+
+
 def lead_soft_limit_skip(v_rel, a_lead=None, slack=None, owned=False,
                          acquiring=False, prev_v_rel=None, a_ego=None, dt=None,
                          opening_release=False, depart_release=False) -> bool:
@@ -1529,10 +1576,11 @@ def lead_soft_limit_skip(v_rel, a_lead=None, slack=None, owned=False,
   Primary: an already-owned / path-synced lead (past first latch, or
   hold-owned) whose residual close shows brake (closing worsened
   beyond ego a) or near-gap aLead is negative. Soft ease can
-  follow immediately. Closing ≥ 1.5 also skips so a finished rise
-  — and a cut-in that is already closing hard — can still react.
-  Large slack (e4) stays floored. Firm / full still waits on
-  confirm so one radar blip cannot dump.
+  follow immediately. Closing ≥ 1.5 skips only with a firm aLead
+  (below −0.35) or this same residual / rising close. A non-braking
+  catch-up (22:12:04, aLead ≈ 0) stays floored. Large slack (e4)
+  stays floored. Firm / full still waits on confirm so one radar
+  blip cannot dump.
 
   Clearly opening + positive slack: negative aLeadK does not skip
   (it is not closing evidence). A latched opening release also
@@ -1546,7 +1594,18 @@ def lead_soft_limit_skip(v_rel, a_lead=None, slack=None, owned=False,
   if slack is not None and float(slack) > LEAD_ALEAD_MATCH_SLACK_M:
     return False
   if v_rel is not None and float(v_rel) >= LEAD_APPROACH_SOFT_LIMIT_CLOSE_MS:
-    return True
+    # Already inside Follow Distance: do not pin a hard close. That
+    # recovery is not the positive-slack catch-up (22:12:04).
+    if slack is not None and float(slack) < 0.0:
+      return True
+    # Close alone unlocked get_accel_from_plan (−1.6) while the lead
+    # was not braking and the MPC tape was still ~−0.3. Weak aLead
+    # (≳ −0.35) does not count — that includes lead_alead_owns_match.
+    if lead_firm_alead(a_lead) or lead_rising_or_residual_brake(
+      v_rel, prev_v_rel, a_ego, dt,
+    ):
+      return True
+    return False
   if opening_release:
     return False
   if acquiring and not owned:
@@ -1681,7 +1740,8 @@ def soft_limit_mpc_a_target(output_a, v_ego, v_lead, d_rel, fcw=False, crash_cnt
                             allow_rapid=False, a_lead=None, slack=None,
                             prev_floored=False, owned=False, acquiring=False,
                             prev_v_rel=None, a_ego=None, dt=None, v_cruise=None,
-                            opening_release=False, depart_release=False):
+                            opening_release=False, depart_release=False,
+                            should_stop=False):
   """Floor non-emergency MPC −a to slight-lift MILD.
 
   Overlay min(MPC, mild) cannot stop MPC commanding ~−2.5 on radar noise
@@ -1693,9 +1753,10 @@ def soft_limit_mpc_a_target(output_a, v_ego, v_lead, d_rel, fcw=False, crash_cnt
   when an already-owned / path-synced lead's residual close (beyond
   ego's own a) or measured aLead shows brake. Do not wait for rapid
   ≥ 6 (07:55 class: held lead, closing 1.8→4.4, aLead ~−1, dRel
-  38→25 while aTarget sat at −0.22). Cut-ins may still skip once
-  closing ≥ 1.5. Large-slack e4 and far / opening aLead stay
-  floored. Over MAX (past the deadband), a far / large-slack
+  38→25 while aTarget sat at −0.22). Close ≥ 1.5 without a firm aLead
+  or that residual / rising close stays on MILD (22:12:04).
+  Large-slack e4 and far / opening aLead stay floored. Over MAX
+  (past the deadband), a far / large-slack
   same-speed lead still passes map decel. A mid-gap lead that is
   not rapid / FCW / near-bumper is comfort-floored so a cruise cliff
   cannot punch at ~60 m. Sitting at MAX still uses MILD. Firm / full
@@ -1710,13 +1771,15 @@ def soft_limit_mpc_a_target(output_a, v_ego, v_lead, d_rel, fcw=False, crash_cnt
   if d_rel is None or v_lead is None or v_ego is None:
     return a
   v_rel = float(v_ego) - max(0.0, float(v_lead))
-  # FCW / confirmed rapid / near-bumper / match-speed skip stay raw.
+  # FCW / shouldStop / confirmed rapid / near-bumper / brake-evidence
+  # skip stay raw. Close ≥ 1.5 alone does not.
   if lead_mpc_needs_full_authority(
     v_rel, d_rel, slack, allow_rapid=allow_rapid, fcw=fcw,
     crash_cnt=crash_cnt, confirm_rapid=True,
     a_lead=a_lead, skip_mild_floor=True, owned=owned,
     acquiring=acquiring, prev_v_rel=prev_v_rel, a_ego=a_ego, dt=dt,
     opening_release=opening_release, depart_release=depart_release,
+    should_stop=should_stop,
   ):
     return a
   if (lead_map_decel_above_max(v_ego, v_cruise)

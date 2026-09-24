@@ -1,3 +1,5 @@
+from collections import deque
+
 import numpy as np
 from cereal import car
 from openpilot.common.realtime import DT_CTRL
@@ -61,9 +63,13 @@ class LongControl:
                              (CP.longitudinalTuning.kiBP, CP.longitudinalTuning.kiV),
                              rate=1 / DT_CTRL)
     self.last_output_accel = 0.0
+    # ~50 ms of lead v_rel so the regen guard can see #222 residual
+    # close without treating a 100 Hz radar step as a brake.
+    self._lead_v_rel_hist = deque(maxlen=5)
 
   def reset(self):
     self.pid.reset()
+    self._lead_v_rel_hist.clear()
 
   def update(self, active, CS, a_target, should_stop, accel_limits,
              lead_v_rel=None, lead_d_rel=None, lead_slack=None, lead_fcw=False,
@@ -102,9 +108,18 @@ class LongControl:
     # FCW, and a near bumper still reach the plant.
     if (self.long_control_state == LongCtrlState.pid
         and _is_tesla_preap_long(self.CP)):
+      prev_v_rel = None
+      if lead_v_rel is None:
+        self._lead_v_rel_hist.clear()
+      else:
+        if len(self._lead_v_rel_hist) >= self._lead_v_rel_hist.maxlen:
+          prev_v_rel = self._lead_v_rel_hist[0]
+        self._lead_v_rel_hist.append(float(lead_v_rel))
       self.last_output_accel = float(guard_follow_actuator_regen(
         self.last_output_accel, a_target,
         v_rel=lead_v_rel, d_rel=lead_d_rel, slack=lead_slack, fcw=lead_fcw,
         v_ego=lead_v_ego, v_cruise=lead_v_cruise, a_lead=lead_a_lead,
+        prev_v_rel=prev_v_rel, a_ego=float(getattr(CS, "aEgo", 0.0)),
+        dt=5.0 * DT_CTRL, should_stop=bool(should_stop),
       ))
     return self.last_output_accel

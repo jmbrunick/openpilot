@@ -677,6 +677,7 @@ class LongitudinalPlanner:
         v_cruise=v_hud_ms,
         opening_release=self._lead_opening_release,
         depart_release=self._lead_depart_release,
+        should_stop=bool(self.output_should_stop),
       )
       self._lead_soft_limit_floored = (
         raw_mpc_a < -LEAD_APPROACH_MILD_A_MS2

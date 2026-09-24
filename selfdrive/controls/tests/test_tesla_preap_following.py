@@ -684,14 +684,19 @@ def test_planner_eases_for_slower_lead_before_mpc_and_lead_can_brake_harder():
   for _ in range(16):
     planner.update(inputs)
   # Closing ≥ 1.5: never rematch +a. Overlay ease stays slight-lift
-  # while MPC is 0; a deeper MPC bite must leave the MILD floor.
+  # while MPC is 0. A deeper MPC bite stays MILD unless the lead is braking.
   assert planner.output_a_target <= 0.0
   assert planner.output_a_target >= -LEAD_APPROACH_MILD_A_MS2 - 0.08
 
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
   planner.update(inputs)
-  # 4.4 m/s close is under rapid 6 but past the soft-limit skip: leave −0.22.
+  # 4.4 m/s close under rapid, lead not braking: stay on MILD.
+  assert planner.output_a_target == pytest.approx(-LEAD_APPROACH_MILD_A_MS2, abs=0.08)
+  lead.aLeadK = -0.80
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
+  planner.update(inputs)
   assert planner.output_a_target == pytest.approx(-2.0, abs=0.08)
+  lead.aLeadK = 0.0
 
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-2.0)
   planner.mpc.crash_cnt = 3
