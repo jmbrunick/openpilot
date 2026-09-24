@@ -23,6 +23,7 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_RESIDUAL_SUSTAIN_N,
   LEAD_RESIDUAL_WINDOW_S,
   LEAD_KIN_APPROACH_CAP_MS2,
+  LEAD_KIN_APPROACH_DESIGN_MARGIN_M,
   LEAD_FIRM_EARLY_CAP_MS2,
   LEAD_POST_CURVE_CATCHUP_S,
   LEAD_CLOSING_ALEAD_MS2,
@@ -2810,36 +2811,64 @@ def test_weak_alead_line_only_when_slow_and_not_rising():
 
 
 def test_kinematic_approach_deepens_mild_not_the_rail():
-  """17:19:44 cut-in and 17:29 slow lead. Mild is not enough; −0.6 is the cap.
+  """Deepen only inside the 0.55 approach distance. Cap stays −0.6.
 
-  22:12 non-braking close (2.81 m/s, slack 17.9) stays exactly mild.
-  Close ≥ 1.5 without brake evidence still does not open the rail.
+  A gap sized for LEAD_APPROACH_A_MS2 (the planner ease test, and the
+  17:19:44 cut-in at slack 10) stays mild. 17:19 deepens once that
+  cut-in is inside the design distance. 17:29 stays mild at slack 24
+  and deepens once the slow close has run inside its design distance.
+  22:12 (close 2.81, slack 17.9) stays exactly mild. A non-braking
+  lead does not take the firm-early path.
   """
-  cut = soft_limit_mpc_a_target(
+  mild = -LEAD_APPROACH_MILD_A_MS2
+  # Planned approach: d_rel sized for 0.55. Stay mild. Not change 7.
+  v_plan = 4.4
+  design_plan = (v_plan * v_plan) / (2.0 * LEAD_APPROACH_A_MS2)
+  assert lead_kinematic_approach_a(v_plan, design_plan, a_lead=0.0) is None
+  assert lead_firm_large_slack_a(v_plan, design_plan, 0.0) is None
+  assert soft_limit_mpc_a_target(
+    -2.0, 26.8, 22.4, 50.0, a_lead=0.0, slack=design_plan, owned=True,
+  ) == pytest.approx(mild)
+  # 17:19:44 first sample is that same design distance.
+  design_cut = (3.3 * 3.3) / (2.0 * LEAD_APPROACH_A_MS2)
+  assert 10.0 >= design_cut - LEAD_KIN_APPROACH_DESIGN_MARGIN_M
+  assert lead_kinematic_approach_a(3.3, 10.0, a_lead=0.10) is None
+  assert soft_limit_mpc_a_target(
     -0.13, 20.0, 20.0 - 3.3, 36.6, a_lead=0.10, slack=10.0, owned=True,
+  ) == pytest.approx(-0.13)
+  # Inside the design window the cut-in needs more than mild, still ≤ −0.6.
+  inside = design_cut - LEAD_KIN_APPROACH_DESIGN_MARGIN_M - 1.0
+  cut = soft_limit_mpc_a_target(
+    -0.13, 20.0, 20.0 - 3.3, 36.6, a_lead=0.10, slack=inside, owned=True,
   )
   assert -LEAD_KIN_APPROACH_CAP_MS2 - 1e-6 <= cut <= -0.45
   assert cut > -1.0
-  kin = lead_kinematic_approach_a(3.3, 10.0, a_lead=0.10)
+  kin = lead_kinematic_approach_a(3.3, inside, a_lead=0.10)
   assert kin == pytest.approx(cut)
+  # 17:29:42 far slack stays mild; inside the design distance deepens.
   far = soft_limit_mpc_a_target(
     -1.5, 20.0, 20.0 - 1.9, 50.0, a_lead=0.05, slack=24.0, owned=True,
   )
-  assert far == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  assert far == pytest.approx(mild)
+  design_slow = (1.9 * 1.9) / (2.0 * LEAD_APPROACH_A_MS2)
+  slow_inside = design_slow - LEAD_KIN_APPROACH_DESIGN_MARGIN_M - 0.5
   near = soft_limit_mpc_a_target(
-    -0.13, 20.0, 20.0 - 1.9, 20.0, a_lead=0.05, slack=4.0, owned=True,
+    -0.13, 20.0, 20.0 - 1.9, 20.0, a_lead=0.05, slack=slow_inside, owned=True,
   )
-  assert -0.60 - 1e-6 <= near <= -0.40
+  assert -LEAD_KIN_APPROACH_CAP_MS2 - 1e-6 <= near <= -0.40
   assert lead_kinematic_approach_a(2.81, 17.9, a_lead=0.10) is None
   assert soft_limit_mpc_a_target(
     -1.62, 27.3, 27.3 - 2.81, 41.0, a_lead=0.10, slack=17.9, owned=True,
-  ) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  ) == pytest.approx(mild)
   assert guard_follow_actuator_regen(
     -1.50, -0.13, v_rel=3.3, d_rel=36.6, slack=10.0, a_lead=0.10,
+  ) == pytest.approx(mild)
+  assert guard_follow_actuator_regen(
+    -1.50, -0.13, v_rel=3.3, d_rel=30.0, slack=inside, a_lead=0.10,
   ) == pytest.approx(cut)
   assert guard_follow_actuator_regen(
     -1.50, -1.62, v_rel=2.81, d_rel=41.0, slack=17.9, a_lead=0.10,
-  ) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  ) == pytest.approx(mild)
 
 
 def test_firm_lead_large_slack_brakes_early_without_dropping_222():

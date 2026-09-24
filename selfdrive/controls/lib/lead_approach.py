@@ -212,10 +212,13 @@ LEAD_RESIDUAL_SUSTAIN_N = 2
 LEAD_RESIDUAL_WINDOW_RISE_MS = 0.25
 # Closing ≥ 1 m/s and mild (−0.22) cannot finish at Follow Distance:
 # brake the kinematic need, capped short of the regen rail.
+# The planned approach is sized for LEAD_APPROACH_A_MS2 (0.55). A gap
+# at that slack stays mild. Deepen only once slack is clearly inside it.
 LEAD_KIN_APPROACH_CAP_MS2 = 0.60
 LEAD_KIN_APPROACH_BIAS_MS2 = 0.05
 LEAD_KIN_APPROACH_SLACK_FLOOR_M = 3.0
-LEAD_KIN_APPROACH_PAST_MILD_MS2 = 0.05
+LEAD_KIN_APPROACH_PAST_MILD_MS2 = 0.15
+LEAD_KIN_APPROACH_DESIGN_MARGIN_M = 0.5
 # Firm lead (aLead < −0.35), closing ≥ 1.5, slack still 20–50 m: start
 # the kinematic brake now instead of sitting on mild until the gap is
 # short. Cap ~−1.0. Inside 20 m, confirmed rapid, and near-bumper stay
@@ -1689,17 +1692,24 @@ def lead_weak_alead_line(v_rel, prev_v_rel=None) -> float:
 
 
 def lead_kinematic_approach_a(v_rel, slack, a_lead=None):
-  """Decel when mild cannot stop at the follow gap. None if mild is enough.
+  """Decel when mild cannot finish inside the planned approach distance.
 
-  Non-braking close ≥ 1 m/s only. Capped at −0.6 so this never becomes
-  a regen rail. A firm braking lead is #222, not this floor.
+  Non-braking close ≥ 1 m/s only. The planned ease is sized for
+  LEAD_APPROACH_A_MS2: a gap at that slack stays mild, even though
+  0.22 cannot stop there. Deepen only once slack is clearly inside
+  that distance and the required decel is past mild by a clear
+  margin. Capped at −0.6 so this never becomes a regen rail. A firm
+  braking lead is #222, not this floor.
   """
   if lead_firm_alead(a_lead):
     return None
   if v_rel is None or slack is None:
     return None
   v = float(v_rel)
-  if v < LEAD_CLOSING_REMATCH_BLOCK_MS:
+  if v < LEAD_CLOSING_REMATCH_BLOCK_MS or LEAD_APPROACH_A_MS2 <= 0.0:
+    return None
+  design = (v * v) / (2.0 * LEAD_APPROACH_A_MS2)
+  if float(slack) >= design - LEAD_KIN_APPROACH_DESIGN_MARGIN_M:
     return None
   s = max(float(slack), LEAD_KIN_APPROACH_SLACK_FLOOR_M)
   pure = -(v * v) / (2.0 * s)
