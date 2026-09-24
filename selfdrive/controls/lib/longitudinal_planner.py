@@ -16,10 +16,16 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_stopped_equivalence_factor,
   get_T_FOLLOW,
 )
+from openpilot.selfdrive.controls.lib.curve_max_hold import (
+  CURVE_ENTER_LAT_MS2,
+  CURVE_EXIT_LAT_MS2,
+)
 from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_APPROACH_MILD_A_MS2,
+  LEAD_POST_CURVE_CATCHUP_S,
   LEAD_POST_DUMP_A_MS2,
   LEAD_POST_DUMP_HOLD_S,
+  LeadResidualWindow,
   apply_lead_approach_overlay,
   apply_lead_glide_a,
   cap_closing_lead_accel,
@@ -168,6 +174,10 @@ class LongitudinalPlanner:
     self._lead_glide_active = False
     self._lead_soft_limit_floored = False
     self._lead_soft_limit_v_rel = None
+    self._lead_residual = LeadResidualWindow()
+    self._post_curve_s = 0.0
+    self._in_curve = False
+    self._corner_curvature = 0.0
     self._lead_y_rel = None
     self._lead_opening_age = 0.0
     self._lead_opening_release = False
@@ -205,6 +215,30 @@ class LongitudinalPlanner:
     else:
       throttle_prob = 1.0
     return x, v, a, j, throttle_prob
+
+  def _update_corner_state(self, sm, v_ego: float) -> None:
+    """Real cornering for the depart check and the post-curve +a trickle.
+
+    Curvature is the same vehicle-model signal the curve cap uses.
+    Enter / exit use lateral accel so a lead in a bend is not treated
+    as leaving the lane, and the first seconds after the bend do not
+    spend the Accel envelope catching back up.
+    """
+    kappa = 0.0
+    cs = sm['controlsState']
+    curv = getattr(cs, "curvature", 0.0)
+    if curv is not None:
+      kappa = float(curv)
+    self._corner_curvature = kappa
+    ay = abs(kappa) * float(v_ego) * float(v_ego)
+    if ay >= CURVE_ENTER_LAT_MS2:
+      self._in_curve = True
+      self._post_curve_s = 0.0
+    elif self._in_curve and ay < CURVE_EXIT_LAT_MS2:
+      self._in_curve = False
+      self._post_curve_s = LEAD_POST_CURVE_CATCHUP_S
+    elif self._post_curve_s > 0.0:
+      self._post_curve_s = max(0.0, self._post_curve_s - float(self.dt))
 
   def update(self, sm):
     self._frame += 1
@@ -267,6 +301,10 @@ class LongitudinalPlanner:
       self._lead_settled = False
       self._lead_acquire_age = 0.0
       self._lead_soft_limit_v_rel = None
+      self._lead_residual.reset()
+      self._post_curve_s = 0.0
+      self._in_curve = False
+      self._corner_curvature = 0.0
       self._lead_y_rel = None
       self._lead_opening_age = 0.0
       self._lead_opening_release = False
@@ -349,6 +387,8 @@ class LongitudinalPlanner:
           blended = accel_clip[1] * (1.0 - cap_strength) + follow_limit * cap_strength
           accel_clip[1] = min(accel_clip[1], blended)
 
+    self._update_corner_state(sm, v_ego)
+
     # Coming up behind a radar lead: cap +a to the same Accel 1–10
     # envelope as open-road / MAX climb (including last-mph baby-step).
     # Cruise 1.6 / Adaptive full-profile used to punch a 160–200 m lead.
@@ -405,6 +445,7 @@ class LongitudinalPlanner:
           settled=self._lead_settled, v_ego=v_ego, v_cruise=v_hud_ms,
           catchup=self._lead_mid_gap_catchup,
           post_dump=self._lead_post_dump_hold > 0.0,
+          post_curve=self._post_curve_s > 0.0,
         )
         if self._lead_close_hold_owned or lead_owns_plan(
           v_rel_lead, self._lead_close_hold_a, slack,
@@ -422,6 +463,7 @@ class LongitudinalPlanner:
         self._lead_glide_active = False
         self._lead_soft_limit_floored = False
         self._lead_soft_limit_v_rel = None
+        self._lead_residual.reset()
         self._lead_y_rel = None
         self._lead_opening_age = 0.0
         self._lead_opening_release = False
@@ -626,7 +668,18 @@ class LongitudinalPlanner:
       # Firm 0.55 / hard dump still waits on the rapid confirm.
       # A raw cliff arms the mid-gap rematch trickle for the re-catch.
       raw_mpc_a = float(output_a_target)
-      prev_close_v_rel = self._lead_soft_limit_v_rel
+      # #222 residual uses ~0.5 s of measured aEgo. prev stays None until
+      # that window has been a real brake for two frames, so one radar
+      # LSB cannot cancel the comfort floors.
+      if live_ok or lead_held:
+        prev_close_v_rel, residual_dt, residual_a = self._lead_residual.update(
+          overlay_v_rel, float(sm['carState'].aEgo), self.dt,
+        )
+      else:
+        self._lead_residual.reset()
+        prev_close_v_rel = None
+        residual_dt = self.dt
+        residual_a = float(sm['carState'].aEgo)
       # Opening gap (09:57 / 10:05) and a lead walking off path
       # (08:57:50–52). aLeadK alone must not keep firm −a, and a
       # departing |yRel| fades the same authority. On-path close stays.
@@ -654,6 +707,7 @@ class LongitudinalPlanner:
         ) = update_depart_release(
           self._lead_depart_age, self._lead_depart_release,
           lead_y, self._lead_depart_abs_y, overlay_slack, overlay_v_rel, self.dt,
+          curvature=self._corner_curvature, d_rel=overlay_d,
         )
       else:
         self._lead_opening_age = 0.0
@@ -672,8 +726,8 @@ class LongitudinalPlanner:
         ),
         acquiring=acquiring,
         prev_v_rel=prev_close_v_rel,
-        a_ego=self.output_a_target,
-        dt=self.dt,
+        a_ego=residual_a,
+        dt=residual_dt,
         v_cruise=v_hud_ms,
         opening_release=self._lead_opening_release,
         depart_release=self._lead_depart_release,
@@ -703,7 +757,7 @@ class LongitudinalPlanner:
         output_a_target, overlay_v_rel, a_lead=lead_a_k,
         lead_present=live_ok or lead_held, owned=self._lead_close_hold_owned,
         slack=overlay_slack, d_rel=overlay_d, acquiring=acquiring,
-        prev_v_rel=prev_close_v_rel, a_ego=self.output_a_target, dt=self.dt,
+        prev_v_rel=prev_close_v_rel, a_ego=residual_a, dt=residual_dt,
         opening_release=self._lead_opening_release,
         depart_release=self._lead_depart_release,
       )
@@ -761,7 +815,7 @@ class LongitudinalPlanner:
         v_ego=v_ego, v_cruise=v_hud_ms,
         fcw=self.fcw, crash_cnt=self.mpc.crash_cnt, allow_rapid=allow_rapid,
         a_lead=lead_a_k, owned=bool(self._lead_close_hold_owned),
-        prev_v_rel=prev_close_v_rel, a_ego=self.output_a_target, dt=self.dt,
+        prev_v_rel=prev_close_v_rel, a_ego=residual_a, dt=residual_dt,
         should_stop=bool(self.output_should_stop),
       )
       near_fd_owned = bool(self._lead_close_hold_owned) or (
@@ -773,7 +827,7 @@ class LongitudinalPlanner:
         fcw=self.fcw, crash_cnt=self.mpc.crash_cnt, allow_rapid=allow_rapid,
         a_lead=lead_a_k, owned=near_fd_owned,
         should_stop=bool(self.output_should_stop),
-        prev_v_rel=prev_close_v_rel, a_ego=self.output_a_target, dt=self.dt,
+        prev_v_rel=prev_close_v_rel, a_ego=residual_a, dt=residual_dt,
         opening_release=self._lead_opening_release,
         depart_release=self._lead_depart_release,
       )

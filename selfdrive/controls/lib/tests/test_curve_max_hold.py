@@ -1,12 +1,19 @@
 """Curve MAX snapshot/restore: temp slow through the bend, then pre-curve set."""
 from pathlib import Path
 
+import pytest
 from openpilot.common.constants import CV
 from openpilot.selfdrive.controls.lib.curve_max_hold import (
+  CURVE_CAP_SETTLE_S,
   CURVE_COMFORT_LAT_MS2,
+  CURVE_ENTER_LAT_MS2,
   CURVE_EXIT_HOLD_S,
+  CURVE_LAT_TAU_S,
   CURVE_MIN_V_EGO_MS,
+  CURVE_RESTORE_A_DEFAULT_MS2,
   CurveMaxHold,
+  cornering_lat_accel_ms2,
+  curve_speed_from_lat,
   curve_speed_ms,
   is_sharp_curve,
   steer_lat_accel_ms2,
@@ -66,11 +73,13 @@ def test_sharp_steer_is_a_curve_and_caps_below_60():
 
 
 def _run_bend(curve: CurveMaxHold, hold: MapCruiseHold, *, last_hud, posted_now,
-              steer, v_ego=V_60, dt=0.01, hud_overlay=None, stalk=False, take=False):
+              steer, v_ego=V_60, dt=0.01, hud_overlay=None, stalk=False, take=False,
+              curvature=None, yaw_rate=None, restore_a_ms2=1.0e4):
   policy_posted, freeze = curve.begin_cycle(
     hold, last_hud_kph=last_hud, posted_kph=posted_now,
     v_ego_ms=v_ego, angle_steers_deg=steer, steer_ratio=SR, wheelbase=WB,
     engaged=True, take_speed_now=take, dt=dt,
+    curvature=curvature, yaw_rate=yaw_rate,
   )
   dec = decide_map_cruise(
     hold, engaged=True, mode=MODE_FOLLOW,
@@ -83,6 +92,7 @@ def _run_bend(curve: CurveMaxHold, hold: MapCruiseHold, *, last_hud, posted_now,
     hud_kph=overlay, hold=hold, posted_kph=posted_now,
     v_ego_ms=v_ego, angle_steers_deg=steer, steer_ratio=SR, wheelbase=WB,
     engaged=True, stalk_pressed=stalk, take_speed_now=take, dt=dt,
+    curvature=curvature, yaw_rate=yaw_rate, restore_a_ms2=restore_a_ms2,
   )
   return out, freeze, dec
 
@@ -298,3 +308,123 @@ def test_card_and_docs_wire_curve_max_restore():
   assert "curve" in hyper.lower()
   hm = next(p for p in releases.split("\n\n") if "curve" in p.lower() and p.startswith("NAP"))
   assert "MAX" in hm
+
+
+def test_curvature_lat_accel_not_raw_steer():
+  """Route 115: steer-model a_y read ~1.84× the real corner.
+
+  A sweeper whose vehicle-model curvature is 1.4 m/s² at 70 mph must
+  not drop MAX. The same wheel angle through the stock steer model
+  (ratio 15, no angle offset, no understeer) would.
+  """
+  v = 70.0 * CV.MPH_TO_MS
+  real_ay = 1.4
+  kappa = real_ay / (v * v)
+  assert cornering_lat_accel_ms2(v, 7.0, SR, WB, curvature=kappa) == pytest.approx(real_ay)
+  assert cornering_lat_accel_ms2(
+    v, 20.0, SR, WB, yaw_rate=real_ay / v,
+  ) == pytest.approx(real_ay)
+  steer_ay = steer_lat_accel_ms2(v, 7.0, 15.0, WB)
+  assert steer_ay > real_ay * 1.5
+  assert curve_speed_from_lat(v, real_ay) > v
+  assert curve_speed_from_lat(v, steer_ay) < v
+
+  posted = _kph(70)
+  hold = MapCruiseHold()
+  _follow_seed(hold, posted, None)
+  curve = CurveMaxHold()
+  out, _, _ = _run_bend(
+    curve, hold, last_hud=posted, posted_now=posted, steer=7.0,
+    v_ego=v, hud_overlay=posted, curvature=kappa,
+  )
+  assert out.hud_kph == pytest.approx(posted, abs=0.05)
+  # Same steer, no curvature: the inflated model does cap.
+  steer_only = curve_speed_ms(v, 7.0, 15.0, WB)
+  assert steer_only is not None and steer_only * CV.MS_TO_KPH < posted
+
+
+def test_lat_accel_smooths_and_cap_holds_then_ramps():
+  """Cap tracks a smoothed a_y, does not pump up mid-bend, ramps out.
+
+  First sample matches the raw corner so entry is immediate. After the
+  settle window a looser reading must not raise the cap; a clearly
+  tighter one may drop it. Exit restores MAX at the Accel rate, not
+  in one frame, and does not rebase sticky.
+  """
+  v = V_60
+  posted = _kph(60)
+  hold = MapCruiseHold()
+  _follow_seed(hold, posted, posted)
+  curve = CurveMaxHold()
+  # a_y 2.4 → comfort speed below 60. kappa = a_y / v².
+  kappa_tight = 2.4 / (v * v)
+  out, _, _ = _run_bend(
+    curve, hold, last_hud=posted, posted_now=posted, steer=4.0,
+    v_ego=v, hud_overlay=posted, curvature=kappa_tight, restore_a_ms2=0.40,
+  )
+  assert curve._ay_s == pytest.approx(2.4, abs=1e-6)
+  assert out.hud_kph < posted - 1.0
+  capped = out.hud_kph
+  # One noisy spike must not jump the smoothed a_y to the spike.
+  kappa_spike = 4.0 / (v * v)
+  _run_bend(
+    curve, hold, last_hud=capped, posted_now=posted, steer=4.0,
+    v_ego=v, hud_overlay=posted, curvature=kappa_spike, restore_a_ms2=0.40,
+  )
+  alpha = 0.01 / (CURVE_LAT_TAU_S + 0.01)
+  assert curve._ay_s < 2.4 + alpha * (4.0 - 2.4) + 0.05
+  assert curve._ay_s < 3.0
+
+  # Settle, then a looser bend must not raise the cap.
+  for _ in range(int(CURVE_CAP_SETTLE_S / 0.01) + 5):
+    out, _, _ = _run_bend(
+      curve, hold, last_hud=posted, posted_now=posted, steer=4.0,
+      v_ego=v, hud_overlay=posted, curvature=kappa_tight, restore_a_ms2=0.40,
+    )
+  held = out.hud_kph
+  kappa_loose = 1.6 / (v * v)
+  assert kappa_loose * v * v >= CURVE_ENTER_LAT_MS2
+  for _ in range(100):
+    out, _, _ = _run_bend(
+      curve, hold, last_hud=posted, posted_now=posted, steer=4.0,
+      v_ego=v, hud_overlay=posted, curvature=kappa_loose, restore_a_ms2=0.40,
+    )
+    assert out.hud_kph <= held + 0.05
+  assert abs(hold.held_max_kph - posted) < 1e-6
+
+  # Clearly tighter: cap may drop.
+  kappa_hard = 3.2 / (v * v)
+  dropped = held
+  for _ in range(int(CURVE_CAP_SETTLE_S / 0.01) + 8):
+    out, _, _ = _run_bend(
+      curve, hold, last_hud=posted, posted_now=posted, steer=4.0,
+      v_ego=v, hud_overlay=posted, curvature=kappa_hard, restore_a_ms2=0.40,
+    )
+    dropped = min(dropped, out.hud_kph)
+  assert dropped < held - 1.0
+
+  # Exit ramps toward the snapshot. Sticky stays put until the ramp ends.
+  saw_partial = False
+  first_rise = None
+  restored = None
+  prev = out.hud_kph
+  for _ in range(int((CURVE_EXIT_HOLD_S + 30.0) / 0.01)):
+    out, _, _ = _run_bend(
+      curve, hold, last_hud=posted, posted_now=posted, steer=1.0,
+      v_ego=v, hud_overlay=posted, curvature=0.0, restore_a_ms2=CURVE_RESTORE_A_DEFAULT_MS2,
+    )
+    if out.restore_seed_kph is None and out.hud_kph > prev + 1e-4:
+      saw_partial = True
+      if first_rise is None:
+        first_rise = out.hud_kph
+      assert abs(hold.sticky_set_kph - posted) < 1e-6
+    prev = out.hud_kph
+    if out.restore_seed_kph is not None:
+      restored = out
+      break
+  assert saw_partial and first_rise is not None
+  assert first_rise < posted - 1.0
+  assert restored is not None
+  assert restored.hud_kph == pytest.approx(posted, abs=0.05)
+  assert abs(hold.held_max_kph - posted) < 1e-6
+  assert not curve.active

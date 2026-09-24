@@ -146,6 +146,8 @@ still closing keeps full firmness.
 """
 from __future__ import annotations
 
+from collections import deque
+
 from openpilot.selfdrive.mapd.constants import LOOKAHEAD_NORMAL, TRACK_DEADBAND_MS, map_accel_a_ms2
 
 # Keep in sync with long_mpc.STOP_DISTANCE (acados cruise/lead obstacle).
@@ -201,6 +203,29 @@ LEAD_SOFT_LIMIT_RISE_MS = 0.15
 # Unexplained closing accel after subtracting ego's own a. Same
 # spirit as aLead ≤ −0.2: residual ≥ 0.2 means the lead is braking.
 LEAD_SOFT_LIMIT_RESIDUAL_MS2 = 0.2
+# #222 residual / rising close, de-noised. One radar LSB (1/16 m/s) over
+# a planner frame is 1.25 m/s² and used to cancel every comfort floor.
+# Require a ~0.5 s window of measured accel, then two frames of it.
+LEAD_RESIDUAL_WINDOW_S = 0.50
+LEAD_RESIDUAL_SUSTAIN_MS2 = 0.45
+LEAD_RESIDUAL_SUSTAIN_N = 2
+LEAD_RESIDUAL_WINDOW_RISE_MS = 0.25
+# Closing ≥ 1 m/s and mild (−0.22) cannot finish at Follow Distance:
+# brake the kinematic need, capped short of the regen rail.
+# The planned approach is sized for LEAD_APPROACH_A_MS2 (0.55). A gap
+# at that slack stays mild. Deepen only once slack is clearly inside it.
+LEAD_KIN_APPROACH_CAP_MS2 = 0.60
+LEAD_KIN_APPROACH_BIAS_MS2 = 0.05
+LEAD_KIN_APPROACH_SLACK_FLOOR_M = 3.0
+LEAD_KIN_APPROACH_PAST_MILD_MS2 = 0.15
+LEAD_KIN_APPROACH_DESIGN_MARGIN_M = 0.5
+# Firm lead (aLead < −0.35), closing ≥ 1.5, slack still 20–50 m: start
+# the kinematic brake now instead of sitting on mild until the gap is
+# short. Cap ~−1.0. Inside 20 m, confirmed rapid, and near-bumper stay
+# on full #222 authority.
+LEAD_FIRM_EARLY_CAP_MS2 = 1.0
+# Right after a curve, do not spend the Accel envelope re-catching a lead.
+LEAD_POST_CURVE_CATCHUP_S = 5.0
 # Never rematch / cruise +a into a live or held closing gap. 1.0 m/s
 # (~2.2 mph) is above rematch-enter jitter; 1.5 is match-speed / ownership.
 LEAD_CLOSING_REMATCH_BLOCK_MS = 1.0
@@ -633,7 +658,7 @@ def lead_midgap_comfort_excluded(v_rel, d_rel, slack, fcw=False, crash_cnt=0,
   return False
 
 
-def lead_near_gap_alead_raw(v_rel, a_lead, slack, owned=False) -> bool:
+def lead_near_gap_alead_raw(v_rel, a_lead, slack, owned=False, prev_v_rel=None) -> bool:
   """True when near-gap lead braking must stay raw.
 
   Slack at or under the near-gap band with a meaningful negative aLead
@@ -647,11 +672,12 @@ def lead_near_gap_alead_raw(v_rel, a_lead, slack, owned=False) -> bool:
     return False
   if lead_kinematics_opening(v_rel, slack):
     return False
-  if lead_alead_owns_match(v_rel, a_lead, slack):
+  line = lead_weak_alead_line(v_rel, prev_v_rel)
+  if lead_alead_owns_match(v_rel, a_lead, slack, a_lead_ms2=line):
     return True
   if not owned or a_lead is None:
     return False
-  return float(a_lead) <= LEAD_CLOSING_ALEAD_MS2
+  return float(a_lead) <= line
 
 
 def guard_follow_actuator_regen(actuator_a, planner_a, v_rel=None, d_rel=None,
@@ -683,7 +709,14 @@ def guard_follow_actuator_regen(actuator_a, planner_a, v_rel=None, d_rel=None,
   )
   if emergency:
     return a
-  if (not lead_near_gap_alead_raw(v_rel, a_lead, slack, owned=owned)
+  # Large-slack firm lead: track the early kinematic brake, not the rail.
+  # Confirmed rapid still falls through to full authority below.
+  if not (v_rel is not None and lead_approach_is_rapid(float(v_rel))):
+    firm_early = lead_firm_large_slack_a(v_rel, slack, a_lead)
+    if firm_early is not None:
+      return a if a >= firm_early else firm_early
+  if (not lead_near_gap_alead_raw(
+        v_rel, a_lead, slack, owned=owned, prev_v_rel=prev_v_rel)
       and not lead_midgap_comfort_excluded(
         v_rel, d_rel, slack, fcw=False, crash_cnt=0, allow_rapid=False,
         a_lead=a_lead, prev_v_rel=prev_v_rel, a_ego=a_ego, dt=dt,
@@ -693,6 +726,10 @@ def guard_follow_actuator_regen(actuator_a, planner_a, v_rel=None, d_rel=None,
     # brake (−0.55) so a limit return is not lifted back to MILD.
     if lead_map_decel_above_max(v_ego, v_cruise):
       floor = -LEAD_MAP_MIDGAP_FLOOR_MS2
+    else:
+      kin = lead_kinematic_approach_a(v_rel, slack, a_lead)
+      if kin is not None:
+        floor = min(floor, kin)
     return a if a >= floor else floor
   if p <= LEAD_FOLLOW_ACT_REGEN_CMD_MS2:
     return a
@@ -771,7 +808,7 @@ def floor_midgap_coast_a_target(a, plan_coasting, v_rel, d_rel, slack,
   """
   if a is None or not plan_coasting:
     return a
-  if (lead_near_gap_alead_raw(v_rel, a_lead, slack, owned=owned)
+  if (lead_near_gap_alead_raw(v_rel, a_lead, slack, owned=owned, prev_v_rel=prev_v_rel)
       and not lead_cruise_midgap_cliff(
         v_rel, a_lead, slack, prev_v_rel=prev_v_rel, a_ego=a_ego, dt=dt,
         should_stop=should_stop,
@@ -788,6 +825,11 @@ def floor_midgap_coast_a_target(a, plan_coasting, v_rel, d_rel, slack,
     floor = -LEAD_MAP_MIDGAP_FLOOR_MS2
   else:
     floor = -LEAD_APPROACH_MILD_A_MS2
+    kin = lead_kinematic_approach_a(v_rel, slack, a_lead)
+    if kin is not None:
+      if out <= 0.0 and out > kin:
+        out = kin
+      floor = min(floor, kin)
   if out >= floor:
     return out
   return floor
@@ -1106,7 +1148,8 @@ def lead_mid_gap_catchup_latch(prev, v_rel, slack, prev_slack=None,
 
 def lead_close_accel_ms2(accel_level: int = 5, v_rel=None, slack=None,
                          a_personality=None, settled=False, v_ego=None,
-                         v_cruise=None, catchup=False, post_dump=False) -> float:
+                         v_cruise=None, catchup=False, post_dump=False,
+                         post_curve=False) -> float:
   """Max positive a (m/s²) when closing the gap on a radar lead.
 
   Same Accel 1–10 envelope as open-road / MAX climb — not a separate
@@ -1130,6 +1173,10 @@ def lead_close_accel_ms2(accel_level: int = 5, v_rel=None, slack=None,
     a = min(a, max(0.0, float(a_personality)))
   if lead_at_or_above_max(v_ego, v_cruise):
     a = 0.0
+  # Just out of a bend, glide back toward an opening / mid-gap lead.
+  # Do not spend the Accel envelope on the first seconds of the rejoin.
+  if post_curve and (v_rel is not None or slack is not None):
+    a = min(a, LEAD_MID_GAP_REMATCH_A_MS2)
   if v_rel is not None and float(v_rel) >= LEAD_CLOSING_REMATCH_BLOCK_MS:
     # Large-gap catch-up still uses Accel (#187) even while closing ≳ 1.0
     # *when same-speed / opening, only barely closing, or slack > 50*.
@@ -1444,41 +1491,58 @@ def update_opening_release(age, released, v_rel, d_rel, prev_d, slack, dt,
   return age, bool(released), prev
 
 
-def lead_lateral_departing(y_rel, prev_abs_y, slack) -> bool:
+def lead_lateral_departing(y_rel, prev_abs_y, slack, *,
+                           curvature=None, d_rel=None) -> bool:
   """True when an owned lead is leaving the path with room to spare.
 
   |yRel| ≲ 1.5 stays on path (full firmness if still closing). Past
   ~2.25 m with slack ≳ 8 m is departing even before another sample.
   Between those, only a growing |yRel| counts.
+
+  In a bend, straight-ahead yRel includes the lane's own offset
+  (½·κ·d²). Subtract that magnitude before the thresholds. The result
+  can only make this release less eager: a lead that is not departing
+  on raw yRel still is not, and an in-lane lead in a curve no longer
+  looks like it left the lane.
   """
   if y_rel is None or slack is None or float(slack) < LEAD_DEPART_SLACK_M:
     return False
-  ay = abs(float(y_rel))
+  raw = abs(float(y_rel))
+  geom = abs(lead_path_offset_m(curvature, d_rel))
+  ay = max(0.0, raw - geom)
   if ay <= LEAD_DEPART_YREL_FIRM_M:
     return False
   if ay >= LEAD_DEPART_YREL_M:
     return True
   if prev_abs_y is None:
     return False
-  return ay > float(prev_abs_y) + LEAD_DEPART_YREL_GROW_M
+  # Grow on raw yRel so a curvature change cannot invent a departure.
+  return raw > float(prev_abs_y) + LEAD_DEPART_YREL_GROW_M
 
 
 def update_depart_release(age, released, y_rel, prev_abs_y, slack, v_rel, dt,
-                          release_s=LEAD_DEPART_RELEASE_S):
+                          release_s=LEAD_DEPART_RELEASE_S, *,
+                          curvature=None, d_rel=None):
   """Latch lateral firm-authority release. Returns `(age, released, abs_y)`.
 
-  Back on path (|yRel| ≲ 1.5) clears it so a cut-in that settles in
-  lane can brake again. A missing lead clears it too.
+  Back on path (|yRel| ≲ 1.5, after the curve offset) clears it so a
+  cut-in that settles in lane can brake again. A missing lead clears
+  it too. `curvature` is the same cornering curvature the curve cap
+  uses; it only makes this release less eager.
   """
   _ = v_rel
   prev = None if y_rel is None else abs(float(y_rel))
   if y_rel is None:
     return 0.0, False, None
-  if lead_lateral_departing(y_rel, prev_abs_y, slack):
+  if lead_lateral_departing(
+    y_rel, prev_abs_y, slack, curvature=curvature, d_rel=d_rel,
+  ):
     age = float(age) + max(0.0, float(dt))
   else:
     age = 0.0
-    if prev is not None and prev <= LEAD_DEPART_YREL_FIRM_M:
+    geom = abs(lead_path_offset_m(curvature, d_rel))
+    on_path = prev is not None and max(0.0, prev - geom) <= LEAD_DEPART_YREL_FIRM_M
+    if on_path:
       released = False
   if age >= float(release_s):
     released = True
@@ -1540,6 +1604,146 @@ def lead_residual_close_ms2(v_rel, prev_v_rel, a_ego, dt):
     return None
   expected = 0.0 if a_ego is None else float(a_ego) * float(dt)
   return (float(v_rel) - float(prev_v_rel) - expected) / float(dt)
+
+
+def lead_residual_window_hit(v_rel, prev_v_rel, a_ego, dt) -> bool:
+  """True when a ~0.5 s window shows a real #222 residual or rise.
+
+  One radar step over 0.05 s is not this. The legacy two-sample helper
+  stays available for the Sep 23 fixtures; callers that arm the comfort
+  floors use this window and then require two consecutive hits.
+  """
+  if v_rel is None or prev_v_rel is None or dt is None:
+    return False
+  if float(dt) + 1e-9 < LEAD_RESIDUAL_WINDOW_S * 0.5:
+    return False
+  rise = float(v_rel) - float(prev_v_rel)
+  if (float(v_rel) >= LEAD_CLOSING_REMATCH_BLOCK_MS
+      and rise >= LEAD_RESIDUAL_WINDOW_RISE_MS):
+    return True
+  residual = lead_residual_close_ms2(v_rel, prev_v_rel, a_ego, dt)
+  if residual is None or residual < LEAD_RESIDUAL_SUSTAIN_MS2:
+    return False
+  return (float(v_rel) >= LEAD_APPROACH_DV_MS
+          and float(v_rel) > float(prev_v_rel))
+
+
+def update_residual_sustain(count, hit, need_n=LEAD_RESIDUAL_SUSTAIN_N):
+  """Hold a window hit for `need_n` frames. Returns `(armed, count)`."""
+  if not hit:
+    return False, 0
+  nxt = int(count) + 1
+  return nxt >= int(need_n), nxt
+
+
+class LeadResidualWindow:
+  """0.5 s v_rel / measured-aEgo history for the #222 residual gate.
+
+  `update` returns `(prev_v_rel, dt, a_ego)` for the existing floor
+  helpers. `prev_v_rel` stays None until the window has been a real
+  brake for two frames, so a one-LSB radar tick cannot cancel a
+  comfort floor. When it is set, `dt` is the window length and `a_ego`
+  is the measured average over that window — not one commanded frame.
+  """
+
+  def __init__(self) -> None:
+    self.hist: deque[tuple[float, float]] = deque()
+    self.count = 0
+
+  def reset(self) -> None:
+    self.hist.clear()
+    self.count = 0
+
+  def update(self, v_rel, a_ego, dt) -> tuple[float | None, float, float]:
+    frame_dt = 0.05 if dt is None or float(dt) <= 1e-6 else float(dt)
+    a = 0.0 if a_ego is None else float(a_ego)
+    if v_rel is None:
+      self.reset()
+      return None, frame_dt, a
+    self.hist.append((float(v_rel), a))
+    n = max(1, int(round(LEAD_RESIDUAL_WINDOW_S / frame_dt)))
+    while len(self.hist) > n + 1:
+      self.hist.popleft()
+    if len(self.hist) <= n:
+      self.count = 0
+      return None, frame_dt, a
+    old_v = float(self.hist[0][0])
+    window = list(self.hist)
+    a_avg = sum(sample_a for _v, sample_a in window) / float(len(window))
+    dt_w = n * frame_dt
+    hit = lead_residual_window_hit(float(v_rel), old_v, a_avg, dt_w)
+    armed, self.count = update_residual_sustain(self.count, hit)
+    if not armed:
+      return None, frame_dt, a
+    return old_v, dt_w, a_avg
+
+
+def lead_weak_alead_line(v_rel, prev_v_rel=None) -> float:
+  """aLead line that may unlock raw near the gap.
+
+  −0.35 while closing stays under 1 m/s and is not rising. At or above
+  1 m/s, or when closing is rising, keep the −0.2 line so a real close
+  still owns the match.
+  """
+  v = 0.0 if v_rel is None else float(v_rel)
+  if v < LEAD_CLOSING_REMATCH_BLOCK_MS and not lead_close_is_rising(v_rel, prev_v_rel):
+    return LEAD_CRUISE_CLIFF_ALEAD_MS2
+  return LEAD_CLOSING_ALEAD_MS2
+
+
+def lead_kinematic_approach_a(v_rel, slack, a_lead=None):
+  """Decel when mild cannot finish inside the planned approach distance.
+
+  Non-braking close ≥ 1 m/s only. The planned ease is sized for
+  LEAD_APPROACH_A_MS2: a gap at that slack stays mild, even though
+  0.22 cannot stop there. Deepen only once slack is clearly inside
+  that distance and the required decel is past mild by a clear
+  margin. Capped at −0.6 so this never becomes a regen rail. A firm
+  braking lead is #222, not this floor.
+  """
+  if lead_firm_alead(a_lead):
+    return None
+  if v_rel is None or slack is None:
+    return None
+  v = float(v_rel)
+  if v < LEAD_CLOSING_REMATCH_BLOCK_MS or LEAD_APPROACH_A_MS2 <= 0.0:
+    return None
+  design = (v * v) / (2.0 * LEAD_APPROACH_A_MS2)
+  if float(slack) >= design - LEAD_KIN_APPROACH_DESIGN_MARGIN_M:
+    return None
+  s = max(float(slack), LEAD_KIN_APPROACH_SLACK_FLOOR_M)
+  pure = -(v * v) / (2.0 * s)
+  if pure >= -LEAD_APPROACH_MILD_A_MS2 - LEAD_KIN_APPROACH_PAST_MILD_MS2:
+    return None
+  return max(pure - LEAD_KIN_APPROACH_BIAS_MS2, -LEAD_KIN_APPROACH_CAP_MS2)
+
+
+def lead_firm_large_slack_a(v_rel, slack, a_lead):
+  """Earlier kinematic brake for a firm lead that is still 20–50 m out.
+
+  None unless aLead is below −0.35, closing ≥ 1.5, and slack is in that
+  band. The result is the kinematic need capped at about −1.0. It does
+  not apply inside 20 m, where #222 keeps full authority.
+  """
+  if not lead_firm_alead(a_lead):
+    return None
+  if v_rel is None or float(v_rel) < LEAD_APPROACH_SOFT_LIMIT_CLOSE_MS:
+    return None
+  if slack is None:
+    return None
+  s = float(slack)
+  if s <= LEAD_ALEAD_MATCH_SLACK_M or s > LEAD_MID_GAP_SLACK_M:
+    return None
+  kin = float(a_lead) - (float(v_rel) ** 2) / (2.0 * max(s, 1.0))
+  return max(kin, -LEAD_FIRM_EARLY_CAP_MS2)
+
+
+def lead_path_offset_m(curvature, d_rel) -> float:
+  """Lane-center lateral offset at d_rel for a constant curvature."""
+  if curvature is None or d_rel is None:
+    return 0.0
+  d = float(d_rel)
+  return 0.5 * float(curvature) * d * d
 
 
 def lead_firm_alead(a_lead, firm_ms2=LEAD_CRUISE_CLIFF_ALEAD_MS2) -> bool:
@@ -1610,7 +1814,9 @@ def lead_soft_limit_skip(v_rel, a_lead=None, slack=None, owned=False,
     return False
   if acquiring and not owned:
     return False
-  if lead_alead_owns_match(v_rel, a_lead, slack):
+  if lead_alead_owns_match(
+    v_rel, a_lead, slack, a_lead_ms2=lead_weak_alead_line(v_rel, prev_v_rel),
+  ):
     return True
   if (v_rel is not None and float(v_rel) >= LEAD_CLOSING_REMATCH_BLOCK_MS
       and lead_close_is_rising(v_rel, prev_v_rel)):
@@ -1766,8 +1972,6 @@ def soft_limit_mpc_a_target(output_a, v_ego, v_lead, d_rel, fcw=False, crash_cnt
   if output_a is None:
     return output_a
   a = float(output_a)
-  if a >= -LEAD_APPROACH_MILD_A_MS2:
-    return a
   if d_rel is None or v_lead is None or v_ego is None:
     return a
   v_rel = float(v_ego) - max(0.0, float(v_lead))
@@ -1782,6 +1986,12 @@ def soft_limit_mpc_a_target(output_a, v_ego, v_lead, d_rel, fcw=False, crash_cnt
     should_stop=should_stop,
   ):
     return a
+  # Firm lead still 20–50 m out: kinematic need, not mild and not the rail.
+  # Inside the 20 m match, full authority above already returned raw.
+  if not depart_release:
+    firm_early = lead_firm_large_slack_a(v_rel, slack, a_lead)
+    if firm_early is not None and a <= 0.0:
+      return firm_early
   if (lead_map_decel_above_max(v_ego, v_cruise)
       and not lead_is_closing(v_rel, a_lead, slack=slack)):
     # Steady mid-gap: comfort floor, not the raw cruise/map cliff.
@@ -1790,7 +2000,17 @@ def soft_limit_mpc_a_target(output_a, v_ego, v_lead, d_rel, fcw=False, crash_cnt
         and not lead_approach_is_rapid(v_rel)):
       return max(a, -LEAD_MAP_MIDGAP_FLOOR_MS2)
     return a
-  return -LEAD_APPROACH_MILD_A_MS2
+  if a >= 0.0:
+    return a
+  floor = -LEAD_APPROACH_MILD_A_MS2
+  kin = None if depart_release else lead_kinematic_approach_a(v_rel, slack, a_lead)
+  if kin is not None:
+    floor = min(floor, kin)
+    if a > kin:
+      a = kin
+  if a >= floor:
+    return a
+  return floor
 
 
 def lead_approach_need_m(v_ego, v_lead, a_comfort=LEAD_APPROACH_A_MS2, t_follow=None) -> float:

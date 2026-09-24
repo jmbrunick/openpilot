@@ -20,6 +20,7 @@ from opendbc.car.car_helpers import get_car, interfaces
 from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET, VCruiseHelper
+from openpilot.selfdrive.mapd.constants import map_accel_a_ms2
 from openpilot.selfdrive.mapd.map_speed_policy import (
   MapCruiseHold, apply_map_speed_kph, decide_map_cruise, effective_map_limit_ms,
   map_slew_a_ms2, read_map_speed_params, should_write_preap_pedal, slew_map_speed_ms,
@@ -81,7 +82,8 @@ class Car:
 
   def __init__(self, CI=None, RI=None) -> None:
     self.can_sock = messaging.sub_sock('can', timeout=20)
-    self.sm = messaging.SubMaster(['pandaStates', 'carControl', 'onroadEvents', 'liveMapDataNAP', 'radarState'])
+    self.sm = messaging.SubMaster(['pandaStates', 'carControl', 'onroadEvents', 'liveMapDataNAP', 'radarState',
+                                   'controlsState', 'livePose'])
     self.pm = messaging.PubMaster(['sendcan', 'carState', 'carParams', 'carOutput', 'liveTracks'])
 
     self.can_rcv_cum_timeout_counter = 0
@@ -295,6 +297,7 @@ class Car:
         # Snapshot pre-curve MAX before decide so OSM flicker cannot wipe sticky.
         last_hud_kph = float(self.v_cruise_helper.v_cruise_kph)
         steer_deg = float(getattr(CS, 'steeringAngleDeg', 0.0) or 0.0)
+        curve_kappa, curve_yaw = self._curve_cornering()
         policy_posted_kph, _ = self._curve_max.begin_cycle(
           self._map_hold,
           last_hud_kph=last_hud_kph,
@@ -306,6 +309,8 @@ class Car:
           engaged=session_engaged,
           take_speed_now=take_speed_now,
           dt=DT_CTRL,
+          curvature=curve_kappa,
+          yaw_rate=curve_yaw,
         )
         dec = decide_map_cruise(
           self._map_hold,
@@ -406,6 +411,9 @@ class Car:
           stalk_pressed=stalk_pressed,
           take_speed_now=take_speed_now,
           dt=DT_CTRL,
+          curvature=curve_kappa,
+          yaw_rate=curve_yaw,
+          restore_a_ms2=map_accel_a_ms2(self._map_speed_lookahead, self._map_speed_accel),
         )
         preap_v_cruise_kph = float(curve_out.hud_kph)
         restore_seed_kph = curve_out.restore_seed_kph
@@ -439,6 +447,18 @@ class Car:
     CS.vCruiseCluster = float(self.v_cruise_helper.v_cruise_cluster_kph)
 
     return CS, RD
+
+  def _curve_cornering(self) -> tuple[float | None, float | None]:
+    """Vehicle-model curvature, else livePose yaw rate. None if not yet valid."""
+    curvature = None
+    yaw_rate = None
+    if self.sm.valid.get('controlsState', False):
+      curvature = float(self.sm['controlsState'].curvature)
+    if self.sm.valid.get('livePose', False):
+      av = self.sm['livePose'].angularVelocityDevice
+      if bool(getattr(av, 'valid', False)):
+        yaw_rate = float(av.z)
+    return curvature, yaw_rate
 
   def _preap_engagement(self):
     inner = getattr(self.CI, 'CS', None)
