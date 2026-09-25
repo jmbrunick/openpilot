@@ -247,6 +247,41 @@ LEAD_PLANT_SHORTFALL_HOLD_S = 1.5
 LEAD_PLANT_SHORTFALL_MS2 = 0.10
 LEAD_PLANT_TRIM_MS2 = 0.12
 LEAD_PLANT_ACTUAL_CAP_MS2 = 0.30
+# Descent plant trim. Flat stays at 0.12 so the #240 approach is unchanged.
+LEAD_DESCENT_PLANT_TRIM_MS2 = 0.30
+# Bias-corrected IMU: orientationNED[1] reads about +0.02 rad uphill.
+# Grade effort is sin(pitch − bias) · g. Plant opens below −0.08 m/s².
+# Profile sizing opens below −1.5% (~−0.147 m/s²) or a stuck-positive shortfall.
+PLANT_PITCH_BIAS_RAD = 0.02
+PLANT_GRAVITY_MS2 = 9.81
+PLANT_DESCENT_GRADE_MS2 = -0.08
+PLANT_DESCENT_SHORTFALL_MS2 = 0.15
+PLANT_DESCENT_SHORTFALL_HOLD_S = 1.5
+PLANT_PID_WINDOW_S = 1.0
+PLANT_PID_SHORTFALL_MS2 = 0.10
+# Extra effort room so the inner PID can trim down. Not the regen rail.
+PLANT_PID_TRIM_CAP_MS2 = 0.30
+LEAD_DESCENT_GRADE_MS2 = -0.015 * PLANT_GRAVITY_MS2
+LEAD_DESCENT_SHORTFALL_MS2 = 0.15
+# aEgo already braking (the flat #240 plant at −0.08) is not a descent shortfall.
+LEAD_DESCENT_SHORTFALL_AEGO_MS2 = -0.05
+LEAD_DESCENT_PROFILE_A_FLOOR_MS2 = 0.05
+# Inside Follow Distance by more than 2 m: replace the 1.5 m/s raw-MPC
+# gate and the fixed −0.22 with a continuous recovery. Latch until the
+# close falls under 0.5 m/s.
+LEAD_INSIDE_FD_RECOVERY_SLACK_M = -2.0
+LEAD_INSIDE_FD_V_ON_MS = 0.3
+LEAD_INSIDE_FD_V_OFF_MS = 0.5
+LEAD_INSIDE_FD_LO_MS2 = 0.60
+LEAD_INSIDE_FD_HEADWAY_S = 0.5
+LEAD_INSIDE_FD_HEADWAY_LO_MS2 = 1.0
+LEAD_INSIDE_FD_SLACK_GAIN = 0.02
+LEAD_INSIDE_FD_SLACK_CAP_M = 15.0
+# Closing-hold arms inside max(design + 5 m, 15 m), or any negative slack.
+LEAD_CLOSING_HOLD_DESIGN_PAD_M = 5.0
+LEAD_CLOSING_HOLD_SLACK_M = 15.0
+LEAD_CLOSING_HOLD_V_OFF_MS = 0.3
+LEAD_CLOSING_HOLD_RELEASE_MS3 = 0.25
 # Firm lead (aLead < −0.35), closing ≥ 1.5, slack still 20–50 m: start
 # the kinematic brake now instead of sitting on mild until the gap is
 # short. Cap ~−1.0. Inside 20 m, confirmed rapid, and near-bumper stay
@@ -945,13 +980,19 @@ def floor_near_fd_coast_a_target(a, plan_coasting, v_rel, d_rel, slack, *,
   return floor
 
 
-def plant_regen_effort_limits(a_cmd, limits):
+def plant_regen_effort_limits(a_cmd, limits, *, steady_grade=0.0, transient=0.0,
+                              descent=False, pid_room=0.0):
   """VirtualDAS effort bounds while the command is coast or mild.
 
   Returns `limits` unchanged when the command is a firm brake. A
   coasting / MILD command cannot use the regen rail: the lower bound
   rises to the slight-lift floor. An existing tighter bound (engage
   grace) is kept.
+
+  On a descent the floor applies to the net command, so the downhill
+  grade term is not clipped off, and a sustained positive aEgo error
+  may pull the inner PID through. Uphill and flat leave the floor on
+  the command alone. Full regen stays reserved for cmd ≤ −0.60.
   """
   if a_cmd is None:
     return limits
@@ -967,11 +1008,114 @@ def plant_regen_effort_limits(a_cmd, limits):
   else:
     # Between MILD and map comfort: track the command, do not open the rail.
     floor = p
+  if descent:
+    grade_sum = float(steady_grade) + float(transient)
+    floor = floor + min(0.0, grade_sum)
+    room = max(0.0, float(pid_room))
+    if room > 0.0:
+      floor -= min(room, PLANT_PID_TRIM_CAP_MS2)
+    # nap_conf.REGEN_MAX. Do not import it here: that pulls capnp, and
+    # the effort floor must stay inside the physical rail.
+    floor = max(float(floor), -1.5)
   if limits is None:
     from opendbc.car.tesla.preap.nap_conf import ACCEL_MAX
     return (floor, float(ACCEL_MAX))
   lo, hi = float(limits[0]), float(limits[1])
   return (max(lo, floor), hi)
+
+
+def bias_corrected_grade_ms2(pitch_rad):
+  """IMU grade effort with the +0.02 rad uphill bias removed.
+
+  None when pitch was not measured. A missing orientation must not
+  look like a descent just because the bias term is negative.
+  """
+  if pitch_rad is None:
+    return None
+  return math.sin(float(pitch_rad) - PLANT_PITCH_BIAS_RAD) * PLANT_GRAVITY_MS2
+
+
+def _preview_grade_compensation(estimator, orientation_ned):
+  """Next-sample steady and transient grade, without stepping the filters.
+
+  VirtualDAS.update applies the real step. The effort floor has to use
+  the same terms or the downhill grade is clipped before it is added.
+  """
+  if estimator is None or orientation_ned is None or len(orientation_ned) < 2:
+    return 0.0, 0.0
+  from numpy import clip
+
+  from opendbc.car.tesla.preap.virtual_das import (
+    GRAVITY,
+    MAX_PITCH_COMPENSATION,
+    MAX_STEADY_GRADE_COMPENSATION,
+    TRANSIENT_GRADE_GAIN,
+  )
+
+  maximum_pitch = math.asin(MAX_STEADY_GRADE_COMPENSATION / GRAVITY)
+  pitch = float(clip(float(orientation_ned[1]), -maximum_pitch, maximum_pitch))
+  lp = estimator.pitch_lp
+  lp_x = (1.0 - lp._alpha) * lp.x + lp._alpha * pitch
+  f1 = estimator.pitch_hp._f1
+  f2 = estimator.pitch_hp._f2
+  hp_x = (
+    (1.0 - f1._alpha) * f1.x + f1._alpha * pitch
+    - ((1.0 - f2._alpha) * f2.x + f2._alpha * pitch)
+  )
+  steady = float(clip(
+    math.sin(lp_x) * GRAVITY,
+    -MAX_STEADY_GRADE_COMPENSATION,
+    MAX_STEADY_GRADE_COMPENSATION,
+  ))
+  transient = float(clip(
+    math.sin(hp_x) * GRAVITY * TRANSIENT_GRADE_GAIN,
+    -MAX_PITCH_COMPENSATION,
+    MAX_PITCH_COMPENSATION,
+  ))
+  return steady, transient
+
+
+def _plant_descent_allowance(vdas, a_cmd, a_ego, orientation_ned, dt):
+  """Descent gate and PID room for one VirtualDAS sample.
+
+  Grade gate is the bias-corrected IMU. The shortfall gate is aEgo − cmd
+  above 0.15 for 1.5 s. PID room opens when the 1 s mean aEgo stays more
+  than 0.10 above the command. State lives on the controller instance.
+  """
+  frame_dt = 0.02 if dt is None or float(dt) <= 1e-6 else float(dt)
+  cmd = 0.0 if a_cmd is None else float(a_cmd)
+  ego = 0.0 if a_ego is None else float(a_ego)
+  hist = getattr(vdas, "_nap_descent_ego", None)
+  if hist is None:
+    hist = deque()
+    vdas._nap_descent_ego = hist
+  short_s = float(getattr(vdas, "_nap_descent_short_s", 0.0))
+  if ego - cmd > PLANT_DESCENT_SHORTFALL_MS2:
+    short_s += frame_dt
+  else:
+    short_s = 0.0
+  vdas._nap_descent_short_s = short_s
+  hist.append((frame_dt, ego, cmd))
+  span = sum(sample_dt for sample_dt, _e, _c in hist)
+  while span > PLANT_PID_WINDOW_S + 1e-9 and len(hist) > 1:
+    drop_dt, _e, _c = hist.popleft()
+    span -= drop_dt
+  pitch = None
+  if orientation_ned is not None and len(orientation_ned) >= 2:
+    pitch = float(orientation_ned[1])
+  grade = bias_corrected_grade_ms2(pitch)
+  descent = (
+    (grade is not None and grade < PLANT_DESCENT_GRADE_MS2)
+    or short_s + 1e-9 >= PLANT_DESCENT_SHORTFALL_HOLD_S
+  )
+  pid_room = 0.0
+  if descent and span + 1e-9 >= PLANT_PID_WINDOW_S:
+    mean_ego = sum(sample_dt * sample_e for sample_dt, sample_e, _c in hist) / span
+    mean_cmd = sum(sample_dt * sample_c for sample_dt, _e, sample_c in hist) / span
+    mean_short = mean_ego - mean_cmd
+    if mean_short > PLANT_PID_SHORTFALL_MS2:
+      pid_room = min(PLANT_PID_TRIM_CAP_MS2, mean_short)
+  return descent, pid_room
 
 
 def install_preap_plant_regen_guard():
@@ -991,14 +1135,23 @@ def install_preap_plant_regen_guard():
   def update(self, a_cmd, v_ego, prev_pedal_di, a_ego=0.0, freeze_integrator=False,
              orientation_ned=None, accel_effort_limits=None,
              pedal_ramp_rate_up=PEDAL_RAMP_RATE_UP):
+    steady, transient = _preview_grade_compensation(self.grade_estimator, orientation_ned)
+    descent, pid_room = _plant_descent_allowance(
+      self, a_cmd, a_ego, orientation_ned, self.dt,
+    )
     return current(
       self, a_cmd, v_ego, prev_pedal_di, a_ego=a_ego,
       freeze_integrator=freeze_integrator, orientation_ned=orientation_ned,
-      accel_effort_limits=plant_regen_effort_limits(a_cmd, accel_effort_limits),
+      accel_effort_limits=plant_regen_effort_limits(
+        a_cmd, accel_effort_limits,
+        steady_grade=steady, transient=transient,
+        descent=descent, pid_room=pid_room,
+      ),
       pedal_ramp_rate_up=pedal_ramp_rate_up,
     )
 
   update._nap_plant_regen_guard = True
+  update._nap_plant_regen_raw = current
   VirtualDAS.update = update
 
 
@@ -1750,10 +1903,39 @@ def lead_kinematic_approach_a(v_rel, slack, a_lead=None):
   return max(pure - LEAD_KIN_APPROACH_BIAS_MS2, -cap)
 
 
-def lead_closing_profile_v_ms(slack) -> float:
-  """Closing speed a constant −0.18 would have `LEAD_CLOSE_PROFILE_BIAS_M` short of this slack."""
+def lead_closing_profile_v_ms(slack, a_eff=None) -> float:
+  """Closing speed a constant decel would have `LEAD_CLOSE_PROFILE_BIAS_M` short of this slack.
+
+  Flat uses −0.18. A descent passes a smaller `a_eff` so the same close
+  starts farther out.
+  """
+  a = LEAD_CLOSE_PROFILE_A_MS2 if a_eff is None else float(a_eff)
+  if a <= 0.0:
+    return 0.0
   remain = max(float(slack) - LEAD_CLOSE_PROFILE_BIAS_M, 0.0)
-  return math.sqrt(2.0 * LEAD_CLOSE_PROFILE_A_MS2 * remain)
+  return math.sqrt(2.0 * a * remain)
+
+
+def lead_profile_on_descent(grade_ms2, shortfall, a_ego=None) -> bool:
+  """True when the closing profile should size itself for a descent.
+
+  Corrected grade below −1.5%, or a plant shortfall of at least 0.15
+  while aEgo is not already braking. The flat #240 plant (aEgo ≈ −0.08)
+  keeps the 0.18 profile.
+  """
+  if grade_ms2 is not None and float(grade_ms2) < LEAD_DESCENT_GRADE_MS2:
+    return True
+  if shortfall is None or float(shortfall) < LEAD_DESCENT_SHORTFALL_MS2:
+    return False
+  if a_ego is not None and float(a_ego) <= LEAD_DESCENT_SHORTFALL_AEGO_MS2:
+    return False
+  return True
+
+
+def lead_descent_profile_a_eff(shortfall) -> float:
+  """Profile decel on a descent: 0.18 minus the plant shortfall, floored at 0.05."""
+  short = 0.0 if shortfall is None else max(0.0, float(shortfall))
+  return max(LEAD_DESCENT_PROFILE_A_FLOOR_MS2, LEAD_CLOSE_PROFILE_A_MS2 - short)
 
 
 def lead_closing_profile_eligible(v_rel, slack, *, a_lead=None, radar=False,
@@ -1780,8 +1962,10 @@ def lead_closing_profile_eligible(v_rel, slack, *, a_lead=None, radar=False,
   s = float(slack)
   if v < LEAD_CLOSE_PROFILE_MIN_V_MS:
     return False
-  if s <= 0.0 or s > LEAD_CLOSE_PROFILE_MAX_SLACK_M:
+  if s > LEAD_CLOSE_PROFILE_MAX_SLACK_M:
     return False
+  # slack <= 0 is inside Follow Distance. The ease and its plant trim
+  # stay armed there instead of releasing to MILD.
   return True
 
 
@@ -1789,12 +1973,15 @@ def lead_closing_profile_ease_a(v_rel, slack, *, a_lead=None, radar=False,
                                 allow_rapid=False, fcw=False, crash_cnt=0,
                                 d_rel=None, should_stop=False,
                                 prev_v_rel=None, a_ego=None, dt=None,
-                                opening_release=False, depart_release=False):
+                                opening_release=False, depart_release=False,
+                                a_eff=None):
   """Unslewed profile decel, or None when the kinematic floor should own it.
 
   Outside the 0.55 design distance the result is clamped to [−0.28, 0].
-  Inside that distance this returns None so `lead_kinematic_approach_a`
-  keeps the late bite.
+  Inside that distance, with slack still positive, this returns None so
+  `lead_kinematic_approach_a` keeps the late bite. At slack <= 0 the
+  profile stays so the ease does not release to MILD inside the gap.
+  `a_eff` sizes v_prof; None keeps the flat −0.18.
   """
   if not lead_closing_profile_eligible(
     v_rel, slack, a_lead=a_lead, radar=radar, allow_rapid=allow_rapid,
@@ -1805,14 +1992,16 @@ def lead_closing_profile_ease_a(v_rel, slack, *, a_lead=None, radar=False,
     return None
   v = float(v_rel)
   s = float(slack)
-  excess = v - lead_closing_profile_v_ms(s)
+  excess = v - lead_closing_profile_v_ms(s, a_eff=a_eff)
   if excess <= LEAD_CLOSE_PROFILE_EXCESS_MS:
     return None
   if LEAD_APPROACH_A_MS2 <= 0.0:
     return None
   design = (v * v) / (2.0 * LEAD_APPROACH_A_MS2)
-  if s < design - LEAD_KIN_APPROACH_DESIGN_MARGIN_M:
+  if s > 0.0 and s < design - LEAD_KIN_APPROACH_DESIGN_MARGIN_M:
     return None
+  # a_eff only moves where the profile turns on. The ease itself stays
+  # the −0.18 + excess shape; descent depth comes from the larger trim.
   a = -LEAD_CLOSE_PROFILE_A_MS2 - LEAD_CLOSE_PROFILE_EXCESS_GAIN * (
     excess - LEAD_CLOSE_PROFILE_EXCESS_MS
   )
@@ -1820,14 +2009,15 @@ def lead_closing_profile_ease_a(v_rel, slack, *, a_lead=None, radar=False,
 
 
 def lead_closing_profile_blocks_positive(v_rel, slack, **kwargs) -> bool:
-  """True when closing is already faster than the −0.18 profile.
+  """True when closing is already faster than the profile.
 
   The planner must not command +a in that case. The 0.2 m/s deadband
   still gates the deepen; any positive excess blocks +a.
   """
+  a_eff = kwargs.pop("a_eff", None)
   if not lead_closing_profile_eligible(v_rel, slack, **kwargs):
     return False
-  return float(v_rel) - lead_closing_profile_v_ms(slack) > 0.0
+  return float(v_rel) - lead_closing_profile_v_ms(slack, a_eff=a_eff) > 0.0
 
 
 class ClosingSpeedEase:
@@ -1851,13 +2041,14 @@ class ClosingSpeedEase:
     self.short_s = 0.0
     self._ego.clear()
 
-  def update(self, target, a_ego, dt, lead_id, slack) -> float | None:
+  def update(self, target, a_ego, dt, lead_id, slack, *, descent=False) -> float | None:
     frame_dt = 0.05 if dt is None or float(dt) <= 1e-6 else float(dt)
     if lead_id != self.lead_id:
       self.reset()
       self.lead_id = lead_id
     onset = LEAD_CLOSE_PROFILE_SLEW_MS3 * frame_dt
     release = LEAD_CLOSE_PROFILE_RELEASE_MS3 * frame_dt
+    trim_cap = LEAD_DESCENT_PLANT_TRIM_MS2 if descent else LEAD_PLANT_TRIM_MS2
     trim = 0.0
     if target is not None and a_ego is not None:
       self._ego.append((frame_dt, float(a_ego)))
@@ -1874,7 +2065,7 @@ class ClosingSpeedEase:
           self.short_s = 0.0
         if self.short_s >= LEAD_PLANT_SHORTFALL_HOLD_S:
           room = max(0.0, mean + LEAD_PLANT_ACTUAL_CAP_MS2)
-          trim = min(LEAD_PLANT_TRIM_MS2, room, max(0.0, short))
+          trim = min(trim_cap, room, max(0.0, short))
     else:
       self._ego.clear()
       self.short_s = 0.0
@@ -1987,7 +2178,17 @@ def lead_soft_limit_skip(v_rel, a_lead=None, slack=None, owned=False,
   if v_rel is not None and float(v_rel) >= LEAD_APPROACH_SOFT_LIMIT_CLOSE_MS:
     # Already inside Follow Distance: do not pin a hard close. That
     # recovery is not the positive-slack catch-up (22:12:04).
+    # Deeper than 2 m inside the gap, close rate alone must not skip:
+    # that raw-MPC path stepped to the fixed −0.22 as soon as v_rel
+    # crossed under 1.5. Firm / residual still skip. The comfort
+    # command is the inside-FD recovery.
     if slack is not None and float(slack) < 0.0:
+      if float(slack) < LEAD_INSIDE_FD_RECOVERY_SLACK_M:
+        if lead_firm_alead(a_lead) or lead_rising_or_residual_brake(
+          v_rel, prev_v_rel, a_ego, dt,
+        ):
+          return True
+        return False
       return True
     # Close alone unlocked get_accel_from_plan (−1.6) while the lead
     # was not braking and the MPC tape was still ~−0.3. Weak aLead
@@ -2037,10 +2238,162 @@ def lead_inferred_decel_ms2(v_rel, prev_v_rel, a_ego, dt, a_lead=None):
   return min(cands)
 
 
+def lead_inside_fd_recovery_a(v_rel, slack, d_rel=None, v_lead=None, t_follow=None,
+                              v_ego=None, *, force=False):
+  """Decel that replaces the 1.5 m/s raw gate and the fixed −0.22 inside FD.
+
+  Active when slack is more than 2 m inside Follow Distance and the lead
+  is still closing. Clamped to [−0.60, −0.22], or down to −1.0 when
+  headway is under half a second. `force` keeps a latched value after
+  slack has climbed back above −2 m.
+  """
+  if v_rel is None or slack is None:
+    return None
+  v = float(v_rel)
+  s = float(slack)
+  if not force:
+    if s >= LEAD_INSIDE_FD_RECOVERY_SLACK_M or v <= LEAD_INSIDE_FD_V_ON_MS:
+      return None
+  if v <= 0.0:
+    return None
+  if d_rel is not None and t_follow is not None and v_lead is not None:
+    remain = (
+      float(d_rel) - STOP_DISTANCE
+      - 0.5 * float(t_follow) * max(0.0, float(v_lead))
+    )
+  elif d_rel is not None:
+    remain = 0.5 * float(d_rel) + 0.5 * s - 3.0
+  else:
+    remain = LEAD_KIN_APPROACH_SLACK_FLOOR_M
+  remain = max(remain, LEAD_KIN_APPROACH_SLACK_FLOOR_M)
+  a = -(v * v) / (2.0 * remain) - LEAD_INSIDE_FD_SLACK_GAIN * min(
+    max(-s, 0.0), LEAD_INSIDE_FD_SLACK_CAP_M,
+  )
+  lo = -LEAD_INSIDE_FD_LO_MS2
+  if (d_rel is not None and v_ego is not None and float(v_ego) > 1.0
+      and float(d_rel) / float(v_ego) < LEAD_INSIDE_FD_HEADWAY_S):
+    lo = -LEAD_INSIDE_FD_HEADWAY_LO_MS2
+  return min(-LEAD_APPROACH_MILD_A_MS2, max(lo, a))
+
+
+class InsideFdRecovery:
+  """Latch inside-FD recovery until closing drops under 0.5 m/s."""
+
+  def __init__(self) -> None:
+    self.latched = False
+
+  def reset(self) -> None:
+    self.latched = False
+
+  def update(self, v_rel, slack, d_rel=None, v_lead=None, t_follow=None, v_ego=None):
+    v = None if v_rel is None else float(v_rel)
+    entered = (
+      slack is not None
+      and float(slack) < LEAD_INSIDE_FD_RECOVERY_SLACK_M
+      and v is not None
+      and v > LEAD_INSIDE_FD_V_ON_MS
+    )
+    if entered:
+      self.latched = True
+    elif self.latched:
+      if v is None or v < LEAD_INSIDE_FD_V_OFF_MS:
+        self.latched = False
+        return None
+    else:
+      return None
+    return lead_inside_fd_recovery_a(
+      v_rel, slack, d_rel=d_rel, v_lead=v_lead, t_follow=t_follow, v_ego=v_ego,
+      force=not entered,
+    )
+
+
+class ClosingHold:
+  """Hold a close that has already gone past MILD. min() only.
+
+  Arms once the output is below −0.22 while still closing inside
+  max(design + 5 m, 15 m) or inside the gap. Later frames publish
+  min(output, hold). Release on v_rel ≤ 0.3 or an opening / depart
+  latch, then slew off at 0.25 m/s³. Never raises a #222 command.
+  """
+
+  def __init__(self) -> None:
+    self.armed = False
+    self.hold: float | None = None
+    self.releasing = False
+
+  def reset(self) -> None:
+    self.armed = False
+    self.hold = None
+    self.releasing = False
+
+  def update(self, output_a, v_rel, slack, d_follow=None, *,
+             opening=False, depart=False, dt=0.05):
+    if output_a is None:
+      return output_a
+    out = float(output_a)
+    v = 0.0 if v_rel is None else float(v_rel)
+    frame_dt = 0.05 if dt is None or float(dt) <= 1e-6 else float(dt)
+    release = v <= LEAD_CLOSING_HOLD_V_OFF_MS or bool(opening) or bool(depart)
+    if self.armed and release and not self.releasing:
+      self.releasing = True
+    if self.releasing:
+      if self.hold is None:
+        self.reset()
+        return out
+      self.hold = float(self.hold) + LEAD_CLOSING_HOLD_RELEASE_MS3 * frame_dt
+      if self.hold >= -1e-6:
+        self.reset()
+        return out
+      return min(out, self.hold)
+    if not self.armed:
+      if (v > LEAD_CLOSING_HOLD_V_OFF_MS and slack is not None
+          and out < -LEAD_APPROACH_MILD_A_MS2):
+        s = float(slack)
+        design = (v * v) / (2.0 * LEAD_APPROACH_A_MS2) if LEAD_APPROACH_A_MS2 > 0.0 else 0.0
+        near = s < 0.0 or s < max(
+          design + LEAD_CLOSING_HOLD_DESIGN_PAD_M, LEAD_CLOSING_HOLD_SLACK_M,
+        )
+        if near:
+          self.armed = True
+          self.hold = out
+      return out
+    d_f = 0.0 if d_follow is None else max(0.0, float(d_follow))
+    s = 0.0 if slack is None else float(slack)
+    dist = max(s + 0.5 * d_f, LEAD_KIN_APPROACH_SLACK_FLOOR_M)
+    need = -(v * v) / (2.0 * dist) if v > 0.0 else 0.0
+    prev = out if self.hold is None else float(self.hold)
+    self.hold = min(prev, need)
+    return min(out, self.hold)
+
+
+class CommandShortfall:
+  """Mean of aEgo − command over a short window. Positive is a plant miss."""
+
+  def __init__(self, window_s: float = 1.0) -> None:
+    self.window_s = float(window_s)
+    self._h: deque[tuple[float, float]] = deque()
+
+  def reset(self) -> None:
+    self._h.clear()
+
+  def update(self, a_ego, a_cmd, dt) -> float:
+    frame = 0.05 if dt is None or float(dt) <= 1e-6 else float(dt)
+    ego = 0.0 if a_ego is None else float(a_ego)
+    cmd = 0.0 if a_cmd is None else float(a_cmd)
+    self._h.append((frame, ego - cmd))
+    span = sum(sample_dt for sample_dt, _short in self._h)
+    while span > self.window_s + 1e-9 and len(self._h) > 1:
+      span -= self._h.popleft()[0]
+    if span <= 1e-9:
+      return 0.0
+    return sum(sample_dt * short for sample_dt, short in self._h) / span
+
+
 def cap_closing_lead_accel(output_a, v_rel, a_lead=None, lead_present=False,
                            owned=False, slack=None, d_rel=None,
                            acquiring=False, prev_v_rel=None, a_ego=None, dt=None,
-                           opening_release=False, depart_release=False):
+                           opening_release=False, depart_release=False,
+                           t_follow=None, v_ego=None, v_lead=None):
   """Never rematch +a into a closing / near-gap braking live or held lead.
 
   Closing ≳ 1.0 m/s (or hold-owned) hard-caps a at 0, except large-gap
@@ -2077,12 +2430,19 @@ def cap_closing_lead_accel(output_a, v_rel, a_lead=None, lead_present=False,
 
   # Inside FD, still closing: never rematch +a. Slow close commands
   # the MILD floor unless residual / aLead already unlocked match.
+  # Deeper than 2 m, the recovery replaces that fixed −0.22.
   if slack is not None and float(slack) <= 0.0 and v >= LEAD_SETTLE_VREL_MS:
     a = min(float(output_a), 0.0)
     if not skip:
-      a_slow = lead_inside_slow_close_a_ms2(v_rel, slack)
-      if a_slow is not None:
-        a = min(a, a_slow)
+      rec = lead_inside_fd_recovery_a(
+        v_rel, slack, d_rel=d_rel, v_lead=v_lead, t_follow=t_follow, v_ego=v_ego,
+      )
+      if rec is not None:
+        a = min(a, rec)
+      else:
+        a_slow = lead_inside_slow_close_a_ms2(v_rel, slack)
+        if a_slow is not None:
+          a = min(a, a_slow)
     return _apply_match(a)
   if not (owned or skip or lead_is_closing(v_rel, a_lead, slack=slack)):
     return float(output_a)
@@ -2134,7 +2494,7 @@ def soft_limit_mpc_a_target(output_a, v_ego, v_lead, d_rel, fcw=False, crash_cnt
                             prev_floored=False, owned=False, acquiring=False,
                             prev_v_rel=None, a_ego=None, dt=None, v_cruise=None,
                             opening_release=False, depart_release=False,
-                            should_stop=False):
+                            should_stop=False, t_follow=None, descent=False):
   """Floor non-emergency MPC −a to slight-lift MILD.
 
   Overlay min(MPC, mild) cannot stop MPC commanding ~−2.5 on radar noise
@@ -2181,14 +2541,26 @@ def soft_limit_mpc_a_target(output_a, v_ego, v_lead, d_rel, fcw=False, crash_cnt
     firm_early = lead_firm_large_slack_a(v_rel, slack, a_lead)
     if firm_early is not None and a <= 0.0:
       return firm_early
-  if (lead_map_decel_above_max(v_ego, v_cruise)
-      and not lead_is_closing(v_rel, a_lead, slack=slack)):
+  over_max = lead_map_decel_above_max(v_ego, v_cruise)
+  closing = lead_is_closing(v_rel, a_lead, slack=slack)
+  if over_max and not closing:
     # Steady mid-gap: comfort floor, not the raw cruise/map cliff.
     # Large-gap / far same-speed still passes map decel through.
     if (lead_mid_gap_map_band(slack, d_rel)
         and not lead_approach_is_rapid(v_rel)):
       return max(a, -LEAD_MAP_MIDGAP_FLOOR_MS2)
     return a
+  if over_max and closing and descent:
+    # Downhill, over MAX, lead still closing: keep the map decel.
+    # min() with MILD so a softer map command cannot lift the close,
+    # and a harder one is not floored back to −0.22.
+    passed = min(a, -LEAD_APPROACH_MILD_A_MS2)
+    rec = lead_inside_fd_recovery_a(
+      v_rel, slack, d_rel=d_rel, v_lead=v_lead, t_follow=t_follow, v_ego=v_ego,
+    )
+    if rec is not None:
+      passed = min(passed, rec)
+    return passed
   if a >= 0.0:
     return a
   floor = -LEAD_APPROACH_MILD_A_MS2
@@ -2197,6 +2569,11 @@ def soft_limit_mpc_a_target(output_a, v_ego, v_lead, d_rel, fcw=False, crash_cnt
     floor = min(floor, kin)
     if a > kin:
       a = kin
+  rec = lead_inside_fd_recovery_a(
+    v_rel, slack, d_rel=d_rel, v_lead=v_lead, t_follow=t_follow, v_ego=v_ego,
+  )
+  if rec is not None:
+    floor = min(floor, rec)
   if a >= floor:
     return a
   return floor

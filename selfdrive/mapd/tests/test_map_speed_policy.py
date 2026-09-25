@@ -1521,3 +1521,116 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   assert "not bool(resume_held) and hold.held_max_kph is None" in policy
   # Sticky / stalk path unchanged.
   assert "should_write_preap_pedal(seed_kph, preap_v_cruise_kph, self._last_pedal_kph)" in card
+
+
+def _decision_fields(dec, hold):
+  seed = None if dec.seed_kph is None else round(float(dec.seed_kph), 4)
+  return (
+    bool(dec.sticky),
+    seed,
+    round(float(hold.held_max_kph), 4),
+    hold.sticky_set_kph is None,
+  )
+
+
+def test_none_to_valid_posted_matches_a_normal_limit_change():
+  """A map dropout that gains a posted limit is a normal limit change.
+
+  Engage while the sign is missing, then the posted limit returns at 3 s
+  and at 30 s: both adopt it. A valid → invalid → same valid flicker does
+  not move MAX. A stalk during the dropout is treated the same way a stalk
+  is treated before a 55 → 70 change.
+  """
+  posted = 70 * CV.MPH_TO_KPH
+  ego = 42.4 * CV.MPH_TO_KPH
+
+  def engage_dropout():
+    hold = MapCruiseHold()
+    dec = decide_map_cruise(
+      hold, engaged=True, mode=MODE_FOLLOW, raw_kph=ego, posted_kph=None,
+      engage_rising=True, now=0.0, take_speed_now=True, traveled_kph=ego,
+    )
+    assert dec.sticky
+    assert abs(dec.seed_kph - ego) < 1e-6
+    assert hold.last_posted_kph is None
+    return hold
+
+  for t_back in (3.0, 30.0):
+    hold = engage_dropout()
+    decide_map_cruise(
+      hold, engaged=True, mode=MODE_FOLLOW, raw_kph=ego, posted_kph=None,
+      engage_rising=False, now=t_back - 0.05, traveled_kph=ego,
+    )
+    assert abs(hold.held_max_kph - ego) < 1e-6
+    dec = decide_map_cruise(
+      hold, engaged=True, mode=MODE_FOLLOW, raw_kph=ego, posted_kph=posted,
+      engage_rising=False, now=t_back, traveled_kph=ego,
+    )
+    assert dec.seed_kph is not None
+    assert abs(dec.seed_kph - posted) < 1e-6
+    assert not dec.sticky
+    assert abs(hold.held_max_kph - posted) < 1e-6
+    assert abs(_follow_hud(dec, posted) - posted) < 1e-6
+    # The next frame must not treat the old traveled speed as a stalk.
+    dec = decide_map_cruise(
+      hold, engaged=True, mode=MODE_FOLLOW, raw_kph=ego, posted_kph=posted,
+      engage_rising=False, now=t_back + 0.05, traveled_kph=ego,
+    )
+    assert not dec.sticky
+    assert abs(_follow_hud(dec, posted) - posted) < 1e-6
+
+  # Same limit returns and MAX already equals it: no pedal write, no rebase.
+  hold = MapCruiseHold()
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=posted, posted_kph=posted,
+    engage_rising=True, now=0.0, take_speed_now=True, traveled_kph=posted,
+  )
+  held_before = hold.held_max_kph
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=posted, posted_kph=None,
+    engage_rising=False, now=1.0, traveled_kph=posted,
+  )
+  assert hold.last_posted_kph is not None
+  assert abs(hold.held_max_kph - posted) < 1e-6
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=posted, posted_kph=posted,
+    engage_rising=False, now=1.5, traveled_kph=posted,
+  )
+  assert dec.seed_kph is None
+  assert abs(hold.held_max_kph - held_before) < 1e-6
+  assert abs(_follow_hud(dec, posted) - posted) < 1e-6
+  assert not should_write_preap_pedal(dec.seed_kph, _follow_hud(dec, posted), posted)
+
+  # Stalk, then the limit changes: dropout and a normal 55 → 70 match.
+  normal = MapCruiseHold()
+  start = 55 * CV.MPH_TO_KPH
+  stalk = start + 5 * CV.MPH_TO_KPH
+  decide_map_cruise(
+    normal, engaged=True, mode=MODE_FOLLOW, raw_kph=start, posted_kph=start,
+    engage_rising=True, now=0.0,
+  )
+  decide_map_cruise(
+    normal, engaged=True, mode=MODE_FOLLOW, raw_kph=stalk, posted_kph=start,
+    engage_rising=False, now=1.0,
+  )
+  assert normal.sticky_set_kph is not None
+  dec_normal = decide_map_cruise(
+    normal, engaged=True, mode=MODE_FOLLOW, raw_kph=stalk, posted_kph=posted,
+    engage_rising=False, now=2.0,
+  )
+
+  dropped = engage_dropout()
+  stalk_drop = ego + 5 * CV.MPH_TO_KPH
+  decide_map_cruise(
+    dropped, engaged=True, mode=MODE_FOLLOW, raw_kph=stalk_drop, posted_kph=None,
+    engage_rising=False, now=1.0, traveled_kph=ego,
+  )
+  assert dropped.sticky_set_kph is not None
+  dec_drop = decide_map_cruise(
+    dropped, engaged=True, mode=MODE_FOLLOW, raw_kph=stalk_drop, posted_kph=posted,
+    engage_rising=False, now=30.0, traveled_kph=ego,
+  )
+  assert _decision_fields(dec_normal, normal) == _decision_fields(dec_drop, dropped)
+  assert dec_drop.seed_kph is not None
+  assert abs(dec_drop.seed_kph - posted) < 1e-6
+  assert not dec_drop.sticky

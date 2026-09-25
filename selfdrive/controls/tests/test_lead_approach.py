@@ -849,6 +849,12 @@ def test_planner_wires_hysteresis_and_slew():
   assert "prev_v_rel=prev_close_v_rel" in planner
   assert "a_ego=residual_a" in planner
   assert "LeadResidualWindow" in planner
+  assert "ClosingHold" in planner
+  assert "InsideFdRecovery" in planner
+  assert "self._closing_hold.update(" in planner
+  assert "self._inside_fd.update(" in planner
+  assert "descent=descent" in planner
+  assert "a_eff=profile_a_eff" in planner
   assert "v_cruise=v_hud_ms" in planner
   assert "v_ego=v_ego, v_cruise=v_hud_ms" in planner
   assert "allow_rapid=allow_rapid" in planner
@@ -3026,3 +3032,326 @@ def test_closing_profile_eases_hot_approach_and_spares_matched_and_firm():
     -0.08, dt, ("radar", 9), 40.0,
   )
   assert ease.short_s == 0.0
+
+
+def _compose_close(ease, inside, hold, *, mpc, v_rel, slack, d_rel, v_ego,
+                   v_cruise, a_lead, a_ego, descent, a_eff, t_follow, dt, lead_id):
+  """Planner tail for one lead sample: soft limit, cap, profile, recovery, hold."""
+  from openpilot.selfdrive.controls.lib.lead_approach import (
+    cap_closing_lead_accel, lead_closing_profile_blocks_positive,
+    lead_closing_profile_ease_a, soft_limit_mpc_a_target,
+  )
+
+  v_lead = max(0.0, float(v_ego) - float(v_rel))
+  a = soft_limit_mpc_a_target(
+    mpc, v_ego, v_lead, d_rel, a_lead=a_lead, slack=slack, owned=True,
+    v_cruise=v_cruise, t_follow=t_follow, descent=descent, a_ego=a_ego, dt=dt,
+  )
+  a = cap_closing_lead_accel(
+    a, v_rel, a_lead=a_lead, lead_present=True, owned=True, slack=slack,
+    d_rel=d_rel, t_follow=t_follow, v_ego=v_ego, v_lead=v_lead,
+    a_ego=a_ego, dt=dt,
+  )
+  kw = dict(
+    v_rel=v_rel, slack=slack, a_lead=a_lead, radar=True, d_rel=d_rel,
+    a_ego=a_ego, dt=dt, a_eff=a_eff,
+  )
+  profile = ease.update(
+    lead_closing_profile_ease_a(**kw), a_ego, dt, lead_id, slack, descent=descent,
+  )
+  if profile is not None:
+    a = min(float(a), float(profile))
+  if lead_closing_profile_blocks_positive(**kw):
+    a = min(float(a), 0.0)
+  rec = inside.update(
+    v_rel, slack, d_rel=d_rel, v_lead=v_lead, t_follow=t_follow, v_ego=v_ego,
+  )
+  if rec is not None:
+    a = min(float(a), float(rec))
+  return hold.update(a, v_rel, slack, float(d_rel) - float(slack), dt=dt)
+
+
+def test_flat_fast_close_matches_pre_hold_profile():
+  """4 m/s close from 65 m on flat road stays the #240 profile.
+
+  Closing-hold may only publish min(), so this trace is identical with
+  the hold removed. Checkpoints are the unslewed profile plus the
+  kinematic floor.
+  """
+  from openpilot.selfdrive.controls.lib.lead_approach import (
+    ClosingHold, ClosingSpeedEase, lead_closing_profile_ease_a,
+    lead_kinematic_approach_a,
+  )
+
+  def trace(use_hold):
+    ease = ClosingSpeedEase()
+    hold = ClosingHold()
+    v_rel = 4.0
+    slack = 65.0
+    dt = 0.05
+    out = []
+    steps = 0
+    while slack > 3.0 and steps < 2000:
+      target = lead_closing_profile_ease_a(
+        v_rel, slack, a_lead=0.0, radar=True, d_rel=slack + 40.0,
+      )
+      cmd = ease.update(target, -0.08, dt, ("radar", 1), slack, descent=False)
+      kin = lead_kinematic_approach_a(v_rel, slack, a_lead=0.0)
+      published = 0.0 if cmd is None else float(cmd)
+      if kin is not None:
+        published = min(published, float(kin))
+      if use_hold:
+        published = float(hold.update(published, v_rel, slack, 40.0, dt=dt))
+      out.append(round(published, 6))
+      slack -= v_rel * dt
+      steps += 1
+    return out
+
+  held = trace(True)
+  plain = trace(False)
+  assert held == plain
+  # slack 65, 41, 33, 25, 17, 9, 5 at dt 0.05 and v_rel 4.
+  marks = {0: 0.0, 120: -0.2155, 160: -0.28, 200: -0.4, 240: -0.4, 280: -0.45, 300: -0.45}
+  for step, expected in marks.items():
+    assert held[step] == pytest.approx(expected, abs=1e-4)
+
+
+def test_descent_inside_fd_and_over_max_stay_below_mild():
+  """08:03 inside the gap and 08:10 over MAX on a descent.
+
+  Grade −0.5 m/s² and aEgo stuck at +0.05. The command stays at or
+  below −0.35 until closing is gone, and the 08:03 sample is about −0.40.
+  """
+  from openpilot.selfdrive.controls.lib.lead_approach import (
+    ClosingHold, ClosingSpeedEase, InsideFdRecovery,
+    lead_closing_profile_ease_a, lead_descent_profile_a_eff,
+    lead_inside_fd_recovery_a, lead_profile_on_descent, soft_limit_mpc_a_target,
+  )
+
+  grade = -0.5
+  a_ego = 0.05
+  shortfall = a_ego - (-0.22)
+  assert lead_profile_on_descent(grade, shortfall, a_ego=a_ego)
+  a_eff = lead_descent_profile_a_eff(shortfall)
+  assert a_eff == pytest.approx(0.05)
+
+  # 08:03: slack −16 m, closing 1.0 m/s, tFollow 0.9 s, dFollow ~35.7 m.
+  slack = -16.0
+  v_rel = 1.0
+  d_rel = 19.7
+  v_ego = 33.5
+  v_lead = v_ego - v_rel
+  t_follow = 0.9
+  rec = lead_inside_fd_recovery_a(
+    v_rel, slack, d_rel=d_rel, v_lead=v_lead, t_follow=t_follow, v_ego=v_ego,
+  )
+  assert rec == pytest.approx(-0.40, abs=0.08)
+  assert rec <= -0.35
+  ease = ClosingSpeedEase()
+  inside = InsideFdRecovery()
+  hold = ClosingHold()
+  published = _compose_close(
+    ease, inside, hold, mpc=-0.42, v_rel=v_rel, slack=slack, d_rel=d_rel,
+    v_ego=v_ego, v_cruise=v_ego, a_lead=0.0, a_ego=a_ego, descent=True,
+    a_eff=a_eff, t_follow=t_follow, dt=0.05, lead_id=("radar", 1),
+  )
+  assert published == pytest.approx(-0.40, abs=0.08)
+  assert published <= -0.35
+  v = 1.1
+  s = -16.0
+  d = 19.7
+  while v > 0.3:
+    published = _compose_close(
+      ease, inside, hold, mpc=-0.42, v_rel=v, slack=s, d_rel=d,
+      v_ego=v_ego, v_cruise=v_ego, a_lead=0.0, a_ego=a_ego, descent=True,
+      a_eff=a_eff, t_follow=t_follow, dt=0.05, lead_id=("radar", 1),
+    )
+    assert published <= -0.35
+    v -= 0.05
+    s -= 0.1
+
+  # Profile starts near 50 m of slack on the descent, not at the flat 0.18 size.
+  descent_ease = lead_closing_profile_ease_a(
+    2.5, 50.0, a_lead=0.0, radar=True, d_rel=90.0, a_eff=a_eff,
+  )
+  flat_ease = lead_closing_profile_ease_a(
+    2.5, 50.0, a_lead=0.0, radar=True, d_rel=90.0,
+  )
+  assert descent_ease is not None and descent_ease <= -0.22
+  assert flat_ease is None
+
+  # 08:10: ego over a 70 mph MAX, lead closing, map decel passes the mild floor.
+  v_cruise = 70 * 0.44704
+  v_ego = 75 * 0.44704
+  map_a = -0.80
+  over = soft_limit_mpc_a_target(
+    map_a, v_ego, v_ego - 2.0, 80.0, a_lead=0.0, slack=40.0, owned=True,
+    v_cruise=v_cruise, t_follow=t_follow, descent=True,
+  )
+  floored = soft_limit_mpc_a_target(
+    map_a, v_ego, v_ego - 2.0, 80.0, a_lead=0.0, slack=40.0, owned=True,
+    v_cruise=v_cruise, t_follow=t_follow, descent=False,
+  )
+  assert over <= -0.35
+  assert floored == pytest.approx(-0.22, abs=0.02)
+  ease = ClosingSpeedEase()
+  inside = InsideFdRecovery()
+  hold = ClosingHold()
+  v = 1.6
+  s = 58.0
+  while v > 0.3 and s > 3.0:
+    published = _compose_close(
+      ease, inside, hold, mpc=map_a, v_rel=v, slack=s, d_rel=s + 36.0,
+      v_ego=v_ego, v_cruise=v_cruise, a_lead=0.0, a_ego=a_ego, descent=True,
+      a_eff=a_eff, t_follow=t_follow, dt=0.05, lead_id=("radar", 2),
+    )
+    assert published <= -0.35
+    s -= v * 0.05
+    v = min(3.0, v + 0.02) if s > 20.0 else max(0.2, v - 0.04)
+
+
+def test_firm_lead_handoff_does_not_step_to_mild():
+  """08:07:12.9: aLead rises through the firm line at v_rel 1.6.
+
+  The command was −1.04. It must not step to −0.22 on that frame.
+  """
+  from openpilot.selfdrive.controls.lib.lead_approach import (
+    ClosingHold, ClosingSpeedEase, InsideFdRecovery,
+  )
+
+  ease = ClosingSpeedEase()
+  inside = InsideFdRecovery()
+  hold = ClosingHold()
+  deep = _compose_close(
+    ease, inside, hold, mpc=-1.04, v_rel=1.6, slack=6.0, d_rel=30.0,
+    v_ego=30.0, v_cruise=30.0, a_lead=-1.0, a_ego=-1.0, descent=False,
+    a_eff=None, t_follow=0.9, dt=0.05, lead_id=("radar", 3),
+  )
+  assert deep == pytest.approx(-1.04)
+  handed = _compose_close(
+    ease, inside, hold, mpc=-0.22, v_rel=1.6, slack=6.0, d_rel=28.0,
+    v_ego=30.0, v_cruise=30.0, a_lead=-0.23, a_ego=-0.9, descent=False,
+    a_eff=None, t_follow=0.9, dt=0.05, lead_id=("radar", 3),
+  )
+  assert handed == pytest.approx(-1.04)
+  assert handed < -0.50
+
+
+def test_inside_fd_close_rate_is_continuous_around_1_5():
+  """1.49 m/s and 1.50 m/s inside the gap must not step to −0.22."""
+  from openpilot.selfdrive.controls.lib.lead_approach import (
+    ClosingHold, ClosingSpeedEase, InsideFdRecovery,
+  )
+
+  published = {}
+  for v_rel in (1.50, 1.49):
+    ease = ClosingSpeedEase()
+    inside = InsideFdRecovery()
+    hold = ClosingHold()
+    published[v_rel] = _compose_close(
+      ease, inside, hold, mpc=-0.61, v_rel=v_rel, slack=-6.0, d_rel=20.0,
+      v_ego=33.0, v_cruise=33.0, a_lead=0.0, a_ego=0.0, descent=True,
+      a_eff=0.05, t_follow=0.9, dt=0.05, lead_id=("radar", 4),
+    )
+  assert published[1.50] <= -0.35
+  assert published[1.49] <= -0.35
+  assert abs(published[1.50] - published[1.49]) < 0.02
+
+
+def test_descent_profile_trim_reaches_0_30_inside_the_gap():
+  """slack <= 0 keeps the profile, and a descent may trim by 0.30."""
+  from openpilot.selfdrive.controls.lib.lead_approach import (
+    ClosingSpeedEase, lead_closing_profile_ease_a,
+  )
+
+  target = lead_closing_profile_ease_a(
+    1.2, -1.0, a_lead=0.0, radar=True, d_rel=20.0, a_eff=0.05,
+  )
+  assert target is not None
+  cmds = {}
+  for descent in (False, True):
+    ease = ClosingSpeedEase()
+    cmd = None
+    for _ in range(120):
+      cmd = ease.update(target, 0.05, 0.05, ("radar", 1), -1.0, descent=descent)
+    cmds[descent] = cmd
+  assert cmds[False] == pytest.approx(float(target) - 0.12, abs=1e-6)
+  assert cmds[True] == pytest.approx(float(target) - 0.30, abs=1e-6)
+
+
+def test_descent_plant_effort_keeps_grade_flat_and_uphill_do_not():
+  """A descent −0.22 effort includes the grade term. Flat and uphill do not move."""
+  import math
+
+  from opendbc.car.tesla.preap.virtual_das import GRAVITY, VirtualDAS
+
+  from openpilot.selfdrive.controls.lib.lead_approach import (
+    install_preap_plant_regen_guard, plant_regen_effort_limits,
+  )
+
+  grade = -0.42
+  down = plant_regen_effort_limits(
+    -0.22, (-1.5, 2.0), steady_grade=grade, transient=0.0, descent=True,
+  )
+  flat = plant_regen_effort_limits(
+    -0.22, (-1.5, 2.0), steady_grade=0.0, transient=0.0, descent=False,
+  )
+  up = plant_regen_effort_limits(
+    -0.22, (-1.5, 2.0), steady_grade=0.27, transient=0.0, descent=False,
+  )
+  assert down[0] == pytest.approx(-0.22 + grade)
+  assert flat[0] == pytest.approx(-0.22)
+  assert up[0] == pytest.approx(-0.22)
+  assert up[0] == flat[0]
+
+  def raw_update():
+    update = VirtualDAS.update
+    while getattr(update, "_nap_plant_regen_guard", False):
+      update = update._nap_plant_regen_raw
+    return update
+
+  before = raw_update()
+  install_preap_plant_regen_guard()
+  try:
+    def settle(update, pitch, a_ego, a_cmd=-0.22, limits=None):
+      vdas = VirtualDAS(dt=0.02)
+      ori = [0.0, pitch, 0.0]
+      for _ in range(400):
+        vdas.observe(a_ego=0.0, orientation_ned=ori)
+      vdas.reset(
+        measured_accel=a_ego, commanded_accel=a_cmd, pedal_di_init=8.0,
+        preserve_grade=True,
+      )
+      pedal = 8.0
+      for _ in range(80):
+        pedal = update(
+          vdas, a_cmd, 30.0, pedal, a_ego=a_ego, orientation_ned=ori,
+          accel_effort_limits=limits,
+        )
+      return vdas.prev_accel_effort, vdas.grade_estimator._steady_grade_compensation()
+
+    guarded = VirtualDAS.update
+    raw = raw_update()
+    # Previous floor: mild command, no descent allowance. Flat and uphill
+    # must still land on that effort. aEgo tracks, so the shortfall gate
+    # stays shut.
+    old_limits = plant_regen_effort_limits(-0.22, (-1.5, 2.0), descent=False)
+    flat_g, _flat_grade = settle(guarded, 0.02, -0.22)
+    flat_old, _ = settle(raw, 0.02, -0.22, limits=old_limits)
+    assert flat_g == pytest.approx(flat_old, abs=0.02)
+
+    up_pitch = 0.02 + math.asin(0.27 / GRAVITY)
+    up_g, up_grade = settle(guarded, up_pitch, -0.22)
+    up_old, _ = settle(raw, up_pitch, -0.22, limits=old_limits)
+    assert up_g == pytest.approx(up_old, abs=0.02)
+    assert up_grade > 0.2
+
+    down_pitch = math.asin(grade / GRAVITY)
+    down_g, down_grade = settle(guarded, down_pitch, 0.05)
+    down_old, _ = settle(raw, down_pitch, 0.05, limits=old_limits)
+    assert down_grade < -0.3
+    assert down_old == pytest.approx(-0.22, abs=0.05)
+    assert down_g <= -0.22 + down_grade + 0.05
+    assert down_g < down_old - 0.15
+  finally:
+    VirtualDAS.update = before
