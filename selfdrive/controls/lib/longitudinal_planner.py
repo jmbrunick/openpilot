@@ -25,8 +25,14 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_POST_CURVE_CATCHUP_S,
   LEAD_POST_DUMP_A_MS2,
   LEAD_POST_DUMP_HOLD_S,
+  ClosingHold,
   ClosingSpeedEase,
+  CommandShortfall,
+  InsideFdRecovery,
   LeadResidualWindow,
+  bias_corrected_grade_ms2,
+  lead_descent_profile_a_eff,
+  lead_profile_on_descent,
   apply_lead_approach_overlay,
   apply_lead_glide_a,
   cap_closing_lead_accel,
@@ -180,6 +186,9 @@ class LongitudinalPlanner:
     self._lead_residual = LeadResidualWindow()
     self._closing_ease = ClosingSpeedEase()
     self._closing_ease_hold_key = None
+    self._closing_hold = ClosingHold()
+    self._inside_fd = InsideFdRecovery()
+    self._cmd_shortfall = CommandShortfall()
     self._post_curve_s = 0.0
     self._in_curve = False
     self._corner_curvature = 0.0
@@ -309,6 +318,8 @@ class LongitudinalPlanner:
       self._lead_residual.reset()
       self._closing_ease.reset()
       self._closing_ease_hold_key = None
+      self._closing_hold.reset()
+      self._inside_fd.reset()
       self._post_curve_s = 0.0
       self._in_curve = False
       self._corner_curvature = 0.0
@@ -604,6 +615,12 @@ class LongitudinalPlanner:
     # Above MAX, a far lead still passes map decel; a steady mid-gap
     # lead is comfort-floored so a cruise cliff cannot punch.
     if self._is_preap:
+      # A cleared approach (lead change, rematch, or the test/planner
+      # reset of _lead_approach_*) must not keep a deep hold from the
+      # previous gap.
+      if not self._lead_approach_active and self._lead_approach_a is None:
+        self._closing_hold.reset()
+        self._inside_fd.reset()
       lead = sm['radarState'].leadOne
       allow_rapid = False
       lead_held = self._lead_close_hold_d is not None and self._lead_close_hold_v is not None
@@ -723,6 +740,15 @@ class LongitudinalPlanner:
         self._lead_depart_age = 0.0
         self._lead_depart_release = False
         self._lead_depart_abs_y = None
+      pitch = hill_pitch if len(sm['carControl'].orientationNED) == 3 else None
+      grade_ms2 = bias_corrected_grade_ms2(pitch)
+      shortfall = self._cmd_shortfall.update(
+        float(sm['carState'].aEgo), self.output_a_target, self.dt,
+      )
+      descent = lead_profile_on_descent(
+        grade_ms2, shortfall, a_ego=float(sm['carState'].aEgo),
+      )
+      profile_a_eff = lead_descent_profile_a_eff(shortfall) if descent else None
       output_a_target = soft_limit_mpc_a_target(
         output_a_target, v_ego, lead_v_hold, lead_d_hold,
         fcw=self.fcw, crash_cnt=self.mpc.crash_cnt, allow_rapid=allow_rapid,
@@ -739,6 +765,8 @@ class LongitudinalPlanner:
         opening_release=self._lead_opening_release,
         depart_release=self._lead_depart_release,
         should_stop=bool(self.output_should_stop),
+        t_follow=self.t_follow,
+        descent=descent,
       )
       self._lead_soft_limit_floored = (
         raw_mpc_a < -LEAD_APPROACH_MILD_A_MS2
@@ -767,6 +795,7 @@ class LongitudinalPlanner:
         prev_v_rel=prev_close_v_rel, a_ego=residual_a, dt=residual_dt,
         opening_release=self._lead_opening_release,
         depart_release=self._lead_depart_release,
+        t_follow=self.t_follow, v_ego=v_ego, v_lead=lead_v_hold,
       )
       output_a_target = lead_remaining_close_a_ms2(
         output_a_target, overlay_v_rel, overlay_slack,
@@ -848,6 +877,7 @@ class LongitudinalPlanner:
       # lift it back to MILD. min() only deepens; #222 / firm-early
       # commands are already more negative and stay put. Slew and the
       # 1.5 s plant trim live on ClosingSpeedEase.
+      prev_ease_key = self._closing_ease_hold_key
       if live_ok:
         ease_key = ("radar", int(getattr(lead, "radarTrackId", 0)))
         self._closing_ease_hold_key = ease_key
@@ -855,11 +885,14 @@ class LongitudinalPlanner:
         ease_key = self._closing_ease_hold_key
       else:
         ease_key = None
+        self._closing_ease_hold_key = None
       profile_a = None
       blocks_plus = False
-      if ease_key is None:
+      if ease_key is None or ease_key != prev_ease_key:
         self._closing_ease.reset()
-      else:
+        self._closing_hold.reset()
+        self._inside_fd.reset()
+      if ease_key is not None:
         ease_kw = dict(
           v_rel=overlay_v_rel,
           slack=overlay_slack,
@@ -875,6 +908,7 @@ class LongitudinalPlanner:
           dt=residual_dt,
           opening_release=bool(self._lead_opening_release),
           depart_release=bool(self._lead_depart_release),
+          a_eff=profile_a_eff,
         )
         blocks_plus = lead_closing_profile_blocks_positive(**ease_kw)
         profile_a = self._closing_ease.update(
@@ -883,11 +917,29 @@ class LongitudinalPlanner:
           self.dt,
           ease_key,
           overlay_slack,
+          descent=descent,
         )
       if profile_a is not None:
         output_a_target = min(float(output_a_target), float(profile_a))
       if blocks_plus:
         output_a_target = min(float(output_a_target), 0.0)
+      d_follow = None
+      if overlay_d is not None and overlay_slack is not None:
+        d_follow = float(overlay_d) - float(overlay_slack)
+      rec = self._inside_fd.update(
+        overlay_v_rel, overlay_slack, d_rel=overlay_d, v_lead=lead_v_hold,
+        t_follow=self.t_follow, v_ego=v_ego,
+        opening=bool(self._lead_opening_release),
+        depart=bool(self._lead_depart_release),
+      )
+      if rec is not None:
+        output_a_target = min(float(output_a_target), float(rec))
+      output_a_target = self._closing_hold.update(
+        output_a_target, overlay_v_rel, overlay_slack, d_follow,
+        opening=bool(self._lead_opening_release),
+        depart=bool(self._lead_depart_release),
+        dt=self.dt,
+      )
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
