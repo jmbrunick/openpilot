@@ -2276,8 +2276,24 @@ def lead_inside_fd_recovery_a(v_rel, slack, d_rel=None, v_lead=None, t_follow=No
   return min(-LEAD_APPROACH_MILD_A_MS2, max(lo, a))
 
 
+def closing_hold_in_window(v_rel, slack) -> bool:
+  """True when a closing hold may publish: inside the gap, or inside max(design+5, 15)."""
+  if slack is None or v_rel is None:
+    return False
+  s = float(slack)
+  if s < 0.0:
+    return True
+  v = float(v_rel)
+  design = (v * v) / (2.0 * LEAD_APPROACH_A_MS2) if LEAD_APPROACH_A_MS2 > 0.0 and v > 0.0 else 0.0
+  return s < max(design + LEAD_CLOSING_HOLD_DESIGN_PAD_M, LEAD_CLOSING_HOLD_SLACK_M)
+
+
 class InsideFdRecovery:
-  """Latch inside-FD recovery until closing drops under 0.5 m/s."""
+  """Latch inside-FD recovery until closing drops under 0.5 m/s.
+
+  The latch does not survive a far lead, a lead change, or an
+  opening / depart release. Those drop it immediately.
+  """
 
   def __init__(self) -> None:
     self.latched = False
@@ -2285,7 +2301,11 @@ class InsideFdRecovery:
   def reset(self) -> None:
     self.latched = False
 
-  def update(self, v_rel, slack, d_rel=None, v_lead=None, t_follow=None, v_ego=None):
+  def update(self, v_rel, slack, d_rel=None, v_lead=None, t_follow=None, v_ego=None,
+             opening=False, depart=False):
+    if opening or depart or not closing_hold_in_window(v_rel, slack):
+      self.reset()
+      return None
     v = None if v_rel is None else float(v_rel)
     entered = (
       slack is not None
@@ -2311,9 +2331,12 @@ class ClosingHold:
   """Hold a close that has already gone past MILD. min() only.
 
   Arms once the output is below −0.22 while still closing inside
-  max(design + 5 m, 15 m) or inside the gap. Later frames publish
-  min(output, hold). Release on v_rel ≤ 0.3 or an opening / depart
-  latch, then slew off at 0.25 m/s³. Never raises a #222 command.
+  max(design + 5 m, 15 m) or inside the gap. Later frames inside that
+  window publish min(output, hold), where hold is the deeper of the
+  previous hold and the kinematic need at the current slack. Outside
+  the window the hold is cleared; a far slack's need is not replaced
+  by a stale deeper command. Opening / depart drop immediately.
+  v_rel ≤ 0.3 slews off at 0.25 m/s³. Never raises a #222 command.
   """
 
   def __init__(self) -> None:
@@ -2333,10 +2356,21 @@ class ClosingHold:
     out = float(output_a)
     v = 0.0 if v_rel is None else float(v_rel)
     frame_dt = 0.05 if dt is None or float(dt) <= 1e-6 else float(dt)
-    release = v <= LEAD_CLOSING_HOLD_V_OFF_MS or bool(opening) or bool(depart)
-    if self.armed and release and not self.releasing:
-      self.releasing = True
-    if self.releasing:
+    # Path collapse and an opening gap already released in the layers
+    # above. Do not slew a −3.5 hold back over that release.
+    if opening or depart:
+      self.reset()
+      return out
+    in_window = closing_hold_in_window(v_rel, slack)
+    if not in_window:
+      # Far slack: the kinematic need is tiny. Drop any deeper prev.
+      self.reset()
+      return out
+    if v <= LEAD_CLOSING_HOLD_V_OFF_MS:
+      if not self.armed:
+        return out
+      if not self.releasing:
+        self.releasing = True
       if self.hold is None:
         self.reset()
         return out
@@ -2346,21 +2380,17 @@ class ClosingHold:
         return out
       return min(out, self.hold)
     if not self.armed:
-      if (v > LEAD_CLOSING_HOLD_V_OFF_MS and slack is not None
-          and out < -LEAD_APPROACH_MILD_A_MS2):
-        s = float(slack)
-        design = (v * v) / (2.0 * LEAD_APPROACH_A_MS2) if LEAD_APPROACH_A_MS2 > 0.0 else 0.0
-        near = s < 0.0 or s < max(
-          design + LEAD_CLOSING_HOLD_DESIGN_PAD_M, LEAD_CLOSING_HOLD_SLACK_M,
-        )
-        if near:
-          self.armed = True
-          self.hold = out
+      if v > LEAD_CLOSING_HOLD_V_OFF_MS and out < -LEAD_APPROACH_MILD_A_MS2:
+        self.armed = True
+        self.hold = out
       return out
     d_f = 0.0 if d_follow is None else max(0.0, float(d_follow))
     s = 0.0 if slack is None else float(slack)
     dist = max(s + 0.5 * d_f, LEAD_KIN_APPROACH_SLACK_FLOOR_M)
     need = -(v * v) / (2.0 * dist) if v > 0.0 else 0.0
+    # Same lead, still inside the window: do not step up to a shallower
+    # need (08:07). The value is still this slack's need when that need
+    # is the deeper of the two.
     prev = out if self.hold is None else float(self.hold)
     self.hold = min(prev, need)
     return min(out, self.hold)

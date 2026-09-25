@@ -318,6 +318,8 @@ class LongitudinalPlanner:
       self._lead_residual.reset()
       self._closing_ease.reset()
       self._closing_ease_hold_key = None
+      self._closing_hold.reset()
+      self._inside_fd.reset()
       self._post_curve_s = 0.0
       self._in_curve = False
       self._corner_curvature = 0.0
@@ -613,6 +615,12 @@ class LongitudinalPlanner:
     # Above MAX, a far lead still passes map decel; a steady mid-gap
     # lead is comfort-floored so a cruise cliff cannot punch.
     if self._is_preap:
+      # A cleared approach (lead change, rematch, or the test/planner
+      # reset of _lead_approach_*) must not keep a deep hold from the
+      # previous gap.
+      if not self._lead_approach_active and self._lead_approach_a is None:
+        self._closing_hold.reset()
+        self._inside_fd.reset()
       lead = sm['radarState'].leadOne
       allow_rapid = False
       lead_held = self._lead_close_hold_d is not None and self._lead_close_hold_v is not None
@@ -869,6 +877,7 @@ class LongitudinalPlanner:
       # lift it back to MILD. min() only deepens; #222 / firm-early
       # commands are already more negative and stay put. Slew and the
       # 1.5 s plant trim live on ClosingSpeedEase.
+      prev_ease_key = self._closing_ease_hold_key
       if live_ok:
         ease_key = ("radar", int(getattr(lead, "radarTrackId", 0)))
         self._closing_ease_hold_key = ease_key
@@ -876,13 +885,14 @@ class LongitudinalPlanner:
         ease_key = self._closing_ease_hold_key
       else:
         ease_key = None
+        self._closing_ease_hold_key = None
       profile_a = None
       blocks_plus = False
-      if ease_key is None:
+      if ease_key is None or ease_key != prev_ease_key:
         self._closing_ease.reset()
         self._closing_hold.reset()
         self._inside_fd.reset()
-      else:
+      if ease_key is not None:
         ease_kw = dict(
           v_rel=overlay_v_rel,
           slack=overlay_slack,
@@ -919,6 +929,8 @@ class LongitudinalPlanner:
       rec = self._inside_fd.update(
         overlay_v_rel, overlay_slack, d_rel=overlay_d, v_lead=lead_v_hold,
         t_follow=self.t_follow, v_ego=v_ego,
+        opening=bool(self._lead_opening_release),
+        depart=bool(self._lead_depart_release),
       )
       if rec is not None:
         output_a_target = min(float(output_a_target), float(rec))
