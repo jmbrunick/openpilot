@@ -82,8 +82,11 @@ class Car:
 
   def __init__(self, CI=None, RI=None) -> None:
     self.can_sock = messaging.sub_sock('can', timeout=20)
+    # Curve MAX reads vehicle-model curvature off carControl (already
+    # polled here). Do not subscribe to controlsState: that 100 Hz socket
+    # pinned card/controlsd/selfdrived and dropped controlsd below 100 Hz.
     self.sm = messaging.SubMaster(['pandaStates', 'carControl', 'onroadEvents', 'liveMapDataNAP', 'radarState',
-                                   'controlsState', 'livePose'])
+                                   'livePose'])
     self.pm = messaging.PubMaster(['sendcan', 'carState', 'carParams', 'carOutput', 'liveTracks'])
 
     self.can_rcv_cum_timeout_counter = 0
@@ -449,11 +452,17 @@ class Car:
     return CS, RD
 
   def _curve_cornering(self) -> tuple[float | None, float | None]:
-    """Vehicle-model curvature, else livePose yaw rate. None if not yet valid."""
+    """Vehicle-model curvature, else livePose yaw rate. None if not yet valid.
+
+    controlsd publishes the learned-ratio / angle-offset curvature on
+    carControl.currentCurvature (the same value as controlsState.curvature).
+    card already receives carControl, so this is a field read, not another
+    100 Hz poll. livePose stays the low-rate yaw fallback only.
+    """
     curvature = None
     yaw_rate = None
-    if self.sm.valid.get('controlsState', False):
-      curvature = float(self.sm['controlsState'].curvature)
+    if self.sm.valid.get('carControl', False):
+      curvature = float(self.sm['carControl'].currentCurvature)
     if self.sm.valid.get('livePose', False):
       av = self.sm['livePose'].angularVelocityDevice
       if bool(getattr(av, 'valid', False)):

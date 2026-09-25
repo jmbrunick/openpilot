@@ -25,12 +25,15 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_POST_CURVE_CATCHUP_S,
   LEAD_POST_DUMP_A_MS2,
   LEAD_POST_DUMP_HOLD_S,
+  ClosingSpeedEase,
   LeadResidualWindow,
   apply_lead_approach_overlay,
   apply_lead_glide_a,
   cap_closing_lead_accel,
   lead_approach_decel_ms2,
   lead_approach_rapid_gate,
+  lead_closing_profile_blocks_positive,
+  lead_closing_profile_ease_a,
   lead_approach_track_ok,
   lead_close_accel_ms2,
   lead_close_should_cap,
@@ -175,6 +178,8 @@ class LongitudinalPlanner:
     self._lead_soft_limit_floored = False
     self._lead_soft_limit_v_rel = None
     self._lead_residual = LeadResidualWindow()
+    self._closing_ease = ClosingSpeedEase()
+    self._closing_ease_hold_key = None
     self._post_curve_s = 0.0
     self._in_curve = False
     self._corner_curvature = 0.0
@@ -302,6 +307,8 @@ class LongitudinalPlanner:
       self._lead_acquire_age = 0.0
       self._lead_soft_limit_v_rel = None
       self._lead_residual.reset()
+      self._closing_ease.reset()
+      self._closing_ease_hold_key = None
       self._post_curve_s = 0.0
       self._in_curve = False
       self._corner_curvature = 0.0
@@ -774,13 +781,15 @@ class LongitudinalPlanner:
         )
       # After acquire: matched-speed glide (no felt ±a), slower
       # near-gap small-bite slew, and mid-gap rematch↔~0 chatter
-      # slew. First-latch smoothness stays #214.
+      # slew. First-latch smoothness stays #214. No lead: leave map /
+      # hill +a alone. Chatter slew treats a 0.30 climb as in-band and
+      # would walk it 0.02/frame from the previous 0.
       self._lead_glide_active = update_lead_glide(
         self._lead_glide_active, overlay_v_rel, overlay_slack,
         d_rel=overlay_d, fcw=self.fcw, crash_cnt=self.mpc.crash_cnt,
         allow_rapid=allow_rapid, acquiring=acquiring, a_lead=lead_a_k,
       )
-      if not acquiring:
+      if (not acquiring) and (live_ok or lead_held):
         output_a_target = apply_lead_glide_a(output_a_target, self._lead_glide_active)
         output_a_target = slew_near_gap_small_a(
           output_a_target, self.output_a_target, overlay_v_rel,
@@ -835,6 +844,50 @@ class LongitudinalPlanner:
           and pre_coast_floor <= -LEAD_POST_DUMP_A_MS2
           and float(output_a_target) > pre_coast_floor + 1e-9):
         self._lead_post_dump_hold = LEAD_POST_DUMP_HOLD_S
+      # Closing-speed profile, after the coast floors so they cannot
+      # lift it back to MILD. min() only deepens; #222 / firm-early
+      # commands are already more negative and stay put. Slew and the
+      # 1.5 s plant trim live on ClosingSpeedEase.
+      if live_ok:
+        ease_key = ("radar", int(getattr(lead, "radarTrackId", 0)))
+        self._closing_ease_hold_key = ease_key
+      elif lead_held:
+        ease_key = self._closing_ease_hold_key
+      else:
+        ease_key = None
+      profile_a = None
+      blocks_plus = False
+      if ease_key is None:
+        self._closing_ease.reset()
+      else:
+        ease_kw = dict(
+          v_rel=overlay_v_rel,
+          slack=overlay_slack,
+          a_lead=lead_a_k,
+          radar=bool(overlay_radar),
+          allow_rapid=allow_rapid,
+          fcw=bool(self.fcw),
+          crash_cnt=int(self.mpc.crash_cnt),
+          d_rel=overlay_d,
+          should_stop=bool(self.output_should_stop),
+          prev_v_rel=prev_close_v_rel,
+          a_ego=residual_a,
+          dt=residual_dt,
+          opening_release=bool(self._lead_opening_release),
+          depart_release=bool(self._lead_depart_release),
+        )
+        blocks_plus = lead_closing_profile_blocks_positive(**ease_kw)
+        profile_a = self._closing_ease.update(
+          lead_closing_profile_ease_a(**ease_kw),
+          float(sm["carState"].aEgo),
+          self.dt,
+          ease_key,
+          overlay_slack,
+        )
+      if profile_a is not None:
+        output_a_target = min(float(output_a_target), float(profile_a))
+      if blocks_plus:
+        output_a_target = min(float(output_a_target), 0.0)
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)

@@ -1850,3 +1850,81 @@ def test_planner_on_path_close_stays_firm_and_departing_releases():
   assert float(planner.output_a_target) > -1.0
   assert float(planner.output_a_target) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2, abs=0.15)
 
+
+def test_planner_hot_close_profile_eases_before_slack_30_and_firm_lead_stays():
+  """4.1 m/s from 65 m slack, aEgo stuck at −0.08.
+
+  Reaches ≤ −0.26 before slack 30 m, never below −0.45 before slack 3 m.
+  A matched lead is not eased. Firm early brake at 20–50 m is unchanged.
+  """
+  from openpilot.selfdrive.controls.lib.lead_approach import (
+    lead_firm_large_slack_a,
+  )
+  v_rel = 4.1
+  v_ego = 31.1
+  v_lead = v_ego - v_rel
+  t_follow = get_T_FOLLOW(nap_follow_dist=4)
+  slack = 65.0
+  dt = FULL_LOOP_PLANNER_DT_S
+  params = _MutablePlannerParams(nap_follow_dist=4)
+  planner = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
+  inputs = _make_planner_inputs(v_ego)
+  inputs["carState"].aEgo = -0.08
+  lead = inputs["radarState"].leadOne
+  lead.status = True
+  lead.vLead = v_lead
+  lead.aLeadK = 0.0
+  lead.radar = True
+  lead.modelProb = 1.0
+  lead.radarTrackId = 7
+  saw = False
+  while slack > 3.0:
+    lead.dRel = t_follow * v_lead + STOP_DISTANCE_M + slack
+    planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=0.0)
+    planner.update(inputs)
+    a = float(planner.output_a_target)
+    assert a >= -0.45 - 1e-6
+    if slack > 30.0 and a <= -0.26:
+      saw = True
+    slack -= v_rel * dt
+  assert saw
+
+  # Matched radar lead: profile does not pull a decel.
+  planner_m = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
+  inputs_m = _make_planner_inputs(v_ego)
+  inputs_m["carState"].aEgo = -0.08
+  lead_m = inputs_m["radarState"].leadOne
+  lead_m.status = True
+  lead_m.vLead = v_ego
+  lead_m.aLeadK = 0.0
+  lead_m.radar = True
+  lead_m.modelProb = 1.0
+  lead_m.radarTrackId = 3
+  d_follow = t_follow * v_ego + STOP_DISTANCE_M
+  lead_m.dRel = d_follow + 20.0
+  for _ in range(40):
+    planner_m.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=0.0)
+    planner_m.update(inputs_m)
+  assert float(planner_m.output_a_target) > -0.10
+
+  # Firm lead, 40 m slack, closing 4 m/s: early brake, not the −0.28 clamp.
+  v_firm = 30.0
+  planner_f = LongitudinalPlanner(_make_preap_params(), init_v=v_firm, params=params)
+  planner_f._lead_acquire_age = LEAD_ACQUIRE_HOLD_S + 0.05
+  inputs_f = _make_planner_inputs(v_firm)
+  lead_f = inputs_f["radarState"].leadOne
+  lead_f.status = True
+  lead_f.vLead = v_firm - 4.0
+  lead_f.aLeadK = -0.8
+  lead_f.radar = True
+  lead_f.modelProb = 1.0
+  lead_f.radarTrackId = 11
+  slack_f = 40.0
+  lead_f.dRel = t_follow * lead_f.vLead + STOP_DISTANCE_M + slack_f
+  planner_f.mpc = _ConstantAccelerationMpc(v_firm, acceleration_mps2=-0.22)
+  planner_f.prev_accel_clip = [-3.5, 1.6]
+  planner_f.update(inputs_f)
+  firm = lead_firm_large_slack_a(4.0, slack_f, -0.8)
+  assert firm is not None
+  assert float(planner_f.output_a_target) == pytest.approx(firm, abs=0.08)
+
