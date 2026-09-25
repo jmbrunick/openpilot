@@ -143,6 +143,21 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // (including a tip already at 1 or 7). selfdrived consumes and
     // holds the toast ~1.5 s. Not a preference.
     {"NAPFollowHudPending", {CLEAR_ON_MANAGER_START, BOOL, "0"}},
+    // Settings → NAP → Driving Mannerisms → Hypermile. Default Off.
+    // On: comfort-biased eco-snap (Adaptive Accel, Cap/Follow,
+    // Early lookahead, Accel 1 lazy climb) — early light ease, not max
+    // regen bite. Restore those knobs on Off. Soft-lat / DM / blinker /
+    // stock 1–7 Follow Distance unchanged (Hypermile does not own follow).
+    {"NAPHypermile", {PERSISTENT, BOOL, "0"}},
+    {"NAPHypermileSaved", {PERSISTENT, STRING}},
+    // Opt-in mileage defer. Default Off. Inert unless Hypermile is On.
+    // Lowers the Cap/Follow posted target on the same posted scale as eco,
+    // larger drop (−15 at 80). Does not stack with eco. Never exceeds posted.
+    {"NAPHypermileStepDown", {PERSISTENT, BOOL, "0"}},
+    // Hypermile sub-toggle. Default On. Inert unless Hypermile is On.
+    // IMU-pitch climb hold + crest/downhill ease. No maps-elevation lookahead.
+    // Never raises HUD MAX. Lead / MPC brake still wins.
+    {"NAPHypermileHillClimb", {PERSISTENT, BOOL, "1"}},
     {"NAPForcePreAP", {PERSISTENT, BOOL, "1"}},
     {"NAPiBoosterEnabled", {PERSISTENT, BOOL}},
     {"NAPPedalCalibDone", {PERSISTENT, BOOL}},

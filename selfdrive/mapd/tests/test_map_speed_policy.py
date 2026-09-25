@@ -10,8 +10,8 @@ from openpilot.selfdrive.mapd.map_speed_policy import (
   MapCruiseHold, anticipatory_limit_ms, apply_map_speed_kph, cap_planner_v_cruise_ms,
   decide_map_cruise, effective_map_limit_ms, is_cruise_stalk_hold_step,
   is_cruise_stalk_step, is_cruise_stalk_tip_step,
-  longitudinal_obstacle_source, map_in_track_deadband, map_slew_a_ms2, map_track_accel_ms2,
-  map_track_decel_ms2, should_write_preap_pedal, slew_map_speed_ms,
+  longitudinal_obstacle_source, map_climb_replaces_mpc, map_in_track_deadband, map_slew_a_ms2,
+  map_track_accel_ms2, map_track_decel_ms2, should_write_preap_pedal, slew_map_speed_ms,
 )
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   MAP_SPEED_ACCEL, MAP_SPEED_ACCEL_DEFAULT, MAP_SPEED_LOOKAHEAD,
@@ -361,6 +361,40 @@ def test_sticky_skips_anticipatory_lookahead():
   assert map_track_decel_ms2(sticky, sticky, a) is None
   # After posted changes, lookahead resumes (sticky=False).
   assert effective_map_limit_ms(current, nxt, dist, current, LOOKAHEAD_NORMAL, sticky=False) == lowered
+
+
+def test_map_climb_does_not_replace_nonneg_mpc_when_lead_present():
+  """Under MAX: map climb may replace ~0 MPC only when there is no lead."""
+  v_ego = 21.5  # ~48 mph
+  v_cruise = 24.6  # ~55 MAX
+  mpc_a = 0.05
+  a_up = map_track_accel_ms2(v_ego, v_cruise, map_accel_a_ms2(LOOKAHEAD_EARLY, 1))
+  assert a_up is not None and a_up > mpc_a
+  assert map_climb_replaces_mpc(a_up, mpc_a, has_valid_lead=False) is True
+  assert map_climb_replaces_mpc(a_up, mpc_a, has_valid_lead=True) is False
+  assert map_climb_replaces_mpc(a_up, 0.0, has_valid_lead=True) is False
+  # Negative MPC (already braking) is never replaced, lead or not.
+  assert map_climb_replaces_mpc(a_up, -0.4, has_valid_lead=False) is False
+  assert map_climb_replaces_mpc(a_up, -0.4, has_valid_lead=True) is False
+  # No climb command available.
+  assert map_climb_replaces_mpc(None, mpc_a, has_valid_lead=False) is False
+
+
+def test_map_decel_still_allowed_above_max_with_lead():
+  """Above MAX: map decel is a min() and is not gated on lead status."""
+  v_cruise = 22.0
+  v_ego = v_cruise + TRACK_TAPER_MS + 0.5
+  a_brake = map_track_decel_ms2(v_ego, v_cruise, map_brake_a_ms2(LOOKAHEAD_EARLY))
+  assert a_brake is not None and a_brake < 0.0
+  mpc_a = 0.0
+  with_lead = min(float(mpc_a), a_brake)
+  no_lead = min(float(mpc_a), a_brake)
+  assert with_lead == a_brake
+  assert no_lead == a_brake
+  # Climb replace stays off above MAX (a_up is None once dv is a brake).
+  a_up = map_track_accel_ms2(v_ego, v_cruise, map_accel_a_ms2(LOOKAHEAD_EARLY, 1))
+  assert a_up is None
+  assert map_climb_replaces_mpc(a_up, mpc_a, has_valid_lead=True) is False
 
 
 def test_hold_deadband_does_not_climb_or_brake():
@@ -1304,10 +1338,10 @@ def test_map_speed_submenu_wires_params():
   assert "driving mannerisms" in nap_mici
   manner = (root / "selfdrive/ui/layouts/settings/driving_mannerisms.py").read_text()
   manner_mici = (root / "selfdrive/ui/mici/layouts/settings/driving_mannerisms.py").read_text()
-  assert "MAP_SPEED_ACCEL_DESCRIPTION" in manner
-  assert "ADAPTIVE_ACCEL_DESCRIPTION" in manner
   assert "FOLLOW_DISTANCE_CITY_DESCRIPTION" in manner
   assert "FOLLOW_DISTANCE_HWY_DESCRIPTION" in manner
+  assert "MAP_SPEED_ACCEL_DESCRIPTION" in manner
+  assert "ADAPTIVE_ACCEL_DESCRIPTION" in manner
   assert "MAP_SPEED_ACCEL_DESCRIPTION" in content
   assert "1 lazy" in content
   assert "same Accel 1–10 gradient" in content
@@ -1347,10 +1381,11 @@ def test_driving_mannerisms_submenu_wires_params():
   mici = (root / "selfdrive/ui/mici/layouts/settings/driving_mannerisms.py").read_text()
   nap = (root / "selfdrive/ui/layouts/settings/nap.py").read_text()
   nap_mici = (root / "selfdrive/ui/mici/layouts/settings/nap.py").read_text()
-  content = (root / "selfdrive/ui/layouts/settings/nap_content.py").read_text()
   for src in (tici, mici):
-    for key in ("ADAPTIVE_ACCEL", "FOLLOW_DISTANCE", "NAP_DRIVER_LAT_HANDOFF", "NAP_ONE_PEDAL_LONG", "NAPMapSpeedAccel"):
+    for key in ("ADAPTIVE_ACCEL", "FOLLOW_DISTANCE", "NAP_DRIVER_LAT_HANDOFF", "NAP_ONE_PEDAL_LONG", "NAP_HYPERMILE", "NAP_HYPERMILE_STEP_DOWN", "NAPMapSpeedAccel"):
       assert key in src
+  content = (root / "selfdrive/ui/layouts/settings/nap_content.py").read_text()
+  assert "Hypermile" in tici
   assert "One-Pedal Long" in tici
   assert "Adaptive Accel" in tici
   assert "Acceleration" in tici
@@ -1368,6 +1403,7 @@ def test_driving_mannerisms_submenu_wires_params():
   assert tici.index("self._follow_city_buttons") < tici.index("self._follow_hwy_buttons")
   assert tici.index("self._follow_hwy_buttons") < tici.index("self._lat_handoff")
   assert tici.index("self._lat_handoff") < tici.index("self._one_pedal")
+  assert tici.index("self._one_pedal") < tici.index("self._hypermile")
   assert "City Follow Distance" in tici
   assert "Highway Follow Distance" in tici
   assert "Soft Lateral Handoff" in tici
@@ -1377,6 +1413,7 @@ def test_driving_mannerisms_submenu_wires_params():
   assert "NAP_DM_FALSE_ALERT_IGNORE" not in tici
   assert '"Back To"' in tici
   assert "Return to NAP settings." in tici
+  assert "hypermile" in mici
   assert "one-pedal long" in mici
   assert "adaptive accel" in mici
   assert '"acceleration"' in mici
@@ -1387,12 +1424,14 @@ def test_driving_mannerisms_submenu_wires_params():
   assert mici_widgets.index("self._follow_distance_city") < mici_widgets.index("self._follow_distance_hwy")
   assert mici_widgets.index("self._follow_distance_hwy") < mici_widgets.index("lat_handoff")
   assert mici_widgets.index("lat_handoff") < mici_widgets.index("one_pedal")
+  assert mici_widgets.index("one_pedal") < mici_widgets.index("hypermile")
   assert "city follow distance" in mici
   assert "highway follow distance" in mici
   assert "soft lateral handoff" in mici
   assert "simulate look" not in mici
   assert "false alert ignore" not in mici
   assert "self._scroller.add_widgets" in mici
+  assert "self._accel.refresh()" in mici
   assert "DrivingMannerismsLayout" in nap
   assert "Accel feel, follow, soft lat" in nap
   assert "one-pedal" in nap
@@ -1402,7 +1441,7 @@ def test_driving_mannerisms_submenu_wires_params():
   assert 'self._page = "driving_mannerisms"' in nap
   assert "self._driving_mannerisms_page.render" in nap
   assert "NAP_DM_SIMULATE_LOOKING" in nap
-  assert "put_bool(NAP_DM_SIMULATE_LOOKING, False)" in nap
+  assert "put_bool(NAP_DM_SIMULATE_LOOKING, False)" in nap  # nap-release keeps Simulate Look default Off
   assert "NAP_DM_FALSE_ALERT_IGNORE" in nap
   assert "put_bool(NAP_DM_FALSE_ALERT_IGNORE, False)" in nap
   keys = (root / "common/params_keys.h").read_text()
@@ -1452,7 +1491,11 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   # Must not seed/overlay on lateral-only first pull (CC.enabled).
   assert "engage_rising = long_active and not long_active_prev" in card
   # Must not clobber stalk by writing Follow HUD onto pedal every frame.
-  assert "should_write_preap_pedal(dec.seed_kph, preap_v_cruise_kph, self._last_pedal_kph)" in card
+  assert "should_write_preap_pedal(seed_kph, preap_v_cruise_kph, self._last_pedal_kph)" in card
+  # Curve snapshot/restore: freeze posted flicker, restore pre-curve MAX.
+  assert "CurveMaxHold" in card
+  assert "begin_cycle" in card
+  assert "restore_seed_kph" in card
   assert "if long_active and dec.seed_kph is not None:" not in card
   # Sticky hold must not slew toward nextSpeedLimit.
   assert "not dec.sticky:" in card
@@ -1460,6 +1503,9 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   planner_src = planner
   assert "output_a_target = a_up" in planner_src
   assert "min(float(output_a_target), a_up)" not in planner_src
+  assert "map_climb_replaces_mpc" in planner_src
+  assert "has_valid_lead" in planner_src
+  assert "leadOne.status" in planner_src
   mapd = (root / "selfdrive/mapd/mapd.py").read_text()
   osm = (root / "selfdrive/mapd/osm_db.py").read_text()
   constants = (root / "selfdrive/mapd/constants.py").read_text()
@@ -1474,4 +1520,169 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   # Delayed pedalLongActive rising after one SET must not take traveled.
   assert "not bool(resume_held) and hold.held_max_kph is None" in policy
   # Sticky / stalk path unchanged.
-  assert "should_write_preap_pedal(dec.seed_kph, preap_v_cruise_kph, self._last_pedal_kph)" in card
+  assert "should_write_preap_pedal(seed_kph, preap_v_cruise_kph, self._last_pedal_kph)" in card
+
+
+def _decision_fields(dec, hold):
+  seed = None if dec.seed_kph is None else round(float(dec.seed_kph), 4)
+  return (
+    bool(dec.sticky),
+    seed,
+    round(float(hold.held_max_kph), 4),
+    hold.sticky_set_kph is None,
+  )
+
+
+def test_none_to_valid_posted_matches_a_normal_limit_change():
+  """A map dropout that gains a posted limit is a normal limit change.
+
+  Engage while the sign is missing, then the posted limit returns at 3 s
+  and at 30 s: both adopt it. A valid → invalid → same valid flicker does
+  not move MAX. A stalk during the dropout is treated the same way a stalk
+  is treated before a 55 → 70 change.
+  """
+  posted = 70 * CV.MPH_TO_KPH
+  ego = 42.4 * CV.MPH_TO_KPH
+
+  def engage_dropout():
+    hold = MapCruiseHold()
+    dec = decide_map_cruise(
+      hold, engaged=True, mode=MODE_FOLLOW, raw_kph=ego, posted_kph=None,
+      engage_rising=True, now=0.0, take_speed_now=True, traveled_kph=ego,
+    )
+    assert dec.sticky
+    assert abs(dec.seed_kph - ego) < 1e-6
+    assert hold.last_posted_kph is None
+    return hold
+
+  for t_back in (3.0, 30.0):
+    hold = engage_dropout()
+    decide_map_cruise(
+      hold, engaged=True, mode=MODE_FOLLOW, raw_kph=ego, posted_kph=None,
+      engage_rising=False, now=t_back - 0.05, traveled_kph=ego,
+    )
+    assert abs(hold.held_max_kph - ego) < 1e-6
+    dec = decide_map_cruise(
+      hold, engaged=True, mode=MODE_FOLLOW, raw_kph=ego, posted_kph=posted,
+      engage_rising=False, now=t_back, traveled_kph=ego,
+    )
+    assert dec.seed_kph is not None
+    assert abs(dec.seed_kph - posted) < 1e-6
+    assert not dec.sticky
+    assert abs(hold.held_max_kph - posted) < 1e-6
+    assert abs(_follow_hud(dec, posted) - posted) < 1e-6
+    # The next frame must not treat the old traveled speed as a stalk.
+    dec = decide_map_cruise(
+      hold, engaged=True, mode=MODE_FOLLOW, raw_kph=ego, posted_kph=posted,
+      engage_rising=False, now=t_back + 0.05, traveled_kph=ego,
+    )
+    assert not dec.sticky
+    assert abs(_follow_hud(dec, posted) - posted) < 1e-6
+
+  # Same limit returns and MAX already equals it: no pedal write, no rebase.
+  hold = MapCruiseHold()
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=posted, posted_kph=posted,
+    engage_rising=True, now=0.0, take_speed_now=True, traveled_kph=posted,
+  )
+  held_before = hold.held_max_kph
+  decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=posted, posted_kph=None,
+    engage_rising=False, now=1.0, traveled_kph=posted,
+  )
+  assert hold.last_posted_kph is not None
+  assert abs(hold.held_max_kph - posted) < 1e-6
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=posted, posted_kph=posted,
+    engage_rising=False, now=1.5, traveled_kph=posted,
+  )
+  assert dec.seed_kph is None
+  assert abs(hold.held_max_kph - held_before) < 1e-6
+  assert abs(_follow_hud(dec, posted) - posted) < 1e-6
+  assert not should_write_preap_pedal(dec.seed_kph, _follow_hud(dec, posted), posted)
+
+  # Stalk, then the limit changes: dropout and a normal 55 → 70 match.
+  normal = MapCruiseHold()
+  start = 55 * CV.MPH_TO_KPH
+  stalk = start + 5 * CV.MPH_TO_KPH
+  decide_map_cruise(
+    normal, engaged=True, mode=MODE_FOLLOW, raw_kph=start, posted_kph=start,
+    engage_rising=True, now=0.0,
+  )
+  decide_map_cruise(
+    normal, engaged=True, mode=MODE_FOLLOW, raw_kph=stalk, posted_kph=start,
+    engage_rising=False, now=1.0,
+  )
+  assert normal.sticky_set_kph is not None
+  dec_normal = decide_map_cruise(
+    normal, engaged=True, mode=MODE_FOLLOW, raw_kph=stalk, posted_kph=posted,
+    engage_rising=False, now=2.0,
+  )
+
+  dropped = engage_dropout()
+  stalk_drop = ego + 5 * CV.MPH_TO_KPH
+  decide_map_cruise(
+    dropped, engaged=True, mode=MODE_FOLLOW, raw_kph=stalk_drop, posted_kph=None,
+    engage_rising=False, now=1.0, traveled_kph=ego,
+  )
+  assert dropped.sticky_set_kph is not None
+  dec_drop = decide_map_cruise(
+    dropped, engaged=True, mode=MODE_FOLLOW, raw_kph=stalk_drop, posted_kph=posted,
+    engage_rising=False, now=30.0, traveled_kph=ego,
+  )
+  assert _decision_fields(dec_normal, normal) == _decision_fields(dec_drop, dropped)
+  assert dec_drop.seed_kph is not None
+  assert abs(dec_drop.seed_kph - posted) < 1e-6
+  assert not dec_drop.sticky
+
+
+def test_valid_to_invalid_posted_leaves_max_unchanged():
+  """Posted → no limit holds MAX. No drop, and no reseed onto ego speed."""
+  posted = 70 * CV.MPH_TO_KPH
+  # 5 mph under MAX: the same delta as a stalk down, if raw falls back to ego.
+  ego_near = posted - 5 * CV.MPH_TO_KPH
+  ego_far = 42.4 * CV.MPH_TO_KPH
+
+  def engage():
+    hold = MapCruiseHold()
+    dec = decide_map_cruise(
+      hold, engaged=True, mode=MODE_FOLLOW, raw_kph=posted, posted_kph=posted,
+      engage_rising=True, now=0.0, take_speed_now=True, traveled_kph=ego_far,
+    )
+    assert dec.seed_kph is not None
+    assert abs(dec.seed_kph - posted) < 1e-6
+    assert abs(hold.held_max_kph - posted) < 1e-6
+    return hold
+
+  for ego in (ego_near, ego_far):
+    hold = engage()
+    dec = decide_map_cruise(
+      hold, engaged=True, mode=MODE_FOLLOW, raw_kph=ego, posted_kph=None,
+      engage_rising=False, now=1.0, traveled_kph=ego,
+    )
+    assert dec.seed_kph is None
+    assert not dec.sticky
+    assert hold.sticky_set_kph is None
+    assert abs(hold.held_max_kph - posted) < 1e-6
+    assert abs(hold.policy_kph - posted) < 1e-6
+    assert abs(dec.driver_kph - posted) < 1e-6
+    assert abs(_follow_hud(dec, None) - posted) < 1e-6
+    # Still invalid. Ego must not become MAX on a later frame either.
+    dec = decide_map_cruise(
+      hold, engaged=True, mode=MODE_FOLLOW, raw_kph=ego, posted_kph=None,
+      engage_rising=False, now=5.0, traveled_kph=ego,
+    )
+    assert dec.seed_kph is None
+    assert not dec.sticky
+    assert abs(hold.held_max_kph - posted) < 1e-6
+    assert abs(_follow_hud(dec, None) - posted) < 1e-6
+
+  # Set speed itself did not move; only the sign went away.
+  hold = engage()
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=posted, posted_kph=None,
+    engage_rising=False, now=1.0, traveled_kph=ego_far,
+  )
+  assert dec.seed_kph is None
+  assert abs(hold.held_max_kph - posted) < 1e-6
+  assert abs(_follow_hud(dec, None) - posted) < 1e-6

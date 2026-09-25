@@ -9,7 +9,7 @@ from cereal.messaging import SubMaster
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_CTRL
-from openpilot.selfdrive.selfdrived.events import Alert, EVENTS, ET, AudibleAlert, follow_distance_changed_alert
+from openpilot.selfdrive.selfdrived.events import Alert, EVENTS, ET, AudibleAlert, hypermile_follow_changed_alert
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
 from openpilot.selfdrive.test.process_replay.process_replay import CONFIGS
 
@@ -168,10 +168,14 @@ class TestAlerts:
     assert stock.audible_alert == AudibleAlert.warningImmediate
 
   def test_follow_distance_changed_alert_matches_mannerisms(self):
-    event_types = EVENTS[log.OnroadEvent.EventName.followDistanceChanged]
+    follow_evt = getattr(log.OnroadEvent.EventName, "hypermileFollowChanged", None) or getattr(
+      log.OnroadEvent.EventName, "followDistanceChanged", None,
+    )
+    assert follow_evt is not None
+    event_types = EVENTS[follow_evt]
     assert ET.WARNING in event_types
     assert ET.PERMANENT in event_types
-    alert = follow_distance_changed_alert(
+    alert = hypermile_follow_changed_alert(
       self.CP, self.CS, self.sm, False, 100, log.LongitudinalPersonality.standard,
     )
     assert alert.alert_text_1.startswith("Follow Distance:")

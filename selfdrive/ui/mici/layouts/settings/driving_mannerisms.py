@@ -1,8 +1,10 @@
 """mici NAP submenu: Driving Mannerisms controls."""
+from openpilot.common.params import Params
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.widgets.scroller import NavScroller
 from openpilot.selfdrive.ui.mici.widgets.big_multi_value_param import BigMultiValueParamToggle
 from openpilot.selfdrive.ui.mici.widgets.button import BigParamControl
+from openpilot.selfdrive.controls.lib.hypermile import apply_hypermile_toggle
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   FOLLOW_DISTANCE_DEFAULT,
   FOLLOW_DISTANCE_LABELS,
@@ -11,6 +13,9 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   NAP_DRIVER_LAT_HANDOFF,
   NAP_FOLLOW_DISTANCE_CITY,
   NAP_FOLLOW_DISTANCE_HWY,
+  NAP_HYPERMILE,
+  NAP_HYPERMILE_HILL_CLIMB,
+  NAP_HYPERMILE_STEP_DOWN,
   NAP_ONE_PEDAL_LONG,
 )
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys
@@ -19,6 +24,12 @@ from opendbc.car.tesla.preap.nap_params import NAPParamKeys
 class DrivingMannerismsLayoutMici(NavScroller):
   def __init__(self):
     super().__init__()
+    self._params = Params()
+
+    def on_hypermile(checked):
+      apply_hypermile_toggle(self._params, bool(checked))
+      self._accel.refresh()
+
     self._accel = BigMultiValueParamToggle(
       "acceleration",
       "NAPMapSpeedAccel",
@@ -52,6 +63,17 @@ class DrivingMannerismsLayoutMici(NavScroller):
     one_pedal = BigParamControl("one-pedal long", NAP_ONE_PEDAL_LONG)
     one_pedal.set_value("Off default — gas pause stays until SET")
 
+    hypermile = BigParamControl("hypermile", NAP_HYPERMILE, toggle_callback=on_hypermile)
+    hypermile.set_value("Off default — early light eco, not max regen")
+
+    step_down = BigParamControl("step down speed", NAP_HYPERMILE_STEP_DOWN)
+    step_down.set_value("Off — scaled drop, −15 at 80 when On")
+    step_down.set_visible(lambda: self._params.get_bool(NAP_HYPERMILE))
+
+    hill_climb = BigParamControl("hill climb", NAP_HYPERMILE_HILL_CLIMB)
+    hill_climb.set_value("On — grade hold on climbs; light crest ease")
+    hill_climb.set_visible(lambda: self._params.get_bool(NAP_HYPERMILE))
+
     self._scroller.add_widgets([
       self._accel,
       adaptive_accel,
@@ -59,14 +81,16 @@ class DrivingMannerismsLayoutMici(NavScroller):
       self._follow_distance_hwy,
       lat_handoff,
       one_pedal,
+      hypermile,
+      step_down,
+      hill_climb,
     ])
 
   def show_event(self):
     super().show_event()
     from openpilot.selfdrive.controls.lib.follow_distance import migrate_follow_distance_params
-    from openpilot.common.params import Params
-    migrate_follow_distance_params(Params())
-    self._accel._load_value()
+    migrate_follow_distance_params(self._params)
+    self._accel.refresh()
     self._follow_distance_city._load_value()
     self._follow_distance_hwy._load_value()
 

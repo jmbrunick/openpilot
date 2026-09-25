@@ -37,9 +37,10 @@ class RadarScenario:
   def step(self, time_s: float, vision_d_rel: float, radar_points: list[tuple[int, float, float, float]] | None = None,
            vision_v: float | None = None, vision_prob: float | None = None,
            vision_y: float | None = None,
-           path_x: list[float] | None = None, path_y: list[float] | None = None):
+           path_x: list[float] | None = None, path_y: list[float] | None = None,
+           lane_probs: list[float] | None = None):
     messages = [self._model_message(time_s, vision_d_rel, vision_v, vision_prob,
-                                    vision_y, path_x, path_y)]
+                                    vision_y, path_x, path_y, lane_probs)]
     if self.frame == 0:
       messages.append(self._car_state_message(time_s))
     if radar_points is not None:
@@ -61,13 +62,16 @@ class RadarScenario:
 
   def _model_message(self, time_s: float, vision_d_rel: float, vision_v: float | None,
                      vision_prob: float | None, vision_y: float | None = None,
-                     path_x: list[float] | None = None, path_y: list[float] | None = None):
+                     path_x: list[float] | None = None, path_y: list[float] | None = None,
+                     lane_probs: list[float] | None = None):
     message = messaging.new_message("modelV2")
     message.logMonoTime = int(time_s * 1e9)
     message.modelV2.velocity.x = [self.v_ego]
     if path_x is not None and path_y is not None:
       message.modelV2.position.x = list(path_x)
       message.modelV2.position.y = list(path_y)
+    if lane_probs is not None:
+      message.modelV2.laneLineProbs = list(lane_probs)
     leads = message.modelV2.init("leadsV3", 2)
     for lead in leads:
       lead.prob = 0.9 if vision_prob is None else vision_prob
@@ -854,3 +858,65 @@ def test_2108_gas_station_ahead_does_not_stop_in_the_road():
                          vision_prob=0.04, path_x=path_x, path_y=path_y)
     assert not lead.radar, f"21:08 tid {tid} latched as radar lead"
     assert not lead.status, f"21:08 tid {tid} published — would stop in the road"
+
+
+def test_path_collapse_blocks_new_wide_lead_keeps_centered():
+  """08:57:58: collapsed lanes + absurd pathY must not start |yRel|~2.9.
+
+  The kink still puts that right-side track on the local path, so the
+  ordinary half-width gate would accept it. A centered track on the
+  same broken path still associates. Healthy lane lines do not raise
+  the bar. An already-owned track is not dropped when the path later
+  collapses.
+  """
+  d_rel = 22.0 - RADAR_TO_CAMERA
+  # Device y = −yRel. Right-side yRel −2.9 sits on the path at 22 m;
+  # 15 m and 30 m are absurd.
+  path_x = [0.0, 10.0, 15.0, 22.0, 30.0, 40.0]
+  path_y_right = [0.0, -2.0, -55.0, 2.9, -70.0, -40.0]
+  collapsed = [0.01, 0.02, 0.02, 0.01]
+  healthy = [0.9, 0.95, 0.96, 0.9]
+
+  blocked = RadarScenario(v_ego=16.0)
+  lead = blocked.step(
+    1.0, vision_d_rel=d_rel, radar_points=[(9, d_rel, -2.9, -1.0)],
+    vision_v=15.0, vision_y=2.9, vision_prob=0.95,
+    path_x=path_x, path_y=path_y_right, lane_probs=collapsed,
+  )
+  assert not lead.status
+
+  allowed = RadarScenario(v_ego=16.0)
+  lead = allowed.step(
+    1.0, vision_d_rel=d_rel, radar_points=[(9, d_rel, -2.9, -1.0)],
+    vision_v=15.0, vision_y=2.9, vision_prob=0.95,
+    path_x=path_x, path_y=path_y_right, lane_probs=healthy,
+  )
+  assert lead.radar
+  assert lead.radarTrackId == 9
+
+  path_y_center = [0.0, -1.0, -55.0, -0.3, -70.0, -40.0]
+  centered = RadarScenario(v_ego=16.0)
+  lead = centered.step(
+    1.0, vision_d_rel=d_rel, radar_points=[(4, d_rel, 0.3, -1.0)],
+    vision_v=15.0, vision_y=-0.3, vision_prob=0.95,
+    path_x=path_x, path_y=path_y_center, lane_probs=collapsed,
+  )
+  assert lead.radar
+  assert lead.radarTrackId == 4
+
+  owned = RadarScenario(v_ego=16.0)
+  straight_x = [0.0, 15.0, 30.0, 45.0]
+  straight_y = [0.0, 0.0, 0.0, 0.0]
+  lead = owned.step(
+    1.0, vision_d_rel=30.0, radar_points=[(9, 30.0, 0.2, -1.0)],
+    vision_v=15.0, vision_y=-0.2, vision_prob=0.95,
+    path_x=straight_x, path_y=straight_y, lane_probs=healthy,
+  )
+  assert lead.radar and lead.radarTrackId == 9
+  lead = owned.step(
+    1.1, vision_d_rel=d_rel, radar_points=[(9, d_rel, -2.9, -1.0)],
+    vision_v=15.0, vision_y=2.9, vision_prob=0.95,
+    path_x=path_x, path_y=path_y_right, lane_probs=collapsed,
+  )
+  assert lead.radar
+  assert lead.radarTrackId == 9

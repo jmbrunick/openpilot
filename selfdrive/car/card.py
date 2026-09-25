@@ -20,13 +20,17 @@ from opendbc.car.car_helpers import get_car, interfaces
 from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET, VCruiseHelper
-from openpilot.selfdrive.controls.lib.follow_stalk import (
-  STALK_COOLDOWN_S, FollowStalkGesture, button_event_closer, button_event_released,
-  persist_follow_distance,
-)
+from openpilot.selfdrive.mapd.constants import map_accel_a_ms2
 from openpilot.selfdrive.mapd.map_speed_policy import (
   MapCruiseHold, apply_map_speed_kph, decide_map_cruise, effective_map_limit_ms,
   map_slew_a_ms2, read_map_speed_params, should_write_preap_pedal, slew_map_speed_ms,
+)
+from openpilot.selfdrive.controls.lib.curve_max_hold import CurveMaxHold
+from openpilot.selfdrive.controls.lib.follow_distance import published_cruise_ms
+from openpilot.selfdrive.controls.lib.hypermile import (
+  FollowStalkGesture, button_event_closer, button_event_released,
+  map_target_offset_kph, persist_follow_distance, read_hypermile_params,
+  read_hypermile_step_down,
 )
 
 REPLAY = "REPLAY" in os.environ
@@ -73,7 +77,11 @@ class Car:
 
   def __init__(self, CI=None, RI=None) -> None:
     self.can_sock = messaging.sub_sock('can', timeout=20)
-    self.sm = messaging.SubMaster(['pandaStates', 'carControl', 'onroadEvents', 'liveMapDataNAP', 'radarState'])
+    # Curve MAX reads vehicle-model curvature off carControl (already
+    # polled here). Do not subscribe to controlsState: that 100 Hz socket
+    # pinned card/controlsd/selfdrived and dropped controlsd below 100 Hz.
+    self.sm = messaging.SubMaster(['pandaStates', 'carControl', 'onroadEvents', 'liveMapDataNAP', 'radarState',
+                                   'livePose'])
     self.pm = messaging.PubMaster(['sendcan', 'carState', 'carParams', 'carOutput', 'liveTracks'])
 
     self.can_rcv_cum_timeout_counter = 0
@@ -159,13 +167,12 @@ class Car:
 
     self.v_cruise_helper = VCruiseHelper(self.CP)
     self._map_hold = MapCruiseHold()
+    self._curve_max = CurveMaxHold()
     self._map_slew_ms: float | None = None
     self._last_pedal_kph: float | None = None
     self._follow_stalk_mono: float = 0.0
     self._follow_gesture = FollowStalkGesture()
-    self._map_speed_mode, self._map_speed_offset_kph, self._map_speed_lookahead, self._map_speed_accel = (
-      read_map_speed_params(self.params)
-    )
+    self._refresh_map_speed_params()
 
     self.is_metric = self.params.get_bool("IsMetric")
     self.experimental_mode = self.params.get_bool("ExperimentalMode")
@@ -176,12 +183,15 @@ class Car:
     self._can_packets: list[CanData] = []
     self.radar_donor_vin = None
     tesla_preap = any(cfg.safetyModel == car.CarParams.SafetyModel.teslaPreap for cfg in self.CP.safetyConfigs)
+    self._tesla_preap = tesla_preap
     if tesla_preap:
       from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import install_blinker_lat_pause
       from opendbc.car.tesla.preap.nap_conf import nap_conf
       from opendbc.car.tesla.preap.radar_donor_vin import RadarDonorVinCommissioner
+      from openpilot.selfdrive.controls.lib.lead_approach import install_preap_plant_regen_guard
 
       install_blinker_lat_pause()
+      install_preap_plant_regen_guard()
 
       def store_donor_vin(vin: str) -> None:
         nap_conf.radar_donor_vin = vin
@@ -261,14 +271,40 @@ class Car:
         map_kph = None
         map_valid = bool(self.sm.valid.get('liveMapDataNAP', False) and self.sm['liveMapDataNAP'].speedLimitValid)
         md = self.sm['liveMapDataNAP'] if map_valid else None
+        raw_posted_kph = None
         if md is not None and md.speedLimit > 0:
-          posted_kph = float(md.speedLimit) * CV.MS_TO_KPH + self._map_speed_offset_kph
+          raw_posted_kph = float(md.speedLimit) * CV.MS_TO_KPH
+        # Offset from raw OSM posted (mph). Hypermile eco / Step Down apply
+        # only with a known map posted — never invent a drop when maps are
+        # off, unmatched, or speedLimit unknown (same as sticky MAX).
+        maps_posted = raw_posted_kph is not None
+        map_offset_kph = self._live_map_offset_kph(raw_posted_kph, maps_posted=maps_posted)
+        if raw_posted_kph is not None:
+          posted_kph = raw_posted_kph + map_offset_kph
+        # Snapshot pre-curve MAX before decide so OSM flicker cannot wipe sticky.
+        last_hud_kph = float(self.v_cruise_helper.v_cruise_kph)
+        steer_deg = float(getattr(CS, 'steeringAngleDeg', 0.0) or 0.0)
+        curve_kappa, curve_yaw = self._curve_cornering()
+        policy_posted_kph, _ = self._curve_max.begin_cycle(
+          self._map_hold,
+          last_hud_kph=last_hud_kph,
+          posted_kph=posted_kph,
+          v_ego_ms=float(CS.vEgo),
+          angle_steers_deg=steer_deg,
+          steer_ratio=float(getattr(self.CP, 'steerRatio', 0.0) or 0.0),
+          wheelbase=float(getattr(self.CP, 'wheelbase', 0.0) or 0.0),
+          engaged=session_engaged,
+          take_speed_now=take_speed_now,
+          dt=DT_CTRL,
+          curvature=curve_kappa,
+          yaw_rate=curve_yaw,
+        )
         dec = decide_map_cruise(
           self._map_hold,
           engaged=session_engaged,
           mode=self._map_speed_mode,
           raw_kph=raw_kph,
-          posted_kph=posted_kph,
+          posted_kph=policy_posted_kph,
           engage_rising=engage_rising,
           now=time.monotonic(),
           stalk_pressed=stalk_pressed,
@@ -291,21 +327,23 @@ class Car:
             self._map_speed_accel,
             sticky=False,
           )
-          if lim is not None and lim > 0:
-            if self._map_slew_ms is None:
-              prev_kph = float(self.v_cruise_helper.v_cruise_kph)
-              prev_ms = prev_kph * CV.KPH_TO_MS
-              if 0.0 < prev_kph < V_CRUISE_UNSET and prev_ms > lim + 0.3:
-                self._map_slew_ms = prev_ms
-              else:
-                self._map_slew_ms = lim
-            a = map_slew_a_ms2(
-              self._map_slew_ms, lim, self._map_speed_lookahead, self._map_speed_accel,
-            )
-            self._map_slew_ms = slew_map_speed_ms(self._map_slew_ms, lim, DT_CTRL, a)
-            map_kph = self._map_slew_ms * CV.MS_TO_KPH
-          else:
-            self._map_slew_ms = None
+        else:
+          lim = None
+        if map_valid and md is not None and lim is not None and lim > 0:
+          if self._map_slew_ms is None:
+            prev_kph = float(self.v_cruise_helper.v_cruise_kph)
+            prev_ms = prev_kph * CV.KPH_TO_MS
+            if 0.0 < prev_kph < V_CRUISE_UNSET and prev_ms > lim + 0.3:
+              self._map_slew_ms = prev_ms
+            else:
+              self._map_slew_ms = lim
+          a = map_slew_a_ms2(
+            self._map_slew_ms, lim, self._map_speed_lookahead, self._map_speed_accel,
+          )
+          self._map_slew_ms = slew_map_speed_ms(self._map_slew_ms, lim, DT_CTRL, a)
+          map_kph = self._map_slew_ms * CV.MS_TO_KPH
+        elif map_valid and md is not None:
+          self._map_slew_ms = None
         elif not map_valid:
           self._map_slew_ms = None
         # seed_kph is a one-shot write (engage, posted raise, stalk step).
@@ -319,18 +357,42 @@ class Car:
             dec.driver_kph,
             map_kph,
             mode=self._map_speed_mode,
-            offset_kph=self._map_speed_offset_kph,
+            offset_kph=map_offset_kph,
             engaged=session_engaged,
             op_long_software_cruise=True,
             driver_override=dec.follow_override,
           )
+        # Temporary curve cap may lower HUD MAX. Restore seed puts pre-curve
+        # MAX back after the bend. Do not let that cap rebase sticky / held.
+        curve_out = self._curve_max.finish(
+          hud_kph=preap_v_cruise_kph,
+          hold=self._map_hold,
+          posted_kph=posted_kph,
+          v_ego_ms=float(CS.vEgo),
+          angle_steers_deg=steer_deg,
+          steer_ratio=float(getattr(self.CP, 'steerRatio', 0.0) or 0.0),
+          wheelbase=float(getattr(self.CP, 'wheelbase', 0.0) or 0.0),
+          engaged=session_engaged,
+          stalk_pressed=stalk_pressed,
+          take_speed_now=take_speed_now,
+          dt=DT_CTRL,
+          curvature=curve_kappa,
+          yaw_rate=curve_yaw,
+          restore_a_ms2=map_accel_a_ms2(self._map_speed_lookahead, self._map_speed_accel),
+        )
+        preap_v_cruise_kph = float(curve_out.hud_kph)
+        restore_seed_kph = curve_out.restore_seed_kph
+        seed_kph = dec.seed_kph if restore_seed_kph is None else float(restore_seed_kph)
+        if restore_seed_kph is not None:
+          self._map_slew_ms = float(restore_seed_kph) * CV.KPH_TO_MS
         # Write engage/posted/stalk seed, or when HUD MAX rose. Never write
         # the same sticky MAX every frame. Pause still writes a rebase /
         # resume seed onto pedal_speed so one SET keeps the held MAX.
+        # Curve restore is a one-shot seed so MAX returns to the pre-bend set.
         write_max = long_active or soft_long or resume_held or take_speed_now or (
-          session_engaged and dec.seed_kph is not None
+          session_engaged and seed_kph is not None
         )
-        if write_max and should_write_preap_pedal(dec.seed_kph, preap_v_cruise_kph, self._last_pedal_kph):
+        if write_max and should_write_preap_pedal(seed_kph, preap_v_cruise_kph, self._last_pedal_kph):
           self._write_preap_pedal_speed(CS, preap_v_cruise_kph)
           self._last_pedal_kph = float(preap_v_cruise_kph)
         elif not session_enabled:
@@ -350,6 +412,24 @@ class Car:
     CS.vCruiseCluster = float(self.v_cruise_helper.v_cruise_cluster_kph)
 
     return CS, RD
+
+  def _curve_cornering(self) -> tuple[float | None, float | None]:
+    """Vehicle-model curvature, else livePose yaw rate. None if not yet valid.
+
+    controlsd publishes the learned-ratio / angle-offset curvature on
+    carControl.currentCurvature (the same value as controlsState.curvature).
+    card already receives carControl, so this is a field read, not another
+    100 Hz poll. livePose stays the low-rate yaw fallback only.
+    """
+    curvature = None
+    yaw_rate = None
+    if self.sm.valid.get('carControl', False):
+      curvature = float(self.sm['carControl'].currentCurvature)
+    if self.sm.valid.get('livePose', False):
+      av = self.sm['livePose'].angularVelocityDevice
+      if bool(getattr(av, 'valid', False)):
+        yaw_rate = float(av.z)
+    return curvature, yaw_rate
 
   def _preap_engagement(self):
     inner = getattr(self.CI, 'CS', None)
@@ -410,13 +490,18 @@ class Car:
     return None
 
   def _maybe_follow_stalk(self, CS, raw_kph: float) -> tuple[float, bool]:
-    """Route Pre-AP stalk tip to stock Follow Distance 1–7 when a lead is present.
+    """Route Pre-AP stalk tip to City or Highway Follow Distance with a lead.
 
-    A first-detent tip undoes that frame's 1 mph MAX and writes
-    NAPFollowDistance only after the lever returns to IDLE without a
-    2nd detent. A full press (2nd detent / 5 mph) keeps MAX +5/−5 and
-    does not remap Follow, even if the lever passed through first
-    detent. No lead: leave stalk as MAX adjust. During a long pause,
+    Same whether Hypermile is On or Off. A first-detent tip undoes that
+    frame's 1 mph MAX and, after the lever returns to IDLE without a
+    2nd detent, steps the matching 1–7: Highway when MAX is 50 mph or
+    higher (including while ego is still coming up to that set speed),
+    City when MAX is under 50 even if ego is already faster. Traveled
+    speed picks the band only when MAX is unset. HUD NAPFollowDistance
+    tracks the band just stepped. A full press (2nd detent / 5 mph)
+    keeps MAX +5/−5 and does not remap Follow, even if the lever passed
+    through first detent.
+    No lead: leave stalk as MAX adjust. During a long pause,
     cruiseState.speed is ego — detent still distinguishes tip vs hold;
     buttonEvents alone do not.
     """
@@ -440,14 +525,10 @@ class Car:
       prev_raw_kph=prev_raw if soft_long else None,
     )
     routed = commit or self._follow_gesture.is_pending or undo is not None
-    if commit and closer is not None and (time.monotonic() - self._follow_stalk_mono) >= STALK_COOLDOWN_S:
-      v_cruise_ms = None
-      try:
-        v_kph = float(getattr(CS, "vCruise", V_CRUISE_UNSET))
-        if v_kph != V_CRUISE_UNSET:
-          v_cruise_ms = v_kph * CV.KPH_TO_MS
-      except (TypeError, ValueError):
-        v_cruise_ms = None
+    if commit and closer is not None and (time.monotonic() - self._follow_stalk_mono) >= 0.25:
+      # CarState.vCruise is still 0 here — card publishes it at the end of
+      # the frame. Read the HUD MAX already on the helper.
+      v_cruise_ms = published_cruise_ms(self.v_cruise_helper.v_cruise_kph, V_CRUISE_UNSET)
       persist_follow_distance(
         self.params, bool(closer),
         v_ego=getattr(CS, "vEgo", None),
@@ -579,13 +660,32 @@ class Car:
     self.initialized_prev = initialized
     self.CS_prev = CS
 
+  def _refresh_map_speed_params(self):
+    mode, offset, lookahead, accel = read_map_speed_params(self.params)
+    hm_on = read_hypermile_params(self.params)
+    self._map_speed_mode = mode
+    # User / settings offset only. Hypermile eco is computed live from posted.
+    self._map_speed_user_offset_kph = offset
+    self._map_hypermile_on = hm_on
+    self._map_step_down_on = read_hypermile_step_down(self.params)
+    self._map_speed_lookahead = lookahead
+    self._map_speed_accel = accel
+
+  def _live_map_offset_kph(self, raw_posted_kph: float | None,
+                           maps_posted: bool | None = None) -> float:
+    return map_target_offset_kph(
+      self._map_speed_user_offset_kph,
+      hypermile_on=self._map_hypermile_on,
+      step_down_on=self._map_step_down_on,
+      posted_kph=raw_posted_kph,
+      maps_posted=maps_posted,
+    )
+
   def params_thread(self, evt):
     while not evt.is_set():
       self.is_metric = self.params.get_bool("IsMetric")
       self.experimental_mode = self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl
-      self._map_speed_mode, self._map_speed_offset_kph, self._map_speed_lookahead, self._map_speed_accel = (
-        read_map_speed_params(self.params)
-      )
+      self._refresh_map_speed_params()
       time.sleep(0.1)
 
   def card_thread(self):
