@@ -146,6 +146,7 @@ still closing keeps full firmness.
 """
 from __future__ import annotations
 
+import math
 from collections import deque
 
 from openpilot.selfdrive.mapd.constants import LOOKAHEAD_NORMAL, TRACK_DEADBAND_MS, map_accel_a_ms2
@@ -215,10 +216,37 @@ LEAD_RESIDUAL_WINDOW_RISE_MS = 0.25
 # The planned approach is sized for LEAD_APPROACH_A_MS2 (0.55). A gap
 # at that slack stays mild. Deepen only once slack is clearly inside it.
 LEAD_KIN_APPROACH_CAP_MS2 = 0.60
+# While slack is still above the 3 m floor, the late bite stops at −0.45
+# so a hot approach does not land on the regen rail at Follow Distance.
+# Inside 3 m the −0.60 cap remains.
+LEAD_KIN_APPROACH_OPEN_CAP_MS2 = 0.45
 LEAD_KIN_APPROACH_BIAS_MS2 = 0.05
 LEAD_KIN_APPROACH_SLACK_FLOOR_M = 3.0
 LEAD_KIN_APPROACH_PAST_MILD_MS2 = 0.15
 LEAD_KIN_APPROACH_DESIGN_MARGIN_M = 0.5
+# Closing-speed profile (Sep 24 hot approaches). A constant −0.18 would
+# be at v_prof at this slack. Radar-locked, non-firm leads that are
+# closing faster than that deepen before the kinematic floor. #222
+# (firm aLead, residual / rising close, confirmed rapid, FCW,
+# near-bumper) does not take this path.
+LEAD_CLOSE_PROFILE_A_MS2 = 0.18
+LEAD_CLOSE_PROFILE_BIAS_M = 3.0
+LEAD_CLOSE_PROFILE_MIN_V_MS = 0.8
+LEAD_CLOSE_PROFILE_MAX_SLACK_M = 150.0
+LEAD_CLOSE_PROFILE_EXCESS_MS = 0.2
+LEAD_CLOSE_PROFILE_EXCESS_GAIN = 0.35
+LEAD_CLOSE_PROFILE_CLAMP_MS2 = 0.28
+# Planner-frame rates at DT_MDL = 0.05 s: 0.025 onset, 0.0125 release.
+LEAD_CLOSE_PROFILE_SLEW_MS3 = 0.50
+LEAD_CLOSE_PROFILE_RELEASE_MS3 = 0.25
+# Plant under-delivers small regen. Deepen only after a 2 s mean aEgo
+# has stayed > 0.10 short of the ease for 1.5 s, so a 17-frame test
+# cannot trip it. Expected actual decel stays ≥ −0.30.
+LEAD_PLANT_WINDOW_S = 2.0
+LEAD_PLANT_SHORTFALL_HOLD_S = 1.5
+LEAD_PLANT_SHORTFALL_MS2 = 0.10
+LEAD_PLANT_TRIM_MS2 = 0.12
+LEAD_PLANT_ACTUAL_CAP_MS2 = 0.30
 # Firm lead (aLead < −0.35), closing ≥ 1.5, slack still 20–50 m: start
 # the kinematic brake now instead of sitting on mild until the gap is
 # short. Cap ~−1.0. Inside 20 m, confirmed rapid, and near-bumper stay
@@ -1698,7 +1726,8 @@ def lead_kinematic_approach_a(v_rel, slack, a_lead=None):
   LEAD_APPROACH_A_MS2: a gap at that slack stays mild, even though
   0.22 cannot stop there. Deepen only once slack is clearly inside
   that distance and the required decel is past mild by a clear
-  margin. Capped at −0.6 so this never becomes a regen rail. A firm
+  margin. Capped at −0.45 while slack is still above 3 m, and at −0.6
+  once inside that, so this never becomes a regen rail. A firm
   braking lead is #222, not this floor.
   """
   if lead_firm_alead(a_lead):
@@ -1715,7 +1744,165 @@ def lead_kinematic_approach_a(v_rel, slack, a_lead=None):
   pure = -(v * v) / (2.0 * s)
   if pure >= -LEAD_APPROACH_MILD_A_MS2 - LEAD_KIN_APPROACH_PAST_MILD_MS2:
     return None
-  return max(pure - LEAD_KIN_APPROACH_BIAS_MS2, -LEAD_KIN_APPROACH_CAP_MS2)
+  cap = LEAD_KIN_APPROACH_CAP_MS2
+  if float(slack) > LEAD_KIN_APPROACH_SLACK_FLOOR_M:
+    cap = LEAD_KIN_APPROACH_OPEN_CAP_MS2
+  return max(pure - LEAD_KIN_APPROACH_BIAS_MS2, -cap)
+
+
+def lead_closing_profile_v_ms(slack) -> float:
+  """Closing speed a constant −0.18 would have `LEAD_CLOSE_PROFILE_BIAS_M` short of this slack."""
+  remain = max(float(slack) - LEAD_CLOSE_PROFILE_BIAS_M, 0.0)
+  return math.sqrt(2.0 * LEAD_CLOSE_PROFILE_A_MS2 * remain)
+
+
+def lead_closing_profile_eligible(v_rel, slack, *, a_lead=None, radar=False,
+                                  allow_rapid=False, fcw=False, crash_cnt=0,
+                                  d_rel=None, should_stop=False,
+                                  prev_v_rel=None, a_ego=None, dt=None,
+                                  opening_release=False, depart_release=False) -> bool:
+  """Radar-locked comfort close. Firm / residual / rapid / FCW stay off."""
+  if not radar:
+    return False
+  if fcw or int(crash_cnt) > 0 or should_stop:
+    return False
+  if allow_rapid or opening_release or depart_release:
+    return False
+  if lead_firm_alead(a_lead):
+    return False
+  if d_rel is not None and float(d_rel) <= LEAD_MPC_SOFT_NEAR_M:
+    return False
+  if lead_rising_or_residual_brake(v_rel, prev_v_rel, a_ego, dt):
+    return False
+  if v_rel is None or slack is None:
+    return False
+  v = float(v_rel)
+  s = float(slack)
+  if v < LEAD_CLOSE_PROFILE_MIN_V_MS:
+    return False
+  if s <= 0.0 or s > LEAD_CLOSE_PROFILE_MAX_SLACK_M:
+    return False
+  return True
+
+
+def lead_closing_profile_ease_a(v_rel, slack, *, a_lead=None, radar=False,
+                                allow_rapid=False, fcw=False, crash_cnt=0,
+                                d_rel=None, should_stop=False,
+                                prev_v_rel=None, a_ego=None, dt=None,
+                                opening_release=False, depart_release=False):
+  """Unslewed profile decel, or None when the kinematic floor should own it.
+
+  Outside the 0.55 design distance the result is clamped to [−0.28, 0].
+  Inside that distance this returns None so `lead_kinematic_approach_a`
+  keeps the late bite.
+  """
+  if not lead_closing_profile_eligible(
+    v_rel, slack, a_lead=a_lead, radar=radar, allow_rapid=allow_rapid,
+    fcw=fcw, crash_cnt=crash_cnt, d_rel=d_rel, should_stop=should_stop,
+    prev_v_rel=prev_v_rel, a_ego=a_ego, dt=dt,
+    opening_release=opening_release, depart_release=depart_release,
+  ):
+    return None
+  v = float(v_rel)
+  s = float(slack)
+  excess = v - lead_closing_profile_v_ms(s)
+  if excess <= LEAD_CLOSE_PROFILE_EXCESS_MS:
+    return None
+  if LEAD_APPROACH_A_MS2 <= 0.0:
+    return None
+  design = (v * v) / (2.0 * LEAD_APPROACH_A_MS2)
+  if s < design - LEAD_KIN_APPROACH_DESIGN_MARGIN_M:
+    return None
+  a = -LEAD_CLOSE_PROFILE_A_MS2 - LEAD_CLOSE_PROFILE_EXCESS_GAIN * (
+    excess - LEAD_CLOSE_PROFILE_EXCESS_MS
+  )
+  return max(-LEAD_CLOSE_PROFILE_CLAMP_MS2, min(0.0, a))
+
+
+def lead_closing_profile_blocks_positive(v_rel, slack, **kwargs) -> bool:
+  """True when closing is already faster than the −0.18 profile.
+
+  The planner must not command +a in that case. The 0.2 m/s deadband
+  still gates the deepen; any positive excess blocks +a.
+  """
+  if not lead_closing_profile_eligible(v_rel, slack, **kwargs):
+    return False
+  return float(v_rel) - lead_closing_profile_v_ms(slack) > 0.0
+
+
+class ClosingSpeedEase:
+  """Slew the closing-speed profile and trim for a short plant.
+
+  Onset 0.5 m/s³, release 0.25 m/s³. The plant trim waits until a 2 s
+  mean of aEgo has been more than 0.10 above the ease for 1.5 s, then
+  deepens by at most 0.12 without aiming the actual decel past −0.30.
+  Resets when the lead id changes.
+  """
+
+  def __init__(self) -> None:
+    self.prev: float | None = None
+    self.lead_id = None
+    self.short_s = 0.0
+    self._ego: deque[tuple[float, float]] = deque()
+
+  def reset(self) -> None:
+    self.prev = None
+    self.lead_id = None
+    self.short_s = 0.0
+    self._ego.clear()
+
+  def update(self, target, a_ego, dt, lead_id, slack) -> float | None:
+    frame_dt = 0.05 if dt is None or float(dt) <= 1e-6 else float(dt)
+    if lead_id != self.lead_id:
+      self.reset()
+      self.lead_id = lead_id
+    onset = LEAD_CLOSE_PROFILE_SLEW_MS3 * frame_dt
+    release = LEAD_CLOSE_PROFILE_RELEASE_MS3 * frame_dt
+    trim = 0.0
+    if target is not None and a_ego is not None:
+      self._ego.append((frame_dt, float(a_ego)))
+      span = sum(sample_dt for sample_dt, _sample_a in self._ego)
+      while span > LEAD_PLANT_WINDOW_S + 1e-9 and len(self._ego) > 1:
+        drop_dt, _sample_a = self._ego.popleft()
+        span -= drop_dt
+      if span + 1e-9 >= LEAD_PLANT_WINDOW_S:
+        mean = sum(sample_dt * sample_a for sample_dt, sample_a in self._ego) / span
+        short = mean - float(target)
+        if short > LEAD_PLANT_SHORTFALL_MS2:
+          self.short_s += frame_dt
+        else:
+          self.short_s = 0.0
+        if self.short_s >= LEAD_PLANT_SHORTFALL_HOLD_S:
+          room = max(0.0, mean + LEAD_PLANT_ACTUAL_CAP_MS2)
+          trim = min(LEAD_PLANT_TRIM_MS2, room, max(0.0, short))
+    else:
+      self._ego.clear()
+      self.short_s = 0.0
+
+    if target is None:
+      if self.prev is None or self.prev >= -1e-6:
+        self.prev = None
+        return None
+      nxt = self.prev + release
+      if nxt >= -1e-6:
+        self.prev = None
+        return None
+      self.prev = nxt
+      return nxt
+
+    desired = float(target) - trim
+    if slack is not None and float(slack) > LEAD_KIN_APPROACH_SLACK_FLOOR_M:
+      desired = max(desired, -LEAD_KIN_APPROACH_OPEN_CAP_MS2)
+    desired = min(0.0, desired)
+    prev = 0.0 if self.prev is None else float(self.prev)
+    if desired < prev:
+      nxt = max(desired, prev - onset)
+    elif desired > prev:
+      nxt = min(desired, prev + release)
+    else:
+      nxt = desired
+    self.prev = min(0.0, nxt)
+    return self.prev
 
 
 def lead_firm_large_slack_a(v_rel, slack, a_lead):
@@ -1955,7 +2142,9 @@ def soft_limit_mpc_a_target(output_a, v_ego, v_lead, d_rel, fcw=False, crash_cnt
   command *before* the overlay so a confirmed rapid 0.55 path is not
   also floored.
 
-  Comfort path stays MILD when matched or slow-close. Skip the floor
+  Comfort path stays MILD when matched or slow-close. A radar-locked
+  closing-speed profile (ClosingSpeedEase) may deepen that after this
+  returns; it does not run on firm / residual / rapid / FCW. Skip the floor
   when an already-owned / path-synced lead's residual close (beyond
   ego's own a) or measured aLead shows brake. Do not wait for rapid
   ≥ 6 (07:55 class: held lead, closing 1.8→4.4, aLead ~−1, dRel

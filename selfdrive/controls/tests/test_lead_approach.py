@@ -114,6 +114,12 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
   lead_weak_alead_line,
   lead_kinematic_approach_a,
   lead_firm_large_slack_a,
+  lead_closing_profile_ease_a,
+  lead_closing_profile_blocks_positive,
+  ClosingSpeedEase,
+  LEAD_KIN_APPROACH_OPEN_CAP_MS2,
+  LEAD_CLOSE_PROFILE_SLEW_MS3,
+  LEAD_PLANT_SHORTFALL_HOLD_S,
   lead_path_offset_m,
   LeadResidualWindow,
   lead_soft_limit_skip,
@@ -2945,3 +2951,78 @@ def test_post_curve_catchup_trickles():
   assert open_road > LEAD_MID_GAP_REMATCH_A_MS2
   # Closing / #222 −a is not this ceiling.
   assert lead_close_accel_ms2(5, v_rel=2.0, slack=8.0, post_curve=True) == pytest.approx(0.0)
+
+
+def test_card_does_not_subscribe_to_controlsstate_for_curve():
+  """Curve MAX curvature comes from carControl, not a 100 Hz controlsState poll."""
+  from pathlib import Path
+  card = (Path(__file__).resolve().parents[3] / "selfdrive/car/card.py").read_text()
+  sm = card.split("messaging.SubMaster([", 1)[1].split("])", 1)[0]
+  assert "controlsState" not in sm
+  assert "currentCurvature" in card
+
+
+def test_closing_profile_eases_hot_approach_and_spares_matched_and_firm():
+  """19:03:35 — 4.1 m/s from 65 m, plant stuck at −0.08.
+
+  The command reaches ≤ −0.26 before slack 30 m and never goes below
+  −0.45 before slack 3 m. A matched lead is not this ease. A firm lead
+  at 20–50 m keeps the early kinematic brake.
+  """
+  v_rel = 4.1
+  slack = 65.0
+  dt = 0.05
+  ease = ClosingSpeedEase()
+  saw = False
+  min_before_3 = 0.0
+  steps = 0
+  while slack > 3.0 and steps < 5000:
+    target = lead_closing_profile_ease_a(
+      v_rel, slack, a_lead=0.0, radar=True,
+    )
+    cmd = ease.update(target, -0.08, dt, ("radar", 7), slack)
+    kin = lead_kinematic_approach_a(v_rel, slack, a_lead=0.0)
+    published = 0.0 if cmd is None else cmd
+    if kin is not None:
+      published = min(published, kin)
+    assert published >= -LEAD_KIN_APPROACH_OPEN_CAP_MS2 - 1e-6
+    if slack > 30.0 and published <= -0.26:
+      saw = True
+    min_before_3 = min(min_before_3, published)
+    slack -= v_rel * dt
+    steps += 1
+  assert saw
+  assert min_before_3 >= -LEAD_KIN_APPROACH_OPEN_CAP_MS2 - 1e-6
+  # 17 planner frames cannot arm the 1.5 s plant trim.
+  short = ClosingSpeedEase()
+  for _ in range(17):
+    target = lead_closing_profile_ease_a(4.1, 40.0, a_lead=0.0, radar=True)
+    short.update(target, -0.08, dt, ("radar", 7), 40.0)
+  assert short.short_s < LEAD_PLANT_SHORTFALL_HOLD_S
+  assert LEAD_CLOSE_PROFILE_SLEW_MS3 * dt == pytest.approx(0.025)
+
+  assert lead_closing_profile_ease_a(0.1, 25.0, a_lead=0.0, radar=True) is None
+  assert lead_closing_profile_ease_a(0.0, 40.0, a_lead=0.0, radar=True) is None
+  assert not lead_closing_profile_blocks_positive(0.1, 25.0, a_lead=0.0, radar=True)
+  matched = ClosingSpeedEase()
+  for _ in range(80):
+    cmd = matched.update(
+      lead_closing_profile_ease_a(0.1, 20.0, a_lead=0.0, radar=True),
+      -0.08, dt, ("radar", 3), 20.0,
+    )
+    assert cmd is None or cmd > -0.05
+
+  firm = lead_firm_large_slack_a(4.0, 40.0, -0.8)
+  assert firm is not None
+  assert lead_closing_profile_ease_a(4.0, 40.0, a_lead=-0.8, radar=True) is None
+  assert soft_limit_mpc_a_target(
+    -0.22, 30.0, 26.0, 60.0, a_lead=-0.8, slack=40.0, owned=True,
+  ) == pytest.approx(firm)
+  # Lead change drops the trim.
+  ease.short_s = 2.0
+  ease.lead_id = ("radar", 7)
+  ease.update(
+    lead_closing_profile_ease_a(4.1, 40.0, a_lead=0.0, radar=True),
+    -0.08, dt, ("radar", 9), 40.0,
+  )
+  assert ease.short_s == 0.0

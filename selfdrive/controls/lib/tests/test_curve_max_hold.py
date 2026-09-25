@@ -310,6 +310,20 @@ def test_card_and_docs_wire_curve_max_restore():
   assert "MAX" in hm
 
 
+def test_card_curve_curvature_comes_from_car_control():
+  """#239's 100 Hz controlsState socket does not belong on card.
+
+  Vehicle-model curvature is already on carControl.currentCurvature.
+  livePose remains the yaw-rate fallback.
+  """
+  root = Path(__file__).resolve().parents[4]
+  card = (root / "selfdrive/car/card.py").read_text()
+  sm = card.split("messaging.SubMaster([", 1)[1].split("])", 1)[0]
+  assert "controlsState" not in sm
+  assert "currentCurvature" in card
+  assert "livePose" in sm
+
+
 def test_curvature_lat_accel_not_raw_steer():
   """Route 115: steer-model a_y read ~1.84× the real corner.
 
