@@ -374,8 +374,9 @@ def decide_map_cruise(
   Maps on: MAX rebases when the posted value changes (known a → known b)
   and when a missing limit becomes a posted limit (none → valid), including
   while long-paused. Both drop a stalk set the same way a 55 → 70 change
-  does. GPS / match drop keeps held MAX and does not wipe sticky. The
-  same posted value coming back after a dropout is not a change.
+  does. A posted limit becoming missing (valid → invalid) holds the
+  current MAX: no drop and no reseed to ego, and sticky is left alone.
+  The same posted value coming back after a dropout is not a change.
 
   Maps off / display: never auto-rebase.
 
@@ -437,6 +438,21 @@ def decide_map_cruise(
   manual = bool(long_active) and (stalk_step or bool(stalk_pressed))
   if long_active:
     hold.last_raw_kph = raw_kph
+  # valid → invalid. Keep the MAX we already have. cruiseState.speed
+  # falling back to ego (including a 1 or 5 mph gap) is not a stalk and
+  # must not reseed.
+  if (
+    not posted_ok
+    and hold.last_posted_kph is not None
+    and not take_now
+    and traveled_kph is not None
+    and abs(float(raw_kph) - float(traveled_kph)) <= MANUAL_SET_EPS_KPH
+  ):
+    manual = False
+    stalk_step = False
+    anchor = hold.held_max_kph if hold.held_max_kph is not None else hold.policy_kph
+    if anchor is not None:
+      hold.last_raw_kph = float(anchor)
 
   posted_changed = (
     posted_ok

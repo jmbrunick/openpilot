@@ -1634,3 +1634,55 @@ def test_none_to_valid_posted_matches_a_normal_limit_change():
   assert dec_drop.seed_kph is not None
   assert abs(dec_drop.seed_kph - posted) < 1e-6
   assert not dec_drop.sticky
+
+
+def test_valid_to_invalid_posted_leaves_max_unchanged():
+  """Posted → no limit holds MAX. No drop, and no reseed onto ego speed."""
+  posted = 70 * CV.MPH_TO_KPH
+  # 5 mph under MAX: the same delta as a stalk down, if raw falls back to ego.
+  ego_near = posted - 5 * CV.MPH_TO_KPH
+  ego_far = 42.4 * CV.MPH_TO_KPH
+
+  def engage():
+    hold = MapCruiseHold()
+    dec = decide_map_cruise(
+      hold, engaged=True, mode=MODE_FOLLOW, raw_kph=posted, posted_kph=posted,
+      engage_rising=True, now=0.0, take_speed_now=True, traveled_kph=ego_far,
+    )
+    assert dec.seed_kph is not None
+    assert abs(dec.seed_kph - posted) < 1e-6
+    assert abs(hold.held_max_kph - posted) < 1e-6
+    return hold
+
+  for ego in (ego_near, ego_far):
+    hold = engage()
+    dec = decide_map_cruise(
+      hold, engaged=True, mode=MODE_FOLLOW, raw_kph=ego, posted_kph=None,
+      engage_rising=False, now=1.0, traveled_kph=ego,
+    )
+    assert dec.seed_kph is None
+    assert not dec.sticky
+    assert hold.sticky_set_kph is None
+    assert abs(hold.held_max_kph - posted) < 1e-6
+    assert abs(hold.policy_kph - posted) < 1e-6
+    assert abs(dec.driver_kph - posted) < 1e-6
+    assert abs(_follow_hud(dec, None) - posted) < 1e-6
+    # Still invalid. Ego must not become MAX on a later frame either.
+    dec = decide_map_cruise(
+      hold, engaged=True, mode=MODE_FOLLOW, raw_kph=ego, posted_kph=None,
+      engage_rising=False, now=5.0, traveled_kph=ego,
+    )
+    assert dec.seed_kph is None
+    assert not dec.sticky
+    assert abs(hold.held_max_kph - posted) < 1e-6
+    assert abs(_follow_hud(dec, None) - posted) < 1e-6
+
+  # Set speed itself did not move; only the sign went away.
+  hold = engage()
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=posted, posted_kph=None,
+    engage_rising=False, now=1.0, traveled_kph=ego_far,
+  )
+  assert dec.seed_kph is None
+  assert abs(hold.held_max_kph - posted) < 1e-6
+  assert abs(_follow_hud(dec, None) - posted) < 1e-6
