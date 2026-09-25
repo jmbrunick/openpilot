@@ -421,11 +421,10 @@ def personality_changed_alert(CP: car.CarParams, CS: car.CarState, sm: messaging
   return NormalPermanentAlert(f"Driving Personality: {personality}", duration=1.5)
 
 
-def follow_distance_changed_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
+def hypermile_follow_changed_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
+  from openpilot.selfdrive.controls.lib.hypermile import follow_distance_hud_text, read_follow_distance
   from openpilot.common.params import Params
-  from openpilot.selfdrive.controls.lib.follow_stalk import follow_distance_hud_text, read_follow_distance
-  level = read_follow_distance(Params())
-  return NormalPermanentAlert(follow_distance_hud_text(level), duration=1.5)
+  return NormalPermanentAlert(follow_distance_hud_text(read_follow_distance(Params())), duration=1.5)
 
 
 def invalid_lkas_setting_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
@@ -1075,11 +1074,6 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
     ET.WARNING: personality_changed_alert,
   },
 
-  EventName.followDistanceChanged: {
-    ET.WARNING: follow_distance_changed_alert,
-    ET.PERMANENT: follow_distance_changed_alert,
-  },
-
   EventName.pedalCruiseEnabled: {
     ET.PERMANENT: Alert(
       "Pedal Cruise Engaged",
@@ -1149,6 +1143,16 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
     ET.PERMANENT: audio_feedback_alert,
   },
 }
+
+
+# Keep generated EventName.hypermileFollowChanged (@108). nap-release uses
+# followDistanceChanged at the same ordinal — accept either name.
+_hypermile_follow_changed = getattr(EventName, "hypermileFollowChanged", None) or getattr(EventName, "followDistanceChanged", None)
+if _hypermile_follow_changed is not None:
+  EVENTS[_hypermile_follow_changed] = {
+    ET.WARNING: hypermile_follow_changed_alert,
+    ET.PERMANENT: hypermile_follow_changed_alert,
+  }
 
 
 if HARDWARE.get_device_type() == 'mici':

@@ -43,18 +43,22 @@ MAP_SPEED_LOOKAHEAD_DESCRIPTION = (
 FOLLOW_DISTANCE_VALUES = list(range(1, 8))
 FOLLOW_DISTANCE_LABELS = [str(i) for i in FOLLOW_DISTANCE_VALUES]
 FOLLOW_DISTANCE_DEFAULT = 4
+NAP_HYPERMILE = "NAPHypermile"
+NAP_HYPERMILE_STEP_DOWN = "NAPHypermileStepDown"
+NAP_HYPERMILE_HILL_CLIMB = "NAPHypermileHillClimb"
 NAP_FOLLOW_DISTANCE_CITY = "NAPFollowDistanceCity"
 NAP_FOLLOW_DISTANCE_HWY = "NAPFollowDistanceHwy"
 FOLLOW_DISTANCE_CITY_DESCRIPTION = (
-  "City follow (<~50 mph). 1 closest, 7 farthest. Below ~50 behind a "
-  + "lead, gap opens gradually to this (ego a bit slower than the lead), "
-  + "then holds. Not a step at 50. A stalk tip behind a lead steps the "
-  + "active (city or highway) 1–7. Not Hypermile."
+  "City follow when MAX is under 50 mph. 1 closest, 7 farthest. Behind a "
+  + "lead, the gap opens gradually to this (ego a bit slower than the lead), "
+  + "then holds. Traveled speed is used only when MAX is unset. A stalk tip "
+  + "steps this when MAX is under 50. Not Hypermile."
 )
 FOLLOW_DISTANCE_HWY_DESCRIPTION = (
-  "Highway follow (>~50 mph). 1 closest, 7 farthest. Rising above ~50 "
-  + "behind a lead, gap creeps toward this. Hysteresis around 50. Same "
-  + "stalk tip as city. Not Hypermile."
+  "Highway follow when MAX is 50 mph or higher. 1 closest, 7 farthest. "
+  + "Behind a lead, the gap creeps toward this. Stays highway while slowing "
+  + "under a highway MAX. A stalk tip steps this when MAX is 50 or higher, "
+  + "including while still coming up to that MAX. Not Hypermile."
 )
 NAP_ONE_PEDAL_LONG = "NAPOnePedalLong"
 ONE_PEDAL_LONG_DESCRIPTION = (
@@ -69,12 +73,27 @@ ONE_PEDAL_LONG_DESCRIPTION = (
   + "stock gas override + A+B/A3 resume. Brake that pauses long RELEASEs "
   + "immediately to stock Tesla regen."
 )
+HYPERMILE_DESCRIPTION = (
+  "Default Off. Comfort-biased efficiency — early light ease, not max "
+  + "regen. On snaps Adaptive Accel, Cap/Follow, Early lookahead, and "
+  + "Accel 1; Off restores. Eco offset is posted-scaled so town 30 stays "
+  + "30. Follow Distance stays the stock slider. Lead braking stays on."
+)
 FOLLOW_DISTANCE_DESCRIPTION = (
-  "1 closest, 7 farthest. City and highway are separate sliders "
-  + "(<~50 / >~50, fluid blend, not a step). A slower car ahead eases "
+  "1 closest, 7 farthest. City when MAX is under 50 mph, highway at 50 "
+  + "or higher (traveled speed only if MAX is unset). Behind a lead the "
+  + "gap eases between them, not a step. A slower car ahead eases "
   + "off farther back (more distance, not a harder brake). Behind a lead, "
   + "a stalk tip steps the active 1–7; a full press still steps MAX. "
   + "No lead: both still adjust MAX."
+)
+HYPERMILE_STEP_DOWN_DESCRIPTION = (
+  "Default Off. Only while Hypermile is On. Larger posted-scale drop "
+  + "(0 under 50 mph, −15 at 80). Maps-only; does not invent a drop."
+)
+HYPERMILE_HILL_CLIMB_DESCRIPTION = (
+  "Default On. Only while Hypermile is On. IMU pitch holds grade on "
+  + "Accel 1 climbs. Never raises MAX. Lead / MPC brake still wins."
 )
 
 NAP_DRIVER_LAT_HANDOFF = "NAPDriverLatHandoff"

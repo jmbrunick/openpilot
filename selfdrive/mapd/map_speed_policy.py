@@ -153,15 +153,26 @@ def map_track_decel_ms2(v_ego_ms: float, v_cruise_ms: float, a_comfort: float) -
   return -float(a_comfort) * scale
 
 
+def map_climb_replaces_mpc(a_up, output_a_target, has_valid_lead: bool) -> bool:
+  """True when map climb may replace a non-negative MPC aTarget.
+
+  A valid radar lead owns follow. Replacing ~0 / slight+ MPC with Accel 1–10
+  toward MAX punches through that lead, then overshoots and will not rematch.
+  map_track_decel when above MAX is a separate min() and is not gated here.
+  """
+  return a_up is not None and float(output_a_target) >= 0.0 and not bool(has_valid_lead)
+
+
 def map_track_accel_ms2(v_ego_ms: float, v_cruise_ms: float, a_comfort: float,
                         accel_level=None) -> float | None:
   """Comfort accel (positive m/s²) when catching a higher Follow MAX, or None.
 
   MPC cruise_obstacle will not climb to a higher MAX (V_EGO_COST=0). The
-  planner commands this a when ego is below MAX and MPC is not braking.
-  Accel 1–10 sets the climb rate *and* the last-mph taper (Accel 1 baby-steps
-  ~5 mph out; Accel 7–10 stays brisk to the target). Lead gap-close uses
-  this same envelope. A slower lead (negative aTarget) still wins.
+  planner commands this a when ego is below MAX and MPC is not braking
+  *and* there is no valid radar lead. Accel 1–10 sets the climb rate *and*
+  the last-mph taper (Accel 1 baby-steps ~5 mph out; Accel 7–10 stays brisk
+  to the target). Lead gap-close uses this same envelope. A slower lead
+  (negative aTarget) still wins.
   """
   if a_comfort <= 0 or v_ego_ms <= 0 or v_cruise_ms <= 0:
     return None
@@ -295,6 +306,32 @@ def _sticky_decision(hold: MapCruiseHold, mode: int, posted_kph: float | None,
   return MapCruiseDecision(held, True, held if write_pedal else None, True)
 
 
+def _apply_posted_change(hold: MapCruiseHold, posted_kph: float, prev: float, *,
+                         take_now: bool, resume_held: bool) -> MapCruiseDecision | None:
+  """Rebase MAX onto a new posted limit and forget a stalk set.
+
+  Known a → known b and none → valid share this path, including how a
+  recent stalk / set-speed override is dropped. A raise seeds the pedal
+  immediately. A decrease does not cliff-seed. Returns None when
+  take-speed-now or one-SET resume still owns the pedal write.
+  """
+  hold.sticky_set_kph = None
+  hold.follow_override_until = 0.0
+  hold.last_posted_kph = posted_kph
+  hold.held_max_kph = float(posted_kph)
+  hold.last_raw_kph = float(posted_kph)
+  hold.policy_kph = float(posted_kph)
+  raised = float(posted_kph) > float(prev) + POSTED_LIMIT_EPS_KPH
+  if take_now or resume_held:
+    return None
+  return MapCruiseDecision(
+    float(posted_kph) if raised else float(prev),
+    False,
+    float(posted_kph) if raised else None,
+    False,
+  )
+
+
 def _traveled_kph(traveled_kph: float | None, raw_kph: float) -> float:
   """Current traveled speed. Never invent a posted value."""
   if traveled_kph is not None and 0.0 < float(traveled_kph) < V_CRUISE_UNSET:
@@ -334,10 +371,12 @@ def decide_map_cruise(
   lags `enableLongControl`). That delayed rising edge must not take-now
   and overwrite a held MAX with current traveled speed.
 
-  Maps on: MAX rebases only when the posted *value* itself changes (known
-  a → known b), including while long-paused. GPS / match drop → posted
-  unknown: keep held MAX, do not wipe sticky, do not treat unknown as a
-  new posted.
+  Maps on: MAX rebases when the posted value changes (known a → known b)
+  and when a missing limit becomes a posted limit (none → valid), including
+  while long-paused. Both drop a stalk set the same way a 55 → 70 change
+  does. A posted limit becoming missing (valid → invalid) holds the
+  current MAX: no drop and no reseed to ego, and sticky is left alone.
+  The same posted value coming back after a dropout is not a change.
 
   Maps off / display: never auto-rebase.
 
@@ -399,6 +438,21 @@ def decide_map_cruise(
   manual = bool(long_active) and (stalk_step or bool(stalk_pressed))
   if long_active:
     hold.last_raw_kph = raw_kph
+  # valid → invalid. Keep the MAX we already have. cruiseState.speed
+  # falling back to ego (including a 1 or 5 mph gap) is not a stalk and
+  # must not reseed.
+  if (
+    not posted_ok
+    and hold.last_posted_kph is not None
+    and not take_now
+    and traveled_kph is not None
+    and abs(float(raw_kph) - float(traveled_kph)) <= MANUAL_SET_EPS_KPH
+  ):
+    manual = False
+    stalk_step = False
+    anchor = hold.held_max_kph if hold.held_max_kph is not None else hold.policy_kph
+    if anchor is not None:
+      hold.last_raw_kph = float(anchor)
 
   posted_changed = (
     posted_ok
@@ -411,21 +465,12 @@ def decide_map_cruise(
     # seeds immediately. A decrease does not cliff-seed — Cap/Follow ease
     # via map_kph (kin+110 m) — unless this frame is one SET resume, which
     # must write the already-rebased held MAX onto pedal.
-    prev = float(hold.last_posted_kph)
-    hold.sticky_set_kph = None
-    hold.follow_override_until = 0.0
-    hold.last_posted_kph = posted_kph
-    hold.held_max_kph = float(posted_kph)
-    hold.last_raw_kph = float(posted_kph)
-    hold.policy_kph = float(posted_kph)
-    raised = float(posted_kph) > prev + POSTED_LIMIT_EPS_KPH
-    if not take_now and not resume_held:
-      return MapCruiseDecision(
-        float(posted_kph) if raised else prev,
-        False,
-        float(posted_kph) if raised else None,
-        False,
-      )
+    changed = _apply_posted_change(
+      hold, posted_kph, float(hold.last_posted_kph),
+      take_now=take_now, resume_held=resume_held,
+    )
+    if changed is not None:
+      return changed
 
   if take_now:
     hold.sticky_set_kph = None
@@ -434,9 +479,9 @@ def decide_map_cruise(
       seed = float(posted_kph)
       hold.last_posted_kph = posted_kph
     else:
-      # Unknown posted: never invent. Take current traveled speed and hold
-      # it so a later GPS lock cannot Follow-overwrite (unknown → known is
-      # not a posted-value change).
+      # Unknown posted: never invent a limit. Hold current traveled speed
+      # until a real posted value appears. That later none → valid step is
+      # a normal limit change, not a timed engage exception.
       seed = _traveled_kph(traveled_kph, raw_kph)
       hold.sticky_set_kph = seed
     hold.held_max_kph = seed
@@ -444,6 +489,19 @@ def decide_map_cruise(
     hold.policy_kph = seed
     return MapCruiseDecision(seed, hold.sticky_set_kph is not None, seed,
                              hold.sticky_set_kph is not None)
+
+  if posted_ok and hold.last_posted_kph is None:
+    # none → valid while long is already engaged. Same rebase as a posted
+    # change, at any time, including a stalk set made during the dropout.
+    # If MAX is already the returning limit, leave it: a same-value return
+    # must not write the pedal again.
+    prev = float(hold.held_max_kph if hold.held_max_kph is not None else raw_kph)
+    if not posted_limits_same(prev, posted_kph):
+      changed = _apply_posted_change(
+        hold, posted_kph, prev, take_now=False, resume_held=resume_held,
+      )
+      if changed is not None:
+        return changed
 
   if posted_ok:
     # GPS return: record posted without rebasing (not a value change).

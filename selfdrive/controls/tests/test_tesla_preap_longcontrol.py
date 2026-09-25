@@ -20,6 +20,8 @@ from openpilot.common.realtime import DT_CTRL
 from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_FOLLOW_ACT_REGEN_FLOOR_MS2,
   guard_follow_actuator_regen,
+  install_preap_plant_regen_guard,
+  plant_regen_effort_limits,
 )
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl, LongCtrlState
 
@@ -289,3 +291,42 @@ def test_preap_longcontrol_does_not_dump_regen_when_planner_near_zero():
   )
   assert dumped <= -1.00
   assert dumped == pytest.approx(-1.20, abs=0.05)
+
+
+def test_preap_coasting_command_cannot_reach_regen_rail():
+  """18:09:23 and 18:10:27.44: aTarget ≈ 0 must not act below about −0.25.
+
+  LongControl is feedforward, so the rail is VirtualDAS effort. A wound
+  inner integral on a coasting command stays at the slight-lift floor.
+  """
+  from opendbc.car.tesla.preap.virtual_das import VirtualDAS
+
+  for planner_a in (-0.039, 0.008, 0.0):
+    commanded = guard_follow_actuator_regen(-1.50, planner_a)
+    assert commanded >= -0.25
+    assert commanded == pytest.approx(LEAD_FOLLOW_ACT_REGEN_FLOOR_MS2)
+
+  original = VirtualDAS.update
+  try:
+    install_preap_plant_regen_guard()
+    vdas = VirtualDAS(dt=VDAS_DT_S)
+    vdas.reset(measured_accel=0.0, commanded_accel=0.0, pedal_di_init=4.0)
+    vdas.inner_pid.i = -5.0
+    vdas.update(
+      0.008, v_ego=30.0, prev_pedal_di=4.0, a_ego=0.4,
+      accel_effort_limits=plant_regen_effort_limits(0.008, None),
+    )
+    assert vdas.prev_accel_effort >= -0.25
+    # The installed seam applies that bound even if the caller does not.
+    vdas.inner_pid.i = -5.0
+    vdas.update(-0.039, v_ego=30.0, prev_pedal_di=vdas.prev_pedal_di, a_ego=0.2)
+    assert vdas.prev_accel_effort >= -0.25
+    # Firm planner brake still reaches the rail.
+    vdas.inner_pid.i = -5.0
+    pedal = vdas.prev_pedal_di
+    for _ in range(40):
+      pedal = vdas.update(-1.20, v_ego=30.0, prev_pedal_di=pedal, a_ego=0.0)
+      vdas.inner_pid.i = -5.0
+    assert vdas.prev_accel_effort <= -1.00
+  finally:
+    VirtualDAS.update = original

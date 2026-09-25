@@ -3,14 +3,21 @@ from openpilot.common.params import Params
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.list_view import toggle_item, multiple_button_item, button_item
 from openpilot.system.ui.widgets.scroller_tici import Scroller
+from openpilot.selfdrive.controls.lib.hypermile import apply_hypermile_toggle
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   ADAPTIVE_ACCEL_DESCRIPTION,
   DRIVER_LAT_HANDOFF_DESCRIPTION,
   FOLLOW_DISTANCE_CITY_DESCRIPTION,
   FOLLOW_DISTANCE_HWY_DESCRIPTION,
+  HYPERMILE_DESCRIPTION,
+  HYPERMILE_HILL_CLIMB_DESCRIPTION,
+  HYPERMILE_STEP_DOWN_DESCRIPTION,
   MAP_SPEED_ACCEL, MAP_SPEED_ACCEL_DEFAULT, MAP_SPEED_ACCEL_DESCRIPTION,
   MAP_SPEED_ACCEL_LABELS,
   NAP_DRIVER_LAT_HANDOFF,
+  NAP_HYPERMILE,
+  NAP_HYPERMILE_HILL_CLIMB,
+  NAP_HYPERMILE_STEP_DOWN,
   NAP_ONE_PEDAL_LONG,
   ONE_PEDAL_LONG_DESCRIPTION,
 )
@@ -18,7 +25,7 @@ from opendbc.car.tesla.preap.nap_params import NAPParamKeys
 
 
 class DrivingMannerismsLayout(Widget):
-  """Nested NAP page for accel feel, follow distance, and soft lateral handoff."""
+  """Nested NAP page for Hypermile, accel feel, follow distance, and soft-lat."""
 
   def __init__(self, on_back):
     super().__init__()
@@ -95,6 +102,40 @@ class DrivingMannerismsLayout(Widget):
     )
     self._all_items.append(self._one_pedal)
 
+    self._hypermile = toggle_item(
+      "Hypermile",
+      description=HYPERMILE_DESCRIPTION,
+      initial_state=self._params.get_bool(NAP_HYPERMILE),
+      callback=self._on_hypermile,
+    )
+    self._all_items.append(self._hypermile)
+
+    self._step_down = toggle_item(
+      "Step Down Speed",
+      description=HYPERMILE_STEP_DOWN_DESCRIPTION,
+      initial_state=self._params.get_bool(NAP_HYPERMILE_STEP_DOWN),
+      callback=self._on_step_down,
+    )
+    self._all_items.append(self._step_down)
+
+    self._hill_climb = toggle_item(
+      "Hill Climb",
+      description=HYPERMILE_HILL_CLIMB_DESCRIPTION,
+      initial_state=self._params.get_bool(NAP_HYPERMILE_HILL_CLIMB),
+      callback=self._on_hill_climb,
+    )
+    self._all_items.append(self._hill_climb)
+
+  def _on_hypermile(self, state):
+    apply_hypermile_toggle(self._params, bool(state))
+    self.refresh()
+
+  def _on_step_down(self, state):
+    self._params.put_bool(NAP_HYPERMILE_STEP_DOWN, state)
+
+  def _on_hill_climb(self, state):
+    self._params.put_bool(NAP_HYPERMILE_HILL_CLIMB, state)
+
   def _on_adaptive_accel(self, state):
     self._params.put_bool(NAPParamKeys.ADAPTIVE_ACCEL, state)
 
@@ -119,6 +160,12 @@ class DrivingMannerismsLayout(Widget):
     self._params.put_bool(NAP_ONE_PEDAL_LONG, state)
 
   def refresh(self):
+    hypermile_on = self._params.get_bool(NAP_HYPERMILE)
+    self._hypermile.action_item.set_state(hypermile_on)
+    self._step_down.action_item.set_state(self._params.get_bool(NAP_HYPERMILE_STEP_DOWN))
+    self._step_down.set_visible(hypermile_on)
+    self._hill_climb.action_item.set_state(self._params.get_bool(NAP_HYPERMILE_HILL_CLIMB))
+    self._hill_climb.set_visible(hypermile_on)
     self._adaptive_accel.action_item.set_state(self._params.get_bool(NAPParamKeys.ADAPTIVE_ACCEL))
     accel = int(self._params.get("NAPMapSpeedAccel", return_default=True) or MAP_SPEED_ACCEL_DEFAULT)
     self._accel_buttons.action_item.set_selected_button(self._accel_index(accel))
@@ -134,5 +181,4 @@ class DrivingMannerismsLayout(Widget):
     self.refresh()
 
   def _render(self, rect):
-    self.refresh()
     self._scroller.render(rect)

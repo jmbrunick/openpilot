@@ -526,27 +526,34 @@ class SelfdriveD:
         self.params.put('LongitudinalPersonality', self.personality)
         self.events.add(EventName.personalityChanged)
 
-    # Stock Follow Distance 1–7 HUD. Seed then announce; hold ~1.5 s so a
-    # one-frame poll is not lost to another alert. A tip at 1/7 still toasts
-    # via NAPFollowHudPending (value-only poll would miss a no-op write).
-    follow = None
+    # Stock Follow Distance 1–7 HUD, same affordance as personalityChanged.
+    # Read the param every frame (stalk writes it from card). First sample
+    # only seeds; every later 1–7 change fires the 1.5 s toast.
+    follow_dist = None
     try:
       raw = self.params.get("NAPFollowDistance", return_default=True)
       if raw is not None and raw != "":
-        follow = int(raw)
+        follow_dist = int(raw)
     except (TypeError, ValueError):
-      follow = None
+      follow_dist = None
+    if follow_dist is None or follow_dist <= 0:
+      try:
+        plan_d = int(self.sm["longitudinalPlan"].napFollowDistance)
+      except (TypeError, ValueError, KeyError):
+        plan_d = 0
+      if plan_d > 0:
+        follow_dist = plan_d
     try:
-      from openpilot.selfdrive.controls.lib.follow_stalk import poll_follow_distance_hud
-      self._follow_hud_dist, announce = poll_follow_distance_hud(self._follow_hud_dist, follow)
+      from openpilot.selfdrive.controls.lib.hypermile import poll_follow_distance_hud
+      self._follow_hud_dist, announce = poll_follow_distance_hud(self._follow_hud_dist, follow_dist)
     except Exception:
       announce = (
         self._follow_hud_dist is not None
-        and follow is not None
-        and int(follow) != int(self._follow_hud_dist)
+        and follow_dist is not None
+        and int(follow_dist) != int(self._follow_hud_dist)
       )
-      if follow is not None:
-        self._follow_hud_dist = int(follow)
+      if follow_dist is not None:
+        self._follow_hud_dist = int(follow_dist)
     try:
       if self.params.get_bool("NAPFollowHudPending"):
         announce = True
@@ -556,7 +563,7 @@ class SelfdriveD:
     if announce:
       self._follow_hud_until = time.monotonic() + 1.5
     if time.monotonic() < self._follow_hud_until:
-      follow_evt = getattr(EventName, "followDistanceChanged", None)
+      follow_evt = getattr(EventName, "hypermileFollowChanged", None) or getattr(EventName, "followDistanceChanged", None)
       if follow_evt is not None:
         self.events.add(follow_evt)
 

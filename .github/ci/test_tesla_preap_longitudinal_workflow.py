@@ -52,6 +52,7 @@ def test_focused_tests_and_mutations_are_pinned():
     "selfdrive/controls/tests/test_following_distance.py",
     "selfdrive/controls/tests/test_follow_distance.py",
     "selfdrive/controls/tests/test_lead_approach.py",
+    "selfdrive/mapd/tests/test_map_speed_policy.py",
     "selfdrive/controls/tests/test_radard.py",
     "selfdrive/controls/tests/test_radar_path_gate.py",
     "selfdrive/controls/tests/test_rain_radar_hold.py",

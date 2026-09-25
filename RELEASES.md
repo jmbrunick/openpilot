@@ -1,3 +1,15 @@
+NAP Hypermile (2026-09-12)
+========================
+* Hypermile On + Step Down Off no longer snaps Map Speed Offset to a flat **−5** (that dropped town posted **30 → 25**). Eco offset is live from the posted/OSM limit: **0** at/under 50 mph so 30 stays 30 and 50 stays 50; linear 0 → −8 from 50 to 80 (65 → 61); **−8** at 80 (→72) and capped −8 above (90 → 82). **Step Down On** uses the same 50→80 scale, just larger: **0** at/under 50 (town 30 stays 30), **−15** at 80 (→65), cap −15 above (90 → 75). Replaces eco, no stack, no flat −15 on town limits. **Maps-only:** eco / Step Down apply only with a known OSM/posted limit; maps off, no match, or unknown posted → no invented drop (same as sticky MAX). Off still restores the saved offset slider. Early lookahead / Accel 1 / stalk 1–5 / 50 mph follow split / curve hold / lead-close / soft-lat unchanged. Not a nap-release change.
+
+NAP Hypermile Hill Climb (2026-09-13)
+========================
+* Settings → NAP → Driving Mannerisms → **Hill Climb** (default **On**, hidden/inert unless Hypermile is On). IMU pitch (`orientationNED[1]`) raises Accel 1 climb authority on a real uphill so Hypermile does not sag under HUD MAX, and eases lightly on a flattening crest / downhill. **Maps-elevation lookahead is NOT included.** Never raises MAX. Lead / MPC hard brake still win. Soft-lat, blinker, sticky MAX, Step Down, lead-close, DM unchanged. Not a nap-release change.
+
+NAP curve MAX (2026-09-12)
+========================
+* Sharp curve: still slow for a comfortable corner (`limit_accel_in_turns` + a temporary lat-accel MAX cap). Snapshot HUD MAX / sticky at entry; after the bend (lat accel / steer straight-ish) restore that pre-curve set. Do not permanently bounce MAX down through a turn — Hypermile eco −5 (posted 60 → steady 55) must not replace a pre-curve MAX of 60. Step Down, lead-close, soft-lat, and blinker-keep-long unchanged.
+
 NAP follow-smooth mid-gap rematch (2026-09-22)
 ========================
 * Pre-AP comfort on a held radar lead: mid-gap Accel rematch no longer pulses while still slowly closing (~0.8–2.0 m/s, slack 12–50 m) unless a same-speed / opening catch-up is already latched (100 m start / too-close recovery still Accel through that band; latch also clears settle so a matched 0–25 m hold cannot freeze rematch while the gap is wrong). A *settled* follow that opens or hunts is not catch-up. Ceiling is a trickle (~0.10), not Accel 1–10. Slack > 50 still Accel. After acquire, small ±a chatter slews both ways so +0.25 ↔ −0.02 cannot flip gas↔regen — catch-up / too-close recovery skips that slew. When planner aTarget is ~0, VirtualDAS cannot dump firm regen (ef 10:18:42: plant −1.23 then rematch +0.40) — effort floor is MILD −0.22. Grade / pitch hold, rapid / near-bumper / FCW / #222 residual-close / planner ≤ −0.5 stay full −a/+a. Port of nap-dev #224. No panda flash.
