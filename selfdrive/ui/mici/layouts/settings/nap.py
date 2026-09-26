@@ -23,6 +23,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   RADAR_OFFSET_MIN,
   RESTORE_EPAS_INSTRUCTIONS,
   INSTALL_SPEED_SIGN_WEIGHTS_INSTRUCTIONS,
+  NAP_LONG_UNIFIED,
   NAP_SPEED_SIGN_LOG,
   WIPER_SPEED_LABELS,
   WIPER_SPEED_VALUES,
@@ -212,6 +213,10 @@ class NAPLayoutMici(NavScroller):
 
     # Force Offroad / simulate look / false alert ignore live in the nap triple-tap overlay.
 
+    # First row of the top-level NAP panel, above every other NAP row.
+    unified_lead = BigParamControl("unified lead follow", NAP_LONG_UNIFIED)
+    unified_lead.set_value("Off — one equation; blends if switched while following")
+
     # ── Longitudinal control ─────────────────────────
     pedal_enabled = BigParamControl("pedal interceptor", NAPParamKeys.PEDAL_ENABLED,
                                      toggle_callback=_reboot_on_toggle)
@@ -328,6 +333,7 @@ class NAPLayoutMici(NavScroller):
     restore_epas_btn.set_enabled(ui_state.is_offroad)
 
     self._scroller.add_widgets([
+      unified_lead,
       pedal_enabled,
       driving_mannerisms_btn,
       map_speed_btn,

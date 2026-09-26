@@ -1179,6 +1179,9 @@ struct LongitudinalPlan @0xe00b5b3eba12876c {
   allowBrake @39: Bool;
   napFollowDistance @40 :UInt8;
   tFollow @41 :Float32;
+  # Shadow of the continuous lead-follow controller. Logged every frame,
+  # including while NAPLongUnified is off.
+  unifiedATarget @42 :Float32;
 
 
   solverExecutionTime @35 :Float32;

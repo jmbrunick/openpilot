@@ -516,6 +516,7 @@ def test_process_replay_ignores_additive_follow_policy_telemetry():
 
   assert "longitudinalPlan.napFollowDistance" in ignored_fields
   assert "longitudinalPlan.tFollow" in ignored_fields
+  assert "longitudinalPlan.unifiedATarget" in ignored_fields
 
 
 def test_nap_follow_setting_map_and_physical_gaps_are_strictly_monotonic():

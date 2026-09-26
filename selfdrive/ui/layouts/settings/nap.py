@@ -31,8 +31,10 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   NAP_HYPERMILE,
   NAP_HYPERMILE_HILL_CLIMB,
   NAP_HYPERMILE_STEP_DOWN,
+  NAP_LONG_UNIFIED,
   NAP_ONE_PEDAL_LONG,
   NAP_SPEED_SIGN_LOG,
+  UNIFIED_LEAD_DESCRIPTION,
   RADAR_OFFSET_MAX, RADAR_OFFSET_MIN,
   REFRESH_MAPS_INSTRUCTIONS,
   RESTORE_EPAS_INSTRUCTIONS,
@@ -130,6 +132,13 @@ class NAPLayout(Widget):
     self._main_items = []
     self._radar_items = []
     self._toggle_map = {}  # param_key -> ListItem (for refresh)
+
+    # First row of the top-level NAP panel, above every section.
+    self._add_toggle(
+      NAP_LONG_UNIFIED,
+      "Unified Lead Follow",
+      UNIFIED_LEAD_DESCRIPTION,
+    )
 
     # ── Section 1: Longitudinal Control ──
     # Force Offroad / Simulate Look / False Alert Ignore live in the NAP triple-tap popup.
@@ -777,6 +786,7 @@ class NAPLayout(Widget):
     self._params.put_bool(NAP_HYPERMILE_STEP_DOWN, False)
     self._params.put_bool(NAP_HYPERMILE_HILL_CLIMB, True)
     self._params.put_bool(NAP_ONE_PEDAL_LONG, False)
+    self._params.put_bool(NAP_LONG_UNIFIED, False)
     self._params.remove("NAPHypermileSaved")
     self._params.put_bool(NAP_FORCE_OFFROAD, False)
     self._params.put_bool("NAPForceOffroadConfirmed", False)
