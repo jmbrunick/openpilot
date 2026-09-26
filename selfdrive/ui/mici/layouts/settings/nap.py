@@ -23,6 +23,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   RADAR_OFFSET_MIN,
   RESTORE_EPAS_INSTRUCTIONS,
   INSTALL_SPEED_SIGN_WEIGHTS_INSTRUCTIONS,
+  NAP_LONG_UNIFIED,
   NAP_SPEED_SIGN_LOG,
   WIPER_SPEED_LABELS,
   WIPER_SPEED_VALUES,
@@ -217,6 +218,9 @@ class NAPLayoutMici(NavScroller):
                                      toggle_callback=_reboot_on_toggle)
     pedal_enabled.set_enabled(ui_state.is_offroad)
 
+    unified_lead = BigParamControl("unified lead follow", NAP_LONG_UNIFIED)
+    unified_lead.set_value("Off — one equation; blends if switched while following")
+
     self._driving_mannerisms_page = DrivingMannerismsLayoutMici()
     driving_mannerisms_btn = BigButton("driving mannerisms", "open")
     driving_mannerisms_btn.set_click_callback(lambda: gui_app.push_widget(self._driving_mannerisms_page))
@@ -329,6 +333,7 @@ class NAPLayoutMici(NavScroller):
 
     self._scroller.add_widgets([
       pedal_enabled,
+      unified_lead,
       driving_mannerisms_btn,
       map_speed_btn,
       speed_sign_log,

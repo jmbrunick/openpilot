@@ -19,6 +19,11 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
 from openpilot.selfdrive.controls.lib.curve_max_hold import (
   CURVE_ENTER_LAT_MS2,
   CURVE_EXIT_LAT_MS2,
+  curve_speed_ms,
+)
+from openpilot.selfdrive.controls.lib.unified_lead import (
+  MODE_BLEND_S,
+  UnifiedLeadController,
 )
 from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_APPROACH_MILD_A_MS2,
@@ -205,6 +210,18 @@ class LongitudinalPlanner:
     self.prev_accel_clip = [ACCEL_MIN, ACCEL_MAX]
     self.output_a_target = 0.0
     self.output_should_stop = False
+    # Continuous lead follow. Default off; shadow is logged either way.
+    self.unified_a_target = 0.0
+    self._unified = UnifiedLeadController()
+    self._unified_enabled = False
+    self._unified_read_age = 0.0
+    self._unified_polled = False
+    self._mode_w = 0.0
+    self._unified_v_cap_ms = 0.0
+    self._unified_lead_id = None
+    self._plan_engaged = False
+    if self._is_preap:
+      self._poll_unified_enabled(force=True)
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
@@ -286,6 +303,7 @@ class LongitudinalPlanner:
     reset_state = long_control_off if self.CP.openpilotLongitudinalControl else not sm['selfdriveState'].enabled
     # PCM cruise speed may be updated a few cycles later, check if initialized
     reset_state = reset_state or not v_cruise_initialized
+    self._plan_engaged = not reset_state
 
     # No change cost when user is controlling the speed, or when standstill
     prev_accel_constraint = not (reset_state or sm['carState'].standstill)
@@ -330,6 +348,11 @@ class LongitudinalPlanner:
       self._lead_depart_age = 0.0
       self._lead_depart_release = False
       self._lead_depart_abs_y = None
+      self._unified.reset()
+      self._unified_lead_id = None
+
+    if self._is_preap:
+      self._poll_unified_enabled()
 
     # Prevent divergence, smooth in current v_ego
     self.v_desired_filter.x = max(0.0, self.v_desired_filter.update(v_ego))
@@ -368,6 +391,7 @@ class LongitudinalPlanner:
       )
     else:
       rb_v = None
+    self._unified_v_cap_ms = float(v_hud_ms)
 
     self.active_nap_follow_dist = effective_nap_follow_dist(self._is_preap, self.nap_follow_dist)
     self.t_follow = get_T_FOLLOW(sm['selfdriveState'].personality, self.active_nap_follow_dist)
@@ -949,6 +973,112 @@ class LongitudinalPlanner:
       accel_clip[1] = min(float(accel_clip[1]), float(self._lead_close_a_cap))
     self.output_a_target = np.clip(output_a_target, accel_clip[0], accel_clip[1])
     self.prev_accel_clip = accel_clip
+    self._apply_unified_lead(sm, float(v_ego))
+
+  def _poll_unified_enabled(self, force: bool = False) -> None:
+    """NAPLongUnified, cached. Not a Params read on the planner frame."""
+    if not self._is_preap:
+      return
+    if not force:
+      self._unified_read_age += float(self.dt)
+      if self._unified_polled and self._unified_read_age < 1.0:
+        return
+    self._unified_read_age = 0.0
+    self._unified_polled = True
+    getter = getattr(self._params, "get_bool", None)
+    if getter is None:
+      return
+    try:
+      self._unified_enabled = bool(getter("NAPLongUnified"))
+    except Exception:
+      pass
+
+  def _apply_unified_lead(self, sm, v_ego: float) -> None:
+    """Log the continuous controller every frame. Use it only while the toggle is on.
+
+    Off (mode weight 0) does not write output_a_target. A lead that the
+    existing path does not own leaves the cruise command alone. FCW,
+    should-stop, and force-decel keep today's command if it is deeper.
+    """
+    if not self._is_preap:
+      self.unified_a_target = 0.0
+      return
+
+    # NAP_LONG_UNIFIED_GATE
+    enabled = self._unified_enabled
+    if not self._plan_engaged:
+      self._mode_w = 1.0 if enabled else 0.0
+    else:
+      target_w = 1.0 if enabled else 0.0
+      step_w = float(self.dt) / MODE_BLEND_S
+      if self._mode_w < target_w:
+        self._mode_w = min(target_w, self._mode_w + step_w)
+      elif self._mode_w > target_w:
+        self._mode_w = max(target_w, self._mode_w - step_w)
+    if self._mode_w < 1e-6:
+      self._mode_w = 0.0
+    elif self._mode_w > 1.0 - 1e-6:
+      self._mode_w = 1.0
+
+    lead = sm["radarState"].leadOne
+    live = bool(lead.status) and lead_close_should_cap(
+      lead.dRel, lead.modelProb, lead.radar, active=False,
+    )
+    held = self._lead_close_hold_d is not None and self._lead_close_hold_v is not None
+    if live:
+      gap = float(lead.dRel)
+      v_lead = float(lead.vLead)
+      a_lead = float(lead.aLeadK)
+      y_rel = float(getattr(lead, "yRel", 0.0) or 0.0)
+      self._unified_lead_id = ("radar", int(getattr(lead, "radarTrackId", 0) or 0))
+      lead_id = self._unified_lead_id
+    elif held:
+      gap = float(self._lead_close_hold_d)
+      v_lead = float(self._lead_close_hold_v)
+      a_lead = 0.0 if self._lead_close_hold_a is None else float(self._lead_close_hold_a)
+      y_rel = 0.0 if self._lead_y_rel is None else float(self._lead_y_rel)
+      lead_id = self._unified_lead_id if self._unified_lead_id is not None else ("hold",)
+    else:
+      gap = None
+      v_lead = 0.0
+      a_lead = 0.0
+      y_rel = 0.0
+      lead_id = None
+
+    v_cap = float(self._unified_v_cap_ms)
+    steer = float(sm["carState"].steeringAngleDeg) - float(sm["liveParameters"].angleOffsetDeg)
+    v_curve = curve_speed_ms(v_ego, steer, self.CP.steerRatio, self.CP.wheelbase)
+    if v_curve is not None:
+      v_cap = min(v_cap, float(v_curve))
+    a_map = None
+    if self._map_speed_mode in (MODE_CAP, MODE_FOLLOW):
+      a_map = map_track_decel_ms2(
+        v_ego, float(self._unified_v_cap_ms), map_brake_a_ms2(self._map_speed_lookahead),
+      )
+    existing = float(self.output_a_target)
+    shadow = self._unified.step(
+      dt=self.dt,
+      present=gap is not None,
+      gap=0.0 if gap is None else gap,
+      v_ego=v_ego,
+      v_lead=v_lead,
+      a_lead=a_lead,
+      t_follow=float(self.t_follow),
+      lead_id=lead_id,
+      seed_a=existing,
+      v_ceiling=v_cap,
+      a_map=a_map,
+      y_rel=y_rel,
+      curvature=float(self._corner_curvature),
+      a_max=float(get_max_accel(v_ego)),
+    )
+    self.unified_a_target = float(shadow)
+    if self._mode_w > 0.0 and gap is not None:
+      mixed = ((1.0 - self._mode_w) * existing) + (self._mode_w * float(shadow))
+      if self.fcw or self.output_should_stop or bool(sm["controlsState"].forceDecel):
+        if mixed > existing:
+          mixed = existing
+      self.output_a_target = float(mixed)
 
   def publish(self, sm, pm):
     plan_send = messaging.new_message('longitudinalPlan')
@@ -982,6 +1112,7 @@ class LongitudinalPlanner:
 
     longitudinalPlan.aTarget = float(self.output_a_target)
     longitudinalPlan.shouldStop = bool(self.output_should_stop)
+    longitudinalPlan.unifiedATarget = float(self.unified_a_target)
     longitudinalPlan.allowBrake = True
     longitudinalPlan.allowThrottle = bool(self.allow_throttle)
     longitudinalPlan.napFollowDistance = self.active_nap_follow_dist or 0

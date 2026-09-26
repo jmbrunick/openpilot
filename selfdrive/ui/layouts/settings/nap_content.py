@@ -23,6 +23,12 @@ MAP_SPEED_ACCEL_DESCRIPTION = (
   + "(including last-mph taper), not a hotter catch-up punch. "
   + "Brake to a lower MAX stays Accel 5. Lead still owns follow."
 )
+NAP_LONG_UNIFIED = "NAPLongUnified"
+UNIFIED_LEAD_DESCRIPTION = (
+  "Default off. One continuous equation for a lead you are following, "
+  + "instead of stacked regen overrides. Off keeps today's planner. "
+  + "Changes while disengaged immediately; while following, blends about one second."
+)
 ADAPTIVE_ACCEL_DESCRIPTION = (
   "Softer accel near a lead so you don't overshoot. "
   + "Open road uses Acceleration 1–10. Coming up behind a lead uses that same Accel gradient, not a full-gap punch."

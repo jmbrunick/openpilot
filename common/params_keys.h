@@ -169,6 +169,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"NAPPedalCalibZero", {PERSISTENT, FLOAT, "0.0"}},
     {"NAPPedalCanBus", {PERSISTENT, INT, "2"}},
     {"NAPAdaptiveAccel", {PERSISTENT, BOOL, "1"}},
+    // Settings → NAP → Longitudinal Control. Default Off.
+    // One continuous lead-follow equation. Off keeps today's layered planner.
+    {"NAPLongUnified", {PERSISTENT, BOOL, "0"}},
     // Settings → NAP → Driving Mannerisms → One-Pedal Long. Default Off.
     // Pedal mode: gas rising from rest kicks software long off (silent
     // pause, like brake). After RELEASE, lift/near-zero accel is Tesla

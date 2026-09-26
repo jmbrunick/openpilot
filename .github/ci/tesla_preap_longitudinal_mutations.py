@@ -14,6 +14,8 @@ GAS_LIFT_TEST_PATH = "selfdrive/controls/tests/test_tesla_preap_gas_lift_handoff
 BRAKE_CANCEL_TEST_PATH = (
   "selfdrive/controls/tests/test_tesla_preap_brake_cancel_regen.py"
 )
+UNIFIED_TEST_PATH = "selfdrive/controls/tests/test_unified_lead.py"
+UNIFIED_PLANNER_TEST_PATH = "selfdrive/controls/tests/test_unified_lead_planner.py"
 NOISE_GATE_TEST_NODE = (
   "opendbc_repo/opendbc/car/tesla/preap/tests/test_virtual_das.py::TestInnerPID::" +
   "test_sub_deadband_sign_changing_noise_does_not_accumulate_residual_authority"
@@ -164,6 +166,45 @@ MUTATIONS = (
     ),
     test_nodes=(
       f"{FOLLOWING_TEST_PATH}::test_plant_aligned_full_closed_loop_grade_compensation_holds_speed",
+    ),
+  ),
+  HistoricalMutation(
+    name="unified-lead-drops-braking-lead-term",
+    source_path="selfdrive/controls/lib/unified_lead.py",
+    original=(
+      b"  a_pd = a_gv + k_a * a_l\n" +
+      b"\n" +
+      b"  a_kin = _a_kin(slack, v_close, gap_f, v_e, t_follow, v_l)\n" +
+      b"  # Braking-lead contribution on the bound. Positive a_lead stays in a_pd only.\n" +
+      b"  a_bound = a_kin + min(a_l, 0.0) * k_a\n"
+    ),
+    replacement=(
+      b"  a_pd = a_gv\n" +
+      b"\n" +
+      b"  a_kin = _a_kin(slack, v_close, gap_f, v_e, t_follow, v_l)\n" +
+      b"  # Braking-lead contribution on the bound. Positive a_lead stays in a_pd only.\n" +
+      b"  a_bound = a_kin\n"
+    ),
+    test_nodes=(
+      f"{UNIFIED_TEST_PATH}::test_sep23_222_exemplars_match_a_braking_lead",
+    ),
+  ),
+  HistoricalMutation(
+    name="unified-lead-jerk-limit-removed",
+    source_path="selfdrive/controls/lib/unified_lead.py",
+    original=b"    nxt = _limit_jerk(prev, target, frame_dt, down=down, up=up)\n",
+    replacement=b"    nxt = target\n",
+    test_nodes=(
+      f"{UNIFIED_TEST_PATH}::test_stateful_sweep_has_no_jerk_cliff",
+    ),
+  ),
+  HistoricalMutation(
+    name="unified-lead-toggle-forced-on",
+    source_path="selfdrive/controls/lib/longitudinal_planner.py",
+    original=b"    enabled = self._unified_enabled\n",
+    replacement=b"    enabled = True\n",
+    test_nodes=(
+      f"{UNIFIED_PLANNER_TEST_PATH}::test_unified_off_keeps_mode_weight_at_zero",
     ),
   ),
 )
