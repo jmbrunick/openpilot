@@ -213,13 +213,14 @@ class NAPLayoutMici(NavScroller):
 
     # Force Offroad / simulate look / false alert ignore live in the nap triple-tap overlay.
 
+    # First row of the top-level NAP panel, above every other NAP row.
+    unified_lead = BigParamControl("unified lead follow", NAP_LONG_UNIFIED)
+    unified_lead.set_value("Off — one equation; blends if switched while following")
+
     # ── Longitudinal control ─────────────────────────
     pedal_enabled = BigParamControl("pedal interceptor", NAPParamKeys.PEDAL_ENABLED,
                                      toggle_callback=_reboot_on_toggle)
     pedal_enabled.set_enabled(ui_state.is_offroad)
-
-    unified_lead = BigParamControl("unified lead follow", NAP_LONG_UNIFIED)
-    unified_lead.set_value("Off — one equation; blends if switched while following")
 
     self._driving_mannerisms_page = DrivingMannerismsLayoutMici()
     driving_mannerisms_btn = BigButton("driving mannerisms", "open")
@@ -332,8 +333,8 @@ class NAPLayoutMici(NavScroller):
     restore_epas_btn.set_enabled(ui_state.is_offroad)
 
     self._scroller.add_widgets([
-      pedal_enabled,
       unified_lead,
+      pedal_enabled,
       driving_mannerisms_btn,
       map_speed_btn,
       speed_sign_log,

@@ -133,6 +133,13 @@ class NAPLayout(Widget):
     self._radar_items = []
     self._toggle_map = {}  # param_key -> ListItem (for refresh)
 
+    # First row of the top-level NAP panel, above every section.
+    self._add_toggle(
+      NAP_LONG_UNIFIED,
+      "Unified Lead Follow",
+      UNIFIED_LEAD_DESCRIPTION,
+    )
+
     # ── Section 1: Longitudinal Control ──
     # Force Offroad / Simulate Look / False Alert Ignore live in the NAP triple-tap popup.
     self._main_items.append(section_header_item("Longitudinal Control"))
@@ -143,12 +150,6 @@ class NAPLayout(Widget):
       "Enable Comma Pedal hardware for direct throttle control. Requires reboot.",
       enabled=ui_state.is_offroad,
       needs_reboot=True,
-    )
-
-    self._add_toggle(
-      NAP_LONG_UNIFIED,
-      "Unified Lead Follow",
-      UNIFIED_LEAD_DESCRIPTION,
     )
 
     self._driving_mannerisms_page = DrivingMannerismsLayout(

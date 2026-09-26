@@ -375,10 +375,13 @@ def test_ui_and_param_default_off():
   content = (ROOT / "selfdrive/ui/layouts/settings/nap_content.py").read_text()
   assert "NAP_LONG_UNIFIED" in nap
   assert "Unified Lead Follow" in nap
-  assert 'section_header_item("Longitudinal Control")' in nap
-  assert nap.index("Unified Lead Follow") > nap.index("Longitudinal Control")
-  assert nap.index("Unified Lead Follow") < nap.index("Driving Mannerisms")
-  assert "unified lead follow" in mici
+  main = nap.split("def _build_items", 1)[1].split("def _add_toggle", 1)[0]
+  assert main.index("Unified Lead Follow") < main.index('section_header_item("Longitudinal Control")')
+  assert main.index("Unified Lead Follow") < main.index("Pedal Interceptor")
+  assert main.index("Unified Lead Follow") < main.index("Driving Mannerisms")
+  nap_mici = mici.split("class NAPLayoutMici", 1)[1]
+  widgets = nap_mici.split("self._scroller.add_widgets", 1)[1]
+  assert widgets.index("unified_lead") < widgets.index("pedal_enabled")
   assert "NAP_LONG_UNIFIED" in mici
   assert "UNIFIED_LEAD_DESCRIPTION" in content
   planner = (ROOT / "selfdrive/controls/lib/longitudinal_planner.py").read_text()
