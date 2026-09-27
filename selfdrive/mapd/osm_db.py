@@ -15,8 +15,10 @@ import math
 import os
 import sqlite3
 import struct
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, replace
 
+from openpilot.common.constants import CV
 from openpilot.selfdrive.mapd.constants import (
   HEADING_ALIGN_DEG,
   LOOKAHEAD_M,
@@ -46,6 +48,26 @@ _HIGHWAY_RANK = {
   "tertiary": 4, "tertiary_link": 4,
   "unclassified": 5,
   "residential": 6, "living_street": 6, "alley": 7,
+}
+
+# Current-way hysteresis. Nearest-wins will hand a motorway to a parallel
+# frontage once GPS drifts onto it. Keep the previous way while it is still
+# close and aligned; a clearly closer candidate must repeat for several
+# lookups. A much slower minor road also has to persist in time or distance.
+STICK_KEEP_M = 35.0
+STICK_SWITCH_CLOSER_M = 9.0
+STICK_SWITCH_LOOKUPS = 3
+STICK_PERSIST_S = 5.0
+STICK_PERSIST_M = 150.0
+_PLAUSIBLE_OVER_MS = 20.0 * CV.MPH_TO_MS
+_MAJOR_HIGHWAY = {
+  "motorway", "motorway_link",
+  "trunk", "trunk_link",
+  "primary", "primary_link",
+}
+_MINOR_HIGHWAY = {
+  "tertiary", "tertiary_link",
+  "residential", "living_street", "service", "unclassified",
 }
 
 EARTH_R = 6371000.0
@@ -228,6 +250,30 @@ def _continues_route(
   return True
 
 
+def _same_named_road(a: str, b: str) -> bool:
+  an = (a or "").strip().lower()
+  bn = (b or "").strip().lower()
+  return bool(an) and an == bn
+
+
+def _major_to_minor(prev_highway: str, cand_highway: str) -> bool:
+  prev = (prev_highway or "").strip().lower()
+  cand = (cand_highway or "").strip().lower()
+  return prev in _MAJOR_HIGHWAY and cand in _MINOR_HIGHWAY
+
+
+def _implausible_minor(v_ego_ms: float, cand: SpeedLimitMatch, prev_highway: str) -> bool:
+  """Ego is far above a lower-class candidate. A parallel frontage or a bad rematch."""
+  if not _major_to_minor(prev_highway, cand.highway):
+    return False
+  return float(v_ego_ms) > float(cand.speed_limit_ms) + _PLAUSIBLE_OVER_MS
+
+
+def _meters_between(a: tuple[float, float], b: tuple[float, float]) -> float:
+  x, y = _local_xy(b[0], b[1], a[0], a[1])
+  return math.hypot(x, y)
+
+
 def _seg_len_m(a: tuple[float, float], b: tuple[float, float]) -> float:
   x, y = _local_xy(b[0], b[1], a[0], a[1])
   return math.hypot(x, y)
@@ -319,6 +365,7 @@ class OsmSpeedLimitDB:
   def __init__(self, path: str):
     self.path = path
     self._con: sqlite3.Connection | None = None
+    self._reset_way_memory()
 
   @property
   def loaded(self) -> bool:
@@ -347,6 +394,7 @@ class OsmSpeedLimitDB:
     if self._con is not None:
       self._con.close()
       self._con = None
+    self._reset_way_memory()
 
   @staticmethod
   def create(path: str) -> sqlite3.Connection:
@@ -755,8 +803,88 @@ class OsmSpeedLimitDB:
         best_dist = dist
     return best if best is not None else RoundaboutHint()
 
+  def _reset_way_memory(self) -> None:
+    self._stuck_match: SpeedLimitMatch | None = None
+    self._reset_pending()
+
+  def _reset_pending(self) -> None:
+    self._pending_way_id: int | None = None
+    self._pending_lookups = 0
+    self._pending_since_s: float | None = None
+    self._pending_dist_m = 0.0
+    self._pending_latlon: tuple[float, float] | None = None
+
+  def _observe_switch_candidate(
+    self, way_id: int, closer_m: float, lat: float, lon: float, now: float,
+  ) -> tuple[int, float, float]:
+    """Track one rival way. Returns (closer-lookups, elapsed_s, traveled_m)."""
+    if self._pending_way_id != int(way_id):
+      self._pending_way_id = int(way_id)
+      self._pending_lookups = 1 if closer_m >= STICK_SWITCH_CLOSER_M else 0
+      self._pending_since_s = now
+      self._pending_dist_m = 0.0
+      self._pending_latlon = (lat, lon)
+    else:
+      if self._pending_latlon is not None:
+        self._pending_dist_m += _meters_between(self._pending_latlon, (lat, lon))
+      self._pending_latlon = (lat, lon)
+      if closer_m >= STICK_SWITCH_CLOSER_M:
+        self._pending_lookups += 1
+      else:
+        self._pending_lookups = 0
+    elapsed = 0.0 if self._pending_since_s is None else max(0.0, now - float(self._pending_since_s))
+    return self._pending_lookups, elapsed, self._pending_dist_m
+
+  def _switch_persisted(self, elapsed_s: float, traveled_m: float) -> bool:
+    return float(elapsed_s) >= STICK_PERSIST_S or float(traveled_m) >= STICK_PERSIST_M
+
+  def _current_way_is_sticky(
+    self, prev_dist_m: float, heading_aligned: bool, closer_m: float, pending_lookups: int,
+  ) -> bool:
+    """Keep the previous way unless a candidate is clearly closer for several lookups."""
+    if prev_dist_m > STICK_KEEP_M or not heading_aligned:
+      return False
+    if closer_m >= STICK_SWITCH_CLOSER_M and pending_lookups >= STICK_SWITCH_LOOKUPS:
+      return False
+    return True
+
+  def _accept_current_way(self, match: SpeedLimitMatch) -> SpeedLimitMatch:
+    self._stuck_match = match
+    self._reset_pending()
+    return match
+
+  def _keep_current_way(
+    self, lat: float, lon: float, bearing_deg: float | None, v_ego_ms: float,
+    cand: SpeedLimitMatch | None, now_s: float | None,
+  ) -> SpeedLimitMatch | None:
+    """Hysteresis + plausibility for the published current road.
+
+    Probe matches (`_best_match` along the route) stay stateless. Only the
+    road we publish as the current limit sticks.
+    """
+    now = time.monotonic() if now_s is None else float(now_s)
+    prev = self._stuck_match
+    if cand is None:
+      self._reset_pending()
+      return None
+    if prev is None or int(prev.way_id) == int(cand.way_id) or _same_named_road(prev.road_name, cand.road_name):
+      return self._accept_current_way(cand)
+
+    prev_dist, prev_heading = _point_to_polyline_m(lat, lon, list(prev.coords))
+    aligned = bearing_deg is None or _heading_aligned(bearing_deg, prev_heading)
+    cand_dist, _cand_heading = _point_to_polyline_m(lat, lon, list(cand.coords))
+    closer = float(prev_dist) - float(cand_dist)
+    lookups, elapsed, traveled = self._observe_switch_candidate(int(cand.way_id), closer, lat, lon, now)
+    if self._current_way_is_sticky(float(prev_dist), aligned, closer, lookups):
+      return replace(prev, distance_m=float(prev_dist))
+    if _implausible_minor(v_ego_ms, cand, prev.highway) and not self._switch_persisted(elapsed, traveled):
+      if float(prev_dist) <= STICK_KEEP_M and aligned:
+        return replace(prev, distance_m=float(prev_dist))
+      return None
+    return self._accept_current_way(cand)
+
   def lookup(self, lat: float, lon: float, bearing_deg: float | None = None,
-             v_ego_ms: float = 0.0) -> SpeedLimitMatch | None:
+             v_ego_ms: float = 0.0, now_s: float | None = None) -> SpeedLimitMatch | None:
     if self._con is None:
       return None
     gps_match = self._stabilize_match(
@@ -784,10 +912,16 @@ class OsmSpeedLimitDB:
       match = lead_match
     else:
       match = gps_match
+    match = self._keep_current_way(
+      float(lat), float(lon), bearing_deg, float(v_ego_ms), match, now_s,
+    )
     if match is None:
       return None
     if bearing_deg is None:
       return match
+    raised = bool(
+      raised and lead_match is not None and int(match.way_id) == int(lead_match.way_id)
+    )
 
     # Next limit follows the matched road (bearing + class/name). Do not use a
     # heading ray that can pick a nearby residential fill as "ahead".

@@ -16,6 +16,8 @@ BRAKE_CANCEL_TEST_PATH = (
 )
 UNIFIED_TEST_PATH = "selfdrive/controls/tests/test_unified_lead.py"
 UNIFIED_PLANNER_TEST_PATH = "selfdrive/controls/tests/test_unified_lead_planner.py"
+OFFSET_TEST_PATH = "selfdrive/mapd/tests/test_map_speed_offset_slew.py"
+FRONTAGE_TEST_PATH = "selfdrive/mapd/tests/test_map_match_frontage.py"
 NOISE_GATE_TEST_NODE = (
   "opendbc_repo/opendbc/car/tesla/preap/tests/test_virtual_das.py::TestInnerPID::" +
   "test_sub_deadband_sign_changing_noise_does_not_accumulate_residual_authority"
@@ -221,6 +223,37 @@ MUTATIONS = (
     test_nodes=(
       f"{UNIFIED_PLANNER_TEST_PATH}::test_unified_shadow_fault_with_toggle_off_matches_legacy",
       f"{UNIFIED_PLANNER_TEST_PATH}::test_unified_shadow_fault_with_toggle_on_falls_back_to_legacy",
+    ),
+  ),
+  HistoricalMutation(
+    name="map-offset-double-add-restored",
+    source_path="selfdrive/car/card.py",
+    original=b"  return (float(displayed_kph) - float(offset_kph)) * CV.KPH_TO_MS\n",
+    replacement=b"  return float(displayed_kph) * CV.KPH_TO_MS\n",
+    test_nodes=(
+      f"{OFFSET_TEST_PATH}::test_engage_mph_offset_is_limit_plus_offset_after_1s",
+      f"{OFFSET_TEST_PATH}::test_engage_kph_offset_is_limit_plus_offset_after_1s",
+      f"{OFFSET_TEST_PATH}::test_posted_raise_keeps_single_offset",
+    ),
+  ),
+  HistoricalMutation(
+    name="current-way-stickiness-removed",
+    source_path="selfdrive/mapd/osm_db.py",
+    original=(
+      b"    \"\"\"Keep the previous way unless a candidate is clearly closer for several lookups.\"\"\"\n"
+      b"    if prev_dist_m > STICK_KEEP_M or not heading_aligned:\n"
+      b"      return False\n"
+      b"    if closer_m >= STICK_SWITCH_CLOSER_M and pending_lookups >= STICK_SWITCH_LOOKUPS:\n"
+      b"      return False\n"
+      b"    return True\n"
+    ),
+    replacement=(
+      b"    \"\"\"Keep the previous way unless a candidate is clearly closer for several lookups.\"\"\"\n"
+      b"    _ = prev_dist_m, heading_aligned, closer_m, pending_lookups\n"
+      b"    return False\n"
+    ),
+    test_nodes=(
+      f"{FRONTAGE_TEST_PATH}::test_nearer_parallel_road_does_not_steal_without_clear_advantage",
     ),
   ),
 )
