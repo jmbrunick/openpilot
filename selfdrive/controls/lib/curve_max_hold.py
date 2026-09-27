@@ -356,8 +356,16 @@ class CurveMaxHold:
     curvature: float | None = None,
     yaw_rate: float | None = None,
     restore_a_ms2: float | None = None,
+    long_active: bool = True,
   ) -> CurveMaxDecision:
-    """Apply temp curve cap or restore. Call after decide_map_cruise + overlay."""
+    """Apply temp curve cap or restore. Call after decide_map_cruise + overlay.
+
+    `long_active` is software long (not paused). In a long pause the driver
+    owns speed: the bend still freezes posted flicker and protects the
+    held MAX, but the temporary cap does not lower HUD MAX and there is no
+    restore ramp. Otherwise a stale ramp value would override the held-MAX
+    seed on the resume frame and be written onto the pedal set speed.
+    """
     if not engaged or take_speed_now:
       self.reset()
       return CurveMaxDecision(float(hud_kph), None, False, False)
@@ -408,10 +416,19 @@ class CurveMaxHold:
     if lat_now:
       self._exit_s = 0.0
       self._release_kph = None
+      if not long_active:
+        # Driver in control: no cap. A resume mid-bend settles a fresh cap.
+        self._cap_kph = None
+        return CurveMaxDecision(float(hud_kph), None, True, True)
       capped = self._held_cap_kph(float(hud_kph), v_ego_ms)
       return CurveMaxDecision(capped, None, True, True)
 
     self._exit_s += float(dt)
+    if not long_active:
+      # Straight in a pause: restore now, no exit hold and no ramp.
+      will_exit = True
+      self._release_kph = None
+      self._cap_kph = None
     if not will_exit:
       capped = self._held_cap_kph(float(hud_kph), v_ego_ms)
       return CurveMaxDecision(capped, None, True, True)
@@ -428,7 +445,10 @@ class CurveMaxHold:
     )
     if same_zone and self.snapshot is not None:
       target = float(self.snapshot.hud_max_kph)
-      ramped, done = self._step_release(target, dt)
+      if long_active:
+        ramped, done = self._step_release(target, dt)
+      else:
+        ramped, done = target, True
       if not done:
         self.protect_hold(hold)
         return CurveMaxDecision(ramped, None, False, True)
