@@ -211,11 +211,11 @@ MUTATIONS = (
     name="unified-lead-shadow-guard-reraises",
     source_path="selfdrive/controls/lib/longitudinal_planner.py",
     original=(
-      b"      except Exception:\n"
+      b"      except Exception:\n" +
       b"        self._note_unified_fault()\n"
     ),
     replacement=(
-      b"      except Exception:\n"
+      b"      except Exception:\n" +
       b"        raise\n"
     ),
     test_nodes=(
