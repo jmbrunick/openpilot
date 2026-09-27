@@ -207,6 +207,22 @@ MUTATIONS = (
       f"{UNIFIED_PLANNER_TEST_PATH}::test_unified_off_keeps_mode_weight_at_zero",
     ),
   ),
+  HistoricalMutation(
+    name="unified-lead-shadow-guard-reraises",
+    source_path="selfdrive/controls/lib/longitudinal_planner.py",
+    original=(
+      b"      except Exception:\n" +
+      b"        self._note_unified_fault()\n"
+    ),
+    replacement=(
+      b"      except Exception:\n" +
+      b"        raise\n"
+    ),
+    test_nodes=(
+      f"{UNIFIED_PLANNER_TEST_PATH}::test_unified_shadow_fault_with_toggle_off_matches_legacy",
+      f"{UNIFIED_PLANNER_TEST_PATH}::test_unified_shadow_fault_with_toggle_on_falls_back_to_legacy",
+    ),
+  ),
 )
 
 
