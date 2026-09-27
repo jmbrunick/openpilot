@@ -21,6 +21,7 @@ from openpilot.selfdrive.controls.lib.curve_max_hold import (
   CURVE_EXIT_LAT_MS2,
   curve_speed_ms,
 )
+from openpilot.selfdrive.controls.lib.radar_path_gate import model_path_xy, path_lateral_m
 from openpilot.selfdrive.controls.lib.unified_lead import (
   MODE_BLEND_S,
   UnifiedLeadController,
@@ -1062,6 +1063,18 @@ class LongitudinalPlanner:
       a_map = map_track_decel_ms2(
         v_ego, float(self._unified_v_cap_ms), map_brake_a_ms2(self._map_speed_lookahead),
       )
+    # Lead weighting: lateral offset from the model's planned path (bends
+    # stay on-path, adjacent lanes do not) and reading quality.
+    path_lat = None
+    model_prob = None
+    radar = None
+    if live:
+      try:
+        path_lat = path_lateral_m(lead, *model_path_xy(sm["modelV2"]))
+        model_prob = float(lead.modelProb)
+        radar = bool(lead.radar)
+      except Exception:
+        path_lat = model_prob = radar = None
     existing = float(self.output_a_target)
     shadow = None
     if not self._unified_faulted:
@@ -1081,6 +1094,9 @@ class LongitudinalPlanner:
           y_rel=y_rel,
           curvature=float(self._corner_curvature),
           a_max=float(get_max_accel(v_ego)),
+          path_lat=path_lat,
+          model_prob=model_prob,
+          radar=radar,
         )
       except Exception:
         self._note_unified_fault()
