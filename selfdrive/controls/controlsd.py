@@ -18,6 +18,9 @@ from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   handoff_new_desired_curvature, lat_active_after_handoff,
   pin_desired_curvature_to_measured)
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
+from openpilot.selfdrive.controls.lib.lane_change_nudge import (
+  EmergencyYankTracker, is_emergency_yank, torque_is_same_direction,
+)
 from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature
 from openpilot.selfdrive.mapd.roundabout import (
   live_map_roundabout_hint, roundabout_outer_curvature_bias, roundabout_outer_path_offset_m,
@@ -55,6 +58,7 @@ class Controls:
     self.curvature = 0.0
     self.desired_curvature = 0.0
     self.blinker_lat_hold = BlinkerLateralHold()
+    self._lane_change_yank = EmergencyYankTracker()
     # Default On (NAPDriverLatHandoff=1) for Pre-AP. Re-read each cycle so
     # Settings → NAP can turn it Off immediately if gravel/wind misbehave.
     self.lat_handoff = DriverLateralHandoff(
@@ -122,6 +126,31 @@ class Controls:
     # when ALC is not latched. During ALC / leftover keep-alive,
     # same-direction stalk must stay on >1.0s to steal ALC as a turn.
     alc_active = model_v2.meta.laneChangeState != LaneChangeState.off
+    # Tipped ALC stays armed through lamp flash-dark gaps. Same-direction
+    # torque is the confirm, not a soft-lat release. An emergency yank
+    # still frees the EPS immediately.
+    lc_state = model_v2.meta.laneChangeState
+    tipped_alc = lc_state in (
+      LaneChangeState.preLaneChange,
+      LaneChangeState.laneChangeStarting,
+      LaneChangeState.laneChangeFinishing,
+    )
+    if model_v2.meta.laneChangeDirection == log.LaneChangeDirection.left:
+      nudge_dir = 1
+    elif model_v2.meta.laneChangeDirection == log.LaneChangeDirection.right:
+      nudge_dir = 2
+    else:
+      nudge_dir = 0
+    nudge_torque = float(CS.steeringTorque)
+    nudge_hands = cs_hands_on_level(CS)
+    nudge_fast = self._lane_change_yank.update(nudge_torque, DT_CTRL)
+    nudge_emergency = is_emergency_yank(
+      torque_nm=nudge_torque, hands_on_level=nudge_hands, fast_rise=nudge_fast)
+    lane_change_confirm = (
+      tipped_alc
+      and torque_is_same_direction(nudge_torque, nudge_dir)
+      and not nudge_emergency
+    )
     # Soft yield frees the EPS the same way blinker pause does (latActive
     # false → DAS_steeringControlType=0). Do not keep latActive and track
     # measured angle — that is follow-the-rim holding, not a free wheel.
@@ -166,6 +195,8 @@ class Controls:
       brake_applied=cs_real_brake_pressed(CS),
       a_ego=float(CS.aEgo),
       v_ego=float(CS.vEgo),
+      emergency_yank=bool(tipped_alc and nudge_emergency),
+      lane_change_confirm=bool(lane_change_confirm),
     )
     CC.latActive = lat_active_after_handoff(
       lat_would_be_active, self._lat_handoff.yielded)
