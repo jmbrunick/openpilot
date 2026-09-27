@@ -353,6 +353,7 @@ def decide_map_cruise(
   resume_held: bool = False,
   traveled_kph: float | None = None,
   long_active: bool = True,
+  self_wrote_pedal: bool = False,
 ) -> MapCruiseDecision:
   """Engage seed + sticky hold. posted_kph is OSM current maxspeed + offset.
 
@@ -386,6 +387,9 @@ def decide_map_cruise(
   not reliable. Pause frames must not arm sticky from cruiseState.speed
   falling back to ego.
 
+  `self_wrote_pedal` is the frame that echoes a pedal_speed this code just
+  wrote. That step is not a driver stalk press.
+
   Pedal write (`seed_kph`) only on take-speed-now, resume-held, a real 1/5
   mph stalk step, or a posted-limit *raise*. A continuing sticky hold must
   not write — that overwrites CI.update's stalk step on the same frame.
@@ -416,7 +420,7 @@ def decide_map_cruise(
       # Pedal/HUD MAX is the source of truth while long is active. Stalk
       # +/- must update the MAX one SET will resume. Pause publishes
       # cruiseState.speed as ego — never latch that into held.
-      stalk_step = is_cruise_stalk_step(hold.last_raw_kph, raw_kph)
+      stalk_step = (not self_wrote_pedal) and is_cruise_stalk_step(hold.last_raw_kph, raw_kph)
       if 0.0 < raw_kph < V_CRUISE_UNSET and (
         hold.held_max_kph is None or stalk_step or bool(stalk_pressed)
       ):
@@ -434,7 +438,7 @@ def decide_map_cruise(
 
   posted_ok = posted_kph is not None and posted_kph > 0
   # Pause: cruiseState.speed is ego, not MAX. Do not treat that as a stalk.
-  stalk_step = bool(long_active) and is_cruise_stalk_step(hold.last_raw_kph, raw_kph)
+  stalk_step = (not self_wrote_pedal) and bool(long_active) and is_cruise_stalk_step(hold.last_raw_kph, raw_kph)
   manual = bool(long_active) and (stalk_step or bool(stalk_pressed))
   if long_active:
     hold.last_raw_kph = raw_kph
