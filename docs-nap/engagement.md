@@ -93,6 +93,8 @@ On Pre-AP that falling `cruiseState.enabled` is `EventName.pcmDisable`. The 3X H
 
 This is the primary user override path when the driver is *not* in a blinker turn. The panda also enforces it independently via EPAS error codes 6–9 and hands-on level ≥ 2 — except during a blinker-latched driver turn, where those conditions must not drop `controls_allowed` (otherwise selfdrived fires `controlsMismatch` after 2s and fully cancels while the lamps are still flashing).
 
+During a **tipped** lane change (not a latched stalk), a same-direction nudge — including hands-on level 2 through the ~1 s lamp flash-dark gap — is the lane-change confirm and must not disengage. An emergency yank still takes over immediately: EPAS hands-on level 3, torsion above `2 * STEER_THRESHOLD` (2.0 Nm), or torsion reaching `3 *` the 0.55 Nm soft-lat floor within 150 ms. Panda allows that level-3 disengage during the flash gap. **Reflash the panda** so the flash-gap tolerance matches Python; otherwise a firm confirm in the dark half of the blink drops `controls_allowed`.
+
 Panda firmware must be flashed after this safety change. Software update / on-device `scons` rebuilds the panda image from `opendbc_repo/opendbc/safety/modes/tesla_preap.h` (latch in `tesla_preap_blinker.h`); reboot so `pandad` sees the new signature and flashes. Python `BlinkerLateralHold` alone cannot keep `controls_allowed`.
 
 ## Driver-wheel temporary lateral handoff
