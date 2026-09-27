@@ -9,6 +9,13 @@ from openpilot.selfdrive.controls.lib.lane_change_nudge import (
   tipped_lane_change_driver_release,
   torque_is_same_direction,
 )
+from openpilot.selfdrive.controls.lib.lane_change_target import (
+  RECROSS_MARGIN_M,
+  STALL_PROGRESS_LANES,
+  STALL_REPULSE_S,
+  LaneChangeTarget,
+  lane_line_offsets,
+)
 from openpilot.selfdrive.controls.lib.stalk_tip_turn import StalkTipTurn
 
 LaneChangeState = log.LaneChangeState
@@ -76,6 +83,17 @@ class DesireHelper:
     self.queued_changes = 0
     self.lane_changes_remaining = 0
 
+    # Target lock (see lane_change_target). None when no tipped lane
+    # change is in progress, or when no modelV2 is passed (legacy path).
+    self.target: LaneChangeTarget | None = None
+    self.target_suspended = False
+    self._best_progress = 0.0
+    self._stall_s = 0.0
+
+  @property
+  def target_locked(self) -> bool:
+    return self.target is not None
+
   @staticmethod
   def get_lane_change_direction(CS):
     return LaneChangeDirection.left if CS.leftBlinker else LaneChangeDirection.right
@@ -93,15 +111,82 @@ class DesireHelper:
     return (direction == LaneChangeDirection.left,
             direction == LaneChangeDirection.right)
 
+  @staticmethod
+  def _opposite_pull(carstate, direction: int) -> bool:
+    """Driver override (steeringPressed) against the lane-change direction."""
+    if not bool(getattr(carstate, "steeringPressed", False)):
+      return False
+    torque = float(getattr(carstate, "steeringTorque", 0.0) or 0.0)
+    if direction == 1:
+      return torque < 0.0
+    if direction == 2:
+      return torque > 0.0
+    return False
+
+  def _complete_one(self):
+    self._clear_target()
+    self.queued_changes = max(self.queued_changes - 1, 0)
+    if self.queued_changes > 0:
+      self.lane_change_state = LaneChangeState.preLaneChange
+      self.lane_change_ll_prob = 1.0
+      self.arm_timer = 0.0
+    else:
+      self._reset()
+
+  def _update_locked(self, suspended: bool) -> bool:
+    """Advance a target-locked change. Returns True for a one-frame desire gap."""
+    target = self.target
+    if target.reached:
+      self._complete_one()
+      return False
+    if self.lane_change_state == LaneChangeState.laneChangeStarting:
+      self.lane_change_ll_prob = max(self.lane_change_ll_prob - 2 * DT_MDL, 0.0)
+      if target.crossed:
+        self.lane_change_state = LaneChangeState.laneChangeFinishing
+    else:
+      self.lane_change_ll_prob = min(self.lane_change_ll_prob + DT_MDL, 1.0)
+      if target.dist_to_line_m > RECROSS_MARGIN_M:
+        self.lane_change_state = LaneChangeState.laneChangeStarting
+    # Stall: lat up but no progress toward the target for a while (the
+    # model's desire pulse may have run out). Re-pulse the desire.
+    if suspended:
+      return False
+    if target.progress > self._best_progress + STALL_PROGRESS_LANES:
+      self._best_progress = target.progress
+      self._stall_s = 0.0
+      return False
+    self._stall_s += DT_MDL
+    if self._stall_s + 1e-9 >= STALL_REPULSE_S:
+      self._stall_s = 0.0
+      return True
+    return False
+
   def _reset(self):
     self.lane_change_state = LaneChangeState.off
     self.lane_change_direction = LaneChangeDirection.none
     self.arm_timer = 0.0
     self.queued_changes = 0
     self.lane_changes_remaining = 0
+    self._clear_target()
 
-  def update(self, carstate, lateral_active, lane_change_prob):
+  def _clear_target(self):
+    self.target = None
+    self.target_suspended = False
+    self._best_progress = 0.0
+    self._stall_s = 0.0
+
+  def update(self, carstate, lateral_active, lane_change_prob, model=None, engaged=None):
+    """``model`` is this frame's modelV2 (laneLines / laneLineProbs).
+
+    With a model, a tipped lane change locks a target on start and runs
+    to the target lane center (see lane_change_target). Without one the
+    legacy lane_change_prob completion is used. ``engaged`` is
+    carControl.enabled; None means "same as lateral_active".
+    """
     v_ego = carstate.vEgo
+    engaged = bool(lateral_active) if engaged is None else bool(engaged)
+    offsets = lane_line_offsets(model)
+    pulse_gap = False
     one_blinker = carstate.leftBlinker != carstate.rightBlinker
     below_lane_change_speed = v_ego < LANE_CHANGE_SPEED_MIN
 
@@ -136,9 +221,27 @@ class DesireHelper:
       alc_stalk_dir = 0
       same_direction_tip, opposite_press = False, False
 
-    if not lateral_active or self.lane_change_timer > LANE_CHANGE_TIME_MAX:
+    locked = self.target is not None
+    if locked:
+      self.target.update(offsets, DT_MDL)
+    # An ordinary lateral release (not an emergency yank, not a cancel)
+    # keeps a target-locked change: desire drops while lat is down and is
+    # re-asserted (fresh rising edge for the model's desire pulse) when
+    # lat resumes. The legacy time cap is replaced by the lock's own
+    # TARGET_LOCK_TIMEOUT_S, which also counts released time.
+    suspended = locked and not lateral_active
+    if not engaged or (not lateral_active and not locked) or \
+       (not locked and self.lane_change_timer > LANE_CHANGE_TIME_MAX):
       self._reset()
+    elif locked and (self.target.timed_out or self.target.low_confidence):
+      # Stale lane change, or cannot tell which lane the car is in.
+      self._reset()
+      self._suppress_next_tip = True
     else:
+      if locked and self.target_suspended and not suspended:
+        # Lateral just came back: re-assert toward the locked target.
+        self._stall_s = 0.0
+      self.target_suspended = suspended
       just_cancelled = False
       if self.lane_change_state != LaneChangeState.off:
         if self.lane_change_direction == LaneChangeDirection.left:
@@ -151,6 +254,12 @@ class DesireHelper:
         if tipped_lane_change_driver_release(
             same_direction=torque_is_same_direction(torque_nm, nudge_dir),
             emergency=emergency_yank):
+          self._reset()
+          just_cancelled = True
+          self._suppress_next_tip = True
+        elif locked and self._opposite_pull(carstate, nudge_dir):
+          # Target-locked change: an opposite-direction pull cancels.
+          # Same-direction bumps never pause, slow, or cancel it.
           self._reset()
           just_cancelled = True
           self._suppress_next_tip = True
@@ -199,10 +308,28 @@ class DesireHelper:
         self.arm_timer += DT_MDL
 
         if torque_applied and not blindspot_detected and not below_lane_change_speed:
-          self.lane_change_state = LaneChangeState.laneChangeStarting
+          if model is None:
+            self.lane_change_state = LaneChangeState.laneChangeStarting
+          else:
+            direction = 1 if self.lane_change_direction == LaneChangeDirection.left else 2
+            self.target = LaneChangeTarget.lock(direction, offsets)
+            if self.target is None:
+              # Lane lines too weak to know which line to cross: cancel
+              # instead of guessing.
+              self._reset()
+              self._suppress_next_tip = True
+            else:
+              self.lane_change_state = LaneChangeState.laneChangeStarting
+              self._best_progress = self.target.progress
+              self._stall_s = 0.0
         elif self.arm_timer > LANE_CHANGE_ARM_TIME:
           # Window expired with no wheel nudge — cancel everything.
           self._reset()
+
+      # Target-locked: geometry decides, not lane_change_prob or a timer.
+      elif self.target is not None and self.lane_change_state in (
+          LaneChangeState.laneChangeStarting, LaneChangeState.laneChangeFinishing):
+        pulse_gap = self._update_locked(suspended)
 
       # LaneChangeState.laneChangeStarting
       elif self.lane_change_state == LaneChangeState.laneChangeStarting:
@@ -247,6 +374,10 @@ class DesireHelper:
     self.prev_one_blinker = one_blinker
 
     self.desire = DESIRES[self.lane_change_direction][self.lane_change_state]
+    if self.target is not None and (self.target_suspended or pulse_gap):
+      # Lat down: no desire. The next frame with lat back up is a fresh
+      # rising edge, which is what the model's desire pulse keys on.
+      self.desire = log.Desire.none
 
     # Send keep pulse once per second during LaneChangeState.preLaneChange
     if self.lane_change_state in (LaneChangeState.off, LaneChangeState.laneChangeStarting):
