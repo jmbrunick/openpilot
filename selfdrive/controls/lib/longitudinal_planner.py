@@ -219,6 +219,11 @@ class LongitudinalPlanner:
     self._mode_w = 0.0
     self._unified_v_cap_ms = 0.0
     self._unified_lead_id = None
+    # Shadow failures latch until process restart. They must not escape update().
+    self._unified_faulted = False
+    self._unified_fault_count = 0
+    self._unified_fault_logged = False
+    self._unified_last_good = None
     self._plan_engaged = False
     if self._is_preap:
       self._poll_unified_enabled(force=True)
@@ -993,32 +998,34 @@ class LongitudinalPlanner:
     except Exception:
       pass
 
+  def _note_unified_fault(self) -> None:
+    """Latch the shadow controller off until this process restarts.
+
+    cloudlog.exception runs for the first failure only. A later hit, if the
+    compute were entered again, only increments the counter.
+    """
+    self._unified_fault_count += 1
+    self._unified_faulted = True
+    if self._unified_fault_logged:
+      return
+    self._unified_fault_logged = True
+    cloudlog.exception(
+      "unified lead-follow shadow compute failed (count=%d); legacy longitudinal command stays in force",
+      self._unified_fault_count,
+    )
+
   def _apply_unified_lead(self, sm, v_ego: float) -> None:
     """Log the continuous controller every frame. Use it only while the toggle is on.
 
     Off (mode weight 0) does not write output_a_target. A lead that the
     existing path does not own leaves the cruise command alone. FCW,
     should-stop, and force-decel keep today's command if it is deeper.
+    A shadow exception latches the controller off for the rest of the drive,
+    publishes 0, and slews back to the legacy command on the 1 s mode blend.
     """
     if not self._is_preap:
       self.unified_a_target = 0.0
       return
-
-    # NAP_LONG_UNIFIED_GATE
-    enabled = self._unified_enabled
-    if not self._plan_engaged:
-      self._mode_w = 1.0 if enabled else 0.0
-    else:
-      target_w = 1.0 if enabled else 0.0
-      step_w = float(self.dt) / MODE_BLEND_S
-      if self._mode_w < target_w:
-        self._mode_w = min(target_w, self._mode_w + step_w)
-      elif self._mode_w > target_w:
-        self._mode_w = max(target_w, self._mode_w - step_w)
-    if self._mode_w < 1e-6:
-      self._mode_w = 0.0
-    elif self._mode_w > 1.0 - 1e-6:
-      self._mode_w = 1.0
 
     lead = sm["radarState"].leadOne
     live = bool(lead.status) and lead_close_should_cap(
@@ -1056,25 +1063,60 @@ class LongitudinalPlanner:
         v_ego, float(self._unified_v_cap_ms), map_brake_a_ms2(self._map_speed_lookahead),
       )
     existing = float(self.output_a_target)
-    shadow = self._unified.step(
-      dt=self.dt,
-      present=gap is not None,
-      gap=0.0 if gap is None else gap,
-      v_ego=v_ego,
-      v_lead=v_lead,
-      a_lead=a_lead,
-      t_follow=float(self.t_follow),
-      lead_id=lead_id,
-      seed_a=existing,
-      v_ceiling=v_cap,
-      a_map=a_map,
-      y_rel=y_rel,
-      curvature=float(self._corner_curvature),
-      a_max=float(get_max_accel(v_ego)),
-    )
-    self.unified_a_target = float(shadow)
-    if self._mode_w > 0.0 and gap is not None:
-      mixed = ((1.0 - self._mode_w) * existing) + (self._mode_w * float(shadow))
+    shadow = None
+    if not self._unified_faulted:
+      try:
+        shadow = self._unified.step(
+          dt=self.dt,
+          present=gap is not None,
+          gap=0.0 if gap is None else gap,
+          v_ego=v_ego,
+          v_lead=v_lead,
+          a_lead=a_lead,
+          t_follow=float(self.t_follow),
+          lead_id=lead_id,
+          seed_a=existing,
+          v_ceiling=v_cap,
+          a_map=a_map,
+          y_rel=y_rel,
+          curvature=float(self._corner_curvature),
+          a_max=float(get_max_accel(v_ego)),
+        )
+      except Exception:
+        self._note_unified_fault()
+      else:
+        self._unified_last_good = float(shadow)
+
+    if self._unified_faulted:
+      # Published shadow is the fallback. A ramp, if any, uses the last good value.
+      self.unified_a_target = 0.0
+    else:
+      self.unified_a_target = float(shadow)
+
+    # NAP_LONG_UNIFIED_GATE
+    enabled = self._unified_enabled
+    if self._unified_faulted:
+      enabled = False
+    if not self._plan_engaged:
+      self._mode_w = 1.0 if enabled else 0.0
+    else:
+      target_w = 1.0 if enabled else 0.0
+      step_w = float(self.dt) / MODE_BLEND_S
+      if self._mode_w < target_w:
+        self._mode_w = min(target_w, self._mode_w + step_w)
+      elif self._mode_w > target_w:
+        self._mode_w = max(target_w, self._mode_w - step_w)
+    if self._mode_w < 1e-6:
+      self._mode_w = 0.0
+    elif self._mode_w > 1.0 - 1e-6:
+      self._mode_w = 1.0
+    # Nothing safe to ramp from: drop the weight so the legacy command is published as-is.
+    if self._unified_faulted and self._unified_last_good is None:
+      self._mode_w = 0.0
+
+    blend_a = self._unified_last_good if self._unified_faulted else shadow
+    if self._mode_w > 0.0 and gap is not None and blend_a is not None:
+      mixed = ((1.0 - self._mode_w) * existing) + (self._mode_w * float(blend_a))
       if self.fcw or self.output_should_stop or bool(sm["controlsState"].forceDecel):
         if mixed > existing:
           mixed = existing

@@ -3,6 +3,8 @@
 Default off leaves the layered command alone and still publishes the shadow.
 On, with a lead, the published accel is the continuous controller. The mode
 weight snaps while disengaged and slews for about a second while following.
+A shadow-compute exception is logged once, latches the controller off for
+the rest of the process, and the published command returns to the legacy path.
 """
 import numpy as np
 import pytest
@@ -10,6 +12,7 @@ import pytest
 from cereal import car, log, messaging
 from opendbc.car.tesla.preap.constants import PEDAL_LONG_K_BP, PEDAL_LONG_KI_V, PEDAL_LONG_KP_V
 from openpilot.common.constants import CV
+from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalPlanSource, T_IDXS
 from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner
@@ -205,6 +208,44 @@ def _run(planner, inputs, n, mpc_accel=None):
   return float(planner.output_a_target)
 
 
+def _guarded_updates(planner, inputs, n):
+  """Turn a propagating shadow exception into an assertion failure.
+
+  The mutation gate only counts AssertionError as a killed mutant. If the
+  planner guard is removed, update() must fail these tests that way.
+  """
+  escaped = []
+  for _ in range(n):
+    try:
+      planner.update(inputs)
+    except Exception as exc:
+      escaped.append(f"{type(exc).__name__}: {exc}")
+  return escaped
+
+
+def _spy_cloudlog_exception(monkeypatch):
+  calls = []
+
+  def _record(*args, **kwargs):
+    calls.append(args)
+
+  monkeypatch.setattr(cloudlog, "exception", _record)
+  return calls
+
+
+def _capture_pre_mix(monkeypatch, planner):
+  """Legacy command for each frame, before the unified mix overwrites it."""
+  captured = []
+  original = planner._apply_unified_lead
+
+  def _wrap(sm, v_ego):
+    captured.append(float(planner.output_a_target))
+    return original(sm, v_ego)
+
+  monkeypatch.setattr(planner, "_apply_unified_lead", _wrap)
+  return captured
+
+
 def test_unified_off_keeps_mode_weight_at_zero():
   """Absent / false NAPLongUnified must not move the mode weight while engaged.
 
@@ -378,3 +419,140 @@ def test_unified_param_is_read_about_once_per_second():
   for _ in range(15):
     planner.update(inputs)
   assert params.unified_reads == 2
+
+
+def test_unified_shadow_fault_with_toggle_off_matches_legacy(monkeypatch):
+  """Toggle off stays on the legacy command when the shadow compute raises.
+
+  The published accel matches a healthy toggle-off planner. The shadow field
+  is the fallback 0, and cloudlog.exception runs once across many frames.
+  """
+  v_ego = 30.0
+  v_lead = v_ego - 1.13
+  faulted, inputs, _ = _planner(v_ego, unified=False, accel=-3.5)
+  legacy, legacy_inputs, _ = _planner(v_ego, unified=False, accel=-3.5)
+  _own_lead(inputs, 35.0, v_lead, a_lead=-1.18)
+  _own_lead(legacy_inputs, 35.0, v_lead, a_lead=-1.18)
+  logs = _spy_cloudlog_exception(monkeypatch)
+  captured = _capture_pre_mix(monkeypatch, faulted)
+  step_calls = {"n": 0}
+
+  def _boom(*_args, **_kwargs):
+    step_calls["n"] += 1
+    raise RuntimeError("unified shadow compute failed")
+
+  monkeypatch.setattr(faulted._unified, "step", _boom)
+
+  for _ in range(12):
+    escaped = _guarded_updates(faulted, inputs, 1)
+    assert escaped == [], escaped
+    legacy.update(legacy_inputs)
+    assert faulted._mode_w == 0.0
+    assert faulted._plan_engaged is True
+    assert faulted.output_a_target == pytest.approx(captured[-1], abs=1e-9)
+    assert faulted.output_a_target == pytest.approx(legacy.output_a_target, abs=1e-9)
+    assert faulted.unified_a_target == 0.0
+
+  assert step_calls["n"] == 1
+  assert faulted._unified_faulted is True
+  assert faulted._unified_fault_count == 1
+  assert len(logs) == 1
+  assert logs[0][1] == 1
+  assert legacy.unified_a_target <= -0.5
+
+  fault_pub = _CapturingPubMaster()
+  legacy_pub = _CapturingPubMaster()
+  faulted.publish(inputs, fault_pub)
+  legacy.publish(legacy_inputs, legacy_pub)
+  assert fault_pub.message.longitudinalPlan.aTarget == pytest.approx(
+    legacy_pub.message.longitudinalPlan.aTarget, abs=1e-9,
+  )
+  assert fault_pub.message.longitudinalPlan.unifiedATarget == 0.0
+
+
+def test_unified_shadow_fault_with_toggle_on_falls_back_to_legacy(monkeypatch):
+  """Engaged with the toggle on, a shadow exception must not escape.
+
+  The mode weight slews to 0 over the existing 1 s blend, mixing the last
+  good unified value with the legacy command. Later frames stay faulted.
+  """
+  v_ego = 30.0
+  v_lead = v_ego - 1.13
+  planner, inputs, _ = _planner(v_ego, unified=True, accel=-3.5)
+  _own_lead(inputs, 35.0, v_lead, a_lead=-1.18)
+  logs = _spy_cloudlog_exception(monkeypatch)
+  _run(planner, inputs, 80)
+  assert planner._plan_engaged is True
+  assert planner._mode_w == 1.0
+  assert planner._unified_faulted is False
+  last_good = float(planner.unified_a_target)
+  assert last_good == pytest.approx(float(planner.output_a_target), abs=1e-6)
+  assert last_good <= -0.5
+  assert logs == []
+
+  captured = _capture_pre_mix(monkeypatch, planner)
+  step_calls = {"n": 0}
+
+  def _boom(*_args, **_kwargs):
+    step_calls["n"] += 1
+    raise RuntimeError("unified shadow compute failed")
+
+  monkeypatch.setattr(planner._unified, "step", _boom)
+  escaped = _guarded_updates(planner, inputs, 1)
+  assert escaped == [], escaped
+  assert planner._unified_faulted is True
+  assert planner.unified_a_target == 0.0
+  step = float(planner.dt) / MODE_BLEND_S
+  assert planner._mode_w == pytest.approx(1.0 - step, abs=1e-9)
+  existing = captured[-1]
+  expected = ((1.0 - planner._mode_w) * existing) + (planner._mode_w * last_good)
+  assert planner.output_a_target == pytest.approx(expected, abs=1e-6)
+  assert len(logs) == 1
+  assert logs[0][1] == 1
+
+  escaped = _guarded_updates(planner, inputs, 19)
+  assert escaped == [], escaped
+  assert planner._mode_w == 0.0
+  assert planner.output_a_target == pytest.approx(captured[-1], abs=1e-9)
+  assert planner.unified_a_target == 0.0
+  assert planner._unified_fault_count == 1
+  assert step_calls["n"] == 1
+  assert len(logs) == 1
+
+  publisher = _CapturingPubMaster()
+  planner.publish(inputs, publisher)
+  assert publisher.message.longitudinalPlan.aTarget == pytest.approx(planner.output_a_target, abs=1e-9)
+  assert publisher.message.longitudinalPlan.unifiedATarget == 0.0
+
+  sentinel_calls = {"n": 0}
+
+  def _sentinel(*_args, **_kwargs):
+    sentinel_calls["n"] += 1
+    return 4.0
+
+  monkeypatch.setattr(planner._unified, "step", _sentinel)
+  escaped = _guarded_updates(planner, inputs, 5)
+  assert escaped == [], escaped
+  assert sentinel_calls["n"] == 0
+  assert planner._unified_faulted is True
+  assert planner._mode_w == 0.0
+  assert planner.unified_a_target == 0.0
+  assert planner.output_a_target == pytest.approx(captured[-1], abs=1e-9)
+  assert planner.output_a_target != pytest.approx(4.0, abs=0.5)
+  assert len(logs) == 1
+
+  inputs["controlsState"].longControlState = LongCtrlState.off
+  escaped = _guarded_updates(planner, inputs, 1)
+  assert escaped == [], escaped
+  assert planner._plan_engaged is False
+  assert planner._unified_faulted is True
+  assert planner._mode_w == 0.0
+  inputs["controlsState"].longControlState = LongCtrlState.pid
+  escaped = _guarded_updates(planner, inputs, 3)
+  assert escaped == [], escaped
+  assert planner._plan_engaged is True
+  assert planner._unified_faulted is True
+  assert planner._mode_w == 0.0
+  assert sentinel_calls["n"] == 0
+  assert planner.unified_a_target == 0.0
+  assert len(logs) == 1
