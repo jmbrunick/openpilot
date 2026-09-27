@@ -169,6 +169,42 @@ MUTATIONS = (
     ),
   ),
   HistoricalMutation(
+    name="same-direction nudge during ALC treated as takeover",
+    source_path="selfdrive/controls/lib/lane_change_nudge.py",
+    original=(
+      b"  # Same-direction nudge during tipped ALC is the lane-change confirm, not a takeover.\n"
+      b"  if same_direction:\n"
+      b"    return False\n"
+    ),
+    replacement=(
+      b"  # Same-direction nudge during tipped ALC is the lane-change confirm, not a takeover.\n"
+      b"  if same_direction:\n"
+      b"    return True\n"
+    ),
+    test_nodes=(
+      "selfdrive/controls/lib/tests/test_lane_change_nudge.py::"
+      "test_tip_at_45_same_direction_nudge_confirms_through_flash_gap",
+    ),
+  ),
+  HistoricalMutation(
+    name="emergency yank suppressed during ALC",
+    source_path="selfdrive/controls/lib/lane_change_nudge.py",
+    original=(
+      b"  # Emergency yank always releases, including a same-direction yank during ALC.\n"
+      b"  if emergency:\n"
+      b"    return True\n"
+    ),
+    replacement=(
+      b"  # Emergency yank always releases, including a same-direction yank during ALC.\n"
+      b"  if emergency:\n"
+      b"    return False\n"
+    ),
+    test_nodes=(
+      "selfdrive/controls/lib/tests/test_lane_change_nudge.py::"
+      "test_emergency_yank_same_direction_releases_and_cancels",
+    ),
+  ),
+  HistoricalMutation(
     name="map-offset-double-add-restored",
     source_path="selfdrive/car/card.py",
     original=b"  return (float(displayed_kph) - float(offset_kph)) * CV.KPH_TO_MS\n",
