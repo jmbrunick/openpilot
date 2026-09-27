@@ -52,6 +52,7 @@ jobs:
           selfdrive/mapd/tests/test_map_speed_policy.py \
           selfdrive/mapd/tests/test_map_speed_offset_slew.py \
           selfdrive/mapd/tests/test_map_match_frontage.py \
+          selfdrive/car/tests/test_preap_engage_max_after_pause.py \
           selfdrive/controls/tests/test_radard.py \
           selfdrive/controls/tests/test_radar_path_gate.py \
           selfdrive/controls/tests/test_rain_radar_hold.py \
