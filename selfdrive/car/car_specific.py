@@ -8,6 +8,14 @@ from openpilot.selfdrive.controls.lib.blinker_lateral_pause import (
   BlinkerLateralHold,
   blinker_turn_blocks_steering_disengage,
 )
+from openpilot.selfdrive.controls.lib.driver_lateral_handoff import cs_hands_on_level
+from openpilot.selfdrive.controls.lib.lane_change_nudge import (
+  EmergencyYankTracker,
+  is_emergency_yank,
+  steer_disengage_this_frame,
+  tipped_lane_change_driver_release,
+  torque_is_same_direction,
+)
 from openpilot.selfdrive.selfdrived.events import Events
 
 ButtonType = structs.CarState.ButtonEvent.Type
@@ -25,6 +33,8 @@ class CarSpecificEvents:
     self.no_steer_warning = False
     self.silent_steer_warning = True
     self.blinker_lat_hold = BlinkerLateralHold()
+    self._yank = EmergencyYankTracker()
+    self._yank_release_prev = False
 
   def update(self, CS: car.CarState, CS_prev: car.CarState, CC: car.CarControl):
     if self.CP.brand in ('body', 'mock'):
@@ -184,11 +194,36 @@ class CarSpecificEvents:
       v_ego=float(getattr(CS, 'vEgo', 0.0) or 0.0),
       stalk_state=int(getattr(CS, 'turnSignalStalkState', 0) or 0),
       steering_disengage=bool(getattr(CS, 'steeringDisengage', False)))
-    if CS.steeringDisengage and not CS_prev.steeringDisengage:
-      if not blinker_turn_blocks_steering_disengage(
-          getattr(CS, 'leftBlinker', False), getattr(CS, 'rightBlinker', False),
-          getattr(CS, 'turnSignalStalkState', 0), self.blinker_lat_hold):
-        events.add(EventName.steerDisengage)
+    torque_nm = float(getattr(CS, 'steeringTorque', 0.0) or 0.0)
+    hands = cs_hands_on_level(CS)
+    fast_rise = self._yank.update(torque_nm, DT_CTRL)
+    emergency = is_emergency_yank(
+      torque_nm=torque_nm, hands_on_level=hands, fast_rise=fast_rise)
+    cc_left = bool(getattr(CC, 'leftBlinker', False))
+    cc_right = bool(getattr(CC, 'rightBlinker', False))
+    # Tipped ALC, including the lamp flash-dark gap (_alc_keep ~1 s, or
+    # controlsd still requesting the keep-alive blinker). A latched stalk
+    # clears _alc_keep and is not this window.
+    alc_confirm = bool(self.blinker_lat_hold._alc_keep) or (cc_left != cc_right)
+    direction = int(self.blinker_lat_hold._alc_direction or 0)
+    if direction not in (1, 2):
+      direction = 1 if cc_left and not cc_right else (2 if cc_right and not cc_left else 0)
+    same_direction = torque_is_same_direction(torque_nm, direction)
+    # Confirm: do not steering-disengage, even if the lamp is in a
+    # flash-dark gap and the hold has not latched blocks yet.
+    confirm = alc_confirm and same_direction and not emergency
+    release = alc_confirm and tipped_lane_change_driver_release(
+      same_direction=same_direction, emergency=emergency)
+    blocks = blinker_turn_blocks_steering_disengage(
+      getattr(CS, 'leftBlinker', False), getattr(CS, 'rightBlinker', False),
+      getattr(CS, 'turnSignalStalkState', 0), self.blinker_lat_hold,
+      emergency=emergency, alc_confirm=alc_confirm)
+    disengage_edge = bool(CS.steeringDisengage and not CS_prev.steeringDisengage)
+    if steer_disengage_this_frame(
+        confirm=confirm, release=release, release_prev=self._yank_release_prev,
+        disengage_edge=disengage_edge, blocks=blocks):
+      events.add(EventName.steerDisengage)
+    self._yank_release_prev = release
     if CS.brakePressed and CS.standstill:
       events.add(EventName.preEnableStandstill)
     if CS.gasPressed:
