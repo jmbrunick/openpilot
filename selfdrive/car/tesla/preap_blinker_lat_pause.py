@@ -40,7 +40,12 @@ controlsMismatch that would otherwise full-cancel after 2s.
 from openpilot.common.constants import CV
 from openpilot.selfdrive.controls.lib.blinker_lateral_pause import (
   BlinkerLateralHold,
+  DT_CTRL,
   blinker_turn_blocks_steering_disengage,
+)
+from openpilot.selfdrive.controls.lib.lane_change_nudge import (
+  EmergencyYankTracker,
+  is_emergency_yank,
 )
 from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   PARAM_DRIVER_LAT_HANDOFF,
@@ -270,6 +275,18 @@ def update_card_lat_handoff(engagement, *, engaged: bool,
     hard_cancel_session(engagement)
     return True
   return False
+
+
+def _peek_torsion_nm_and_hands(can_parsers):
+  """Signed torsion (same sign as CS.steeringTorque) and EPAS hands-on 0–3."""
+  try:
+    from opendbc.car import Bus
+    epas = can_parsers[Bus.chassis].vl["EPAS_sysStatus"]
+    torque = -float(epas.get("EPAS_torsionBarTorque", 0.0) or 0.0)
+    hands = int(epas.get("EPAS_handsOnLevel", 0) or 0)
+    return torque, hands
+  except Exception:
+    return 0.0, 0
 
 
 def _peek_steering_override(can_parsers):
@@ -639,7 +656,14 @@ def _handle_steering_disengage(self, steering_disengage):
   # Hard gate: one lamp or physical LEFT/RIGHT, not only hold state.
   # Dropping cruiseEnabled here is EventName.pcmDisable on Pre-AP —
   # the 3X HUD string "Steering Disengaged".
-  if blinker_turn_blocks_steering_disengage(left, right, stalk, hold):
+  # Tipped ALC flash-gap: level-2 hands stay a confirm. An emergency
+  # yank (level 3, hard torque, or a fast rise) must still tear down.
+  # A latched stalk is not _alc_keep. Panda needs a reflash for the
+  # matching hands-on level 2 / level 3 split.
+  emergency = bool(getattr(self, "_nap_emergency_yank", False))
+  alc_confirm = bool(hold._alc_keep)
+  if blinker_turn_blocks_steering_disengage(
+      left, right, stalk, hold, emergency=emergency, alc_confirm=alc_confirm):
     # Keep prev in sync so lamp-off / hand-release is not a rising edge.
     self.prev_steering_disengage = steering_disengage
     return
@@ -667,6 +691,14 @@ def _update_preap(cs, can_parsers):
       steering_disengage=disengage,
       **_hold_kwargs(engagement))
     _drop_long_if_driver_turn(engagement)
+    torque_nm, hands = _peek_torsion_nm_and_hands(can_parsers)
+    tracker = getattr(engagement, "_nap_yank_tracker", None)
+    if tracker is None:
+      tracker = EmergencyYankTracker()
+      engagement._nap_yank_tracker = tracker
+    fast_rise = tracker.update(torque_nm, DT_CTRL)
+    engagement._nap_emergency_yank = is_emergency_yank(
+      torque_nm=torque_nm, hands_on_level=hands, fast_rise=fast_rise)
   ret = _ORIG_UPDATE(cs, can_parsers)
   hands = int(getattr(cs, 'hands_on_level', 0) or 0)
   if hands <= 0:

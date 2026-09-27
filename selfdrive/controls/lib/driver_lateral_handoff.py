@@ -114,6 +114,9 @@ import numpy as np
 from cereal import log
 from opendbc.car.tesla.values import STEER_THRESHOLD
 from openpilot.common.constants import CV
+from openpilot.selfdrive.controls.lib.lane_change_nudge import (
+  tipped_lane_change_driver_release,
+)
 
 # Match controlsd / card (openpilot.common.realtime.DT_CTRL).
 DT_CTRL = 0.01
@@ -548,7 +551,9 @@ class DriverLateralHandoff:
              alc_active: bool = False, blinker_paused: bool = False,
              hands_on_level: int = 0, tracking_error: float = 0.0,
              brake_applied: bool = False, a_ego: float = 0.0,
-             v_ego: float = 15.0, dt: float | None = None) -> HandoffOutput:
+             v_ego: float = 15.0, dt: float | None = None,
+             emergency_yank: bool = False,
+             lane_change_confirm: bool = False) -> HandoffOutput:
     if dt is None:
       dt = DT_CTRL
 
@@ -561,6 +566,16 @@ class DriverLateralHandoff:
     # CC.latActive after this update when yielded so the EPS is free —
     # do not feed that dropped bit back in or we reset to identity and
     # forget we yielded.
+    # A same-direction confirm during tipped ALC is not a soft-yield.
+    # An emergency yank still frees the EPS immediately, same as a yield
+    # that today's takeover follows with a full disengage.
+    tipped = bool(alc_active or lane_change_confirm)
+    if tipped and tipped_lane_change_driver_release(
+        same_direction=bool(lane_change_confirm), emergency=bool(emergency_yank)):
+      self._enter_yield()
+      self._set_ui_paused()
+      return HandoffOutput(self.authority, self.ui_paused, True, False, False)
+
     # ALC wheel-nudge uses steeringPressed at 1 Nm and must not be softened.
     # Full disengage (cancel / door / hands-on >= 2) clears engaged.
     # blinker_paused is a latched *driver-turn* (not ALC tip/keep-alive).
@@ -570,7 +585,7 @@ class DriverLateralHandoff:
     # owns resume (no dedicated blinker rising-edge blend). Soft-lat
     # Off never reaches here (enabled=False → identity);
     # BlinkerLateralHold still frees lat on lamp latch only.
-    if not engaged or alc_active:
+    if not engaged or alc_active or lane_change_confirm:
       self._reset()
       return self._identity()
     inhibited = lat_reenable_inhibited(blinker_paused=blinker_paused, v_ego=v_ego)
