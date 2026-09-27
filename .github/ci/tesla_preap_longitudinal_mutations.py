@@ -17,6 +17,7 @@ BRAKE_CANCEL_TEST_PATH = (
 UNIFIED_TEST_PATH = "selfdrive/controls/tests/test_unified_lead.py"
 UNIFIED_PLANNER_TEST_PATH = "selfdrive/controls/tests/test_unified_lead_planner.py"
 OFFSET_TEST_PATH = "selfdrive/mapd/tests/test_map_speed_offset_slew.py"
+ENGAGE_MAX_TEST_PATH = "selfdrive/car/tests/test_preap_engage_max_after_pause.py"
 FRONTAGE_TEST_PATH = "selfdrive/mapd/tests/test_map_match_frontage.py"
 LANE_CHANGE_TARGET_TEST_PATH = "selfdrive/controls/lib/tests/test_lane_change_target.py"
 NOISE_GATE_TEST_NODE = (
@@ -199,6 +200,76 @@ MUTATIONS = (
     replacement=b"    nxt = target\n",
     test_nodes=(
       f"{UNIFIED_TEST_PATH}::test_stateful_sweep_has_no_jerk_cliff",
+    ),
+  ),
+  HistoricalMutation(
+    name="unified-lead kinematic close term removed",
+    source_path="selfdrive/controls/lib/unified_lead.py",
+    original=b"  return max(A_MIN_MS2, -(v * v) / (2.0 * room))\n",
+    replacement=b"  return 0.0\n",
+    test_nodes=(
+      f"{UNIFIED_TEST_PATH}::test_sep25_1007_rapid_close_is_at_least_legacy_firm",
+    ),
+  ),
+  HistoricalMutation(
+    name="unified-lead gap curve discontinuity restored",
+    source_path="selfdrive/controls/lib/unified_lead.py",
+    original=b"  room = outside + inside - REACTION_S * v\n",
+    replacement=b"  room = (outside if e > 0.0 else inside) - REACTION_S * v\n",
+    test_nodes=(
+      f"{UNIFIED_TEST_PATH}::test_no_jump_across_the_follow_distance",
+    ),
+  ),
+  HistoricalMutation(
+    name="unified-lead MAX hard clamp restored",
+    source_path="selfdrive/controls/lib/unified_lead.py",
+    original=b"  return -OVERSPEED_MAX_MS2 * math.tanh(raw / OVERSPEED_MAX_MS2)\n",
+    replacement=b"  return A_MIN_MS2\n",
+    test_nodes=(
+      f"{UNIFIED_TEST_PATH}::test_sep25_1043_overspeed_is_proportional_not_a_clamp",
+    ),
+  ),
+  HistoricalMutation(
+    name="unified-lead confidence weighting removed",
+    source_path="selfdrive/controls/lib/unified_lead.py",
+    original=b"    target_conf = on_path * lead_quality(model_prob, radar)\n",
+    replacement=b"    target_conf = on_path\n",
+    test_nodes=(
+      f"{UNIFIED_TEST_PATH}::test_lead_confidence_weights_weak_readings_and_ramps_strong_ones",
+    ),
+  ),
+  HistoricalMutation(
+    name="unified-lead release rate not proportional",
+    source_path="selfdrive/controls/lib/unified_lead.py",
+    original=b"    up = min(JERK_PHYS_MS3, release_base + JERK_PROP_1_S * max(0.0, err)) * frame_dt\n",
+    replacement=b"    up = release_base * frame_dt\n",
+    test_nodes=(
+      f"{UNIFIED_TEST_PATH}::test_release_rate_is_proportional_to_how_far_below_target",
+    ),
+  ),
+  HistoricalMutation(
+    name="unified-lead opening trickle removed",
+    source_path="selfdrive/controls/lib/unified_lead.py",
+    original=b"    a_cmd = w * min(a_cmd, trickle) + (1.0 - w) * a_cmd\n",
+    replacement=b"    a_cmd = a_cmd\n",
+    test_nodes=(
+      f"{UNIFIED_TEST_PATH}::test_sep25_pulling_away_lead_near_gap_is_a_trickle",
+    ),
+  ),
+  HistoricalMutation(
+    name="engage MAX stale seed restored",
+    source_path="selfdrive/car/card.py",
+    original=(
+      b"      restore_a_ms2=map_accel_a_ms2(self._map_speed_lookahead, self._map_speed_accel),\n" +
+      b"      long_active=soft_long,\n"
+    ),
+    replacement=(
+      b"      restore_a_ms2=map_accel_a_ms2(self._map_speed_lookahead, self._map_speed_accel),\n" +
+      b"      long_active=True,\n"
+    ),
+    test_nodes=(
+      f"{ENGAGE_MAX_TEST_PATH}::test_resume_with_gas_after_pause_turn_publishes_held_max_first_frame",
+      f"{ENGAGE_MAX_TEST_PATH}::test_paused_long_curve_does_not_rewrite_hud_max",
     ),
   ),
   HistoricalMutation(

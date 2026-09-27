@@ -445,6 +445,7 @@ class Car:
       curvature=curve_kappa,
       yaw_rate=curve_yaw,
       restore_a_ms2=map_accel_a_ms2(self._map_speed_lookahead, self._map_speed_accel),
+      long_active=soft_long,
     )
     preap_v_cruise_kph = float(curve_out.hud_kph)
     restore_seed_kph = curve_out.restore_seed_kph
