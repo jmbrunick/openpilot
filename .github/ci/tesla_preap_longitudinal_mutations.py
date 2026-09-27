@@ -18,6 +18,7 @@ UNIFIED_TEST_PATH = "selfdrive/controls/tests/test_unified_lead.py"
 UNIFIED_PLANNER_TEST_PATH = "selfdrive/controls/tests/test_unified_lead_planner.py"
 OFFSET_TEST_PATH = "selfdrive/mapd/tests/test_map_speed_offset_slew.py"
 FRONTAGE_TEST_PATH = "selfdrive/mapd/tests/test_map_match_frontage.py"
+LANE_CHANGE_TARGET_TEST_PATH = "selfdrive/controls/lib/tests/test_lane_change_target.py"
 NOISE_GATE_TEST_NODE = (
   "opendbc_repo/opendbc/car/tesla/preap/tests/test_virtual_das.py::TestInnerPID::" +
   "test_sub_deadband_sign_changing_noise_does_not_accumulate_residual_authority"
@@ -259,6 +260,89 @@ MUTATIONS = (
     test_nodes=(
       "selfdrive/controls/lib/tests/test_lane_change_nudge.py::"
       "test_emergency_yank_same_direction_releases_and_cancels",
+    ),
+  ),
+  HistoricalMutation(
+    name="same-direction bump pauses target-locked lane change",
+    source_path="selfdrive/controls/lib/desire_helper.py",
+    original=b"    suspended = locked and not lateral_active\n",
+    replacement=b"    suspended = locked and (not lateral_active or bool(carstate.steeringPressed))\n",
+    test_nodes=(
+      f"{LANE_CHANGE_TARGET_TEST_PATH}::test_same_direction_bump_mid_change_continues_with_no_pause",
+    ),
+  ),
+  HistoricalMutation(
+    name="resume after release disabled",
+    source_path="selfdrive/controls/lib/desire_helper.py",
+    original=b"    if not engaged or (not lateral_active and not locked) or \\\n",
+    replacement=b"    if not engaged or not lateral_active or \\\n",
+    test_nodes=(
+      f"{LANE_CHANGE_TARGET_TEST_PATH}::test_ordinary_release_pauses_then_resumes_to_target",
+      f"{LANE_CHANGE_TARGET_TEST_PATH}::test_resume_from_partially_over_finishes_centered_in_target_lane",
+    ),
+  ),
+  HistoricalMutation(
+    name="desire held through release so resume is not a fresh pulse",
+    source_path="selfdrive/controls/lib/desire_helper.py",
+    original=b"    if self.target is not None and (self.target_suspended or pulse_gap):\n",
+    replacement=b"    if self.target is not None and pulse_gap:\n",
+    test_nodes=(
+      f"{LANE_CHANGE_TARGET_TEST_PATH}::test_ordinary_release_pauses_then_resumes_to_target",
+    ),
+  ),
+  HistoricalMutation(
+    name="opposite pull no longer cancels",
+    source_path="selfdrive/controls/lib/desire_helper.py",
+    original=b"        elif locked and self._opposite_pull(carstate, nudge_dir):\n",
+    replacement=b"        elif False:\n",
+    test_nodes=(
+      f"{LANE_CHANGE_TARGET_TEST_PATH}::test_opposite_pull_cancels",
+    ),
+  ),
+  HistoricalMutation(
+    name="opposite tip no longer cancels target-locked lane change",
+    source_path="selfdrive/controls/lib/desire_helper.py",
+    original=b"        elif opposite_press:\n",
+    replacement=b"        elif False:\n",
+    test_nodes=(
+      f"{LANE_CHANGE_TARGET_TEST_PATH}::test_opposite_tip_cancels",
+    ),
+  ),
+  HistoricalMutation(
+    name="target-locked lane change completes on crossing instead of centered",
+    source_path="selfdrive/controls/lib/lane_change_target.py",
+    original=b"    return self.crossed and self.centered_s + 1e-9 >= CENTERED_HOLD_S\n",
+    replacement=b"    return self.crossed\n",
+    test_nodes=(
+      f"{LANE_CHANGE_TARGET_TEST_PATH}::test_completes_when_centered_in_target_lane_not_on_a_timer",
+      f"{LANE_CHANGE_TARGET_TEST_PATH}::test_resume_from_partially_over_finishes_centered_in_target_lane",
+    ),
+  ),
+  HistoricalMutation(
+    name="target lock timeout removed",
+    source_path="selfdrive/controls/lib/lane_change_target.py",
+    original=b"    return self.age_s > TARGET_LOCK_TIMEOUT_S\n",
+    replacement=b"    return False\n",
+    test_nodes=(
+      f"{LANE_CHANGE_TARGET_TEST_PATH}::test_timeout_cancels_including_released_time",
+    ),
+  ),
+  HistoricalMutation(
+    name="low-confidence lane lines keep guessing",
+    source_path="selfdrive/controls/lib/desire_helper.py",
+    original=b"    elif locked and (self.target.timed_out or self.target.low_confidence):\n",
+    replacement=b"    elif locked and self.target.timed_out:\n",
+    test_nodes=(
+      f"{LANE_CHANGE_TARGET_TEST_PATH}::test_low_lane_line_confidence_cancels",
+    ),
+  ),
+  HistoricalMutation(
+    name="target lock accepts low-confidence ego lines",
+    source_path="selfdrive/controls/lib/lane_change_target.py",
+    original=b"    if probs[1] < LANE_LINE_MIN_PROB or probs[2] < LANE_LINE_MIN_PROB:\n",
+    replacement=b"    if False:\n",
+    test_nodes=(
+      f"{LANE_CHANGE_TARGET_TEST_PATH}::test_low_confidence_at_start_does_not_guess",
     ),
   ),
   HistoricalMutation(
