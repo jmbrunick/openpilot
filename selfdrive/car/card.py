@@ -20,7 +20,7 @@ from opendbc.car.car_helpers import get_car, interfaces
 from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET, VCruiseHelper
-from openpilot.selfdrive.mapd.constants import map_accel_a_ms2
+from openpilot.selfdrive.mapd.constants import MANUAL_SET_EPS_KPH, map_accel_a_ms2
 from openpilot.selfdrive.mapd.map_speed_policy import (
   MapCruiseHold, apply_map_speed_kph, decide_map_cruise, effective_map_limit_ms,
   map_slew_a_ms2, read_map_speed_params, should_write_preap_pedal, slew_map_speed_ms,
@@ -36,6 +36,12 @@ from openpilot.selfdrive.controls.lib.hypermile import (
 REPLAY = "REPLAY" in os.environ
 
 EventName = log.OnroadEvent.EventName
+
+
+def map_slew_from_displayed_kph(displayed_kph: float, offset_kph: float) -> float:
+  """Slew state tracks the raw OSM limit. HUD / pedal MAX already includes offset."""
+  return (float(displayed_kph) - float(offset_kph)) * CV.KPH_TO_MS
+
 
 # forward
 carlog.addHandler(ForwardingHandler(cloudlog))
@@ -170,6 +176,7 @@ class Car:
     self._curve_max = CurveMaxHold()
     self._map_slew_ms: float | None = None
     self._last_pedal_kph: float | None = None
+    self._pedal_self_write_kph: float | None = None
     self._follow_stalk_mono: float = 0.0
     self._follow_gesture = FollowStalkGesture()
     self._refresh_map_speed_params()
@@ -239,167 +246,7 @@ class Car:
           # Use CarState w/ buttons from the step selfdrived enables on
           self.v_cruise_helper.initialize_v_cruise(self.CS_prev, self.experimental_mode)
       else:
-        # Pre-AP pedal mode owns set-speed via pedal_speed_kph. Overlay OSM
-        # onto vCruise/MAX for the OP session (cruiseEnabled), including a
-        # brake long pause so sticky MAX can rebase. The first
-        # pull is lateral-only and must not seed or arm a sticky hold.
-        raw_kph = float(CS.cruiseState.speed * CV.MS_TO_KPH)
-        raw_kph, follow_stalk = self._maybe_follow_stalk(CS, raw_kph)
-        long_active = bool(getattr(CS, 'pedalLongActive', False))
-        long_active_prev = bool(getattr(self.CS_prev, 'pedalLongActive', False))
-        engage_rising = long_active and not long_active_prev
-        session_enabled = bool(getattr(CS.cruiseState, 'enabled', False))
-        resume_held, take_speed_now = self._preap_set_events()
-        # Overlay held can be None (maps off never stalk-latched). The FSM
-        # still has the brake-pause MAX — adopt it before pause substitution
-        # so we never treat ego as held, and so session_engaged stays up.
-        self._adopt_preap_fsm_held_max()
-        # Software long (enableLongControl), not pedal authority. Pause and
-        # the authority-acquisition gap both have pedalLongActive False;
-        # only a true long pause publishes cruiseState.speed as ego.
-        soft_long = bool(getattr(CS, 'enableLongControl', False))
-        # Pause publishes cruiseState.speed as ego. Keep the held MAX instead.
-        if not soft_long and self._map_hold.held_max_kph is not None:
-          raw_kph = float(self._map_hold.held_max_kph)
-        traveled_kph = float(CS.vEgo) * CV.MS_TO_KPH
-        has_held = self._map_hold.held_max_kph is not None
-        session_engaged = bool(session_enabled) and (
-          soft_long or has_held or resume_held or take_speed_now
-        )
-        stalk_pressed = (not follow_stalk) and self._preap_stalk_set_pressed(CS)
-        posted_kph = None
-        map_kph = None
-        map_valid = bool(self.sm.valid.get('liveMapDataNAP', False) and self.sm['liveMapDataNAP'].speedLimitValid)
-        md = self.sm['liveMapDataNAP'] if map_valid else None
-        raw_posted_kph = None
-        if md is not None and md.speedLimit > 0:
-          raw_posted_kph = float(md.speedLimit) * CV.MS_TO_KPH
-        # Offset from raw OSM posted (mph). Hypermile eco / Step Down apply
-        # only with a known map posted — never invent a drop when maps are
-        # off, unmatched, or speedLimit unknown (same as sticky MAX).
-        maps_posted = raw_posted_kph is not None
-        map_offset_kph = self._live_map_offset_kph(raw_posted_kph, maps_posted=maps_posted)
-        if raw_posted_kph is not None:
-          posted_kph = raw_posted_kph + map_offset_kph
-        # Snapshot pre-curve MAX before decide so OSM flicker cannot wipe sticky.
-        last_hud_kph = float(self.v_cruise_helper.v_cruise_kph)
-        steer_deg = float(getattr(CS, 'steeringAngleDeg', 0.0) or 0.0)
-        curve_kappa, curve_yaw = self._curve_cornering()
-        policy_posted_kph, _ = self._curve_max.begin_cycle(
-          self._map_hold,
-          last_hud_kph=last_hud_kph,
-          posted_kph=posted_kph,
-          v_ego_ms=float(CS.vEgo),
-          angle_steers_deg=steer_deg,
-          steer_ratio=float(getattr(self.CP, 'steerRatio', 0.0) or 0.0),
-          wheelbase=float(getattr(self.CP, 'wheelbase', 0.0) or 0.0),
-          engaged=session_engaged,
-          take_speed_now=take_speed_now,
-          dt=DT_CTRL,
-          curvature=curve_kappa,
-          yaw_rate=curve_yaw,
-        )
-        dec = decide_map_cruise(
-          self._map_hold,
-          engaged=session_engaged,
-          mode=self._map_speed_mode,
-          raw_kph=raw_kph,
-          posted_kph=policy_posted_kph,
-          engage_rising=engage_rising,
-          now=time.monotonic(),
-          stalk_pressed=stalk_pressed,
-          take_speed_now=take_speed_now,
-          resume_held=resume_held,
-          traveled_kph=traveled_kph,
-          long_active=soft_long,
-        )
-        # Stalk +/- while maps off updates overlay held; keep the FSM latch
-        # aligned so the next brake pause resumes that MAX.
-        self._publish_preap_held_max(long_active=soft_long)
-        if map_valid and md is not None and not dec.sticky:
-          # Any posted decrease: kin+110 m ease, never assign the new limit in one shot.
-          lim = effective_map_limit_ms(
-            float(md.speedLimit),
-            float(md.nextSpeedLimit),
-            float(md.nextSpeedLimitDistance),
-            float(CS.vEgo),
-            self._map_speed_lookahead,
-            self._map_speed_accel,
-            sticky=False,
-          )
-        else:
-          lim = None
-        if map_valid and md is not None and lim is not None and lim > 0:
-          if self._map_slew_ms is None:
-            prev_kph = float(self.v_cruise_helper.v_cruise_kph)
-            prev_ms = prev_kph * CV.KPH_TO_MS
-            if 0.0 < prev_kph < V_CRUISE_UNSET and prev_ms > lim + 0.3:
-              self._map_slew_ms = prev_ms
-            else:
-              self._map_slew_ms = lim
-          a = map_slew_a_ms2(
-            self._map_slew_ms, lim, self._map_speed_lookahead, self._map_speed_accel,
-          )
-          self._map_slew_ms = slew_map_speed_ms(self._map_slew_ms, lim, DT_CTRL, a)
-          map_kph = self._map_slew_ms * CV.MS_TO_KPH
-        elif map_valid and md is not None:
-          self._map_slew_ms = None
-        elif not map_valid:
-          self._map_slew_ms = None
-        # seed_kph is a one-shot write (engage, posted raise, stalk step).
-        # Sticky hold uses driver_kph / follow_override — do not write pedal
-        # every frame or CI.update's stalk step is undone.
-        if dec.seed_kph is not None:
-          preap_v_cruise_kph = dec.seed_kph
-          self._map_slew_ms = dec.seed_kph * CV.KPH_TO_MS
-        else:
-          preap_v_cruise_kph = apply_map_speed_kph(
-            dec.driver_kph,
-            map_kph,
-            mode=self._map_speed_mode,
-            offset_kph=map_offset_kph,
-            engaged=session_engaged,
-            op_long_software_cruise=True,
-            driver_override=dec.follow_override,
-          )
-        # Temporary curve cap may lower HUD MAX. Restore seed puts pre-curve
-        # MAX back after the bend. Do not let that cap rebase sticky / held.
-        curve_out = self._curve_max.finish(
-          hud_kph=preap_v_cruise_kph,
-          hold=self._map_hold,
-          posted_kph=posted_kph,
-          v_ego_ms=float(CS.vEgo),
-          angle_steers_deg=steer_deg,
-          steer_ratio=float(getattr(self.CP, 'steerRatio', 0.0) or 0.0),
-          wheelbase=float(getattr(self.CP, 'wheelbase', 0.0) or 0.0),
-          engaged=session_engaged,
-          stalk_pressed=stalk_pressed,
-          take_speed_now=take_speed_now,
-          dt=DT_CTRL,
-          curvature=curve_kappa,
-          yaw_rate=curve_yaw,
-          restore_a_ms2=map_accel_a_ms2(self._map_speed_lookahead, self._map_speed_accel),
-        )
-        preap_v_cruise_kph = float(curve_out.hud_kph)
-        restore_seed_kph = curve_out.restore_seed_kph
-        seed_kph = dec.seed_kph if restore_seed_kph is None else float(restore_seed_kph)
-        if restore_seed_kph is not None:
-          self._map_slew_ms = float(restore_seed_kph) * CV.KPH_TO_MS
-        # Write engage/posted/stalk seed, or when HUD MAX rose. Never write
-        # the same sticky MAX every frame. Pause still writes a rebase /
-        # resume seed onto pedal_speed so one SET keeps the held MAX.
-        # Curve restore is a one-shot seed so MAX returns to the pre-bend set.
-        write_max = long_active or soft_long or resume_held or take_speed_now or (
-          session_engaged and seed_kph is not None
-        )
-        if write_max and should_write_preap_pedal(seed_kph, preap_v_cruise_kph, self._last_pedal_kph):
-          self._write_preap_pedal_speed(CS, preap_v_cruise_kph)
-          self._last_pedal_kph = float(preap_v_cruise_kph)
-        elif not session_enabled:
-          self._last_pedal_kph = None
-        self.v_cruise_helper.v_cruise_kph_last = self.v_cruise_helper.v_cruise_kph
-        self.v_cruise_helper.v_cruise_kph = preap_v_cruise_kph
-        self.v_cruise_helper.v_cruise_cluster_kph = preap_v_cruise_kph
+        self._update_preap_map_cruise(CS)
     except Exception:
       # Fail-safe: never crash card due cruise-target selection logic.
       cloudlog.exception("Pre-AP software cruise target update failed, falling back to VCruiseHelper default")
@@ -412,6 +259,177 @@ class Car:
     CS.vCruiseCluster = float(self.v_cruise_helper.v_cruise_cluster_kph)
 
     return CS, RD
+
+  def _update_preap_map_cruise(self, CS) -> None:
+    # Pre-AP pedal mode owns set-speed via pedal_speed_kph. Overlay OSM
+    # onto vCruise/MAX for the OP session (cruiseEnabled), including a
+    # brake long pause so sticky MAX can rebase. The first
+    # pull is lateral-only and must not seed or arm a sticky hold.
+    raw_kph = float(CS.cruiseState.speed * CV.MS_TO_KPH)
+    raw_kph, follow_stalk = self._maybe_follow_stalk(CS, raw_kph)
+    long_active = bool(getattr(CS, 'pedalLongActive', False))
+    long_active_prev = bool(getattr(self.CS_prev, 'pedalLongActive', False))
+    engage_rising = long_active and not long_active_prev
+    session_enabled = bool(getattr(CS.cruiseState, 'enabled', False))
+    resume_held, take_speed_now = self._preap_set_events()
+    # Overlay held can be None (maps off never stalk-latched). The FSM
+    # still has the brake-pause MAX — adopt it before pause substitution
+    # so we never treat ego as held, and so session_engaged stays up.
+    self._adopt_preap_fsm_held_max()
+    # Software long (enableLongControl), not pedal authority. Pause and
+    # the authority-acquisition gap both have pedalLongActive False;
+    # only a true long pause publishes cruiseState.speed as ego.
+    soft_long = bool(getattr(CS, 'enableLongControl', False))
+    # Pause publishes cruiseState.speed as ego. Keep the held MAX instead.
+    if not soft_long and self._map_hold.held_max_kph is not None:
+      raw_kph = float(self._map_hold.held_max_kph)
+    traveled_kph = float(CS.vEgo) * CV.MS_TO_KPH
+    has_held = self._map_hold.held_max_kph is not None
+    session_engaged = bool(session_enabled) and (
+      soft_long or has_held or resume_held or take_speed_now
+    )
+    stalk_pressed = (not follow_stalk) and self._preap_stalk_set_pressed(CS)
+    self_wrote_pedal = (
+      self._pedal_self_write_kph is not None
+      and abs(float(raw_kph) - float(self._pedal_self_write_kph)) <= MANUAL_SET_EPS_KPH
+    )
+    self._pedal_self_write_kph = None
+    posted_kph = None
+    map_kph = None
+    map_valid = bool(self.sm.valid.get('liveMapDataNAP', False) and self.sm['liveMapDataNAP'].speedLimitValid)
+    md = self.sm['liveMapDataNAP'] if map_valid else None
+    raw_posted_kph = None
+    if md is not None and md.speedLimit > 0:
+      raw_posted_kph = float(md.speedLimit) * CV.MS_TO_KPH
+    # Offset from raw OSM posted (mph). Hypermile eco / Step Down apply
+    # only with a known map posted — never invent a drop when maps are
+    # off, unmatched, or speedLimit unknown (same as sticky MAX).
+    maps_posted = raw_posted_kph is not None
+    map_offset_kph = self._live_map_offset_kph(raw_posted_kph, maps_posted=maps_posted)
+    if raw_posted_kph is not None:
+      posted_kph = raw_posted_kph + map_offset_kph
+    # Snapshot pre-curve MAX before decide so OSM flicker cannot wipe sticky.
+    last_hud_kph = float(self.v_cruise_helper.v_cruise_kph)
+    steer_deg = float(getattr(CS, 'steeringAngleDeg', 0.0) or 0.0)
+    curve_kappa, curve_yaw = self._curve_cornering()
+    policy_posted_kph, _ = self._curve_max.begin_cycle(
+      self._map_hold,
+      last_hud_kph=last_hud_kph,
+      posted_kph=posted_kph,
+      v_ego_ms=float(CS.vEgo),
+      angle_steers_deg=steer_deg,
+      steer_ratio=float(getattr(self.CP, 'steerRatio', 0.0) or 0.0),
+      wheelbase=float(getattr(self.CP, 'wheelbase', 0.0) or 0.0),
+      engaged=session_engaged,
+      take_speed_now=take_speed_now,
+      dt=DT_CTRL,
+      curvature=curve_kappa,
+      yaw_rate=curve_yaw,
+    )
+    dec = decide_map_cruise(
+      self._map_hold,
+      engaged=session_engaged,
+      mode=self._map_speed_mode,
+      raw_kph=raw_kph,
+      posted_kph=policy_posted_kph,
+      engage_rising=engage_rising,
+      now=time.monotonic(),
+      stalk_pressed=stalk_pressed,
+      take_speed_now=take_speed_now,
+      resume_held=resume_held,
+      traveled_kph=traveled_kph,
+      long_active=soft_long,
+      self_wrote_pedal=self_wrote_pedal,
+    )
+    # Stalk +/- while maps off updates overlay held; keep the FSM latch
+    # aligned so the next brake pause resumes that MAX.
+    self._publish_preap_held_max(long_active=soft_long)
+    if map_valid and md is not None and not dec.sticky:
+      # Any posted decrease: kin+110 m ease, never assign the new limit in one shot.
+      lim = effective_map_limit_ms(
+        float(md.speedLimit),
+        float(md.nextSpeedLimit),
+        float(md.nextSpeedLimitDistance),
+        float(CS.vEgo),
+        self._map_speed_lookahead,
+        self._map_speed_accel,
+        sticky=False,
+      )
+    else:
+      lim = None
+    if map_valid and md is not None and lim is not None and lim > 0:
+      if self._map_slew_ms is None:
+        hud_kph = float(self.v_cruise_helper.v_cruise_kph)
+        prev_ms = map_slew_from_displayed_kph(hud_kph, map_offset_kph)
+        if 0.0 < hud_kph < V_CRUISE_UNSET and prev_ms > lim + 0.3:
+          self._map_slew_ms = prev_ms
+        else:
+          self._map_slew_ms = lim
+      a = map_slew_a_ms2(
+        self._map_slew_ms, lim, self._map_speed_lookahead, self._map_speed_accel,
+      )
+      self._map_slew_ms = slew_map_speed_ms(self._map_slew_ms, lim, DT_CTRL, a)
+      map_kph = self._map_slew_ms * CV.MS_TO_KPH
+    elif map_valid and md is not None:
+      self._map_slew_ms = None
+    elif not map_valid:
+      self._map_slew_ms = None
+    # seed_kph is a one-shot write (engage, posted raise, stalk step).
+    # Sticky hold uses driver_kph / follow_override — do not write pedal
+    # every frame or CI.update's stalk step is undone.
+    if dec.seed_kph is not None:
+      preap_v_cruise_kph = dec.seed_kph
+      self._map_slew_ms = map_slew_from_displayed_kph(dec.seed_kph, map_offset_kph)
+    else:
+      preap_v_cruise_kph = apply_map_speed_kph(
+        dec.driver_kph,
+        map_kph,
+        mode=self._map_speed_mode,
+        offset_kph=map_offset_kph,
+        engaged=session_engaged,
+        op_long_software_cruise=True,
+        driver_override=dec.follow_override,
+      )
+    # Temporary curve cap may lower HUD MAX. Restore seed puts pre-curve
+    # MAX back after the bend. Do not let that cap rebase sticky / held.
+    curve_out = self._curve_max.finish(
+      hud_kph=preap_v_cruise_kph,
+      hold=self._map_hold,
+      posted_kph=posted_kph,
+      v_ego_ms=float(CS.vEgo),
+      angle_steers_deg=steer_deg,
+      steer_ratio=float(getattr(self.CP, 'steerRatio', 0.0) or 0.0),
+      wheelbase=float(getattr(self.CP, 'wheelbase', 0.0) or 0.0),
+      engaged=session_engaged,
+      stalk_pressed=stalk_pressed,
+      take_speed_now=take_speed_now,
+      dt=DT_CTRL,
+      curvature=curve_kappa,
+      yaw_rate=curve_yaw,
+      restore_a_ms2=map_accel_a_ms2(self._map_speed_lookahead, self._map_speed_accel),
+    )
+    preap_v_cruise_kph = float(curve_out.hud_kph)
+    restore_seed_kph = curve_out.restore_seed_kph
+    seed_kph = dec.seed_kph if restore_seed_kph is None else float(restore_seed_kph)
+    if restore_seed_kph is not None:
+      self._map_slew_ms = map_slew_from_displayed_kph(float(restore_seed_kph), map_offset_kph)
+    # Write engage/posted/stalk seed, or when HUD MAX rose. Never write
+    # the same sticky MAX every frame. Pause still writes a rebase /
+    # resume seed onto pedal_speed so one SET keeps the held MAX.
+    # Curve restore is a one-shot seed so MAX returns to the pre-bend set.
+    write_max = long_active or soft_long or resume_held or take_speed_now or (
+      session_engaged and seed_kph is not None
+    )
+    if write_max and should_write_preap_pedal(seed_kph, preap_v_cruise_kph, self._last_pedal_kph):
+      self._write_preap_pedal_speed(CS, preap_v_cruise_kph)
+      self._last_pedal_kph = float(preap_v_cruise_kph)
+      self._pedal_self_write_kph = float(preap_v_cruise_kph)
+    elif not session_enabled:
+      self._last_pedal_kph = None
+      self._pedal_self_write_kph = None
+    self.v_cruise_helper.v_cruise_kph_last = self.v_cruise_helper.v_cruise_kph
+    self.v_cruise_helper.v_cruise_kph = preap_v_cruise_kph
+    self.v_cruise_helper.v_cruise_cluster_kph = preap_v_cruise_kph
 
   def _curve_cornering(self) -> tuple[float | None, float | None]:
     """Vehicle-model curvature, else livePose yaw rate. None if not yet valid.
@@ -540,6 +558,7 @@ class Car:
     if undo is not None and soft_long:
       self._write_preap_pedal_speed(CS, undo)
       self._last_pedal_kph = float(undo)
+      self._pedal_self_write_kph = float(undo)
       return float(undo), True
     return raw_kph, routed
 
