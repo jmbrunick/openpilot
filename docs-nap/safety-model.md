@@ -83,6 +83,8 @@ See `test_tesla_preap.py::test_prev_user_brake` for the panda-layer invariant te
 
 A stalk **tip** (LEFT/RIGHT then IDLE within 0.40s) is ALC: leftover keep-alive flashes are not a turn. Same-direction stalk during that keep-alive must be held 1.0s to become a turn. Hazards (both lamps) are not a turn. Stalk cancel, door open, and gear out of Drive still drop immediately.
 
+While that tipped lane change is active, including the ~1 s lamp flash-dark gap (`preap_alc_keep`), hands-on **level 2** must not drop `controls_allowed`. That torque is the lane-change confirm, not a takeover. Hands-on **level 3** (EPAS maximum) is an emergency yank and still disengages during the flash gap. A latched stalk is unchanged (level 2 and 3 stay suppressed for the turn). **Reflash the panda** after this safety change; a Python-only update still drops `controls_allowed` in the flash-dark gap and selfdrived then raises `controlsMismatch`.
+
 This lives in the panda firmware, not just Python. tesla_preap skips `pcm_cruise_check(false)` and sets `steering_disengage_keep_controls` so `generic_rx_checks` does not drop on the same rising edge.
 
 After pulling this change, **flash the panda** (usual NAP/panda update path: on-device `scons` rebuilds `panda/board` from `opendbc_repo` safety, then reboot so `pandad` compares firmware signatures and flashes). A Python-only update leaves the old firmware dropping `controls_allowed` mid-turn; `controlsMismatch` then appears right after the hold ends.

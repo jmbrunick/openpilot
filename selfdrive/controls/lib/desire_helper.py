@@ -2,6 +2,13 @@ import math
 
 from cereal import log
 from openpilot.common.constants import CV
+from openpilot.selfdrive.controls.lib.driver_lateral_handoff import cs_hands_on_level
+from openpilot.selfdrive.controls.lib.lane_change_nudge import (
+  EmergencyYankTracker,
+  is_emergency_yank,
+  tipped_lane_change_driver_release,
+  torque_is_same_direction,
+)
 from openpilot.selfdrive.controls.lib.stalk_tip_turn import StalkTipTurn
 
 LaneChangeState = log.LaneChangeState
@@ -63,6 +70,7 @@ class DesireHelper:
     # is not re-read as a new tip after a reset.
     self._tip_turn = StalkTipTurn()
     self._suppress_next_tip = False
+    self._yank = EmergencyYankTracker()
 
     # Includes the lane change currently armed or in progress.
     self.queued_changes = 0
@@ -103,6 +111,13 @@ class DesireHelper:
     # same-direction stalk must stay on past STALK_ALC_TURN_HOLD_S (1.0s)
     # to cancel ALC as a turn. Classification uses the stalk, not lamps.
     self._tip_turn.update(carstate.turnSignalStalkState, DT_MDL)
+    torque_nm = float(getattr(carstate, "steeringTorque", 0.0) or 0.0)
+    fast_rise = self._yank.update(torque_nm, DT_MDL)
+    emergency_yank = is_emergency_yank(
+      torque_nm=torque_nm,
+      hands_on_level=cs_hands_on_level(carstate),
+      fast_rise=fast_rise,
+    )
     left_press = self._tip_turn.left_press
     right_press = self._tip_turn.right_press
     tip_event = self._tip_turn.tip_event and not self._suppress_next_tip
@@ -126,7 +141,20 @@ class DesireHelper:
     else:
       just_cancelled = False
       if self.lane_change_state != LaneChangeState.off:
-        if opposite_press:
+        if self.lane_change_direction == LaneChangeDirection.left:
+          nudge_dir = 1
+        elif self.lane_change_direction == LaneChangeDirection.right:
+          nudge_dir = 2
+        else:
+          nudge_dir = 0
+        # Emergency yank cancels. A same-direction confirm does not.
+        if tipped_lane_change_driver_release(
+            same_direction=torque_is_same_direction(torque_nm, nudge_dir),
+            emergency=emergency_yank):
+          self._reset()
+          just_cancelled = True
+          self._suppress_next_tip = True
+        elif opposite_press:
           self._reset()
           just_cancelled = True
           self._suppress_next_tip = True

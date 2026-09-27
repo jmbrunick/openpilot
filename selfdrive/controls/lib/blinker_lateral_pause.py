@@ -46,6 +46,9 @@ controls_allowed on the same hands-on during a blinker-latched driver turn
 controlsMismatch after the Python hold ends.
 """
 
+from openpilot.selfdrive.controls.lib.lane_change_nudge import (
+  tipped_lane_change_driver_release,
+)
 from openpilot.selfdrive.controls.lib.stalk_tip_turn import StalkTipTurn
 
 # Match controlsd / card (openpilot.common.realtime.DT_CTRL).
@@ -64,8 +67,13 @@ def stalk_is_left_or_right(stalk_state) -> bool:
 
 
 def blinker_turn_blocks_steering_disengage(left_blinker, right_blinker,
-                                          stalk_state=0, hold=None) -> bool:
+                                          stalk_state=0, hold=None,
+                                          emergency=False, alc_confirm=False) -> bool:
   """Do not USER_DISABLE on hands-on / EPAS reject during a driver turn.
+
+  During a tipped lane change (including the flash-dark gap), an
+  emergency yank must still disengage. A same-direction confirm does
+  not: callers leave ``emergency`` false and this gate stays closed.
 
   Hold state can lag a frame or expire on a Tesla lamp self-cancel while
   the stalk is still LEFT/RIGHT. Raw one-lamp XOR and the physical stalk
@@ -74,8 +82,11 @@ def blinker_turn_blocks_steering_disengage(left_blinker, right_blinker,
 
   Genuine hard faults (door, gear, stalk cancel, permanent steer fault)
   are separate events and are not suppressed here. Hazards (both lamps)
-  are not a turn.
+  are not a turn. A latched stalk is not ``alc_confirm``.
   """
+  if alc_confirm and tipped_lane_change_driver_release(
+      same_direction=False, emergency=bool(emergency)):
+    return False
   if blinker_pauses_lateral(left_blinker, right_blinker):
     return True
   if stalk_is_left_or_right(stalk_state):
