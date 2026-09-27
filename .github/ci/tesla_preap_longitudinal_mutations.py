@@ -404,7 +404,6 @@ MUTATIONS = (
     original=b"    elif locked and (self.target.timed_out or self.target.low_confidence):\n",
     replacement=b"    elif locked and self.target.timed_out:\n",
     test_nodes=(
-      f"{LANE_CHANGE_TARGET_TEST_PATH}::test_low_confidence_lane_lines_cancel" if False else
       f"{LANE_CHANGE_TARGET_TEST_PATH}::test_low_lane_line_confidence_cancels",
     ),
   ),
