@@ -18,9 +18,8 @@ from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   handoff_new_desired_curvature, lat_active_after_handoff,
   pin_desired_curvature_to_measured)
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
-from openpilot.selfdrive.controls.lib.lane_change_nudge import (
-  EmergencyYankTracker, is_emergency_yank, torque_is_same_direction,
-)
+from openpilot.selfdrive.controls.lib.lane_change_nudge import TippedLaneChangeTorque
+from openpilot.selfdrive.controls.lib.lane_change_turn import LaneChangeTurnHold, blinker_with_turn_hold
 from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature
 from openpilot.selfdrive.controls.lib.lat_turn_geometry import (
   PARAM_TURN_GEOMETRY, is_preap_car, turn_geometry_active,
@@ -64,7 +63,10 @@ class Controls:
     self.curvature = 0.0
     self.desired_curvature = 0.0
     self.blinker_lat_hold = BlinkerLateralHold()
-    self._lane_change_yank = EmergencyYankTracker()
+    self._lane_change_torque = TippedLaneChangeTorque()
+    # Lane change -> driver turn: blinker hold + manual-turn lat pause.
+    self._lane_change_turn = LaneChangeTurnHold()
+    self._lat_active_prev = False
     # Default On (NAPDriverLatHandoff=1) for Pre-AP. Re-read each cycle so
     # Settings → NAP can turn it Off immediately if gravel/wind misbehave.
     self.lat_handoff = DriverLateralHandoff(
@@ -147,18 +149,21 @@ class Controls:
       nudge_dir = 2
     else:
       nudge_dir = 0
-    nudge_torque = float(CS.steeringTorque)
-    nudge_hands = cs_hands_on_level(CS)
-    nudge_fast = self._lane_change_yank.update(nudge_torque, DT_CTRL)
-    nudge_emergency = is_emergency_yank(
-      torque_nm=nudge_torque, hands_on_level=nudge_hands, fast_rise=nudge_fast,
-      over_torque=self._lane_change_yank.over_torque,
-      alc_direction=nudge_dir if tipped_alc else 0)
-    lane_change_confirm = (
-      tipped_alc
-      and torque_is_same_direction(nudge_torque, nudge_dir)
-      and not nudge_emergency
-    )
+    # Emergency (spike / opposite) or a sustained same-direction takeover
+    # (held until the hands come off) yields lateral now; only the
+    # emergency also disengages (car_specific steerDisengage).
+    self._lane_change_torque.update(
+      torque_nm=float(CS.steeringTorque), hands_on_level=cs_hands_on_level(CS),
+      direction=nudge_dir, tipped=tipped_alc, dt=DT_CTRL)
+    lane_change_confirm = self._lane_change_torque.confirm
+    # Turning the wheel well past a lane change in its direction ends the
+    # change (DesireHelper) and becomes a manual driver turn here: keep the
+    # blinker until the turn completes, pause lat like a latched stalk.
+    turn_hold_dir = self._lane_change_turn.update(
+      lc_state=lc_state, lc_direction=nudge_dir, steering_angle_deg=float(CS.steeringAngleDeg),
+      torque_nm=float(CS.steeringTorque), lat_active=self._lat_active_prev,
+      v_ego=float(CS.vEgo), stalk_state=getattr(CS, 'turnSignalStalkState', 0),
+      engaged=bool(CC.enabled), dt=DT_CTRL)
     # Soft yield frees the EPS the same way blinker pause does (latActive
     # false → DAS_steeringControlType=0). Do not keep latActive and track
     # measured angle — that is follow-the-rim holding, not a free wheel.
@@ -185,6 +190,7 @@ class Controls:
       v_ego=CS.vEgo,
       stalk_state=getattr(CS, 'turnSignalStalkState', 0),
       soft_lat_on=self.lat_handoff.enabled,
+      driver_turn=self._lane_change_turn.turning,
     )
     CC.longActive = CC.enabled and not any(e.overrideLongitudinal for e in self.sm['onroadEvents']) and self.CP.openpilotLongitudinalControl
     # turn_active is the latched driver-turn blinker (not ALC, not the
@@ -203,19 +209,22 @@ class Controls:
       brake_applied=cs_real_brake_pressed(CS),
       a_ego=float(CS.aEgo),
       v_ego=float(CS.vEgo),
-      emergency_yank=bool(tipped_alc and nudge_emergency),
+      emergency_yank=bool(self._lane_change_torque.release),
       lane_change_confirm=bool(lane_change_confirm),
     )
     CC.latActive = lat_active_after_handoff(
       lat_would_be_active, self._lat_handoff.yielded)
+    self._lat_active_prev = bool(CC.latActive)
 
     actuators = CC.actuators
     actuators.longControlState = self.LoC.long_control_state
 
     # Keep the indicator flashing while ALC is armed or in progress. Pre-AP
     # carcontroller TXes DAS_bodyControls from CC.leftBlinker / rightBlinker.
-    CC.leftBlinker, CC.rightBlinker = DesireHelper.lane_change_keep_blinker(
-      model_v2.meta.laneChangeState, model_v2.meta.laneChangeDirection)
+    CC.leftBlinker, CC.rightBlinker = blinker_with_turn_hold(
+      DesireHelper.lane_change_keep_blinker(
+        model_v2.meta.laneChangeState, model_v2.meta.laneChangeDirection),
+      turn_hold_dir)
 
     if not CC.latActive:
       self.LaC.reset()
