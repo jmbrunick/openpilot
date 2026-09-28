@@ -22,8 +22,8 @@ clearly past a nudge:
   ~1.9-2.3 Nm reach level 3); it still needs one of the torque lines.
   Opposite-direction level 3 is still an emergency.
 * |torsion| above ``EMERGENCY_TORQUE_NM`` (2.5 Nm) held for
-  ``EMERGENCY_SUSTAIN_S`` (0.10 s). Logged confirms peak 1.0-2.3 Nm;
-  hard takeovers reach 2.6-4 Nm and stay there.
+  ``EMERGENCY_SUSTAIN_S`` (0.10 s) *against* the lane-change direction
+  (or outside a tipped lane change). Logged confirms peak 1.0-2.3 Nm.
 * Fast torque rise. There is no torsion-rate signal (``steeringRateDeg``
   is wheel rate). |torsion| reaching ``EMERGENCY_RISE_NM`` (2.2 Nm, 4x the
   0.55 Nm soft-lat floor) within ``EMERGENCY_RISE_WINDOW_S`` (0.25 s) of
@@ -32,6 +32,19 @@ clearly past a nudge:
   tripped the old 1.65 Nm / 150 ms single-frame line.
 
 A genuine hard yank (0 -> 3.5 Nm in 50 ms) releases ~0.13 s after onset.
+An emergency is a full disengage: car_specific adds steerDisengage
+(USER_DISABLE, lat and long) and the Pre-AP engagement tears cruise down.
+
+Driver takeover (same direction, sustained). During a tipped lane change,
+|torsion| above ``EMERGENCY_TORQUE_NM`` for ``TAKEOVER_SUSTAIN_S`` (0.30 s)
+*in the lane-change direction* without a fast rise is the driver steering through
+(e.g. turning at the intersection before a tip into a turn lane finishes).
+controlsd yields lateral through the soft-lat handoff until the hands
+come off (``TAKEOVER_HANDS_OFF_S``); a target-locked change just suspends
+and resumes, like any ordinary lateral release. Whether it is a *turn*
+(which ends the change) is decided by wheel angle in lane_change_turn,
+not torque. It is not an emergency: no steerDisengage, openpilot and
+longitudinal stay engaged. A sudden spike (the fast-rise line) still is.
 
 Soft confirm (armed only). While ``preLaneChange`` is armed after a stalk
 tip and v_ego >= 20 mph, same-direction torsion >= ``SOFT_CONFIRM_NM``
@@ -39,7 +52,7 @@ tip and v_ego >= 20 mph, same-direction torsion >= ``SOFT_CONFIRM_NM``
 ``steeringPressed`` (1.0 Nm, debounced) is still false. Logged first
 attempts that did not reach steeringPressed sat at 0.7-1.0 Nm for
 0.2-0.3 s; hands-off lane-keep torsion is |tq| p99.9 ~0.5 Nm and 0.65 Nm
-held that long is ~0.6/h per direction. The global steeringPressed
+held that long is ~0.8/h per direction. The global steeringPressed
 threshold is unchanged.
 
 Panda firmware must be reflashed. ``tesla_preap_blinker.h`` keeps
@@ -68,6 +81,14 @@ EMERGENCY_RISE_NM = 4.0 * SOFT_YIELD_TRIGGER_NM
 # |torsion| must stay above the emergency line this long (not one frame).
 EMERGENCY_SUSTAIN_S = 0.10
 
+# Same-direction over-torque held this long during a tipped lane change is
+# a driver takeover (turning through), not a hard confirm. Logged hard
+# confirms (peaks 2.3-3.3 Nm) stay above 2.5 Nm for <= ~0.1 s.
+TAKEOVER_SUSTAIN_S = 0.30
+# Takeover yield holds until |torsion| < soft-lat floor and hands-on < 1
+# for this long (same as the handoff's hands-off confirm).
+TAKEOVER_HANDS_OFF_S = 0.15
+
 # Armed-only soft confirm (preLaneChange, v_ego >= 20 mph, same direction).
 SOFT_CONFIRM_NM = 0.65 * float(STEER_THRESHOLD)
 SOFT_CONFIRM_SUSTAIN_S = 0.15
@@ -92,14 +113,30 @@ def is_emergency_yank(*, torque_nm: float, hands_on_level: int, fast_rise: bool,
   is set only while a tipped lane change is armed or in progress; then a
   same-direction push at hands-on level 3 needs a torque line too.
   """
+  same_direction = torque_is_same_direction(torque_nm, alc_direction)
   if int(hands_on_level or 0) >= EMERGENCY_HANDS_ON_LEVEL:
-    if not torque_is_same_direction(torque_nm, alc_direction):
+    if not same_direction:
       return True
   if over_torque is None:
     over_torque = abs(float(torque_nm)) > EMERGENCY_TORQUE_NM
-  if over_torque:
+  # Sustained same-direction over-torque is a takeover, not an emergency.
+  if over_torque and not same_direction:
     return True
   return bool(fast_rise)
+
+
+def is_driver_takeover(*, torque_nm: float, over_torque_s: float,
+                       alc_direction: int) -> bool:
+  """Sustained same-direction over-torque during a tipped lane change.
+
+  ``over_torque_s`` is ``EmergencyYankTracker.over_torque_s``. Yields
+  lateral (a target-locked change suspends); never a steerDisengage.
+  """
+  if alc_direction not in (1, 2):
+    return False
+  if float(over_torque_s) < TAKEOVER_SUSTAIN_S - 1e-9:
+    return False
+  return torque_is_same_direction(torque_nm, alc_direction)
 
 
 def steer_disengage_this_frame(*, confirm: bool, release: bool, release_prev: bool,
@@ -152,6 +189,7 @@ class EmergencyYankTracker:
     self._over_t: float | None = None
     self.fast_rise = False
     self.over_torque = False
+    self.over_torque_s = 0.0
 
   def update(self, torque_nm: float, dt: float) -> bool:
     self._t += max(float(dt), 0.0)
@@ -174,8 +212,9 @@ class EmergencyYankTracker:
       self._over_t = None
     self.fast_rise = (self._rise_cross_t is not None and self._rise_ok and
                       (t - self._rise_cross_t) >= EMERGENCY_SUSTAIN_S - 1e-9)
+    self.over_torque_s = 0.0 if self._over_t is None else t - self._over_t
     self.over_torque = (self._over_t is not None and
-                        (t - self._over_t) >= EMERGENCY_SUSTAIN_S - 1e-9)
+                        self.over_torque_s >= EMERGENCY_SUSTAIN_S - 1e-9)
     return self.fast_rise
 
 
@@ -201,3 +240,41 @@ class SoftConfirmTracker:
       return False
     self._held_s += max(float(dt), 0.0)
     return self._held_s >= SOFT_CONFIRM_SUSTAIN_S - 1e-9
+
+
+class TippedLaneChangeTorque:
+  """controlsd: driver torque vs a tipped lane change, per 100 Hz frame.
+
+  ``emergency``: full release (spike, opposite over-torque, opposite
+  hands-on 3). ``takeover``: sustained same-direction over-torque, latched
+  until hands are off for TAKEOVER_HANDS_OFF_S (or the lane change is
+  off). ``release``: yield lateral now (either).
+  ``confirm``: same-direction torque that is neither.
+  """
+
+  def __init__(self):
+    self.yank = EmergencyYankTracker()
+    self.emergency = False
+    self.takeover = False
+    self._hands_off_s = 0.0
+    self.release = False
+    self.confirm = False
+
+  def update(self, *, torque_nm: float, hands_on_level: int, direction: int,
+             tipped: bool, dt: float) -> None:
+    fast_rise = self.yank.update(torque_nm, dt)
+    alc_direction = direction if tipped else 0
+    self.emergency = is_emergency_yank(
+      torque_nm=torque_nm, hands_on_level=hands_on_level, fast_rise=fast_rise,
+      over_torque=self.yank.over_torque, alc_direction=alc_direction)
+    takeover_now = is_driver_takeover(
+      torque_nm=torque_nm, over_torque_s=self.yank.over_torque_s, alc_direction=alc_direction)
+    hands_off = (abs(float(torque_nm)) < SOFT_YIELD_TRIGGER_NM and
+                 int(hands_on_level or 0) < 1)
+    self._hands_off_s = self._hands_off_s + max(float(dt), 0.0) if hands_off else 0.0
+    if self.takeover and self._hands_off_s >= TAKEOVER_HANDS_OFF_S - 1e-9:
+      self.takeover = False
+    self.takeover = bool(tipped) and (self.takeover or takeover_now)
+    self.release = bool(tipped) and (self.emergency or self.takeover)
+    self.confirm = (bool(tipped) and torque_is_same_direction(torque_nm, direction)
+                    and not self.release)
