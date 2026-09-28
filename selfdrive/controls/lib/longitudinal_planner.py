@@ -19,7 +19,15 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
 from openpilot.selfdrive.controls.lib.curve_max_hold import (
   CURVE_ENTER_LAT_MS2,
   CURVE_EXIT_LAT_MS2,
-  curve_speed_ms,
+  curve_speed_for_curvature,
+)
+from openpilot.selfdrive.controls.lib.curve_preview import (
+  PREVIEW_FREE_A_MS2,
+  CurvePreview,
+  curve_preview_accel,
+  path_curvature,
+  path_lat_accel_ahead,
+  turn_accel_limit,
 )
 from openpilot.selfdrive.controls.lib.radar_path_gate import model_path_xy, path_lateral_m
 from openpilot.selfdrive.controls.lib.unified_lead import (
@@ -127,7 +135,7 @@ def get_max_accel(v_ego):
 def get_coast_accel(pitch):
   return np.sin(pitch) * -5.65 - 0.3  # fitted from data using xx/projects/allow_throttle/compute_coast_accel.py
 
-def limit_accel_in_turns(v_ego, angle_steers, a_target, CP):
+def limit_accel_in_turns(v_ego, angle_steers, a_target, CP, a_y=None, a_y_ahead=None):
   """
   This function returns a limited long acceleration allowed, depending on the existing lateral acceleration
   this should avoid accelerating when losing the target in turns.
@@ -135,7 +143,13 @@ def limit_accel_in_turns(v_ego, angle_steers, a_target, CP):
   Pre-AP HUD MAX snapshot/restore through a bend lives in card.py
   (CurveMaxHold). This clip is temporary +a only — it must not rebase
   vCruise / sticky MAX.
+
+  With true cornering force (`a_y`, vehicle-model curvature) the clip is a
+  friction circle on the smaller of now and the model path 1 s ahead, so
+  +a returns near the apex. Without it, the stock steer-model table stays.
   """
+  if a_y is not None:
+    return [a_target[0], min(a_target[1], turn_accel_limit(v_ego, a_y, a_y_ahead))]
   # FIXME: This function to calculate lateral accel is incorrect and should use the VehicleModel
   # The lookup table for turns should also be updated if we do this
   a_total_max = np.interp(v_ego, _A_TOTAL_MAX_BP, _A_TOTAL_MAX_V)
@@ -197,6 +211,9 @@ class LongitudinalPlanner:
     self._cmd_shortfall = CommandShortfall()
     self._post_curve_s = 0.0
     self._in_curve = False
+    self._curve_preview = CurvePreview()
+    self.curve_preview_a = PREVIEW_FREE_A_MS2
+    self._turn_a_max = None
     self._corner_curvature = 0.0
     self._lead_y_rel = None
     self._lead_opening_age = 0.0
@@ -316,7 +333,19 @@ class LongitudinalPlanner:
 
     accel_clip = [ACCEL_MIN, get_max_accel(v_ego)]
     steer_angle_without_offset = sm['carState'].steeringAngleDeg - sm['liveParameters'].angleOffsetDeg
-    accel_clip = limit_accel_in_turns(v_ego, steer_angle_without_offset, accel_clip, self.CP)
+    # Pre-AP: true cornering force (vehicle-model curvature) and the model
+    # path ahead for the turn clip and the curve preview.
+    curve_path = path_curvature(sm['modelV2']) if self._is_preap else None
+    a_y_now = None
+    a_y_ahead = None
+    if self._is_preap:
+      a_y_now = abs(float(getattr(sm['controlsState'], "curvature", 0.0) or 0.0)) * v_ego * v_ego
+      if curve_path is not None:
+        a_y_ahead = path_lat_accel_ahead(v_ego, curve_path[0], curve_path[2])
+    accel_clip = limit_accel_in_turns(
+      v_ego, steer_angle_without_offset, accel_clip, self.CP, a_y=a_y_now, a_y_ahead=a_y_ahead,
+    )
+    self._turn_a_max = float(accel_clip[1]) if self._is_preap else None
 
     if reset_state:
       self.v_desired_filter.x = v_ego
@@ -356,6 +385,7 @@ class LongitudinalPlanner:
       self._lead_depart_abs_y = None
       self._unified.reset()
       self._unified_lead_id = None
+      self._curve_preview.reset()
 
     if self._is_preap:
       self._poll_unified_enabled()
@@ -971,6 +1001,19 @@ class LongitudinalPlanner:
         dt=self.dt,
       )
 
+    # Curve preview: accel ceiling from the model path (0–5 s) that slows
+    # ahead of a bend, finished ~1.5 s before the tight point, and holds
+    # back +a just under a bend's comfort speed. min() only: never raises
+    # the command, never lifts a deeper lead / FCW one. Legacy and unified.
+    self.curve_preview_a = PREVIEW_FREE_A_MS2
+    if self._is_preap:
+      if reset_state or curve_path is None:
+        self._curve_preview.reset()
+      else:
+        a_prev_raw = curve_preview_accel(v_ego, *curve_path)
+        self.curve_preview_a = float(self._curve_preview.update(v_ego, a_prev_raw, self.dt))
+      output_a_target = min(float(output_a_target), self.curve_preview_a)
+
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
     # Hard +a ceiling: the 0.05 clip slew must not leak cruise punch for a
@@ -1054,15 +1097,21 @@ class LongitudinalPlanner:
       lead_id = None
 
     v_cap = float(self._unified_v_cap_ms)
-    steer = float(sm["carState"].steeringAngleDeg) - float(sm["liveParameters"].angleOffsetDeg)
-    v_curve = curve_speed_ms(v_ego, steer, self.CP.steerRatio, self.CP.wheelbase)
-    if v_curve is not None:
+    # True cornering (vehicle-model curvature) with the speed-dependent
+    # lateral target, not the steer model (which reads ~12% high at speed).
+    v_curve = curve_speed_for_curvature(float(self._corner_curvature))
+    if v_curve is not None and v_ego >= 5.0:
       v_cap = min(v_cap, float(v_curve))
     a_map = None
     if self._map_speed_mode in (MODE_CAP, MODE_FOLLOW):
       a_map = map_track_decel_ms2(
         v_ego, float(self._unified_v_cap_ms), map_brake_a_ms2(self._map_speed_lookahead),
       )
+    if self.curve_preview_a < PREVIEW_FREE_A_MS2:
+      a_map = self.curve_preview_a if a_map is None else min(float(a_map), self.curve_preview_a)
+    a_max_u = float(get_max_accel(v_ego))
+    if self._turn_a_max is not None:
+      a_max_u = min(a_max_u, float(self._turn_a_max))
     # Lead weighting: lateral offset from the model's planned path (bends
     # stay on-path, adjacent lanes do not) and reading quality.
     path_lat = None
@@ -1093,7 +1142,7 @@ class LongitudinalPlanner:
           a_map=a_map,
           y_rel=y_rel,
           curvature=float(self._corner_curvature),
-          a_max=float(get_max_accel(v_ego)),
+          a_max=a_max_u,
           path_lat=path_lat,
           model_prob=model_prob,
           radar=radar,

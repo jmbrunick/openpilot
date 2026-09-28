@@ -6,6 +6,8 @@ weight snaps while disengaged and slews for about a second while following.
 A shadow-compute exception is logged once, latches the controller off for
 the rest of the process, and the published command returns to the legacy path.
 """
+import math
+
 import numpy as np
 import pytest
 
@@ -400,6 +402,10 @@ def test_curve_ceiling_brakes_only_on_the_unified_path():
   _own_lead(off_inputs, 50.0, v_ego + 1.0, a_lead=0.0)
   inputs["carState"].steeringAngleDeg = 15.0
   off_inputs["carState"].steeringAngleDeg = 15.0
+  # The curve ceiling reads true cornering (vehicle-model curvature).
+  kappa = 15.0 * math.pi / 180.0 / (15.75 * 2.959)
+  inputs["controlsState"].curvature = kappa
+  off_inputs["controlsState"].curvature = kappa
   inputs["controlsState"].longControlState = LongCtrlState.off
   on.update(inputs)
   inputs["controlsState"].longControlState = LongCtrlState.pid

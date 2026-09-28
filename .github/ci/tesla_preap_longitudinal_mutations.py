@@ -16,6 +16,8 @@ BRAKE_CANCEL_TEST_PATH = (
 )
 UNIFIED_TEST_PATH = "selfdrive/controls/tests/test_unified_lead.py"
 UNIFIED_PLANNER_TEST_PATH = "selfdrive/controls/tests/test_unified_lead_planner.py"
+CURVE_PREVIEW_TEST_PATH = "selfdrive/controls/tests/test_curve_preview.py"
+CURVE_MAX_HOLD_TEST_PATH = "selfdrive/controls/lib/tests/test_curve_max_hold.py"
 OFFSET_TEST_PATH = "selfdrive/mapd/tests/test_map_speed_offset_slew.py"
 ENGAGE_MAX_TEST_PATH = "selfdrive/car/tests/test_preap_engage_max_after_pause.py"
 FRONTAGE_TEST_PATH = "selfdrive/mapd/tests/test_map_match_frontage.py"
@@ -445,6 +447,117 @@ MUTATIONS = (
     ),
     test_nodes=(
       f"{FRONTAGE_TEST_PATH}::test_nearer_parallel_road_does_not_steal_without_clear_advantage",
+    ),
+  ),
+  HistoricalMutation(
+    name="unified-lead-decel-anticipation-removed",
+    source_path="selfdrive/controls/lib/unified_lead.py",
+    original=b'    a_eff = self._a_f - lead_decel_anticipation(self._a_f, self._lead_jerk, gap, v_ego)\n',
+    replacement=b'    a_eff = self._a_f\n',
+    test_nodes=(
+      f"{UNIFIED_TEST_PATH}::test_real_lead_brake_onset_is_anticipated_but_gradual_slowdown_is_not",
+    ),
+  ),
+  HistoricalMutation(
+    name="unified-lead-brake-scale-removed",
+    source_path="selfdrive/controls/lib/unified_lead.py",
+    original=b'  k_a = _k_a(slack) * _k_a_brake_scale(a_l)\n',
+    replacement=b'  k_a = _k_a(slack)\n',
+    test_nodes=(
+      f"{UNIFIED_TEST_PATH}::test_mild_lead_slowing_is_under_matched_and_braking_over_matched",
+    ),
+  ),
+  HistoricalMutation(
+    name="unified-lead-glide-inside-removed",
+    source_path="selfdrive/controls/lib/unified_lead.py",
+    original=b'  glide_keep = GLIDE_KEEP + (GLIDE_KEEP_INSIDE - GLIDE_KEEP) * _smooth01(-slack / GLIDE_GAP_M)\n',
+    replacement=b'  glide_keep = GLIDE_KEEP\n',
+    test_nodes=(
+      f"{UNIFIED_TEST_PATH}::test_small_inside_gap_keeps_easing_until_the_gap_recovers",
+    ),
+  ),
+  HistoricalMutation(
+    name="unified-lead-far-close-fade-removed",
+    source_path="selfdrive/controls/lib/unified_lead.py",
+    original=b'  k_v_close *= 1.0 - (1.0 - K_V_FAR_MIN) * _smooth01(\n',
+    replacement=b'  k_v_close *= 1.0 - 0.0 * _smooth01(\n',
+    test_nodes=(
+      f"{UNIFIED_TEST_PATH}::test_far_slow_close_coasts_near_close_does_not",
+    ),
+  ),
+  HistoricalMutation(
+    name="curve-preview-min-removed",
+    source_path="selfdrive/controls/lib/longitudinal_planner.py",
+    original=b'      output_a_target = min(float(output_a_target), self.curve_preview_a)\n',
+    replacement=b'      output_a_target = float(output_a_target)\n',
+    test_nodes=(
+      f"{CURVE_PREVIEW_TEST_PATH}::test_planner_preview_only_lowers_the_command",
+    ),
+  ),
+  HistoricalMutation(
+    name="curve-preview-may-raise-command",
+    source_path="selfdrive/controls/lib/longitudinal_planner.py",
+    original=b'      output_a_target = min(float(output_a_target), self.curve_preview_a)\n',
+    replacement=(
+      b'      output_a_target = self.curve_preview_a if self.curve_preview_a < PREVIEW_FREE_A_MS2 else float(output_a_target)\n'
+    ),
+    test_nodes=(
+      f"{CURVE_PREVIEW_TEST_PATH}::test_planner_preview_only_lowers_the_command",
+    ),
+  ),
+  HistoricalMutation(
+    name="curve-preview-decel-limit-removed",
+    source_path="selfdrive/controls/lib/curve_preview.py",
+    original=b'  return min(PREVIEW_FREE_A_MS2, max(a, -preview_decel_limit_ms2(v)))\n',
+    replacement=b'  return min(PREVIEW_FREE_A_MS2, a)\n',
+    test_nodes=(
+      f"{CURVE_PREVIEW_TEST_PATH}::test_highway_bend_preview_is_a_lift",
+      f"{CURVE_PREVIEW_TEST_PATH}::test_town_bend_preview_slows_early_and_gently",
+    ),
+  ),
+  HistoricalMutation(
+    name="curve-preview-release-rate-removed",
+    source_path="selfdrive/controls/lib/curve_preview.py",
+    original=b'    if self.a < 0.0:\n',
+    replacement=b'    if False:\n',
+    test_nodes=(
+      f"{CURVE_PREVIEW_TEST_PATH}::test_preview_sweep_has_no_jump",
+    ),
+  ),
+  HistoricalMutation(
+    name="turn-clip-ignores-path-ahead",
+    source_path="selfdrive/controls/lib/curve_preview.py",
+    original=b'    ay = min(ay, abs(float(a_y_ahead)))\n',
+    replacement=b'    ay = max(ay, 0.0)\n',
+    test_nodes=(
+      f"{CURVE_PREVIEW_TEST_PATH}::test_turn_clip_returns_accel_near_the_apex",
+    ),
+  ),
+  HistoricalMutation(
+    name="curve-cap-unwind-disabled",
+    source_path="selfdrive/controls/lib/curve_max_hold.py",
+    original=b'      elif proposed > self._cap_kph and unwind > 0.0:\n',
+    replacement=b'      elif proposed > self._cap_kph and False:\n',
+    test_nodes=(
+      f"{CURVE_MAX_HOLD_TEST_PATH}::test_lat_accel_smooths_and_cap_holds_then_ramps",
+    ),
+  ),
+  HistoricalMutation(
+    name="curve-lat-target-constant",
+    source_path="selfdrive/controls/lib/curve_max_hold.py",
+    original=b'  return _interp(float(v_ms), CURVE_LAT_TARGET_BP_MS, CURVE_LAT_TARGET_MS2)\n',
+    replacement=b'  return 2.0\n',
+    test_nodes=(
+      f"{CURVE_PREVIEW_TEST_PATH}::test_lateral_target_vs_speed",
+    ),
+  ),
+  HistoricalMutation(
+    name="curve-restore-profile-constant",
+    source_path="selfdrive/controls/lib/curve_max_hold.py",
+    original=b'  base = _interp(float(v_ms), CURVE_RESTORE_BP_MS, CURVE_RESTORE_A_MS2)\n',
+    replacement=b'  base = 0.40\n',
+    test_nodes=(
+      f"{CURVE_PREVIEW_TEST_PATH}::test_restore_rate_is_speed_dependent",
     ),
   ),
 )
