@@ -66,6 +66,8 @@ def test_focused_tests_and_mutations_are_pinned():
     "selfdrive/controls/lib/tests/test_lane_change_target.py",
     "selfdrive/controls/lib/tests/test_lane_change_turn.py",
     "selfdrive/mapd/tests/test_roundabout.py",
+    "selfdrive/mapd/tests/test_roundabout_map.py",
+    "selfdrive/controls/lib/tests/test_roundabout_guide.py",
     "selfdrive/controls/tests/test_roundabout_planner.py",
     "selfdrive/controls/tests/test_tesla_preap_longcontrol.py",
     "selfdrive/controls/tests/test_tesla_preap_gas_lift_handoff.py",
