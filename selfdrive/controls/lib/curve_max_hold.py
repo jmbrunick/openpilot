@@ -29,8 +29,13 @@ CURVE_EXIT_LAT_MS2 = 0.65
 CURVE_ENTER_STEER_DEG = 14.0
 CURVE_EXIT_STEER_DEG = 8.0
 CURVE_EXIT_HOLD_S = 0.45
-# Comfortable corner lat accel for the temporary HUD/planner cap.
+# Comfortable corner lat accel for the temporary HUD/planner cap. Kept as
+# the 22 m/s reference; the cap itself uses the speed-dependent target below.
 CURVE_COMFORT_LAT_MS2 = 2.00
+# Cornering lateral-accel target vs speed (true curvature, not steer angle).
+# Justin carries ~2.2 in town corners and ~1.5 at highway speed (Sep 20–27).
+CURVE_LAT_TARGET_BP_MS = [8.0, 15.0, 22.0, 30.0]
+CURVE_LAT_TARGET_MS2 = [2.40, 2.25, 2.00, 1.75]
 # Ignore parking-lot / standstill wheel spin.
 CURVE_MIN_V_EGO_MS = 5.0
 # Do not invent a crawl MAX in a hairpin.
@@ -46,6 +51,62 @@ CURVE_CAP_SETTLE_S = 0.45
 # Exit raises MAX toward the snapshot at about an Accel-3 rate unless
 # card passes the live map Accel envelope.
 CURVE_RESTORE_A_DEFAULT_MS2 = 0.40
+# Exit restore rate vs speed at the default Accel (0.80 m/s² envelope):
+# ~0.65 in town, ~0.35 at highway speed. Card's Accel envelope scales it.
+CURVE_RESTORE_BP_MS = [10.0, 20.0, 30.0]
+CURVE_RESTORE_A_MS2 = [0.65, 0.45, 0.35]
+CURVE_RESTORE_REF_A_MS2 = 0.80
+# Past the apex: once the smoothed a_y has fallen this far below its peak
+# the cap may rise again (at the restore rate), so accel returns near the
+# apex instead of after the whole bend. Hysteresis keeps jitter out.
+CURVE_UNWIND_START_FRAC = 0.10
+CURVE_UNWIND_FULL_FRAC = 0.25
+
+
+def _interp(x: float, xp: list[float], fp: list[float]) -> float:
+  if x <= xp[0]:
+    return float(fp[0])
+  for i in range(1, len(xp)):
+    if x <= xp[i]:
+      t = (x - xp[i - 1]) / (xp[i] - xp[i - 1])
+      return float(fp[i - 1] + t * (fp[i] - fp[i - 1]))
+  return float(fp[-1])
+
+
+def _smooth01(x: float) -> float:
+  if x <= 0.0:
+    return 0.0
+  if x >= 1.0:
+    return 1.0
+  return x * x * (3.0 - 2.0 * x)
+
+
+def curve_lat_target_ms2(v_ms: float) -> float:
+  """Comfort cornering lateral accel at speed v (m/s²)."""
+  return _interp(float(v_ms), CURVE_LAT_TARGET_BP_MS, CURVE_LAT_TARGET_MS2)
+
+
+def curve_restore_a_ms2(v_ms: float, accel_envelope_ms2: float | None = None) -> float:
+  """MAX restore rate after a bend: speed profile scaled by the Accel envelope."""
+  base = _interp(float(v_ms), CURVE_RESTORE_BP_MS, CURVE_RESTORE_A_MS2)
+  if accel_envelope_ms2 is None or float(accel_envelope_ms2) <= 0.0:
+    return base
+  return base * float(accel_envelope_ms2) / CURVE_RESTORE_REF_A_MS2
+
+
+def curve_speed_for_curvature(kappa: float) -> float | None:
+  """Speed whose lateral accel on |kappa| equals the speed-dependent target.
+
+  v²·|κ| = A(v) has one root because A falls with speed; a few fixed-point
+  steps converge. None for a straight road.
+  """
+  k = abs(float(kappa))
+  if not math.isfinite(k) or k <= 1e-6:
+    return None
+  v = math.sqrt(CURVE_COMFORT_LAT_MS2 / k)
+  for _ in range(8):
+    v = math.sqrt(curve_lat_target_ms2(v) / k)
+  return max(CURVE_SPEED_FLOOR_MS, v)
 
 
 def steer_lat_accel_ms2(v_ego_ms: float, angle_steers_deg: float,
@@ -78,13 +139,19 @@ def cornering_lat_accel_ms2(v_ego_ms: float, angle_steers_deg: float,
 
 
 def curve_speed_from_lat(v_ego_ms: float, a_y: float | None,
-                         a_lat: float = CURVE_COMFORT_LAT_MS2) -> float | None:
-  """Comfort speed for a measured lateral accel. None when not a bend."""
-  if a_y is None or v_ego_ms < CURVE_MIN_V_EGO_MS or a_lat <= 0:
+                         a_lat: float | None = None) -> float | None:
+  """Comfort speed for a measured lateral accel. None when not a bend.
+
+  Default target is speed-dependent (curve_lat_target_ms2); a fixed
+  `a_lat` keeps the old v·sqrt(a_lat/a_y) form.
+  """
+  if a_y is None or v_ego_ms < CURVE_MIN_V_EGO_MS or (a_lat is not None and a_lat <= 0):
     return None
   ay = float(a_y)
   if ay < 0.05:
     return None
+  if a_lat is None:
+    return curve_speed_for_curvature(ay / (float(v_ego_ms) ** 2))
   v = float(v_ego_ms) * math.sqrt(float(a_lat) / ay)
   if v < CURVE_SPEED_FLOOR_MS:
     return CURVE_SPEED_FLOOR_MS
@@ -93,9 +160,9 @@ def curve_speed_from_lat(v_ego_ms: float, a_y: float | None,
 
 def curve_speed_ms(v_ego_ms: float, angle_steers_deg: float,
                    steer_ratio: float, wheelbase: float,
-                   a_lat: float = CURVE_COMFORT_LAT_MS2) -> float | None:
-  """Comfort v from current steer. None when not a meaningful bend."""
-  if v_ego_ms < CURVE_MIN_V_EGO_MS or a_lat <= 0:
+                   a_lat: float | None = None) -> float | None:
+  """Comfort v from current steer (fallback only). None when not a bend."""
+  if v_ego_ms < CURVE_MIN_V_EGO_MS or (a_lat is not None and a_lat <= 0):
     return None
   ang = abs(float(angle_steers_deg))
   if ang < 1e-3:
@@ -105,6 +172,8 @@ def curve_speed_ms(v_ego_ms: float, angle_steers_deg: float,
   kappa = ang * CV.DEG_TO_RAD / (sr * wb)
   if kappa <= 1e-6:
     return None
+  if a_lat is None:
+    return curve_speed_for_curvature(kappa)
   v = math.sqrt(float(a_lat) / kappa)
   if v < CURVE_SPEED_FLOOR_MS:
     return CURVE_SPEED_FLOOR_MS
@@ -163,8 +232,9 @@ class CurveMaxHold:
     self._cap_kph: float | None = None
     self._cap_age: float = 0.0
     self._release_kph: float | None = None
-    self._restore_a: float = CURVE_RESTORE_A_DEFAULT_MS2
+    self._restore_a: float | None = None
     self._last_dt: float = 0.01
+    self._ay_peak: float = 0.0
 
   def reset(self) -> None:
     self.snapshot = None
@@ -176,6 +246,7 @@ class CurveMaxHold:
     self._cap_kph = None
     self._cap_age = 0.0
     self._release_kph = None
+    self._ay_peak = 0.0
 
   def _observe(self, v_ego_ms: float, angle_steers_deg: float,
                steer_ratio: float, wheelbase: float, dt: float, *,
@@ -204,8 +275,22 @@ class CurveMaxHold:
       lat_override=self._ay_raw,
     )
 
+  def _unwind_weight(self) -> float:
+    """0 while the bend holds or tightens, 1 once a_y is well past its peak."""
+    ay = float(self._ay_s or 0.0)
+    self._ay_peak = max(self._ay_peak, ay)
+    if self._ay_peak <= 0.05:
+      return 0.0
+    frac = 1.0 - ay / self._ay_peak
+    return _smooth01((frac - CURVE_UNWIND_START_FRAC) / (CURVE_UNWIND_FULL_FRAC - CURVE_UNWIND_START_FRAC))
+
   def _held_cap_kph(self, hud_kph: float, v_ego_ms: float) -> float:
-    """Cap from smoothed cornering. May drop; does not rise mid-bend."""
+    """Cap from smoothed cornering. May drop; rises only as the bend unwinds.
+
+    Jitter inside the unwind hysteresis never raises it. Past the apex the
+    cap climbs toward the looser comfort speed at the restore rate.
+    """
+    unwind = self._unwind_weight()
     v_curve = curve_speed_from_lat(v_ego_ms, self._ay_s)
     if v_curve is None:
       proposed = float(hud_kph)
@@ -220,15 +305,22 @@ class CurveMaxHold:
         self._cap_kph = proposed
       elif proposed < self._cap_kph - CURVE_CAP_TIGHTEN_KPH:
         self._cap_kph = proposed
+      elif proposed > self._cap_kph and unwind > 0.0:
+        rate = curve_restore_a_ms2(v_ego_ms, self._restore_a) * CV.MS_TO_KPH
+        self._cap_kph = min(proposed, self._cap_kph + rate * unwind * self._last_dt)
     return min(float(hud_kph), float(self._cap_kph))
 
-  def _step_release(self, target_kph: float, dt: float) -> tuple[float, bool]:
-    """Ramp HUD MAX up toward the pre-curve snapshot. Returns (kph, done)."""
+  def _step_release(self, target_kph: float, dt: float, v_ego_ms: float) -> tuple[float, bool]:
+    """Ramp HUD MAX up toward the pre-curve snapshot. Returns (kph, done).
+
+    Rate is speed-dependent (~0.65 town, ~0.35 highway at default Accel),
+    scaled by card's Accel envelope.
+    """
     target = float(target_kph)
     if self._release_kph is None:
       start = self._cap_kph if self._cap_kph is not None else target
       self._release_kph = min(float(start), target)
-    rate = self._restore_a if self._restore_a > 0.0 else CURVE_RESTORE_A_DEFAULT_MS2
+    rate = curve_restore_a_ms2(v_ego_ms, self._restore_a)
     step = rate * CV.MS_TO_KPH * max(0.0, float(dt))
     nxt = min(target, float(self._release_kph) + step)
     done = nxt >= target - 0.05
@@ -446,7 +538,7 @@ class CurveMaxHold:
     if same_zone and self.snapshot is not None:
       target = float(self.snapshot.hud_max_kph)
       if long_active:
-        ramped, done = self._step_release(target, dt)
+        ramped, done = self._step_release(target, dt, v_ego_ms)
       else:
         ramped, done = target, True
       if not done:
