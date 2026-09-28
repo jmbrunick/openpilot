@@ -44,6 +44,7 @@ from openpilot.selfdrive.mapd.gps_fix import (
 from openpilot.selfdrive.mapd.maps_manifest import LICENSE, LICENSE_URL
 from openpilot.selfdrive.mapd.mn_statutory import FILL_NOTES, FILL_SOURCE, bbox_intersects_minnesota
 from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB
+from openpilot.selfdrive.mapd.roundabout_map import ROLE_RING, rb_rows_from_overpass
 from openpilot.selfdrive.mapd.overpass import (
   OVERPASS_URL,
   bbox_from_center,
@@ -130,8 +131,13 @@ def merge_ways_into_db(
   ways: list[dict],
   bbox: tuple[float, float, float, float],
   extra_meta: dict | None = None,
+  rb_rows: list[dict] | None = None,
 ) -> tuple[int, int]:
-  """Delete ways intersecting bbox, insert incoming way_ids. Returns (deleted, inserted)."""
+  """Delete ways intersecting bbox, insert incoming way_ids. Returns (deleted, inserted).
+
+  rb_rows (roundabout rings + approaches, roundabout_map.roundabout_rows) replace
+  the rb_ways in the same bbox. None leaves rb_ways untouched (older callers).
+  """
   con = sqlite3.connect(db_path)
   try:
     deleted = OsmSpeedLimitDB.delete_ways_intersecting_bbox(con, *bbox)
@@ -143,6 +149,12 @@ def merge_ways_into_db(
       )
       inserted += 1
     OsmSpeedLimitDB.recount_ways(con)
+    if rb_rows is not None:
+      OsmSpeedLimitDB.ensure_rb_tables(con)
+      OsmSpeedLimitDB.delete_rb_ways_intersecting_bbox(con, *bbox)
+      for row in rb_rows:
+        OsmSpeedLimitDB.insert_rb_way(con, row)
+      OsmSpeedLimitDB.recount_rb_ways(con)
     if extra_meta:
       con.executemany(
         "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
@@ -191,6 +203,7 @@ def install_merged_overlay(
   ways: list[dict],
   bbox: tuple[float, float, float, float],
   extra_meta: dict | None = None,
+  rb_rows: list[dict] | None = None,
 ) -> str:
   """Copy dest on the dest filesystem, merge, then atomically replace. Dest is untouched on failure."""
   dest = os.path.abspath(dest)
@@ -207,8 +220,11 @@ def install_merged_overlay(
   try:
     _p("Merging live OSM ways into a copy of the installed US maps...")
     shutil.copy2(dest, work)
-    deleted, inserted = merge_ways_into_db(work, ways, bbox, extra_meta)
+    deleted, inserted = merge_ways_into_db(work, ways, bbox, extra_meta, rb_rows=rb_rows)
     _p(f"Replaced {deleted} ways in the 100-mile box; inserted {inserted} Overpass ways.")
+    if rb_rows is not None:
+      rings = sum(1 for r in rb_rows if r.get("role") == ROLE_RING)
+      _p(f"Roundabouts: {rings} ring ways, {len(rb_rows) - rings} approach pieces.")
     if not sqlite_ok(work):
       raise RefreshMapsError("Merged sqlite failed to open. Previous maps were left unchanged.")
     _p("Installing...")
@@ -312,6 +328,7 @@ def refresh_local_maps(
       include_unmarked=fill_unmarked,
     )
   ways = ways_from_overpass(payload, fill_unmarked=fill_unmarked)
+  rb_rows = rb_rows_from_overpass(payload)
   tagged_n = sum(1 for w in ways if w.get("source") != FILL_SOURCE)
   filled_n = len(ways) - tagged_n
   if fill_unmarked:
@@ -341,7 +358,8 @@ def refresh_local_maps(
     extra_meta["fill_notes"] = FILL_NOTES
     extra_meta["local_refresh_tagged_ways"] = str(tagged_n)
     extra_meta["local_refresh_filled_ways"] = str(filled_n)
-  install_merged_overlay(dest, ways, bbox, extra_meta)
+  extra_meta["local_refresh_rb_rows"] = str(len(rb_rows))
+  install_merged_overlay(dest, ways, bbox, extra_meta, rb_rows=rb_rows)
   _p(installed_db_summary(dest))
   _p("mapd reloads this file within ~15s onroad. No reboot required.")
   return dest
