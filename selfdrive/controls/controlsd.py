@@ -27,6 +27,7 @@ from openpilot.selfdrive.controls.lib.lat_turn_geometry import (
 from openpilot.selfdrive.mapd.roundabout import (
   live_map_roundabout_hint, roundabout_lateral_curvature_bias,
 )
+from openpilot.selfdrive.controls.lib.roundabout_guide import RoundaboutAssist
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, STEER_ANGLE_SATURATION_THRESHOLD
@@ -53,13 +54,16 @@ class Controls:
 
     self.sm = messaging.SubMaster(['liveDelay', 'liveParameters', 'liveTorqueParameters', 'modelV2', 'selfdriveState',
                                    'liveCalibration', 'livePose', 'longitudinalPlan', 'lateralManeuverPlan', 'carState', 'carOutput',
-                                   'driverMonitoringState', 'onroadEvents', 'driverAssistance', 'liveMapDataNAP', 'radarState'], poll='selfdriveState')
+                                   'driverMonitoringState', 'onroadEvents', 'driverAssistance', 'liveMapDataNAP', 'radarState',
+                                   'gpsLocation', 'gpsLocationExternal'], poll='selfdriveState')
     self.pm = messaging.PubMaster(['carControl', 'controlsState'])
 
     self.steer_limited_by_safety = False
     self._turn_geom_preap = is_preap_car(self.CP)
     self._turn_geom_active = False
     self._turn_geom_param_frame = -1
+    # Roundabout Steering Assist (NAPRoundaboutAssist, Pre-AP only, default Off).
+    self.rb_assist = RoundaboutAssist(self._turn_geom_preap, self.params)
     self.curvature = 0.0
     self.desired_curvature = 0.0
     self.blinker_lat_hold = BlinkerLateralHold()
@@ -267,9 +271,22 @@ class Controls:
       self._turn_geom_active = turn_geometry_active(
         self._turn_geom_preap, bool(self.params.get_bool(PARAM_TURN_GEOMETRY)))
     self._turn_geom_param_frame += 1
-    model_or_plan_curvature = float(model_or_plan_curvature) + roundabout_lateral_curvature_bias(
+    # Map-guided ring curvature blend (identity unless the toggle is On near a mapped ring).
+    # The hint is read by alive, not valid: liveMapDataNAP is invalid without a speed match.
+    rb_assist_hint = rb_hint
+    if rb_assist_hint is None and self.sm.alive.get('liveMapDataNAP', False):
+      rb_assist_hint = live_map_roundabout_hint(self.sm['liveMapDataNAP'])
+    yaw_rate = float(self.calibrated_pose.angular_velocity.z) if self.calibrated_pose is not None else 0.0
+    model_or_plan_curvature = self.rb_assist.update(
+      self.sm, t=float(self.sm.logMonoTime['carState']) * 1e-9, v_ego=float(CS.vEgo), yaw_rate=yaw_rate,
+      model_k=float(model_or_plan_curvature), lat_active=bool(CC.latActive) and not bool(self._lat_handoff.yielded),
+      maneuver_active=bool(self.sm.valid['lateralManeuverPlan']), lane_change_active=bool(alc_active),
+      hint=rb_assist_hint, model_v2=model_v2)
+    rb_bias = roundabout_lateral_curvature_bias(
       rb_hint, is_rhd=is_rhd, turn_geometry_active=self._turn_geom_active,
     )
+    # The legacy outer bias never stacks on the assist.
+    model_or_plan_curvature = float(model_or_plan_curvature) + (0.0 if self.rb_assist.active else rb_bias)
     new_desired_curvature = handoff_new_desired_curvature(
       yielded=bool(self._lat_handoff.yielded),
       lat_active=bool(CC.latActive),
