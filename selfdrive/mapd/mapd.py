@@ -19,6 +19,7 @@ from openpilot.selfdrive.mapd.gps_fix import (
   persist_last_gps_position,
 )
 from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB
+from openpilot.selfdrive.mapd.roundabout_map import PARAM_RING, RingCache, roundabout_comfort_speed_ms
 
 MAPD_HZ = 2.0
 RELOAD_PERIOD_S = 15.0
@@ -66,6 +67,14 @@ def main():
   last_reload = 0.0
   last_gps_write = 0.0
   last_path = db.path
+
+  ring_cache = RingCache()
+
+  def _publish_ring(payload: dict) -> None:
+    try:
+      params.put(PARAM_RING, payload)
+    except Exception:
+      cloudlog.exception("mapd: NAPRoundaboutRing write failed")
 
   cloudlog.info("mapd starting, db=%s", db.path)
   if not os.path.isfile(db.path):
@@ -115,8 +124,15 @@ def main():
       d.onRoundabout = bool(rb.on_roundabout)
       d.approachingRoundabout = bool(rb.approaching)
       d.roundaboutDistance = float(rb.distance_m)
-      d.roundaboutSpeedLimit = float(rb.speed_limit_ms)
       d.roundaboutWayId = int(rb.way_id)
+      # Ring geometry (center / radius / sense) for controlsd via param, and a
+      # ring speed that keeps the inner lane ≤ 2.5 m/s² (OSM maxspeed still caps).
+      geom = ring_cache.update(db, int(rb.way_id), lat, lon, now, publish=_publish_ring)
+      if geom is not None:
+        d.roundaboutSpeedLimit = float(roundabout_comfort_speed_ms(
+          geom.radius_m, geom.lanes, max(float(rb.speed_limit_ms), float(geom.maxspeed_ms))))
+      else:
+        d.roundaboutSpeedLimit = float(rb.speed_limit_ms)
     pm.send("liveMapDataNAP", msg)
     rk.keep_time()
 
