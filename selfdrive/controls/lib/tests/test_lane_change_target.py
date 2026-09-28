@@ -14,6 +14,8 @@ from cereal import log
 from openpilot.common.constants import CV
 from openpilot.selfdrive.controls.lib.desire_helper import (
   DT_MDL,
+  OPPOSITE_PULL_NM,
+  OPPOSITE_PULL_SUSTAIN_S,
   DesireHelper,
   LaneChangeDirection,
   LaneChangeState,
@@ -207,7 +209,12 @@ def test_opposite_pull_cancels(pull_at):
   _start(dh)
   y, _ = _drive_to(dh, 0.0, pull_at)
   assert dh.target_locked
-  _step(dh, y, _CS(left=True, steering_pressed=True, steering_torque=-FIRM_NUDGE_NM, hands_on=1))
+  pull = _CS(left=True, steering_pressed=True, steering_torque=-FIRM_NUDGE_NM, hands_on=1)
+  frames = int(round(OPPOSITE_PULL_SUSTAIN_S / DT_MDL))
+  for _ in range(frames - 1):
+    _step(dh, y, pull)
+  assert dh.lane_change_state != LaneChangeState.off, "cancelled before the sustain time"
+  _step(dh, y, pull)
   assert dh.lane_change_state == LaneChangeState.off
   assert dh.desire == log.Desire.none
   assert not dh.target_locked
@@ -215,6 +222,27 @@ def test_opposite_pull_cancels(pull_at):
   desires = _hold(dh, y, 3.0)
   assert all(d == log.Desire.none for d in desires)
   assert dh.lane_change_state == LaneChangeState.off
+
+
+def test_confirm_spring_back_does_not_cancel():
+  # Logged confirm pushes spring back one 10 Hz sample against the change
+  # while steeringPressed is still set (e.g. -2.52 -> +1.22 Nm).
+  assert OPPOSITE_PULL_NM == SOFT_YIELD_TRIGGER_NM
+  assert OPPOSITE_PULL_SUSTAIN_S == 0.20
+  dh = DesireHelper()
+  _start(dh)
+  y, _ = _drive_to(dh, 0.0, -0.5)
+  assert dh.target_locked
+  back = _CS(left=True, steering_pressed=True, steering_torque=-1.3, hands_on=1)
+  light = _CS(left=True, steering_pressed=True, steering_torque=-(OPPOSITE_PULL_NM - 0.05), hands_on=1)
+  for _ in range(3):
+    _step(dh, y, back)
+    _step(dh, y, back)
+    _step(dh, y)
+  for _ in range(20):
+    _step(dh, y, light)
+  assert dh.lane_change_state == LaneChangeState.laneChangeStarting
+  assert dh.target_locked
 
 
 def test_same_direction_emergency_yank_cancels_and_does_not_resume():
