@@ -5,7 +5,6 @@ import pytest
 from openpilot.common.constants import CV
 from openpilot.selfdrive.controls.lib.curve_max_hold import (
   CURVE_CAP_SETTLE_S,
-  CURVE_COMFORT_LAT_MS2,
   CURVE_ENTER_LAT_MS2,
   CURVE_EXIT_HOLD_S,
   CURVE_LAT_TAU_S,
@@ -13,6 +12,9 @@ from openpilot.selfdrive.controls.lib.curve_max_hold import (
   CURVE_RESTORE_A_DEFAULT_MS2,
   CurveMaxHold,
   cornering_lat_accel_ms2,
+  curve_lat_target_ms2,
+  curve_restore_a_ms2,
+  curve_speed_for_curvature,
   curve_speed_from_lat,
   curve_speed_ms,
   is_sharp_curve,
@@ -67,9 +69,10 @@ def test_sharp_steer_is_a_curve_and_caps_below_60():
   v_cap = curve_speed_ms(V_60, steer, SR, WB)
   assert v_cap is not None
   assert v_cap < V_60
-  # Comfort a_lat: v = sqrt(a / kappa)
+  # Speed-dependent comfort a_lat: v²·kappa = A(v).
   kappa = abs(steer) * CV.DEG_TO_RAD / (SR * WB)
-  assert abs(v_cap - (CURVE_COMFORT_LAT_MS2 / kappa) ** 0.5) < 1e-6
+  assert abs(v_cap - curve_speed_for_curvature(kappa)) < 1e-6
+  assert abs(v_cap * v_cap * kappa - curve_lat_target_ms2(v_cap)) < 1e-3
 
 
 def _run_bend(curve: CurveMaxHold, hold: MapCruiseHold, *, last_hud, posted_now,
@@ -396,14 +399,29 @@ def test_lat_accel_smooths_and_cap_holds_then_ramps():
       v_ego=v, hud_overlay=posted, curvature=kappa_tight, restore_a_ms2=0.40,
     )
   held = out.hud_kph
+  # A slightly looser reading (jitter, inside the unwind hysteresis) must
+  # not raise the cap.
+  kappa_jitter = 2.25 / (v * v)
+  for _ in range(100):
+    out, _, _ = _run_bend(
+      curve, hold, last_hud=posted, posted_now=posted, steer=4.0,
+      v_ego=v, hud_overlay=posted, curvature=kappa_jitter, restore_a_ms2=0.40,
+    )
+    assert out.hud_kph <= held + 0.05
+  # A real unwind past the apex lets the cap climb, but only at the
+  # restore rate, never a jump.
   kappa_loose = 1.6 / (v * v)
   assert kappa_loose * v * v >= CURVE_ENTER_LAT_MS2
+  step_max = curve_restore_a_ms2(v, 0.40) * CV.MS_TO_KPH * 0.01 + 1e-6
+  prev = out.hud_kph
   for _ in range(100):
     out, _, _ = _run_bend(
       curve, hold, last_hud=posted, posted_now=posted, steer=4.0,
       v_ego=v, hud_overlay=posted, curvature=kappa_loose, restore_a_ms2=0.40,
     )
-    assert out.hud_kph <= held + 0.05
+    assert out.hud_kph <= prev + step_max
+    prev = out.hud_kph
+  assert out.hud_kph > held + 0.1
   assert abs(hold.held_max_kph - posted) < 1e-6
 
   # Clearly tighter: cap may drop.
