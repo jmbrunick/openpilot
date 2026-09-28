@@ -30,9 +30,11 @@ from openpilot.selfdrive.controls.lib.curve_preview import (
   turn_accel_limit,
 )
 from openpilot.selfdrive.controls.lib.radar_path_gate import model_path_xy, path_lateral_m
+from openpilot.selfdrive.controls.lib.lead_leaving import LeadLeavingEstimator, release_lead_brake
 from openpilot.selfdrive.controls.lib.unified_lead import (
   MODE_BLEND_S,
   UnifiedLeadController,
+  speed_ceiling_accel,
 )
 from openpilot.selfdrive.controls.lib.lead_approach import (
   LEAD_APPROACH_MILD_A_MS2,
@@ -231,6 +233,9 @@ class LongitudinalPlanner:
     # Continuous lead follow. Default off; shadow is logged either way.
     self.unified_a_target = 0.0
     self._unified = UnifiedLeadController()
+    # Lead leaving our path: one weight for both the legacy and unified paths.
+    self._lead_leave = LeadLeavingEstimator()
+    self.lead_leave_w = 0.0
     self._unified_enabled = False
     self._unified_read_age = 0.0
     self._unified_polled = False
@@ -582,6 +587,14 @@ class LongitudinalPlanner:
     else:
       output_a_target = output_a_target_mpc
       self.output_should_stop = output_should_stop_mpc
+    # Lead-free floor: the deepest non-lead decel in force this frame (MAX,
+    # map, curve, roundabout, e2e). A leaving lead's brake releases to this,
+    # never above it.
+    lead_free_a = 0.0
+    if sm['selfdriveState'].experimentalMode:
+      lead_free_a = min(lead_free_a, float(output_a_target_e2e))
+    if self._is_preap:
+      self._update_lead_leave(sm, float(v_ego), reset_state)
 
     # Map MAX is a set speed; MPC cruise_obstacle will not track it.
     # Climb at Accel 1–10 until the deadband, then hold so we do not surge
@@ -622,6 +635,7 @@ class LongitudinalPlanner:
         )
         if a_brake is not None:
           output_a_target = min(float(output_a_target), a_brake)
+          lead_free_a = min(lead_free_a, float(a_brake))
         else:
           a_up = map_track_accel_ms2(
             v_ego, v_hud_ms, map_accel_a_ms2(self._map_speed_lookahead, self._map_speed_accel),
@@ -651,6 +665,7 @@ class LongitudinalPlanner:
     # Kinematic a from apply_roundabout_plan — not map_track_decel comfort.
     if rb_v is not None:
       output_a_target = min(float(output_a_target), float(a_rb_plan))
+      lead_free_a = min(lead_free_a, float(a_rb_plan))
 
     # Slower radar lead: early light ease as soon as radar feedback is
     # reasonable (200 m Bosch ceiling, 24 s head-start, clear-close skips
@@ -1001,6 +1016,14 @@ class LongitudinalPlanner:
         dt=self.dt,
       )
 
+    # Lead leaving our path (turning off, projected clear of our width by the
+    # time we arrive): fade its brake toward the lead-free command. The same
+    # weight feeds the unified controller below. Stalled / still-overlapping
+    # leads have weight 0, so this is exactly today's command for them.
+    if self._is_preap and self.lead_leave_w > 0.0:
+      free_a = min(float(lead_free_a), self._lead_free_ceiling_a(float(v_ego)))
+      output_a_target = release_lead_brake(output_a_target, self.lead_leave_w, free_a)
+
     # Curve preview: accel ceiling from the model path (0–5 s) that slows
     # ahead of a bend, finished ~1.5 s before the tight point, and holds
     # back +a just under a bend's comfort speed. min() only: never raises
@@ -1023,6 +1046,53 @@ class LongitudinalPlanner:
     self.output_a_target = np.clip(output_a_target, accel_clip[0], accel_clip[1])
     self.prev_accel_clip = accel_clip
     self._apply_unified_lead(sm, float(v_ego))
+
+  def _lead_free_ceiling_a(self, v_ego: float) -> float:
+    """Hold speed, or the MAX / cornering speed-error decel if deeper (EV settle included)."""
+    v_cap = float(self._unified_v_cap_ms)
+    v_curve = curve_speed_for_curvature(float(self._corner_curvature))
+    if v_curve is not None and v_ego >= 5.0:
+      v_cap = min(v_cap, float(v_curve)) if v_cap > 0.5 else float(v_curve)
+    if v_cap <= 0.5:
+      return 0.0
+    return min(0.0, float(speed_ceiling_accel(v_ego, v_cap)))
+
+  def _update_lead_leave(self, sm, v_ego: float, reset_state: bool) -> None:
+    """Leaving-path weight for radard's leadOne (shared by legacy and unified)."""
+    radar_state = sm['radarState']
+    lead = radar_state.leadOne
+    live = bool(lead.status)
+    held = (not live) and self._lead_close_hold_d is not None and self._lead_close_hold_v is not None
+    suppress = bool(reset_state or self.fcw or self.mpc.crash_cnt > 0 or self.output_should_stop
+                    or bool(sm['controlsState'].forceDecel))
+    path_lat = None
+    two_lat = None
+    if live:
+      try:
+        path_x, path_y = model_path_xy(sm['modelV2'])
+        path_lat = path_lateral_m(lead, path_x, path_y)
+        two = radar_state.leadTwo
+        if bool(two.status) and int(getattr(two, 'radarTrackId', -1)) != int(getattr(lead, 'radarTrackId', -1)):
+          two_lat = path_lateral_m(two, path_x, path_y)
+          if two_lat is None:
+            two_lat = 0.0
+      except Exception:
+        path_lat = None
+        two_lat = 0.0
+    self.lead_leave_w = float(self._lead_leave.update(
+      dt=self.dt,
+      present=live or held,
+      held=held,
+      lead_id=int(getattr(lead, 'radarTrackId', 0) or 0) if live else None,
+      path_lat=path_lat,
+      gap=float(lead.dRel) if live else 0.0,
+      v_ego=v_ego,
+      v_lead=float(lead.vLead) if live else None,
+      a_lead=float(lead.aLeadK) if live else 0.0,
+      model_prob=float(lead.modelProb) if live else None,
+      lead_two_path_lat=two_lat,
+      suppress=suppress,
+    ))
 
   def _poll_unified_enabled(self, force: bool = False) -> None:
     """NAPLongUnified, cached. Not a Params read on the planner frame."""
@@ -1146,6 +1216,7 @@ class LongitudinalPlanner:
           path_lat=path_lat,
           model_prob=model_prob,
           radar=radar,
+          leave_w=float(self.lead_leave_w),
         )
       except Exception:
         self._note_unified_fault()
