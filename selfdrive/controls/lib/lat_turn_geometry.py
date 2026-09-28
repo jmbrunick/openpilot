@@ -20,7 +20,7 @@ Low-speed reach (Sep 28 PM drive: 5-8 mph turns still clipped the inside by
 MIN_STABLE_DELAY (0.3 s) as 0.3 s, so the effective reduction was only
 0.167 s, and the 3-4 m/s fade meant ~no correction at 5-8 mph. Below 8 mph
 the cap rises to 0.25 s and the plan is sampled directly down to 0.2 s
-(`plan_curvature`); both fade back to exactly the 7c49a8e behaviour by
+(`plan_curvature`); both fade back to exactly the 7c49a8e behavior by
 10 mph (4.47 m/s). Below 10 mph a rate-limited wheel freezes the reduction
 instead of slewing back to stock. At >= 10 mph every output is identical to
 7c49a8e.
