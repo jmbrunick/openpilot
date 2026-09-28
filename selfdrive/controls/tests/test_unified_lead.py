@@ -11,6 +11,7 @@ import pytest
 
 from openpilot.selfdrive.controls.lib.unified_lead import (
   A_MIN_MS2,
+  NEED_MARGIN,
   K_A_FIRM,
   K_A_MILD,
   LEAD_ANTICIPATE_MAX_MS2,
@@ -18,7 +19,9 @@ from openpilot.selfdrive.controls.lib.unified_lead import (
   UnifiedLeadController,
   _k_a_brake_scale,
   gap_set_m,
+  kinematic_need_accel,
   kinematic_required_accel,
+  lead_trust,
   lead_decel_anticipation,
   speed_ceiling_accel,
   unified_follow_desired,
@@ -921,3 +924,173 @@ def test_far_slow_close_coasts_near_close_does_not(monkeypatch):
   slow_near_plain = unified_follow_desired(gap + 2.0, v_l + 0.3, v_l, -0.3, 1.2, v_ceiling=40.0)
   assert slow_far >= slow_far_plain + 0.002
   assert slow_near == pytest.approx(slow_near_plain, abs=1e-9)
+
+
+# Sep 28 2026 11:07:22 CT, route 00000124 (unified ON), qlog at 0.1 s.
+# (dRel, vLead, aLeadK, yRel, radar, modelProb, trackId, vEgo, override, aTarget)
+# or (None, vEgo, override, aTarget) with no lead in the sample. `override`
+# is the driver on the pedal (longActive off: the planner resets every frame
+# and seeds from the legacy command). Logged unified/aTarget: -3.46..-3.50
+# for ~1 s on a lead 80-120 m ahead, yRel up to ~2 m.
+SEP28_1107_ROWS = (
+  (None, 19.29, 1, 0.0), (None, 19.31, 1, 0.0), (None, 19.31, 1, 0.0),
+  (141.69, 11.06, -0.4, -2.52, 1, 0.56, 1929, 19.31, 1, 0.0),
+  (141.69, 11.06, -0.4, -2.52, 1, 0.56, 1929, 19.31, 1, 0.0),
+  (139.38, 10.79, -0.59, -2.39, 1, 0.63, 1929, 19.27, 1, -0.11),
+  (139.38, 10.79, -0.59, -2.39, 1, 0.63, 1929, 19.23, 1, -0.11),
+  (139.38, 10.79, -0.59, -2.39, 1, 0.63, 1929, 19.17, 1, -0.11), (None, 19.14, 1, -0.11), (None, 19.12, 1, -0.11),
+  (None, 19.11, 1, -0.15), (None, 19.1, 1, -0.15), (None, 19.09, 1, -0.15), (None, 19.07, 1, -0.15),
+  (None, 19.07, 1, -0.15), (None, 19.04, 1, -0.14), (None, 19.01, 1, -0.14), (None, 19.02, 1, -0.14),
+  (None, 19.03, 1, -0.14), (None, 19.0, 1, -0.14), (None, 18.97, 1, -0.41), (None, 18.94, 1, -0.41),
+  (None, 18.91, 1, -0.41), (None, 18.87, 1, -0.41), (None, 18.81, 1, -0.41),
+  (119.81, 7.57, -1.91, 0.73, 1, 0.64, 1929, 18.75, 1, -0.33),
+  (119.81, 7.57, -1.91, 0.73, 1, 0.64, 1929, 18.69, 1, -0.33),
+  (119.81, 7.57, -1.91, 0.73, 1, 0.64, 1929, 18.62, 1, -0.33), (None, 18.56, 1, -0.33), (None, 18.52, 1, -0.33),
+  (None, 18.46, 1, -3.46), (None, 18.41, 1, -3.46), (None, 18.36, 1, -3.46),
+  (111.12, 6.73, -1.53, 1.98, 1, 0.82, 1929, 18.3, 1, -3.46),
+  (111.12, 6.73, -1.53, 1.98, 1, 0.82, 1929, 18.24, 1, -3.46),
+  (80.14, 12.54, -0.63, 0.83, 0, 0.92, -1, 18.19, 1, -3.5), (80.14, 12.54, -0.63, 0.83, 0, 0.92, -1, 18.13, 0, -3.5),
+  (80.14, 12.54, -0.63, 0.83, 0, 0.92, -1, 18.06, 1, -3.5), (None, 17.99, 1, -3.5), (None, 17.92, 0, -3.5),
+  (None, 17.84, 0, -0.1), (None, 17.75, 0, -0.1), (None, 17.66, 0, -0.1), (None, 17.58, 0, -0.1),
+  (None, 17.5, 1, -0.1), (None, 17.42, 0, -0.2),
+)
+
+
+def _replay_1107(resets=True):
+  ctrl = UnifiedLeadController()
+  out = []
+  for row in SEP28_1107_ROWS:
+    if row[0] is None:
+      _, v_ego, override, seed = row
+      lead = None
+    else:
+      d, v_lead, a_lead, y_rel, radar, mprob, track, v_ego, override, seed = row
+      lead = (d, v_lead, a_lead, y_rel, bool(radar), mprob, track)
+    for _ in range(2):
+      if resets and override:
+        ctrl.reset()
+      if lead is None:
+        a = ctrl.step(dt=DT, present=False, gap=0.0, v_ego=v_ego, v_lead=0.0, a_lead=0.0,
+                      t_follow=1.7, lead_id=None, seed_a=seed)
+        out.append((None, override, a))
+        continue
+      d, v_lead, a_lead, y_rel, radar, mprob, track = lead
+      a = ctrl.step(dt=DT, present=True, gap=d, v_ego=v_ego, v_lead=v_lead, a_lead=a_lead,
+                    t_follow=1.7, lead_id=("radar", track), seed_a=seed, v_ceiling=68.37 / 3.6,
+                    y_rel=y_rel, model_prob=mprob, radar=radar, a_max=1.2)
+      need = kinematic_need_accel(d, v_ego, v_lead, a_lead, 1.7)
+      out.append((need, override, a))
+  return out
+
+
+@pytest.mark.parametrize("resets", [True, False])
+def test_sep28_1107_far_ambiguous_lead_is_not_a_full_regen_flash(resets):
+  """11:07:22: no firm decel past what the kinematics need. Logged -3.46/-3.50."""
+  out = _replay_1107(resets)
+  with_lead = [(need, ovr, a) for need, ovr, a in out if need is not None]
+  assert with_lead
+  recent = []
+  for need, _, a in with_lead:
+    # Physical need with margin (deepest in the last 0.5 s, so a jerk-limited
+    # release after a lead switch is not a failure), plus a little blend.
+    recent = (recent + [need])[-10:]
+    assert a >= min(-0.45, NEED_MARGIN * min(recent)) - 0.25
+    assert a >= A_MIN_MS2
+  published = min(a for _, _, a in with_lead)
+  assert published >= -1.8
+  engaged = [a for _, ovr, a in with_lead if not ovr]
+  if resets:
+    # Gas released onto the 80 m lead: the legacy -3.5 seed is not carried.
+    assert engaged and min(engaged) >= -1.0
+  # Still responds to the real closer (vRel ~ -11 m/s).
+  assert published <= -0.3
+
+
+def test_far_offset_or_weak_lead_cannot_reach_full_regen():
+  """111 m, closing 11.6, aLead -1.5, yRel 2 m: physics needs ~-1.1, not -3.5."""
+  v_ego, v_lead, gap = 18.3, 6.73, 111.1
+  need = kinematic_need_accel(gap, v_ego, v_lead, -1.53, 1.7)
+  assert -1.7 <= need <= -0.8
+  offset = unified_follow_desired(gap, v_ego, v_lead, -1.53, 1.7, v_ceiling=19.0,
+                                  y_rel=1.98, model_prob=0.82, radar=True)
+  in_path = unified_follow_desired(gap, v_ego, v_lead, -1.53, 1.7, v_ceiling=19.0,
+                                   y_rel=0.0, model_prob=0.82, radar=True)
+  weak = unified_follow_desired(gap, v_ego, v_lead, -1.53, 1.7, v_ceiling=19.0,
+                                y_rel=0.0, model_prob=0.3, radar=False)
+  for a in (offset, in_path, weak):
+    assert a >= NEED_MARGIN * need - 0.45
+    assert a <= -0.5
+  # Trust falls with lateral offset and a weak read, continuously.
+  assert offset > in_path + 0.05
+  assert weak > in_path + 0.05
+  assert lead_trust(gap, v_ego, v_lead, 1.98, radar=True) < lead_trust(gap, v_ego, v_lead, 0.0, radar=True)
+
+
+def test_far_lead_that_kinematically_needs_full_regen_still_gets_it():
+  """Stopped car 100 m ahead at 30 m/s: the kinematics need full regen."""
+  assert kinematic_need_accel(100.0, 30.0, 0.0, 0.0, 1.3) <= A_MIN_MS2 + 1e-6
+  desired = unified_follow_desired(100.0, 30.0, 0.0, 0.0, 1.3, v_ceiling=31.0,
+                                   y_rel=1.5, model_prob=0.6, radar=True)
+  assert desired <= -3.3
+  # 130 m at 30 m/s, lead stopped: need ~-3.9 -> still full regen.
+  assert unified_follow_desired(130.0, 30.0, 0.0, 0.0, 1.3, v_ceiling=31.0, radar=True) <= -3.3
+
+
+def test_close_rapid_closer_still_gets_full_fast_brake():
+  """Consistent in-path close closer: trust 1, full regen within ~1.5 s."""
+  v_ego, v_lead, gap = 25.0, 8.0, 32.0
+  assert lead_trust(gap, v_ego, v_lead, 0.2, model_prob=0.9, radar=True) == 1.0
+  ctrl = UnifiedLeadController()
+  cmds = []
+  for _ in range(40):
+    cmds.append(ctrl.step(dt=DT, present=True, gap=gap, v_ego=v_ego, v_lead=v_lead, a_lead=0.0,
+                          t_follow=1.3, lead_id=7, seed_a=0.0, v_ceiling=30.0, y_rel=0.2,
+                          model_prob=0.9, radar=True))
+  assert min(cmds) <= -3.4
+  assert _first_at_or_below(cmds, -3.0) <= 1.6
+  assert min(cmds) >= A_MIN_MS2
+  # An inherited full-regen seed stays in force on a close closer.
+  held = UnifiedLeadController()
+  first = held.step(dt=DT, present=True, gap=gap, v_ego=v_ego, v_lead=v_lead, a_lead=0.0,
+                    t_follow=1.3, lead_id=8, seed_a=-3.5, v_ceiling=30.0, radar=True, model_prob=0.9)
+  assert first <= -3.3
+
+
+def test_moderate_range_cut_in_still_responds():
+  """Cut-in 35 m ahead closing 5 m/s: trust 1, firm within ~1.5 s."""
+  v_ego = 27.0
+  v_lead = 22.0
+  assert lead_trust(35.0, v_ego, v_lead, 1.2, model_prob=0.8, radar=True) == 1.0
+  ctrl = UnifiedLeadController()
+  for _ in range(20):
+    ctrl.step(dt=DT, present=True, gap=90.0, v_ego=v_ego, v_lead=v_ego, a_lead=0.0, t_follow=1.3,
+              lead_id=1, seed_a=0.0, v_ceiling=30.0, radar=True, model_prob=0.9)
+  cmds = []
+  gap = 35.0
+  for _ in range(40):
+    cmds.append(ctrl.step(dt=DT, present=True, gap=gap, v_ego=v_ego, v_lead=v_lead, a_lead=0.0,
+                          t_follow=1.3, lead_id=2, seed_a=0.0, v_ceiling=30.0, y_rel=1.2,
+                          radar=True, model_prob=0.8))
+    gap -= (v_ego - v_lead) * DT
+  assert _first_at_or_below(cmds, -1.0) is not None
+  assert _first_at_or_below(cmds, -1.0) <= 1.5
+  assert min(cmds) <= -1.5
+
+
+def test_inherited_firm_seed_is_not_carried_into_a_remote_lead():
+  """A legacy -3.5 in force when a far, slow-closing lead appears is released."""
+  ctrl = UnifiedLeadController()
+  cmds = []
+  for _ in range(30):
+    cmds.append(ctrl.step(dt=DT, present=True, gap=80.0, v_ego=18.1, v_lead=12.5, a_lead=-0.6,
+                          t_follow=1.7, lead_id=("radar", -1), seed_a=-3.5, v_ceiling=19.0,
+                          y_rel=0.8, model_prob=0.92, radar=False))
+  assert cmds[0] >= -1.2
+  assert min(cmds) >= -1.2
+
+
+def test_222_exemplars_are_fully_trusted_so_unchanged():
+  """Every #222 exemplar row is close/short-TTC: the trust bound is identity."""
+  for rows in (SEP20_0755_ROWS, SEP23_2214_ROWS, SEP22_2331_ROWS):
+    for d, v_lead, _, v_ego, _ in _interp_rows(rows):
+      assert lead_trust(d, v_ego, v_lead, 0.0, model_prob=0.9, radar=True) == 1.0
