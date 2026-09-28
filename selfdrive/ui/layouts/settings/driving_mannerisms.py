@@ -24,12 +24,13 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
 from openpilot.selfdrive.ui.layouts.settings.nap_lateral import (
   LAT_REF_OFFSET_DESCRIPTION, LAT_REF_OFFSET_LABELS, LAT_REF_OFFSET_PRESETS,
   LAT_TURN_GEOM_DESCRIPTION, NAP_LAT_REF_OFFSET, NAP_LAT_TURN_GEOM, lat_ref_offset_index,
+  NAP_ROUNDABOUT_ASSIST, ROUNDABOUT_ASSIST_DESCRIPTION,
 )
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys
 
 
 class DrivingMannerismsLayout(Widget):
-  """Nested NAP page for Hypermile, accel feel, follow distance, soft-lat, and turn geometry."""
+  """Nested NAP page for Hypermile, accel feel, follow distance, soft-lat, turn geometry, roundabout assist."""
 
   def __init__(self, on_back):
     super().__init__()
@@ -116,6 +117,14 @@ class DrivingMannerismsLayout(Widget):
     )
     self._all_items.append(self._ref_offset_buttons)
 
+    self._rb_assist = toggle_item(
+      "Roundabout Steering Assist",
+      description=ROUNDABOUT_ASSIST_DESCRIPTION,
+      initial_state=self._params.get_bool(NAP_ROUNDABOUT_ASSIST),
+      callback=self._on_rb_assist,
+    )
+    self._all_items.append(self._rb_assist)
+
     self._one_pedal = toggle_item(
       "One-Pedal Long",
       description=ONE_PEDAL_LONG_DESCRIPTION,
@@ -181,6 +190,9 @@ class DrivingMannerismsLayout(Widget):
   def _on_turn_geom(self, state):
     self._params.put_bool(NAP_LAT_TURN_GEOM, state)
 
+  def _on_rb_assist(self, state):
+    self._params.put_bool(NAP_ROUNDABOUT_ASSIST, state)
+
   def _on_ref_offset(self, index: int):
     self._params.put(NAP_LAT_REF_OFFSET, float(LAT_REF_OFFSET_PRESETS[index]))
 
@@ -204,6 +216,7 @@ class DrivingMannerismsLayout(Widget):
     self._lat_handoff.action_item.set_state(self._params.get_bool(NAP_DRIVER_LAT_HANDOFF))
     self._turn_geom.action_item.set_state(self._params.get_bool(NAP_LAT_TURN_GEOM))
     self._ref_offset_buttons.action_item.set_selected_button(lat_ref_offset_index(self._params))
+    self._rb_assist.action_item.set_state(self._params.get_bool(NAP_ROUNDABOUT_ASSIST))
     self._one_pedal.action_item.set_state(self._params.get_bool(NAP_ONE_PEDAL_LONG))
 
   def show_event(self):
