@@ -5,6 +5,7 @@ from openpilot.common.constants import CV
 from openpilot.selfdrive.controls.lib.driver_lateral_handoff import cs_hands_on_level
 from openpilot.selfdrive.controls.lib.lane_change_nudge import (
   EmergencyYankTracker,
+  SoftConfirmTracker,
   is_emergency_yank,
   tipped_lane_change_driver_release,
   torque_is_same_direction,
@@ -78,6 +79,7 @@ class DesireHelper:
     self._tip_turn = StalkTipTurn()
     self._suppress_next_tip = False
     self._yank = EmergencyYankTracker()
+    self._soft_confirm = SoftConfirmTracker()
 
     # Includes the lane change currently armed or in progress.
     self.queued_changes = 0
@@ -198,11 +200,26 @@ class DesireHelper:
     self._tip_turn.update(carstate.turnSignalStalkState, DT_MDL)
     torque_nm = float(getattr(carstate, "steeringTorque", 0.0) or 0.0)
     fast_rise = self._yank.update(torque_nm, DT_MDL)
+    if self.lane_change_state == LaneChangeState.off:
+      lc_dir = 0
+    elif self.lane_change_direction == LaneChangeDirection.left:
+      lc_dir = 1
+    elif self.lane_change_direction == LaneChangeDirection.right:
+      lc_dir = 2
+    else:
+      lc_dir = 0
     emergency_yank = is_emergency_yank(
       torque_nm=torque_nm,
       hands_on_level=cs_hands_on_level(carstate),
       fast_rise=fast_rise,
+      over_torque=self._yank.over_torque,
+      alc_direction=lc_dir,
     )
+    # Armed-only soft confirm: preLaneChange, >= 20 mph, same direction.
+    soft_confirm = self._soft_confirm.update(
+      torque_nm=torque_nm, direction=lc_dir,
+      armed=(self.lane_change_state == LaneChangeState.preLaneChange and not below_lane_change_speed),
+      dt=DT_MDL)
     left_press = self._tip_turn.left_press
     right_press = self._tip_turn.right_press
     tip_event = self._tip_turn.tip_event and not self._suppress_next_tip
@@ -301,6 +318,8 @@ class DesireHelper:
         torque_applied = carstate.steeringPressed and \
                          ((carstate.steeringTorque > 0 and self.lane_change_direction == LaneChangeDirection.left) or
                           (carstate.steeringTorque < 0 and self.lane_change_direction == LaneChangeDirection.right))
+        # A lighter same-direction nudge held SOFT_CONFIRM_SUSTAIN_S also confirms.
+        torque_applied = torque_applied or soft_confirm
 
         blindspot_detected = ((carstate.leftBlindspot and self.lane_change_direction == LaneChangeDirection.left) or
                               (carstate.rightBlindspot and self.lane_change_direction == LaneChangeDirection.right))
