@@ -10,16 +10,28 @@ anchored ~0.35 m early in space. Both are the same knob:
   lookahead = lagd + dly_offset(v) + 0.075 - ref_offset_m / max(v, 3)
 
 Reduction is capped at 0.2 s, the lookahead never goes below 0.2 s (or
-below the stock value if that is already lower), it fades in from 3 to
-4 m/s (no effect below 3 m/s), and it is held off (slewed back to stock)
+below the stock value if that is already lower), it fades in from 1.5 to
+2.5 m/s (no effect below 1.5 m/s), and it is held off (slewed back to stock)
 while the steering angle is pinned by the 250 deg/s rate limit. Highway
 speeds are unchanged apart from ref_offset / v (0.012 s at 30 m/s).
+
+Low-speed reach (Sep 28 PM drive: 5-8 mph turns still clipped the inside by
+~0.6-0.8 m). drive_helpers.get_curvature_from_plan treats any action_t below
+MIN_STABLE_DELAY (0.3 s) as 0.3 s, so the effective reduction was only
+0.167 s, and the 3-4 m/s fade meant ~no correction at 5-8 mph. Below 8 mph
+the cap rises to 0.25 s and the plan is sampled directly down to 0.2 s
+(`plan_curvature`); both fade back to exactly the 7c49a8e behaviour by
+10 mph (4.47 m/s). Below 10 mph a rate-limited wheel freezes the reduction
+instead of slewing back to stock. At >= 10 mph every output is identical to
+7c49a8e.
 
 Off, or not Pre-AP, returns the stock lookahead unchanged.
 """
 from __future__ import annotations
 
 import numpy as np
+
+from openpilot.selfdrive.controls.lib.drive_helpers import MIN_STABLE_DELAY, curv_from_psis, get_curvature_from_plan
 
 PARAM_TURN_GEOMETRY = "NAPLatTurnGeom"
 PARAM_REF_OFFSET = "NAPLatRefOffset"
@@ -32,11 +44,18 @@ REF_OFFSET_MAX_M = 1.0
 DELAY_OFFSET_BP_MS = (5.0, 10.0, 14.0, 19.0, 25.0)
 DELAY_OFFSET_S = (-0.13, -0.10, -0.08, -0.05, 0.0)
 
-MIN_SPEED_MS = 3.0          # no correction at or below
-FADE_IN_SPEED_MS = 4.0      # full correction from here
+MIN_SPEED_MS = 1.5          # no correction at or below
+FADE_IN_SPEED_MS = 2.5      # full correction from here
 REF_SPEED_FLOOR_MS = 3.0    # offset / max(v, 3)
 MAX_REDUCTION_S = 0.20
 MIN_LOOKAHEAD_S = 0.20
+
+# Low-speed reach: full below 8 mph, gone (== 7c49a8e) from 10 mph.
+MPH = 0.44704
+LOW_SPEED_REACH_FULL_MS = 8.0 * MPH
+LOW_SPEED_REACH_END_MS = 10.0 * MPH
+LOW_SPEED_MAX_REDUCTION_S = 0.25
+LOW_SPEED_SAMPLE_FLOOR_S = MIN_LOOKAHEAD_S   # plan sampled directly down to 0.2 s
 
 # Steering rate limit hold-off. Pre-AP MAX_ANGLE_RATE is 5 deg per 20 ms.
 STEER_RATE_LIMIT_DEG_S = 250.0
@@ -70,17 +89,53 @@ def speed_fade(v_ego: float) -> float:
   return float(np.clip((float(v_ego) - MIN_SPEED_MS) / (FADE_IN_SPEED_MS - MIN_SPEED_MS), 0.0, 1.0))
 
 
+def low_speed_reach_weight(v_ego: float) -> float:
+  """1 below 8 mph, 0 from 10 mph (linear between)."""
+  w = (LOW_SPEED_REACH_END_MS - float(v_ego)) / (LOW_SPEED_REACH_END_MS - LOW_SPEED_REACH_FULL_MS)
+  return float(np.clip(w, 0.0, 1.0))
+
+
+def reduction_cap_s(v_ego: float) -> float:
+  """0.25 s below 8 mph, exactly MAX_REDUCTION_S from 10 mph."""
+  w = low_speed_reach_weight(v_ego)
+  if w <= 0.0:
+    return MAX_REDUCTION_S
+  return MAX_REDUCTION_S + (LOW_SPEED_MAX_REDUCTION_S - MAX_REDUCTION_S) * w
+
+
+def sample_floor_s(v_ego: float) -> float:
+  """Shortest plan sample time: 0.2 s below 8 mph, MIN_STABLE_DELAY (stock) from 10 mph."""
+  w = low_speed_reach_weight(v_ego)
+  if w <= 0.0:
+    return MIN_STABLE_DELAY
+  return MIN_STABLE_DELAY - (MIN_STABLE_DELAY - LOW_SPEED_SAMPLE_FLOOR_S) * w
+
+
+def plan_curvature(yaws, yaw_rates, t_idxs, v_ego: float, action_t: float,
+                   sample_floor: float = MIN_STABLE_DELAY) -> float:
+  """get_curvature_from_plan, but the plan may be sampled directly below 0.3 s.
+
+  With the stock floor (or action_t >= 0.3 s) this IS get_curvature_from_plan.
+  """
+  floor = float(sample_floor)
+  if floor >= MIN_STABLE_DELAY or float(action_t) >= MIN_STABLE_DELAY:
+    return get_curvature_from_plan(yaws, yaw_rates, t_idxs, v_ego, action_t)
+  t = max(float(action_t), floor, LOW_SPEED_SAMPLE_FLOOR_S)
+  psi_target = np.interp(t, t_idxs, yaws)
+  return curv_from_psis(psi_target, yaw_rates[0], v_ego, t)
+
+
 def target_reduction_s(v_ego: float, ref_offset_m: float) -> float:
-  """Seconds to take off the stock lookahead (>= 0, <= MAX_REDUCTION_S)."""
+  """Seconds to take off the stock lookahead (>= 0, <= reduction_cap_s(v))."""
   v = max(0.0, float(v_ego))
-  red = min(MAX_REDUCTION_S, max(0.0, -delay_offset_s(v) + ref_offset_s(v, ref_offset_m)))
+  red = min(reduction_cap_s(v), max(0.0, -delay_offset_s(v) + ref_offset_s(v, ref_offset_m)))
   return red * speed_fade(v)
 
 
-def apply_reduction(stock_lookahead_s: float, reduction_s: float) -> float:
+def apply_reduction(stock_lookahead_s: float, reduction_s: float, cap_s: float = MAX_REDUCTION_S) -> float:
   """Stock minus reduction, floored at MIN_LOOKAHEAD_S (never above stock)."""
   stock = float(stock_lookahead_s)
-  red = min(MAX_REDUCTION_S, max(0.0, float(reduction_s)))
+  red = min(float(cap_s), max(0.0, float(reduction_s)))
   if red <= 0.0:
     return stock
   return max(min(stock, MIN_LOOKAHEAD_S), stock - red)
@@ -105,12 +160,14 @@ class TurnGeometryCorrection:
     self._hold_s = 0.0
     self._out_prev: float | None = None
     self.rate_limited = False
+    self.sample_floor_s = MIN_STABLE_DELAY
 
   def reset(self) -> None:
     self.reduction_s = 0.0
     self._hold_s = 0.0
     self._out_prev = None
     self.rate_limited = False
+    self.sample_floor_s = MIN_STABLE_DELAY
 
   def update(self, *, enabled: bool, stock_lookahead_s: float, v_ego: float, ref_offset_m: float,
              lat_active: bool = True, cmd_angle_deg: float = 0.0, out_angle_deg: float | None = None) -> float:
@@ -125,10 +182,14 @@ class TurnGeometryCorrection:
       self._out_prev = float(out_angle_deg)
     self.rate_limited = limited
     self._hold_s = RATE_LIMIT_HOLD_S if limited else max(0.0, self._hold_s - self.dt)
-    target = 0.0 if self._hold_s > 0.0 else target_reduction_s(v_ego, ref_offset_m)
+    if self._hold_s > 0.0 and low_speed_reach_weight(v_ego) > 0.0:
+      target = self.reduction_s   # below 10 mph: freeze, keep the turn-in timing
+    else:
+      target = 0.0 if self._hold_s > 0.0 else target_reduction_s(v_ego, ref_offset_m)
     step = REDUCTION_SLEW_S_PER_S * self.dt
     self.reduction_s += float(np.clip(target - self.reduction_s, -step, step))
-    return apply_reduction(stock_lookahead_s, self.reduction_s)
+    self.sample_floor_s = sample_floor_s(v_ego)
+    return apply_reduction(stock_lookahead_s, self.reduction_s, reduction_cap_s(v_ego))
 
 
 def turn_geometry_active(is_preap: bool, param_on: bool) -> bool:
