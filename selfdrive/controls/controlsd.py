@@ -151,7 +151,9 @@ class Controls:
     nudge_hands = cs_hands_on_level(CS)
     nudge_fast = self._lane_change_yank.update(nudge_torque, DT_CTRL)
     nudge_emergency = is_emergency_yank(
-      torque_nm=nudge_torque, hands_on_level=nudge_hands, fast_rise=nudge_fast)
+      torque_nm=nudge_torque, hands_on_level=nudge_hands, fast_rise=nudge_fast,
+      over_torque=self._lane_change_yank.over_torque,
+      alc_direction=nudge_dir if tipped_alc else 0)
     lane_change_confirm = (
       tipped_alc
       and torque_is_same_direction(nudge_torque, nudge_dir)
