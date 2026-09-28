@@ -23,6 +23,7 @@ from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   lat_active_after_handoff,
 )
 from openpilot.selfdrive.controls.lib.lane_change_nudge import (
+  EMERGENCY_SUSTAIN_S,
   EMERGENCY_TORQUE_NM,
   SOFT_YIELD_TRIGGER_NM,
 )
@@ -222,7 +223,10 @@ def test_same_direction_emergency_yank_cancels_and_does_not_resume():
   y, _ = _drive_to(dh, 0.0, -1.2)
   yank = _CS(left=True, steering_pressed=True,
              steering_torque=EMERGENCY_TORQUE_NM + 0.25, hands_on=3)
-  _step(dh, y, yank, lat=False)
+  # Same-direction level 3 alone is a firm confirm; the hard torque must
+  # be held EMERGENCY_SUSTAIN_S (0.10 s = 3 model frames incl. the first).
+  for _ in range(int(round(EMERGENCY_SUSTAIN_S / DT_MDL)) + 1):
+    _step(dh, y, yank, lat=False)
   assert dh.lane_change_state == LaneChangeState.off
   assert dh.queued_changes == 0
   assert not dh.target_locked
