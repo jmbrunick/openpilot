@@ -172,6 +172,12 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Settings → NAP, first row of the top-level panel. Default Off.
     // One continuous lead-follow equation. Off keeps today's layered planner.
     {"NAPLongUnified", {PERSISTENT, BOOL, "0"}},
+    // Settings → NAP → Lateral Control. Default On (Pre-AP only). Turn
+    // geometry correction: low-speed lag + rear reference offset (m) in
+    // modeld's plan sampling time. On also drops the legacy roundabout
+    // outer bias. Off = previous lateral behavior.
+    {"NAPLatTurnGeom", {PERSISTENT, BOOL, "1"}},
+    {"NAPLatRefOffset", {PERSISTENT, FLOAT, "0.35"}},
     // Settings → NAP → Driving Mannerisms → One-Pedal Long. Default Off.
     // Pedal mode: gas rising from rest kicks software long off (silent
     // pause, like brake). After RELEASE, lift/near-zero accel is Tesla
