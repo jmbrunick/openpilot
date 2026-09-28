@@ -19,6 +19,7 @@ UNIFIED_PLANNER_TEST_PATH = "selfdrive/controls/tests/test_unified_lead_planner.
 CURVE_PREVIEW_TEST_PATH = "selfdrive/controls/tests/test_curve_preview.py"
 CURVE_MAX_HOLD_TEST_PATH = "selfdrive/controls/lib/tests/test_curve_max_hold.py"
 LEAD_LEAVING_TEST_PATH = "selfdrive/controls/tests/test_lead_leaving.py"
+TURN_GEOM_TEST_PATH = "selfdrive/controls/lib/tests/test_lat_turn_geometry.py"
 OFFSET_TEST_PATH = "selfdrive/mapd/tests/test_map_speed_offset_slew.py"
 ENGAGE_MAX_TEST_PATH = "selfdrive/car/tests/test_preap_engage_max_after_pause.py"
 FRONTAGE_TEST_PATH = "selfdrive/mapd/tests/test_map_match_frontage.py"
@@ -642,6 +643,159 @@ MUTATIONS = (
     replacement=b"    on_path = 1.0 - fade\n",
     test_nodes=(
       f"{LEAD_LEAVING_TEST_PATH}::test_unified_leave_weight_releases_brake_but_keeps_max_ceiling",
+    ),
+  ),
+  HistoricalMutation(
+    name="turn-geom-ref-offset-ignored",
+    source_path="selfdrive/controls/lib/lat_turn_geometry.py",
+    original=b'-delay_offset_s(v) + ref_offset_s(v, ref_offset_m)))',
+    replacement=b'-delay_offset_s(v)))',
+    test_nodes=(
+      f"{TURN_GEOM_TEST_PATH}::test_ref_offset_is_used",
+    ),
+  ),
+  HistoricalMutation(
+    name="turn-geom-delay-table-removed",
+    source_path="selfdrive/controls/lib/lat_turn_geometry.py",
+    original=b'max(0.0, -delay_offset_s(v) + ref_offset_s',
+    replacement=b'max(0.0, ref_offset_s',
+    test_nodes=(
+      f"{TURN_GEOM_TEST_PATH}::test_delay_table_values",
+    ),
+  ),
+  HistoricalMutation(
+    name="turn-geom-speed-floor-removed",
+    source_path="selfdrive/controls/lib/lat_turn_geometry.py",
+    original=b'/ max(float(v_ego), REF_SPEED_FLOOR_MS)',
+    replacement=b'/ max(float(v_ego), 1e-3)',
+    test_nodes=(
+      f"{TURN_GEOM_TEST_PATH}::test_ref_offset_speed_floor",
+    ),
+  ),
+  HistoricalMutation(
+    name="turn-geom-highway-fade-removed",
+    source_path="selfdrive/controls/lib/lat_turn_geometry.py",
+    original=b'DELAY_OFFSET_S = (-0.13, -0.10, -0.08, -0.05, 0.0)',
+    replacement=b'DELAY_OFFSET_S = (-0.13, -0.10, -0.08, -0.05, -0.05)',
+    test_nodes=(
+      f"{TURN_GEOM_TEST_PATH}::test_highway_only_reference_offset",
+    ),
+  ),
+  HistoricalMutation(
+    name="turn-geom-low-speed-fade-removed",
+    source_path="selfdrive/controls/lib/lat_turn_geometry.py",
+    original=b'  return red * speed_fade(v)\n',
+    replacement=b'  return red\n',
+    test_nodes=(
+      f"{TURN_GEOM_TEST_PATH}::test_no_effect_below_3ms_and_continuous_fade",
+    ),
+  ),
+  HistoricalMutation(
+    name="turn-geom-toggle-forced-on",
+    source_path="selfdrive/controls/lib/lat_turn_geometry.py",
+    original=b'    if not enabled:\n      self.reset()\n',
+    replacement=b'    if False:\n      self.reset()\n',
+    test_nodes=(
+      f"{TURN_GEOM_TEST_PATH}::test_off_is_stock_bit_for_bit",
+    ),
+  ),
+  HistoricalMutation(
+    name="turn-geom-active-ignores-toggle",
+    source_path="selfdrive/controls/lib/lat_turn_geometry.py",
+    original=b'  return bool(is_preap) and bool(param_on)\n',
+    replacement=b'  return bool(is_preap)\n',
+    test_nodes=(
+      f"{TURN_GEOM_TEST_PATH}::test_active_only_preap_and_toggle_on",
+    ),
+  ),
+  HistoricalMutation(
+    name="turn-geom-toggle-forced-off",
+    source_path="selfdrive/controls/lib/lat_turn_geometry.py",
+    original=b'  return bool(is_preap) and bool(param_on)\n',
+    replacement=b'  return False\n',
+    test_nodes=(
+      f"{TURN_GEOM_TEST_PATH}::test_active_only_preap_and_toggle_on",
+    ),
+  ),
+  HistoricalMutation(
+    name="turn-geom-default-off",
+    source_path="common/params_keys.h",
+    original=b'{"NAPLatTurnGeom", {PERSISTENT, BOOL, "1"}}',
+    replacement=b'{"NAPLatTurnGeom", {PERSISTENT, BOOL, "0"}}',
+    test_nodes=(
+      f"{TURN_GEOM_TEST_PATH}::test_params_default_on_and_offset_035",
+    ),
+  ),
+  HistoricalMutation(
+    name="turn-geom-reduction-cap-removed",
+    source_path="selfdrive/controls/lib/lat_turn_geometry.py",
+    original=b'  red = min(MAX_REDUCTION_S, max(0.0, -delay_offset_s(v)',
+    replacement=b'  red = min(9.9, max(0.0, -delay_offset_s(v)',
+    test_nodes=(
+      f"{TURN_GEOM_TEST_PATH}::test_reduction_capped_at_02",
+    ),
+  ),
+  HistoricalMutation(
+    name="turn-geom-min-lookahead-clamp-removed",
+    source_path="selfdrive/controls/lib/lat_turn_geometry.py",
+    original=b'  return max(min(stock, MIN_LOOKAHEAD_S), stock - red)\n',
+    replacement=b'  return stock - red\n',
+    test_nodes=(
+      f"{TURN_GEOM_TEST_PATH}::test_min_lookahead_floor_never_raises",
+    ),
+  ),
+  HistoricalMutation(
+    name="turn-geom-rate-limit-hold-removed",
+    source_path="selfdrive/controls/lib/lat_turn_geometry.py",
+    original=b'target = 0.0 if self._hold_s > 0.0 else target_reduction_s(v_ego, ref_offset_m)',
+    replacement=b'target = target_reduction_s(v_ego, ref_offset_m)',
+    test_nodes=(
+      f"{TURN_GEOM_TEST_PATH}::test_rate_limit_holds_stock_then_slews_back",
+    ),
+  ),
+  HistoricalMutation(
+    name="turn-geom-applied-to-maneuver-plan",
+    source_path="selfdrive/controls/controlsd.py",
+    original=b"      model_or_plan_curvature = self.sm['lateralManeuverPlan'].desiredCurvature\n",
+    replacement=b'      model_or_plan_curvature = model_v2.action.desiredCurvature\n',
+    test_nodes=(
+      f"{TURN_GEOM_TEST_PATH}::test_lateral_maneuver_plan_bypasses_correction",
+    ),
+  ),
+  HistoricalMutation(
+    name="turn-geom-modeld-off-path-not-stock",
+    source_path="selfdrive/modeld/modeld.py",
+    original=b'      lat_action_t = lat_delay + frame_delay + action_delay\n',
+    replacement=b'      lat_action_t = lat_delay + frame_delay\n',
+    test_nodes=(
+      f"{TURN_GEOM_TEST_PATH}::test_modeld_applies_only_to_model_action_lookahead",
+    ),
+  ),
+  HistoricalMutation(
+    name="roundabout-outer-bias-kept-with-turn-geom",
+    source_path="selfdrive/mapd/roundabout.py",
+    original=b'  if turn_geometry_active:\n    return 0.0\n  return roundabout_outer_curvature_bias(',
+    replacement=b'  return roundabout_outer_curvature_bias(',
+    test_nodes=(
+      f"{TURN_GEOM_TEST_PATH}::test_roundabout_outer_bias_stripped_when_correction_active",
+    ),
+  ),
+  HistoricalMutation(
+    name="roundabout-controlsd-ignores-turn-geom",
+    source_path="selfdrive/controls/controlsd.py",
+    original=b'turn_geometry_active=self._turn_geom_active,',
+    replacement=b'turn_geometry_active=False,',
+    test_nodes=(
+      f"{TURN_GEOM_TEST_PATH}::test_controlsd_gates_roundabout_bias_on_turn_geometry",
+    ),
+  ),
+  HistoricalMutation(
+    name="roundabout-off-path-bias-dropped",
+    source_path="selfdrive/mapd/roundabout.py",
+    original=b'  if turn_geometry_active:\n    return 0.0\n',
+    replacement=b'  if True:\n    return 0.0\n',
+    test_nodes=(
+      f"{TURN_GEOM_TEST_PATH}::test_roundabout_outer_bias_off_path_is_legacy",
     ),
   ),
 )
