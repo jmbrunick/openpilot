@@ -4,6 +4,10 @@ Pins: default ON, OFF == stock lookahead (1119c0f) bit-for-bit, the low-speed
 delay table, rear reference offset, speed floor/fade, 0.2 s cap and 0.2 s
 floor, 250 deg/s rate-limit hold-off, lateralManeuverPlan untouched, and the
 #223 roundabout outer bias stripped while the correction is active.
+
+Low-speed reach (Sep 28 PM): 1.5-2.5 m/s fade-in, 0.25 s cap and direct plan
+sampling down to 0.2 s below 8 mph, reduction frozen (not slewed to stock)
+while rate-limited below 10 mph, and >= 10 mph identical to 7c49a8e.
 """
 import math
 from pathlib import Path
@@ -12,7 +16,7 @@ import numpy as np
 import pytest
 
 from openpilot.selfdrive.controls.lib import lat_turn_geometry as tg
-from openpilot.selfdrive.controls.lib.drive_helpers import get_curvature_from_plan
+from openpilot.selfdrive.controls.lib.drive_helpers import MIN_STABLE_DELAY, curv_from_psis, get_curvature_from_plan
 from openpilot.selfdrive.mapd.roundabout import (
   RoundaboutHint, roundabout_lateral_curvature_bias, roundabout_outer_curvature_bias,
   roundabout_outer_path_offset_m,
@@ -101,14 +105,17 @@ def test_highway_only_reference_offset():
     assert tg.target_reduction_s(v, 0.0) == 0.0
 
 
-def test_no_effect_below_3ms_and_continuous_fade():
-  for v in (0.0, 1.0, 2.0, 2.99, 3.0):
+def test_no_effect_below_1p5ms_and_continuous_fade():
+  for v in (0.0, 1.0, 1.49, 1.5):
     assert tg.target_reduction_s(v, 0.35) == 0.0
-  assert tg.target_reduction_s(3.5, 0.35) == pytest.approx(0.5 * 0.2)
+  # half faded at 2.0 m/s: 0.5 * (0.13 + 0.35 / 3)
+  assert tg.target_reduction_s(2.0, 0.35) == pytest.approx(0.5 * (0.13 + 0.35 / 3.0))
+  assert tg.target_reduction_s(2.5, 0.35) == pytest.approx(0.13 + 0.35 / 3.0)
   vs = np.linspace(0.0, 40.0, 4001)
   r = np.array([tg.target_reduction_s(float(v), 0.35) for v in vs])
-  assert np.max(np.abs(np.diff(r))) <= 0.0021         # no jumps (fade slope 0.2 s per m/s)
-  assert np.all(r <= tg.MAX_REDUCTION_S + 1e-12)
+  assert np.max(np.abs(np.diff(r))) <= 0.0026         # no jumps (fade slope 0.25 s per m/s)
+  assert np.all(r <= tg.LOW_SPEED_MAX_REDUCTION_S + 1e-12)
+  assert np.all(r[vs >= tg.LOW_SPEED_REACH_END_MS] <= tg.MAX_REDUCTION_S + 1e-12)
 
 
 def test_reduction_capped_at_02():
@@ -245,7 +252,13 @@ def test_closed_loop_highway_unchanged():
 def test_modeld_applies_only_to_model_action_lookahead():
   src = (ROOT / "selfdrive/modeld/modeld.py").read_text()
   assert "lat_action_t = lat_delay + frame_delay + action_delay\n" in src
-  assert "action = get_action_from_model(model_output, prev_action, lat_action_t, long_delay + frame_delay + action_delay, v_ego)" in src
+  call = "action = get_action_from_model(model_output, prev_action, lat_action_t, long_delay + frame_delay + action_delay, v_ego,"
+  assert call + "\n                                     lat_sample_floor_s)" in src
+  # stock sample floor unless the Pre-AP correction supplies one
+  assert "      lat_sample_floor_s = MIN_STABLE_DELAY\n      if turn_geom_preap:" in src
+  assert "        lat_sample_floor_s = turn_geom.sample_floor_s\n" in src
+  assert "desired_curvature = plan_curvature(" in src
+  assert "get_curvature_from_plan(" not in src
   assert "if turn_geom_preap:" in src
   assert "enabled=turn_geom_on, stock_lookahead_s=lat_action_t" in src
   # no schema change: modeld writes no new capnp fields
@@ -289,3 +302,170 @@ def test_controlsd_gates_roundabout_bias_on_turn_geometry():
   assert "roundabout_lateral_curvature_bias(\n      rb_hint, is_rhd=is_rhd, turn_geometry_active=self._turn_geom_active," in src
   assert "self._turn_geom_preap, bool(self.params.get_bool(PARAM_TURN_GEOMETRY)))" in src
   assert "roundabout_outer_curvature_bias(" not in src
+
+
+# ---------- low-speed reach (Sep 28 PM: 5-8 mph turns still clip the inside) ----------
+
+MPH = 0.44704
+
+
+def test_low_speed_reach_band_and_values():
+  for mph in (1.0, 3.0, 5.0, 8.0):
+    assert tg.low_speed_reach_weight(mph * MPH) == pytest.approx(1.0)
+  assert tg.low_speed_reach_weight(9.0 * MPH) == pytest.approx(0.5)
+  for mph in (10.0, 12.0, 20.0, 70.0):
+    assert tg.low_speed_reach_weight(mph * MPH) == 0.0
+    assert tg.reduction_cap_s(mph * MPH) == tg.MAX_REDUCTION_S
+    assert tg.sample_floor_s(mph * MPH) == MIN_STABLE_DELAY
+  assert tg.reduction_cap_s(6.0 * MPH) == pytest.approx(0.25)
+  assert tg.sample_floor_s(6.0 * MPH) == pytest.approx(0.20)
+  assert tg.reduction_cap_s(9.0 * MPH) == pytest.approx(0.225)
+  assert tg.sample_floor_s(9.0 * MPH) == pytest.approx(0.25)
+
+
+def _settle(c, v, n=60, **kw):
+  out = None
+  for _ in range(n):
+    out = c.update(enabled=True, stock_lookahead_s=STOCK, v_ego=v, ref_offset_m=0.35, **kw)
+  return out
+
+
+@pytest.mark.parametrize("mph", [6.0, 7.6])
+def test_low_speed_extra_reach_at_5_to_8_mph(mph):
+  v = mph * MPH
+  c = tg.TurnGeometryCorrection(DT_MDL)
+  la = _settle(c, v)
+  red = min(0.25, 0.13 + 0.35 / max(v, 3.0))
+  assert la == pytest.approx(STOCK - red, abs=1e-6)       # ~0.23 s, was 0.475 (6 mph) / 0.40 (7.6 mph)
+  assert la < MIN_STABLE_DELAY
+  assert c.sample_floor_s == pytest.approx(0.20)
+  # a turn starting 0.26 s ahead: 7c49a8e (0.3 s floor) already steers, the new sampling waits
+  t, yaw, yr = _turn_plan(v, 0.26, 1.0 / 8.0)
+  assert get_curvature_from_plan(yaw, yr, t, v, la) > 0.01
+  assert tg.plan_curvature(yaw, yr, t, v, la, c.sample_floor_s) == pytest.approx(0.0, abs=1e-9)
+  # steady arc: same radius either way
+  t, yaw, yr = _turn_plan(v, -1.0, 1.0 / 8.0)
+  assert tg.plan_curvature(yaw, yr, t, v, la, c.sample_floor_s) == pytest.approx(
+    get_curvature_from_plan(yaw, yr, t, v, la), rel=1e-6)
+
+
+def test_plan_curvature_stock_floor_is_get_curvature_from_plan():
+  rng = np.random.default_rng(7)
+  t = np.array([10.0 * (i / 32) ** 2 for i in range(33)])
+  for _ in range(300):
+    yr = np.cumsum(rng.normal(0, 0.05, 33))
+    yaw = np.concatenate([[0.0], np.cumsum(0.5 * (yr[1:] + yr[:-1]) * np.diff(t))])
+    v = float(rng.uniform(0.0, 40.0))
+    a = float(rng.uniform(0.05, 0.8))
+    assert tg.plan_curvature(yaw, yr, t, v, a) == get_curvature_from_plan(yaw, yr, t, v, a)
+    assert tg.plan_curvature(yaw, yr, t, v, a, MIN_STABLE_DELAY) == get_curvature_from_plan(yaw, yr, t, v, a)
+
+
+def test_plan_curvature_direct_sampling_below_03():
+  t, yaw, yr = _turn_plan(3.0, 0.1, 1.0 / 8.0)
+  for a in (0.2, 0.22, 0.25, 0.28):
+    k = tg.plan_curvature(yaw, yr, t, 3.0, a, 0.2)
+    assert k == pytest.approx(curv_from_psis(np.interp(a, t, yaw), yr[0], 3.0, a))
+    assert k != pytest.approx(get_curvature_from_plan(yaw, yr, t, 3.0, a), rel=1e-3)
+  # clamped at the floor, continuous at 0.3 s
+  assert tg.plan_curvature(yaw, yr, t, 3.0, 0.1, 0.2) == pytest.approx(tg.plan_curvature(yaw, yr, t, 3.0, 0.2, 0.2))
+  assert tg.plan_curvature(yaw, yr, t, 3.0, 0.2999999, 0.2) == pytest.approx(
+    get_curvature_from_plan(yaw, yr, t, 3.0, 0.3), rel=1e-4)
+
+
+def test_rate_limit_freezes_reduction_below_10mph():
+  v = 6.0 * MPH
+  c = tg.TurnGeometryCorrection(DT_MDL)
+  out_angle = 0.0
+  full_out = _settle(c, v, lat_active=True, cmd_angle_deg=0.0, out_angle_deg=out_angle)
+  full = c.reduction_s
+  assert full == pytest.approx(min(0.25, 0.13 + 0.35 / 3.0))
+  for _ in range(8):
+    out_angle += 12.5
+    o = c.update(enabled=True, stock_lookahead_s=STOCK, v_ego=v, ref_offset_m=0.35,
+                 lat_active=True, cmd_angle_deg=out_angle + 80.0, out_angle_deg=out_angle)
+    assert c.rate_limited
+    assert c.reduction_s == full           # frozen, not slewed back to stock
+    assert o == full_out
+  for _ in range(40):
+    c.update(enabled=True, stock_lookahead_s=STOCK, v_ego=v, ref_offset_m=0.35,
+             lat_active=True, cmd_angle_deg=out_angle, out_angle_deg=out_angle)
+  assert c.reduction_s == pytest.approx(full)
+
+
+# Verbatim 7c49a8e formulas (reference for the >= 10 mph identity pin).
+class _Legacy:
+  def __init__(self, dt):
+    self.dt, self.reduction_s, self._hold_s, self._out_prev = dt, 0.0, 0.0, None
+
+  @staticmethod
+  def target(v_ego, ref_offset_m):
+    v = max(0.0, float(v_ego))
+    d = float(np.interp(v, (5.0, 10.0, 14.0, 19.0, 25.0), (-0.13, -0.10, -0.08, -0.05, 0.0)))
+    red = min(0.20, max(0.0, -d + tg.clamp_ref_offset(ref_offset_m) / max(v, 3.0)))
+    return red * float(np.clip((v - 3.0) / (4.0 - 3.0), 0.0, 1.0))
+
+  @staticmethod
+  def apply(stock, reduction):
+    stock = float(stock)
+    red = min(0.20, max(0.0, float(reduction)))
+    if red <= 0.0:
+      return stock
+    return max(min(stock, 0.20), stock - red)
+
+  def update(self, *, enabled, stock_lookahead_s, v_ego, ref_offset_m, lat_active=True, cmd_angle_deg=0.0,
+             out_angle_deg=None):
+    if not enabled:
+      self.reduction_s, self._hold_s, self._out_prev = 0.0, 0.0, None
+      return stock_lookahead_s
+    limited = False
+    if out_angle_deg is not None:
+      if self._out_prev is not None and lat_active and self.dt > 0.0:
+        rate = abs(float(out_angle_deg) - float(self._out_prev)) / self.dt
+        limited = rate >= 0.8 * 250.0 and abs(float(cmd_angle_deg) - float(out_angle_deg)) > 2.5
+      self._out_prev = float(out_angle_deg)
+    self._hold_s = 0.5 if limited else max(0.0, self._hold_s - self.dt)
+    target = 0.0 if self._hold_s > 0.0 else self.target(v_ego, ref_offset_m)
+    step = 0.5 * self.dt
+    self.reduction_s += float(np.clip(target - self.reduction_s, -step, step))
+    return self.apply(stock_lookahead_s, self.reduction_s)
+
+
+def test_at_or_above_10mph_output_identical_to_7c49a8e():
+  rng = np.random.default_rng(253)
+  t_idx = np.array([10.0 * (i / 32) ** 2 for i in range(33)])
+  for trial in range(20):
+    new, old = tg.TurnGeometryCorrection(DT_MDL), _Legacy(DT_MDL)
+    out_angle, v = 0.0, float(rng.uniform(tg.LOW_SPEED_REACH_END_MS, 12.0))
+    offset = float(rng.choice([0.0, 0.35, 0.6, 1.0]))
+    stock = float(rng.choice([STOCK, 0.36, 0.52]))
+    for step in range(400):
+      v = float(np.clip(v + rng.normal(0, 0.3), tg.LOW_SPEED_REACH_END_MS, 40.0))
+      burst = (step // 40) % 3 == 1                        # rate-limited bursts
+      out_angle += 12.5 if burst else float(rng.normal(0, 1.0))
+      cmd = out_angle + (80.0 if burst else float(rng.normal(0, 1.0)))
+      enabled = not (trial % 5 == 4 and 150 <= step < 170)
+      kw = dict(enabled=enabled, stock_lookahead_s=stock, v_ego=v, ref_offset_m=offset,
+                lat_active=True, cmd_angle_deg=cmd, out_angle_deg=out_angle)
+      a_new, a_old = new.update(**kw), old.update(**kw)
+      assert a_new == a_old, (trial, step, v)
+      assert new.sample_floor_s == MIN_STABLE_DELAY
+      yr = np.cumsum(rng.normal(0, 0.03, 33))
+      yaw = np.concatenate([[0.0], np.cumsum(0.5 * (yr[1:] + yr[:-1]) * np.diff(t_idx))])
+      assert tg.plan_curvature(yaw, yr, t_idx, v, a_new, new.sample_floor_s) == \
+        get_curvature_from_plan(yaw, yr, t_idx, v, a_old)
+
+
+@pytest.mark.parametrize("R,v", [(7.0, 6.0 * MPH), (6.0, 7.0 * MPH)])
+def test_closed_loop_low_speed_inside_cut_reduced(R, v):
+  # effective sample time = what get_curvature_from_plan / plan_curvature actually use
+  old = _Legacy(DT_MDL)
+  old_t = max(old.apply(STOCK, old.target(v, 0.35)), MIN_STABLE_DELAY)
+  c = tg.TurnGeometryCorrection(DT_MDL)
+  la = _settle(c, v)
+  new_t = max(la, c.sample_floor_s)
+  old_in, old_out = _sim_turn(R, v, old_t)
+  new_in, new_out = _sim_turn(R, v, new_t)
+  assert old_in > 0.35                   # 7c49a8e: still clips the inside at 6-8 mph
+  assert new_in < 0.5 * old_in
+  assert new_out > -0.2                  # and does not run wide
