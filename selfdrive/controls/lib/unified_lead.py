@@ -43,6 +43,18 @@ Driver-likeness (Justin's fingerprint, Sep 20–27 qlogs):
   real braking is over-matched (1.10×). One smooth blend, no threshold.
 - Inside the gap the glide keeps a small ease until the gap recovers.
 - A far, slow close coasts: the closing gain fades with time-to-gap 12→30 s.
+
+How hard a lead may brake us depends on how much we trust it (Sep 28
+11:07:22, a half-lane-over lead 80–120 m ahead drove −3.5 for ~1 s). The
+physical need a_need is the decel that stops the gap closing inside a
+keep distance, lead braking-to-stop included. Lead-driven decel past
+min(a_need·margin, −0.22) is scaled by a continuous trust: 1 for a close
+or short-time-to-collision lead (every #222 / cut-in / rapid-close case),
+falling to a fraction for a far, long-TTC lead, lower still when it sits
+off our path or is a weak vision read. The same bound applies to the
+command a new lead blends from, so a firmer inherited command is not
+carried into an ambiguous far lead either. A far lead whose kinematics
+really need full regen (stopped car at 100 m and 30 m/s) still gets it.
 """
 from __future__ import annotations
 
@@ -177,6 +189,21 @@ MODE_BLEND_S = 1.0
 # weight (`leave_w`), combined with this fade below.
 DEPART_Y0_M = EGO_HALF_WIDTH_M + LEAD_HALF_WIDTH_M + CLEAR_MARGIN_M
 DEPART_Y1_M = DEPART_Y0_M + 0.7
+
+# Achievable hard decel vs lead trust (Sep 28 11:07:22). A lead is remote
+# when it is both far and a long time-to-collision away; a remote lead's
+# trust tops out at TRUST_REMOTE and shrinks with lateral offset and a weak
+# read. Decel past the physical need (with margin) is scaled by trust.
+TRUST_RANGE_LO_M = 60.0
+TRUST_RANGE_HI_M = 110.0
+TRUST_TTC_LO_S = 4.0
+TRUST_TTC_HI_S = 8.0
+TRUST_REMOTE = 0.35
+TRUST_LAT_Y0_M = 0.9   # within our own half-width: fully on path
+TRUST_LAT_MIN = 0.35   # at the static depart line
+NEED_KEEP_TF_FRAC = 0.5  # keep distance: standstill + half the follow time
+NEED_MARGIN = 1.25
+NEED_MILD_MS2 = 0.22  # an untrusted lead may always ease at the EV's mild settle
 
 
 def _smooth01(x: float) -> float:
@@ -325,6 +352,73 @@ def _leave_fade(y_rel: float, curvature: float, gap: float,
   return 1.0 - (1.0 - static) * (1.0 - w)
 
 
+def kinematic_need_accel(gap: float, v_ego: float, v_lead: float, a_lead: float,
+                         t_follow: float) -> float:
+  """Physical decel (<= 0) that keeps the gap above a keep distance.
+
+  Constant-accel lead, braking to a stop if a_lead < 0. If our speed can
+  match the lead's before it stops, a = a_lead - v_close²/(2·room);
+  otherwise we stop behind where it stops. The two agree at the boundary.
+  """
+  g = max(0.0, float(gap))
+  v_e = max(0.0, float(v_ego))
+  v_l = max(0.0, float(v_lead))
+  a_l = min(0.0, float(a_lead))
+  keep = STOP_DISTANCE_M + NEED_KEEP_TF_FRAC * max(0.0, float(t_follow)) * v_l
+  room = g - keep
+  if room <= KIN_ROOM_MIN_M:
+    return A_MIN_MS2 if v_e > v_l or a_l < 0.0 else min(0.0, a_l)
+  v_close = max(0.0, v_e - v_l)
+  a_match = a_l - (v_close * v_close) / (2.0 * room)
+  if a_l < 0.0:
+    t_match = 2.0 * room / max(v_close, 1e-3)
+    t_stop = v_l / -a_l
+    if t_match > t_stop:
+      a_match = -(v_e * v_e) / (2.0 * (room + (v_l * v_l) / (2.0 * -a_l)))
+  return max(A_MIN_MS2, min(0.0, a_match))
+
+
+def lead_trust(gap: float, v_ego: float, v_lead: float, y_rel: float = 0.0,
+               curvature: float = 0.0, path_lat: float | None = None,
+               model_prob: float | None = None, radar: bool | None = None) -> float:
+  """How much hard braking this lead may command, in [0, 1].
+
+  1 for a close or short-TTC lead. A remote lead (far AND long TTC) keeps
+  TRUST_REMOTE, scaled by how on-path and how good the reading is.
+  """
+  g = max(0.0, float(gap))
+  v_close = max(0.0, float(v_ego) - max(0.0, float(v_lead)))
+  ttc = g / max(v_close, 0.1)
+  far = _smooth01((g - TRUST_RANGE_LO_M) / (TRUST_RANGE_HI_M - TRUST_RANGE_LO_M))
+  slow = _smooth01((ttc - TRUST_TTC_LO_S) / (TRUST_TTC_HI_S - TRUST_TTC_LO_S))
+  remote = far * slow
+  if remote <= 0.0:
+    return 1.0
+  if path_lat is not None and math.isfinite(float(path_lat)):
+    y = abs(float(path_lat))
+  else:
+    lane = abs(0.5 * float(curvature) * g * g)
+    y = max(0.0, abs(float(y_rel)) - lane)
+  lat_w = 1.0 - (1.0 - TRUST_LAT_MIN) * _smooth01((y - TRUST_LAT_Y0_M) / (DEPART_Y0_M - TRUST_LAT_Y0_M))
+  q = lead_quality(model_prob, radar)
+  return 1.0 - remote * (1.0 - TRUST_REMOTE * lat_w * q)
+
+
+def hard_decel_floor(gap: float, v_ego: float, v_lead: float, a_lead: float,
+                     t_follow: float) -> float:
+  """Firmest decel an untrusted lead may command: the need with margin, or mild."""
+  need = kinematic_need_accel(gap, v_ego, v_lead, a_lead, t_follow)
+  return max(A_MIN_MS2, min(-NEED_MILD_MS2, NEED_MARGIN * need))
+
+
+def trust_bound(a: float, floor: float, trust: float) -> float:
+  """Decel past `floor` scaled by trust. Continuous; identity at trust 1."""
+  a = float(a)
+  if a >= floor:
+    return a
+  return float(floor) + min(1.0, max(0.0, float(trust))) * (a - float(floor))
+
+
 def speed_ceiling_accel(v_ego: float, v_cap: float) -> float:
   """Speed-error term for MAX / curve caps.
 
@@ -346,7 +440,9 @@ def unified_follow_desired(gap: float, v_ego: float, v_lead: float, a_lead: floa
                            a_map: float | None = None, y_rel: float = 0.0,
                            curvature: float = 0.0,
                            path_lat: float | None = None,
-                           leave_w: float = 0.0) -> float:
+                           leave_w: float = 0.0,
+                           model_prob: float | None = None,
+                           radar: bool | None = None) -> float:
   """Unslewed follow accel from filtered lead signals. Continuous in its inputs."""
   gap_f = max(0.0, float(gap))
   v_l = max(0.0, float(v_lead))
@@ -405,6 +501,11 @@ def unified_follow_desired(gap: float, v_ego: float, v_lead: float, a_lead: floa
   if fade > 0.0:
     a_cmd *= (1.0 - fade)
 
+  # Achievable hard decel follows trust: a remote, off-path, or weak lead
+  # cannot brake us past what its kinematics need (Sep 28 11:07:22).
+  trust = lead_trust(gap_f, v_e, v_l, y_rel, curvature, path_lat, model_prob, radar)
+  a_cmd = trust_bound(a_cmd, hard_decel_floor(gap_f, v_e, v_l, a_l, t_follow), trust)
+
   if v_ceiling is not None and float(v_ceiling) > 0.5:
     a_cmd = min(a_cmd, speed_ceiling_accel(v_e, float(v_ceiling)))
   if a_map is not None:
@@ -458,6 +559,8 @@ class UnifiedLeadController:
     self.last_a_lead = 0.0
     self.last_a_lead_eff = 0.0
     self.last_confidence = 0.0
+    self.last_trust = 1.0
+    self.last_floor = A_MIN_MS2
 
   @property
   def _cutin_w(self) -> float:
@@ -476,6 +579,8 @@ class UnifiedLeadController:
       self.reset()
       return 0.0
 
+    # No command of our own yet: the first frame starts from seed_a.
+    fresh = self._prev is None
     if lead_id != self._lead_id:
       # New lead or cut-in: blend in from the command already in force.
       self._cutin_from = float(seed_a if self._prev is None else self._prev)
@@ -501,7 +606,7 @@ class UnifiedLeadController:
     desired = unified_follow_desired(
       gap, v_ego, self._v_f, a_eff, t_follow,
       v_ceiling=v_ceiling, a_map=a_map, y_rel=y_rel, curvature=curvature,
-      path_lat=path_lat, leave_w=leave_w,
+      path_lat=path_lat, leave_w=leave_w, model_prob=model_prob, radar=radar,
     )
     if a_max is not None:
       desired = min(desired, float(a_max))
@@ -534,8 +639,26 @@ class UnifiedLeadController:
     # Off-path leads already fade inside `desired`; confidence blends a new
     # or weak reading from the command in force before this lead.
     w = self._conf if lead_id == self._lead_id else 0.0
+    # The command a lead blends from obeys a trust bound too: an inherited
+    # command firmer than both this lead's own demand and its kinematic
+    # floor (legacy seed after a gas override, a previous lead) is kept only
+    # in proportion to trust × confidence. A new or remote lead cannot carry
+    # it (Sep 28 11:07:22). MAX / map terms keep their own depth.
+    trust = lead_trust(gap, v_ego, self._v_f, y_rel, curvature, path_lat, model_prob, radar)
+    floor = hard_decel_floor(gap, v_ego, self._v_f, self._a_f, t_follow)
+    if v_ceiling is not None and float(v_ceiling) > 0.5:
+      floor = min(floor, speed_ceiling_accel(float(v_ego), float(v_ceiling)))
+    if a_map is not None:
+      floor = min(floor, float(a_map))
+    carry = min(desired, floor)
+    carry_trust = trust * self._conf
+    self.last_trust = float(trust)
+    self.last_floor = float(floor)
+    self._cutin_from = trust_bound(self._cutin_from, carry, carry_trust)
     target = ((1.0 - w) * self._cutin_from) + (w * desired)
     prev = float(self._prev if self._prev is not None else seed_a)
+    if fresh:
+      prev = trust_bound(prev, carry, carry_trust)
 
     opening = v_err > 0.25 and slack > 1.0
     release_base = JERK_RELEASE_OPEN_MS3 if (opening or fade > 0.35) else JERK_RELEASE_MS3

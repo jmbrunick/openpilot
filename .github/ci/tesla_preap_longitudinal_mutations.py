@@ -491,6 +491,79 @@ MUTATIONS = (
     ),
   ),
   HistoricalMutation(
+    name="unified-lead-far-trust-bound-removed",
+    source_path="selfdrive/controls/lib/unified_lead.py",
+    original=b"  a_cmd = trust_bound(a_cmd, hard_decel_floor(gap_f, v_e, v_l, a_l, t_follow), trust)\n",
+    replacement=b"  a_cmd = a_cmd\n",
+    test_nodes=(
+      f"{UNIFIED_TEST_PATH}::test_far_offset_or_weak_lead_cannot_reach_full_regen",
+    ),
+  ),
+  HistoricalMutation(
+    name="unified-lead-far-trust-ignores-lateral-offset",
+    source_path="selfdrive/controls/lib/unified_lead.py",
+    original=b"  lat_w = 1.0 - (1.0 - TRUST_LAT_MIN) * _smooth01((y - TRUST_LAT_Y0_M) / (DEPART_Y0_M - TRUST_LAT_Y0_M))\n",
+    replacement=b"  lat_w = 1.0\n",
+    test_nodes=(
+      f"{UNIFIED_TEST_PATH}::test_far_offset_or_weak_lead_cannot_reach_full_regen",
+    ),
+  ),
+  HistoricalMutation(
+    name="unified-lead-far-trust-ignores-range",
+    source_path="selfdrive/controls/lib/unified_lead.py",
+    original=b"  remote = far * slow\n",
+    replacement=b"  remote = slow\n",
+    test_nodes=(
+      f"{UNIFIED_TEST_PATH}::test_222_exemplars_are_fully_trusted_so_unchanged",
+    ),
+  ),
+  HistoricalMutation(
+    name="unified-lead-kinematic-need-zeroed",
+    source_path="selfdrive/controls/lib/unified_lead.py",
+    original=b"  return max(A_MIN_MS2, min(0.0, a_match))\n",
+    replacement=b"  return 0.0\n",
+    test_nodes=(
+      f"{UNIFIED_TEST_PATH}::test_far_lead_that_kinematically_needs_full_regen_still_gets_it",
+    ),
+  ),
+  HistoricalMutation(
+    name="unified-lead-inherited-seed-carried-into-remote-lead",
+    source_path="selfdrive/controls/lib/unified_lead.py",
+    original=b"    self._cutin_from = trust_bound(self._cutin_from, carry, carry_trust)\n",
+    replacement=b"    self._cutin_from = self._cutin_from\n",
+    test_nodes=(
+      f"{UNIFIED_TEST_PATH}::test_inherited_firm_seed_is_not_carried_into_a_remote_lead",
+    ),
+  ),
+  HistoricalMutation(
+    name="unified-lead-fresh-seed-unbounded",
+    source_path="selfdrive/controls/lib/unified_lead.py",
+    original=b"      prev = trust_bound(prev, carry, carry_trust)\n",
+    replacement=b"      prev = prev\n",
+    test_nodes=(
+      f"{UNIFIED_TEST_PATH}::test_inherited_firm_seed_is_not_carried_into_a_remote_lead",
+    ),
+  ),
+  HistoricalMutation(
+    name="unified-lead-seed-carry-ignores-confidence",
+    source_path="selfdrive/controls/lib/unified_lead.py",
+    original=b"    carry_trust = trust * self._conf\n",
+    replacement=b"    carry_trust = trust\n",
+    test_nodes=(
+      f"{UNIFIED_TEST_PATH}::test_sep28_1107_far_ambiguous_lead_is_not_a_full_regen_flash",
+    ),
+  ),
+  HistoricalMutation(
+    name="unified-lead-close-closer-trust-reduced",
+    source_path="selfdrive/controls/lib/unified_lead.py",
+    original=b"  if remote <= 0.0:\n    return 1.0\n",
+    replacement=b"  if remote <= 0.0:\n    return TRUST_REMOTE\n",
+    test_nodes=(
+      f"{UNIFIED_TEST_PATH}::test_close_rapid_closer_still_gets_full_fast_brake",
+      f"{UNIFIED_TEST_PATH}::test_moderate_range_cut_in_still_responds",
+    ),
+  ),
+  HistoricalMutation(
     name="curve-preview-min-removed",
     source_path="selfdrive/controls/lib/longitudinal_planner.py",
     original=b'      output_a_target = min(float(output_a_target), self.curve_preview_a)\n',
