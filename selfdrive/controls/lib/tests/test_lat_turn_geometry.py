@@ -248,7 +248,8 @@ def test_modeld_applies_only_to_model_action_lookahead():
   assert "action = get_action_from_model(model_output, prev_action, lat_action_t, long_delay + frame_delay + action_delay, v_ego)" in src
   assert "if turn_geom_preap:" in src
   assert "enabled=turn_geom_on, stock_lookahead_s=lat_action_t" in src
-  assert "        action.napLatActionT = float(lat_action_t)\n" in src
+  # no schema change: modeld writes no new capnp fields
+  assert "napLat" not in src
 
 
 def test_lateral_maneuver_plan_bypasses_correction():
