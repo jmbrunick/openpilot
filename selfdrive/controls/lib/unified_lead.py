@@ -34,6 +34,15 @@ lead (cut-in) ramps in the same way from the command already in force.
 
 A jerk limit slews the result. Build and release rates grow with how far
 the command is from the target: fast when far too firm, gentle when close.
+
+Driver-likeness (Justin's fingerprint, Sep 20–27 qlogs):
+- A lead that starts braking is anticipated: its filtered decel onset rate
+  extends a_lead ahead by up to 0.8 m/s², weighted continuously by how hard
+  it already brakes, how short the headway is, and how fast the decel builds.
+- Mild lead slowing is mirrored under 1:1 (0.75×) so the ease stays gradual;
+  real braking is over-matched (1.10×). One smooth blend, no threshold.
+- Inside the gap the glide keeps a small ease until the gap recovers.
+- A far, slow close coasts: the closing gain fades with time-to-gap 12→30 s.
 """
 from __future__ import annotations
 
@@ -57,6 +66,16 @@ K_A_NEAR = 1.10  # slightly over 1: a closing ego must shed more than the lead b
 K_A_FAR = 0.45
 K_A_NEAR_M = 18.0
 K_A_FAR_M = 70.0
+# The a_lead weight also grows with how hard the lead brakes: mild slowing is
+# under-matched (a gradual, matched ease), real braking over-matched.
+K_A_MILD = 0.75
+K_A_FIRM = 1.10
+K_A_FIRM_A0_MS2 = 0.30
+K_A_FIRM_BAND_MS2 = 0.50
+# Far, slow closes coast: the closing gain fades with time-to-gap.
+K_V_FAR_TTG_LO_S = 12.0
+K_V_FAR_TTG_HI_S = 30.0
+K_V_FAR_MIN = 0.40
 
 GAP_SEV_M = 16.0
 CLOSE_SEV_MS = 3.2
@@ -65,6 +84,9 @@ CLOSE_SEV_MS = 3.2
 GLIDE_GAP_M = 3.5
 GLIDE_V_MS = 0.40
 GLIDE_KEEP = 0.90  # fraction of the gap/speed term removed at perfect glide
+# Inside the gap the glide removes less, so a small ease persists until the
+# gap recovers instead of holding speed a few meters too close.
+GLIDE_KEEP_INSIDE = 0.60
 
 # Kinematic room D(e): outside the gap the gap error shortened with closing
 # speed (e / (1 + v/V0)); at and inside the setpoint a share of the follow
@@ -102,15 +124,28 @@ OPEN_INSIDE_M = 6.0  # inside by this much: opening uses the closing gain
 
 # Speed ceiling (MAX, curve). Below the cap: a <= (v_cap - v)/tau (0 at cap).
 # Above it: start at the EV mild settle, firmer only when well over.
-SPEED_CEILING_TAU_S = 2.4
+SPEED_CEILING_TAU_S = 4.0
 OVERSPEED_SETTLE_MS2 = 0.22
 OVERSPEED_RAMP_MS = 0.45
 OVERSPEED_K = 0.12       # m/s² per m/s beyond the ramp
 OVERSPEED_MAX_MS2 = 1.20  # soft saturation
 
-# Filters. One 50 ms blip moves a_lead by ~1/6 of the spike.
+# Filters. One 50 ms blip moves a_lead by ~1/4 of the spike.
 TAU_V_S = 0.20
-TAU_A_S = 0.28
+TAU_A_S = 0.15
+
+# Lead-decel anticipation: a_eff = a_lead - min(MAX, T·max(0, -da_lead/dt)·w).
+# w grows continuously with the lead's decel (A0/BAND), short headway
+# (HW/HW_BAND) and the decel onset rate (J0/JBAND). A steady lead adds nothing.
+LEAD_ANTICIPATE_T_S = 2.2
+LEAD_ANTICIPATE_MAX_MS2 = 0.80
+LEAD_JERK_TAU_S = 0.25
+LEAD_ANTICIPATE_A0_MS2 = 0.10
+LEAD_ANTICIPATE_ABAND_MS2 = 0.35
+LEAD_ANTICIPATE_HW_S = 2.5
+LEAD_ANTICIPATE_HW_BAND_S = 1.0
+LEAD_ANTICIPATE_J0_MS3 = 0.20
+LEAD_ANTICIPATE_JBAND_MS3 = 0.40
 
 # Jerk. Rates grow with the distance between command and target.
 JERK_RELEASE_MS3 = 0.45
@@ -177,6 +212,29 @@ def _severity(slack: float, v_err: float) -> float:
 def _k_a(slack: float) -> float:
   t = _smooth01((max(float(slack), 0.0) - K_A_NEAR_M) / max(1e-3, K_A_FAR_M - K_A_NEAR_M))
   return K_A_NEAR + (K_A_FAR - K_A_NEAR) * t
+
+
+def _k_a_brake_scale(a_lead: float) -> float:
+  """0.75× for mild lead slowing, 1.10× for real braking, smooth in between."""
+  t = _smooth01((-float(a_lead) - K_A_FIRM_A0_MS2) / K_A_FIRM_BAND_MS2)
+  return K_A_MILD + (K_A_FIRM - K_A_MILD) * t
+
+
+def lead_decel_anticipation(a_lead: float, lead_jerk: float, gap: float, v_ego: float) -> float:
+  """Extra decel (>= 0) ahead of a lead whose braking is still building.
+
+  Continuous in every input: 0 for a steady or recovering lead, growing with
+  how hard the lead already brakes, how short the headway is, and how fast
+  its decel builds. Capped so a gradual slowdown cannot become a wall.
+  """
+  building = max(0.0, -float(lead_jerk))
+  if building <= 0.0:
+    return 0.0
+  hw = float(gap) / max(float(v_ego), 1.0)
+  w = _smooth01((-float(a_lead) - LEAD_ANTICIPATE_A0_MS2) / LEAD_ANTICIPATE_ABAND_MS2)
+  w *= _smooth01((LEAD_ANTICIPATE_HW_S - hw) / LEAD_ANTICIPATE_HW_BAND_S)
+  w *= _smooth01((building - LEAD_ANTICIPATE_J0_MS3) / LEAD_ANTICIPATE_JBAND_MS3)
+  return min(LEAD_ANTICIPATE_MAX_MS2, LEAD_ANTICIPATE_T_S * building * w)
 
 
 def _glide(slack: float, v_err: float, a_lead: float) -> float:
@@ -288,6 +346,10 @@ def unified_follow_desired(gap: float, v_ego: float, v_lead: float, a_lead: floa
   k_g = K_G_LO + (K_G_HI - K_G_LO) * sev
   # High severity uses the smaller velocity gain (K_V_HI < K_V_LO).
   k_v_close = K_V_LO + (K_V_HI - K_V_LO) * sev
+  # A far, slow close coasts: the closing gain fades with time-to-gap.
+  ttg_far = slack / max(v_close, 0.3)
+  k_v_close *= 1.0 - (1.0 - K_V_FAR_MIN) * _smooth01(
+    (ttg_far - K_V_FAR_TTG_LO_S) / max(1e-3, K_V_FAR_TTG_HI_S - K_V_FAR_TTG_LO_S))
   # Opening: small gain at/over the setpoint (a lead pulling away is not
   # chased), growing with slack. Inside the gap the opening speed keeps the
   # closing gain so braking unwinds as soon as the gap starts recovering.
@@ -298,9 +360,10 @@ def unified_follow_desired(gap: float, v_ego: float, v_lead: float, a_lead: floa
   # Blend the two across v_err = 0 so the gain has no step.
   side = _smooth01((v_err + 0.3) / 0.6)
   k_v = (1.0 - side) * k_v_close + side * k_v_open
-  k_a = _k_a(slack)
+  k_a = _k_a(slack) * _k_a_brake_scale(a_l)
   glide = _glide(slack, v_err, a_l)
-  keep = 1.0 - GLIDE_KEEP * glide
+  glide_keep = GLIDE_KEEP + (GLIDE_KEEP_INSIDE - GLIDE_KEEP) * _smooth01(-slack / GLIDE_GAP_M)
+  keep = 1.0 - glide_keep * glide
   a_gv = (k_g * slack + k_v * v_err) * keep
   a_gv += _short_headway(gap_f, v_e, v_close)
   a_pd = a_gv + k_a * a_l
@@ -368,6 +431,7 @@ class UnifiedLeadController:
   def reset(self) -> None:
     self._v_f: float | None = None
     self._a_f: float | None = None
+    self._lead_jerk = 0.0
     self._prev: float | None = None
     self._lead_id = None
     self._conf = 1.0
@@ -375,6 +439,7 @@ class UnifiedLeadController:
     self.last_desired = 0.0
     self.last_v_lead = 0.0
     self.last_a_lead = 0.0
+    self.last_a_lead_eff = 0.0
     self.last_confidence = 0.0
 
   @property
@@ -402,16 +467,22 @@ class UnifiedLeadController:
       # Do not inherit the previous lead's accel. Speed starts at this sample.
       self._v_f = float(v_lead)
       self._a_f = 0.0
+      self._lead_jerk = 0.0
       if self._prev is None:
         self._prev = float(seed_a)
 
     self._v_f = _filt(self._v_f, float(v_lead), frame_dt, TAU_V_S)
+    a_prev = self._a_f
     self._a_f = _filt(self._a_f, float(a_lead), frame_dt, TAU_A_S)
+    jerk_raw = (self._a_f - a_prev) / frame_dt if a_prev is not None else 0.0
+    self._lead_jerk = _filt(self._lead_jerk, jerk_raw, frame_dt, LEAD_JERK_TAU_S)
+    a_eff = self._a_f - lead_decel_anticipation(self._a_f, self._lead_jerk, gap, v_ego)
     self.last_v_lead = float(self._v_f)
     self.last_a_lead = float(self._a_f)
+    self.last_a_lead_eff = float(a_eff)
 
     desired = unified_follow_desired(
-      gap, v_ego, self._v_f, self._a_f, t_follow,
+      gap, v_ego, self._v_f, a_eff, t_follow,
       v_ceiling=v_ceiling, a_map=a_map, y_rel=y_rel, curvature=curvature,
       path_lat=path_lat,
     )
