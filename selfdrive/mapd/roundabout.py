@@ -3,9 +3,12 @@
 Map `junction=roundabout` (or a closed circulating way already in the OSM
 pack) — not steer. Funnel starts ~200 m so 40–45 mph can hit 15–20 by the
 ring. Kinematic a (not Lookahead comfort −0.55) toward OSM maxspeed when
-present. Clamp aTarget ≤ 0 while approaching / on the ring. ~3.2 m outer
-path bias on entry + circulating (right in RHT / US) so a ~3 m inside cut
-does not own lat.
+present. Clamp aTarget ≤ 0 while approaching / on the ring.
+
+Lateral: the legacy ~3.2 m outer path bias (#223) is applied only when the
+turn geometry correction (NAPLatTurnGeom, default On for Pre-AP) is off.
+With the correction on, modeld owns turn-in timing / rear-axle reference and
+roundabouts get no extra lateral bias (no double compensation).
 
 Yield-before-merge, continue-circulate desire, and UI chip are later tips.
 """
@@ -38,7 +41,7 @@ RB_NEAR_SPEED_MS = 2.5 * CV.MPH_TO_MS
 RB_ON_RING_DECEL_M = 28.0
 RB_DECEL_D_MIN_M = 12.0
 
-# Outer path bias. openpilot +y is left. EP1: OP lat R=14.9 vs OSM 18.2
+# Legacy outer path bias (turn geometry correction OFF only). openpilot +y is left. EP1: OP lat R=14.9 vs OSM 18.2
 # (−3.3 m inside); 0.45 m was far too small. 3.2 m counters that cut and
 # sits near the outer half of the circulating lane / ring, not the island.
 RB_OUTER_OFFSET_M = 3.2
@@ -280,3 +283,26 @@ def roundabout_outer_curvature_bias(offset_m: float, lookahead_m: float = RB_PAT
     return 0.0
   L = max(8.0, float(lookahead_m))
   return 2.0 * float(offset_m) / (L * L)
+
+
+def roundabout_lateral_curvature_bias(hint: RoundaboutHint | None, *, is_rhd: bool = False,
+                                      turn_geometry_active: bool = False) -> float:
+  """Curvature add-on controlsd applies to the model / maneuver curvature.
+
+  Turn geometry correction ON (NAPLatTurnGeom, Pre-AP default): 0. The
+  3.2 m outer bias was tuned against the EP1 inside cut, which included
+  early turn-in / corner clipping that the correction now handles in
+  modeld; keeping both would double-compensate (run wide on entry).
+  Correction OFF: legacy #223 outer bias, unchanged from 1119c0f.
+  Roundabout detection and speed ease are not affected either way.
+  """
+  if turn_geometry_active:
+    return 0.0
+  return roundabout_outer_curvature_bias(
+    roundabout_outer_path_offset_m(
+      on_roundabout=bool(hint.on_roundabout) if hint is not None else False,
+      approaching=bool(hint.approaching) if hint is not None else False,
+      distance_m=float(hint.distance_m) if hint is not None else 0.0,
+      is_rhd=is_rhd,
+    ),
+  )
