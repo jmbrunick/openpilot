@@ -197,8 +197,6 @@ class CarSpecificEvents:
     torque_nm = float(getattr(CS, 'steeringTorque', 0.0) or 0.0)
     hands = cs_hands_on_level(CS)
     fast_rise = self._yank.update(torque_nm, DT_CTRL)
-    emergency = is_emergency_yank(
-      torque_nm=torque_nm, hands_on_level=hands, fast_rise=fast_rise)
     cc_left = bool(getattr(CC, 'leftBlinker', False))
     cc_right = bool(getattr(CC, 'rightBlinker', False))
     # Tipped ALC, including the lamp flash-dark gap (_alc_keep ~1 s, or
@@ -208,6 +206,9 @@ class CarSpecificEvents:
     direction = int(self.blinker_lat_hold._alc_direction or 0)
     if direction not in (1, 2):
       direction = 1 if cc_left and not cc_right else (2 if cc_right and not cc_left else 0)
+    emergency = is_emergency_yank(
+      torque_nm=torque_nm, hands_on_level=hands, fast_rise=fast_rise,
+      over_torque=self._yank.over_torque, alc_direction=direction if alc_confirm else 0)
     same_direction = torque_is_same_direction(torque_nm, direction)
     # Confirm: do not steering-disengage, even if the lamp is in a
     # flash-dark gap and the hold has not latched blocks yet.
