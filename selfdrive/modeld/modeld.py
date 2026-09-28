@@ -18,7 +18,7 @@ from openpilot.common.transformations.camera import DEVICE_CAMERAS
 from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
 from openpilot.common.transformations.model import get_warp_matrix
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
-from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, smooth_value, get_curvature_from_plan
+from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, smooth_value, MIN_STABLE_DELAY
 from openpilot.selfdrive.modeld.parse_model_outputs import Parser
 from openpilot.selfdrive.modeld.compile_modeld import make_input_queues, WARP_INPUTS, POLICY_INPUTS
 from openpilot.selfdrive.modeld.fill_model_msg import fill_model_msg, fill_pose_msg, PublishState
@@ -26,7 +26,7 @@ from openpilot.common.file_chunker import read_file_chunked, get_manifest_path
 from openpilot.selfdrive.modeld.constants import ModelConstants, Plan
 from openpilot.selfdrive.modeld.helpers import usbgpu_present, modeld_pkl_path, get_tg_input_devices
 from openpilot.selfdrive.controls.lib.lat_turn_geometry import (
-  PARAM_REF_OFFSET, PARAM_TURN_GEOMETRY, TurnGeometryCorrection, clamp_ref_offset, is_preap_car,
+  PARAM_REF_OFFSET, PARAM_TURN_GEOMETRY, TurnGeometryCorrection, clamp_ref_offset, is_preap_car, plan_curvature,
 )
 
 
@@ -40,7 +40,8 @@ MIN_LAT_CONTROL_SPEED = 0.3
 
 
 def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.ModelDataV2.Action,
-                          lat_action_t: float, long_action_t: float, v_ego: float) -> log.ModelDataV2.Action:
+                          lat_action_t: float, long_action_t: float, v_ego: float,
+                          lat_sample_floor_s: float = MIN_STABLE_DELAY) -> log.ModelDataV2.Action:
     plan = model_output['plan'][0]
     desired_accel, should_stop = get_accel_from_plan(plan[:,Plan.VELOCITY][:,0],
                                                      plan[:,Plan.ACCELERATION][:,0],
@@ -48,11 +49,12 @@ def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.
                                                      action_t=long_action_t)
     desired_accel = smooth_value(desired_accel, prev_action.desiredAcceleration, LONG_SMOOTH_SECONDS)
 
-    desired_curvature = get_curvature_from_plan(plan[:,Plan.T_FROM_CURRENT_EULER][:,2],
-                                                plan[:,Plan.ORIENTATION_RATE][:,2],
-                                                ModelConstants.T_IDXS,
-                                                v_ego,
-                                                lat_action_t)
+    desired_curvature = plan_curvature(plan[:,Plan.T_FROM_CURRENT_EULER][:,2],
+                                       plan[:,Plan.ORIENTATION_RATE][:,2],
+                                       ModelConstants.T_IDXS,
+                                       v_ego,
+                                       lat_action_t,
+                                       lat_sample_floor_s)
     if v_ego > MIN_LAT_CONTROL_SPEED:
       desired_curvature = smooth_value(desired_curvature, prev_action.desiredCurvature, LAT_SMOOTH_SECONDS)
     else:
@@ -312,6 +314,7 @@ def main(demo=False):
       frame_delay = DT_MDL # compensate for time passed since the frame was captured: current_time - timestamp_eof is 50ms on average
       action_delay = DT_MDL / 2 # middle of the interval between model output (current state) and next frame (expected state)
       lat_action_t = lat_delay + frame_delay + action_delay
+      lat_sample_floor_s = MIN_STABLE_DELAY
       if turn_geom_preap:
         if turn_geom_param_frame < 0 or run_count - turn_geom_param_frame >= ModelConstants.MODEL_RUN_FREQ:
           turn_geom_param_frame = run_count
@@ -322,7 +325,9 @@ def main(demo=False):
           lat_active=bool(sm['carControl'].latActive),
           cmd_angle_deg=float(sm['carControl'].actuators.steeringAngleDeg),
           out_angle_deg=float(sm['carOutput'].actuatorsOutput.steeringAngleDeg) if sm.seen['carOutput'] else None)
-      action = get_action_from_model(model_output, prev_action, lat_action_t, long_delay + frame_delay + action_delay, v_ego)
+        lat_sample_floor_s = turn_geom.sample_floor_s
+      action = get_action_from_model(model_output, prev_action, lat_action_t, long_delay + frame_delay + action_delay, v_ego,
+                                     lat_sample_floor_s)
       prev_action = action
       fill_model_msg(drivingdata_send, modelv2_send, model_output, action,
                      publish_state, meta_main.frame_id, meta_extra.frame_id, frame_id,
