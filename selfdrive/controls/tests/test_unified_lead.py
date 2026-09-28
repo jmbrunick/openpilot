@@ -11,10 +11,15 @@ import pytest
 
 from openpilot.selfdrive.controls.lib.unified_lead import (
   A_MIN_MS2,
+  K_A_FIRM,
+  K_A_MILD,
+  LEAD_ANTICIPATE_MAX_MS2,
   UNIFIED_JERK_LIMIT_MS3,
   UnifiedLeadController,
+  _k_a_brake_scale,
   gap_set_m,
   kinematic_required_accel,
+  lead_decel_anticipation,
   speed_ceiling_accel,
   unified_follow_desired,
 )
@@ -691,3 +696,228 @@ def test_release_rate_is_proportional_to_how_far_below_target():
   assert far and min(far) >= 1.8
   near = [r for r, gap_to_target in rates if 0.02 < gap_to_target < 0.15]
   assert near and max(near) <= 0.8
+
+
+# #222 log exemplars at 0.25 s: (dRel, vLead, aLeadK, vEgo, tFollow), open loop
+# on the logged ego. 07:55:06 CT Sep 20 (route 000000ed), 22:14:11 CT Sep 23
+# (00000110), 23:31:01 CT Sep 22 (00000104). Legacy (logged aTarget, 4 Hz)
+# first reached -0.5 at: never (07:55, min -0.22), 2.0 s (22:14), 2.5 s (23:31).
+SEP20_0755_ROWS = (
+  (40.69, 29.6, 0.03, 30.04, 0.9), (40.44, 29.59, -0.03, 30.03, 0.9), (40.38, 29.58, -0.04, 30.02, 0.9),
+  (40.31, 29.58, -0.05, 30.01, 0.9), (41.35, 29.45, -0.03, 30.01, 0.9), (41.13, 29.2, -0.12, 30.01, 0.9),
+  (40.27, 29.0, -0.24, 29.99, 0.9), (39.89, 28.91, -0.49, 29.97, 0.9), (39.45, 28.75, -0.56, 29.93, 0.9),
+  (39.19, 28.57, -0.6, 29.86, 0.9), (38.94, 28.44, -0.63, 29.82, 0.9), (38.57, 28.19, -0.61, 29.74, 0.9),
+  (38.02, 27.87, -0.67, 29.67, 0.9), (37.57, 27.68, -0.79, 29.6, 0.9), (37.08, 27.49, -0.87, 29.55, 0.9),
+  (36.52, 27.17, -0.87, 29.47, 0.9), (35.95, 27.01, -0.92, 29.38, 0.9), (35.21, 26.74, -0.94, 29.3, 0.9),
+  (34.7, 26.56, -0.95, 29.22, 0.9), (33.96, 26.17, -0.94, 29.14, 0.9), (33.09, 25.88, -0.97, 29.07, 0.9),
+  (32.21, 25.62, -1.04, 28.98, 0.9), (31.64, 25.5, -1.06, 28.91, 0.9), (30.65, 25.2, -1.04, 28.83, 0.9),
+  (29.59, 24.94, -1.02, 28.75, 0.9), (28.4, 24.6, -0.99, 28.65, 0.9), (27.46, 24.46, -1.03, 28.57, 0.9),
+  (26.28, 24.2, -1.01, 28.49, 0.9), (25.21, 23.79, -1.01, 28.22, 0.9), (24.21, 23.56, -1.04, 27.87, 0.9),
+  (23.15, 23.3, -1.12, 27.47, 0.9), (22.03, 23.0, -1.09, 27.0, 0.9), (21.09, 22.65, -1.13, 26.52, 0.9),
+  (20.03, 22.49, -1.18, 26.04, 0.9), (19.15, 22.32, -1.1, 25.57, 0.9), (18.45, 22.08, -0.99, 25.04, 0.9),
+  (17.89, 21.84, -0.95, 24.53, 0.9),
+)
+
+SEP23_2214_ROWS = (
+  (41.47, 31.18, -0.08, 29.58, 0.7), (41.63, 31.1, -0.14, 29.71, 0.7), (41.82, 30.9, -0.23, 29.83, 0.7),
+  (42.03, 30.74, -0.38, 29.94, 0.7), (42.19, 30.59, -0.48, 30.05, 0.7), (42.38, 30.44, -0.54, 30.13, 0.7),
+  (42.44, 30.3, -0.59, 30.21, 0.7), (42.38, 30.12, -0.6, 30.25, 0.7), (42.34, 29.9, -0.65, 30.26, 0.7),
+  (42.28, 29.74, -0.72, 30.19, 0.7), (42.15, 29.72, -0.75, 30.15, 0.7), (42.0, 29.75, -0.58, 30.09, 0.7),
+  (41.97, 29.82, -0.41, 30.02, 0.7), (41.94, 29.97, -0.2, 29.96, 0.7), (41.91, 30.07, 0.1, 29.91, 0.7),
+  (41.97, 30.18, 0.23, 29.89, 0.7), (42.03, 30.28, 0.35, 29.87, 0.7), (42.13, 30.35, 0.4, 29.89, 0.7),
+  (42.28, 30.44, 0.4, 29.91, 0.7), (42.38, 30.48, 0.4, 29.95, 0.7), (52.61, 27.66, -0.31, 29.98, 0.7),
+  (52.08, 27.55, -0.31, 29.98, 0.7), (51.52, 27.5, -0.35, 29.97, 0.7), (50.86, 27.43, -0.33, 29.94, 0.7),
+  (50.18, 27.28, -0.32, 29.9, 0.7), (49.49, 27.13, -0.38, 29.85, 0.7), (48.83, 27.1, -0.41, 29.82, 0.7),
+  (48.17, 27.01, -0.37, 29.75, 0.7), (47.36, 26.89, -0.39, 29.7, 0.7), (46.61, 26.85, -0.37, 29.64, 0.7),
+  (45.92, 26.73, -0.35, 29.6, 0.7), (45.14, 26.6, -0.38, 29.53, 0.7), (44.43, 26.56, -0.39, 29.47, 0.7),
+  (43.83, 26.53, -0.33, 29.41, 0.7), (43.11, 26.45, -0.29, 29.31, 0.7), (42.3, 26.36, -0.28, 29.18, 0.7),
+  (41.61, 26.22, -0.28, 28.93, 0.7),
+)
+
+SEP22_2331_ROWS = (
+  (38.97, 31.88, -0.06, 32.4, 0.7), (38.85, 31.87, -0.09, 32.41, 0.7), (38.72, 31.88, -0.09, 32.37, 0.7),
+  (38.6, 31.89, -0.07, 32.34, 0.7), (38.47, 31.82, -0.05, 32.3, 0.7), (38.35, 31.77, -0.1, 32.27, 0.7),
+  (38.22, 31.69, -0.14, 32.26, 0.7), (38.1, 31.67, -0.15, 32.23, 0.7), (37.97, 31.56, -0.19, 32.21, 0.7),
+  (37.84, 31.39, -0.24, 32.13, 0.7), (37.65, 31.16, -0.39, 32.04, 0.7), (37.41, 31.0, -0.47, 31.93, 0.7),
+  (37.02, 30.63, -0.68, 31.76, 0.7), (36.79, 30.4, -0.74, 31.5, 0.7), (36.4, 30.07, -0.99, 31.18, 0.7),
+  (36.19, 29.84, -1.06, 30.93, 0.7), (35.88, 29.64, -1.06, 30.64, 0.7), (35.59, 29.35, -1.06, 30.34, 0.7),
+  (35.39, 29.09, -1.09, 30.08, 0.7), (35.13, 28.78, -1.14, 29.77, 0.7), (34.82, 28.46, -1.17, 29.48, 0.7),
+  (34.56, 28.17, -1.18, 29.22, 0.7), (34.26, 27.9, -1.17, 28.9, 0.7), (34.0, 27.56, -1.17, 28.62, 0.7),
+  (33.71, 27.28, -1.17, 28.31, 0.7), (33.51, 27.08, -1.13, 28.02, 0.7), (33.28, 26.75, -1.12, 27.73, 0.7),
+  (33.1, 26.58, -1.08, 27.41, 0.7), (32.96, 26.38, -1.06, 27.11, 0.7), (32.79, 26.21, -0.99, 26.8, 0.7),
+  (32.65, 26.06, -0.94, 26.49, 0.7), (32.5, 25.99, -0.77, 26.19, 0.7), (32.5, 25.9, -0.69, 25.89, 0.7),
+  (32.52, 25.83, -0.53, 25.57, 0.7), (32.65, 25.78, -0.43, 25.28, 0.7), (32.8, 25.79, -0.32, 24.96, 0.7),
+  (33.06, 25.78, -0.19, 24.65, 0.7),
+)
+
+
+def _log_replay(rows, seed):
+  ctrl = UnifiedLeadController()
+  out = []
+  for d, v_lead, a_lead, v_ego, t_follow in _interp_rows(rows):
+    out.append(ctrl.step(
+      dt=DT, present=True, gap=d, v_ego=v_ego, v_lead=v_lead, a_lead=a_lead,
+      t_follow=t_follow, lead_id=1, seed_a=seed, v_ceiling=40.0, radar=True, model_prob=0.9,
+    ))
+  return out
+
+
+def _first_at_or_below(cmds, level):
+  for k, a in enumerate(cmds):
+    if a <= level:
+      return k * DT
+  return None
+
+
+@pytest.mark.parametrize("rows, seed, t05_max, t10_max, min_max", [
+  # a8664c10 unified: 1.95 / 3.15 s. Legacy never braked (-0.22).
+  (SEP20_0755_ROWS, -0.02, 1.8, 2.2, -2.0),
+  # a8664c10 unified: 2.05 s / never. Legacy 2.0 s.
+  (SEP23_2214_ROWS, 0.37, 1.2, None, -0.9),
+  # a8664c10 unified: 2.9 / 3.65 s. Legacy 2.5 s at 4 Hz.
+  (SEP22_2331_ROWS, -0.02, 2.7, 3.0, -2.0),
+])
+def test_222_log_exemplars_brake_promptly_and_firmly(rows, seed, t05_max, t10_max, min_max):
+  """Real #222 lead braking: onset anticipated, firm, never past full regen."""
+  cmds = _log_replay(rows, seed)
+  t05 = _first_at_or_below(cmds, -0.5)
+  assert t05 is not None and t05 <= t05_max
+  if t10_max is not None:
+    t10 = _first_at_or_below(cmds, -1.0)
+    assert t10 is not None and t10 <= t10_max
+  assert min(cmds) <= min_max
+  assert min(cmds) >= A_MIN_MS2
+
+
+def test_lead_decel_anticipation_is_continuous_and_bounded():
+  # Steady or recovering lead: nothing added.
+  assert lead_decel_anticipation(-1.0, 0.0, 30.0, 30.0) == 0.0
+  assert lead_decel_anticipation(-1.0, 0.8, 30.0, 30.0) == 0.0
+  # Real braking onset at a short headway: anticipated, capped.
+  firm = lead_decel_anticipation(-0.8, -1.2, 30.0, 30.0)
+  assert 0.5 <= firm <= LEAD_ANTICIPATE_MAX_MS2 + 1e-9
+  # Long headway (>3.5 s) or a lead that is barely slowing: nothing.
+  assert lead_decel_anticipation(-0.8, -1.2, 110.0, 30.0) == 0.0
+  assert lead_decel_anticipation(-0.05, -1.2, 30.0, 30.0) == 0.0
+  # Gradual slowdown (small decel onset rate) barely moves it.
+  assert lead_decel_anticipation(-0.3, -0.25, 30.0, 30.0) < 0.1
+  # No step anywhere in a fine sweep.
+  prev = None
+  for i in range(400):
+    j = -3.0 + i * 0.0075
+    val = lead_decel_anticipation(-0.6, j, 30.0, 30.0)
+    if prev is not None:
+      assert abs(val - prev) < 0.05
+    prev = val
+
+
+def _brake_onset(ctrl_cls, *, a_final, jerk, seconds=4.0):
+  """Lead at the setpoint, matched speed, starts braking at `jerk` to `a_final`."""
+  ctrl = ctrl_cls()
+  v = 27.0
+  t_follow = 1.2
+  d = gap_set_m(v, t_follow)
+  v_l = v
+  a_l = 0.0
+  cmds = []
+  for k in range(int(round(seconds / DT))):
+    a_l = max(a_final, a_l + jerk * DT) if k * DT >= 0.5 else 0.0
+    cmds.append(ctrl.step(
+      dt=DT, present=True, gap=d, v_ego=v, v_lead=v_l, a_lead=a_l, t_follow=t_follow,
+      lead_id=1, seed_a=0.0, v_ceiling=40.0, radar=True, model_prob=0.9,
+    ))
+    v_l += a_l * DT
+    d += (v_l - v) * DT
+  return cmds
+
+
+def test_real_lead_brake_onset_is_anticipated_but_gradual_slowdown_is_not(monkeypatch):
+  import openpilot.selfdrive.controls.lib.unified_lead as ul
+  brake = _brake_onset(UnifiedLeadController, a_final=-2.5, jerk=-2.5)
+  gradual = _brake_onset(UnifiedLeadController, a_final=-0.5, jerk=-0.3, seconds=6.0)
+  monkeypatch.setattr(ul, "LEAD_ANTICIPATE_T_S", 0.0)
+  brake_plain = _brake_onset(UnifiedLeadController, a_final=-2.5, jerk=-2.5)
+  gradual_plain = _brake_onset(UnifiedLeadController, a_final=-0.5, jerk=-0.3, seconds=6.0)
+  t_ant = _first_at_or_below(brake, -0.5)
+  t_plain = _first_at_or_below(brake_plain, -0.5)
+  assert t_ant is not None and t_plain is not None
+  assert t_ant <= t_plain - 0.1
+  # Gradual -0.5 slowdown (includes catching the growing gap error): no
+  # firmer than a8664c10 (-0.91) and anticipation adds nothing to it.
+  assert min(gradual) >= -0.88
+  assert min(gradual) >= min(gradual_plain) - 0.02
+
+
+def test_mild_lead_slowing_is_under_matched_and_braking_over_matched():
+  assert _k_a_brake_scale(-0.1) == pytest.approx(K_A_MILD)
+  assert _k_a_brake_scale(-1.2) == pytest.approx(K_A_FIRM)
+  assert K_A_MILD < 1.0 < K_A_FIRM
+  v = 27.0
+  gap = gap_set_m(v, 1.2)
+  mild = unified_follow_desired(gap, v, v, -0.3, 1.2, v_ceiling=40.0)
+  firm = unified_follow_desired(gap, v, v, -1.2, 1.2, v_ceiling=40.0)
+  assert -0.3 <= mild < 0.0
+  assert firm <= -1.2 * 1.05
+  # Smooth in between: no step across the blend.
+  prev = None
+  for i in range(200):
+    a_l = -0.1 - i * 0.006
+    val = unified_follow_desired(gap, v, v, a_l, 1.2, v_ceiling=40.0)
+    if prev is not None:
+      assert abs(val - prev) < 0.03
+    prev = val
+
+
+def test_small_inside_gap_keeps_easing_until_the_gap_recovers(monkeypatch):
+  """3 m inside at matched speed: a gentle ease that does not stall short.
+
+  The glide (matched speed, lead not braking) removes less of the gap term
+  inside the setpoint than at it, so the ease continues until the gap is back.
+  """
+  import openpilot.selfdrive.controls.lib.unified_lead as ul
+  v = 27.0
+  t_follow = 1.2
+  gap = gap_set_m(v, t_follow)
+  inside = unified_follow_desired(gap - 3.0, v, v, 0.0, t_follow, v_ceiling=40.0)
+  at_set = unified_follow_desired(gap, v, v, 0.0, t_follow, v_ceiling=40.0)
+  monkeypatch.setattr(ul, "GLIDE_KEEP_INSIDE", ul.GLIDE_KEEP)
+  inside_plain = unified_follow_desired(gap - 3.0, v, v, 0.0, t_follow, v_ceiling=40.0)
+  monkeypatch.undo()
+  assert -0.3 <= inside <= inside_plain - 0.003
+  assert inside < at_set
+  ctrl = UnifiedLeadController()
+  d0 = gap - 3.0
+  _, _, cmds = _closed_loop(
+    ctrl, d=d0, v_ego=v, lead_v=lambda t: v, lead_a=lambda t: 0.0,
+    t_follow=t_follow, seconds=30.0, v_ceiling=40.0,
+  )
+  assert min(cmds) >= -0.3
+  # Replay the plant to find the gap error at the end.
+  a_act = 0.0
+  v_e = v
+  d = d0
+  for cmd in cmds:
+    a_act += (max(cmd, -1.5) - a_act) * DT / 0.3
+    v_e += a_act * DT
+    d += (v - v_e) * DT
+  assert d - gap >= -1.0
+
+
+def test_far_slow_close_coasts_near_close_does_not(monkeypatch):
+  """Closing gain fades with time-to-gap (12 → 30 s): far slow closes nibble less."""
+  import openpilot.selfdrive.controls.lib.unified_lead as ul
+  v_l = 25.0
+  gap = gap_set_m(v_l, 1.2)
+  far = unified_follow_desired(gap + 70.0, v_l + 1.5, v_l, 0.0, 1.2, v_ceiling=40.0)
+  assert -0.10 <= far <= 0.0
+  near = unified_follow_desired(gap + 10.0, v_l + 1.5, v_l, 0.0, 1.2, v_ceiling=40.0)
+  assert near <= -0.12
+  assert near < far - 0.08
+  # ttg ~33 s (10 m at 0.3 m/s) vs ~7 s (2 m): only the far one is faded.
+  slow_far = unified_follow_desired(gap + 10.0, v_l + 0.3, v_l, -0.3, 1.2, v_ceiling=40.0)
+  slow_near = unified_follow_desired(gap + 2.0, v_l + 0.3, v_l, -0.3, 1.2, v_ceiling=40.0)
+  monkeypatch.setattr(ul, "K_V_FAR_MIN", 1.0)
+  slow_far_plain = unified_follow_desired(gap + 10.0, v_l + 0.3, v_l, -0.3, 1.2, v_ceiling=40.0)
+  slow_near_plain = unified_follow_desired(gap + 2.0, v_l + 0.3, v_l, -0.3, 1.2, v_ceiling=40.0)
+  assert slow_far >= slow_far_plain + 0.002
+  assert slow_near == pytest.approx(slow_near_plain, abs=1e-9)
