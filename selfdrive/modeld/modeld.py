@@ -25,6 +25,9 @@ from openpilot.selfdrive.modeld.fill_model_msg import fill_model_msg, fill_pose_
 from openpilot.common.file_chunker import read_file_chunked, get_manifest_path
 from openpilot.selfdrive.modeld.constants import ModelConstants, Plan
 from openpilot.selfdrive.modeld.helpers import usbgpu_present, modeld_pkl_path, get_tg_input_devices
+from openpilot.selfdrive.controls.lib.lat_turn_geometry import (
+  PARAM_REF_OFFSET, PARAM_TURN_GEOMETRY, TurnGeometryCorrection, clamp_ref_offset, is_preap_car,
+)
 
 
 PROCESS_NAME = "selfdrive.modeld.modeld"
@@ -184,7 +187,8 @@ def main(demo=False):
 
   # messaging
   pm = PubMaster(["modelV2", "drivingModelData", "cameraOdometry"])
-  sm = SubMaster(["deviceState", "carState", "roadCameraState", "liveCalibration", "driverMonitoringState", "carControl", "liveDelay"])
+  sm = SubMaster(["deviceState", "carState", "roadCameraState", "liveCalibration", "driverMonitoringState", "carControl", "liveDelay",
+                  "carOutput"])
 
   publish_state = PublishState()
   params = Params()
@@ -212,6 +216,12 @@ def main(demo=False):
   # TODO this needs more thought, use .2s extra for now to estimate other delays
   # TODO Move smooth seconds to action function
   long_delay = CP.longitudinalActuatorDelay + LONG_SMOOTH_SECONDS
+  # NAP turn geometry correction (Pre-AP only). Params re-read ~1 Hz.
+  turn_geom_preap = is_preap_car(CP)
+  turn_geom = TurnGeometryCorrection(DT_MDL)
+  turn_geom_on = False
+  turn_geom_offset = clamp_ref_offset(None)
+  turn_geom_param_frame = -1
   prev_action = log.ModelDataV2.Action()
 
   DH = DesireHelper()
@@ -301,7 +311,18 @@ def main(demo=False):
 
       frame_delay = DT_MDL # compensate for time passed since the frame was captured: current_time - timestamp_eof is 50ms on average
       action_delay = DT_MDL / 2 # middle of the interval between model output (current state) and next frame (expected state)
-      action = get_action_from_model(model_output, prev_action, lat_delay + frame_delay + action_delay, long_delay + frame_delay + action_delay, v_ego)
+      lat_action_t = lat_delay + frame_delay + action_delay
+      if turn_geom_preap:
+        if turn_geom_param_frame < 0 or run_count - turn_geom_param_frame >= ModelConstants.MODEL_RUN_FREQ:
+          turn_geom_param_frame = run_count
+          turn_geom_on = params.get_bool(PARAM_TURN_GEOMETRY)
+          turn_geom_offset = clamp_ref_offset(params.get(PARAM_REF_OFFSET, return_default=True))
+        lat_action_t = turn_geom.update(
+          enabled=turn_geom_on, stock_lookahead_s=lat_action_t, v_ego=v_ego, ref_offset_m=turn_geom_offset,
+          lat_active=bool(sm['carControl'].latActive),
+          cmd_angle_deg=float(sm['carControl'].actuators.steeringAngleDeg),
+          out_angle_deg=float(sm['carOutput'].actuatorsOutput.steeringAngleDeg) if sm.seen['carOutput'] else None)
+      action = get_action_from_model(model_output, prev_action, lat_action_t, long_delay + frame_delay + action_delay, v_ego)
       prev_action = action
       fill_model_msg(drivingdata_send, modelv2_send, model_output, action,
                      publish_state, meta_main.frame_id, meta_extra.frame_id, frame_id,

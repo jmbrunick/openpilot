@@ -21,11 +21,15 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   NAP_ONE_PEDAL_LONG,
   ONE_PEDAL_LONG_DESCRIPTION,
 )
+from openpilot.selfdrive.ui.layouts.settings.nap_lateral import (
+  LAT_REF_OFFSET_DESCRIPTION, LAT_REF_OFFSET_LABELS, LAT_REF_OFFSET_PRESETS,
+  LAT_TURN_GEOM_DESCRIPTION, NAP_LAT_REF_OFFSET, NAP_LAT_TURN_GEOM, lat_ref_offset_index,
+)
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys
 
 
 class DrivingMannerismsLayout(Widget):
-  """Nested NAP page for Hypermile, accel feel, follow distance, and soft-lat."""
+  """Nested NAP page for Hypermile, accel feel, follow distance, soft-lat, and turn geometry."""
 
   def __init__(self, on_back):
     super().__init__()
@@ -94,6 +98,24 @@ class DrivingMannerismsLayout(Widget):
     )
     self._all_items.append(self._lat_handoff)
 
+    self._turn_geom = toggle_item(
+      "Turn Geometry Correction",
+      description=LAT_TURN_GEOM_DESCRIPTION,
+      initial_state=self._params.get_bool(NAP_LAT_TURN_GEOM),
+      callback=self._on_turn_geom,
+    )
+    self._all_items.append(self._turn_geom)
+
+    self._ref_offset_buttons = multiple_button_item(
+      "Rear Reference Offset (m)",
+      LAT_REF_OFFSET_DESCRIPTION,
+      buttons=LAT_REF_OFFSET_LABELS,
+      button_width=110,
+      selected_index=lat_ref_offset_index(self._params),
+      callback=self._on_ref_offset,
+    )
+    self._all_items.append(self._ref_offset_buttons)
+
     self._one_pedal = toggle_item(
       "One-Pedal Long",
       description=ONE_PEDAL_LONG_DESCRIPTION,
@@ -156,6 +178,12 @@ class DrivingMannerismsLayout(Widget):
   def _on_lat_handoff(self, state):
     self._params.put_bool(NAP_DRIVER_LAT_HANDOFF, state)
 
+  def _on_turn_geom(self, state):
+    self._params.put_bool(NAP_LAT_TURN_GEOM, state)
+
+  def _on_ref_offset(self, index: int):
+    self._params.put(NAP_LAT_REF_OFFSET, float(LAT_REF_OFFSET_PRESETS[index]))
+
   def _on_one_pedal(self, state):
     self._params.put_bool(NAP_ONE_PEDAL_LONG, state)
 
@@ -174,6 +202,8 @@ class DrivingMannerismsLayout(Widget):
     self._follow_city_buttons.action_item.set_selected_button(max(0, min(6, city - 1)))
     self._follow_hwy_buttons.action_item.set_selected_button(max(0, min(6, hwy - 1)))
     self._lat_handoff.action_item.set_state(self._params.get_bool(NAP_DRIVER_LAT_HANDOFF))
+    self._turn_geom.action_item.set_state(self._params.get_bool(NAP_LAT_TURN_GEOM))
+    self._ref_offset_buttons.action_item.set_selected_button(lat_ref_offset_index(self._params))
     self._one_pedal.action_item.set_state(self._params.get_bool(NAP_ONE_PEDAL_LONG))
 
   def show_event(self):

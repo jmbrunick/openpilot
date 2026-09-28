@@ -22,8 +22,11 @@ from openpilot.selfdrive.controls.lib.lane_change_nudge import (
   EmergencyYankTracker, is_emergency_yank, torque_is_same_direction,
 )
 from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature
+from openpilot.selfdrive.controls.lib.lat_turn_geometry import (
+  PARAM_TURN_GEOMETRY, is_preap_car, turn_geometry_active,
+)
 from openpilot.selfdrive.mapd.roundabout import (
-  live_map_roundabout_hint, roundabout_outer_curvature_bias, roundabout_outer_path_offset_m,
+  live_map_roundabout_hint, roundabout_lateral_curvature_bias,
 )
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
@@ -55,6 +58,9 @@ class Controls:
     self.pm = messaging.PubMaster(['carControl', 'controlsState'])
 
     self.steer_limited_by_safety = False
+    self._turn_geom_preap = is_preap_car(self.CP)
+    self._turn_geom_active = False
+    self._turn_geom_param_frame = -1
     self.curvature = 0.0
     self.desired_curvature = 0.0
     self.blinker_lat_hold = BlinkerLateralHold()
@@ -244,13 +250,14 @@ class Controls:
       model_or_plan_curvature = model_v2.action.desiredCurvature
     rb_hint = live_map_roundabout_hint(self.sm['liveMapDataNAP'] if self.sm.valid.get('liveMapDataNAP', False) else None)
     is_rhd = bool(self.sm['driverMonitoringState'].isRHD) if self.sm.valid.get('driverMonitoringState', False) else False
-    model_or_plan_curvature = float(model_or_plan_curvature) + roundabout_outer_curvature_bias(
-      roundabout_outer_path_offset_m(
-        on_roundabout=bool(rb_hint.on_roundabout) if rb_hint is not None else False,
-        approaching=bool(rb_hint.approaching) if rb_hint is not None else False,
-        distance_m=float(rb_hint.distance_m) if rb_hint is not None else 0.0,
-        is_rhd=is_rhd,
-      ),
+    # Turn geometry ON: no roundabout outer bias (modeld owns turn-in timing).
+    if self._turn_geom_param_frame < 0 or self._turn_geom_param_frame >= 100:
+      self._turn_geom_param_frame = 0
+      self._turn_geom_active = turn_geometry_active(
+        self._turn_geom_preap, bool(self.params.get_bool(PARAM_TURN_GEOMETRY)))
+    self._turn_geom_param_frame += 1
+    model_or_plan_curvature = float(model_or_plan_curvature) + roundabout_lateral_curvature_bias(
+      rb_hint, is_rhd=is_rhd, turn_geometry_active=self._turn_geom_active,
     )
     new_desired_curvature = handoff_new_desired_curvature(
       yielded=bool(self._lat_handoff.yielded),
