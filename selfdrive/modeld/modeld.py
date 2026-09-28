@@ -323,9 +323,6 @@ def main(demo=False):
           cmd_angle_deg=float(sm['carControl'].actuators.steeringAngleDeg),
           out_angle_deg=float(sm['carOutput'].actuatorsOutput.steeringAngleDeg) if sm.seen['carOutput'] else None)
       action = get_action_from_model(model_output, prev_action, lat_action_t, long_delay + frame_delay + action_delay, v_ego)
-      if turn_geom_preap:
-        action.napLatActionT = float(lat_action_t)
-        action.napLatReduction = float(turn_geom.reduction_s) if turn_geom_on else 0.0
       prev_action = action
       fill_model_msg(drivingdata_send, modelv2_send, model_output, action,
                      publish_state, meta_main.frame_id, meta_extra.frame_id, frame_id,
