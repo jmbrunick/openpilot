@@ -4,7 +4,9 @@ from cereal import log
 from openpilot.common.constants import CV
 from openpilot.selfdrive.controls.lib.driver_lateral_handoff import cs_hands_on_level
 from openpilot.selfdrive.controls.lib.lane_change_nudge import (
+  SOFT_YIELD_TRIGGER_NM,
   EmergencyYankTracker,
+  SoftConfirmTracker,
   is_emergency_yank,
   tipped_lane_change_driver_release,
   torque_is_same_direction,
@@ -16,6 +18,7 @@ from openpilot.selfdrive.controls.lib.lane_change_target import (
   LaneChangeTarget,
   lane_line_offsets,
 )
+from openpilot.selfdrive.controls.lib.lane_change_turn import is_lane_change_turn
 from openpilot.selfdrive.controls.lib.stalk_tip_turn import StalkTipTurn
 
 LaneChangeState = log.LaneChangeState
@@ -34,6 +37,18 @@ DT_MDL = 0.05
 
 # Time the lane change stays armed waiting for steering input.
 LANE_CHANGE_ARM_TIME = 7.0
+
+# Target-locked change: an opposite pull cancels only when it is a real
+# pull (steeringPressed, >= the soft-yield floor against the change) held
+# OPPOSITE_PULL_SUSTAIN_S. The spring-back after a confirm push is one
+# 10 Hz sample: 54 of 145 logged starts (Sep 16-28) had a steeringPressed
+# opposite-sign sample within [-0.6, +2.0] s of the start (up to 1.22 Nm,
+# e.g. -2.52 -> +1.22 Nm), and with the armed soft confirm the start now
+# comes before that spring-back. Held 0.20 s at >= 0.55 Nm only matched
+# the 2 real opposite pulls (>= 4 Nm). Hard pulls still hit the emergency
+# lines.
+OPPOSITE_PULL_NM = SOFT_YIELD_TRIGGER_NM
+OPPOSITE_PULL_SUSTAIN_S = 0.20
 
 # Cap on how many same-direction lane changes can be queued from repeated taps.
 MAX_QUEUED_LANE_CHANGES = 3
@@ -78,6 +93,8 @@ class DesireHelper:
     self._tip_turn = StalkTipTurn()
     self._suppress_next_tip = False
     self._yank = EmergencyYankTracker()
+    self._soft_confirm = SoftConfirmTracker()
+    self._opposite_s = 0.0
 
     # Includes the lane change currently armed or in progress.
     self.queued_changes = 0
@@ -118,10 +135,18 @@ class DesireHelper:
       return False
     torque = float(getattr(carstate, "steeringTorque", 0.0) or 0.0)
     if direction == 1:
-      return torque < 0.0
+      return torque <= -OPPOSITE_PULL_NM
     if direction == 2:
-      return torque > 0.0
+      return torque >= OPPOSITE_PULL_NM
     return False
+
+  def _opposite_pull_held(self, carstate, direction: int) -> bool:
+    """``_opposite_pull`` held OPPOSITE_PULL_SUSTAIN_S (spring-back is not)."""
+    if self._opposite_pull(carstate, direction):
+      self._opposite_s += DT_MDL
+    else:
+      self._opposite_s = 0.0
+    return self._opposite_s >= OPPOSITE_PULL_SUSTAIN_S - 1e-9
 
   def _complete_one(self):
     self._clear_target()
@@ -198,11 +223,34 @@ class DesireHelper:
     self._tip_turn.update(carstate.turnSignalStalkState, DT_MDL)
     torque_nm = float(getattr(carstate, "steeringTorque", 0.0) or 0.0)
     fast_rise = self._yank.update(torque_nm, DT_MDL)
+    if self.lane_change_state == LaneChangeState.off:
+      lc_dir = 0
+    elif self.lane_change_direction == LaneChangeDirection.left:
+      lc_dir = 1
+    elif self.lane_change_direction == LaneChangeDirection.right:
+      lc_dir = 2
+    else:
+      lc_dir = 0
     emergency_yank = is_emergency_yank(
       torque_nm=torque_nm,
       hands_on_level=cs_hands_on_level(carstate),
       fast_rise=fast_rise,
+      over_torque=self._yank.over_torque,
+      alc_direction=lc_dir,
     )
+    # Driver turning in the lane-change direction (wheel angle well past
+    # any lane change): end the change and drop the target for good.
+    # controlsd keeps the blinker and pauses lat like a manual turn.
+    driver_turn = is_lane_change_turn(
+      direction=lc_dir, steering_angle_deg=float(getattr(carstate, "steeringAngleDeg", 0.0) or 0.0),
+      torque_nm=torque_nm, lat_active=bool(lateral_active))
+    # Counted every frame so a spring-back never carries over.
+    opposite_pull = self._opposite_pull_held(carstate, lc_dir)
+    # Armed-only soft confirm: preLaneChange, >= 20 mph, same direction.
+    soft_confirm = self._soft_confirm.update(
+      torque_nm=torque_nm, direction=lc_dir,
+      armed=(self.lane_change_state == LaneChangeState.preLaneChange and not below_lane_change_speed),
+      dt=DT_MDL)
     left_press = self._tip_turn.left_press
     right_press = self._tip_turn.right_press
     tip_event = self._tip_turn.tip_event and not self._suppress_next_tip
@@ -257,7 +305,18 @@ class DesireHelper:
           self._reset()
           just_cancelled = True
           self._suppress_next_tip = True
-        elif locked and self._opposite_pull(carstate, nudge_dir):
+        elif driver_turn:
+          # Turning at the intersection before the change finished.
+          self._reset()
+          just_cancelled = True
+          self._suppress_next_tip = True
+        elif below_lane_change_speed and self.lane_change_state in (
+            LaneChangeState.laneChangeStarting, LaneChangeState.laneChangeFinishing):
+          # Slowed under 20 mph mid-change (e.g. into an intersection): end it.
+          self._reset()
+          just_cancelled = True
+          self._suppress_next_tip = True
+        elif locked and opposite_pull:
           # Target-locked change: an opposite-direction pull cancels.
           # Same-direction bumps never pause, slow, or cancel it.
           self._reset()
@@ -301,6 +360,8 @@ class DesireHelper:
         torque_applied = carstate.steeringPressed and \
                          ((carstate.steeringTorque > 0 and self.lane_change_direction == LaneChangeDirection.left) or
                           (carstate.steeringTorque < 0 and self.lane_change_direction == LaneChangeDirection.right))
+        # A lighter same-direction nudge held SOFT_CONFIRM_SUSTAIN_S also confirms.
+        torque_applied = torque_applied or soft_confirm
 
         blindspot_detected = ((carstate.leftBlindspot and self.lane_change_direction == LaneChangeDirection.left) or
                               (carstate.rightBlindspot and self.lane_change_direction == LaneChangeDirection.right))

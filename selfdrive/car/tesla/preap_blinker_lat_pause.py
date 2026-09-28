@@ -697,8 +697,11 @@ def _update_preap(cs, can_parsers):
       tracker = EmergencyYankTracker()
       engagement._nap_yank_tracker = tracker
     fast_rise = tracker.update(torque_nm, DT_CTRL)
+    hold = _hold_for(engagement)
+    alc_direction = int(hold._alc_direction or 0) if hold._alc_keep else 0
     engagement._nap_emergency_yank = is_emergency_yank(
-      torque_nm=torque_nm, hands_on_level=hands, fast_rise=fast_rise)
+      torque_nm=torque_nm, hands_on_level=hands, fast_rise=fast_rise,
+      over_torque=tracker.over_torque, alc_direction=alc_direction)
   ret = _ORIG_UPDATE(cs, can_parsers)
   hands = int(getattr(cs, 'hands_on_level', 0) or 0)
   if hands <= 0:
