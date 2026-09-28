@@ -48,6 +48,8 @@ from __future__ import annotations
 
 import math
 
+from openpilot.selfdrive.controls.lib.lead_leaving import CLEAR_MARGIN_M, EGO_HALF_WIDTH_M, LEAD_HALF_WIDTH_M
+
 # Same standstill gap long_mpc uses for the follow obstacle.
 STOP_DISTANCE_M = 6.0
 
@@ -167,10 +169,14 @@ CUTIN_S = 0.45
 # Toggle engage/disengage blend lives in the planner (~1 s).
 MODE_BLEND_S = 1.0
 
-# Lateral fade from the predicted travel path. On-path (|lat| under
-# ~1.2 m) stays. A lead walking off past ~2.5 m fades the command to 0.
-DEPART_Y0_M = 1.2
-DEPART_Y1_M = 2.5
+# Static lateral fade from the predicted travel path. It starts only where
+# a lead that is not moving sideways already clears our body: our half-width
+# + its half-width + margin (lead_leaving). A stalled half-out lead keeps
+# full weight. A lead that is *moving* out is released earlier, and only
+# when its projection clears us at our arrival, by the planner's leaving
+# weight (`leave_w`), combined with this fade below.
+DEPART_Y0_M = EGO_HALF_WIDTH_M + LEAD_HALF_WIDTH_M + CLEAR_MARGIN_M
+DEPART_Y1_M = DEPART_Y0_M + 0.7
 
 
 def _smooth01(x: float) -> float:
@@ -311,6 +317,14 @@ def _depart_fade(y_rel: float, curvature: float, gap: float,
   return _smooth01((y - DEPART_Y0_M) / max(1e-3, DEPART_Y1_M - DEPART_Y0_M))
 
 
+def _leave_fade(y_rel: float, curvature: float, gap: float,
+                path_lat: float | None = None, leave_w: float = 0.0) -> float:
+  """Static off-path fade combined with the planner's leaving weight."""
+  static = _depart_fade(y_rel, curvature, gap, path_lat)
+  w = 0.0 if leave_w is None or not math.isfinite(float(leave_w)) else min(1.0, max(0.0, float(leave_w)))
+  return 1.0 - (1.0 - static) * (1.0 - w)
+
+
 def speed_ceiling_accel(v_ego: float, v_cap: float) -> float:
   """Speed-error term for MAX / curve caps.
 
@@ -331,7 +345,8 @@ def unified_follow_desired(gap: float, v_ego: float, v_lead: float, a_lead: floa
                            t_follow: float, *, v_ceiling: float | None = None,
                            a_map: float | None = None, y_rel: float = 0.0,
                            curvature: float = 0.0,
-                           path_lat: float | None = None) -> float:
+                           path_lat: float | None = None,
+                           leave_w: float = 0.0) -> float:
   """Unslewed follow accel from filtered lead signals. Continuous in its inputs."""
   gap_f = max(0.0, float(gap))
   v_l = max(0.0, float(v_lead))
@@ -384,7 +399,9 @@ def unified_follow_desired(gap: float, v_ego: float, v_lead: float, a_lead: floa
     trickle = TRICKLE_A * math.tanh(a_cmd / TRICKLE_SCALE)
     a_cmd = w * min(a_cmd, trickle) + (1.0 - w) * a_cmd
 
-  fade = _depart_fade(y_rel, curvature, gap_f, path_lat)
+  # Off-path / leaving lead: its command (brake included) fades toward 0;
+  # the MAX / map / curve terms below still apply in full.
+  fade = _leave_fade(y_rel, curvature, gap_f, path_lat, leave_w)
   if fade > 0.0:
     a_cmd *= (1.0 - fade)
 
@@ -452,7 +469,7 @@ class UnifiedLeadController:
            a_map: float | None = None, y_rel: float = 0.0,
            curvature: float = 0.0, a_max: float | None = None,
            path_lat: float | None = None, model_prob: float | None = None,
-           radar: bool | None = None) -> float:
+           radar: bool | None = None, leave_w: float = 0.0) -> float:
     """One planner frame. Returns the slewed road-relative accel, or 0 with no lead."""
     frame_dt = 0.05 if dt is None or float(dt) <= 1e-6 else float(dt)
     if not present:
@@ -484,7 +501,7 @@ class UnifiedLeadController:
     desired = unified_follow_desired(
       gap, v_ego, self._v_f, a_eff, t_follow,
       v_ceiling=v_ceiling, a_map=a_map, y_rel=y_rel, curvature=curvature,
-      path_lat=path_lat,
+      path_lat=path_lat, leave_w=leave_w,
     )
     if a_max is not None:
       desired = min(desired, float(a_max))
@@ -498,6 +515,11 @@ class UnifiedLeadController:
     # Confidence: consistent, on-path, good-quality readings ramp to 1.
     # A fast close (deep kinematic demand) ramps within a fraction of a
     # second; a one-frame reading barely moves it.
+    # Confidence reads the static off-path geometry only. A leaving lead is
+    # released through `desired` (leave_w above), toward the lead-free
+    # command; a confidence drop would blend toward the command in force,
+    # which is the lead's brake itself.
+    fade = _leave_fade(y_rel, curvature, gap, path_lat, leave_w)
     on_path = 1.0 - _depart_fade(y_rel, curvature, gap, path_lat)
     target_conf = on_path * lead_quality(model_prob, radar)
     urgency = _smooth01((-a_kin - CONF_URGENT_LO_MS2) / CONF_URGENT_BAND_MS2)
@@ -516,7 +538,6 @@ class UnifiedLeadController:
     prev = float(self._prev if self._prev is not None else seed_a)
 
     opening = v_err > 0.25 and slack > 1.0
-    fade = _depart_fade(y_rel, curvature, gap, path_lat)
     release_base = JERK_RELEASE_OPEN_MS3 if (opening or fade > 0.35) else JERK_RELEASE_MS3
     err = float(target) - prev
     # Proportional: far too firm releases fast, near the target gently.

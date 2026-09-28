@@ -18,6 +18,7 @@ UNIFIED_TEST_PATH = "selfdrive/controls/tests/test_unified_lead.py"
 UNIFIED_PLANNER_TEST_PATH = "selfdrive/controls/tests/test_unified_lead_planner.py"
 CURVE_PREVIEW_TEST_PATH = "selfdrive/controls/tests/test_curve_preview.py"
 CURVE_MAX_HOLD_TEST_PATH = "selfdrive/controls/lib/tests/test_curve_max_hold.py"
+LEAD_LEAVING_TEST_PATH = "selfdrive/controls/tests/test_lead_leaving.py"
 OFFSET_TEST_PATH = "selfdrive/mapd/tests/test_map_speed_offset_slew.py"
 ENGAGE_MAX_TEST_PATH = "selfdrive/car/tests/test_preap_engage_max_after_pause.py"
 FRONTAGE_TEST_PATH = "selfdrive/mapd/tests/test_map_match_frontage.py"
@@ -558,6 +559,89 @@ MUTATIONS = (
     replacement=b'  base = 0.40\n',
     test_nodes=(
       f"{CURVE_PREVIEW_TEST_PATH}::test_restore_rate_is_speed_dependent",
+    ),
+  ),
+  HistoricalMutation(
+    name="lead-leaving-clearance-bound-removed",
+    source_path="selfdrive/controls/lib/lead_leaving.py",
+    original=b"  clear_w = _smooth01((y_proj - clearance_needed_m(v_ego)) / CLEAR_BAND_M)\n",
+    replacement=b"  clear_w = 1.0\n",
+    test_nodes=(
+      f"{LEAD_LEAVING_TEST_PATH}::test_stalled_half_out_lead_keeps_braking",
+      f"{LEAD_LEAVING_TEST_PATH}::test_clearance_bound_is_ego_half_width_plus_lead_plus_margin",
+    ),
+  ),
+  HistoricalMutation(
+    name="lead-leaving-stall-gate-removed",
+    source_path="selfdrive/controls/lib/lead_leaving.py",
+    original=b"  vy_eff = max(0.0, float(vy_away) - VY_DEADBAND_MS)\n",
+    replacement=b"  vy_eff = 1.5\n",
+    test_nodes=(
+      f"{LEAD_LEAVING_TEST_PATH}::test_stalled_half_out_lead_keeps_braking",
+    ),
+  ),
+  HistoricalMutation(
+    name="lead-leaving-overlap-gate-removed",
+    source_path="selfdrive/controls/lib/lead_leaving.py",
+    original=b"  overlap_w = _smooth01((y - OVERLAP_Y0_M) / OVERLAP_BAND_M)\n",
+    replacement=b"  overlap_w = 1.0\n",
+    test_nodes=(
+      f"{LEAD_LEAVING_TEST_PATH}::test_lead_drifting_within_lane_not_released",
+      f"{LEAD_LEAVING_TEST_PATH}::test_turning_lead_released_early_with_clearance",
+    ),
+  ),
+  HistoricalMutation(
+    name="lead-leaving-fcw-suppress-removed",
+    source_path="selfdrive/controls/lib/lead_leaving.py",
+    original=b"    if suppress:\n",
+    replacement=b"    if False:\n",
+    test_nodes=(
+      f"{LEAD_LEAVING_TEST_PATH}::test_fcw_lead_two_and_new_track_restore_full_weight",
+    ),
+  ),
+  HistoricalMutation(
+    name="lead-leaving-legacy-application-removed",
+    source_path="selfdrive/controls/lib/longitudinal_planner.py",
+    original=b"      output_a_target = release_lead_brake(output_a_target, self.lead_leave_w, free_a)\n",
+    replacement=b"      output_a_target = output_a_target\n",
+    test_nodes=(
+      f"{LEAD_LEAVING_TEST_PATH}::test_turning_lead_released_early_with_clearance",
+    ),
+  ),
+  HistoricalMutation(
+    name="lead-leaving-release-ignores-max-ceiling",
+    source_path="selfdrive/controls/lib/longitudinal_planner.py",
+    original=b"      free_a = min(float(lead_free_a), self._lead_free_ceiling_a(float(v_ego)))\n",
+    replacement=b"      free_a = 0.0\n",
+    test_nodes=(
+      f"{LEAD_LEAVING_TEST_PATH}::test_planner_leaving_release_respects_max_ceiling",
+    ),
+  ),
+  HistoricalMutation(
+    name="lead-leaving-unified-application-removed",
+    source_path="selfdrive/controls/lib/unified_lead.py",
+    original=b"  fade = _leave_fade(y_rel, curvature, gap_f, path_lat, leave_w)\n",
+    replacement=b"  fade = _depart_fade(y_rel, curvature, gap_f, path_lat)\n",
+    test_nodes=(
+      f"{LEAD_LEAVING_TEST_PATH}::test_unified_leave_weight_releases_brake_but_keeps_max_ceiling",
+    ),
+  ),
+  HistoricalMutation(
+    name="unified-static-depart-fades-half-out-lead",
+    source_path="selfdrive/controls/lib/unified_lead.py",
+    original=b"DEPART_Y0_M = EGO_HALF_WIDTH_M + LEAD_HALF_WIDTH_M + CLEAR_MARGIN_M\n",
+    replacement=b"DEPART_Y0_M = 1.2\n",
+    test_nodes=(
+      f"{LEAD_LEAVING_TEST_PATH}::test_unified_leave_weight_releases_brake_but_keeps_max_ceiling",
+    ),
+  ),
+  HistoricalMutation(
+    name="unified-leaving-drops-confidence-instead",
+    source_path="selfdrive/controls/lib/unified_lead.py",
+    original=b"    on_path = 1.0 - _depart_fade(y_rel, curvature, gap, path_lat)\n",
+    replacement=b"    on_path = 1.0 - fade\n",
+    test_nodes=(
+      f"{LEAD_LEAVING_TEST_PATH}::test_unified_leave_weight_releases_brake_but_keeps_max_ceiling",
     ),
   ),
 )
