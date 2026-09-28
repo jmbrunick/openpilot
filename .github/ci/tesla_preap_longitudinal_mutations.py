@@ -763,7 +763,7 @@ MUTATIONS = (
     original=b'  return red * speed_fade(v)\n',
     replacement=b'  return red\n',
     test_nodes=(
-      f"{TURN_GEOM_TEST_PATH}::test_no_effect_below_3ms_and_continuous_fade",
+      f"{TURN_GEOM_TEST_PATH}::test_no_effect_below_1p5ms_and_continuous_fade",
     ),
   ),
   HistoricalMutation(
@@ -805,7 +805,7 @@ MUTATIONS = (
   HistoricalMutation(
     name="turn-geom-reduction-cap-removed",
     source_path="selfdrive/controls/lib/lat_turn_geometry.py",
-    original=b'  red = min(MAX_REDUCTION_S, max(0.0, -delay_offset_s(v)',
+    original=b'  red = min(reduction_cap_s(v), max(0.0, -delay_offset_s(v)',
     replacement=b'  red = min(9.9, max(0.0, -delay_offset_s(v)',
     test_nodes=(
       f"{TURN_GEOM_TEST_PATH}::test_reduction_capped_at_02",
@@ -827,6 +827,105 @@ MUTATIONS = (
     replacement=b'target = target_reduction_s(v_ego, ref_offset_m)',
     test_nodes=(
       f"{TURN_GEOM_TEST_PATH}::test_rate_limit_holds_stock_then_slews_back",
+    ),
+  ),
+  HistoricalMutation(
+    name="turn-geom-low-speed-fade-start-restored",
+    source_path="selfdrive/controls/lib/lat_turn_geometry.py",
+    original=b'MIN_SPEED_MS = 1.5 ',
+    replacement=b'MIN_SPEED_MS = 3.0 ',
+    test_nodes=(
+      f"{TURN_GEOM_TEST_PATH}::test_no_effect_below_1p5ms_and_continuous_fade",
+    ),
+  ),
+  HistoricalMutation(
+    name="turn-geom-low-speed-reach-removed",
+    source_path="selfdrive/controls/lib/lat_turn_geometry.py",
+    original=b'  return float(np.clip(w, 0.0, 1.0))\n',
+    replacement=b'  return 0.0\n',
+    test_nodes=(
+      f"{TURN_GEOM_TEST_PATH}::test_low_speed_extra_reach_at_5_to_8_mph",
+    ),
+  ),
+  HistoricalMutation(
+    name="turn-geom-low-speed-reach-not-faded-by-10mph",
+    source_path="selfdrive/controls/lib/lat_turn_geometry.py",
+    original=b'  return float(np.clip(w, 0.0, 1.0))\n',
+    replacement=b'  return 1.0\n',
+    test_nodes=(
+      f"{TURN_GEOM_TEST_PATH}::test_at_or_above_10mph_output_identical_to_7c49a8e",
+    ),
+  ),
+  HistoricalMutation(
+    name="turn-geom-low-speed-cap-not-raised",
+    source_path="selfdrive/controls/lib/lat_turn_geometry.py",
+    original=b'LOW_SPEED_MAX_REDUCTION_S = 0.25\n',
+    replacement=b'LOW_SPEED_MAX_REDUCTION_S = 0.20\n',
+    test_nodes=(
+      f"{TURN_GEOM_TEST_PATH}::test_low_speed_extra_reach_at_5_to_8_mph",
+    ),
+  ),
+  HistoricalMutation(
+    name="turn-geom-direct-sampling-removed",
+    source_path="selfdrive/controls/lib/lat_turn_geometry.py",
+    original=b'  if floor >= MIN_STABLE_DELAY or float(action_t) >= MIN_STABLE_DELAY:\n',
+    replacement=b'  if True:\n',
+    test_nodes=(
+      f"{TURN_GEOM_TEST_PATH}::test_plan_curvature_direct_sampling_below_03",
+    ),
+  ),
+  HistoricalMutation(
+    name="turn-geom-direct-sampling-ignores-floor",
+    source_path="selfdrive/controls/lib/lat_turn_geometry.py",
+    original=b'  t = max(float(action_t), floor, LOW_SPEED_SAMPLE_FLOOR_S)\n',
+    replacement=b'  t = max(float(action_t), 0.05)\n',
+    test_nodes=(
+      f"{TURN_GEOM_TEST_PATH}::test_plan_curvature_direct_sampling_below_03",
+    ),
+  ),
+  HistoricalMutation(
+    name="turn-geom-low-speed-freeze-removed",
+    source_path="selfdrive/controls/lib/lat_turn_geometry.py",
+    original=b'    if self._hold_s > 0.0 and low_speed_reach_weight(v_ego) > 0.0:\n',
+    replacement=b'    if False:\n',
+    test_nodes=(
+      f"{TURN_GEOM_TEST_PATH}::test_rate_limit_freezes_reduction_below_10mph",
+    ),
+  ),
+  HistoricalMutation(
+    name="turn-geom-freeze-applied-above-10mph",
+    source_path="selfdrive/controls/lib/lat_turn_geometry.py",
+    original=b'    if self._hold_s > 0.0 and low_speed_reach_weight(v_ego) > 0.0:\n',
+    replacement=b'    if self._hold_s > 0.0:\n',
+    test_nodes=(
+      f"{TURN_GEOM_TEST_PATH}::test_at_or_above_10mph_output_identical_to_7c49a8e",
+    ),
+  ),
+  HistoricalMutation(
+    name="turn-geom-low-speed-cap-not-passed",
+    source_path="selfdrive/controls/lib/lat_turn_geometry.py",
+    original=b'    return apply_reduction(stock_lookahead_s, self.reduction_s, reduction_cap_s(v_ego))\n',
+    replacement=b'    return apply_reduction(stock_lookahead_s, self.reduction_s)\n',
+    test_nodes=(
+      f"{TURN_GEOM_TEST_PATH}::test_low_speed_extra_reach_at_5_to_8_mph",
+    ),
+  ),
+  HistoricalMutation(
+    name="turn-geom-sample-floor-not-updated",
+    source_path="selfdrive/controls/lib/lat_turn_geometry.py",
+    original=b'    self.sample_floor_s = sample_floor_s(v_ego)\n',
+    replacement=b'    pass\n',
+    test_nodes=(
+      f"{TURN_GEOM_TEST_PATH}::test_low_speed_extra_reach_at_5_to_8_mph",
+    ),
+  ),
+  HistoricalMutation(
+    name="turn-geom-modeld-sample-floor-not-wired",
+    source_path="selfdrive/modeld/modeld.py",
+    original=b'        lat_sample_floor_s = turn_geom.sample_floor_s\n',
+    replacement=b'        pass\n',
+    test_nodes=(
+      f"{TURN_GEOM_TEST_PATH}::test_modeld_applies_only_to_model_action_lookahead",
     ),
   ),
   HistoricalMutation(
