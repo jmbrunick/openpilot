@@ -21,7 +21,7 @@ _spec.loader.exec_module(parent)
 HistoricalMutation = parent.HistoricalMutation
 RB_GUIDE_TEST_PATH = "selfdrive/controls/lib/tests/test_roundabout_guide.py"
 RB_MAP_TEST_PATH = "selfdrive/mapd/tests/test_roundabout_map.py"
-EXPECTED_COUNT = 23
+EXPECTED_COUNT = 37
 
 
 MUTATIONS = (
@@ -230,6 +230,142 @@ MUTATIONS = (
     replacement=b'      rb_rows = []\n',
     test_nodes=(
       f"{RB_MAP_TEST_PATH}::test_builder_from_json_writes_pack_v4",
+    ),
+  ),
+)
+
+
+CARD = "selfdrive/car/card.py"
+MAPD = "selfdrive/mapd/mapd.py"
+RMAP = "selfdrive/mapd/roundabout_status.py"
+T = RB_MAP_TEST_PATH
+
+MUTATIONS += (
+  HistoricalMutation(
+    name="rb-card-ring-limit-needs-speed-match",
+    source_path=CARD,
+    original=b"    if rb_hint is not None:\n      posted_ms =",
+    replacement=b"    if rb_hint is not None and map_valid and md is not None:\n      posted_ms =",
+    test_nodes=(
+      f"{T}::test_card_ring_hint_drops_hud_max_without_speed_match",
+      f"{T}::test_card_ring_hint_same_max_with_or_without_speed_match",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-card-ring-hint-ignores-message-validity",
+    source_path=CARD,
+    original=b"    rb_md = self.sm['liveMapDataNAP'] if self.sm.valid.get('liveMapDataNAP', False) else None\n",
+    replacement=b"    rb_md = self.sm['liveMapDataNAP']\n",
+    test_nodes=(
+      f"{T}::test_card_ring_hint_needs_a_valid_map_message",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-card-ring-limit-read-from-speed-match-only",
+    source_path=CARD,
+    original=b"    rb_hint = live_map_roundabout_hint(rb_md)\n",
+    replacement=b"    rb_hint = live_map_roundabout_hint(md)\n",
+    test_nodes=(
+      f"{T}::test_card_ring_hint_drops_hud_max_without_speed_match",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-card-ring-slowdown-gated-on-assist-toggle",
+    source_path=CARD,
+    original=b"    rb_hint = live_map_roundabout_hint(rb_md)\n",
+    replacement=b"    rb_hint = live_map_roundabout_hint(rb_md) if Params().get_bool('NAPRoundaboutAssist') else None\n",
+    test_nodes=(
+      f"{T}::test_card_and_mapd_never_read_the_assist_toggle",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-mapd-ring-hint-leaves-message-invalid",
+    source_path=MAPD,
+    original=b"matched=match is not None, ring_hint=True)",
+    replacement=b"matched=match is not None, ring_hint=False)",
+    test_nodes=(
+      f"{T}::test_mapd_ring_hint_keeps_message_valid_without_speed_match",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-mapd-valid-without-speed-match-off-ring",
+    source_path=MAPD,
+    original=b"matched=match is not None, ring_hint=False)",
+    replacement=b"matched=match is not None, ring_hint=True)",
+    test_nodes=(
+      f"{T}::test_mapd_ring_hint_keeps_message_valid_without_speed_match",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-map-valid-ignores-ring-hint",
+    source_path=RMAP,
+    original=b"  return bool(gps_ok and db_loaded and (matched or ring_hint))\n",
+    replacement=b"  return bool(gps_ok and db_loaded and matched)\n",
+    test_nodes=(
+      f"{T}::test_map_msg_valid_only_changes_with_a_ring_hint",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-map-valid-ring-hint-skips-gps-check",
+    source_path=RMAP,
+    original=b"  return bool(gps_ok and db_loaded and (matched or ring_hint))\n",
+    replacement=b"  return bool(db_loaded and (matched or ring_hint))\n",
+    test_nodes=(
+      f"{T}::test_map_msg_valid_only_changes_with_a_ring_hint",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-map-ring-count-v3-pack-reads-as-none",
+    source_path=RMAP,
+    original=b"      if row is None:\n        return 0\n",
+    replacement=b"      if row is None:\n        return None\n",
+    test_nodes=(
+      f"{T}::test_pack_ring_count_and_summary",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-map-ring-count-counts-approach-rows",
+    source_path=RMAP,
+    original=b'"SELECT COUNT(*) FROM rb_ways WHERE role = ?", (ROLE_RING,)',
+    replacement=b'"SELECT COUNT(*) FROM rb_ways WHERE role != ?", ("",)',
+    test_nodes=(
+      f"{T}::test_pack_ring_count_and_summary",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-map-ring-summary-zero-rings-not-flagged",
+    source_path=RMAP,
+    original=b"  if count <= 0:\n    return RING_MISSING_TEXT\n",
+    replacement=b"  if count < 0:\n    return RING_MISSING_TEXT\n",
+    test_nodes=(
+      f"{T}::test_pack_ring_count_and_summary",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-map-ring-watch-logs-every-check",
+    source_path=RMAP,
+    original=b"    if key == self._key:\n      return None\n",
+    replacement=b"    if key is None:\n      return None\n",
+    test_nodes=(
+      f"{T}::test_ring_data_watch_logs_once_per_pack_state",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-mapd-never-logs-missing-ring-rows",
+    source_path=MAPD,
+    original=b"          getattr(cloudlog, note[0])(note[1])\n",
+    replacement=b"          pass\n",
+    test_nodes=(
+      f"{T}::test_mapd_logs_missing_ring_rows_once",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-map-ring-summary-ignores-path",
+    source_path=RMAP,
+    original=b"pack_ring_count(path or default_db_path())",
+    replacement=b"pack_ring_count(default_db_path())",
+    test_nodes=(
+      f"{T}::test_pack_ring_count_and_summary",
     ),
   ),
 )

@@ -375,15 +375,15 @@ class Car:
       lim = None
     # RB funnel is geometry, not a posted rebase. Ease even on a sticky
     # hold so aTarget cannot stay +a into the ring (Willmar 49→17).
+    # The ring hint does not need a speed-limit match: a ring often has no
+    # maxspeed. Read it whenever mapd publishes it, then use the ring speed.
     rb_lim = None
-    if map_valid and md is not None:
-      rb_lim = roundabout_ease_v_ms(
-        live_map_roundabout_hint(md),
-        float(CS.vEgo),
-        float(md.speedLimit) if md.speedLimit > 0 else float(CS.vEgo),
-        self._map_speed_lookahead,
-      )
-      if rb_lim is not None:
+    rb_md = self.sm['liveMapDataNAP'] if self.sm.valid.get('liveMapDataNAP', False) else None
+    rb_hint = live_map_roundabout_hint(rb_md)
+    if rb_hint is not None:
+      posted_ms = float(md.speedLimit) if md is not None and md.speedLimit > 0 else float(CS.vEgo)
+      rb_lim = roundabout_ease_v_ms(rb_hint, float(CS.vEgo), posted_ms, self._map_speed_lookahead)
+      if rb_lim is not None and map_valid and md is not None:
         lim = rb_lim if lim is None else min(float(lim), rb_lim)
     if map_valid and md is not None and lim is not None and lim > 0:
       if rb_lim is not None:
