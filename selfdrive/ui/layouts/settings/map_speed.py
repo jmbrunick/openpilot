@@ -10,7 +10,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   MAP_SPEED_OFFSET_DESCRIPTION, MAP_SPEED_OFFSETS_MPH,
   REFRESH_MAPS_INSTRUCTIONS,
 )
-from openpilot.selfdrive.mapd.fetch_maps import installed_db_summary, installed_revision_summary
+from openpilot.selfdrive.mapd.fetch_maps import installed_db_summary, installed_revision_summary, installed_ring_summary
 from openpilot.selfdrive.ui.ui_state import ui_state
 
 
@@ -92,6 +92,14 @@ class MapSpeedLimitLayout(Widget):
       description="US OpenStreetMap maxspeed ways (ODbL). Download after flash; Refresh overlays live OSM within 100 miles.",
     )
     self._all_items.append(self._db_status)
+
+    self._ring_status = text_item(
+      "Roundabout data",
+      installed_ring_summary,
+      description="Roundabout rings in the map pack. If this says Missing, run Refresh maps (offroad, on Wi-Fi) or the"
+                  + " roundabout slow-down cannot fire.",
+    )
+    self._all_items.append(self._ring_status)
 
     self._revision_status = text_item(
       "Map revision",
