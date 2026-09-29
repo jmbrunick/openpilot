@@ -178,6 +178,13 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // outer bias. Off = previous lateral behavior.
     {"NAPLatTurnGeom", {PERSISTENT, BOOL, "1"}},
     {"NAPLatRefOffset", {PERSISTENT, FLOAT, "0.35"}},
+    // Settings → NAP → Driving Mannerisms → Roundabout Steering Assist.
+    // Pre-AP, default Off. Near / on a mapped OSM ring, blends the model's
+    // curvature toward the lane's circle curvature (map-match confidence
+    // weighted; camera keeps lane edges; driver torque overrides as today).
+    {"NAPRoundaboutAssist", {PERSISTENT, BOOL, "0"}},
+    // mapd → controlsd: fitted ring geometry of the hinted roundabout (JSON).
+    {"NAPRoundaboutRing", {CLEAR_ON_MANAGER_START, JSON}},
     // Settings → NAP → Driving Mannerisms → One-Pedal Long. Default Off.
     // Pedal mode: gas rising from rest kicks software long off (silent
     // pause, like brake). After RELEASE, lift/near-zero accel is Tesla

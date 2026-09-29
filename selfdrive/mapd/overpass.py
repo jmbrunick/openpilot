@@ -38,24 +38,44 @@ def overpass_query(
   *,
   timeout_s: int = 180,
   include_unmarked: bool = False,
+  include_roundabouts: bool = True,
 ) -> str:
-  """Bbox query. Tagged maxspeed only, or all fillable highways + place polygons (MN fill)."""
+  """Bbox query. Tagged maxspeed only, or all fillable highways + place polygons (MN fill).
+
+  include_roundabouts adds junction=roundabout|circular rings and the highway
+  ways that touch them, with or without maxspeed.
+  """
   bbox = f"({south},{west},{north},{east})"
+  # Roundabout rings (any maxspeed) + every highway way sharing a ring node
+  # (approach roads). Stored in rb_ways, not in the speed-limit ways table.
+  rb_sets = "" if not include_roundabouts else f"""
+way["highway"]["junction"~"^(roundabout|circular)$"]{bbox}->.rb;
+node(w.rb)->.rbn;
+way(bn.rbn)["highway"]->.ap;"""
+  rb_union = "" if not include_roundabouts else "\n  .rb;\n  .ap;"
   if include_unmarked:
     return f"""
-[out:json][timeout:{int(timeout_s)}];
+[out:json][timeout:{int(timeout_s)}];{rb_sets}
 (
   way["highway"~"{FILLABLE_HIGHWAY_REGEX}"]{bbox};
   way["place"~"^(city|town|village)$"]{bbox};
   rel["place"~"^(city|town|village)$"]{bbox};
   way["boundary"="administrative"]["admin_level"="8"]{bbox};
-  rel["boundary"="administrative"]["admin_level"="8"]{bbox};
+  rel["boundary"="administrative"]["admin_level"="8"]{bbox};{rb_union}
 );
 out geom;
 """.strip()
-  return f"""
+  if not include_roundabouts:
+    return f"""
 [out:json][timeout:{int(timeout_s)}];
 way["highway"]["maxspeed"]{bbox};
+out geom;
+""".strip()
+  return f"""
+[out:json][timeout:{int(timeout_s)}];{rb_sets}
+(
+  way["highway"]["maxspeed"]{bbox};{rb_union}
+);
 out geom;
 """.strip()
 
@@ -67,9 +87,11 @@ def fetch_overpass(
   timeout_s: float = 240,
   query_timeout: int = 180,
   include_unmarked: bool = False,
+  include_roundabouts: bool = True,
 ) -> dict:
   """POST a bbox highway query. Raises RuntimeError with a retryable message on timeout/HTTP failure."""
-  q = overpass_query(*bbox, timeout_s=query_timeout, include_unmarked=include_unmarked)
+  q = overpass_query(*bbox, timeout_s=query_timeout, include_unmarked=include_unmarked,
+                     include_roundabouts=include_roundabouts)
   data = urllib.parse.urlencode({"data": q}).encode()
   req = urllib.request.Request(url, data=data, headers={"User-Agent": USER_AGENT})
   try:

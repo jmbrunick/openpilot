@@ -13,6 +13,8 @@ expect roughly 0.8–1.5 GB sqlite and 200–500 MB zstd — one US-wide asset.
 Examples:
 
   # After: osmium tags-filter us-latest.osm.pbf w/highway w/maxspeed -o us-ms.osm.pbf
+  # (w/highway keeps every highway way, so roundabout rings and their approach
+  # roads are in the filtered PBF; they go to the rb_ways table, pack v4+)
   python scripts/nap/build_osm_speed_limits.py --pbf us-ms.osm.pbf --out speed_limits_us.sqlite
   zstd -19 speed_limits_us.sqlite -o speed_limits_us.sqlite.zst
 
@@ -48,6 +50,12 @@ from openpilot.selfdrive.mapd.mn_statutory import (
 )
 from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB
 from openpilot.selfdrive.mapd.overpass import bbox_from_center, resolve_way_speed, ways_from_overpass
+from openpilot.selfdrive.mapd.roundabout_map import (
+  ROLE_RING,
+  is_ring_tags,
+  rb_rows_from_overpass,
+  roundabout_rows,
+)
 from openpilot.selfdrive.mapd.speed_limit import parse_maxspeed
 
 _FILLABLE_HINT = (
@@ -175,14 +183,76 @@ def _ways_from_pyosmium(
   return out
 
 
+def _rb_rows_from_pyosmium(pbf: str, *, bbox: tuple[float, float, float, float] | None = None) -> list[dict]:
+  """Roundabout rings (any maxspeed) + approach roads touching them. Two passes over the PBF."""
+  try:
+    import osmium  # type: ignore
+  except ImportError as e:
+    raise RuntimeError(
+      "Reading .osm.pbf needs pyosmium (pip install osmium) or convert with osmium-tool first."
+    ) from e
+
+  generic: list[dict] = []
+  ring_nodes: set[int] = set()
+
+  def _coords(w) -> tuple[list[int], list[tuple[float, float]]] | None:
+    nodes: list[int] = []
+    coords: list[tuple[float, float]] = []
+    try:
+      for n in w.nodes:
+        if not n.location.valid():
+          return None
+        nodes.append(int(n.ref))
+        coords.append((float(n.lat), float(n.lon)))
+    except osmium.InvalidLocationError:
+      return None
+    return nodes, coords
+
+  class Rings(osmium.SimpleHandler):
+    def way(self, w):
+      tags = {t.k: t.v for t in w.tags}
+      if not is_ring_tags(tags):
+        return
+      got = _coords(w)
+      if got is None or len(got[1]) < 2:
+        return
+      if bbox is not None and not _bbox_intersects_way(got[1], bbox):
+        return
+      ring_nodes.update(got[0])
+      generic.append({"way_id": int(w.id), "tags": tags, "node_ids": got[0], "coords": got[1]})
+
+  class Approaches(osmium.SimpleHandler):
+    def way(self, w):
+      tags = {t.k: t.v for t in w.tags}
+      if not tags.get("highway") or is_ring_tags(tags):
+        return
+      if not any(int(n.ref) in ring_nodes for n in w.nodes):
+        return
+      got = _coords(w)
+      if got is None or len(got[1]) < 2:
+        return
+      generic.append({"way_id": int(w.id), "tags": tags, "node_ids": got[0], "coords": got[1]})
+
+  print(f"Reading roundabout rings from {pbf}…", file=sys.stderr, flush=True)
+  Rings().apply_file(pbf, locations=True)
+  if ring_nodes:
+    print(f"Reading approach roads for {len(generic)} ring ways…", file=sys.stderr, flush=True)
+    Approaches().apply_file(pbf, locations=True)
+  return roundabout_rows(generic)
+
+
 def _count_sources(ways: list[dict]) -> tuple[int, int]:
   filled = sum(1 for w in ways if w.get("source") == FILL_SOURCE)
   tagged = len(ways) - filled
   return tagged, filled
 
 
-def write_db(path: str, ways: list[dict], extra_meta: dict | None = None) -> int:
+def write_db(path: str, ways: list[dict], extra_meta: dict | None = None,
+             rb_rows: list[dict] | None = None) -> int:
   con = OsmSpeedLimitDB.create(path)
+  for row in rb_rows or []:
+    OsmSpeedLimitDB.insert_rb_way(con, row)
+  OsmSpeedLimitDB.recount_rb_ways(con)
   n = 0
   for w in ways:
     OsmSpeedLimitDB.insert_way(
@@ -202,6 +272,10 @@ def write_db(path: str, ways: list[dict], extra_meta: dict | None = None) -> int
     "tagged_way_count": str(tagged),
     "filled_way_count": str(filled),
   }
+  if rb_rows is not None:
+    # Pack v4: rb_ways (roundabout rings + approaches, any maxspeed). Readers
+    # without rb support ignore the extra tables.
+    meta["pack_schema"] = "4"
   if extra_meta:
     meta.update({str(k): str(v) for k, v in extra_meta.items()})
   con.executemany("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", list(meta.items()))
@@ -234,6 +308,8 @@ def main(argv: list[str] | None = None) -> int:
   p.add_argument("--fill-mn-statutory", action="store_true",
                  help="Fill unmarked fillable highways with Minn. Stat. 169.14 estimates (NAP pack only)")
   p.add_argument("--merge-into", help="Existing NAP sqlite to overlay the bbox into (keeps US tagged coverage)")
+  p.add_argument("--no-roundabouts", action="store_true",
+                 help="Skip the rb_ways table (roundabout rings + approach roads, pack v4+)")
   args = p.parse_args(argv)
 
   bbox = args.bbox
@@ -250,16 +326,24 @@ def main(argv: list[str] | None = None) -> int:
   if fill and args.pbf:
     places = _places_from_pyosmium(args.pbf)
 
+  rb_rows: list[dict] | None = None
   if args.from_json:
     with open(args.from_json, encoding="utf-8") as f:
       payload = json.load(f)
     ways = ways_from_overpass(payload, fill_unmarked=fill)
+    if not args.no_roundabouts:
+      rb_rows = rb_rows_from_overpass(payload)
     source = os.path.basename(args.from_json)
   elif args.pbf:
     ways = _ways_from_pyosmium(args.pbf, bbox=bbox, fill_unmarked=fill, places=places)
+    if not args.no_roundabouts:
+      rb_rows = _rb_rows_from_pyosmium(args.pbf, bbox=bbox)
     source = os.path.basename(args.pbf)
   else:
     p.error("provide --pbf or --from-json")
+  if rb_rows is not None:
+    rings = sum(1 for r in rb_rows if r["role"] == ROLE_RING)
+    print(f"Roundabouts: {rings} ring ways, {len(rb_rows) - rings} approach pieces (no maxspeed needed)", file=sys.stderr)
 
   tagged, filled = _count_sources(ways)
   print(f"Prepared {len(ways)} ways ({tagged} tagged OSM maxspeed, {filled} {FILL_SOURCE} fills)", file=sys.stderr)
@@ -287,7 +371,7 @@ def main(argv: list[str] | None = None) -> int:
       print(f"Copying {src} → {dest}", file=sys.stderr)
       shutil.copy2(src, dest)
     print(f"Overlaying {len(ways)} ways into {dest} (delete ∩ bbox, then insert)", file=sys.stderr)
-    deleted, inserted = merge_ways_into_db(dest, ways, bbox, extra_meta)
+    deleted, inserted = merge_ways_into_db(dest, ways, bbox, extra_meta, rb_rows=rb_rows)
     # merge_ways_into_db recounts way_count; keep tagged/filled overlay counts in meta.
     con = sqlite3.connect(dest)
     try:
@@ -307,7 +391,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Replaced {deleted} intersecting ways; inserted {inserted} ({tagged} tagged, {filled} filled)", file=sys.stderr)
   else:
     print(f"Writing {len(ways)} ways → {args.out}", file=sys.stderr)
-    n = write_db(args.out, ways, extra_meta=extra_meta)
+    n = write_db(args.out, ways, extra_meta=extra_meta, rb_rows=rb_rows)
 
   sz = os.path.getsize(args.out) if os.path.isfile(args.out) else 0
   print(f"Wrote {n} overlay ways, {sz / 1e6:.0f} MB sqlite (ODbL, {ATTRIBUTION})")

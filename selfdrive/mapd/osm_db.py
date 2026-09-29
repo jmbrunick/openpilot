@@ -34,9 +34,15 @@ from openpilot.selfdrive.mapd.roundabout import (
   RB_ON_WAY_M,
   RB_SEARCH_PAD_DEG,
   RoundaboutHint,
+  junction_is_roundabout,
   roundabout_suppressed_for_highway,
   way_is_roundabout,
 )
+from openpilot.selfdrive.mapd.roundabout_map import ROLE_RING, RingGeometry
+from openpilot.selfdrive.mapd.roundabout_map import ring_geometry as fit_ring_geometry
+
+# Ring geometry search box around the ego / hinted ring (~165 m).
+RB_GEOM_PAD_DEG = 0.0015
 
 # Functional class for route continuity. Residential fills next to a trunk
 # must not count as the "next limit ahead" even when a heading ray hits them.
@@ -365,6 +371,7 @@ class OsmSpeedLimitDB:
   def __init__(self, path: str):
     self.path = path
     self._con: sqlite3.Connection | None = None
+    self._rb_ok = False
     self._reset_way_memory()
 
   @property
@@ -387,6 +394,10 @@ class OsmSpeedLimitDB:
       OsmSpeedLimitDB.ensure_junction_column(con)
     except sqlite3.Error:
       pass
+    try:
+      self._rb_ok = OsmSpeedLimitDB.has_rb_tables(con)
+    except sqlite3.Error:
+      self._rb_ok = False
     self._con = con
     return True
 
@@ -423,6 +434,7 @@ class OsmSpeedLimitDB:
         way_id, min_lat, max_lat, min_lon, max_lon
       );
     """)
+    OsmSpeedLimitDB.ensure_rb_tables(con)
     con.executemany(
       "INSERT INTO meta(key, value) VALUES (?, ?)",
       [
@@ -510,6 +522,157 @@ class OsmSpeedLimitDB:
     n = int(con.execute("SELECT COUNT(*) FROM ways").fetchone()[0])
     con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", ("way_count", str(n)))
     return n
+
+  @staticmethod
+  def has_rb_tables(con: sqlite3.Connection) -> bool:
+    row = con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='rb_ways'").fetchone()
+    return row is not None
+
+  @staticmethod
+  def ensure_rb_tables(con: sqlite3.Connection) -> None:
+    """Roundabout rings + approach roads (no maxspeed needed). Pack v4+ / Refresh maps.
+
+    Kept apart from `ways` so speed-limit matching never sees a 0 m/s way.
+    """
+    con.executescript("""
+      CREATE TABLE IF NOT EXISTS rb_ways (
+        id INTEGER PRIMARY KEY,
+        way_id INTEGER NOT NULL,
+        piece INTEGER NOT NULL DEFAULT 0,
+        role TEXT NOT NULL,
+        name TEXT,
+        highway TEXT,
+        junction TEXT,
+        oneway INTEGER NOT NULL DEFAULT 0,
+        lanes INTEGER NOT NULL DEFAULT 0,
+        maxspeed_ms REAL NOT NULL DEFAULT 0,
+        min_lat REAL NOT NULL,
+        max_lat REAL NOT NULL,
+        min_lon REAL NOT NULL,
+        max_lon REAL NOT NULL,
+        coords BLOB NOT NULL,
+        UNIQUE(way_id, piece)
+      );
+      CREATE VIRTUAL TABLE IF NOT EXISTS rb_ways_rtree USING rtree(
+        id, min_lat, max_lat, min_lon, max_lon
+      );
+    """)
+
+  @staticmethod
+  def insert_rb_way(con: sqlite3.Connection, row: dict) -> None:
+    """Insert one roundabout_map.roundabout_rows() row (replaces the same way_id/piece)."""
+    OsmSpeedLimitDB.ensure_rb_tables(con)
+    coords = simplify_coords([(float(a), float(b)) for a, b in row["coords"]], tol_m=1.0)
+    if len(coords) < 2:
+      return
+    way_id, piece = int(row["way_id"]), int(row.get("piece", 0) or 0)
+    old = con.execute("SELECT id FROM rb_ways WHERE way_id = ? AND piece = ?", (way_id, piece)).fetchone()
+    if old is not None:
+      con.execute("DELETE FROM rb_ways WHERE id = ?", (int(old[0]),))
+      con.execute("DELETE FROM rb_ways_rtree WHERE id = ?", (int(old[0]),))
+    lats = [c[0] for c in coords]
+    lons = [c[1] for c in coords]
+    cur = con.execute(
+      "INSERT INTO rb_ways(way_id, piece, role, name, highway, junction, oneway, lanes, maxspeed_ms, "
+      + "min_lat, max_lat, min_lon, max_lon, coords) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      (way_id, piece, str(row["role"]), row.get("name") or "", row.get("highway") or "",
+       row.get("junction") or "", int(row.get("oneway") or 0), int(row.get("lanes") or 0),
+       float(row.get("maxspeed_ms") or 0.0), min(lats), max(lats), min(lons), max(lons), _pack_coords(coords)),
+    )
+    con.execute(
+      "INSERT INTO rb_ways_rtree(id, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?)",
+      (int(cur.lastrowid), min(lats), max(lats), min(lons), max(lons)),
+    )
+
+  @staticmethod
+  def delete_rb_ways_intersecting_bbox(con: sqlite3.Connection, south: float, west: float,
+                                       north: float, east: float) -> int:
+    if not OsmSpeedLimitDB.has_rb_tables(con):
+      return 0
+    ids = [int(r[0]) for r in con.execute(
+      "SELECT id FROM rb_ways_rtree WHERE max_lat >= ? AND min_lat <= ? AND max_lon >= ? AND min_lon <= ?",
+      (south, north, west, east),
+    )]
+    for i in range(0, len(ids), 500):
+      chunk = ids[i:i + 500]
+      q = ",".join("?" * len(chunk))
+      con.execute(f"DELETE FROM rb_ways WHERE id IN ({q})", chunk)
+      con.execute(f"DELETE FROM rb_ways_rtree WHERE id IN ({q})", chunk)
+    return len(ids)
+
+  @staticmethod
+  def recount_rb_ways(con: sqlite3.Connection) -> int:
+    if not OsmSpeedLimitDB.has_rb_tables(con):
+      return 0
+    n = int(con.execute("SELECT COUNT(*) FROM rb_ways WHERE role = 'ring'").fetchone()[0])
+    con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", ("rb_ring_way_count", str(n)))
+    return n
+
+  def _rb_candidates(self, lat: float, lon: float, pad_deg: float, role: str | None = None) -> list[sqlite3.Row]:
+    if self._con is None or not self._rb_ok:
+      return []
+    ids = [
+      int(r[0]) for r in self._con.execute(
+        "SELECT id FROM rb_ways_rtree WHERE max_lat >= ? AND min_lat <= ? AND max_lon >= ? AND min_lon <= ?",
+        (lat - pad_deg, lat + pad_deg, lon - pad_deg, lon + pad_deg),
+      )
+    ]
+    if not ids:
+      return []
+    q = f"SELECT * FROM rb_ways WHERE id IN ({','.join('?' * len(ids))})"
+    rows = list(self._con.execute(q, ids))
+    if role is not None:
+      rows = [r for r in rows if str(r["role"]) == role]
+    return rows
+
+  def _way_bbox(self, way_id: int) -> tuple[float, float, float, float] | None:
+    """(min_lat, max_lat, min_lon, max_lon) of a ring way from rb_ways or the speed ways table."""
+    if self._con is None:
+      return None
+    rows = []
+    if self._rb_ok:
+      rows = list(self._con.execute("SELECT min_lat, max_lat, min_lon, max_lon FROM rb_ways WHERE way_id = ?", (way_id,)))
+    if not rows:
+      rows = list(self._con.execute("SELECT min_lat, max_lat, min_lon, max_lon FROM ways WHERE way_id = ?", (way_id,)))
+    if not rows:
+      return None
+    return (min(float(r[0]) for r in rows), max(float(r[1]) for r in rows),
+            min(float(r[2]) for r in rows), max(float(r[3]) for r in rows))
+
+  def ring_geometry(self, way_id: int, lat: float, lon: float) -> RingGeometry | None:
+    """Fit the ring containing way_id (rings from rb_ways and junction-tagged speed ways)."""
+    if self._con is None:
+      return None
+    # Search around the hinted way itself (the hint fires ~150-200 m before the ring), not the car.
+    pad = RB_GEOM_PAD_DEG
+    box = self._way_bbox(int(way_id))
+    if box is not None:
+      lat, lon = 0.5 * (box[0] + box[1]), 0.5 * (box[2] + box[3])
+      pad += 0.5 * max(box[1] - box[0], box[3] - box[2])
+    rings: dict[int, dict] = {}
+    for row in self._candidates(float(lat), float(lon), pad_deg=pad):
+      if junction_is_roundabout(_row_junction(row)):
+        rings[int(row["way_id"])] = {
+          "way_id": int(row["way_id"]), "coords": _unpack_coords(row["coords"]), "lanes": 0,
+          "maxspeed_ms": float(row["maxspeed_ms"]), "junction": _row_junction(row),
+        }
+    approaches = []
+    for row in self._rb_candidates(float(lat), float(lon), pad):
+      d = {
+        "way_id": int(row["way_id"]), "coords": _unpack_coords(row["coords"]), "lanes": int(row["lanes"] or 0),
+        "maxspeed_ms": float(row["maxspeed_ms"] or 0.0), "junction": str(row["junction"] or ""),
+        "oneway": int(row["oneway"] or 0),
+      }
+      if str(row["role"]) == ROLE_RING:
+        prev = rings.get(d["way_id"])
+        if prev is not None:
+          d["maxspeed_ms"] = max(d["maxspeed_ms"], prev["maxspeed_ms"])
+        rings[d["way_id"]] = d
+      else:
+        approaches.append(d)
+    if int(way_id) not in rings:
+      return None
+    return fit_ring_geometry(list(rings.values()), approaches, seed_id=int(way_id))
 
   def _candidates(self, lat: float, lon: float, pad_deg: float | None = None) -> list[sqlite3.Row]:
     if self._con is None:
@@ -769,7 +932,11 @@ class OsmSpeedLimitDB:
     if roundabout_suppressed_for_highway(current_highway):
       return RoundaboutHint()
     # Default SEARCH_PAD is ~110 m; 200 m westbound at 45°N needs more.
-    rows = self._candidates(float(lat), float(lon), pad_deg=RB_SEARCH_PAD_DEG)
+    rows = list(self._candidates(float(lat), float(lon), pad_deg=RB_SEARCH_PAD_DEG))
+    seen = {int(r["way_id"]) for r in rows}
+    # Pack v4 / Refresh maps: rings without maxspeed live in rb_ways.
+    rows += [r for r in self._rb_candidates(float(lat), float(lon), RB_SEARCH_PAD_DEG, role=ROLE_RING)
+             if int(r["way_id"]) not in seen]
 
     best: RoundaboutHint | None = None
     best_dist = 1e12

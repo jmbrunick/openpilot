@@ -66,6 +66,8 @@ def test_focused_tests_and_mutations_are_pinned():
     "selfdrive/controls/lib/tests/test_lane_change_target.py",
     "selfdrive/controls/lib/tests/test_lane_change_turn.py",
     "selfdrive/mapd/tests/test_roundabout.py",
+    "selfdrive/mapd/tests/test_roundabout_map.py",
+    "selfdrive/controls/lib/tests/test_roundabout_guide.py",
     "selfdrive/controls/tests/test_roundabout_planner.py",
     "selfdrive/controls/tests/test_tesla_preap_longcontrol.py",
     "selfdrive/controls/tests/test_tesla_preap_gas_lift_handoff.py",
@@ -80,6 +82,7 @@ def test_focused_tests_and_mutations_are_pinned():
   for command in required_commands:
     assert command in normalized_lines(focused_job)
   assert "run: python .github/ci/tesla_preap_longitudinal_mutations.py" in normalized_lines(focused_job)
+  assert "run: python .github/ci/tesla_preap_roundabout_mutations.py" in normalized_lines(focused_job)
 
 
 def test_focused_job_builds_generated_mpc_dependencies():

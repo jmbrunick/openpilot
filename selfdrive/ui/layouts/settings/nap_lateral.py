@@ -15,6 +15,16 @@ LAT_TURN_GEOM_DESCRIPTION = (
   + "Highway is unchanged. Also turns off the old roundabout outer bias. "
   + "Off = previous behavior."
 )
+NAP_ROUNDABOUT_ASSIST = "NAPRoundaboutAssist"   # roundabout_guide.PARAM_ROUNDABOUT_ASSIST
+ROUNDABOUT_ASSIST_DESCRIPTION = (
+  "Default Off. Pre-AP, experimental. Near a roundabout that is in the map "
+  + "data, blends the steering toward the circle using GPS: keeps the right "
+  + "entry until ~9 m out, then turns left smoothly and follows the lane "
+  + "around. GPS is ~1-3 m off, so the camera still limits it at lane lines "
+  + "and curbs, and it backs off when GPS looks poor. Wheel torque takes over "
+  + "as usual. Needs Settings > NAP > Map Speed Limit > Refresh maps (or map "
+  + "pack v4) so the ring is mapped. Off = model only."
+)
 LAT_REF_OFFSET_DESCRIPTION = (
   "Rear reference offset (m). How much later turn-in is anchored in space. "
   + "0.35 matches the Model S camera-to-axle difference. Higher = later turn-in."
