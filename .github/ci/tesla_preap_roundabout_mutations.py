@@ -21,7 +21,7 @@ _spec.loader.exec_module(parent)
 HistoricalMutation = parent.HistoricalMutation
 RB_GUIDE_TEST_PATH = "selfdrive/controls/lib/tests/test_roundabout_guide.py"
 RB_MAP_TEST_PATH = "selfdrive/mapd/tests/test_roundabout_map.py"
-EXPECTED_COUNT = 37
+EXPECTED_COUNT = 56
 
 
 MUTATIONS = (
@@ -37,7 +37,7 @@ MUTATIONS = (
   HistoricalMutation(
     name="rb-guide-correction-not-slewed",
     source_path="selfdrive/controls/lib/roundabout_guide.py",
-    original=b'    self.dk_out += min(max(dk - self.dk_out, -OUT_SLEW * dt), OUT_SLEW * dt)\n',
+    original=b'    self.dk_out += min(max(dk - self.dk_out, -oslew * dt), oslew * dt)\n',
     replacement=b'    self.dk_out = dk\n',
     test_nodes=(
       f"{RB_GUIDE_TEST_PATH}::test_left_transition_within_jerk_limit",
@@ -46,7 +46,7 @@ MUTATIONS = (
   HistoricalMutation(
     name="rb-guide-output-exceeds-jerk-limit",
     source_path="selfdrive/controls/lib/roundabout_guide.py",
-    original=b'      allowed = max(OUT_SLEW * dt, abs(model_k - self.prev_model))\n',
+    original=b'      allowed = max(oslew * dt, abs(model_k - self.prev_model))\n',
     replacement=b'      allowed = 1.0\n',
     test_nodes=(
       f"{RB_GUIDE_TEST_PATH}::test_left_transition_within_jerk_limit",
@@ -366,6 +366,184 @@ MUTATIONS += (
     replacement=b"pack_ring_count(default_db_path())",
     test_nodes=(
       f"{T}::test_pack_ring_count_and_summary",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-gps-latency-back-to-0-9",
+    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    original=b'GPS_LATENCY_S = 0.66 ',
+    replacement=b'GPS_LATENCY_S = 0.9  ',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_gps_latency_is_the_measured_one",
+      f"{RB_GUIDE_TEST_PATH}::test_sep29_left_curl_no_longer_doubles_the_model",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-left-transition-a-lat-3-0",
+    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    original=b'A_LAT_CIRC_MAX = 2.2 ',
+    replacement=b'A_LAT_CIRC_MAX = 3.0 ',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_left_transition_cap_uses_actual_speed",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-left-cap-ignores-circulation-side",
+    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    original=b'  k_circ, k_other = (A_LAT_MAX if latched else A_LAT_CIRC_MAX) / v2, A_LAT_MAX / v2\n',
+    replacement=b'  k_circ, k_other = A_LAT_MAX / v2, A_LAT_MAX / v2\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_left_transition_cap_uses_actual_speed",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-left-cap-applies-on-the-ring",
+    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    original=b'(A_LAT_MAX if latched else A_LAT_CIRC_MAX) / v2',
+    replacement=b'A_LAT_CIRC_MAX / v2',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_left_transition_cap_uses_actual_speed",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-output-slew-back-to-0-07",
+    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    original=b'OUT_SLEW = 0.035 ',
+    replacement=b'OUT_SLEW = 0.07  ',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_slews_are_0_035_for_a_poor_pose",
+      f"{RB_GUIDE_TEST_PATH}::test_poor_pose_uses_the_slow_slews",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-poor-pose-uses-fast-output-slew",
+    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    original=b'    oslew = OUT_SLEW if poor else OUT_SLEW_GOOD\n',
+    replacement=b'    oslew = OUT_SLEW_GOOD\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_poor_pose_uses_the_slow_slews",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-poor-pose-uses-fast-target-slew",
+    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    original=b'      tslew = TARGET_SLEW if poor else TARGET_SLEW_GOOD\n',
+    replacement=b'      tslew = TARGET_SLEW_GOOD\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_poor_pose_target_slew",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-bearing-accuracy-never-unreliable",
+    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    original=b'  unreliable = bearing_acc_deg > BEARING_ACC_UNRELIABLE_DEG or \\\n',
+    replacement=b'  unreliable = False or \\\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_pose_quality_thresholds",
+      f"{RB_GUIDE_TEST_PATH}::test_unreliable_or_unsettled_pose_does_not_latch",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-large-bias-never-unreliable",
+    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    original=b'    (bias_m > BIAS_UNRELIABLE_M and bearing_acc_deg > BEARING_ACC_POOR_DEG)\n',
+    replacement=b'    False\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_pose_quality_thresholds",
+      f"{RB_GUIDE_TEST_PATH}::test_unreliable_or_unsettled_pose_does_not_latch",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-latches-on-unreliable-pose",
+    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    original=b'    can_latch = not unreliable and drift <= BIAS_LATCH_DRIFT_M\n',
+    replacement=b'    can_latch = True\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_unreliable_or_unsettled_pose_does_not_latch",
+      f"{RB_GUIDE_TEST_PATH}::test_sep29_left_curl_no_longer_doubles_the_model",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-latches-before-bias-settles",
+    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    original=b'    can_latch = not unreliable and drift <= BIAS_LATCH_DRIFT_M\n',
+    replacement=b'    can_latch = not unreliable\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_unreliable_or_unsettled_pose_does_not_latch",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-inner-clamp-on-poor-pose",
+    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    original=b'      lo = R if (poor or bias_m > BIAS_UNRELIABLE_M) else R - 0.5 * hw      # doubtful pose: never the inner side\n',
+    replacement=b'      lo = R - 0.5 * hw\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_poor_pose_latch_never_aims_at_the_inner_side",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-fades-nothing-on-unreliable-pose",
+    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    original=b'      phase_target = 0.0 if (unreliable and not self.latched) else 1.0\n',
+    replacement=b'      phase_target = 1.0\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_sep29_left_curl_no_longer_doubles_the_model",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-curl-not-held-over-ring-speed",
+    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    original=b'      k_raw = hold_curl(k_raw, model_k, sense)\n',
+    replacement=b'      pass\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_curl_held_while_over_ring_speed_on_the_fixtures",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-hold-curl-wrong-side",
+    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    original=b'  return max(model_k, k_raw) if sense > 0.0 else min(model_k, k_raw)\n',
+    replacement=b'  return min(model_k, k_raw) if sense > 0.0 else max(model_k, k_raw)\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_curl_is_held_until_within_3_mph_of_ring_speed",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-hold-speed-window-removed",
+    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    original=b'    holding = v > self.ring_v + SPEED_HOLD_MS\n',
+    replacement=b'    holding = False\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_curl_held_while_over_ring_speed_on_the_fixtures",
+      f"{RB_GUIDE_TEST_PATH}::test_curl_is_held_until_within_3_mph_of_ring_speed",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-no-poor-gps-cap-after-latch",
+    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    original=b'    capping = self.latched and self.latch_poor and t - (self.latch_t or t) <= CAP_WINDOW_S\n',
+    replacement=b'    capping = False\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_poor_gps_caps_the_assist_after_the_latch",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-poor-gps-cap-too-loose",
+    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    original=b'  c = (POOR_GPS_CAP - 1.0) * abs(model_k) + POOR_GPS_FLOOR\n',
+    replacement=b'  c = 1.0\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_poor_gps_caps_the_assist_at_1_2x_the_model",
+      f"{RB_GUIDE_TEST_PATH}::test_poor_gps_caps_the_assist_after_the_latch",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-ring-state-not-logged",
+    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    original=b'      cloudlog.warning(f"roundabout_assist {e}")\n',
+    replacement=b'      pass\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_ring_state_is_logged_via_cloudlog_without_capnp",
     ),
   ),
 )
