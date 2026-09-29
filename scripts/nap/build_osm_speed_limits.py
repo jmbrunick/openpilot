@@ -210,7 +210,7 @@ def _rb_rows_from_pyosmium(pbf: str, *, bbox: tuple[float, float, float, float] 
 
   class Rings(osmium.SimpleHandler):
     def way(self, w):
-      tags = {k: v for k, v in w.tags}
+      tags = {t.k: t.v for t in w.tags}
       if not is_ring_tags(tags):
         return
       got = _coords(w)
@@ -223,7 +223,7 @@ def _rb_rows_from_pyosmium(pbf: str, *, bbox: tuple[float, float, float, float] 
 
   class Approaches(osmium.SimpleHandler):
     def way(self, w):
-      tags = {k: v for k, v in w.tags}
+      tags = {t.k: t.v for t in w.tags}
       if not tags.get("highway") or is_ring_tags(tags):
         return
       if not any(int(n.ref) in ring_nodes for n in w.nodes):
