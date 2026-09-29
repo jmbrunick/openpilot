@@ -10,7 +10,8 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   MAP_SPEED_OFFSET_DESCRIPTION, MAP_SPEED_OFFSETS_MPH,
   REFRESH_MAPS_INSTRUCTIONS,
 )
-from openpilot.selfdrive.mapd.fetch_maps import installed_db_summary, installed_revision_summary, installed_ring_summary
+from openpilot.selfdrive.mapd.fetch_maps import installed_db_summary, installed_revision_summary
+from openpilot.selfdrive.mapd.roundabout_status import installed_ring_summary
 from openpilot.selfdrive.ui.ui_state import ui_state
 
 

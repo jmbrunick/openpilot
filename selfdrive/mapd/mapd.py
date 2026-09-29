@@ -19,9 +19,8 @@ from openpilot.selfdrive.mapd.gps_fix import (
   persist_last_gps_position,
 )
 from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB
-from openpilot.selfdrive.mapd.roundabout_map import (
-  PARAM_RING, RingCache, RingDataWatch, map_msg_valid, roundabout_comfort_speed_ms,
-)
+from openpilot.selfdrive.mapd.roundabout_map import PARAM_RING, RingCache, roundabout_comfort_speed_ms
+from openpilot.selfdrive.mapd.roundabout_status import RingDataWatch, map_msg_valid
 
 MAPD_HZ = 2.0
 RELOAD_PERIOD_S = 15.0
