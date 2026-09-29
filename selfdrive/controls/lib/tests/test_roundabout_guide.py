@@ -155,7 +155,8 @@ def test_assist_keeps_both_passes_in_the_ring_band(name, max_beyond, min_inband)
 
 
 @pytest.mark.parametrize("name", sorted(PASSES))
-def test_right_entry_held_until_turn_distance(name):
+def test_right_entry_held_until_turn_distance(name, monkeypatch):
+  monkeypatch.setattr(RG, "SPEED_HOLD_MS", 1e9)   # the ring-speed curl hold would also hold the left; test the distance hold alone
   rows, ring = simulate(name, "after")
   R, hw = ring.radius_m, ring.half_width_m
   for _t, x, y, _psi, _v, mk, out, _ in rows:
@@ -171,8 +172,8 @@ def test_left_transition_within_jerk_limit(name):
     corr_rate = abs((b[6] - b[5]) - (a[6] - a[5])) / DT
     out_rate = abs(b[6] - a[6]) / DT
     model_rate = abs(b[5] - a[5]) / DT
-    assert corr_rate <= RG.OUT_SLEW + 1e-6
-    assert out_rate <= max(RG.OUT_SLEW, model_rate) + 1e-6
+    assert corr_rate <= RG.OUT_SLEW_GOOD + 1e-6
+    assert out_rate <= max(RG.OUT_SLEW_GOOD, model_rate) + 1e-6
 
 
 @pytest.mark.parametrize("name", sorted(PASSES))
@@ -447,3 +448,219 @@ def test_nan_odometry_sample_does_not_poison_the_pose():
   pose = g.corrected_pose()
   assert pose is not None and all(math.isfinite(v) for v in pose)
   assert g.update(6.01, float("nan"), 0.0, 0.002, enabled=True, lat_active=True) == 0.002
+
+
+# ---------------------------------------------------------------------------------------------
+# Sep 29 11:57:48 (Scallywag): the left curl was ~2x the model at 17-18 mph from a pose that read inside the lane
+# (qcom bearing accuracy 30-50°, map-match bias 1.2→3.4 m). 11:57:20-52 carState v / yaw / model curvature (10 Hz)
+# and the 1 Hz GNSS fixes are in the fixture; t is relative to 11:57:20.
+
+SEP29 = json.loads((Path(__file__).parent / "data" / "roundabout_sep29_1157.json").read_text())
+MPH_MS = 0.44704
+
+
+def _sep29(**patch):
+  """Replay the ring pass through the guide; returns (rows, guide). rows: (t, v, model_k, out_k, latched)."""
+  ring = RingGeometry.from_json(SEP29["ring"])
+  g = RG.RoundaboutGuide()
+  g.set_ring(ring)
+  fixes = list(SEP29["gps"])
+  fi, rows = 0, []
+  for t, v, yr, mk, lat in SEP29["rows"]:
+    while fi < len(fixes) and fixes[fi][0] <= t:
+      f = fixes[fi]
+      g.gnss(f[0], f[1], f[2], f[3], f[4], f[5], patch.get("latency", RG.GPS_LATENCY_S))
+      fi += 1
+    out = g.update(t, v, yr, mk, enabled=t >= 16.0, lat_active=bool(lat))
+    rows.append((t, v, mk, out, g.latched))
+  return rows, g
+
+
+def _old_constants(monkeypatch):
+  for k, v in dict(A_LAT_CIRC_MAX=3.0, OUT_SLEW=0.07, TARGET_SLEW=0.07, OUT_SLEW_GOOD=0.07, TARGET_SLEW_GOOD=0.07, SPEED_HOLD_MS=1e9,
+                   BEARING_ACC_UNRELIABLE_DEG=1e9, BIAS_UNRELIABLE_M=1e9, BIAS_LATCH_DRIFT_M=1e9, POOR_GPS_CAP=1e3).items():
+    monkeypatch.setattr(RG, k, v)
+
+
+def _left_peak(rows):
+  win = [r for r in rows if 24.5 <= r[0] <= 30.2]
+  return max(-r[3] for r in win), max(-r[2] for r in win)
+
+
+def test_sep29_left_curl_no_longer_doubles_the_model(monkeypatch):
+  _old_constants(monkeypatch)
+  old_rows, _ = _sep29(latency=0.9)
+  old_out, old_mk = _left_peak(old_rows)
+  assert old_out > 1.8 * old_mk                  # the logged bug: 0.0476 vs the model's 0.0237
+  monkeypatch.undo()
+  rows, g = _sep29()
+  out, mk = _left_peak(rows)
+  assert out <= 1.2 * mk + 1e-9                  # never more than 1.2x the model through the pass
+  assert out < 0.7 * old_out
+  assert not any(r[4] for r in rows if r[0] < 30.0)   # no latch on the unreliable pose (bearing accuracy 33-45°)
+  assert all(abs(r[3] - r[2]) < 1e-9 for r in rows if 29.0 <= r[0] <= 30.2)   # ...and the assist has faded: the model keeps the pass
+  assert any("latch blocked unreliable" in e for e in g.events)
+
+
+def test_sep29_left_transition_accel_and_rate_stay_low():
+  rows, _ = _sep29()
+  win = [r for r in rows if 24.5 <= r[0] <= 30.2]
+  assert max(abs(r[3]) * r[1] ** 2 for r in win if r[3] < 0) <= 2.2
+  assert max(abs((b[3] - b[2]) - (a[3] - a[2])) / (b[0] - a[0]) for a, b in zip(win, win[1:], strict=False)) <= 0.035   # correction rate
+
+
+def test_gps_latency_is_the_measured_one():
+  assert RG.GPS_LATENCY_S == 0.66
+  assert RG.GPS_EXT_LATENCY_S == 0.2
+
+
+def test_left_transition_cap_uses_actual_speed():
+  v = 8.0
+  assert RG.lat_limited(-1.0, v, 1.0) == pytest.approx(-2.2 / v ** 2)        # CCW: left (negative) capped at 2.2 m/s²
+  assert RG.lat_limited(1.0, v, 1.0) == pytest.approx(3.0 / v ** 2)          # right entry keeps 3.0
+  assert RG.lat_limited(-1.0, v, 1.0, latched=True) == pytest.approx(-3.0 / v ** 2)   # once on the ring
+  assert RG.lat_limited(1.0, v, -1.0) == pytest.approx(2.2 / v ** 2)         # CW ring mirrors it
+  assert RG.lat_limited(-1.0, v, -1.0) == pytest.approx(-3.0 / v ** 2)
+
+
+def test_slews_are_0_035_for_a_poor_pose():
+  assert RG.OUT_SLEW == 0.035 and RG.TARGET_SLEW == 0.035
+  assert RG.OUT_SLEW_GOOD == 0.07 and RG.TARGET_SLEW_GOOD == 0.07     # good pose: R126/R128 fixtures need the old rate
+
+
+def test_pose_quality_thresholds():
+  assert RG.pose_quality(31.0, 0.0, 0.0, 1.0) == (True, True)         # bearing accuracy > 30°
+  assert RG.pose_quality(10.0, 0.0, 0.0, 1.0) == (False, False)
+  assert RG.pose_quality(25.0, 2.5, 0.0, 1.0) == (True, True)         # bias > 2 m with a degraded bearing
+  assert RG.pose_quality(10.0, 4.5, 0.0, 1.0) == (False, False)       # R126: large but removed bias, usable bearing
+  assert RG.pose_quality(25.0, 0.5, 0.0, 1.0) == (False, True)        # poor: latch allowed, capped
+  assert RG.pose_quality(10.0, 0.5, 0.0, RG.INNOV_POOR_M + 0.1) == (False, True)
+
+
+def test_curl_is_held_until_within_3_mph_of_ring_speed():
+  assert RG.SPEED_HOLD_MS == pytest.approx(3.0 * MPH_MS)
+  assert RG.hold_curl(-0.03, 0.01, 1.0) == 0.01                        # CCW: left (negative) not added over the model
+  assert RG.hold_curl(0.03, 0.01, 1.0) == 0.03                         # right still added
+  assert RG.hold_curl(0.03, -0.01, -1.0) == -0.01                      # CW mirrors it
+  ring = RingGeometry.from_json(SEP29["ring"])
+  g = RG.RoundaboutGuide()
+  g.set_ring(ring)
+  assert g.ring_v == pytest.approx(15.8 * MPH_MS, abs=0.05)
+  rows, g2 = _sep29()
+  assert any(e.startswith("curl held") for e in g2.events) and any(e.startswith("curl released") for e in g2.events)
+
+
+def test_poor_gps_caps_the_assist_at_1_2x_the_model():
+  assert RG.cap_poor_gps(-0.05, -0.02, 1.0) == pytest.approx(-(0.2 * 0.02 + RG.POOR_GPS_FLOOR))
+  assert RG.cap_poor_gps(0.05, -0.02, 1.0) == 0.05                     # right (away from circulation) untouched on CCW
+  assert RG.cap_poor_gps(0.05, 0.02, -1.0) == pytest.approx(0.2 * 0.02 + RG.POOR_GPS_FLOOR)
+
+
+def _tangent_guide(bacc, bias, old_bias=None):
+  """Guide with a fabricated pose on the ring's east point heading north (tangent for CCW), one update in."""
+  ring = RingGeometry.from_json(SEP29["ring"])
+  g = RG.RoundaboutGuide()
+  g.set_ring(ring)
+  g.pose.bacc = bacc
+  g.bias = (bias, 0.0)
+  if old_bias is not None:
+    g.bias_hist.append((-2.0, old_bias, 0.0))
+  g.pose.initialized = True
+  g.pose.xo, g.pose.yo, g.pose.psio, g.pose.dpsi = ring.radius_m - 2.5 + bias, 0.0, 0.0, 0.0
+  g.pose.t = 0.0
+  g.pose.n_good, g.pose.innov, g.pose.last_fix_t = 3, 0.5, 0.0
+  g.phase = RG.ACTIVE
+  g.update(0.1, 7.0, 0.0, -0.02, enabled=True, lat_active=True)
+  return g, ring
+
+
+def test_poor_pose_latch_never_aims_at_the_inner_side():
+  g, ring = _tangent_guide(5.0, 0.3)                       # good pose: the lane clamp R - hw/2 is fine
+  assert g.latched and g.r_ref >= ring.radius_m - 0.5 * ring.half_width_m - 1e-9
+  g, ring = _tangent_guide(25.0, 0.3)                      # degraded bearing: latch, but never inside R
+  assert g.latched and g.latch_poor and g.r_ref >= ring.radius_m - 1e-9
+  g, ring = _tangent_guide(5.0, 3.0)                       # bias > 2 m: never inside R
+  assert g.latched and g.r_ref >= ring.radius_m - 1e-9
+
+
+def test_unreliable_or_unsettled_pose_does_not_latch():
+  g, _ = _tangent_guide(35.0, 0.3)
+  assert not g.latched and any("latch blocked unreliable" in e for e in g.events)
+  g, _ = _tangent_guide(25.0, 2.5)
+  assert not g.latched
+  g, _ = _tangent_guide(5.0, 0.3, old_bias=2.0)             # bias moved 1.7 m in the last 2 s: not bias-consistent yet
+  assert not g.latched and any("latch blocked bias_unsettled" in e for e in g.events)
+  g, _ = _tangent_guide(5.0, 0.3, old_bias=0.0)             # 0.3 m: consistent
+  assert g.latched
+
+
+def _with_poor_pose(monkeypatch, name):
+  monkeypatch.setattr(RG, "pose_quality", lambda *a: (False, True))
+  rows, ring = simulate(name, "after")
+  return rows, _LAST["guide"]
+
+
+@pytest.mark.parametrize("name", sorted(PASSES))
+def test_poor_pose_uses_the_slow_slews(monkeypatch, name):
+  rows, _ = _with_poor_pose(monkeypatch, name)
+  for a, b in zip(rows, rows[1:], strict=False):
+    assert abs((b[6] - b[5]) - (a[6] - a[5])) / DT <= RG.OUT_SLEW + 1e-6
+    assert abs(b[6] - a[6]) / DT <= max(RG.OUT_SLEW, abs(b[5] - a[5]) / DT) + 1e-6
+
+
+@pytest.mark.parametrize("name", sorted(PASSES))
+def test_poor_pose_target_slew(monkeypatch, name):
+  seen = []
+  orig = RG.RoundaboutGuide.update
+
+  def spy(self, t, *a, **k):
+    out = orig(self, t, *a, **k)
+    seen.append((t, self.k_tgt))
+    return out
+  monkeypatch.setattr(RG.RoundaboutGuide, "update", spy)
+  _with_poor_pose(monkeypatch, name)
+  steps = [(b[0] - a[0], abs(b[1] - a[1])) for a, b in zip(seen, seen[1:], strict=False) if a[1] is not None and b[1] is not None and 0 < b[0] - a[0] < 0.05]
+  assert len(steps) > 500
+  jumps = [d / dt for dt, d in steps if d / dt > RG.TARGET_SLEW + 1e-6]
+  assert len(jumps) <= 3    # only re-seeds when lat/the model reset the target
+
+
+def test_poor_gps_caps_the_assist_after_the_latch(monkeypatch):
+  rows, g = _with_poor_pose(monkeypatch, "00000128")
+  assert g.latch_poor and g.latch_t is not None
+  win = [r for r in rows if g.latch_t + 0.6 <= r[0] <= g.latch_t + RG.CAP_WINDOW_S]   # after the cap has slewed in at OUT_SLEW
+  assert len(win) > 100
+  for r in win:
+    left_extra = r[5] - r[6]                                # how much further left than the model the assist pushes
+    assert left_extra <= (RG.POOR_GPS_CAP - 1.0) * abs(r[5]) + RG.POOR_GPS_FLOOR + 5e-4
+
+
+def test_curl_held_while_over_ring_speed_on_the_fixtures():
+  for name in sorted(PASSES):
+    rows, ring = simulate(name, "after", slow=False)     # no ring slow-down: the car arrives fast
+    g = _LAST["guide"]
+    R, hw = ring.radius_m, ring.half_width_m
+    fast = [r for r in rows if r[4] > g.ring_v + RG.SPEED_HOLD_MS and math.hypot(r[1], r[2]) > R - 0.5 * hw]
+    assert fast and all(r[6] >= r[5] - 1e-9 for r in fast)
+
+
+def test_ring_state_is_logged_via_cloudlog_without_capnp(monkeypatch):
+  msgs = []
+  monkeypatch.setattr(RG.cloudlog, "warning", lambda m: msgs.append(m))
+  monkeypatch.setattr(RG.cloudlog, "info", lambda m: msgs.append(m))
+  a = _assist()
+  _drive_assist(a, "00000128")
+  assert any(m.startswith("roundabout_assist latched") for m in msgs)
+  assert any(m.startswith("roundabout_assist state phase=") and "bacc=" in m and "r_ref=" in m for m in msgs)
+  src = (ROOT / "selfdrive" / "controls" / "lib" / "roundabout_guide.py").read_text()
+  assert "import cereal" not in src and "from cereal" not in src
+
+
+def test_off_stays_bit_identical_on_the_sep29_pass():
+  ring_json = json.dumps(SEP29["ring"])
+  for on, preap in ((False, True), (True, False)):
+    a = RG.RoundaboutAssist(preap, FakeParams(on=on, ring=ring_json))
+    sm = FakeSM()
+    for t, v, yr, mk, lat in SEP29["rows"]:
+      assert a.update(sm, t=t, v_ego=v, yaw_rate=yr, model_k=mk, lat_active=bool(lat), maneuver_active=False, lane_change_active=False,
+                      hint=Hint(SEP29["ring"]["ids"][0]), model_v2=None) == mk
