@@ -29,8 +29,13 @@ Completion is geometry, not a timer.
 
 If the tracked line is not confidently seen for LOW_CONFIDENCE_CANCEL_S,
 the lock reports low confidence and the caller cancels rather than
-guessing which lane the car is in. Lock itself is refused when the ego
-lines are not confident.
+guessing which lane the car is in.
+
+Lock needs confidence only on the line being crossed (left line for a
+left change, right line for a right change). A weak far line does not
+matter: the lane width falls back to the last good width, else 3.7 m.
+When the crossing line is weak, lock returns None and DesireHelper keeps
+the change armed and retries (LOCK_RETRY_S), instead of cancelling.
 """
 
 # Min laneLineProbs for a line to count as seen.
@@ -51,6 +56,15 @@ LINE_MATCH_GATE_M = 1.2
 # Lat up with no gain in progress for this long -> re-pulse the desire.
 STALL_REPULSE_S = 3.0
 STALL_PROGRESS_LANES = 0.05
+
+# A confirmed change whose crossing line is not seen keeps retrying the
+# lock this long (a brief probability dip is not a refusal). After that the
+# change stays armed (7 s window) and "Lane lines unclear" is shown.
+LOCK_RETRY_S = 1.0
+# modelV2.meta.laneChangeSignalsRemaining is otherwise a countdown that
+# nothing reads. This value flags "lock refused, lane lines unclear" to
+# selfdrived without a capnp change.
+LANE_LINES_UNCLEAR_SIGNAL = 255
 
 DEFAULT_LANE_WIDTH_M = 3.7
 MIN_LANE_WIDTH_M = 2.4
@@ -92,21 +106,48 @@ class LaneChangeTarget:
     self.age_s = 0.0
 
   @classmethod
-  def lock(cls, direction: int, offsets):
-    """Lock the ego line in ``direction``; None if not confident."""
+  def lock(cls, direction: int, offsets, last_width: float | None = None):
+    """Lock the ego line in ``direction``; None if the crossing line is not confident.
+
+    Only the line being crossed needs LANE_LINE_MIN_PROB. With a weak far
+    line the width is ``last_width`` (if sane) or DEFAULT_LANE_WIDTH_M.
+    """
     if offsets is None or direction not in (LEFT, RIGHT):
       return None
     ys, probs = offsets
-    if probs[1] < LANE_LINE_MIN_PROB or probs[2] < LANE_LINE_MIN_PROB:
-      return None
     left_y, right_y = ys[1], ys[2]
-    if not (left_y < 0.0 < right_y):
-      return None
-    width = right_y - left_y
-    if not _sane_width(width):
-      width = DEFAULT_LANE_WIDTH_M
+    if probs[1] < LANE_LINE_MIN_PROB or probs[2] < LANE_LINE_MIN_PROB:
+      # An ego line is weak. Only the line being crossed has to be seen.
+      if probs[1 if direction == LEFT else 2] < LANE_LINE_MIN_PROB:
+        return None
+      if direction == LEFT and not left_y < 0.0:
+        return None
+      if direction == RIGHT and not right_y > 0.0:
+        return None
+      if abs(left_y if direction == LEFT else right_y) > MAX_LANE_WIDTH_M:
+        return None
+      width = last_width if last_width is not None and _sane_width(last_width) else DEFAULT_LANE_WIDTH_M
+    else:
+      if not (left_y < 0.0 < right_y):
+        return None
+      width = right_y - left_y
+      if not _sane_width(width):
+        width = DEFAULT_LANE_WIDTH_M
     line_y = left_y if direction == LEFT else right_y
     return cls(direction, line_y, width)
+
+  @staticmethod
+  def good_width(offsets):
+    """Ego lane width when both ego lines are confident and sane, else None."""
+    if offsets is None:
+      return None
+    ys, probs = offsets
+    if min(probs[1], probs[2]) < LANE_LINE_MIN_PROB:
+      return None
+    if not (ys[1] < 0.0 < ys[2]):
+      return None
+    width = ys[2] - ys[1]
+    return width if _sane_width(width) else None
 
   @property
   def dist_to_line_m(self) -> float:
