@@ -66,6 +66,7 @@ jobs:
           selfdrive/controls/lib/tests/test_lane_change_confirm_replay.py \
           selfdrive/controls/lib/tests/test_lane_change_nudge.py \
           selfdrive/controls/lib/tests/test_lane_change_target.py \
+          selfdrive/controls/lib/tests/test_lane_change_lock.py \
           selfdrive/controls/lib/tests/test_lane_change_turn.py \
           selfdrive/mapd/tests/test_roundabout.py \
           selfdrive/mapd/tests/test_roundabout_map.py \
@@ -83,6 +84,8 @@ jobs:
       run: python .github/ci/tesla_preap_longitudinal_mutations.py
     - name: Run roundabout mutation checks
       run: python .github/ci/tesla_preap_roundabout_mutations.py
+    - name: Run lane-change mutation checks
+      run: python .github/ci/tesla_preap_lane_change_mutations.py
 
   build_release:
     name: build release

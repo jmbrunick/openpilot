@@ -370,11 +370,12 @@ def test_low_lane_line_confidence_cancels():
 
 
 def test_low_confidence_at_start_does_not_guess():
+  """No confident crossing line: never lock or guess, but do not cancel either."""
   dh = DesireHelper()
   _arm(dh)
   dh.update(_CS(left=True, steering_pressed=True, steering_torque=FIRM_NUDGE_NM, hands_on=2),
             True, 0.0, model=_Model(0.0, prob=0.1), engaged=True)
-  assert dh.lane_change_state == LaneChangeState.off
+  assert dh.lane_change_state == LaneChangeState.preLaneChange
   assert dh.desire == log.Desire.none
   assert not dh.target_locked
 
