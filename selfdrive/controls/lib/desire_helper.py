@@ -15,6 +15,8 @@ from openpilot.selfdrive.controls.lib.lane_change_target import (
   RECROSS_MARGIN_M,
   STALL_PROGRESS_LANES,
   STALL_REPULSE_S,
+  LANE_LINES_UNCLEAR_SIGNAL,
+  LOCK_RETRY_S,
   LaneChangeTarget,
   lane_line_offsets,
 )
@@ -49,6 +51,9 @@ LANE_CHANGE_ARM_TIME = 7.0
 # lines.
 OPPOSITE_PULL_NM = SOFT_YIELD_TRIGGER_NM
 OPPOSITE_PULL_SUSTAIN_S = 0.20
+
+# "Lane lines unclear" stays up this long after a lock retry runs out.
+LANE_LINES_UNCLEAR_SHOW_S = 2.0
 
 # Cap on how many same-direction lane changes can be queued from repeated taps.
 MAX_QUEUED_LANE_CHANGES = 3
@@ -106,6 +111,20 @@ class DesireHelper:
     self.target_suspended = False
     self._best_progress = 0.0
     self._stall_s = 0.0
+
+    # Confirmed but not yet locked (crossing line not seen): the lock is
+    # retried for LOCK_RETRY_S instead of cancelling the change.
+    self._lock_pending = False
+    self._lock_gave_up = False
+    self._lock_wait_s = 0.0
+    self._confirm_prev = False
+    self._unclear_s = 0.0
+    self._last_lane_width: float | None = None
+
+  @property
+  def lane_lines_unclear(self) -> bool:
+    """Armed, confirmed, and the lock retry ran out (crossing line weak)."""
+    return self._unclear_s > 0.0
 
   @property
   def target_locked(self) -> bool:
@@ -199,6 +218,22 @@ class DesireHelper:
     self.target_suspended = False
     self._best_progress = 0.0
     self._stall_s = 0.0
+    self._lock_pending = False
+    self._lock_gave_up = False
+    self._lock_wait_s = 0.0
+    self._confirm_prev = False
+    self._unclear_s = 0.0
+
+  def _try_lock(self, offsets) -> None:
+    direction = 1 if self.lane_change_direction == LaneChangeDirection.left else 2
+    self.target = LaneChangeTarget.lock(direction, offsets, self._last_lane_width)
+    if self.target is not None:
+      self._lock_pending = False
+      self._lock_gave_up = False
+      self._unclear_s = 0.0
+      self.lane_change_state = LaneChangeState.laneChangeStarting
+      self._best_progress = self.target.progress
+      self._stall_s = 0.0
 
   def update(self, carstate, lateral_active, lane_change_prob, model=None, engaged=None):
     """``model`` is this frame's modelV2 (laneLines / laneLineProbs).
@@ -211,6 +246,10 @@ class DesireHelper:
     v_ego = carstate.vEgo
     engaged = bool(lateral_active) if engaged is None else bool(engaged)
     offsets = lane_line_offsets(model)
+    good_width = LaneChangeTarget.good_width(offsets)
+    if good_width is not None:
+      self._last_lane_width = good_width
+    self._unclear_s = max(self._unclear_s - DT_MDL, 0.0)
     pulse_gap = False
     one_blinker = carstate.leftBlinker != carstate.rightBlinker
     below_lane_change_speed = v_ego < LANE_CHANGE_SPEED_MIN
@@ -368,21 +407,38 @@ class DesireHelper:
 
         self.arm_timer += DT_MDL
 
-        if torque_applied and not blindspot_detected and not below_lane_change_speed:
-          if model is None:
-            self.lane_change_state = LaneChangeState.laneChangeStarting
-          else:
-            direction = 1 if self.lane_change_direction == LaneChangeDirection.left else 2
-            self.target = LaneChangeTarget.lock(direction, offsets)
-            if self.target is None:
-              # Lane lines too weak to know which line to cross: cancel
-              # instead of guessing.
-              self._reset()
-              self._suppress_next_tip = True
+        eligible = bool(torque_applied) and not blindspot_detected and not below_lane_change_speed
+        # A new eligible confirm (rising edge) starts a fresh lock retry window.
+        if eligible and not self._confirm_prev:
+          self._lock_pending = True
+          self._lock_wait_s = 0.0
+          self._lock_gave_up = False
+          self._unclear_s = 0.0
+        self._confirm_prev = eligible
+        if blindspot_detected or below_lane_change_speed:
+          self._lock_pending = False
+          self._lock_gave_up = False
+
+        if model is None and eligible:
+          self.lane_change_state = LaneChangeState.laneChangeStarting
+        elif model is not None and (self._lock_pending or (self._lock_gave_up and eligible)):
+          self._try_lock(offsets)
+          if self.target is None:
+            # Crossing line not confident (a brief probability dip, or the
+            # line is really not seen): stay armed and retry rather than
+            # cancelling. After LOCK_RETRY_S "Lane lines unclear" shows and
+            # the lock keeps being retried while the nudge is held, until
+            # the 7 s arm window ends.
+            if self._lock_pending:
+              self._lock_wait_s += DT_MDL
+              if self._lock_wait_s >= LOCK_RETRY_S - 1e-9:
+                self._lock_pending = False
+                self._lock_gave_up = True
+                self._unclear_s = LANE_LINES_UNCLEAR_SHOW_S
             else:
-              self.lane_change_state = LaneChangeState.laneChangeStarting
-              self._best_progress = self.target.progress
-              self._stall_s = 0.0
+              self._unclear_s = LANE_LINES_UNCLEAR_SHOW_S
+            if self.arm_timer > LANE_CHANGE_ARM_TIME:
+              self._reset()
         elif self.arm_timer > LANE_CHANGE_ARM_TIME:
           # Window expired with no wheel nudge — cancel everything.
           self._reset()
@@ -423,6 +479,9 @@ class DesireHelper:
     # displays the countdown or queue depth.
     if self.lane_change_state == LaneChangeState.preLaneChange:
       self.signals_remaining = max(math.ceil(LANE_CHANGE_ARM_TIME - self.arm_timer), 0)
+      if self.lane_lines_unclear:
+        # No capnp change: this otherwise-unused count flags the alert.
+        self.signals_remaining = LANE_LINES_UNCLEAR_SIGNAL
     else:
       self.signals_remaining = math.ceil(LANE_CHANGE_ARM_TIME)
     self.lane_changes_remaining = max(self.queued_changes - 1, 0)
