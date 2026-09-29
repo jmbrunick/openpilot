@@ -82,6 +82,7 @@ def test_focused_tests_and_mutations_are_pinned():
   for command in required_commands:
     assert command in normalized_lines(focused_job)
   assert "run: python .github/ci/tesla_preap_longitudinal_mutations.py" in normalized_lines(focused_job)
+  assert "run: python .github/ci/tesla_preap_roundabout_mutations.py" in normalized_lines(focused_job)
 
 
 def test_focused_job_builds_generated_mpc_dependencies():

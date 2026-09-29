@@ -81,6 +81,8 @@ jobs:
           opendbc_repo/opendbc/car/tesla/preap/tests/test_vdas_grade_control.py
     - name: Run historical mutation checks
       run: python .github/ci/tesla_preap_longitudinal_mutations.py
+    - name: Run roundabout mutation checks
+      run: python .github/ci/tesla_preap_roundabout_mutations.py
 
   build_release:
     name: build release
