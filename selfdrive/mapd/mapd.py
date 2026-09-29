@@ -19,7 +19,9 @@ from openpilot.selfdrive.mapd.gps_fix import (
   persist_last_gps_position,
 )
 from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB
-from openpilot.selfdrive.mapd.roundabout_map import PARAM_RING, RingCache, roundabout_comfort_speed_ms
+from openpilot.selfdrive.mapd.roundabout_map import (
+  PARAM_RING, RingCache, RingDataWatch, map_msg_valid, roundabout_comfort_speed_ms,
+)
 
 MAPD_HZ = 2.0
 RELOAD_PERIOD_S = 15.0
@@ -69,6 +71,7 @@ def main():
   last_path = db.path
 
   ring_cache = RingCache()
+  ring_watch = RingDataWatch()
 
   def _publish_ring(payload: dict) -> None:
     try:
@@ -91,6 +94,10 @@ def main():
         last_path = path
       db.open()
       last_reload = now
+      if db.loaded:
+        note = ring_watch.check(db.path)
+        if note is not None:
+          getattr(cloudlog, note[0])(note[1])
 
     lat, lon, bearing, gps_ok = gps_sample_from_sm(sm, now=now)
     if gps_ok and (last_gps_write == 0.0 or (now - last_gps_write) >= LAST_GPS_WRITE_PERIOD_S):
@@ -100,7 +107,7 @@ def main():
     match = db.lookup(lat, lon, bearing, v_ego_ms=v_ego_ms) if gps_ok and db.loaded else None
 
     msg = messaging.new_message("liveMapDataNAP")
-    msg.valid = gps_ok and db.loaded and match is not None
+    msg.valid = map_msg_valid(gps_ok=gps_ok, db_loaded=db.loaded, matched=match is not None, ring_hint=False)
     d = msg.liveMapDataNAP
     d.latitude = lat
     d.longitude = lon
@@ -133,6 +140,8 @@ def main():
           geom.radius_m, geom.lanes, max(float(rb.speed_limit_ms), float(geom.maxspeed_ms))))
       else:
         d.roundaboutSpeedLimit = float(rb.speed_limit_ms)
+      # A ring has no maxspeed to match. Keep the message valid for its hint.
+      msg.valid = map_msg_valid(gps_ok=gps_ok, db_loaded=db.loaded, matched=match is not None, ring_hint=True)
     pm.send("liveMapDataNAP", msg)
     rk.keep_time()
 

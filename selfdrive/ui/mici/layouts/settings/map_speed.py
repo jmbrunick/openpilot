@@ -10,7 +10,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   MAP_SPEED_MODES, MAP_SPEED_MODE_LABELS, MAP_SPEED_OFFSETS_MPH,
   REFRESH_MAPS_INSTRUCTIONS,
 )
-from openpilot.selfdrive.mapd.fetch_maps import installed_db_summary, installed_revision_summary
+from openpilot.selfdrive.mapd.fetch_maps import installed_db_summary, installed_revision_summary, installed_ring_summary
 from openpilot.selfdrive.ui.ui_state import ui_state
 
 
@@ -39,6 +39,7 @@ class MapSpeedLimitLayoutMici(NavScroller):
       default_value=2,
     )
     self._map_db_status = BigButton("osm map data", installed_db_summary())
+    self._map_rings = BigButton("roundabouts", installed_ring_summary())
     self._map_revision = BigButton("map revision", installed_revision_summary())
     refresh_maps_btn = BigButton("refresh maps", "start")
     refresh_maps_btn.set_click_callback(
@@ -59,12 +60,14 @@ class MapSpeedLimitLayoutMici(NavScroller):
       refresh_maps_btn,
       download_maps_btn,
       self._map_db_status,
+      self._map_rings,
       self._map_revision,
     ])
 
   def show_event(self):
     super().show_event()
     self._map_db_status.set_value(installed_db_summary())
+    self._map_rings.set_value(installed_ring_summary())
     self._map_revision.set_value(installed_revision_summary())
 
 
