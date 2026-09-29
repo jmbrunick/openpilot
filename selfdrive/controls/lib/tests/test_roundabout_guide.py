@@ -61,7 +61,7 @@ def simulate(name: str, kind: str, *, slow: bool = True, fix_scale: float = 1.0)
   guide = RG.RoundaboutGuide()
   guide.set_ring(ring)
   _LAST["guide"] = guide
-  fixes = [f for f in p["fixes"]]
+  fixes = list(p["fixes"])
   hist = p["hist"]
   fi = 0
   # Warm the pose tracker on the logged approach (as on the car, GNSS is fed continuously).
@@ -158,7 +158,7 @@ def test_assist_keeps_both_passes_in_the_ring_band(name, max_beyond, min_inband)
 def test_right_entry_held_until_turn_distance(name):
   rows, ring = simulate(name, "after")
   R, hw = ring.radius_m, ring.half_width_m
-  for t, x, y, psi, v, mk, out, _ in rows:
+  for _t, x, y, _psi, _v, mk, out, _ in rows:
     d_edge = math.hypot(x, y) - (R + hw)
     if d_edge > RG.D_TURN_M + 3.0:   # + guide pose error margin
       assert out >= mk - 1e-9, f"early left at {d_edge:.1f} m"
@@ -318,7 +318,7 @@ def test_identity_far_from_any_ring():
   ring = _ring(PASSES["00000128"])
   g = RG.RoundaboutGuide()
   g.set_ring(ring)
-  x, y, psi = -400.0, 400.0, math.radians(90.0)
+  x, y = -400.0, 400.0
   for i in range(3000):
     t = i * DT
     if i % 100 == 0:
