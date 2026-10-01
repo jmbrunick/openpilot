@@ -28,7 +28,10 @@ RB_FUNNEL_MIN_M = 80.0
 RB_SEARCH_PAD_DEG = 0.0035
 
 # Circulating target. OSM maxspeed on the RB way wins when present (often 20).
-RB_V_MIN_MS = 15.0 * CV.MPH_TO_MS
+# Sep 30: entry was a little slow. Soco ring pass speeds were 17-19 mph (R126 17.8, R128 19.3, R130 17.5 median); the
+# 2.5 m/s² comfort speed (15.8 mph) is now floored here, so the planner's ring speed (and the guide's) is 18 mph.
+RB_RING_SPEED_MPH = 18.0
+RB_V_MIN_MS = RB_RING_SPEED_MPH * CV.MPH_TO_MS
 RB_V_MAX_MS = 20.0 * CV.MPH_TO_MS
 RB_V_DEFAULT_MS = 20.0 * CV.MPH_TO_MS
 
