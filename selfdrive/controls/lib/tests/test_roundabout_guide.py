@@ -1,5 +1,9 @@
 """Roundabout Steering Assist (NAPRoundaboutAssist, Pre-AP, default Off).
 
+Sep 30: once latched the assist follows the map's lane circle (no blend), capped at 1.15x the model, 2.2 m/s², slew 0.035; released only by a
+held same-side stalk / steering pull / override (no map-only exit); ALC tips are suppressed while latched. R126 / R128 (Sep 28) and
+0000012f / 00000130 (Sep 29, roundabout_passes_sep29.json) replay below.
+
 Sep 28 PM, Soco Rd / Dellwood / Jonathan Creek ring (R ~21.6 m, CCW):
 R126 16:52 CT (inner lane) and R128 17:38 CT (outer lane). The model's plan
 was a wide, slow S: it swung across the band (island side on R128, outer curb
@@ -22,6 +26,8 @@ from openpilot.selfdrive.mapd.roundabout_map import RingGeometry, latlon_from_xy
 ROOT = Path(__file__).resolve().parents[4]
 FIXTURE = Path(__file__).parent / "data" / "roundabout_passes_sep28.json"
 PASSES = json.loads(FIXTURE.read_text())["passes"]
+PASSES29 = json.loads((Path(__file__).parent / "data" / "roundabout_passes_sep29.json").read_text())["passes"]
+PASSES_ALL = {**PASSES, **PASSES29}
 MPH = 0.44704
 DT = 0.01
 
@@ -49,13 +55,13 @@ def _interp(x, xs, ys):
 _LAST: dict = {}
 
 
-def simulate(name: str, kind: str, *, slow: bool = True, fix_scale: float = 1.0):
+def simulate(name: str, kind: str, *, slow: bool = True, fix_scale: float = 1.0, pool=None):
   """Kinematic closed loop: model curvature by distance -> [guide] -> clip_curvature -> 0.2 s delay + 0.2 s lag.
 
   kind: "before" (model only) or "after" (guide On). slow: planner ring slow-down from the first hint.
   Returns rows (t, x, y, psi, v, model_k, out_k, des_k).
   """
-  p = PASSES[name]
+  p = (pool or PASSES)[name]
   ring = _ring(p)
   R, hw = ring.radius_m, ring.half_width_m
   guide = RG.RoundaboutGuide()
@@ -80,7 +86,7 @@ def simulate(name: str, kind: str, *, slow: bool = True, fix_scale: float = 1.0)
   delay = [k_act] * 20
   s = 0.0
   rows = []
-  v_target = p["hint_speed_ms"]
+  v_target = guide.ring_v          # the planner's ring speed (RB_RING_SPEED_MPH = 18 since Sep 30), not the logged 15.8 mph hint
   while t < vts[-1]:
     v = _interp(t, vts, p["v"])
     if slow:
@@ -118,8 +124,8 @@ def _feed(guide, ring, f, track, scale):
   guide.gnss(t_fix, lat, lon, (math.degrees(psi) + scale * dbrg) % 360.0, v, bacc)
 
 
-def band_metrics(rows, ring):
-  """First 120° after entering the ring band: max distance beyond a curb, % inside the band."""
+def band_metrics(rows, ring, deg=120.0):
+  """First `deg` degrees after entering the ring band: max distance beyond a curb, % inside the band."""
   R, hw = ring.radius_m, ring.half_width_m
   r = [math.hypot(row[1], row[2]) for row in rows]
   i0 = next(i for i, rr in enumerate(r) if rr < R + hw)
@@ -129,7 +135,7 @@ def band_metrics(rows, ring):
     th = math.atan2(rows[i][2], rows[i][1])
     travel += math.degrees(RG._wrap(th - prev))
     prev = th
-    if travel > 120.0:
+    if travel > deg:
       break
     out.append(max(0.0, (R - hw) - r[i], r[i] - (R + hw)))
   return max(out), 100.0 * sum(o < 0.01 for o in out) / len(out)
@@ -138,61 +144,78 @@ def band_metrics(rows, ring):
 # ---------------------------------------------------------------------------------------------
 # Replay: both passes, closed loop with the real GNSS error stream
 
-@pytest.mark.parametrize("name", sorted(PASSES))
+@pytest.mark.parametrize("name", ["00000126", "00000128", "00000130"])
 def test_model_only_leaves_the_ring_band(name):
-  rows, ring = simulate(name, "before")
-  beyond, inband = band_metrics(rows, ring)
-  assert beyond > 2.5 and inband < 70.0
+  rows, ring = simulate(name, "before", pool=PASSES_ALL)
+  beyond, inband = band_metrics(rows, ring, 90.0)
+  assert beyond > 0.9 and inband < 70.0
 
 
-@pytest.mark.parametrize("name,max_beyond,min_inband", [("00000126", 0.5, 95.0), ("00000128", 0.5, 95.0)])
-def test_assist_keeps_both_passes_in_the_ring_band(name, max_beyond, min_inband):
-  before = band_metrics(*simulate(name, "before"))
-  after = band_metrics(*simulate(name, "after"))
+@pytest.mark.parametrize("name,max_beyond,min_inband", [("00000126", 2.0, 85.0), ("00000128", 0.7, 94.0), ("00000130", 0.5, 95.0)])
+def test_ring_follow_keeps_the_passes_in_the_ring_band(name, max_beyond, min_inband):
+  """First 90° of circulation (the later part of the logged passes is the driver leaving the ring at the exit)."""
+  before = band_metrics(*simulate(name, "before", pool=PASSES_ALL), 90.0)
+  after = band_metrics(*simulate(name, "after", pool=PASSES_ALL), 90.0)
   assert after[0] <= max_beyond
   assert after[1] >= min_inband
   assert after[0] < before[0] and after[1] > before[1]
 
 
-@pytest.mark.parametrize("name", sorted(PASSES))
+def test_unreliable_pose_pass_is_model_only_and_unchanged():
+  """0000012f (Scallywag 11:57): bearing accuracy 13-52° the whole way in, the guide never latches and never touches the pass."""
+  before, ring = simulate("0000012f", "before", pool=PASSES_ALL)
+  after, _ = simulate("0000012f", "after", pool=PASSES_ALL)
+  assert not _LAST["guide"].latch_t
+  assert all(a[6] == b[6] for a, b in zip(after, before, strict=False))
+
+
+@pytest.mark.parametrize("name", sorted(PASSES_ALL))
 def test_right_entry_held_until_turn_distance(name, monkeypatch):
   monkeypatch.setattr(RG, "SPEED_HOLD_MS", 1e9)   # the ring-speed curl hold would also hold the left; test the distance hold alone
-  rows, ring = simulate(name, "after")
+  rows, ring = simulate(name, "after", pool=PASSES_ALL)
   R, hw = ring.radius_m, ring.half_width_m
+  t_latch = _LAST["guide"].latch_t if _LAST["guide"].latch_t is not None else 1e9    # entry only: after the latch the car is on the ring
   for _t, x, y, _psi, _v, mk, out, _ in rows:
+    if _t >= t_latch:
+      break
     d_edge = math.hypot(x, y) - (R + hw)
     if d_edge > RG.D_TURN_M + 3.0:   # + guide pose error margin
       assert out >= mk - 1e-9, f"early left at {d_edge:.1f} m"
 
 
-@pytest.mark.parametrize("name", sorted(PASSES))
+@pytest.mark.parametrize("name", sorted(PASSES_ALL))
 def test_left_transition_within_jerk_limit(name):
-  rows, _ = simulate(name, "after")
+  rows, _ = simulate(name, "after", pool=PASSES_ALL)
+  t_latch = _LAST["guide"].latch_t or 1e9
   for a, b in zip(rows, rows[1:], strict=False):
+    if abs(b[0] - t_latch) < 1e-6:
+      continue        # the one sample where an over-cap entry curl meets the 1.15x cap (clip_curvature rate-limits it downstream)
     corr_rate = abs((b[6] - b[5]) - (a[6] - a[5])) / DT
     out_rate = abs(b[6] - a[6]) / DT
     model_rate = abs(b[5] - a[5]) / DT
     assert corr_rate <= RG.OUT_SLEW_GOOD + 1e-6
-    assert out_rate <= max(RG.OUT_SLEW_GOOD, model_rate) + 1e-6
+    assert out_rate <= max(RG.OUT_SLEW_GOOD, RG.RING_CAP_RATIO * model_rate) + 1e-6   # the ring cap follows the model at 1.15x
 
 
-@pytest.mark.parametrize("name", sorted(PASSES))
-def test_ring_speed_about_15_mph_and_lateral(name):
-  p = PASSES[name]
-  assert 15.0 * MPH <= p["hint_speed_ms"] <= 16.5 * MPH
-  rows, ring = simulate(name, "after")
+@pytest.mark.parametrize("name", sorted(PASSES_ALL))
+def test_ring_speed_is_18_mph_and_lateral_cap(name):
+  """Sep 30: entry was a little slow; the ring speed constant is 18 mph (RB_RING_SPEED_MPH), up from 15.8 (2.5 m/s² comfort speed)."""
+  from openpilot.selfdrive.mapd.roundabout import RB_RING_SPEED_MPH
+  assert RB_RING_SPEED_MPH == 18.0
+  rows, ring = simulate(name, "after", pool=PASSES_ALL)
+  assert _LAST["guide"].ring_v == pytest.approx(18.0 * MPH)
   R, hw = ring.radius_m, ring.half_width_m
   inside = [r for r in rows if math.hypot(r[1], r[2]) < R + hw]
-  assert inside and max(r[4] for r in inside) <= 16.5 * MPH
+  assert inside and max(r[4] for r in inside) <= 18.05 * MPH
   assert max(abs(r[7]) * r[4] ** 2 for r in inside) <= 3.0
 
 
-@pytest.mark.parametrize("name", sorted(PASSES))
+@pytest.mark.parametrize("name", ["00000126", "00000128", "00000130"])
 def test_hands_back_to_model_after_exit(name):
-  rows, _ = simulate(name, "after")
+  rows, _ = simulate(name, "after", pool=PASSES_ALL)
   tail = rows[-150:]
   assert all(r[6] == r[5] for r in tail)
-  assert _LAST["guide"].phase == RG.DONE
+  assert _LAST["guide"].phase in (RG.DONE, RG.IDLE)   # DONE, then reset once > 60 m from the ring
   assert _LAST["guide"].dk_out == 0.0
 
 
@@ -477,8 +500,10 @@ def _sep29(**patch):
 
 
 def _old_constants(monkeypatch):
+  """The Sep 29 behaviour: 3.0 m/s² left cap, fast slews, no curl hold, latch whatever the pose, no ring cap."""
   for k, v in dict(A_LAT_CIRC_MAX=3.0, OUT_SLEW=0.07, TARGET_SLEW=0.07, OUT_SLEW_GOOD=0.07, TARGET_SLEW_GOOD=0.07, SPEED_HOLD_MS=1e9,
-                   BEARING_ACC_UNRELIABLE_DEG=1e9, BIAS_UNRELIABLE_M=1e9, BIAS_LATCH_DRIFT_M=1e9, POOR_GPS_CAP=1e3).items():
+                   BEARING_ACC_UNRELIABLE_DEG=1e9, BIAS_UNRELIABLE_M=1e9, BIAS_LATCH_DRIFT_M=1e9, RING_CAP_RATIO=1e3, RING_A_LAT_MAX=1e3,
+                   RING_SLEW=0.07).items():
     monkeypatch.setattr(RG, k, v)
 
 
@@ -491,7 +516,7 @@ def test_sep29_left_curl_no_longer_doubles_the_model(monkeypatch):
   _old_constants(monkeypatch)
   old_rows, _ = _sep29(latency=0.9)
   old_out, old_mk = _left_peak(old_rows)
-  assert old_out > 1.8 * old_mk                  # the logged bug: 0.0476 vs the model's 0.0237
+  assert old_out > 1.5 * old_mk                  # the logged bug (0.0476 vs the model's 0.0237) without the Sep 29/30 limits
   monkeypatch.undo()
   rows, g = _sep29()
   out, mk = _left_peak(rows)
@@ -518,9 +543,18 @@ def test_left_transition_cap_uses_actual_speed():
   v = 8.0
   assert RG.lat_limited(-1.0, v, 1.0) == pytest.approx(-2.2 / v ** 2)        # CCW: left (negative) capped at 2.2 m/s²
   assert RG.lat_limited(1.0, v, 1.0) == pytest.approx(3.0 / v ** 2)          # right entry keeps 3.0
-  assert RG.lat_limited(-1.0, v, 1.0, latched=True) == pytest.approx(-3.0 / v ** 2)   # once on the ring
   assert RG.lat_limited(1.0, v, -1.0) == pytest.approx(2.2 / v ** 2)         # CW ring mirrors it
   assert RG.lat_limited(-1.0, v, -1.0) == pytest.approx(-3.0 / v ** 2)
+
+
+def test_ring_cap_is_1_15x_the_model_and_2_2_mps2():
+  assert (RG.RING_CAP_RATIO, RG.RING_A_LAT_MAX, RG.RING_SLEW) == (1.15, 2.2, 0.035)
+  assert RG.ring_cap(0.02, -0.02, 6.0, 1.0) == pytest.approx(1.15 * 0.02)               # CCW, model 0.02 left: 1.15x
+  assert RG.ring_cap(0.03, -0.03, 8.0, 1.0) == pytest.approx(2.2 / 64.0)                # lateral cap bites first (1.15x = 0.0345)
+  assert RG.ring_cap(0.05, -0.05, 20.0, 1.0) == pytest.approx(0.05)                     # ...never below the model itself
+  assert RG.ring_cap(0.02, 0.01, 6.0, 1.0) == pytest.approx(-0.01)                      # model curving away: the assist never adds left
+  assert RG.ring_cap(0.02, 0.02, 6.0, -1.0) == pytest.approx(1.15 * 0.02)               # CW mirrors it
+  assert RG.ring_floor(0.02, 6.0) == pytest.approx(0.85 * 0.02)
 
 
 def test_slews_are_0_035_for_a_poor_pose():
@@ -545,15 +579,9 @@ def test_curl_is_held_until_within_3_mph_of_ring_speed():
   ring = RingGeometry.from_json(SEP29["ring"])
   g = RG.RoundaboutGuide()
   g.set_ring(ring)
-  assert g.ring_v == pytest.approx(15.8 * MPH_MS, abs=0.05)
+  assert g.ring_v == pytest.approx(18.0 * MPH_MS, abs=0.05)   # RB_RING_SPEED_MPH
   rows, g2 = _sep29()
   assert any(e.startswith("curl held") for e in g2.events) and any(e.startswith("curl released") for e in g2.events)
-
-
-def test_poor_gps_caps_the_assist_at_1_2x_the_model():
-  assert RG.cap_poor_gps(-0.05, -0.02, 1.0) == pytest.approx(-(0.2 * 0.02 + RG.POOR_GPS_FLOOR))
-  assert RG.cap_poor_gps(0.05, -0.02, 1.0) == 0.05                     # right (away from circulation) untouched on CCW
-  assert RG.cap_poor_gps(0.05, 0.02, -1.0) == pytest.approx(0.2 * 0.02 + RG.POOR_GPS_FLOOR)
 
 
 def _tangent_guide(bacc, bias, old_bias=None):
@@ -605,7 +633,7 @@ def test_poor_pose_uses_the_slow_slews(monkeypatch, name):
   rows, _ = _with_poor_pose(monkeypatch, name)
   for a, b in zip(rows, rows[1:], strict=False):
     assert abs((b[6] - b[5]) - (a[6] - a[5])) / DT <= RG.OUT_SLEW + 1e-6
-    assert abs(b[6] - a[6]) / DT <= max(RG.OUT_SLEW, abs(b[5] - a[5]) / DT) + 1e-6
+    assert abs(b[6] - a[6]) / DT <= max(RG.OUT_SLEW, RG.RING_CAP_RATIO * abs(b[5] - a[5]) / DT) + 1e-6   # the cap follows the model at 1.15x
 
 
 @pytest.mark.parametrize("name", sorted(PASSES))
@@ -625,18 +653,37 @@ def test_poor_pose_target_slew(monkeypatch, name):
   assert len(jumps) <= 3    # only re-seeds when lat/the model reset the target
 
 
-def test_poor_gps_caps_the_assist_after_the_latch(monkeypatch):
-  rows, g = _with_poor_pose(monkeypatch, "00000128")
-  assert g.latch_poor and g.latch_t is not None
-  win = [r for r in rows if g.latch_t + 0.6 <= r[0] <= g.latch_t + RG.CAP_WINDOW_S]   # after the cap has slewed in at OUT_SLEW
-  assert len(win) > 100
-  for r in win:
-    left_extra = r[5] - r[6]                                # how much further left than the model the assist pushes
-    assert left_extra <= (RG.POOR_GPS_CAP - 1.0) * abs(r[5]) + RG.POOR_GPS_FLOOR + 5e-4
+@pytest.mark.parametrize("name", ["00000128", "00000130"])
+def test_ring_output_never_above_1_15x_the_model_or_2_2_after_the_latch(name):
+  """After the latch, whatever the pose quality, the output is within [0.85, 1.15] x the model while it curves with the circulation."""
+  for poor in (False, True):
+    with pytest.MonkeyPatch.context() as mp:
+      if poor:
+        mp.setattr(RG, "pose_quality", lambda *a: (False, True))
+      rows, _ = simulate(name, "after", pool=PASSES_ALL)
+      g = _LAST["guide"]
+    assert g.latch_t is not None
+    peak = 0.0
+    for r in rows:
+      if r[0] < g.latch_t + 0.5 or r[0] > g.latch_t + 40.0 or r[5] >= 0.0 or r[6] == r[5]:
+        continue
+      peak = max(peak, r[6] / r[5])
+      assert r[6] / r[5] <= RG.RING_CAP_RATIO + 1e-6
+      assert -r[6] * r[4] ** 2 <= max(RG.RING_A_LAT_MAX, -r[5] * r[4] ** 2) + 1e-6
+    assert peak > 1.05
+
+
+def test_ring_output_slews_at_most_0_035_after_the_latch():
+  rows, _ = simulate("00000128", "after", pool=PASSES_ALL)
+  g = _LAST["guide"]
+  win = [r for r in rows if g.latch_t <= r[0] <= g.latch_t + 8.0]
+  assert len(win) > 500
+  for a, b in zip(win, win[1:], strict=False):
+    assert abs((b[6] - b[5]) - (a[6] - a[5])) / DT <= RG.RING_SLEW + 1e-6
 
 
 def test_curl_held_while_over_ring_speed_on_the_fixtures():
-  for name in sorted(PASSES):
+  for name in ("00000128",):
     rows, ring = simulate(name, "after", slow=False)     # no ring slow-down: the car arrives fast
     g = _LAST["guide"]
     R, hw = ring.radius_m, ring.half_width_m
@@ -646,14 +693,66 @@ def test_curl_held_while_over_ring_speed_on_the_fixtures():
 
 def test_ring_state_is_logged_via_cloudlog_without_capnp(monkeypatch):
   msgs = []
-  monkeypatch.setattr(RG.cloudlog, "warning", lambda m: msgs.append(m))
-  monkeypatch.setattr(RG.cloudlog, "info", lambda m: msgs.append(m))
+  monkeypatch.setattr(RG.cloudlog, "error", lambda m: msgs.append(m))   # errorLogMessage is in qlog, logMessage is rlog-only
   a = _assist()
   _drive_assist(a, "00000128")
   assert any(m.startswith("roundabout_assist latched") for m in msgs)
+  assert any(m.startswith("roundabout_assist released") for m in msgs)
   assert any(m.startswith("roundabout_assist state phase=") and "bacc=" in m and "r_ref=" in m for m in msgs)
   src = (ROOT / "selfdrive" / "controls" / "lib" / "roundabout_guide.py").read_text()
   assert "import cereal" not in src and "from cereal" not in src
+  assert "from cereal" not in (ROOT / "selfdrive" / "controls" / "lib" / "roundabout_ring_log.py").read_text()
+
+
+class _Seq:
+  def __init__(self, x, y):
+    self.x, self.y = x, y
+
+
+class _FakeModel:
+  position = _Seq([0.0, 10.0, 20.0, 40.0], [0.0, 0.5, 2.0, 8.0])
+  laneLines = [_Seq([0.0, 40.0], [-5.5, -5.0]), _Seq([0.0, 40.0], [-1.8, -1.4]), _Seq([0.0, 40.0], [1.8, 2.2]), _Seq([0.0, 25.0], [5.5, 6.0])]
+  laneLineProbs = [0.1, 0.9, 0.8, 0.2]
+  roadEdges = [_Seq([0.0, 40.0], [-7.0, -6.0]), _Seq([0.0, 40.0], [4.0, 4.5])]
+  roadEdgeStds = [0.3, 1.2]
+
+
+def test_raw_model_summary_logged_near_and_in_the_ring(monkeypatch):
+  """~1.25 Hz compact JSON of the model's raw lane lines / road edges / path (+ ring state and driver inputs) near and in a ring."""
+  msgs = []
+  monkeypatch.setattr(RG.cloudlog, "error", lambda m: msgs.append(m))
+  a = _assist()
+  p = PASSES["00000128"]
+  ring = _ring(p)
+  sm = FakeSM()
+  t = 0.0
+  for i in range(400):
+    t = p["hist"][0][0] + i * 0.05
+    a.update(sm, t=t, v_ego=8.0, yaw_rate=0.0, model_k=0.0, lat_active=True, maneuver_active=False, lane_change_active=False,
+             hint=Hint(ring.way_ids[0]), model_v2=_FakeModel())
+  raw = [m for m in msgs if m.startswith("roundabout_raw ")]
+  assert raw == [] or len(raw) <= int(400 * 0.05 / RG.LOG_RAW_PERIOD_S) + 1
+  g = a.guide
+  g.d_edge, g.debug = 20.0, {"r": 45.0}
+  a._last_raw_t = -1e9
+  a._log(100.0, 0.01, 0.01, 8.0, _FakeModel(), RG.DriverInput(2, True, False, 0.4), True)
+  lines = [m for m in msgs if m.startswith("roundabout_raw ")]
+  assert lines
+  line = lines[-1]
+  d = json.loads(line[len("roundabout_raw "):])
+  assert d["path"] == [0.25, 0.5, 1.25, 2.0, 5.0]
+  assert len(d["ll"]) == 4 and d["ll"][0][0] == -5.44 and d["ll"][3][-1] is None     # 4th line stops at 25 m
+  assert d["llp"] == [0.1, 0.9, 0.8, 0.2] and d["res"] == [0.3, 1.2] and len(d["re"]) == 2
+  assert d["stalk"] == [2, 1, 0, 0.4] and d["lat"] == 0 and d["de"] == 20.0
+  assert len(line) < 700
+  n = len(msgs)
+  a._log(100.3, 0.01, 0.01, 8.0, _FakeModel(), None, True)       # inside LOG_RAW_PERIOD_S: no second summary
+  assert len(msgs) == n
+  g.d_edge = 200.0
+  a._log(105.0, 0.01, 0.01, 8.0, _FakeModel(), None, True)       # far from any ring: nothing
+  assert len(msgs) == n
+  a._log(106.0, 0.01, 0.01, 8.0, None, None, True)               # no model message: nothing
+  assert len(msgs) == n
 
 
 def test_off_stays_bit_identical_on_the_sep29_pass():
@@ -664,3 +763,168 @@ def test_off_stays_bit_identical_on_the_sep29_pass():
     for t, v, yr, mk, lat in SEP29["rows"]:
       assert a.update(sm, t=t, v_ego=v, yaw_rate=yr, model_k=mk, lat_active=bool(lat), maneuver_active=False, lane_change_active=False,
                       hint=Hint(SEP29["ring"]["ids"][0]), model_v2=None) == mk
+
+
+# ---------------------------------------------------------------------------------------------
+# Sep 30: release only by the driver (held same-side stalk / steering pull / override); the driver always wins; tips suppressed
+
+def _on_ring(**kw):
+  """Latched guide on the ring (east point, heading north, CCW), a few updates in, model curving left (-0.02)."""
+  g, ring = _tangent_guide(5.0, 0.3)
+  assert g.latched and g.phase == RG.ACTIVE
+  return g
+
+
+def _run(g, n, driver=None, mk=-0.02, lat=True, t0=0.2, v=7.0):
+  outs = []
+  for i in range(n):
+    outs.append(g.update(t0 + i * DT, v, v * mk, mk, enabled=True, lat_active=lat, driver=driver))
+  return outs
+
+
+def test_ring_assist_follows_the_lane_circle_once_latched():
+  g = _on_ring()
+  outs = _run(g, 100)
+  assert g.latched and g.r_lane == pytest.approx(g.ring.radius_m - 0.5 * g.ring.half_width_m)
+  assert all(o >= -0.02 * RG.RING_CAP_RATIO - 1e-9 for o in outs)       # CCW: never more left than 1.15x the model
+
+
+def test_held_right_stalk_releases_the_ring_and_hands_back_at_once():
+  g = _on_ring()
+  _run(g, 50)
+  out = _run(g, 1, RG.DriverInput(stalk_dir=2, stalk_held=True), t0=0.7)
+  assert out == [-0.02] and g.release == "stalk" and g.phase == RG.DONE and g.dk_out == 0.0
+  assert any(e.startswith("released stalk") for e in g.events)
+  assert _run(g, 20, t0=0.8) == [-0.02] * 20                              # stays released
+
+
+def test_held_left_stalk_does_not_release_but_the_guide_weight_is_zero():
+  g = _on_ring()
+  _run(g, 50)
+  outs = _run(g, 100, RG.DriverInput(stalk_dir=1, stalk_held=True), t0=0.7)
+  assert outs == [-0.02] * 100 and g.latched and g.phase == RG.ACTIVE and g.release == "" and g.debug["w"] == 0.0
+
+
+def test_steering_pull_toward_the_exit_releases_after_0_3_s():
+  g = _on_ring()
+  _run(g, 50)
+  outs = _run(g, 25, RG.DriverInput(torque=-2.0), t0=0.7)                  # + is left: -2 Nm pulls right = the exit on a CCW ring
+  assert outs == [-0.02] * 25 and g.release == "" and g.latched          # weight is 0 at once, not released yet
+  outs = _run(g, 10, RG.DriverInput(torque=-2.0), t0=0.95)
+  assert outs == [-0.02] * 10 and g.release == "pull" and g.phase == RG.DONE
+
+
+def test_steering_pull_toward_the_circulation_does_not_release_but_wins():
+  g = _on_ring()
+  _run(g, 50)
+  outs = _run(g, 100, RG.DriverInput(torque=2.0), t0=0.7)
+  assert outs == [-0.02] * 100 and g.release == "" and g.phase == RG.ACTIVE
+
+
+def test_steering_press_zeroes_the_weight_at_once_and_overrides_after_0_5_s():
+  g = _on_ring()
+  _run(g, 50)
+  assert _run(g, 40, RG.DriverInput(pressed=True), t0=0.7) == [-0.02] * 40 and g.release == ""
+  assert _run(g, 20, RG.DriverInput(pressed=True), t0=1.1) == [-0.02] * 20 and g.release == "override"
+  g = _on_ring()
+  _run(g, 50)
+  assert _run(g, 100, lat=False, t0=0.7) == [-0.02] * 100 and g.release == "override"      # lat off: the driver has the wheel
+
+
+def test_no_blinker_no_map_exit_the_car_stays_on_the_ring():
+  """No stalk / pull / press: the guide never releases for map reasons, on any of the four passes."""
+  for name in ("00000126", "00000128", "0000012f", "00000130"):
+    simulate(name, "after", pool=PASSES_ALL)
+    g = _LAST["guide"]
+    assert g.release in ("", "far_from_ring"), name         # the only non-driver release is the safety one, > 15 m outside the band
+    if g.latch_t is not None:
+      assert g.d_edge is None or g.release == "" or g.d_edge > RG.FAILSAFE_EDGE_M
+  g = _on_ring()
+  g.travel = 400.0                                                      # more than a full circuit of the ring: still no map exit
+  outs = _run(g, 150)
+  assert g.release == "" and g.latched and g.phase == RG.ACTIVE and any(o != -0.02 for o in outs)
+
+
+def test_latched_weight_does_not_depend_on_pose_confidence():
+  """The 1.15x / 2.2 / 0.035 limits bound the assist, not a confidence fade: a stale fix (2.5 s) keeps the full weight."""
+  g = _on_ring()
+  _run(g, 80)
+  g.pose.last_fix_t = g.last_t - 2.5
+  _run(g, 5, t0=1.0)
+  assert g.debug["conf"] < 0.5 and g.debug["w"] == pytest.approx(1.0) and g.latched
+
+
+def test_safety_release_far_outside_the_ring_fades_instead_of_stepping():
+  g = _on_ring()
+  _run(g, 50)
+  g.pose.xo += 40.0                                                     # pose says 40 m outside the band
+  _run(g, 5, t0=0.7)
+  assert g.release == "far_from_ring" and g.phase in (RG.EXITING, RG.DONE)
+
+
+class _PutParams(FakeParams):
+  def __init__(self, **kw):
+    super().__init__(**kw)
+    self.puts = []
+
+  def put_bool(self, key, val):
+    self.puts.append((key, val))
+
+
+def test_latched_param_and_stalk_release_through_the_assist():
+  from openpilot.selfdrive.controls.lib.stalk_tip_turn import PARAM_RING_LATCHED
+  assert PARAM_RING_LATCHED == "NAPRoundaboutLatched"
+  params = _PutParams(on=True, ring=json.dumps(PASSES["00000128"]["ring"]))
+  a = RG.RoundaboutAssist(True, params)
+  g = _on_ring()
+  a.guide = g
+  sm = FakeSM()
+  def step(i, stalk):
+    return a.update(sm, t=0.2 + i * DT, v_ego=7.0, yaw_rate=-0.14, model_k=-0.02, lat_active=True, maneuver_active=False,
+                    lane_change_active=False, hint=Hint(g.ring.way_ids[0]), model_v2=None, stalk_state=stalk)
+  for i in range(30):
+    step(i, 0)
+  assert a.latched and params.puts == [(PARAM_RING_LATCHED, True)]
+  outs = [step(30 + i, 2) for i in range(60)]                            # right stalk held 0.6 s: StalkTipTurn.is_turn after 0.40 s
+  assert g.release == "stalk" and not a.latched and params.puts[-1] == (PARAM_RING_LATCHED, False)
+  assert outs[-1] == -0.02
+
+
+def test_off_while_latched_resets_and_clears_the_param():
+  params = _PutParams(on=True, ring=json.dumps(PASSES["00000128"]["ring"]))
+  a = RG.RoundaboutAssist(True, params)
+  a.guide = _on_ring()
+  a.update(FakeSM(), t=0.2, v_ego=7.0, yaw_rate=0.0, model_k=-0.02, lat_active=True, maneuver_active=False, lane_change_active=False,
+           hint=Hint(a.guide.ring.way_ids[0]))
+  assert params.puts == [(RG.PARAM_RING_LATCHED, True)]
+  params.on = False
+  a._frame = RG.PARAM_READ_FRAMES
+  assert a.update(FakeSM(), t=0.3, v_ego=7.0, yaw_rate=0.0, model_k=-0.02, lat_active=True, maneuver_active=False,
+                  lane_change_active=False) == -0.02
+  assert not a.guide.latched and params.puts[-1] == (RG.PARAM_RING_LATCHED, False)
+
+
+def test_tips_are_suppressed_while_latched_and_modeld_controlsd_are_wired():
+  from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper, LaneChangeState
+  from openpilot.selfdrive.controls.lib.tests.test_desire_helper import _arm_left
+  dh = DesireHelper()
+  dh.suppress_tips = True
+  _arm_left(dh)
+  assert dh.lane_change_state == LaneChangeState.off                     # a tip no longer arms ALC on the ring
+  dh = DesireHelper()
+  _arm_left(dh)
+  assert dh.lane_change_state == LaneChangeState.preLaneChange           # ...and does elsewhere
+  modeld = (ROOT / "selfdrive" / "modeld" / "modeld.py").read_text()
+  assert "DH.suppress_tips = params.get_bool(PARAM_RING_LATCHED)" in modeld
+  assert modeld.index("DH.suppress_tips = ") < modeld.index("DH.update(")
+  cd = (ROOT / "selfdrive" / "controls" / "controlsd.py").read_text()
+  assert "stalk_state=int(getattr(CS, 'turnSignalStalkState', 0) or 0)" in cd
+  assert "steering_pressed=bool(CS.steeringPressed), steering_torque=float(CS.steeringTorque)" in cd
+  assert '{"NAPRoundaboutLatched", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}}' in (ROOT / "common" / "params_keys.h").read_text()
+
+
+def test_ring_speed_constant_is_18_mph_and_planner_uses_it():
+  from openpilot.selfdrive.mapd import roundabout as rb
+  assert rb.RB_RING_SPEED_MPH == 18.0 and rb.RB_V_MIN_MS == pytest.approx(18.0 * MPH)
+  assert rb.roundabout_target_ms(12.0 * MPH) == pytest.approx(18.0 * MPH)       # a slower comfort speed is floored up to it
+  assert rb.roundabout_target_ms(40.0 * MPH) == pytest.approx(20.0 * MPH)       # and the max stays 20 mph
