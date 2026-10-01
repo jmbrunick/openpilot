@@ -21,7 +21,11 @@ _spec.loader.exec_module(parent)
 HistoricalMutation = parent.HistoricalMutation
 RB_GUIDE_TEST_PATH = "selfdrive/controls/lib/tests/test_roundabout_guide.py"
 RB_MAP_TEST_PATH = "selfdrive/mapd/tests/test_roundabout_map.py"
-EXPECTED_COUNT = 84
+RB_HOLD_TEST_PATH = "selfdrive/controls/lib/tests/test_roundabout_ring_hold.py"
+RB_MAPD_TEST_PATH = "selfdrive/mapd/tests/test_roundabout.py"
+RH_PATH = "selfdrive/controls/lib/roundabout_ring_hold.py"
+RG_PATH = "selfdrive/controls/lib/roundabout_guide.py"
+EXPECTED_COUNT = 110
 
 
 MUTATIONS = (
@@ -604,8 +608,8 @@ MUTATIONS += (
   HistoricalMutation(
     name="rb-guide-ring-cap-skipped-on-poor-pose",
     source_path='selfdrive/controls/lib/roundabout_guide.py',
-    original=b'      cap = -sense * model_k if holding else ring_cap(self.k_ref, model_k, v, sense)   # over the ring speed: no curl above the model\n',
-    replacement=b'      cap = -sense * model_k if holding else (1e9 if poor else ring_cap(self.k_ref, model_k, v, sense))\n',
+    original=b'      base = -sense * model_k if holding else ring_cap(self.k_ref, model_k, v, sense)\n',
+    replacement=b'      base = -sense * model_k if holding else (1e9 if poor else ring_cap(self.k_ref, model_k, v, sense))\n',
     test_nodes=(
       f"{RB_GUIDE_TEST_PATH}::test_ring_output_never_above_1_15x_the_model_or_2_2_after_the_latch",
     ),
@@ -617,10 +621,11 @@ MUTATIONS += (
     replacement=b'      out = model_k + self.dk_out\n',
     test_nodes=(
       f"{RB_GUIDE_TEST_PATH}::test_ring_output_never_above_1_15x_the_model_or_2_2_after_the_latch",
+      f"{RB_GUIDE_TEST_PATH}::test_curl_held_while_over_ring_speed_on_the_fixtures",
     ),
   ),
   HistoricalMutation(
-    name="rb-guide-lane-circle-is-the-centre-line",
+    name="rb-guide-lane-circle-is-the-center-line",
     source_path='selfdrive/controls/lib/roundabout_guide.py',
     original=b'        self.r_lane = R - LANE_CIRCLE_FRAC * hw\n',
     replacement=b'        self.r_lane = R\n',
@@ -691,7 +696,7 @@ MUTATIONS += (
     original=b'    if self.override_s >= OVERRIDE_S:\n',
     replacement=b'    if False:\n',
     test_nodes=(
-      f"{RB_GUIDE_TEST_PATH}::test_steering_press_zeroes_the_weight_at_once_and_overrides_after_0_5_s",
+      f"{RB_GUIDE_TEST_PATH}::test_steering_press_zeroes_the_weight_after_0_3_s_and_overrides_after_0_5_s",
     ),
   ),
   HistoricalMutation(
@@ -706,8 +711,8 @@ MUTATIONS += (
   HistoricalMutation(
     name="rb-guide-driver-torque-does-not-win",
     source_path='selfdrive/controls/lib/roundabout_guide.py',
-    original=b'    drv_active = bool(drv.stalk_held or drv.pressed or abs(drv.torque) >= PULL_TORQUE_NM)',
-    replacement=b'    drv_active = bool(drv.stalk_held or drv.pressed)',
+    original=b'    drv_active, self.drv_s = RH.driver_wins(drv.stalk_held, drv.pressed, drv.torque, sense, self.drv_s, dt)\n',
+    replacement=b'    drv_active, self.drv_s = bool(drv.stalk_held or drv.pressed), 0.0\n',
     test_nodes=(
       f"{RB_GUIDE_TEST_PATH}::test_steering_pull_toward_the_exit_releases_after_0_3_s",
       f"{RB_GUIDE_TEST_PATH}::test_steering_pull_toward_the_circulation_does_not_release_but_wins",
@@ -805,6 +810,249 @@ MUTATIONS += (
       f"{RB_GUIDE_TEST_PATH}::test_ring_speed_is_18_mph_and_lateral_cap",
     ),
   ),
+  HistoricalMutation(
+    name="rb-hold-cap-never-widens",
+    source_path=RH_PATH,
+    original=b'  if s_circle <= 0.0 or s_model >= CIRCLE_CAP_FRAC * s_circle:\n',
+    replacement=b'  if True:\n',
+    test_nodes=(
+      f"{RB_HOLD_TEST_PATH}::test_widen_cap_only_below_half_the_circle_and_bounded",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-hold-cap-widens-above-half",
+    source_path=RH_PATH,
+    original=b'  if s_circle <= 0.0 or s_model >= CIRCLE_CAP_FRAC * s_circle:\n',
+    replacement=b'  if s_circle <= 0.0 or s_model >= 2.0 * s_circle:\n',
+    test_nodes=(
+      f"{RB_HOLD_TEST_PATH}::test_widen_cap_only_below_half_the_circle_and_bounded",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-hold-cap-extra-unbounded",
+    source_path=RH_PATH,
+    original=b's_model + CIRCLE_CAP_EXTRA * fade, a_lat_max',
+    replacement=b's_model + 9.0 * fade, a_lat_max',
+    test_nodes=(
+      f"{RB_HOLD_TEST_PATH}::test_widen_cap_only_below_half_the_circle_and_bounded",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-hold-cap-ignores-lateral-accel-cap",
+    source_path=RH_PATH,
+    original=b'  return max(cap, min(s_circle, s_model + CIRCLE_CAP_EXTRA * fade, a_lat_max / max(v * v, 1.0)))\n',
+    replacement=b'  return max(cap, min(s_circle, s_model + CIRCLE_CAP_EXTRA * fade))\n',
+    test_nodes=(
+      f"{RB_HOLD_TEST_PATH}::test_widen_cap_only_below_half_the_circle_and_bounded",
+      f"{RB_HOLD_TEST_PATH}::test_cap_against_the_circle_when_the_model_is_flat_but_still_2_2_and_slew_bound",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-hold-cap-widening-steps-at-half-circle",
+    source_path=RH_PATH,
+    original=b'  fade = min(max(1.0 - s_model / (CIRCLE_CAP_FRAC * s_circle), 0.0), 1.0)\n',
+    replacement=b'  fade = 1.0\n',
+    test_nodes=(
+      f"{RB_HOLD_TEST_PATH}::test_widen_cap_only_below_half_the_circle_and_bounded",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-hold-exit-floor-removed",
+    source_path=RH_PATH,
+    original=b'    floor = max(floor, min(s_circle, a_lat_max / max(v * v, 1.0)))\n',
+    replacement=b'    floor = floor\n',
+    test_nodes=(
+      f"{RB_HOLD_TEST_PATH}::test_ring_limits_floor_only_in_the_exit_window_without_a_stalk",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-hold-exit-floor-ignores-stalk",
+    source_path=RG_PATH,
+    original=b'      plain = drv.stalk_dir == (2 if sense > 0.0 else 1) or d_edge',
+    replacement=b'      plain = d_edge',
+    test_nodes=(
+      f"{RB_HOLD_TEST_PATH}::test_exit_window_floor_keeps_the_circle_target_without_a_stalk_and_not_with_one",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-hold-exit-window-never-applied",
+    source_path=RG_PATH,
+    original=b'RH.in_exit_window(theta, sense, self.exits), plain)',
+    replacement=b'False, plain)',
+    test_nodes=(
+      f"{RB_HOLD_TEST_PATH}::test_exit_window_floor_keeps_the_circle_target_without_a_stalk_and_not_with_one",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-hold-exit-window-too-short",
+    source_path=RH_PATH,
+    original=b'EXIT_BEFORE_DEG = 20.0 ',
+    replacement=b'EXIT_BEFORE_DEG = 5.0 ',
+    test_nodes=(
+      f"{RB_HOLD_TEST_PATH}::test_exit_windows_20_deg_before_and_5_after_for_both_senses",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-hold-exit-window-wrong-side",
+    source_path=RH_PATH,
+    original=b'  return _wrap_deg(sense * (exit_deg - math.degrees(theta_rad)))\n',
+    replacement=b'  return _wrap_deg(exit_deg - math.degrees(theta_rad))\n',
+    test_nodes=(
+      f"{RB_HOLD_TEST_PATH}::test_exit_windows_20_deg_before_and_5_after_for_both_senses",
+      f"{RB_HOLD_TEST_PATH}::test_cw_ring_mirror_of_the_window_and_the_widening",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-hold-exits-not-computed",
+    source_path=RG_PATH,
+    original=b'    self.exits = RH.exit_angles(ring)\n',
+    replacement=b'    self.exits = []\n',
+    test_nodes=(
+      f"{RB_HOLD_TEST_PATH}::test_exit_angles_are_the_three_soco_branches",
+      f"{RB_HOLD_TEST_PATH}::test_exit_window_floor_keeps_the_circle_target_without_a_stalk_and_not_with_one",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-hold-exit-blinker-never-releases",
+    source_path=RG_PATH,
+    original=b'    if drv.stalk_dir == exit_dir and RH.on_exit_arm(',
+    replacement=b'    if False and RH.on_exit_arm(',
+    test_nodes=(
+      f"{RB_HOLD_TEST_PATH}::test_exit_blinker_releases_only_on_the_exit_arm_and_only_to_the_model",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-hold-exit-blinker-releases-either-side",
+    source_path=RG_PATH,
+    original=b'    if drv.stalk_dir == exit_dir and RH.on_exit_arm(',
+    replacement=b'    if drv.stalk_dir != 0 and RH.on_exit_arm(',
+    test_nodes=(
+      f"{RB_HOLD_TEST_PATH}::test_exit_blinker_releases_only_on_the_exit_arm_and_only_to_the_model",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-hold-exit-blinker-releases-anywhere",
+    source_path=RH_PATH,
+    original=b'  return near_exit(theta_rad, sense, exits) and d_edge >= -EXIT_ARM_EDGE_M\n',
+    replacement=b'  return True\n',
+    test_nodes=(
+      f"{RB_HOLD_TEST_PATH}::test_exit_blinker_releases_only_on_the_exit_arm_and_only_to_the_model",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-hold-press-not-debounced",
+    source_path=RH_PATH,
+    original=b'or drv_s >= PRESS_DEBOUNCE_S), drv_s',
+    replacement=b'or counts_as_press(pressed, torque, sense)), drv_s',
+    test_nodes=(
+      f"{RB_HOLD_TEST_PATH}::test_press_debounce_and_light_torque",
+      f"{RB_HOLD_TEST_PATH}::test_press_flicker_keeps_the_correction_but_a_held_press_and_hard_torque_still_win",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-hold-light-torque-not-ignored",
+    source_path=RH_PATH,
+    original=b'  return bool(pressed) and not (0.0 < sense * torque < LIGHT_TORQUE_NM)\n',
+    replacement=b'  return bool(pressed)\n',
+    test_nodes=(
+      f"{RB_HOLD_TEST_PATH}::test_press_debounce_and_light_torque",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-hold-light-torque-ignored-toward-exit",
+    source_path=RH_PATH,
+    original=b'not (0.0 < sense * torque < LIGHT_TORQUE_NM)',
+    replacement=b'not (0.0 < -sense * torque < LIGHT_TORQUE_NM)',
+    test_nodes=(
+      f"{RB_HOLD_TEST_PATH}::test_press_debounce_and_light_torque",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-hold-hard-override-removed",
+    source_path=RH_PATH,
+    original=b'bool(stalk_held or abs(torque) >= LIGHT_TORQUE_NM or drv_s',
+    replacement=b'bool(stalk_held or drv_s',
+    test_nodes=(
+      f"{RB_HOLD_TEST_PATH}::test_press_debounce_and_light_torque",
+      f"{RB_HOLD_TEST_PATH}::test_press_flicker_keeps_the_correction_but_a_held_press_and_hard_torque_still_win",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-hold-guide-override-uses-raw-press",
+    source_path=RG_PATH,
+    original=b'    hands = RH.counts_as_press(drv.pressed, drv.torque, sense) or',
+    replacement=b'    hands = drv.pressed or',
+    test_nodes=(
+      f"{RB_HOLD_TEST_PATH}::test_press_flicker_keeps_the_correction_but_a_held_press_and_hard_torque_still_win",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-hold-latch-waits-for-tangent",
+    source_path=RH_PATH,
+    original=b'  return d_edge < LATCH_EDGE_M and align_deg < max(tangent_deg, LATCH_ALIGN_EDGE_DEG)\n',
+    replacement=b'  return d_edge < LATCH_EDGE_M and align_deg < tangent_deg\n',
+    test_nodes=(
+      f"{RB_HOLD_TEST_PATH}::test_latch_ready_earlier_at_the_ring_edge",
+      f"{RB_HOLD_TEST_PATH}::test_early_latch_at_45_deg_alignment_and_not_beyond",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-hold-cap-widening-given-up-at-once",
+    source_path=RH_PATH,
+    original=b'  rate = 1.0 if plain or base + extra > a_cap else fall\n',
+    replacement=b'  rate = 1.0\n',
+    test_nodes=(
+      f"{RB_HOLD_TEST_PATH}::test_step_cap_rises_at_once_falls_slowly_and_is_bound_by_a_lat",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-hold-cap-widening-kept-over-ring-speed",
+    source_path=RH_PATH,
+    original=b'  if holding:\n    return 0.0, base\n',
+    replacement=b'  if False:\n    return 0.0, base\n',
+    test_nodes=(
+      f"{RB_HOLD_TEST_PATH}::test_step_cap_rises_at_once_falls_slowly_and_is_bound_by_a_lat",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-hold-guide-caps-against-live-model",
+    source_path=RG_PATH,
+    original=b'      s_cmd = max(min(-sense * k_pp, lim[0]), lim[1])\n',
+    replacement=b'      s_cmd = max(min(-sense * k_pp, ring_cap(self.k_ref, model_k, v, sense)), ring_floor(self.k_ref, v))\n',
+    test_nodes=(
+      f"{RB_HOLD_TEST_PATH}::test_0000013c_holds_the_left_turn_at_the_ring_edge_in_band",
+      f"{RB_HOLD_TEST_PATH}::test_cap_against_the_circle_when_the_model_is_flat_but_still_2_2_and_slew_bound",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-hold-guide-widening-past-lateral-accel",
+    source_path=RG_PATH,
+    original=b'    if self.latched and self.phase != EXITING and self.cap_extra > 0.0:\n',
+    replacement=b'    if False:\n',
+    test_nodes=(
+      f"{RB_HOLD_TEST_PATH}::test_0000013c_holds_the_left_turn_at_the_ring_edge_in_band",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-hold-guide-exit-blinker-not-handed-back",
+    source_path=RG_PATH,
+    original=b'("stalk", "pull", "override", "exit_blinker")',
+    replacement=b'("stalk", "pull", "override")',
+    test_nodes=(
+      f"{RB_HOLD_TEST_PATH}::test_exit_blinker_releases_only_on_the_exit_arm_and_only_to_the_model",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-hold-decel-onset-back-to-200m",
+    source_path="selfdrive/mapd/roundabout.py",
+    original=b'RB_DECEL_ONSET_M = 140.0\n',
+    replacement=b'RB_DECEL_ONSET_M = 200.0\n',
+    test_nodes=(
+      f"{RB_MAPD_TEST_PATH}::test_funnel_eases_speed",
+      f"{RB_HOLD_TEST_PATH}::test_decel_onset_is_a_named_constant_near_the_ring",
+      f"{RB_MAPD_TEST_PATH}::test_funnel_detects_farther_out",
+    ),
+  ),
 )
 
 
@@ -815,7 +1063,7 @@ def main() -> int:
   with tempfile.TemporaryDirectory(prefix="tesla-preap-roundabout-mutation-") as temp_dir:
     temp_root = Path(temp_dir)
     baseline_xml = temp_root / "baseline.xml"
-    baseline = parent.run_pytest((RB_GUIDE_TEST_PATH, RB_MAP_TEST_PATH), baseline_xml)
+    baseline = parent.run_pytest((RB_GUIDE_TEST_PATH, RB_MAP_TEST_PATH, RB_HOLD_TEST_PATH, RB_MAPD_TEST_PATH), baseline_xml)
     if baseline.returncode != 0:
       print("BASELINE FAILED: roundabout tests did not pass")
       print(baseline.stdout)
