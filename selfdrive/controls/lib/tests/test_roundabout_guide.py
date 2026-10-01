@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from openpilot.selfdrive.controls.lib import roundabout_guide as RG
+from openpilot.selfdrive.controls.lib import roundabout_ring_hold as RH
 from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature
 from openpilot.selfdrive.mapd.roundabout_map import RingGeometry, latlon_from_xy
 
@@ -213,7 +214,7 @@ def test_ring_speed_is_18_mph_and_lateral_cap(name):
 @pytest.mark.parametrize("name", ["00000126", "00000128", "00000130"])
 def test_hands_back_to_model_after_exit(name):
   rows, _ = simulate(name, "after", pool=PASSES_ALL)
-  tail = rows[-150:]
+  tail = rows[-100:]          # the fade of a widened ring correction (0.015 at the 0.035 slew) takes ~0.45 s after the safety release
   assert all(r[6] == r[5] for r in tail)
   assert _LAST["guide"].phase in (RG.DONE, RG.IDLE)   # DONE, then reset once > 60 m from the ring
   assert _LAST["guide"].dk_out == 0.0
@@ -500,7 +501,7 @@ def _sep29(**patch):
 
 
 def _old_constants(monkeypatch):
-  """The Sep 29 behaviour: 3.0 m/s² left cap, fast slews, no curl hold, latch whatever the pose, no ring cap."""
+  """The Sep 29 behavior: 3.0 m/s² left cap, fast slews, no curl hold, latch whatever the pose, no ring cap."""
   for k, v in dict(A_LAT_CIRC_MAX=3.0, OUT_SLEW=0.07, TARGET_SLEW=0.07, OUT_SLEW_GOOD=0.07, TARGET_SLEW_GOOD=0.07, SPEED_HOLD_MS=1e9,
                    BEARING_ACC_UNRELIABLE_DEG=1e9, BIAS_UNRELIABLE_M=1e9, BIAS_LATCH_DRIFT_M=1e9, RING_CAP_RATIO=1e3, RING_A_LAT_MAX=1e3,
                    RING_SLEW=0.07).items():
@@ -632,7 +633,7 @@ def _with_poor_pose(monkeypatch, name):
 def test_poor_pose_uses_the_slow_slews(monkeypatch, name):
   rows, _ = _with_poor_pose(monkeypatch, name)
   for a, b in zip(rows, rows[1:], strict=False):
-    assert abs((b[6] - b[5]) - (a[6] - a[5])) / DT <= RG.OUT_SLEW + 1e-6
+    assert abs((b[6] - b[5]) - (a[6] - a[5])) / DT <= RG.OUT_SLEW + 1e-6 or abs(b[6] - a[6]) / DT <= RG.OUT_SLEW + 1e-6   # or held
     assert abs(b[6] - a[6]) / DT <= max(RG.OUT_SLEW, RG.RING_CAP_RATIO * abs(b[5] - a[5]) / DT) + 1e-6   # the cap follows the model at 1.15x
 
 
@@ -655,17 +656,32 @@ def test_poor_pose_target_slew(monkeypatch, name):
 
 @pytest.mark.parametrize("name", ["00000128", "00000130"])
 def test_ring_output_never_above_1_15x_the_model_or_2_2_after_the_latch(name):
-  """After the latch, whatever the pose quality, the output is within [0.85, 1.15] x the model while it curves with the circulation."""
+  """After the latch, whatever the pose quality, the output is within [0.85, 1.15] x the model while it curves with the circulation.
+  Oct 1 (ring hold): except while the cap is widened toward the circle (model under half of it, <= CIRCLE_CAP_EXTRA over the model) or
+  inside an exit window (floor = the circle target); those are bounded below and in test_ring_hold_*."""
   for poor in (False, True):
     with pytest.MonkeyPatch.context() as mp:
       if poor:
         mp.setattr(RG, "pose_quality", lambda *a: (False, True))
+      seen = {}
+      orig = RG.RoundaboutGuide.update
+
+      def spy(self, t, *a, _o=orig, _s=seen, **k):
+        out = _o(self, t, *a, **k)
+        pose = self.corrected_pose()
+        _s[round(t, 2)] = (self.cap_extra, pose is not None and RH.in_exit_window(math.atan2(pose[1], pose[0]), 1.0, self.exits))
+        return out
+      mp.setattr(RG.RoundaboutGuide, "update", spy)
       rows, _ = simulate(name, "after", pool=PASSES_ALL)
       g = _LAST["guide"]
     assert g.latch_t is not None
     peak = 0.0
     for r in rows:
       if r[0] < g.latch_t + 0.5 or r[0] > g.latch_t + 40.0 or r[5] >= 0.0 or r[6] == r[5]:
+        continue
+      extra, window = seen[round(r[0], 2)]
+      if extra > 0.0 or window:
+        assert -r[6] * r[4] ** 2 <= RG.RING_A_LAT_MAX * 1.0001          # the widened cap / floor stays bound by 2.2 m/s²
         continue
       peak = max(peak, r[6] / r[5])
       assert r[6] / r[5] <= RG.RING_CAP_RATIO + 1e-6
@@ -679,7 +695,7 @@ def test_ring_output_slews_at_most_0_035_after_the_latch():
   win = [r for r in rows if g.latch_t <= r[0] <= g.latch_t + 8.0]
   assert len(win) > 500
   for a, b in zip(win, win[1:], strict=False):
-    assert abs((b[6] - b[5]) - (a[6] - a[5])) / DT <= RG.RING_SLEW + 1e-6
+    assert abs((b[6] - b[5]) - (a[6] - a[5])) / DT <= RG.RING_SLEW + 1e-6 or abs(b[6] - a[6]) / DT <= RG.RING_SLEW + 1e-6   # or held
 
 
 def test_curl_held_while_over_ring_speed_on_the_fixtures():
@@ -786,7 +802,7 @@ def test_ring_assist_follows_the_lane_circle_once_latched():
   g = _on_ring()
   outs = _run(g, 100)
   assert g.latched and g.r_lane == pytest.approx(g.ring.radius_m - 0.5 * g.ring.half_width_m)
-  assert all(o >= -0.02 * RG.RING_CAP_RATIO - 1e-9 for o in outs)       # CCW: never more left than 1.15x the model
+  assert all(o >= -0.02 - RH.CIRCLE_CAP_EXTRA - 1e-9 for o in outs)       # CCW: never more left than the model + CIRCLE_CAP_EXTRA
 
 
 def test_held_right_stalk_releases_the_ring_and_hands_back_at_once():
@@ -821,11 +837,14 @@ def test_steering_pull_toward_the_circulation_does_not_release_but_wins():
   assert outs == [-0.02] * 100 and g.release == "" and g.phase == RG.ACTIVE
 
 
-def test_steering_press_zeroes_the_weight_at_once_and_overrides_after_0_5_s():
+def test_steering_press_zeroes_the_weight_after_0_3_s_and_overrides_after_0_5_s():
   g = _on_ring()
   _run(g, 50)
-  assert _run(g, 40, RG.DriverInput(pressed=True), t0=0.7) == [-0.02] * 40 and g.release == ""
-  assert _run(g, 20, RG.DriverInput(pressed=True), t0=1.1) == [-0.02] * 20 and g.release == "override"
+  assert any(o != -0.02 for o in _run(g, 25, RG.DriverInput(pressed=True), t0=0.7))     # < 0.3 s: a flicker, the assist keeps going
+  _run(g, 5, t0=0.95)                                                                    # hands off: the debounce resets
+  _run(g, 35, RG.DriverInput(pressed=True), t0=1.0)
+  assert _run(g, 5, RG.DriverInput(pressed=True), t0=1.35) == [-0.02] * 5 and g.release == ""   # past 0.3 s: weight 0, not yet an override
+  assert _run(g, 20, RG.DriverInput(pressed=True), t0=1.4) == [-0.02] * 20 and g.release == "override"
   g = _on_ring()
   _run(g, 50)
   assert _run(g, 100, lat=False, t0=0.7) == [-0.02] * 100 and g.release == "override"      # lat off: the driver has the wheel
