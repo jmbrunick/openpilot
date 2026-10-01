@@ -21,7 +21,7 @@ _spec.loader.exec_module(parent)
 HistoricalMutation = parent.HistoricalMutation
 RB_GUIDE_TEST_PATH = "selfdrive/controls/lib/tests/test_roundabout_guide.py"
 RB_MAP_TEST_PATH = "selfdrive/mapd/tests/test_roundabout_map.py"
-EXPECTED_COUNT = 56
+EXPECTED_COUNT = 84
 
 
 MUTATIONS = (
@@ -58,7 +58,7 @@ MUTATIONS = (
     original=b'    px, py, ppsi = _arc_ahead(x, y, psi, v, yaw_rate, PREVIEW_S)\n',
     replacement=b'    px, py, ppsi = x, y, psi\n',
     test_nodes=(
-      f"{RB_GUIDE_TEST_PATH}::test_assist_keeps_both_passes_in_the_ring_band",
+      f"{RB_GUIDE_TEST_PATH}::test_ring_follow_keeps_the_passes_in_the_ring_band",
     ),
   ),
   HistoricalMutation(
@@ -388,24 +388,6 @@ MUTATIONS += (
     ),
   ),
   HistoricalMutation(
-    name="rb-guide-left-cap-ignores-circulation-side",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
-    original=b'  k_circ, k_other = (A_LAT_MAX if latched else A_LAT_CIRC_MAX) / v2, A_LAT_MAX / v2\n',
-    replacement=b'  k_circ, k_other = A_LAT_MAX / v2, A_LAT_MAX / v2\n',
-    test_nodes=(
-      f"{RB_GUIDE_TEST_PATH}::test_left_transition_cap_uses_actual_speed",
-    ),
-  ),
-  HistoricalMutation(
-    name="rb-guide-left-cap-applies-on-the-ring",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
-    original=b'(A_LAT_MAX if latched else A_LAT_CIRC_MAX) / v2',
-    replacement=b'A_LAT_CIRC_MAX / v2',
-    test_nodes=(
-      f"{RB_GUIDE_TEST_PATH}::test_left_transition_cap_uses_actual_speed",
-    ),
-  ),
-  HistoricalMutation(
     name="rb-guide-output-slew-back-to-0-07",
     source_path="selfdrive/controls/lib/roundabout_guide.py",
     original=b'OUT_SLEW = 0.035 ',
@@ -413,24 +395,6 @@ MUTATIONS += (
     test_nodes=(
       f"{RB_GUIDE_TEST_PATH}::test_slews_are_0_035_for_a_poor_pose",
       f"{RB_GUIDE_TEST_PATH}::test_poor_pose_uses_the_slow_slews",
-    ),
-  ),
-  HistoricalMutation(
-    name="rb-guide-poor-pose-uses-fast-output-slew",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
-    original=b'    oslew = OUT_SLEW if poor else OUT_SLEW_GOOD\n',
-    replacement=b'    oslew = OUT_SLEW_GOOD\n',
-    test_nodes=(
-      f"{RB_GUIDE_TEST_PATH}::test_poor_pose_uses_the_slow_slews",
-    ),
-  ),
-  HistoricalMutation(
-    name="rb-guide-poor-pose-uses-fast-target-slew",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
-    original=b'      tslew = TARGET_SLEW if poor else TARGET_SLEW_GOOD\n',
-    replacement=b'      tslew = TARGET_SLEW_GOOD\n',
-    test_nodes=(
-      f"{RB_GUIDE_TEST_PATH}::test_poor_pose_target_slew",
     ),
   ),
   HistoricalMutation(
@@ -473,15 +437,6 @@ MUTATIONS += (
     ),
   ),
   HistoricalMutation(
-    name="rb-guide-inner-clamp-on-poor-pose",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
-    original=b'      lo = R if (poor or bias_m > BIAS_UNRELIABLE_M) else R - 0.5 * hw      # doubtful pose: never the inner side\n',
-    replacement=b'      lo = R - 0.5 * hw\n',
-    test_nodes=(
-      f"{RB_GUIDE_TEST_PATH}::test_poor_pose_latch_never_aims_at_the_inner_side",
-    ),
-  ),
-  HistoricalMutation(
     name="rb-guide-fades-nothing-on-unreliable-pose",
     source_path="selfdrive/controls/lib/roundabout_guide.py",
     original=b'      phase_target = 0.0 if (unreliable and not self.latched) else 1.0\n',
@@ -519,31 +474,335 @@ MUTATIONS += (
     ),
   ),
   HistoricalMutation(
-    name="rb-guide-no-poor-gps-cap-after-latch",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
-    original=b'    capping = self.latched and self.latch_poor and t - (self.latch_t or t) <= CAP_WINDOW_S\n',
-    replacement=b'    capping = False\n',
+    name="rb-guide-left-cap-ignores-circulation-side",
+    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    original=b'  k_circ, k_other = A_LAT_CIRC_MAX / v2, A_LAT_MAX / v2\n',
+    replacement=b'  k_circ, k_other = A_LAT_MAX / v2, A_LAT_MAX / v2\n',
     test_nodes=(
-      f"{RB_GUIDE_TEST_PATH}::test_poor_gps_caps_the_assist_after_the_latch",
+      f"{RB_GUIDE_TEST_PATH}::test_left_transition_cap_uses_actual_speed",
     ),
   ),
   HistoricalMutation(
-    name="rb-guide-poor-gps-cap-too-loose",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
-    original=b'  c = (POOR_GPS_CAP - 1.0) * abs(model_k) + POOR_GPS_FLOOR\n',
-    replacement=b'  c = 1.0\n',
+    name="rb-guide-poor-pose-uses-fast-output-slew",
+    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    original=b'    oslew = RING_SLEW if self.latched else (OUT_SLEW if poor else OUT_SLEW_GOOD)\n',
+    replacement=b'    oslew = RING_SLEW if self.latched else OUT_SLEW_GOOD\n',
     test_nodes=(
-      f"{RB_GUIDE_TEST_PATH}::test_poor_gps_caps_the_assist_at_1_2x_the_model",
-      f"{RB_GUIDE_TEST_PATH}::test_poor_gps_caps_the_assist_after_the_latch",
+      f"{RB_GUIDE_TEST_PATH}::test_poor_pose_uses_the_slow_slews",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-poor-pose-uses-fast-target-slew",
+    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    original=b'    slew = RING_SLEW if self.latched else (TARGET_SLEW if poor else TARGET_SLEW_GOOD)\n',
+    replacement=b'    slew = RING_SLEW if self.latched else TARGET_SLEW_GOOD\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_poor_pose_target_slew",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-inner-lane-on-poor-pose",
+    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    original=b'      inner = r <= R and not (poor or bias_m > BIAS_UNRELIABLE_M)           # doubtful pose: never the inner lane\n',
+    replacement=b'      inner = r <= R\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_poor_pose_latch_never_aims_at_the_inner_side",
     ),
   ),
   HistoricalMutation(
     name="rb-guide-ring-state-not-logged",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
-    original=b'      cloudlog.warning(f"roundabout_assist {e}")\n',
+    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    original=b'      cloudlog.error(f"roundabout_assist {e}")\n',
     replacement=b'      pass\n',
     test_nodes=(
       f"{RB_GUIDE_TEST_PATH}::test_ring_state_is_logged_via_cloudlog_without_capnp",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-ring-state-logged-below-qlog-level",
+    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    original=b'      cloudlog.error(f"roundabout_assist {e}")\n',
+    replacement=b'      cloudlog.warning(f"roundabout_assist {e}")\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_ring_state_is_logged_via_cloudlog_without_capnp",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-raw-model-summary-not-logged",
+    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    original=b'      cloudlog.error("roundabout_raw " + raw_ring_summary(g, t, v_ego, model_k, out, model_v2, driver))\n',
+    replacement=b'      pass\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_raw_model_summary_logged_near_and_in_the_ring",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-raw-model-summary-logged-far-from-ring",
+    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    original=b'    near = on and g.d_edge is not None and g.d_edge < RAW_LOG_EDGE_M and g.phase != DONE\n',
+    replacement=b'    near = on\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_raw_model_summary_logged_near_and_in_the_ring",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-ring-cap-ratio-1-5",
+    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    original=b'RING_CAP_RATIO = 1.15 ',
+    replacement=b'RING_CAP_RATIO = 1.5  ',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_ring_cap_is_1_15x_the_model_and_2_2_mps2",
+      f"{RB_GUIDE_TEST_PATH}::test_ring_output_never_above_1_15x_the_model_or_2_2_after_the_latch",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-ring-a-lat-cap-3-0",
+    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    original=b'RING_A_LAT_MAX = 2.2 ',
+    replacement=b'RING_A_LAT_MAX = 3.0 ',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_ring_cap_is_1_15x_the_model_and_2_2_mps2",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-ring-slew-0-07",
+    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    original=b'RING_SLEW = 0.035 ',
+    replacement=b'RING_SLEW = 0.07  ',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_ring_cap_is_1_15x_the_model_and_2_2_mps2",
+      f"{RB_GUIDE_TEST_PATH}::test_ring_output_slews_at_most_0_035_after_the_latch",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-ring-floor-removed",
+    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    original=b'RING_FLOOR_RATIO = 0.85 ',
+    replacement=b'RING_FLOOR_RATIO = 0.0  ',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_ring_cap_is_1_15x_the_model_and_2_2_mps2",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-ring-cap-not-lateral-limited",
+    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    original=b'  return max(s_model, min(RING_CAP_RATIO * max(ref_k, s_model) + RING_CAP_FLOOR, RING_A_LAT_MAX / max(v * v, 1.0)))\n',
+    replacement=b'  return max(s_model, RING_CAP_RATIO * max(ref_k, s_model) + RING_CAP_FLOOR)\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_ring_cap_is_1_15x_the_model_and_2_2_mps2",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-ring-cap-steers-against-the-model",
+    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    original=b'    return s_model          # model not curving with the circulation: the assist never steers against it\n',
+    replacement=b'    return 0.0\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_ring_cap_is_1_15x_the_model_and_2_2_mps2",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-ring-cap-skipped-on-poor-pose",
+    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    original=b'      cap = -sense * model_k if holding else ring_cap(self.k_ref, model_k, v, sense)   # over the ring speed: no curl above the model\n',
+    replacement=b'      cap = -sense * model_k if holding else (1e9 if poor else ring_cap(self.k_ref, model_k, v, sense))\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_ring_output_never_above_1_15x_the_model_or_2_2_after_the_latch",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-ring-hard-clamp-removed",
+    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    original=b'      out = -sense * min(-sense * (model_k + self.dk_out), cap)\n',
+    replacement=b'      out = model_k + self.dk_out\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_ring_output_never_above_1_15x_the_model_or_2_2_after_the_latch",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-lane-circle-is-the-centre-line",
+    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    original=b'        self.r_lane = R - LANE_CIRCLE_FRAC * hw\n',
+    replacement=b'        self.r_lane = R\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_ring_assist_follows_the_lane_circle_once_latched",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-latched-confidence-weight-only",
+    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    original=b'    w = self.phase_w if self.latched else W_MAX * conf * self.phase_w     # latched: the cap, not the confidence, bounds the assist\n',
+    replacement=b'    w = W_MAX * conf * self.phase_w\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_latched_weight_does_not_depend_on_pose_confidence",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-stalk-releases-wrong-side",
+    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    original=b'    exit_dir = 2 if sense > 0.0 else 1                      # exit side: right on a CCW ring\n',
+    replacement=b'    exit_dir = 1 if sense > 0.0 else 2\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_held_right_stalk_releases_the_ring_and_hands_back_at_once",
+      f"{RB_GUIDE_TEST_PATH}::test_held_left_stalk_does_not_release_but_the_guide_weight_is_zero",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-stalk-never-releases",
+    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    original=b'    if drv.stalk_held and drv.stalk_dir == exit_dir:\n',
+    replacement=b'    if False:\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_held_right_stalk_releases_the_ring_and_hands_back_at_once",
+      f"{RB_GUIDE_TEST_PATH}::test_latched_param_and_stalk_release_through_the_assist",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-any-stalk-releases",
+    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    original=b'    if drv.stalk_held and drv.stalk_dir == exit_dir:\n',
+    replacement=b'    if drv.stalk_held:\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_held_left_stalk_does_not_release_but_the_guide_weight_is_zero",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-pull-wrong-direction",
+    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    original=b'    self.pull_s = self.pull_s + dt if -sense * drv.torque >= PULL_TORQUE_NM else 0.0\n',
+    replacement=b'    self.pull_s = self.pull_s + dt if sense * drv.torque >= PULL_TORQUE_NM else 0.0\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_steering_pull_toward_the_exit_releases_after_0_3_s",
+      f"{RB_GUIDE_TEST_PATH}::test_steering_pull_toward_the_circulation_does_not_release_but_wins",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-pull-never-releases",
+    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    original=b'    if self.pull_s >= PULL_RELEASE_S:\n',
+    replacement=b'    if False:\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_steering_pull_toward_the_exit_releases_after_0_3_s",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-override-never-releases",
+    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    original=b'    if self.override_s >= OVERRIDE_S:\n',
+    replacement=b'    if False:\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_steering_press_zeroes_the_weight_at_once_and_overrides_after_0_5_s",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-map-only-exit",
+    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    original=b'    if v > V_MAX + 2.0:\n      return "speed"\n',
+    replacement=b'    if self.travel > 60.0:\n      return "map_exit"\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_no_blinker_no_map_exit_the_car_stays_on_the_ring",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-driver-torque-does-not-win",
+    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    original=b'    drv_active = bool(drv.stalk_held or drv.pressed or abs(drv.torque) >= PULL_TORQUE_NM)',
+    replacement=b'    drv_active = bool(drv.stalk_held or drv.pressed)',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_steering_pull_toward_the_exit_releases_after_0_3_s",
+      f"{RB_GUIDE_TEST_PATH}::test_steering_pull_toward_the_circulation_does_not_release_but_wins",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-held-stalk-keeps-the-assist",
+    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    original=b'    if not lat_active or drv_active:\n',
+    replacement=b'    if not lat_active:\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_held_left_stalk_does_not_release_but_the_guide_weight_is_zero",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-held-stalk-weight-not-zero",
+    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    original=b'    if drv_active:\n      w = 0.0\n',
+    replacement=b'    if False:\n      w = 0.0\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_held_left_stalk_does_not_release_but_the_guide_weight_is_zero",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-latched-param-not-written",
+    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    original=b'      self.params.put_bool(PARAM_RING_LATCHED, latched)\n',
+    replacement=b'      pass\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_latched_param_and_stalk_release_through_the_assist",
+      f"{RB_GUIDE_TEST_PATH}::test_off_while_latched_resets_and_clears_the_param",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-guide-off-while-latched-keeps-the-ring",
+    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    original=b'      if self.guide.latched:\n        self.guide.reset_state()      # toggled Off on the ring: nothing carried over\n',
+    replacement=b'      if False:\n        self.guide.reset_state()\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_off_while_latched_resets_and_clears_the_param",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-desire-helper-tips-not-suppressed-on-ring",
+    source_path='selfdrive/controls/lib/desire_helper.py',
+    original=b'    tip_event = self._tip_turn.tip_event and not self._suppress_next_tip and not self.suppress_tips\n',
+    replacement=b'    tip_event = self._tip_turn.tip_event and not self._suppress_next_tip\n',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_tips_are_suppressed_while_latched_and_modeld_controlsd_are_wired",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-modeld-ring-latch-not-read",
+    source_path='selfdrive/modeld/modeld.py',
+    original=b'        DH.suppress_tips = params.get_bool(PARAM_RING_LATCHED)',
+    replacement=b'        DH.suppress_tips = False',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_tips_are_suppressed_while_latched_and_modeld_controlsd_are_wired",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-controlsd-driver-stalk-not-passed",
+    source_path='selfdrive/controls/controlsd.py',
+    original=b"stalk_state=int(getattr(CS, 'turnSignalStalkState', 0) or 0)",
+    replacement=b'stalk_state=0',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_tips_are_suppressed_while_latched_and_modeld_controlsd_are_wired",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-controlsd-driver-torque-not-passed",
+    source_path='selfdrive/controls/controlsd.py',
+    original=b'steering_pressed=bool(CS.steeringPressed), steering_torque=float(CS.steeringTorque)',
+    replacement=b'steering_pressed=False, steering_torque=0.0',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_tips_are_suppressed_while_latched_and_modeld_controlsd_are_wired",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-latched-param-persists-across-drives",
+    source_path='common/params_keys.h',
+    original=b'{"NAPRoundaboutLatched", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}}',
+    replacement=b'{"NAPRoundaboutLatched", {PERSISTENT, BOOL}}',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_tips_are_suppressed_while_latched_and_modeld_controlsd_are_wired",
+    ),
+  ),
+  HistoricalMutation(
+    name="rb-ring-speed-back-to-15-8-mph",
+    source_path='selfdrive/mapd/roundabout.py',
+    original=b'RB_RING_SPEED_MPH = 18.0',
+    replacement=b'RB_RING_SPEED_MPH = 15.8',
+    test_nodes=(
+      f"{RB_GUIDE_TEST_PATH}::test_ring_speed_constant_is_18_mph_and_planner_uses_it",
+      f"{RB_GUIDE_TEST_PATH}::test_ring_speed_is_18_mph_and_lateral_cap",
     ),
   ),
 )

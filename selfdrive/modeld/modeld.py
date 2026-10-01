@@ -18,6 +18,7 @@ from openpilot.common.transformations.camera import DEVICE_CAMERAS
 from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
 from openpilot.common.transformations.model import get_warp_matrix
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
+from openpilot.selfdrive.controls.lib.stalk_tip_turn import PARAM_RING_LATCHED
 from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, smooth_value, MIN_STABLE_DELAY
 from openpilot.selfdrive.modeld.parse_model_outputs import Parser
 from openpilot.selfdrive.modeld.compile_modeld import make_input_queues, WARP_INPUTS, POLICY_INPUTS
@@ -337,6 +338,8 @@ def main(demo=False):
       l_lane_change_prob = desire_state[log.Desire.laneChangeLeft]
       r_lane_change_prob = desire_state[log.Desire.laneChangeRight]
       lane_change_prob = l_lane_change_prob + r_lane_change_prob
+      if turn_geom_preap and run_count % ModelConstants.MODEL_RUN_FREQ == 0:
+        DH.suppress_tips = params.get_bool(PARAM_RING_LATCHED)   # roundabout ring latched (controlsd): no ALC from a tip
       DH.update(sm['carState'], sm['carControl'].latActive, lane_change_prob,
                 model=modelv2_send.modelV2, engaged=sm['carControl'].enabled)
       modelv2_send.modelV2.meta.laneChangeState = DH.lane_change_state

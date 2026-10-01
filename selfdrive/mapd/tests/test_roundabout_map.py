@@ -126,8 +126,8 @@ def test_comfort_speed_soco_about_15_mph():
   assert 15.0 * CV.MPH_TO_MS <= v <= 16.5 * CV.MPH_TO_MS
   # Inner lane (2 lanes, lanes tag missing) at that speed: <= 2.5 m/s^2.
   assert v * v / (ring.radius_m - 1.75) <= 2.5 + 1e-6
-  # Planner target keeps it (15-20 mph clamp).
-  assert abs(roundabout_target_ms(v) - v) < 1e-6
+  # Planner target floors it at the 18 mph ring speed (Sep 30; the comfort speed itself is unchanged).
+  assert roundabout_target_ms(v) == pytest.approx(18.0 * CV.MPH_TO_MS)
   # OSM maxspeed still caps; bigger rings are faster; bad input safe.
   assert roundabout_comfort_speed_ms(21.6, 2, 5.0) == pytest.approx(5.0)
   assert roundabout_comfort_speed_ms(40.0, 2) > v
@@ -433,8 +433,8 @@ def test_card_ring_hint_drops_hud_max_without_speed_match():
   md.speedLimitValid, md.speedLimit = False, 0.0
   _set_ring(md)
   run(h, cs, 1.0)
-  assert _hud_mph(h) == pytest.approx(15.8, abs=0.3)
-  assert h._map_slew_ms == pytest.approx(15.8 * CV.MPH_TO_MS, abs=0.05)
+  assert _hud_mph(h) == pytest.approx(18.0, abs=0.3)
+  assert h._map_slew_ms == pytest.approx(18.0 * CV.MPH_TO_MS, abs=0.05)
 
 
 def test_card_ring_hint_same_max_with_or_without_speed_match():
@@ -447,7 +447,7 @@ def test_card_ring_hint_same_max_with_or_without_speed_match():
   _set_ring(md_b)                                # no match
   run(a, cs_a, 1.0)
   run(b, cs_b, 1.0)
-  assert _hud_mph(a) == pytest.approx(_hud_mph(b), abs=1e-6) == pytest.approx(15.8, abs=0.3)
+  assert _hud_mph(a) == pytest.approx(_hud_mph(b), abs=1e-6) == pytest.approx(18.0, abs=0.3)
 
 
 def test_card_ring_hint_needs_a_valid_map_message():

@@ -97,6 +97,8 @@ class DesireHelper:
     # is not re-read as a new tip after a reset.
     self._tip_turn = StalkTipTurn()
     self._suppress_next_tip = False
+    # Set by modeld from NAPRoundaboutLatched (roundabout ring assist latched): a tip is not a lane change on a ring.
+    self.suppress_tips = False
     self._yank = EmergencyYankTracker()
     self._soft_confirm = SoftConfirmTracker()
     self._opposite_s = 0.0
@@ -292,7 +294,7 @@ class DesireHelper:
       dt=DT_MDL)
     left_press = self._tip_turn.left_press
     right_press = self._tip_turn.right_press
-    tip_event = self._tip_turn.tip_event and not self._suppress_next_tip
+    tip_event = self._tip_turn.tip_event and not self._suppress_next_tip and not self.suppress_tips
     if not self._tip_turn.is_pending and self._tip_turn.direction == 0:
       self._suppress_next_tip = False
 

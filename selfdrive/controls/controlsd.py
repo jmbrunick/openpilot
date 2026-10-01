@@ -281,7 +281,8 @@ class Controls:
       self.sm, t=float(self.sm.logMonoTime['carState']) * 1e-9, v_ego=float(CS.vEgo), yaw_rate=yaw_rate,
       model_k=float(model_or_plan_curvature), lat_active=bool(CC.latActive) and not bool(self._lat_handoff.yielded),
       maneuver_active=bool(self.sm.valid['lateralManeuverPlan']), lane_change_active=bool(alc_active),
-      hint=rb_assist_hint, model_v2=model_v2)
+      hint=rb_assist_hint, model_v2=model_v2, stalk_state=int(getattr(CS, 'turnSignalStalkState', 0) or 0),
+      steering_pressed=bool(CS.steeringPressed), steering_torque=float(CS.steeringTorque))
     rb_bias = roundabout_lateral_curvature_bias(
       rb_hint, is_rhd=is_rhd, turn_geometry_active=self._turn_geom_active,
     )
