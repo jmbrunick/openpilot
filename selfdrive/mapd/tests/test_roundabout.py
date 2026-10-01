@@ -1,6 +1,8 @@
 """Roundabout first slice: funnel detect, speed ease, outer bias, FP guard."""
 import math
 
+import pytest
+
 from openpilot.common.constants import CV
 from openpilot.selfdrive.mapd.constants import LOOKAHEAD_NORMAL
 from openpilot.selfdrive.mapd.osm_db import EARTH_R, OsmSpeedLimitDB, _unpack_coords
@@ -14,6 +16,7 @@ from openpilot.selfdrive.mapd.roundabout import (
   RB_OUTER_OFFSET_MAX_M,
   RB_OUTER_OFFSET_MIN_M,
   RB_V_DEFAULT_MS,
+  RB_RING_SPEED_MPH,
   RB_V_MAX_MS,
   RB_V_MIN_MS,
   RoundaboutHint,
@@ -124,7 +127,9 @@ def test_motorway_and_trunk_suppress_roundabout_hints():
 def test_target_clamps_osm_to_15_20():
   assert abs(roundabout_target_ms(0.0) - RB_V_DEFAULT_MS) < 1e-6
   assert abs(roundabout_target_ms(20.0 * CV.MPH_TO_MS) - 20.0 * CV.MPH_TO_MS) < 1e-6
-  assert abs(roundabout_target_ms(15.0 * CV.MPH_TO_MS) - 15.0 * CV.MPH_TO_MS) < 1e-6
+  assert abs(roundabout_target_ms(18.5 * CV.MPH_TO_MS) - 18.5 * CV.MPH_TO_MS) < 1e-6
+  assert roundabout_target_ms(15.0 * CV.MPH_TO_MS) == RB_V_MIN_MS == pytest.approx(RB_RING_SPEED_MPH * CV.MPH_TO_MS)   # Sep 30: 18 mph floor
+  assert RB_RING_SPEED_MPH == 18.0
   assert roundabout_target_ms(25.0 * CV.MPH_TO_MS) == RB_V_MAX_MS
   assert roundabout_target_ms(10.0 * CV.MPH_TO_MS) == RB_V_MIN_MS
 
