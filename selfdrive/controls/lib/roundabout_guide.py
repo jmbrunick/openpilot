@@ -4,7 +4,7 @@ Sep 28 (R126, R128): through the Soco / Dellwood / Jonathan Creek ring the model
 curvature blend curled left at 1.8x the model and the driver overrode it. Sep 30: once latched the car FOLLOWS THE MAP'S LANE
 CIRCLE; the blend, the left-curl ramp and the map-only auto-exit are gone.
 
-  * Pose: 1 Hz GNSS (0.66 s latency, odometry-compensated) fused with wheel speed + yaw rate, local frame at the ring centre.
+  * Pose: 1 Hz GNSS (0.66 s latency, odometry-compensated) fused with wheel speed + yaw rate, local frame at the ring center.
   * Entry (unchanged): farther than D_TURN_M from the ring edge the target can only hold / add right. Inside it the target is the
     circle-follow curvature (1 s preview), circulation-side curl capped at 2.2 m/s² and held while > 3 mph over the ring speed.
   * Latch: tangent in the band -> lane circle R -/+ half-width/2 (inner if on the island side of R and the pose is trustworthy).
@@ -23,6 +23,7 @@ from collections import deque
 from dataclasses import dataclass
 
 from openpilot.common.swaglog import cloudlog
+from openpilot.selfdrive.controls.lib import roundabout_ring_hold as RH
 from openpilot.selfdrive.controls.lib.roundabout_ring_log import LOG_RAW_X, _interp_xy, raw_ring_summary  # noqa: F401
 from openpilot.selfdrive.controls.lib.stalk_tip_turn import PARAM_RING_LATCHED, StalkTipTurn
 from openpilot.selfdrive.mapd.roundabout import roundabout_target_ms
@@ -406,6 +407,7 @@ def pose_quality(bearing_acc_deg: float, bias_m: float, bias_drift_m: float, inn
   return unreliable, poor
 
 
+CAP_FALL = 0.3               # x RING_SLEW: how fast the widened ring cap is given up
 IDLE, ACTIVE, EXITING, DONE = "idle", "active", "exiting", "done"
 
 
@@ -414,6 +416,7 @@ class RoundaboutGuide:
     self.pose = PoseTracker()
     self.ring: RingGeometry | None = None
     self.ring_v = 0.0
+    self.exits: list[float] = []
     self.reset_state()
     self.debug: dict = {}
 
@@ -431,6 +434,8 @@ class RoundaboutGuide:
     self.release = ""
     self.override_s = 0.0
     self.pull_s = 0.0
+    self.drv_s = 0.0
+    self.cap_extra = 0.0
     self.last_t = None
     self.turning = False
     self.bias = (0.0, 0.0)
@@ -455,6 +460,7 @@ class RoundaboutGuide:
     if self.ring is not None and set(ring.way_ids) == set(self.ring.way_ids):
       return
     self.ring = ring
+    self.exits = RH.exit_angles(ring)
     self.ring_v = float(roundabout_target_ms(roundabout_comfort_speed_ms(ring.radius_m, ring.lanes, ring.maxspeed_ms)))
     self.pose.set_origin(ring.lat, ring.lon)
     self.reset_state()
@@ -489,16 +495,18 @@ class RoundaboutGuide:
     self.bias = (bx, by)
 
   def _release_reason(self, drv: DriverInput, sense: float, lat_active: bool, dt: float, v: float, d_edge: float,
-                      fix_age: float) -> str:
+                      fix_age: float, theta: float = 0.0) -> str:
     """Why a latched ring is released ('' = stay). Only the driver (stalk / steering pull / override) or a hard
     failsafe: there is no map-only exit, with no blinker the car stays on the ring."""
     exit_dir = 2 if sense > 0.0 else 1                      # exit side: right on a CCW ring
     if drv.stalk_held and drv.stalk_dir == exit_dir:
       return "stalk"
+    if drv.stalk_dir == exit_dir and RH.on_exit_arm(theta, sense, self.exits, d_edge):
+      return "exit_blinker"                               # blinker on while on the exit arm: hand back to the model
     self.pull_s = self.pull_s + dt if -sense * drv.torque >= PULL_TORQUE_NM else 0.0
     if self.pull_s >= PULL_RELEASE_S:
       return "pull"
-    hands = drv.pressed or (not lat_active and not drv.stalk_held)
+    hands = RH.counts_as_press(drv.pressed, drv.torque, sense) or (not lat_active and not drv.stalk_held)
     self.override_s = self.override_s + dt if hands else 0.0
     if self.override_s >= OVERRIDE_S:
       return "override"
@@ -567,19 +575,20 @@ class RoundaboutGuide:
     drift = math.hypot(self.bias[0] - self.bias_hist[0][1], self.bias[1] - self.bias_hist[0][2])
     unreliable, poor = pose_quality(self.pose.bacc, bias_m, drift, self.pose.innov)
     can_latch = not unreliable and drift <= BIAS_LATCH_DRIFT_M
-    if not self.latched and align < TANGENT_DEG and d_edge < 1.0 and not can_latch:
+    ready = RH.latch_ready(align, d_edge, TANGENT_DEG)
+    if not self.latched and ready and not can_latch:
       kind = "unreliable" if unreliable else "bias_unsettled"
       if kind != self._blocked:
         self._blocked = kind
         self._ev(f"latch blocked {kind} bacc={self.pose.bacc:.0f} bias={bias_m:.1f} drift={drift:.1f} r={r:.1f} d_edge={d_edge:.1f}")
-    if not self.latched and align < TANGENT_DEG and d_edge < 1.0 and can_latch:
+    if not self.latched and ready and can_latch:
       self.latched = True
       self.latch_t = t
       self.latch_poor = poor
       inner = r <= R and not (poor or bias_m > BIAS_UNRELIABLE_M)           # doubtful pose: never the inner lane
       if inner:
         self.r_lane = R - LANE_CIRCLE_FRAC * hw
-      else:     # doubtful pose: the outer lane circle if the car reads outside R, else the centre line (never the island side)
+      else:     # doubtful pose: the outer lane circle if the car reads outside R, else the center line (never the island side)
         self.r_lane = R + LANE_CIRCLE_FRAC * hw if r > R else R
       self.r_ref = self.r_lane
       self.theta_entry = theta
@@ -593,13 +602,13 @@ class RoundaboutGuide:
       self.model_hist.popleft()
     self.k_ref = max(0.0, max(m for _, m in self.model_hist))
     drv = driver or DriverInput()
-    drv_active = bool(drv.stalk_held or drv.pressed or abs(drv.torque) >= PULL_TORQUE_NM)   # the driver always wins: weight 0 at once
+    drv_active, self.drv_s = RH.driver_wins(drv.stalk_held, drv.pressed, drv.torque, sense, self.drv_s, dt)
     if self.latched and self.phase != EXITING:
-      why = self._release_reason(drv, sense, lat_active, dt, v, d_edge, t - self.pose.last_fix_t)
+      why = self._release_reason(drv, sense, lat_active, dt, v, d_edge, t - self.pose.last_fix_t, theta)
       if why:
         self.release = why
         self._ev(f"released {why} r={r:.1f} travel={self.travel:.0f} v={v:.1f}")
-        if why in ("stalk", "pull", "override"):      # the driver: hand back at once
+        if why in ("stalk", "pull", "override", "exit_blinker"):      # the driver: hand back at once
           self.phase, self.k_tgt, self.phase_w = DONE, None, 0.0
           return self._passthrough(model_k)
         self.phase = EXITING                          # safety release: fade to the model (W_RATE, RING_SLEW)
@@ -617,9 +626,14 @@ class RoundaboutGuide:
       k_raw = k_pp
       # Unreliable pose and not latched: fade the assist out, the model keeps this pass (Sep 29 11:57:48).
       phase_target = 0.0 if (unreliable and not self.latched) else 1.0
+    lim, plain = (0.0, 0.0), True
     if self.latched:
       # Circulating: command the lane circle, within [ring_floor, ring_cap] whatever the pose quality.
-      s_cmd = max(min(-sense * k_pp, ring_cap(self.k_ref, model_k, v, sense)), ring_floor(self.k_ref, v))
+      holding_now = v > self.ring_v + SPEED_HOLD_MS
+      plain = drv.stalk_dir == (2 if sense > 0.0 else 1) or d_edge > RH.EXIT_ARM_EDGE_M or holding_now   # the old 1.15x-model limits
+      lim = RH.ring_limits(ring_cap(self.k_ref, model_k, v, sense), ring_floor(self.k_ref, v), -sense * model_k, -sense * k_pp, v,
+                           RING_A_LAT_MAX, RH.in_exit_window(theta, sense, self.exits), plain)
+      s_cmd = max(min(-sense * k_pp, lim[0]), lim[1])
       k_raw = -sense * s_cmd
     else:
       k_raw = lat_limited(k_raw, v, sense)
@@ -665,8 +679,9 @@ class RoundaboutGuide:
     dk = min(max(dk, -DK_MAX), DK_MAX)
     if self.latched and self.phase != EXITING:
       # Ring cap / floor on what is actually sent. Over the ring speed the curl hold wins (no floor, nothing above the model's).
-      cap = -sense * model_k if holding else ring_cap(self.k_ref, model_k, v, sense)   # over the ring speed: no curl above the model
-      floor = -1e9 if (holding or not self.latched) else ring_floor(self.k_ref, v)
+      floor = -1e9 if holding else lim[1]
+      base = -sense * model_k if holding else ring_cap(self.k_ref, model_k, v, sense)
+      self.cap_extra, cap = RH.step_cap(self.cap_extra, base, lim[0], v, RING_A_LAT_MAX, RING_SLEW * dt, CAP_FALL, plain, holding)
       dk = -sense * min(max(-sense * (model_k + dk), floor), cap) - model_k
     # The correction moves at <= RING_SLEW once latched: an over-cap entry curl unwinds at the slew, no step.
     oslew = RING_SLEW if self.latched else (OUT_SLEW if poor else OUT_SLEW_GOOD)
@@ -680,6 +695,9 @@ class RoundaboutGuide:
       # Hard clamp while the model curves with the circulation (the slews can lag a model that drops): never above the cap.
       out = -sense * min(-sense * (model_k + self.dk_out), cap)
       self.dk_out = out - model_k
+    if self.latched and self.phase != EXITING and self.cap_extra > 0.0:
+      a_cap = RING_A_LAT_MAX / max(v * v, 1.0)           # the model follows the exit branch (right) while the guide holds the circle: 2.2 m/s² still binds
+      self.dk_out = -sense * min(-sense * (model_k + self.dk_out), max(a_cap, -sense * model_k)) - model_k
     self.prev_model = model_k
     self.prev_out = model_k + self.dk_out
     if self.phase == EXITING and self.phase_w <= 0.0 and abs(self.dk_out) < HANDOFF_DK:
