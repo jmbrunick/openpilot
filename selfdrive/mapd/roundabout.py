@@ -1,7 +1,7 @@
 """Roundabout detect, speed ease, and outer path bias.
 
 Map `junction=roundabout` (or a closed circulating way already in the OSM
-pack) — not steer. Funnel starts ~200 m so 40–45 mph can hit 15–20 by the
+pack) — not steer. Decel onset ~140 m (was 200 m, Oct 1) so 35 mph can hit 18 by the
 ring. Kinematic a (not Lookahead comfort −0.55) toward OSM maxspeed when
 present. Clamp aTarget ≤ 0 while approaching / on the ring.
 
@@ -20,9 +20,11 @@ from dataclasses import dataclass
 from openpilot.common.constants import CV
 from openpilot.selfdrive.mapd.constants import LOOKAHEAD_NORMAL
 
-# Detect / start ease by this distance. Must still have fired by MIN.
-# 45→20 at −1.0 needs ~180 m; 100 m was too late (Willmar 10:11 / 10:14).
-RB_FUNNEL_M = 200.0
+# Detect / start ease by this distance (the decel onset). Must still have fired by MIN.
+# Oct 1: 200 m (first fire 187 m in the field) braked ~0.2 m/s² earlier than needed and had the car crawling at 18 mph well before the ring
+# (0000013c); 140 m keeps 35→18 mph at ~0.64 m/s² average. 100 m was too late (Willmar 10:11 / 10:14).
+RB_DECEL_ONSET_M = 140.0
+RB_FUNNEL_M = RB_DECEL_ONSET_M
 RB_FUNNEL_MIN_M = 80.0
 # ~0.0035° ≈ 280 m EW at 45°N so a 200 m westbound approach is in the rtree.
 RB_SEARCH_PAD_DEG = 0.0035

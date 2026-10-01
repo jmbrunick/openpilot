@@ -27,7 +27,7 @@ SOCO_WAY = 1514082747
 SOCO_RING_WAYS = {1514082747, 1517278969, 1517278970, 1517279058, 1517279059, 1517279060}
 SOCO_CENTER = (35.52208, -83.02814)
 # R128 17:37:59.9 CT, first mapd hint ~192 m east of the ring (westbound on Dellwood Rd).
-R128_FIRST_HINT = (35.52224, -83.02602)
+R128_FIRST_HINT = (35.52224, -83.02645)   # decel onset (RB_DECEL_ONSET_M = 140): ~131 m out
 # A tagged speed way near the ring (synthetic, not in OSM) to prove speed matching is unchanged.
 SPEED_WAY = {"way_id": 900000001, "name": "Test Rd", "highway": "primary", "maxspeed_ms": 45 * CV.MPH_TO_MS,
              "coords": [(35.5240, -83.0330), (35.5240, -83.0230)], "junction": ""}
@@ -141,7 +141,7 @@ def test_v4_pack_ring_geometry_from_first_hint_distance(tmp_path):
   ring = db.ring_geometry(SOCO_WAY, *R128_FIRST_HINT)
   assert ring is not None and set(ring.way_ids) == SOCO_RING_WAYS
   assert hint.approaching and int(hint.way_id) in SOCO_RING_WAYS
-  assert 150.0 < hint.distance_m < 200.0
+  assert 120.0 < hint.distance_m < 140.0
 
 
 def test_v4_pack_find_roundabout_sees_untagged_speed_ring(tmp_path):

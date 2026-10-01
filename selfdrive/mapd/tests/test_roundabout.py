@@ -10,6 +10,7 @@ from openpilot.selfdrive.mapd.overpass import ways_from_overpass
 from openpilot.selfdrive.mapd.roundabout import (
   RB_A_FLOOR_MS2,
   RB_ENTRY_BIAS_M,
+  RB_DECEL_ONSET_M,
   RB_FUNNEL_M,
   RB_FUNNEL_MIN_M,
   RB_OUTER_OFFSET_M,
@@ -75,7 +76,7 @@ def test_closed_loop_radius_is_roundabout():
 
 def test_tagged_arc_counts_as_roundabout():
   # Multi-way OSM rings are 90° arcs with junction=roundabout, not closed.
-  arc = [_offset(RB_LAT, RB_LON, ang, RB_R_M) for ang in (0.0, 30.0, 60.0, 90.0)]
+  arc = [_offset(RB_LAT, RB_LON, brg, RB_R_M) for brg in (0.0, 30.0, 60.0, 90.0)]
   assert not way_is_closed_loop(arc)
   assert way_is_roundabout(arc, junction="roundabout")
   assert not way_is_roundabout(arc, junction="")
@@ -145,9 +146,10 @@ def test_funnel_eases_speed():
   assert eased >= RB_V_MIN_MS - 1e-6
   on_ring = RoundaboutHint(on_roundabout=True, speed_limit_ms=20.0 * CV.MPH_TO_MS)
   assert abs(roundabout_ease_v_ms(on_ring, v49, v49) - 20.0 * CV.MPH_TO_MS) < 1e-6
-  # Funnel starts farther out so 40–45 mph can hit 15–20 by the ring.
+  # Decel onset (named RB_DECEL_ONSET_M, Oct 1: 200 -> 140 m): 35 mph can still hit 18 by the ring at ~0.65 m/s².
   assert 80.0 <= RB_FUNNEL_MIN_M <= 100.0
-  assert 180.0 <= RB_FUNNEL_M <= 220.0
+  assert RB_DECEL_ONSET_M == RB_FUNNEL_M and 130.0 <= RB_DECEL_ONSET_M <= 140.0
+  assert (35.0 * CV.MPH_TO_MS) ** 2 / 2.0 - (18.0 * CV.MPH_TO_MS) ** 2 / 2.0 <= 0.7 * RB_DECEL_ONSET_M
 
 
 def test_no_hint_does_not_ease():
@@ -295,12 +297,14 @@ def test_tagged_ring_detects_in_funnel(tmp_path):
 
 
 def test_funnel_detects_farther_out(tmp_path):
-  """45→20 needs ~180 m at −1.0; detect must be live before 100 m."""
+  """Decel onset ~RB_DECEL_ONSET_M: live at 135 m out, not yet at 180 m (Oct 1: was 200 m)."""
   db, west_lat, west_lon = _db_with_ring_and_approach(tmp_path, tagged=True)
-  qlat, qlon = _offset(west_lat, west_lon, 270.0, 180.0)
+  qlat, qlon = _offset(west_lat, west_lon, 270.0, 135.0)
   hint = db.find_roundabout(qlat, qlon, bearing_deg=90.0)
   assert hint.approaching
-  assert 150.0 <= hint.distance_m <= RB_FUNNEL_M
+  assert 100.0 <= hint.distance_m <= RB_FUNNEL_M
+  qlat, qlon = _offset(west_lat, west_lon, 270.0, 180.0)
+  assert not db.find_roundabout(qlat, qlon, bearing_deg=90.0).approaching
   db.close()
 
 
