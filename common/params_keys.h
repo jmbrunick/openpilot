@@ -185,6 +185,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"NAPRoundaboutAssist", {PERSISTENT, BOOL, "0"}},
     // mapd → controlsd: fitted ring geometry of the hinted roundabout (JSON).
     {"NAPRoundaboutRing", {CLEAR_ON_MANAGER_START, JSON}},
+    // controlsd -> modeld: the ring assist is latched on a ring; DesireHelper ignores stalk tips (no ALC) while true.
+    {"NAPRoundaboutLatched", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}},
     // Settings → NAP → Driving Mannerisms → One-Pedal Long. Default Off.
     // Pedal mode: gas rising from rest kicks software long off (silent
     // pause, like brake). After RELEASE, lift/near-zero accel is Tesla
