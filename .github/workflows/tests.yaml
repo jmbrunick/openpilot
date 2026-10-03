@@ -364,4 +364,4 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: ui-report-${{ inputs.run_number || '1' }}-${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'master' || github.event.number }}
-          path: selfdrive/ui/tests/diff
+          path: selfdrive/ui/tests/diff/report
