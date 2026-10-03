@@ -215,6 +215,7 @@ class Controls:
       v_ego=float(CS.vEgo),
       emergency_yank=bool(self._lane_change_torque.release),
       lane_change_confirm=bool(lane_change_confirm),
+      steering_pressed=bool(CS.steeringPressed),
     )
     CC.latActive = lat_active_after_handoff(
       lat_would_be_active, self._lat_handoff.yielded)
