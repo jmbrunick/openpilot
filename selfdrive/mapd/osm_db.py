@@ -76,6 +76,19 @@ _MINOR_HIGHWAY = {
   "residential", "living_street", "service", "unclassified",
 }
 
+# Ways a car does not drive on. A tagged `maxspeed` here (5 mph on a golf-cart
+# `highway=path`) must never become the posted limit, even when it is the only
+# stored way within MAX_MATCH_DISTANCE_M of the real, untagged road. Applied in
+# `_best_match` (so `_next_limit` and the min-zone probes inherit it), NOT in
+# `_candidates()` which roundabout ring geometry also uses.
+_NON_ROAD_HIGHWAY = frozenset({
+  "path", "footway", "cycleway", "bridleway", "steps", "pedestrian", "track",
+})
+
+
+def _is_non_road_highway(highway: str | None) -> bool:
+  return (highway or "").strip().lower() in _NON_ROAD_HIGHWAY
+
 EARTH_R = 6371000.0
 _COORDS_HDR = struct.Struct("<I")
 _COORD_F64 = struct.Struct("<dd")
@@ -694,12 +707,14 @@ class OsmSpeedLimitDB:
     best: SpeedLimitMatch | None = None
     best_score = 1e12
     for row in self._candidates(lat, lon):
+      highway = row["highway"] or ""
+      if _is_non_road_highway(highway):
+        continue
       coords = _unpack_coords(row["coords"])
       dist, seg_heading = _point_to_polyline_m(lat, lon, coords)
       if dist > MAX_MATCH_DISTANCE_M:
         continue
       name = row["name"] or ""
-      highway = row["highway"] or ""
       heading_pen = 0.0
       if along_route is not None:
         if not _continues_route(
