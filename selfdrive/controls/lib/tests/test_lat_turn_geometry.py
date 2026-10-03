@@ -5,6 +5,9 @@ delay table, rear reference offset, speed floor/fade, 0.2 s cap and 0.2 s
 floor, 250 deg/s rate-limit hold-off, lateralManeuverPlan untouched, and the
 #223 roundabout outer bias stripped while the correction is active.
 
+Turn-in delay trim (NAPTurnInDelay, steps -2..+3, 30 ms each, low-speed band
+only): default 0 is bit-identical, >= 10 mph untouched, bounded, slewed.
+
 Low-speed reach (Sep 28 PM): 1.5-2.5 m/s fade-in, 0.25 s cap and direct plan
 sampling down to 0.2 s below 8 mph, reduction frozen (not slewed to stock)
 while rate-limited below 10 mph, and >= 10 mph identical to 7c49a8e.
@@ -469,3 +472,195 @@ def test_closed_loop_low_speed_inside_cut_reduced(R, v):
   assert old_in > 0.35                   # 7c49a8e: still clips the inside at 6-8 mph
   assert new_in < 0.5 * old_in
   assert new_out > -0.2                  # and does not run wide
+
+
+# ---------- turn-in delay trim (NAPTurnInDelay) ----------
+
+def _la(step, v, stock=STOCK, n=80, enabled=True):
+  c = tg.TurnGeometryCorrection(DT_MDL)
+  out = None
+  for _ in range(n):
+    out = c.update(enabled=enabled, stock_lookahead_s=stock, v_ego=v, ref_offset_m=0.35, turn_in_step=step)
+  return out, c
+
+
+def test_turn_in_param_defaults_to_zero_int():
+  keys = (ROOT / "common/params_keys.h").read_text()
+  assert '{"NAPTurnInDelay", {PERSISTENT, INT, "0"}}' in keys
+  assert tg.PARAM_TURN_IN_DELAY == "NAPTurnInDelay"
+  assert (tg.TURN_IN_STEP_MIN, tg.TURN_IN_STEP_MAX) == (-2, 3)
+  assert tg.TURN_IN_STEP_S == pytest.approx(0.030)
+  assert tg.TURN_IN_MIN_LOOKAHEAD_S == pytest.approx(0.10)
+
+
+def test_turn_in_step_is_clamped_and_junk_is_zero():
+  assert [tg.clamp_turn_in_step(x) for x in (-9, -2, -1, 0, 1, 2, 3, 4, 99)] == [-2, -2, -1, 0, 1, 2, 3, 3, 3]
+  assert tg.clamp_turn_in_step(2.6) == 3
+  assert tg.clamp_turn_in_step(-1.4) == -1
+  for junk in (None, "x", float("nan"), float("inf"), [], {}):
+    assert tg.clamp_turn_in_step(junk) == 0
+
+
+def test_turn_in_step_zero_is_bit_identical_to_the_untrimmed_update():
+  rng = np.random.default_rng(7)
+  t_idx = np.linspace(0.0, 10.0, 33)
+  for trial in range(20):
+    new, old = tg.TurnGeometryCorrection(DT_MDL), tg.TurnGeometryCorrection(DT_MDL)
+    v = float(rng.uniform(0.5, 6.0))
+    out_angle = 0.0
+    stock = float(rng.uniform(0.25, 0.7))
+    for step in range(300):
+      v = float(np.clip(v + rng.normal(0, 0.3), 0.0, 40.0))
+      burst = (step // 40) % 3 == 1
+      out_angle += 12.5 if burst else float(rng.normal(0, 1.0))
+      cmd = out_angle + (80.0 if burst else float(rng.normal(0, 1.0)))
+      kw = dict(enabled=not (trial % 5 == 4 and 100 <= step < 120), stock_lookahead_s=stock, v_ego=v,
+                ref_offset_m=0.35, lat_active=True, cmd_angle_deg=cmd, out_angle_deg=out_angle)
+      a = old.update(**kw)
+      assert new.update(turn_in_step=0, **kw) == a, (trial, step)
+      assert new.sample_floor_s == old.sample_floor_s
+      assert new.trim_s == 0.0
+      yr = np.cumsum(rng.normal(0, 0.03, 33))
+      yaw = np.concatenate([[0.0], np.cumsum(0.5 * (yr[1:] + yr[:-1]) * np.diff(t_idx))])
+      assert tg.plan_curvature(yaw, yr, t_idx, v, a, old.sample_floor_s) == \
+        tg.plan_curvature(yaw, yr, t_idx, v, a, new.sample_floor_s)
+
+
+@pytest.mark.parametrize("step", [-2, -1, 1, 2, 3])
+def test_turn_in_trim_never_changes_10mph_and_up_or_below_1p5ms(step):
+  for v in (10.0 * MPH, 11.0 * MPH, 15.0 * MPH, 25.0, 40.0, 1.5, 1.0, 0.3):
+    base, cb = _la(0, v)
+    trim, ct = _la(step, v)
+    assert trim == base
+    assert ct.sample_floor_s == cb.sample_floor_s
+    assert ct.trim_s == 0.0
+
+
+@pytest.mark.parametrize("step", [-2, -1, 1, 2, 3])
+@pytest.mark.parametrize("mph", [5.6, 6.0, 7.0, 8.0])
+def test_turn_in_each_step_is_30ms_in_the_full_band(step, mph):
+  v = max(mph * MPH, 2.5)
+  base, _ = _la(0, v)
+  trim, c = _la(step, v)
+  assert trim - base == pytest.approx(-step * 0.030, abs=1e-9)
+  # time shift -> distance shift: this is what the menu description quotes
+  assert (base - trim) * v == pytest.approx(step * 0.030 * v, abs=1e-9)
+  assert c.trim_s == pytest.approx(step * 0.030)
+
+
+def test_turn_in_band_fades_out_by_10mph_and_in_between_1p5_and_2p5():
+  assert tg.turn_in_weight(2.5) == pytest.approx(1.0)
+  assert tg.turn_in_weight(8.0 * MPH) == pytest.approx(1.0)
+  assert tg.turn_in_weight(9.0 * MPH) == pytest.approx(0.5)
+  assert tg.turn_in_weight(10.0 * MPH) == 0.0
+  assert tg.turn_in_weight(1.5) == 0.0
+  assert tg.turn_in_weight(2.0) == pytest.approx(0.5)
+  vs = np.linspace(0.0, 15.0, 301)
+  w = [tg.turn_in_weight(float(x)) for x in vs]
+  assert max(abs(a - b) for a, b in zip(w, w[1:], strict=False)) < 0.06      # continuous
+  assert tg.turn_in_shift_s(3, 9.0 * MPH) == pytest.approx(0.5 * 3 * 0.030)
+  assert tg.turn_in_shift_s(-2, 9.0 * MPH) == pytest.approx(-0.5 * 2 * 0.030)
+  assert tg.turn_in_shift_s(99, 6.0 * MPH) == pytest.approx(3 * 0.030)       # clamped
+
+
+def test_turn_in_lookahead_is_bounded():
+  # positive: never below 0.10 s (or below the untrimmed value if that is lower)
+  for stock in (0.12, 0.2, 0.3, 0.475):
+    base, _ = _la(0, 6.0 * MPH, stock=stock)
+    trim, _ = _la(3, 6.0 * MPH, stock=stock)
+    assert trim >= min(base, tg.TURN_IN_MIN_LOOKAHEAD_S) - 1e-12
+    assert trim <= base + 1e-12
+  assert tg.apply_turn_in_trim(0.11, 0.4, 0.09) == pytest.approx(tg.TURN_IN_MIN_LOOKAHEAD_S)
+  assert tg.apply_turn_in_trim(0.11, 0.4, 0.09) == pytest.approx(0.10)
+  assert tg.apply_turn_in_trim(0.05, 0.05, 0.09) == pytest.approx(0.05)
+  # negative: never above stock
+  for stock in (0.25, 0.3, 0.475):
+    base, _ = _la(0, 6.0 * MPH, stock=stock)
+    trim, _ = _la(-2, 6.0 * MPH, stock=stock)
+    assert base <= trim <= stock + 1e-12
+  assert tg.apply_turn_in_trim(0.30, 0.31, -0.06) == pytest.approx(0.31)
+  assert tg.apply_turn_in_trim(0.2, 0.475, 0.0) == 0.2
+
+
+def test_turn_in_moves_the_sample_floor_with_the_lookahead():
+  v = 6.0 * MPH
+  base, cb = _la(0, v)
+  later, cl = _la(3, v)
+  earlier, ce = _la(-2, v)
+  assert cb.sample_floor_s == pytest.approx(0.20)
+  assert cl.sample_floor_s == pytest.approx(0.20 - 0.09)
+  assert ce.sample_floor_s == pytest.approx(0.20 + 0.06)
+  assert later < base < earlier
+  # the plan really is sampled at the trimmed time (below the old 0.2 s floor)
+  t_idx = np.linspace(0.0, 10.0, 2001)
+  yr = t_idx.copy()
+  yaw = 0.5 * t_idx ** 2           # curvature now depends on the sample time
+  k_base = tg.plan_curvature(yaw, yr, t_idx, v, base, cb.sample_floor_s)
+  k_later = tg.plan_curvature(yaw, yr, t_idx, v, later, cl.sample_floor_s)
+  assert k_base == pytest.approx(curv_from_psis(np.interp(base, t_idx, yaw), 0.0, v, base))
+  assert k_later == pytest.approx(curv_from_psis(np.interp(later, t_idx, yaw), 0.0, v, later))
+  assert k_later != pytest.approx(curv_from_psis(np.interp(0.2, t_idx, yaw), 0.0, v, 0.2))
+  assert later < tg.LOW_SPEED_SAMPLE_FLOOR_S
+
+
+def test_turn_in_trim_is_slewed_not_stepped():
+  c = tg.TurnGeometryCorrection(DT_MDL)
+  for _ in range(60):
+    c.update(enabled=True, stock_lookahead_s=STOCK, v_ego=6.0 * MPH, ref_offset_m=0.35)
+  prev = c.update(enabled=True, stock_lookahead_s=STOCK, v_ego=6.0 * MPH, ref_offset_m=0.35)
+  worst = 0.0
+  for _ in range(20):
+    cur = c.update(enabled=True, stock_lookahead_s=STOCK, v_ego=6.0 * MPH, ref_offset_m=0.35, turn_in_step=3)
+    worst = max(worst, abs(cur - prev))
+    prev = cur
+  assert worst <= tg.REDUCTION_SLEW_S_PER_S * DT_MDL + 1e-9
+  assert c.trim_s == pytest.approx(0.09)
+  for _ in range(20):
+    cur = c.update(enabled=True, stock_lookahead_s=STOCK, v_ego=6.0 * MPH, ref_offset_m=0.35, turn_in_step=0)
+  assert c.trim_s == 0.0
+
+
+@pytest.mark.parametrize("step", [-2, 3])
+def test_turn_in_trim_needs_turn_geometry_on(step):
+  out, c = _la(step, 6.0 * MPH, enabled=False)
+  assert out == STOCK
+  assert c.trim_s == 0.0
+  assert c.sample_floor_s == MIN_STABLE_DELAY
+  # trimmed, then turned off: the trim is dropped with the rest of the state
+  _, c = _la(step, 6.0 * MPH)
+  assert c.trim_s != 0.0
+  out = c.update(enabled=False, stock_lookahead_s=STOCK, v_ego=6.0 * MPH, ref_offset_m=0.35, turn_in_step=step)
+  assert out == STOCK
+  assert c.trim_s == 0.0
+
+
+def test_turn_in_trim_is_wired_into_modeld_and_the_menu():
+  modeld = (ROOT / "selfdrive/modeld/modeld.py").read_text()
+  assert "turn_in_step = clamp_turn_in_step(params.get(PARAM_TURN_IN_DELAY, return_default=True))" in modeld
+  assert "          turn_in_step=turn_in_step)\n" in modeld
+  menu = (ROOT / "selfdrive/ui/layouts/settings/driving_mannerisms.py").read_text()
+  assert '"Turn-In Timing (low speed)"' in menu
+  assert "self._params.put(NAP_TURN_IN_DELAY, int(TURN_IN_DELAY_STEPS[index]))" in menu
+  assert "    self._all_items.append(self._turn_in_buttons)\n" in menu
+  mici = (ROOT / "selfdrive/ui/mici/layouts/settings/driving_mannerisms.py").read_text()
+  assert '"turn-in timing"' in mici
+  from openpilot.selfdrive.ui.layouts.settings import nap_lateral as nl
+  assert nl.TURN_IN_DELAY_LABELS == ["-2", "-1", "0", "+1", "+2", "+3"]
+  assert nl.TURN_IN_DELAY_STEPS == [-2, -1, 0, 1, 2, 3]
+  assert "30 ms" in nl.TURN_IN_DELAY_DESCRIPTION
+
+  class _P:
+    def __init__(self, v):
+      self.v = v
+
+    def get(self, key, return_default=False):
+      assert key == "NAPTurnInDelay"
+      if isinstance(self.v, Exception):
+        raise self.v
+      return self.v
+
+  assert nl.turn_in_delay_index(_P(0)) == 2
+  assert nl.turn_in_delay_index(_P(-2)) == 0
+  assert nl.turn_in_delay_index(_P(3)) == 5
+  assert nl.turn_in_delay_index(_P(9)) == 5
+  assert nl.turn_in_delay_index(_P(KeyError("old params build"))) == 2
