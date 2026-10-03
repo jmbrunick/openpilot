@@ -27,7 +27,8 @@ from openpilot.common.file_chunker import read_file_chunked, get_manifest_path
 from openpilot.selfdrive.modeld.constants import ModelConstants, Plan
 from openpilot.selfdrive.modeld.helpers import usbgpu_present, modeld_pkl_path, get_tg_input_devices
 from openpilot.selfdrive.controls.lib.lat_turn_geometry import (
-  PARAM_REF_OFFSET, PARAM_TURN_GEOMETRY, TurnGeometryCorrection, clamp_ref_offset, is_preap_car, plan_curvature,
+  PARAM_REF_OFFSET, PARAM_TURN_GEOMETRY, PARAM_TURN_IN_DELAY, TurnGeometryCorrection, clamp_ref_offset,
+  clamp_turn_in_step, is_preap_car, plan_curvature,
 )
 
 
@@ -224,6 +225,7 @@ def main(demo=False):
   turn_geom = TurnGeometryCorrection(DT_MDL)
   turn_geom_on = False
   turn_geom_offset = clamp_ref_offset(None)
+  turn_in_step = 0
   turn_geom_param_frame = -1
   prev_action = log.ModelDataV2.Action()
 
@@ -321,11 +323,16 @@ def main(demo=False):
           turn_geom_param_frame = run_count
           turn_geom_on = params.get_bool(PARAM_TURN_GEOMETRY)
           turn_geom_offset = clamp_ref_offset(params.get(PARAM_REF_OFFSET, return_default=True))
+          try:
+            turn_in_step = clamp_turn_in_step(params.get(PARAM_TURN_IN_DELAY, return_default=True))
+          except Exception:
+            turn_in_step = 0
         lat_action_t = turn_geom.update(
           enabled=turn_geom_on, stock_lookahead_s=lat_action_t, v_ego=v_ego, ref_offset_m=turn_geom_offset,
           lat_active=bool(sm['carControl'].latActive),
           cmd_angle_deg=float(sm['carControl'].actuators.steeringAngleDeg),
-          out_angle_deg=float(sm['carOutput'].actuatorsOutput.steeringAngleDeg) if sm.seen['carOutput'] else None)
+          out_angle_deg=float(sm['carOutput'].actuatorsOutput.steeringAngleDeg) if sm.seen['carOutput'] else None,
+          turn_in_step=turn_in_step)
         lat_sample_floor_s = turn_geom.sample_floor_s
       action = get_action_from_model(model_output, prev_action, lat_action_t, long_delay + frame_delay + action_delay, v_ego,
                                      lat_sample_floor_s)
