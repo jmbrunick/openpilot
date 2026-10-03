@@ -140,14 +140,19 @@ def is_driver_takeover(*, torque_nm: float, over_torque_s: float,
 
 
 def steer_disengage_this_frame(*, confirm: bool, release: bool, release_prev: bool,
-                              disengage_edge: bool, blocks: bool) -> bool:
+                              disengage_edge: bool, blocks: bool,
+                              lat_full_control: bool = True) -> bool:
   """True when car_specific should add EventName.steerDisengage.
 
   A same-direction confirm never does, including a lamp flash-dark gap.
   An emergency yank (``release``) does, on its rising edge. Otherwise the
   existing hands-on edge fires only when the blinker gate is open.
+
+  ``lat_full_control`` False means lateral was already yielded to the driver
+  (inferred from the 0x488 type-1 history, see opendbc preap/lat_yield.py):
+  wheel input is then a driver maneuver and never raises steerDisengage.
   """
-  if confirm:
+  if confirm or not lat_full_control:
     return False
   return (bool(release) and not release_prev) or (bool(disengage_edge) and not blocks)
 
