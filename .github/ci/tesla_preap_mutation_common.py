@@ -44,3 +44,4 @@ class HistoricalMutation:
   original: bytes
   replacement: bytes
   test_nodes: tuple[str, ...]
+
