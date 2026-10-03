@@ -37,6 +37,7 @@ in tesla_preap.h keeps controls_allowed; selfdrived also hides the
 controlsMismatch that would otherwise full-cancel after 2s.
 """
 
+from opendbc.car.tesla.preap.lat_yield import encode_hands_stash
 from openpilot.common.constants import CV
 from openpilot.selfdrive.controls.lib.blinker_lateral_pause import (
   BlinkerLateralHold,
@@ -134,12 +135,17 @@ def _peek_hands_on_level(can_parsers) -> int:
     return 0
 
 
-def _publish_hands_on_level(ret, hands: int) -> None:
+def _publish_hands_on_level(ret, hands: int, full_control: bool = True) -> None:
   """Expose EPAS hands-on to controlsd for soft lat hold.
 
   Prefer cereal handsOnLevel when the schema has it. Also stash the
   discrete 0/1/2/3 on steeringTorqueEps (unused on Pre-AP angle control)
   so a nap-dev-only PR works without an opendbc cereal bump.
+
+  The same float carries one more bit: hands + 0.25 means lateral was
+  yielded at this frame (see opendbc preap/lat_yield.py). car_specific
+  reads it to decide whether a hands-on edge raises steerDisengage (A) or
+  not (B). cs_hands_on_level rounds, so the level still decodes.
   """
   hands = int(max(0, min(3, hands)))
   if hasattr(ret, 'handsOnLevel'):
@@ -149,7 +155,7 @@ def _publish_hands_on_level(ret, hands: int) -> None:
       pass
   if hasattr(ret, 'steeringTorqueEps'):
     try:
-      ret.steeringTorqueEps = float(hands)
+      ret.steeringTorqueEps = encode_hands_stash(hands, bool(full_control))
     except Exception:
       pass
 
@@ -245,6 +251,7 @@ def update_card_lat_handoff(engagement, *, engaged: bool,
                             a_ego: float, v_ego: float,
                             alc_active: bool = False,
                             blinker_paused: bool = False,
+                            steering_pressed: bool = False,
                             dt: float | None = None,
                             param_on: bool | None = None) -> bool:
   """Card-local intent tracker. Emergency hard-brake → full session cancel.
@@ -269,6 +276,7 @@ def update_card_lat_handoff(engagement, *, engaged: bool,
     brake_applied=brake_applied,
     a_ego=a_ego,
     v_ego=v_ego,
+    steering_pressed=steering_pressed,
     dt=dt,
   )
   if out.emergency_cancel and engaged:
@@ -641,7 +649,14 @@ def _process_buttons(self, cruise_buttons, prev_cruise_buttons, *args, **kwargs)
   return result
 
 
-def _handle_steering_disengage(self, steering_disengage):
+def _handle_steering_disengage(self, steering_disengage, lat_full_control=True):
+  # A hands-on edge cancels only while OP is in full control of lateral
+  # (lat_full_control, inferred from the 0x488 type-1 history in opendbc
+  # preap/lat_yield.py). Yielded lateral (B) keeps the session and long.
+  # The blinker/ALC gates below are independent and stay as they were.
+  lat_yield = getattr(self, "lat_yield", None)
+  if lat_yield is not None:
+    lat_yield.update_block(bool(steering_disengage))
   left = getattr(self, "_nap_left_blinker", False)
   right = getattr(self, "_nap_right_blinker", False)
   stalk = int(getattr(self, "_nap_stalk_state", 0) or 0)
@@ -667,7 +682,7 @@ def _handle_steering_disengage(self, steering_disengage):
     # Keep prev in sync so lamp-off / hand-release is not a rising edge.
     self.prev_steering_disengage = steering_disengage
     return
-  _ORIG_HANDLE(self, steering_disengage)
+  _ORIG_HANDLE(self, steering_disengage, lat_full_control)
   if not self.cruiseEnabled:
     _clear_session_max_flags(self)
 
@@ -706,7 +721,7 @@ def _update_preap(cs, can_parsers):
   hands = int(getattr(cs, 'hands_on_level', 0) or 0)
   if hands <= 0:
     hands = _peek_hands_on_level(can_parsers)
-  _publish_hands_on_level(ret, hands)
+  _publish_hands_on_level(ret, hands, bool(getattr(cs, 'lat_full_control', True)))
   real_brake = bool(getattr(cs, 'real_brake_pressed', False))
   _publish_real_brake(ret, real_brake)
   engagement = getattr(cs, "engagement", None)
@@ -731,6 +746,7 @@ def _update_preap(cs, can_parsers):
       v_ego=float(getattr(ret, "vEgo", 0.0) or 0.0),
       alc_active=bool(getattr(engagement, "_nap_alc_active", False)),
       blinker_paused=driver_turn,
+      steering_pressed=bool(getattr(ret, "steeringPressed", False)),
     )
     if canceled:
       if hasattr(ret, "cruiseState"):
