@@ -18,6 +18,9 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   NAP_HYPERMILE_STEP_DOWN,
   NAP_ONE_PEDAL_LONG,
 )
+from openpilot.selfdrive.ui.layouts.settings.nap_lateral import (
+  NAP_TURN_IN_DELAY, TURN_IN_DELAY_LABELS, TURN_IN_DELAY_STEPS,
+)
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys
 
 
@@ -57,6 +60,14 @@ class DrivingMannerismsLayoutMici(NavScroller):
       default_value=FOLLOW_DISTANCE_DEFAULT,
     )
 
+    self._turn_in_delay = BigMultiValueParamToggle(
+      "turn-in timing",
+      NAP_TURN_IN_DELAY,
+      values=list(TURN_IN_DELAY_STEPS),
+      labels=TURN_IN_DELAY_LABELS,
+      default_value=0,
+    )
+
     lat_handoff = BigParamControl("soft lateral handoff", NAP_DRIVER_LAT_HANDOFF)
     lat_handoff.set_value("On — free-wheel yield; Off if false-yield")
 
@@ -79,6 +90,7 @@ class DrivingMannerismsLayoutMici(NavScroller):
       adaptive_accel,
       self._follow_distance_city,
       self._follow_distance_hwy,
+      self._turn_in_delay,
       lat_handoff,
       one_pedal,
       hypermile,
@@ -93,6 +105,7 @@ class DrivingMannerismsLayoutMici(NavScroller):
     self._accel.refresh()
     self._follow_distance_city._load_value()
     self._follow_distance_hwy._load_value()
+    self._turn_in_delay._load_value()
 
 
 def open_driving_mannerisms_menu(page: DrivingMannerismsLayoutMici | None = None) -> DrivingMannerismsLayoutMici:
