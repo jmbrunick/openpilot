@@ -1,10 +1,14 @@
 """NAP Lateral Control settings content (turn geometry correction)."""
 from openpilot.selfdrive.controls.lib.lat_turn_geometry import (
-  PARAM_REF_OFFSET, PARAM_TURN_GEOMETRY, REF_OFFSET_DEFAULT_M,
+  PARAM_REF_OFFSET, PARAM_TURN_GEOMETRY, PARAM_TURN_IN_DELAY, REF_OFFSET_DEFAULT_M,
+  TURN_IN_STEP_MAX, TURN_IN_STEP_MIN, clamp_turn_in_step,
 )
 
 NAP_LAT_TURN_GEOM = PARAM_TURN_GEOMETRY
 NAP_LAT_REF_OFFSET = PARAM_REF_OFFSET
+NAP_TURN_IN_DELAY = PARAM_TURN_IN_DELAY
+TURN_IN_DELAY_STEPS = list(range(TURN_IN_STEP_MIN, TURN_IN_STEP_MAX + 1))
+TURN_IN_DELAY_LABELS = [f"{v:+d}" if v else "0" for v in TURN_IN_DELAY_STEPS]
 LAT_REF_OFFSET_PRESETS = [0.0, 0.2, 0.35, 0.5, 0.75, 1.0]
 LAT_REF_OFFSET_LABELS = ["0", "0.2", "0.35", "0.5", "0.75", "1.0"]
 LAT_REF_OFFSET_DEFAULT = REF_OFFSET_DEFAULT_M
@@ -29,6 +33,22 @@ LAT_REF_OFFSET_DESCRIPTION = (
   "Rear reference offset (m). How much later turn-in is anchored in space. "
   + "0.35 matches the Model S camera-to-axle difference. Higher = later turn-in."
 )
+
+
+TURN_IN_DELAY_DESCRIPTION = (
+  "Turn-in timing at low speed (about 3-8 mph, fading out by 10 mph). 0 = "
+  + "current behavior. + steps start the turn later, - steps earlier. Each "
+  + "step is 30 ms: about 7-11 cm of travel at 5-8 mph. Needs Turn Geometry "
+  + "Correction On. Highway is never affected."
+)
+
+
+def turn_in_delay_index(params) -> int:
+  try:
+    step = clamp_turn_in_step(params.get(NAP_TURN_IN_DELAY, return_default=True))
+  except Exception:
+    step = 0
+  return TURN_IN_DELAY_STEPS.index(step)
 
 
 def lat_ref_offset_value(params) -> float:
