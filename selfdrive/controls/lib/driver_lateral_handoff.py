@@ -103,6 +103,32 @@ edge after a yield / lat-down, enters yield so the normal resume
 owns the take-back. v_ego below 10 mph uses that same inhibit
 (OR, not a parallel path). Soft-lat Off still uses BlinkerLateralHold
 to clear latActive on lamp latch.
+
+INFERENCE CONTRACT (lateral yield is inferred, never announced):
+  Panda and the card decide "OP has yielded lateral" (a wheel yank is a
+  driver maneuver, not a cancel) from the 0x488 DAS_steeringControlType=1
+  send history alone: opendbc preap/lat_yield.py and
+  safety/modes/tesla_preap_latyield.h. That inference assumes, about THIS
+  module and controlsd:
+    * latActive (hence type 1) is False for the whole yield, and True when
+      OP steers, including the take-back blend at authority < 1;
+    * a yield lasts at least HANDS_OFF_CONFIRM_S before the blend starts;
+    * the blend lasts BLEND_TIME_S and the re-arm grace covers it.
+  ANY change to yield / blend / confirm timing, to what makes latActive
+  false (new release path, inhibit, pause) or true (new early re-arm), or
+  to what authority does MUST update the inference windows and the panda
+  header. selfdrive/controls/lib/tests/test_lat_yield_inference_guard.py
+  fails when BLEND_TIME_S / HANDS_OFF_CONFIRM_S and the lat_yield windows
+  diverge; fix lat_yield.py + tesla_preap_latyield.h first, then the pins.
+
+Early yield (steeringPressed, no hands gate): EPAS_handsOnLevel lags the
+torsion bar, so a firm push can reach hands >= 2 before the hands-gated
+soft yield above has fired. EARLY_YIELD_FRAMES consecutive steeringPressed
+frames of same-sign torque >= EARLY_YIELD_NM yield without the hands gate,
+so the wheel input lands on a yielded lateral (B) rather than a full one (A).
+Tuned conservatively against Oct 1-3 qlogs: 1 Nm / 50 ms false-yielded on
+road chatter; a true first-contact yank (<= 0.2 s to level 3) still reaches
+level 3 on full lateral and cancels by design.
 """
 
 from __future__ import annotations
@@ -137,6 +163,12 @@ SOFT_YIELD_RELEASE_NM = 0.40 * float(STEER_THRESHOLD)  # 0.40 Nm, wider gap
 SOFT_YIELD_DEBOUNCE_FRAMES = 9   # 90 ms at 100 Hz (0.55 Nm)
 SOFT_YIELD_FAST_DEBOUNCE_FRAMES = 6  # 60 ms as |torsion| → 1.0 Nm
 SOFT_YIELD_RELEASE_FRAMES = 8    # 80 ms below release before clearing latch
+
+# Early yield on steeringPressed, no EPAS hands gate (see module docstring).
+# Same-sign torsion at/above EARLY_YIELD_NM while steeringPressed for
+# EARLY_YIELD_FRAMES consecutive frames (100 Hz) enters the same yield.
+EARLY_YIELD_NM = 2.0
+EARLY_YIELD_FRAMES = 8  # 80 ms
 
 # Rate agreement. Pre-AP CS.steeringRateDeg is −StW_AnglHP_Spd (deg/s).
 # SNA decodes to ~4095 deg/s. Kept as a *weak low-torsion* wind filter
@@ -349,6 +381,13 @@ def smoothstep(t: float) -> float:
 def lat_active_after_handoff(lat_would_be_active: bool, yielded: bool) -> bool:
   """EPS request bit after blinker / standstill / soft-yield.
 
+  INFERENCE CONTRACT: this bit becomes DAS_steeringControlType (1 = OP is
+  steering) and is the ONLY thing panda / the card use to infer "lateral
+  yielded". Any new reason for latActive to go false or come back true,
+  or any change to handoff / blend timing, must update opendbc
+  preap/lat_yield.py + tesla_preap_latyield.h (see the module docstring
+  and test_lat_yield_inference_guard.py).
+
   Blinker pause and standstill already cleared lat_would_be_active.
   Soft yield does the same: latActive false so Pre-AP carcontroller
   sends DAS_steeringControlType=0 and apply_steer_angle_limits_vm
@@ -444,6 +483,8 @@ class DriverLateralHandoff:
     self._blend_s = 0.0
     self._press_cnt = 0
     self._release_cnt = 0
+    self._early_cnt = 0
+    self._early_sign = 0
     self._pressed = False
     self._blinker_was_paused = False
     self._hands_off_s = 0.0
@@ -482,6 +523,19 @@ class DriverLateralHandoff:
     if self._pressed and self._release_cnt >= SOFT_YIELD_RELEASE_FRAMES:
       self._pressed = False
     return self._pressed
+
+  def _update_early(self, torque_nm: float, steering_pressed: bool) -> bool:
+    """Same-sign firm torsion while steeringPressed, no hands gate."""
+    mag = abs(float(torque_nm))
+    sign = 1 if float(torque_nm) > 0.0 else -1
+    if steering_pressed and mag >= EARLY_YIELD_NM and (
+        self._early_cnt == 0 or sign == self._early_sign):
+      self._early_sign = sign
+      self._early_cnt = min(self._early_cnt + 1, EARLY_YIELD_FRAMES + 1)
+    else:
+      self._early_cnt = 0
+      self._early_sign = 0
+    return self._early_cnt >= EARLY_YIELD_FRAMES
 
   def _update_emergency(self, *, brake_applied: bool, a_ego: float,
                         v_ego: float, dt: float) -> bool:
@@ -553,7 +607,8 @@ class DriverLateralHandoff:
              brake_applied: bool = False, a_ego: float = 0.0,
              v_ego: float = 15.0, dt: float | None = None,
              emergency_yank: bool = False,
-             lane_change_confirm: bool = False) -> HandoffOutput:
+             lane_change_confirm: bool = False,
+             steering_pressed: bool = False) -> HandoffOutput:
     if dt is None:
       dt = DT_CTRL
 
@@ -599,6 +654,8 @@ class DriverLateralHandoff:
     pressed = self._update_intent(
       steering_torque, steering_rate_deg,
       hands_still_on(hands_on_level), tracking_error)
+    if self._update_early(steering_torque, bool(steering_pressed)):
+      pressed = self._pressed = True
     hands_on = hands_still_on(hands_on_level)
     firm_push = mag >= SOFT_YIELD_TRIGGER_NM
 
