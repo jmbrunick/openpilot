@@ -21,6 +21,7 @@ LC_NUDGE_TEST_PATH = "selfdrive/controls/lib/tests/test_lane_change_nudge.py"
 OFFSET_TEST_PATH = "selfdrive/mapd/tests/test_map_speed_offset_slew.py"
 ENGAGE_MAX_TEST_PATH = "selfdrive/car/tests/test_preap_engage_max_after_pause.py"
 FRONTAGE_TEST_PATH = "selfdrive/mapd/tests/test_map_match_frontage.py"
+ROAD_CLASS_TEST_PATH = "selfdrive/mapd/tests/test_map_match_road_class.py"
 LANE_CHANGE_TARGET_TEST_PATH = "selfdrive/controls/lib/tests/test_lane_change_target.py"
 LC_TURN_TEST_PATH = "selfdrive/controls/lib/tests/test_lane_change_turn.py"
 NOISE_GATE_TEST_NODE = (
