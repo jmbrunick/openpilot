@@ -169,6 +169,11 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"NAPPedalCalibZero", {PERSISTENT, FLOAT, "0.0"}},
     {"NAPPedalCanBus", {PERSISTENT, INT, "2"}},
     {"NAPAdaptiveAccel", {PERSISTENT, BOOL, "1"}},
+    // Curve-follow (continuous curve term in the longitudinal planner).
+    // 0 = off, 1 = shadow (compute + log only; old preview and CurveMaxHold
+    // stay in force), 2 = active (replaces the preview, retires the
+    // CurveMaxHold MAX cap). Default 1.
+    {"NAPCurveFollow", {PERSISTENT, INT, "1"}},
     // Settings → NAP → Lateral Control. Default On (Pre-AP only). Turn
     // geometry correction: low-speed lag + rear reference offset (m) in
     // modeld's plan sampling time. On also drops the legacy roundabout
