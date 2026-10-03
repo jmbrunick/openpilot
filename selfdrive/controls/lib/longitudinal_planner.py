@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import math
+import time
+
 import numpy as np
 
 import cereal.messaging as messaging
@@ -16,11 +18,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   get_stopped_equivalence_factor,
   get_T_FOLLOW,
 )
-from openpilot.selfdrive.controls.lib.curve_max_hold import (
-  CURVE_ENTER_LAT_MS2,
-  CURVE_EXIT_LAT_MS2,
-  curve_speed_for_curvature,
-)
+from openpilot.selfdrive.controls.lib.curve_max_hold import curve_speed_for_curvature
 from openpilot.selfdrive.controls.lib.curve_preview import (
   PREVIEW_FREE_A_MS2,
   CurvePreview,
@@ -30,53 +28,12 @@ from openpilot.selfdrive.controls.lib.curve_preview import (
   turn_accel_limit,
 )
 from openpilot.selfdrive.controls.lib.radar_path_gate import model_path_xy, path_lateral_m
-from openpilot.selfdrive.controls.lib.lead_leaving import LeadLeavingEstimator, release_lead_brake
-from openpilot.selfdrive.controls.lib.unified_lead import (
-  MODE_BLEND_S,
-  UnifiedLeadController,
-  speed_ceiling_accel,
-)
+from openpilot.selfdrive.controls.lib.lead_leaving import LeadLeavingEstimator
+from openpilot.selfdrive.controls.lib.unified_lead import UnifiedLeadController, unified_follow_desired
 from openpilot.selfdrive.controls.lib.lead_approach import (
-  LEAD_APPROACH_MILD_A_MS2,
-  LEAD_POST_CURVE_CATCHUP_S,
-  LEAD_POST_DUMP_A_MS2,
-  LEAD_POST_DUMP_HOLD_S,
-  ClosingHold,
-  ClosingSpeedEase,
-  CommandShortfall,
-  InsideFdRecovery,
-  LeadResidualWindow,
-  bias_corrected_grade_ms2,
-  lead_descent_profile_a_eff,
-  lead_profile_on_descent,
-  apply_lead_approach_overlay,
-  apply_lead_glide_a,
-  cap_closing_lead_accel,
-  lead_approach_decel_ms2,
-  lead_approach_rapid_gate,
-  lead_closing_profile_blocks_positive,
-  lead_closing_profile_ease_a,
   lead_approach_track_ok,
-  lead_close_accel_ms2,
   lead_close_should_cap,
-  lead_mid_gap_catchup_latch,
-  lead_follow_slack_m,
-  lead_owns_plan,
-  lead_remaining_close_a_ms2,
   resolve_lead_close_hold,
-  slew_follow_chatter_a,
-  slew_lead_acquire_a,
-  slew_lead_approach_a,
-  slew_near_gap_small_a,
-  floor_midgap_coast_a_target,
-  floor_near_fd_coast_a_target,
-  plan_horizon_is_coasting,
-  soft_limit_mpc_a_target,
-  update_depart_release,
-  update_lead_acquire,
-  update_lead_glide,
-  update_lead_settle,
-  update_opening_release,
 )
 from openpilot.selfdrive.controls.lib.follow_distance import FollowDistanceBlend, NAP_FOLLOW_DISTANCE_RANGE
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
@@ -96,6 +53,7 @@ from openpilot.selfdrive.controls.lib.hypermile import (
 )
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
+
 
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
@@ -161,6 +119,40 @@ def limit_accel_in_turns(v_ego, angle_steers, a_target, CP, a_y=None, a_y_ahead=
   return [a_target[0], min(a_target[1], a_x_allowed)]
 
 
+
+# First-frame brake head start for a new lead (m/s^2 below the lead-free command).
+SEED_BRAKE_STEP_MS2 = 0.7
+CYCLE_LOG_EVERY_N = 600  # ~30 s at the 20 Hz model rate
+
+
+class CycleTimeLog:
+  """Running planner update() cost, logged every CYCLE_LOG_EVERY_N cycles.
+
+  The unified controller is the only lead-follow path, so this is the number
+  to compare against older builds when checking plannerd CPU.
+  """
+
+  def __init__(self, every_n: int = CYCLE_LOG_EVERY_N) -> None:
+    self.every_n = int(every_n)
+    self.reset()
+
+  def reset(self) -> None:
+    self.n = 0
+    self.total_s = 0.0
+    self.max_s = 0.0
+
+  def record(self, elapsed_s: float):
+    """Add one cycle. Returns (n, mean_ms, max_ms) when a window closes, else None."""
+    self.n += 1
+    self.total_s += float(elapsed_s)
+    self.max_s = max(self.max_s, float(elapsed_s))
+    if self.n < self.every_n:
+      return None
+    out = (self.n, 1000.0 * self.total_s / self.n, 1000.0 * self.max_s)
+    self.reset()
+    return out
+
+
 class LongitudinalPlanner:
   def __init__(self, CP, init_v=0.0, init_a=0.0, dt=DT_MDL, params=None):
     self.CP = CP
@@ -186,70 +178,35 @@ class LongitudinalPlanner:
     self.active_nap_follow_dist = effective_nap_follow_dist(self._is_preap, self.nap_follow_dist)
     self.t_follow = get_T_FOLLOW(nap_follow_dist=self.active_nap_follow_dist)
     self._frame = 0
-    self._lead_approach_active = False
-    self._lead_approach_a = None
-    self._lead_approach_rapid_count = 0
+    # Last in-window radar lead, held through a brief status drop.
     self._lead_close_hold_d = None
     self._lead_close_hold_v = None
     self._lead_close_hold_a = None
     self._lead_close_hold_age = 0.0
-    self._lead_close_hold_owned = False
-    self._lead_close_a_cap = None
-    self._lead_mid_gap_catchup = False
-    self._lead_mid_gap_slack = None
-    self._lead_post_dump_hold = 0.0
-    self._follow_open_a = None
-    self._lead_settle_age = 0.0
-    self._lead_settled = False
-    self._lead_acquire_age = 0.0
-    self._lead_glide_active = False
-    self._lead_soft_limit_floored = False
-    self._lead_soft_limit_v_rel = None
-    self._lead_residual = LeadResidualWindow()
-    self._closing_ease = ClosingSpeedEase()
-    self._closing_ease_hold_key = None
-    self._closing_hold = ClosingHold()
-    self._inside_fd = InsideFdRecovery()
-    self._cmd_shortfall = CommandShortfall()
-    self._post_curve_s = 0.0
-    self._in_curve = False
+    self._lead_y_rel = None
+    self._corner_curvature = 0.0
     self._curve_preview = CurvePreview()
     self.curve_preview_a = PREVIEW_FREE_A_MS2
     self._turn_a_max = None
-    self._corner_curvature = 0.0
-    self._lead_y_rel = None
-    self._lead_opening_age = 0.0
-    self._lead_opening_release = False
-    self._lead_opening_d = None
-    self._lead_depart_age = 0.0
-    self._lead_depart_release = False
-    self._lead_depart_abs_y = None
 
     self.a_desired = init_a
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
     self.prev_accel_clip = [ACCEL_MIN, ACCEL_MAX]
     self.output_a_target = 0.0
     self.output_should_stop = False
-    # Continuous lead follow. Default off; shadow is logged either way.
+    # Continuous lead follow: the one longitudinal controller for a lead on Pre-AP.
     self.unified_a_target = 0.0
     self._unified = UnifiedLeadController()
-    # Lead leaving our path: one weight for both the legacy and unified paths.
     self._lead_leave = LeadLeavingEstimator()
     self.lead_leave_w = 0.0
-    self._unified_enabled = False
-    self._unified_read_age = 0.0
-    self._unified_polled = False
-    self._mode_w = 0.0
     self._unified_v_cap_ms = 0.0
     self._unified_lead_id = None
-    # Shadow failures latch until process restart. They must not escape update().
+    self._unified_following = False
+    # A compute failure latches until process restart. It must not escape update().
     self._unified_faulted = False
     self._unified_fault_count = 0
     self._unified_fault_logged = False
-    self._unified_last_good = None
-    self._plan_engaged = False
-    if self._is_preap:
-      self._poll_unified_enabled(force=True)
+    self._cycle_log = CycleTimeLog()
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
@@ -275,31 +232,46 @@ class LongitudinalPlanner:
       throttle_prob = 1.0
     return x, v, a, j, throttle_prob
 
-  def _update_corner_state(self, sm, v_ego: float) -> None:
-    """Real cornering for the depart check and the post-curve +a trickle.
+  def _update_corner_state(self, sm) -> None:
+    """Vehicle-model curvature for the lead path weighting and the curve ceiling."""
+    curv = getattr(sm['controlsState'], "curvature", 0.0)
+    self._corner_curvature = 0.0 if curv is None else float(curv)
 
-    Curvature is the same vehicle-model signal the curve cap uses.
-    Enter / exit use lateral accel so a lead in a bend is not treated
-    as leaving the lane, and the first seconds after the bend do not
-    spend the Accel envelope catching back up.
+  def _track_lead(self, sm) -> None:
+    """Hold the last in-window radar lead through a brief status drop.
+
+    The continuous controller reads this: a live lead, or the held one while
+    radard flickers, with its aLead and lateral offset.
     """
-    kappa = 0.0
-    cs = sm['controlsState']
-    curv = getattr(cs, "curvature", 0.0)
-    if curv is not None:
-      kappa = float(curv)
-    self._corner_curvature = kappa
-    ay = abs(kappa) * float(v_ego) * float(v_ego)
-    if ay >= CURVE_ENTER_LAT_MS2:
-      self._in_curve = True
-      self._post_curve_s = 0.0
-    elif self._in_curve and ay < CURVE_EXIT_LAT_MS2:
-      self._in_curve = False
-      self._post_curve_s = LEAD_POST_CURVE_CATCHUP_S
-    elif self._post_curve_s > 0.0:
-      self._post_curve_s = max(0.0, self._post_curve_s - float(self.dt))
+    if not self._is_preap:
+      return
+    lead = sm['radarState'].leadOne
+    d_cap, _, self._lead_close_hold_d, self._lead_close_hold_v, self._lead_close_hold_age = (
+      resolve_lead_close_hold(
+        lead.status, lead.dRel, lead.vLead,
+        self._lead_close_hold_d, self._lead_close_hold_v, self._lead_close_hold_age,
+        self.dt, model_prob=lead.modelProb, radar=lead.radar,
+      )
+    )
+    if d_cap is not None:
+      if lead.status and lead_close_should_cap(lead.dRel, lead.modelProb, lead.radar, active=True):
+        self._lead_close_hold_a = float(lead.aLeadK)
+    else:
+      self._lead_close_hold_a = None
+    held = self._lead_close_hold_d is not None and self._lead_close_hold_v is not None
+    if bool(lead.status) and lead_close_should_cap(lead.dRel, lead.modelProb, lead.radar, active=False):
+      self._lead_y_rel = float(lead.yRel)
+    elif not held:
+      self._lead_y_rel = None
 
   def update(self, sm):
+    t0 = time.perf_counter()
+    self._update(sm)
+    window = self._cycle_log.record(time.perf_counter() - t0)
+    if window is not None:
+      cloudlog.info("longitudinal planner cycle: n=%d mean=%.3f ms max=%.3f ms", *window)
+
+  def _update(self, sm):
     self._frame += 1
     if self._is_preap:
       # Stalk Follow Distance 1–7 must land on the next plan.
@@ -331,7 +303,6 @@ class LongitudinalPlanner:
     reset_state = long_control_off if self.CP.openpilotLongitudinalControl else not sm['selfdriveState'].enabled
     # PCM cruise speed may be updated a few cycles later, check if initialized
     reset_state = reset_state or not v_cruise_initialized
-    self._plan_engaged = not reset_state
 
     # No change cost when user is controlling the speed, or when standstill
     prev_accel_constraint = not (reset_state or sm['carState'].standstill)
@@ -356,44 +327,16 @@ class LongitudinalPlanner:
       self.v_desired_filter.x = v_ego
       # Clip aEgo to cruise limits to prevent large accelerations when becoming active
       self.a_desired = np.clip(sm['carState'].aEgo, accel_clip[0], accel_clip[1])
-      self._lead_approach_active = False
-      self._lead_approach_a = None
-      self._lead_approach_rapid_count = 0
       self._lead_close_hold_d = None
       self._lead_close_hold_v = None
       self._lead_close_hold_a = None
       self._lead_close_hold_age = 0.0
-      self._lead_close_hold_owned = False
-      self._lead_close_a_cap = None
-      self._lead_mid_gap_catchup = False
-      self._lead_mid_gap_slack = None
-      self._lead_post_dump_hold = 0.0
-      self._follow_open_a = None
-      self._lead_settle_age = 0.0
-      self._lead_settled = False
-      self._lead_acquire_age = 0.0
-      self._lead_soft_limit_v_rel = None
-      self._lead_residual.reset()
-      self._closing_ease.reset()
-      self._closing_ease_hold_key = None
-      self._closing_hold.reset()
-      self._inside_fd.reset()
-      self._post_curve_s = 0.0
-      self._in_curve = False
-      self._corner_curvature = 0.0
       self._lead_y_rel = None
-      self._lead_opening_age = 0.0
-      self._lead_opening_release = False
-      self._lead_opening_d = None
-      self._lead_depart_age = 0.0
-      self._lead_depart_release = False
-      self._lead_depart_abs_y = None
+      self._corner_curvature = 0.0
       self._unified.reset()
       self._unified_lead_id = None
+      self._unified_following = False
       self._curve_preview.reset()
-
-    if self._is_preap:
-      self._poll_unified_enabled()
 
     # Prevent divergence, smooth in current v_ego
     self.v_desired_filter.x = max(0.0, self.v_desired_filter.update(v_ego))
@@ -413,7 +356,6 @@ class LongitudinalPlanner:
 
     # OSM map speed: trust card HUD MAX (eased decreases, lag-corrected raises).
     # Do not min() with posted — that snapped when GPS entered a lower zone.
-    # Lead still wins via mpc.update(radarState, v_cruise).
     # Roundabout funnel: cap cruise to ring speed and command kinematic −a
     # (not Lookahead comfort). aTarget stays ≤ 0 until the ring is exited.
     rb_hint = None
@@ -436,7 +378,6 @@ class LongitudinalPlanner:
 
     self.active_nap_follow_dist = effective_nap_follow_dist(self._is_preap, self.nap_follow_dist)
     self.t_follow = get_T_FOLLOW(sm['selfdriveState'].personality, self.active_nap_follow_dist)
-    self._follow_open_a = None
     long_engaged = self._is_preap and (not reset_state)
     has_lead_status = bool(sm['radarState'].leadOne.status)
     if self._is_preap:
@@ -444,7 +385,7 @@ class LongitudinalPlanner:
       # Unset (255) is clamped to V_CRUISE_MAX above, which would look
       # like a highway MAX. 0 is not a city set speed. Ego is the fallback.
       follow_max_ms = v_hud_ms if v_cruise_initialized and float(v_hud_ms) > 0.0 else None
-      t_blended, active_dist, self._follow_open_a = self._follow_blend.update(
+      t_blended, active_dist, _ = self._follow_blend.update(
         v_ego, self.dt,
         engaged=long_engaged,
         has_lead=has_lead_status,
@@ -457,10 +398,9 @@ class LongitudinalPlanner:
         self.t_follow = float(t_blended)
 
     # Pre-AP adaptive accel: only limit accel when the lead's obstacle-equivalent
-    # distance is close. Above 1.5x, Adaptive Accel used the full cruise profile
-    # to close the gap — that punch. The lead-close cap below owns large-gap
-    # +a (Mannerisms Accel, never higher). Below 1.2x, cap to follow limits
-    # to prevent overshoot → regen → overshoot oscillation. Blend in between.
+    # distance is close. Above 1.5x the full cruise profile applies. Below 1.2x,
+    # cap to follow limits so the command the lead-follow controller starts
+    # from does not overshoot. Blend in between.
     if self.CP.carFingerprint == "TESLA_MODEL_S_PREAP" and self.nap_adaptive_accel and sm['radarState'].leadOne.status:
       follow_limit = _get_preap_follow_limit(v_ego)
       if follow_limit is not None:
@@ -470,90 +410,8 @@ class LongitudinalPlanner:
           blended = accel_clip[1] * (1.0 - cap_strength) + follow_limit * cap_strength
           accel_clip[1] = min(accel_clip[1], blended)
 
-    self._update_corner_state(sm, v_ego)
-
-    # Coming up behind a radar lead: cap +a to the same Accel 1–10
-    # envelope as open-road / MAX climb (including last-mph baby-step).
-    # Cruise 1.6 / Adaptive full-profile used to punch a 160–200 m lead.
-    # Near-gap rematch trickles. After match-settle, Accel-ceil rematch
-    # is deadbanded (trickle / hunt, not +0.323 for 7 s while opening).
-    # At/above MAX the envelope is 0 — do not chase a faster lead past
-    # set. Hold last in-window lead on a brief status drop. Does not
-    # change MPC danger / −a.
-    self._lead_close_a_cap = None
-    if self._is_preap:
-      lead_close = sm['radarState'].leadOne
-      d_cap, v_cap, self._lead_close_hold_d, self._lead_close_hold_v, self._lead_close_hold_age = (
-        resolve_lead_close_hold(
-          lead_close.status, lead_close.dRel, lead_close.vLead,
-          self._lead_close_hold_d, self._lead_close_hold_v, self._lead_close_hold_age,
-          self.dt, model_prob=lead_close.modelProb, radar=lead_close.radar,
-        )
-      )
-      if d_cap is not None:
-        v_rel_lead = v_ego - float(v_cap)
-        slack = lead_follow_slack_m(d_cap, v_cap, self.t_follow)
-        a_peak = map_accel_a_ms2(self._map_speed_lookahead, self._map_speed_accel)
-        a_grad = map_track_accel_ms2(
-          v_ego, v_hud_ms, a_peak, accel_level=self._map_speed_accel,
-        )
-        # At/above MAX, map_track_accel is None (deadband). That must be
-        # a 0 ceiling, not full Accel peak — otherwise rematch +a chases
-        # a faster lead past set (ea 11:46: Accel-1 at 62 on a 60 MAX).
-        a_env = 0.0 if a_grad is None else min(a_peak, float(a_grad))
-        if lead_close.status and lead_close_should_cap(
-          lead_close.dRel, lead_close.modelProb, lead_close.radar, active=True,
-        ):
-          self._lead_close_hold_a = float(lead_close.aLeadK)
-          self._lead_close_hold_owned = lead_owns_plan(
-            v_rel_lead, self._lead_close_hold_a, slack,
-          )
-        self._lead_settle_age, self._lead_settled = update_lead_settle(
-          self._lead_settle_age, self._lead_settled, v_rel_lead, slack, self.dt,
-          present=True, closing_hard=lead_owns_plan(
-            v_rel_lead, self._lead_close_hold_a, slack,
-          ),
-        )
-        self._lead_mid_gap_catchup = lead_mid_gap_catchup_latch(
-          self._lead_mid_gap_catchup, v_rel_lead, slack,
-          prev_slack=self._lead_mid_gap_slack,
-          settled=self._lead_settled,
-        )
-        self._lead_mid_gap_slack = slack
-        if self._lead_mid_gap_catchup:
-          self._lead_settled = False
-          self._lead_settle_age = 0.0
-        self._lead_close_a_cap = lead_close_accel_ms2(
-          self._map_speed_accel, v_rel=v_rel_lead, slack=slack, a_personality=a_env,
-          settled=self._lead_settled, v_ego=v_ego, v_cruise=v_hud_ms,
-          catchup=self._lead_mid_gap_catchup,
-          post_dump=self._lead_post_dump_hold > 0.0,
-          post_curve=self._post_curve_s > 0.0,
-        )
-        if self._lead_close_hold_owned or lead_owns_plan(
-          v_rel_lead, self._lead_close_hold_a, slack,
-        ):
-          self._lead_close_a_cap = min(float(self._lead_close_a_cap), 0.0)
-        accel_clip[1] = min(accel_clip[1], self._lead_close_a_cap)
-      else:
-        self._lead_close_hold_a = None
-        self._lead_close_hold_owned = False
-        self._lead_settle_age = 0.0
-        self._lead_settled = False
-        self._lead_mid_gap_catchup = False
-        self._lead_mid_gap_slack = None
-        self._lead_post_dump_hold = 0.0
-        self._lead_glide_active = False
-        self._lead_soft_limit_floored = False
-        self._lead_soft_limit_v_rel = None
-        self._lead_residual.reset()
-        self._lead_y_rel = None
-        self._lead_opening_age = 0.0
-        self._lead_opening_release = False
-        self._lead_opening_d = None
-        self._lead_depart_age = 0.0
-        self._lead_depart_release = False
-        self._lead_depart_abs_y = None
+    self._update_corner_state(sm)
+    self._track_lead(sm)
 
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
@@ -587,12 +445,6 @@ class LongitudinalPlanner:
     else:
       output_a_target = output_a_target_mpc
       self.output_should_stop = output_should_stop_mpc
-    # Lead-free floor: the deepest non-lead decel in force this frame (MAX,
-    # map, curve, roundabout, e2e). A leaving lead's brake releases to this,
-    # never above it.
-    lead_free_a = 0.0
-    if sm['selfdriveState'].experimentalMode:
-      lead_free_a = min(lead_free_a, float(output_a_target_e2e))
     if self._is_preap:
       self._update_lead_leave(sm, float(v_ego), reset_state)
 
@@ -601,8 +453,7 @@ class LongitudinalPlanner:
     # past MAX and map_track_decel below it. Brake is locked Accel 5.
     # A valid radar lead owns follow: do not replace ~0 / slight+ MPC with
     # map climb toward MAX (punch + overshoot + sluggish re-match).
-    # map_track_decel when above MAX still mins in. Lead-approach min()
-    # and MPC stay as-is.
+    # map_track_decel when above MAX still mins in.
     # Hypermile Hill Climb (IMU pitch only — no maps-elevation lookahead)
     # then raises +a on a real uphill *under* MAX when there is no lead.
     # Crest / downhill ease only at or above MAX (not TRACK_TAPER).
@@ -635,7 +486,6 @@ class LongitudinalPlanner:
         )
         if a_brake is not None:
           output_a_target = min(float(output_a_target), a_brake)
-          lead_free_a = min(lead_free_a, float(a_brake))
         else:
           a_up = map_track_accel_ms2(
             v_ego, v_hud_ms, map_accel_a_ms2(self._map_speed_lookahead, self._map_speed_accel),
@@ -665,369 +515,12 @@ class LongitudinalPlanner:
     # Kinematic a from apply_roundabout_plan — not map_track_decel comfort.
     if rb_v is not None:
       output_a_target = min(float(output_a_target), float(a_rb_plan))
-      lead_free_a = min(lead_free_a, float(a_rb_plan))
-
-    # Slower radar lead: early light ease as soon as radar feedback is
-    # reasonable (200 m Bosch ceiling, 24 s head-start, clear-close skips
-    # the late-gap need). Far radar-associated tracks are accepted without
-    # a modelProb wait; vision-only far flicker is not. Mild closes stay
-    # at MILD; rapid / dumping still uses kinematics up to 0.55 after 4
-    # agreeing in-window samples (~0.20 s). Hysteresis + slew both ways
-    # keep regen from slamming rematch. Map's +110 m is road distance to
-    # a sign and must not be used here. Rapid 0.55 needs consecutive high
-    # v_rel frames (a single closing-rate blip stays on mild). A far
-    # same-speed nibble must not steal cruise +a; a closing lock never
-    # rematches +a. Hold last in-window lead through status flicker so
-    # cruise cannot reclaim +a. Near the follow gap, a nibble can mesh.
-    # MPC −a is floored at MILD as anti-chatter (gap opening /
-    # small |v_rel|, far aLead) and for large-slack small adjustments
-    # (e4 40 m / 9.5 m/s −2.33). Closing *near the follow gap* or a
-    # near-gap braking lead keeps full match-speed −a. First latch
-    # slews both ways so a cruise/MPC punch cannot yo-yo regen→accel
-    # (e4 09:53:19). After acquire, matched-speed near the gap glides
-    # (a≈0) and inside-FD slow close commands the MILD floor.
-    # FCW / rapid / near-bumper / a real stop still own danger.
-    # Above MAX, a far lead still passes map decel; a steady mid-gap
-    # lead is comfort-floored so a cruise cliff cannot punch.
-    if self._is_preap:
-      # A cleared approach (lead change, rematch, or the test/planner
-      # reset of _lead_approach_*) must not keep a deep hold from the
-      # previous gap.
-      if not self._lead_approach_active and self._lead_approach_a is None:
-        self._closing_hold.reset()
-        self._inside_fd.reset()
-      lead = sm['radarState'].leadOne
-      allow_rapid = False
-      lead_held = self._lead_close_hold_d is not None and self._lead_close_hold_v is not None
-      live_ok = bool(lead.status) and lead_close_should_cap(
-        lead.dRel, lead.modelProb, lead.radar, active=False,
-      )
-      if live_ok:
-        overlay_v_rel = v_ego - float(lead.vLead)
-        overlay_d = float(lead.dRel)
-        overlay_v = float(lead.vLead)
-        overlay_radar = lead.radar
-        overlay_prob = lead.modelProb
-      elif lead_held:
-        overlay_v_rel = v_ego - float(self._lead_close_hold_v)
-        overlay_d = float(self._lead_close_hold_d)
-        overlay_v = float(self._lead_close_hold_v)
-        overlay_radar = True
-        overlay_prob = None
-      else:
-        overlay_v_rel = None
-        overlay_d = None
-        overlay_v = None
-        overlay_radar = None
-        overlay_prob = None
-      overlay_slack = lead_follow_slack_m(overlay_d, overlay_v, self.t_follow)
-      self._lead_acquire_age, acquiring = update_lead_acquire(
-        self._lead_acquire_age, live_ok or lead_held, self.dt,
-      )
-      keep_overlay = live_ok or (
-        lead_held and (self._lead_close_hold_owned or lead_owns_plan(
-          overlay_v_rel, self._lead_close_hold_a, overlay_slack,
-        ))
-      )
-      if keep_overlay:
-        a_lead = lead_approach_decel_ms2(
-          v_ego, overlay_v, overlay_d, self.t_follow, active=self._lead_approach_active or lead_held,
-          model_prob=overlay_prob, radar=overlay_radar, allow_rapid=False,
-        )
-        allow_rapid, self._lead_approach_rapid_count = lead_approach_rapid_gate(
-          overlay_v_rel, self._lead_approach_rapid_count, sample_ok=a_lead is not None,
-        )
-        if allow_rapid:
-          a_lead = lead_approach_decel_ms2(
-            v_ego, overlay_v, overlay_d, self.t_follow, active=self._lead_approach_active or lead_held,
-            model_prob=overlay_prob, radar=overlay_radar, allow_rapid=allow_rapid,
-          )
-        self._lead_approach_active = a_lead is not None
-      else:
-        self._lead_approach_active = False
-        self._lead_approach_rapid_count = 0
-        a_lead = None
-      if live_ok:
-        lead_v_hold = float(lead.vLead)
-        lead_d_hold = float(lead.dRel)
-        lead_a_k = float(lead.aLeadK)
-      elif lead_held:
-        lead_v_hold = self._lead_close_hold_v
-        lead_d_hold = self._lead_close_hold_d
-        lead_a_k = self._lead_close_hold_a
-      else:
-        lead_v_hold = None
-        lead_d_hold = None
-        lead_a_k = None
-      # Floor MPC before overlay so a confirmed rapid 0.55 path is not
-      # also clamped. Owned / path-synced lead: residual close (beyond
-      # ego a) or aLead skips MILD. One-frame v_rel spikes stay at MILD.
-      # Large-slack e4 stays floored. Over MAX, a far lead still
-      # passes map decel; a steady mid-gap lead is comfort-floored.
-      # Firm 0.55 / hard dump still waits on the rapid confirm.
-      # A raw cliff arms the mid-gap rematch trickle for the re-catch.
-      raw_mpc_a = float(output_a_target)
-      # #222 residual uses ~0.5 s of measured aEgo. prev stays None until
-      # that window has been a real brake for two frames, so one radar
-      # LSB cannot cancel the comfort floors.
-      if live_ok or lead_held:
-        prev_close_v_rel, residual_dt, residual_a = self._lead_residual.update(
-          overlay_v_rel, float(sm['carState'].aEgo), self.dt,
-        )
-      else:
-        self._lead_residual.reset()
-        prev_close_v_rel = None
-        residual_dt = self.dt
-        residual_a = float(sm['carState'].aEgo)
-      # Opening gap (09:57 / 10:05) and a lead walking off path
-      # (08:57:50–52). aLeadK alone must not keep firm −a, and a
-      # departing |yRel| fades the same authority. On-path close stays.
-      if live_ok:
-        lead_y = float(lead.yRel)
-        self._lead_y_rel = lead_y
-      elif lead_held:
-        lead_y = self._lead_y_rel
-      else:
-        lead_y = None
-        self._lead_y_rel = None
-      if live_ok or lead_held:
-        (
-          self._lead_opening_age,
-          self._lead_opening_release,
-          self._lead_opening_d,
-        ) = update_opening_release(
-          self._lead_opening_age, self._lead_opening_release,
-          overlay_v_rel, overlay_d, self._lead_opening_d, overlay_slack, self.dt,
-        )
-        (
-          self._lead_depart_age,
-          self._lead_depart_release,
-          self._lead_depart_abs_y,
-        ) = update_depart_release(
-          self._lead_depart_age, self._lead_depart_release,
-          lead_y, self._lead_depart_abs_y, overlay_slack, overlay_v_rel, self.dt,
-          curvature=self._corner_curvature, d_rel=overlay_d,
-        )
-      else:
-        self._lead_opening_age = 0.0
-        self._lead_opening_release = False
-        self._lead_opening_d = None
-        self._lead_depart_age = 0.0
-        self._lead_depart_release = False
-        self._lead_depart_abs_y = None
-      pitch = hill_pitch if len(sm['carControl'].orientationNED) == 3 else None
-      grade_ms2 = bias_corrected_grade_ms2(pitch)
-      shortfall = self._cmd_shortfall.update(
-        float(sm['carState'].aEgo), self.output_a_target, self.dt,
-      )
-      descent = lead_profile_on_descent(
-        grade_ms2, shortfall, a_ego=float(sm['carState'].aEgo),
-      )
-      profile_a_eff = lead_descent_profile_a_eff(shortfall) if descent else None
-      output_a_target = soft_limit_mpc_a_target(
-        output_a_target, v_ego, lead_v_hold, lead_d_hold,
-        fcw=self.fcw, crash_cnt=self.mpc.crash_cnt, allow_rapid=allow_rapid,
-        a_lead=lead_a_k, slack=overlay_slack,
-        prev_floored=self._lead_soft_limit_floored,
-        owned=bool(self._lead_close_hold_owned) or (
-          (not acquiring) and (live_ok or lead_held)
-        ),
-        acquiring=acquiring,
-        prev_v_rel=prev_close_v_rel,
-        a_ego=residual_a,
-        dt=residual_dt,
-        v_cruise=v_hud_ms,
-        opening_release=self._lead_opening_release,
-        depart_release=self._lead_depart_release,
-        should_stop=bool(self.output_should_stop),
-        t_follow=self.t_follow,
-        descent=descent,
-      )
-      self._lead_soft_limit_floored = (
-        raw_mpc_a < -LEAD_APPROACH_MILD_A_MS2
-        and float(output_a_target) > raw_mpc_a + 1e-9
-      )
-      if (live_ok or lead_held) and raw_mpc_a <= -LEAD_POST_DUMP_A_MS2:
-        self._lead_post_dump_hold = LEAD_POST_DUMP_HOLD_S
-      elif self._lead_post_dump_hold > 0.0:
-        self._lead_post_dump_hold = max(0.0, self._lead_post_dump_hold - float(self.dt))
-      self._lead_soft_limit_v_rel = overlay_v_rel if (live_ok or lead_held) else None
-      a_lead = slew_lead_approach_a(a_lead, self._lead_approach_a)
-      self._lead_approach_a = a_lead
-      if a_lead is not None:
-        output_a_target = apply_lead_approach_overlay(
-          output_a_target, a_lead, v_rel=overlay_v_rel, slack=overlay_slack,
-        )
-      if self._follow_open_a is not None and float(output_a_target) > float(self._follow_open_a):
-        output_a_target = float(self._follow_open_a)
-      # Hard block rematch / cruise +a while closing on a live or held
-      # lead. Prefer match-speed −a; never positive into a shrinking gap.
-      # aLead-only match is near-gap only (not a far / opening lead).
-      output_a_target = cap_closing_lead_accel(
-        output_a_target, overlay_v_rel, a_lead=lead_a_k,
-        lead_present=live_ok or lead_held, owned=self._lead_close_hold_owned,
-        slack=overlay_slack, d_rel=overlay_d, acquiring=acquiring,
-        prev_v_rel=prev_close_v_rel, a_ego=residual_a, dt=residual_dt,
-        opening_release=self._lead_opening_release,
-        depart_release=self._lead_depart_release,
-        t_follow=self.t_follow, v_ego=v_ego, v_lead=lead_v_hold,
-      )
-      output_a_target = lead_remaining_close_a_ms2(
-        output_a_target, overlay_v_rel, overlay_slack,
-        v_ego=v_ego, v_cruise=v_hud_ms,
-      )
-      if live_ok or lead_held:
-        output_a_target = slew_lead_acquire_a(
-          output_a_target, self.output_a_target, overlay_v_rel,
-          d_rel=overlay_d, slack=overlay_slack, acquiring=acquiring,
-          allow_rapid=allow_rapid, fcw=self.fcw, crash_cnt=self.mpc.crash_cnt,
-          a_lead=lead_a_k, v_ego=v_ego, v_cruise=v_hud_ms,
-        )
-      # After acquire: matched-speed glide (no felt ±a), slower
-      # near-gap small-bite slew, and mid-gap rematch↔~0 chatter
-      # slew. First-latch smoothness stays #214. No lead: leave map /
-      # hill +a alone. Chatter slew treats a 0.30 climb as in-band and
-      # would walk it 0.02/frame from the previous 0.
-      self._lead_glide_active = update_lead_glide(
-        self._lead_glide_active, overlay_v_rel, overlay_slack,
-        d_rel=overlay_d, fcw=self.fcw, crash_cnt=self.mpc.crash_cnt,
-        allow_rapid=allow_rapid, acquiring=acquiring, a_lead=lead_a_k,
-      )
-      if (not acquiring) and (live_ok or lead_held):
-        output_a_target = apply_lead_glide_a(output_a_target, self._lead_glide_active)
-        output_a_target = slew_near_gap_small_a(
-          output_a_target, self.output_a_target, overlay_v_rel,
-          d_rel=overlay_d, slack=overlay_slack, allow_rapid=allow_rapid,
-          fcw=self.fcw, crash_cnt=self.mpc.crash_cnt,
-          opening_release=self._lead_opening_release,
-          depart_release=self._lead_depart_release,
-        )
-        output_a_target = slew_follow_chatter_a(
-          output_a_target, self.output_a_target, overlay_v_rel,
-          d_rel=overlay_d, slack=overlay_slack, allow_rapid=allow_rapid,
-          fcw=self.fcw, crash_cnt=self.mpc.crash_cnt,
-          catchup=self._lead_mid_gap_catchup,
-          opening_release=self._lead_opening_release,
-          depart_release=self._lead_depart_release,
-        )
-      # Coasting mid-gap: do not publish an ACCEL_MIN-region cliff while
-      # plan accels stay ~0 (18:10 under the map, and the same geometry
-      # over the map). Near-gap match-aLead stays raw, except a weak
-      # aLead cruise / lead0 cliff in the slack ~8–15 m overlap
-      # (0000010e 20:10 / 20:11 / 20:18) which still floors to MILD.
-      # Residual / rising close stays firm. Near Follow Distance
-      # (slack under that mid-gap floor) gets the same coast floor
-      # only when the lead is not braking and #222 is not armed.
-      # Arm the rematch trickle if that cliff was real so Accel cannot
-      # relight the next plant bite.
-      pre_coast_floor = float(output_a_target)
-      plan_coasting = plan_horizon_is_coasting(self.a_desired_trajectory)
-      output_a_target = floor_midgap_coast_a_target(
-        output_a_target, plan_coasting,
-        overlay_v_rel, overlay_d, overlay_slack,
-        v_ego=v_ego, v_cruise=v_hud_ms,
-        fcw=self.fcw, crash_cnt=self.mpc.crash_cnt, allow_rapid=allow_rapid,
-        a_lead=lead_a_k, owned=bool(self._lead_close_hold_owned),
-        prev_v_rel=prev_close_v_rel, a_ego=residual_a, dt=residual_dt,
-        should_stop=bool(self.output_should_stop),
-      )
-      near_fd_owned = bool(self._lead_close_hold_owned) or (
-        (not acquiring) and (live_ok or lead_held)
-      )
-      output_a_target = floor_near_fd_coast_a_target(
-        output_a_target, plan_coasting,
-        overlay_v_rel, overlay_d, overlay_slack,
-        fcw=self.fcw, crash_cnt=self.mpc.crash_cnt, allow_rapid=allow_rapid,
-        a_lead=lead_a_k, owned=near_fd_owned,
-        should_stop=bool(self.output_should_stop),
-        prev_v_rel=prev_close_v_rel, a_ego=residual_a, dt=residual_dt,
-        opening_release=self._lead_opening_release,
-        depart_release=self._lead_depart_release,
-      )
-      if ((live_ok or lead_held)
-          and pre_coast_floor <= -LEAD_POST_DUMP_A_MS2
-          and float(output_a_target) > pre_coast_floor + 1e-9):
-        self._lead_post_dump_hold = LEAD_POST_DUMP_HOLD_S
-      # Closing-speed profile, after the coast floors so they cannot
-      # lift it back to MILD. min() only deepens; #222 / firm-early
-      # commands are already more negative and stay put. Slew and the
-      # 1.5 s plant trim live on ClosingSpeedEase.
-      prev_ease_key = self._closing_ease_hold_key
-      if live_ok:
-        ease_key = ("radar", int(getattr(lead, "radarTrackId", 0)))
-        self._closing_ease_hold_key = ease_key
-      elif lead_held:
-        ease_key = self._closing_ease_hold_key
-      else:
-        ease_key = None
-        self._closing_ease_hold_key = None
-      profile_a = None
-      blocks_plus = False
-      if ease_key is None or ease_key != prev_ease_key:
-        self._closing_ease.reset()
-        self._closing_hold.reset()
-        self._inside_fd.reset()
-      if ease_key is not None:
-        ease_kw = dict(
-          v_rel=overlay_v_rel,
-          slack=overlay_slack,
-          a_lead=lead_a_k,
-          radar=bool(overlay_radar),
-          allow_rapid=allow_rapid,
-          fcw=bool(self.fcw),
-          crash_cnt=int(self.mpc.crash_cnt),
-          d_rel=overlay_d,
-          should_stop=bool(self.output_should_stop),
-          prev_v_rel=prev_close_v_rel,
-          a_ego=residual_a,
-          dt=residual_dt,
-          opening_release=bool(self._lead_opening_release),
-          depart_release=bool(self._lead_depart_release),
-          a_eff=profile_a_eff,
-        )
-        blocks_plus = lead_closing_profile_blocks_positive(**ease_kw)
-        profile_a = self._closing_ease.update(
-          lead_closing_profile_ease_a(**ease_kw),
-          float(sm["carState"].aEgo),
-          self.dt,
-          ease_key,
-          overlay_slack,
-          descent=descent,
-        )
-      if profile_a is not None:
-        output_a_target = min(float(output_a_target), float(profile_a))
-      if blocks_plus:
-        output_a_target = min(float(output_a_target), 0.0)
-      d_follow = None
-      if overlay_d is not None and overlay_slack is not None:
-        d_follow = float(overlay_d) - float(overlay_slack)
-      rec = self._inside_fd.update(
-        overlay_v_rel, overlay_slack, d_rel=overlay_d, v_lead=lead_v_hold,
-        t_follow=self.t_follow, v_ego=v_ego,
-        opening=bool(self._lead_opening_release),
-        depart=bool(self._lead_depart_release),
-      )
-      if rec is not None:
-        output_a_target = min(float(output_a_target), float(rec))
-      output_a_target = self._closing_hold.update(
-        output_a_target, overlay_v_rel, overlay_slack, d_follow,
-        opening=bool(self._lead_opening_release),
-        depart=bool(self._lead_depart_release),
-        dt=self.dt,
-      )
-
-    # Lead leaving our path (turning off, projected clear of our width by the
-    # time we arrive): fade its brake toward the lead-free command. The same
-    # weight feeds the unified controller below. Stalled / still-overlapping
-    # leads have weight 0, so this is exactly today's command for them.
-    if self._is_preap and self.lead_leave_w > 0.0:
-      free_a = min(float(lead_free_a), self._lead_free_ceiling_a(float(v_ego)))
-      output_a_target = release_lead_brake(output_a_target, self.lead_leave_w, free_a)
 
     # Curve preview: accel ceiling from the model path (0–5 s) that slows
     # ahead of a bend, finished ~1.5 s before the tight point, and holds
     # back +a just under a bend's comfort speed. min() only: never raises
-    # the command, never lifts a deeper lead / FCW one. Legacy and unified.
+    # the command. A lead, if any, is then followed by the continuous
+    # controller, which takes this ceiling as its own map/curve term.
     self.curve_preview_a = PREVIEW_FREE_A_MS2
     if self._is_preap:
       if reset_state or curve_path is None:
@@ -1039,26 +532,12 @@ class LongitudinalPlanner:
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
-    # Hard +a ceiling: the 0.05 clip slew must not leak cruise punch for a
-    # second, and a status flicker must not restore 1.6.
-    if self._lead_close_a_cap is not None:
-      accel_clip[1] = min(float(accel_clip[1]), float(self._lead_close_a_cap))
     self.output_a_target = np.clip(output_a_target, accel_clip[0], accel_clip[1])
     self.prev_accel_clip = accel_clip
-    self._apply_unified_lead(sm, float(v_ego))
-
-  def _lead_free_ceiling_a(self, v_ego: float) -> float:
-    """Hold speed, or the MAX / cornering speed-error decel if deeper (EV settle included)."""
-    v_cap = float(self._unified_v_cap_ms)
-    v_curve = curve_speed_for_curvature(float(self._corner_curvature))
-    if v_curve is not None and v_ego >= 5.0:
-      v_cap = min(v_cap, float(v_curve)) if v_cap > 0.5 else float(v_curve)
-    if v_cap <= 0.5:
-      return 0.0
-    return min(0.0, float(speed_ceiling_accel(v_ego, v_cap)))
+    self._apply_lead_follow(sm, float(v_ego))
 
   def _update_lead_leave(self, sm, v_ego: float, reset_state: bool) -> None:
-    """Leaving-path weight for radard's leadOne (shared by legacy and unified)."""
+    """Leaving-path weight for radard's leadOne (feeds the lead-follow controller)."""
     radar_state = sm['radarState']
     lead = radar_state.leadOne
     live = bool(lead.status)
@@ -1094,29 +573,12 @@ class LongitudinalPlanner:
       suppress=suppress,
     ))
 
-  def _poll_unified_enabled(self, force: bool = False) -> None:
-    """NAPLongUnified, cached. Not a Params read on the planner frame."""
-    if not self._is_preap:
-      return
-    if not force:
-      self._unified_read_age += float(self.dt)
-      if self._unified_polled and self._unified_read_age < 1.0:
-        return
-    self._unified_read_age = 0.0
-    self._unified_polled = True
-    getter = getattr(self._params, "get_bool", None)
-    if getter is None:
-      return
-    try:
-      self._unified_enabled = bool(getter("NAPLongUnified"))
-    except Exception:
-      pass
-
   def _note_unified_fault(self) -> None:
-    """Latch the shadow controller off until this process restarts.
+    """Latch the controller off until this process restarts.
 
-    cloudlog.exception runs for the first failure only. A later hit, if the
-    compute were entered again, only increments the counter.
+    cloudlog.exception runs for the first failure only. While latched the
+    published command is the MPC command with the map, curve and roundabout
+    ceilings (the lead-free path), which still brakes for the lead.
     """
     self._unified_fault_count += 1
     self._unified_faulted = True
@@ -1124,18 +586,18 @@ class LongitudinalPlanner:
       return
     self._unified_fault_logged = True
     cloudlog.exception(
-      "unified lead-follow shadow compute failed (count=%d); legacy longitudinal command stays in force",
+      "unified lead-follow compute failed (count=%d); MPC command stays in force",
       self._unified_fault_count,
     )
 
-  def _apply_unified_lead(self, sm, v_ego: float) -> None:
-    """Log the continuous controller every frame. Use it only while the toggle is on.
+  def _apply_lead_follow(self, sm, v_ego: float) -> None:
+    """The one lead-follow controller (Pre-AP).
 
-    Off (mode weight 0) does not write output_a_target. A lead that the
-    existing path does not own leaves the cruise command alone. FCW,
-    should-stop, and force-decel keep today's command if it is deeper.
-    A shadow exception latches the controller off for the rest of the drive,
-    publishes 0, and slews back to the legacy command on the 1 s mode blend.
+    Runs every frame. With a live or held lead its command replaces the
+    lead-free command in output_a_target. With none, the lead-free command
+    (MPC, map, hill, roundabout, curve preview) stands. FCW, should-stop and
+    force-decel keep that command if it is deeper. A compute exception
+    latches the controller off and leaves the lead-free command in force.
     """
     if not self._is_preap:
       self.unified_a_target = 0.0
@@ -1195,10 +657,30 @@ class LongitudinalPlanner:
       except Exception:
         path_lat = model_prob = radar = None
     existing = float(self.output_a_target)
-    shadow = None
+    seed = existing
+    command = None
     if not self._unified_faulted:
       try:
-        shadow = self._unified.step(
+        if gap is not None and not self._unified_following:
+          # First lead after the lead-free command. That command knows nothing
+          # of this lead (cruise or map-climb +a), so it may not accelerate
+          # harder than the law itself asks. A far closing lead is never
+          # rematched with +a.
+          wanted = unified_follow_desired(
+            gap, v_ego, v_lead, a_lead, float(self.t_follow),
+            v_ceiling=v_cap, a_map=a_map, y_rel=y_rel,
+            curvature=float(self._corner_curvature), path_lat=path_lat,
+            leave_w=float(self.lead_leave_w), model_prob=model_prob, radar=radar,
+          )
+          wanted = min(wanted, a_max_u)
+          if wanted >= 0.0:
+            seed = min(existing, max(wanted, 0.0))
+          else:
+            # The law wants a brake the lead-free command does not: start up to
+            # SEED_BRAKE_STEP_MS2 firmer than it (a hard close must not wait on
+            # the jerk-limited build-up), never past what the law itself asks.
+            seed = min(existing, max(wanted, min(existing, 0.0) - SEED_BRAKE_STEP_MS2))
+        command = float(self._unified.step(
           dt=self.dt,
           present=gap is not None,
           gap=0.0 if gap is None else gap,
@@ -1207,7 +689,7 @@ class LongitudinalPlanner:
           a_lead=a_lead,
           t_follow=float(self.t_follow),
           lead_id=lead_id,
-          seed_a=existing,
+          seed_a=seed,
           v_ceiling=v_cap,
           a_map=a_map,
           y_rel=y_rel,
@@ -1217,46 +699,21 @@ class LongitudinalPlanner:
           model_prob=model_prob,
           radar=radar,
           leave_w=float(self.lead_leave_w),
-        )
+        ))
       except Exception:
         self._note_unified_fault()
-      else:
-        self._unified_last_good = float(shadow)
 
-    if self._unified_faulted:
-      # Published shadow is the fallback. A ramp, if any, uses the last good value.
+    if self._unified_faulted or command is None:
       self.unified_a_target = 0.0
-    else:
-      self.unified_a_target = float(shadow)
-
-    # NAP_LONG_UNIFIED_GATE
-    enabled = self._unified_enabled
-    if self._unified_faulted:
-      enabled = False
-    if not self._plan_engaged:
-      self._mode_w = 1.0 if enabled else 0.0
-    else:
-      target_w = 1.0 if enabled else 0.0
-      step_w = float(self.dt) / MODE_BLEND_S
-      if self._mode_w < target_w:
-        self._mode_w = min(target_w, self._mode_w + step_w)
-      elif self._mode_w > target_w:
-        self._mode_w = max(target_w, self._mode_w - step_w)
-    if self._mode_w < 1e-6:
-      self._mode_w = 0.0
-    elif self._mode_w > 1.0 - 1e-6:
-      self._mode_w = 1.0
-    # Nothing safe to ramp from: drop the weight so the legacy command is published as-is.
-    if self._unified_faulted and self._unified_last_good is None:
-      self._mode_w = 0.0
-
-    blend_a = self._unified_last_good if self._unified_faulted else shadow
-    if self._mode_w > 0.0 and gap is not None and blend_a is not None:
-      mixed = ((1.0 - self._mode_w) * existing) + (self._mode_w * float(blend_a))
-      if self.fcw or self.output_should_stop or bool(sm["controlsState"].forceDecel):
-        if mixed > existing:
-          mixed = existing
-      self.output_a_target = float(mixed)
+      self._unified_following = False
+      return
+    self._unified_following = gap is not None
+    self.unified_a_target = command
+    if gap is None:
+      return
+    if self.fcw or self.output_should_stop or bool(sm["controlsState"].forceDecel):
+      command = min(command, existing)
+    self.output_a_target = float(command)
 
   def publish(self, sm, pm):
     plan_send = messaging.new_message('longitudinalPlan')

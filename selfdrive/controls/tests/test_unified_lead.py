@@ -394,27 +394,22 @@ def test_arrives_at_the_setpoint_already_speed_matched():
   assert abs(v_ego - v_lead) < 0.45
 
 
-def test_ui_and_param_default_off():
+def test_unified_is_the_sole_path_and_the_toggle_is_gone():
   keys = (ROOT / "common" / "params_keys.h").read_text()
-  assert '{"NAPLongUnified", {PERSISTENT, BOOL, "0"}}' in keys
   nap = (ROOT / "selfdrive/ui/layouts/settings/nap.py").read_text()
   mici = (ROOT / "selfdrive/ui/mici/layouts/settings/nap.py").read_text()
   content = (ROOT / "selfdrive/ui/layouts/settings/nap_content.py").read_text()
-  assert "NAP_LONG_UNIFIED" in nap
-  assert "Unified Lead Follow" in nap
-  main = nap.split("def _build_items", 1)[1].split("def _add_toggle", 1)[0]
-  assert main.index("Unified Lead Follow") < main.index('section_header_item("Longitudinal Control")')
-  assert main.index("Unified Lead Follow") < main.index("Pedal Interceptor")
-  assert main.index("Unified Lead Follow") < main.index("Driving Mannerisms")
-  nap_mici = mici.split("class NAPLayoutMici", 1)[1]
-  widgets = nap_mici.split("self._scroller.add_widgets", 1)[1]
-  assert widgets.index("unified_lead") < widgets.index("pedal_enabled")
-  assert "NAP_LONG_UNIFIED" in mici
-  assert "UNIFIED_LEAD_DESCRIPTION" in content
   planner = (ROOT / "selfdrive/controls/lib/longitudinal_planner.py").read_text()
+  for text in (keys, nap, mici, content, planner):
+    assert "NAPLongUnified" not in text
+    assert "NAP_LONG_UNIFIED" not in text
+  for text in (planner,):
+    assert "_unified_enabled" not in text
+    assert "_mode_w" not in text
+    assert "_apply_unified_lead" not in text
   assert "unifiedATarget" in planner
-  assert "NAP_LONG_UNIFIED_GATE" in planner
-  assert planner.index("self.output_a_target = np.clip") < planner.index("self._apply_unified_lead")
+  assert "self._apply_lead_follow(sm, float(v_ego))" in planner
+  assert planner.index("self.output_a_target = np.clip") < planner.index("self._apply_lead_follow(sm, float(v_ego))")
 
 
 # ---- Sep 25 2026 drives (Scallywag qlogs, routes 11a/11b/11c) ----------------

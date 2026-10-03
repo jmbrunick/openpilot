@@ -1,12 +1,13 @@
-"""Planner integration for NAPLongUnified.
+"""Planner integration for the unified lead-follow controller (the sole path).
 
-Default off leaves the layered command alone and still publishes the shadow.
-On, with a lead, the published accel is the continuous controller. The mode
-weight snaps while disengaged and slews for about a second while following.
-A shadow-compute exception is logged once, latches the controller off for
-the rest of the process, and the published command returns to the legacy path.
+On Pre-AP, a live or held lead hands the published accel to the continuous
+controller. Without a lead the lead-free command (MPC, map, curve, roundabout)
+stays in force. A compute exception is logged once, latches the controller off
+for the rest of the process, and the lead-free command (which still brakes for
+the lead) is published. Other cars never run it.
 """
 import math
+import time
 
 import numpy as np
 import pytest
@@ -17,8 +18,7 @@ from openpilot.common.constants import CV
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalPlanSource, T_IDXS
-from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner
-from openpilot.selfdrive.controls.lib.unified_lead import MODE_BLEND_S
+from openpilot.selfdrive.controls.lib.longitudinal_planner import SEED_BRAKE_STEP_MS2, CycleTimeLog, LongitudinalPlanner
 from openpilot.selfdrive.modeld.constants import ModelConstants
 
 
@@ -39,8 +39,7 @@ class _CapturingPubMaster:
 class _MutablePlannerParams:
   """Same unknown-key behavior as the following-suite double.
 
-  NAPLongUnified is not special-cased, so a missing key raises and the
-  planner must keep the controller off.
+  An unknown key raises, so the planner may only read keys it knows.
   """
 
   def __init__(self, nap_follow_dist, adaptive_accel=False, map_speed_accel=5):
@@ -88,19 +87,6 @@ class _MutablePlannerParams:
       self.migrated = bool(value)
     elif key == "NAPAdaptiveAccel":
       self.adaptive_accel = bool(value)
-
-
-class _UnifiedParams(_MutablePlannerParams):
-  def __init__(self, *args, unified=False, **kwargs):
-    super().__init__(*args, **kwargs)
-    self.unified = unified
-    self.unified_reads = 0
-
-  def get_bool(self, key):
-    if key == "NAPLongUnified":
-      self.unified_reads += 1
-      return bool(self.unified)
-    return super().get_bool(key)
 
 
 class _ConstantAccelerationMpc:
@@ -177,8 +163,8 @@ def _make_planner_inputs(speed_mps):
   })
 
 
-def _planner(v_ego, *, unified=False, nap_follow_dist=2, accel=-3.5):
-  params = _UnifiedParams(nap_follow_dist=nap_follow_dist, unified=unified)
+def _planner(v_ego, *, nap_follow_dist=2, accel=-3.5):
+  params = _MutablePlannerParams(nap_follow_dist=nap_follow_dist)
   planner = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
   planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=accel)
   planner.prev_accel_clip = [-3.5, 2.0]
@@ -235,292 +221,178 @@ def _spy_cloudlog_exception(monkeypatch):
   return calls
 
 
-def _capture_pre_mix(monkeypatch, planner):
-  """Legacy command for each frame, before the unified mix overwrites it."""
+def _capture_lead_free(monkeypatch, planner):
+  """Lead-free command for each frame, before the lead-follow step runs."""
   captured = []
-  original = planner._apply_unified_lead
+  original = planner._apply_lead_follow
 
   def _wrap(sm, v_ego):
     captured.append(float(planner.output_a_target))
     return original(sm, v_ego)
 
-  monkeypatch.setattr(planner, "_apply_unified_lead", _wrap)
+  monkeypatch.setattr(planner, "_apply_lead_follow", _wrap)
   return captured
 
 
-def test_unified_off_keeps_mode_weight_at_zero():
-  """Absent / false NAPLongUnified must not move the mode weight while engaged.
-
-  Forcing `enabled = True` slews the weight by dt/1s on this frame.
-  """
+def test_sole_path_follows_the_continuous_command_for_sep23():
+  """23:31 geometry: firm match to a braking lead, not the raw MPC -3.5."""
   v_ego = 30.0
-  params = _MutablePlannerParams(nap_follow_dist=2)
-  planner = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=params)
-  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-3.5)
-  inputs = _make_planner_inputs(v_ego)
-  _set_v_cruise_ms(inputs, 40.0)
+  planner, inputs, _ = _planner(v_ego, accel=-3.5)
   _own_lead(inputs, 35.0, v_ego - 1.13, a_lead=-1.18)
-  assert planner._unified_enabled is False
-  planner.update(inputs)
-  assert planner._plan_engaged is True
-  # Layered command stays in force. A forced-on toggle would have slewed this off zero.
-  assert planner._mode_w == 0.0
-
-
-def test_toggle_off_matches_legacy_and_still_logs_shadow():
-  v_ego = 30.0
-  v_lead = v_ego - 1.13
-  legacy_params = _MutablePlannerParams(nap_follow_dist=2)
-  legacy = LongitudinalPlanner(_make_preap_params(), init_v=v_ego, params=legacy_params)
-  legacy.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-3.5)
-  explicit, inputs, _ = _planner(v_ego, unified=False, accel=-3.5)
-  _own_lead(inputs, 35.0, v_lead, a_lead=-1.18)
-  legacy_inputs = _make_planner_inputs(v_ego)
-  _set_v_cruise_ms(legacy_inputs, 40.0)
-  _own_lead(legacy_inputs, 35.0, v_lead, a_lead=-1.18)
-  for _ in range(40):
-    legacy.update(legacy_inputs)
-    explicit.update(inputs)
-  assert explicit._mode_w == 0.0
-  assert float(explicit.output_a_target) == pytest.approx(float(legacy.output_a_target), abs=1e-9)
-  assert float(explicit.unified_a_target) <= -0.5
+  _run(planner, inputs, 80)
+  assert float(planner.output_a_target) == pytest.approx(float(planner.unified_a_target), abs=1e-6)
+  assert -2.2 < float(planner.output_a_target) <= -0.90
   publisher = _CapturingPubMaster()
-  explicit.publish(inputs, publisher)
-  assert publisher.message.longitudinalPlan.unifiedATarget == pytest.approx(explicit.unified_a_target)
+  planner.publish(inputs, publisher)
+  assert publisher.message.longitudinalPlan.unifiedATarget == pytest.approx(planner.unified_a_target)
 
 
-def test_toggle_on_follows_the_continuous_command_for_sep23():
-  """23:31 geometry: firm match to a braking lead, not the raw MPC −3.5."""
-  v_ego = 30.0
-  v_lead = v_ego - 1.13
-  on, inputs, _ = _planner(v_ego, unified=True, accel=-3.5)
-  off, off_inputs, _ = _planner(v_ego, unified=False, accel=-3.5)
-  _own_lead(inputs, 35.0, v_lead, a_lead=-1.18)
-  _own_lead(off_inputs, 35.0, v_lead, a_lead=-1.18)
-  _run(on, inputs, 80)
-  _run(off, off_inputs, 80)
-  assert on._mode_w == 1.0
-  assert float(on.output_a_target) == pytest.approx(float(on.unified_a_target), abs=1e-6)
-  assert -2.2 < float(on.output_a_target) <= -0.90
-  assert abs(float(off.output_a_target) - float(off.unified_a_target)) > 0.15 or abs(
-    float(on.output_a_target) - float(off.output_a_target)
-  ) > 0.05
-
-
-def test_mode_weight_slews_while_following_and_snaps_while_disengaged():
-  v_ego = 22.0
-  planner, inputs, params = _planner(v_ego, unified=False, accel=0.0)
-  _own_lead(inputs, 40.0, v_ego, a_lead=0.0)
+def test_first_far_closing_lead_is_never_rematched_with_plus_a():
+  """The lead-free command knows nothing of a new lead: cruise +a must not pass through."""
+  v_ego = 25.0
+  planner, inputs, _ = _planner(v_ego, nap_follow_dist=4, accel=1.5)
+  _own_lead(inputs, 160.0, v_ego - 1.6, a_lead=0.0)
   planner.update(inputs)
-  assert planner._mode_w == 0.0
+  assert planner._unified_following is True
+  assert float(planner.output_a_target) <= 0.05
+  assert _run(planner, inputs, 15, mpc_accel=1.5) <= 0.05
 
-  params.unified = True
-  planner._unified_enabled = True
+  # A far same-speed lead (the law wants +a): the cruise +1.5 is bounded by what
+  # the law itself asks (about +0.8 here), never passed through.
+  same, same_in, _ = _planner(v_ego, nap_follow_dist=4, accel=1.5)
+  _own_lead(same_in, 160.0, v_ego, a_lead=0.0)
+  same.update(same_in)
+  assert 0.0 < float(same.output_a_target) <= 0.9
+
+
+def test_first_hard_close_frame_starts_firmer_than_the_lead_free_command():
+  """07:55 Sep 20 class: the law asks for far more brake than the lead-free command.
+
+  The new lead starts up to SEED_BRAKE_STEP_MS2 firmer than that command
+  (not waiting on the jerk-limited build-up) and never passes the law's own ask.
+  """
+  v_ego = 18.5
+  planner, inputs, _ = _planner(v_ego, accel=-0.5)
+  _own_lead(inputs, 25.0, v_ego - 4.44, a_lead=-1.04)
   planner.update(inputs)
-  step = float(planner.dt) / MODE_BLEND_S
-  assert planner._mode_w == pytest.approx(step, abs=1e-9)
-  assert planner._mode_w < 0.5
-
-  for _ in range(25):
-    planner.update(inputs)
-  assert planner._mode_w == 1.0
-
-  params.unified = False
-  planner._unified_enabled = False
-  planner.update(inputs)
-  assert planner._mode_w == pytest.approx(1.0 - step, abs=1e-6)
-  assert planner._mode_w > 0.5
-
-  inputs["controlsState"].longControlState = LongCtrlState.off
-  planner.update(inputs)
-  assert planner._plan_engaged is False
-  assert planner._mode_w == 0.0
-
-  params.unified = True
-  planner._unified_enabled = True
-  planner.update(inputs)
-  assert planner._mode_w == 1.0
+  first = float(planner.output_a_target)
+  assert first <= -0.5 - 0.5 * SEED_BRAKE_STEP_MS2
+  assert first >= -0.5 - SEED_BRAKE_STEP_MS2 - 0.8
+  assert _run(planner, inputs, 40, mpc_accel=-0.5) <= -2.0
 
 
-def test_no_lead_keeps_the_cruise_command_when_unified_is_on():
+def test_no_lead_keeps_the_lead_free_command(monkeypatch):
   v_ego = 20.0
-  on, inputs, _ = _planner(v_ego, unified=True, accel=0.40)
-  off, off_inputs, _ = _planner(v_ego, unified=False, accel=0.40)
-  inputs["controlsState"].longControlState = LongCtrlState.off
-  off_inputs["controlsState"].longControlState = LongCtrlState.off
-  on.update(inputs)
-  off.update(off_inputs)
-  assert on._mode_w == 1.0
-  inputs["controlsState"].longControlState = LongCtrlState.pid
-  off_inputs["controlsState"].longControlState = LongCtrlState.pid
-  for _ in range(10):
-    on.update(inputs)
-    off.update(off_inputs)
+  planner, inputs, _ = _planner(v_ego, accel=0.40)
+  captured = _capture_lead_free(monkeypatch, planner)
+  _run(planner, inputs, 10)
   assert inputs["radarState"].leadOne.status is False
-  assert float(on.output_a_target) == pytest.approx(float(off.output_a_target), abs=1e-9)
-  assert float(on.unified_a_target) == pytest.approx(0.0, abs=1e-9)
+  assert float(planner.output_a_target) == pytest.approx(captured[-1], abs=1e-9)
+  assert float(planner.output_a_target) > 0.1
+  assert float(planner.unified_a_target) == pytest.approx(0.0, abs=1e-9)
+  assert planner._unified_following is False
 
 
-def test_faster_lead_at_max_does_not_overrun_when_unified_is_on():
+def test_faster_lead_at_max_does_not_overrun():
   v_max = 60.0 * CV.MPH_TO_MS
   v_lead = v_max + 3.0 * CV.MPH_TO_MS
-  planner, inputs, _ = _planner(v_max, unified=True, nap_follow_dist=4, accel=1.2)
+  planner, inputs, _ = _planner(v_max, nap_follow_dist=4, accel=1.2)
   _set_v_cruise_ms(inputs, v_max)
   _own_lead(inputs, 80.0, v_lead, a_lead=0.2)
-  inputs["controlsState"].longControlState = LongCtrlState.off
-  planner.update(inputs)
-  inputs["controlsState"].longControlState = LongCtrlState.pid
   _run(planner, inputs, 30, mpc_accel=1.2)
-  assert planner._mode_w == 1.0
   assert float(planner.output_a_target) <= 0.05
 
 
-def test_fcw_is_not_weaker_than_the_layered_command():
+def test_fcw_is_not_weaker_than_the_lead_free_command(monkeypatch):
   v_ego = 30.0
-  v_lead = v_ego - 1.13
-  on, inputs, _ = _planner(v_ego, unified=True, accel=-3.5)
-  off, off_inputs, _ = _planner(v_ego, unified=False, accel=-3.5)
-  _own_lead(inputs, 35.0, v_lead, a_lead=-1.18)
-  _own_lead(off_inputs, 35.0, v_lead, a_lead=-1.18)
-  on.mpc.crash_cnt = 3
-  off.mpc.crash_cnt = 3
-  inputs["controlsState"].longControlState = LongCtrlState.off
-  on.update(inputs)
-  inputs["controlsState"].longControlState = LongCtrlState.pid
-  _run(on, inputs, 8, mpc_accel=-3.5)
-  _run(off, off_inputs, 8, mpc_accel=-3.5)
-  assert on.fcw is True
-  assert off.fcw is True
-  assert float(on.output_a_target) <= float(off.output_a_target) + 1e-6
+  planner, inputs, _ = _planner(v_ego, accel=-3.5)
+  captured = _capture_lead_free(monkeypatch, planner)
+  _own_lead(inputs, 35.0, v_ego - 1.13, a_lead=-1.18)
+  planner.mpc.crash_cnt = 3
+  _run(planner, inputs, 8, mpc_accel=-3.5)
+  assert planner.fcw is True
+  assert float(planner.output_a_target) <= captured[-1] + 1e-6
 
 
-def test_curve_ceiling_brakes_only_on_the_unified_path():
+def test_curve_ceiling_brakes_with_a_lead_present():
   v_ego = 25.0
-  on, inputs, _ = _planner(v_ego, unified=True, accel=0.0)
-  off, off_inputs, _ = _planner(v_ego, unified=False, accel=0.0)
+  curve, inputs, _ = _planner(v_ego, accel=0.0)
+  straight, straight_inputs, _ = _planner(v_ego, accel=0.0)
   _own_lead(inputs, 50.0, v_ego + 1.0, a_lead=0.0)
-  _own_lead(off_inputs, 50.0, v_ego + 1.0, a_lead=0.0)
+  _own_lead(straight_inputs, 50.0, v_ego + 1.0, a_lead=0.0)
   inputs["carState"].steeringAngleDeg = 15.0
-  off_inputs["carState"].steeringAngleDeg = 15.0
   # The curve ceiling reads true cornering (vehicle-model curvature).
-  kappa = 15.0 * math.pi / 180.0 / (15.75 * 2.959)
-  inputs["controlsState"].curvature = kappa
-  off_inputs["controlsState"].curvature = kappa
-  inputs["controlsState"].longControlState = LongCtrlState.off
-  on.update(inputs)
-  inputs["controlsState"].longControlState = LongCtrlState.pid
-  _run(on, inputs, 40, mpc_accel=0.0)
-  _run(off, off_inputs, 40, mpc_accel=0.0)
-  assert float(on.output_a_target) <= -0.50
-  assert float(off.output_a_target) > float(on.output_a_target)
+  inputs["controlsState"].curvature = 15.0 * math.pi / 180.0 / (15.75 * 2.959)
+  _run(curve, inputs, 40, mpc_accel=0.0)
+  _run(straight, straight_inputs, 40, mpc_accel=0.0)
+  assert float(curve.output_a_target) <= -0.50
+  assert float(straight.output_a_target) > float(curve.output_a_target)
 
 
-def test_unified_param_is_read_about_once_per_second():
-  v_ego = 15.0
-  planner, inputs, params = _planner(v_ego, unified=False, accel=0.0)
-  assert params.unified_reads == 1
-  for _ in range(10):
+@pytest.mark.parametrize("brand,fingerprint,openpilot_long,pcm_cruise", [
+  ("tesla", "TESLA_MODEL_3", True, False),       # other Tesla
+  ("tesla", "TESLA_MODEL_S_PREAP", False, False),  # Pre-AP without openpilot long
+  ("tesla", "TESLA_MODEL_S_PREAP", True, True),    # Pre-AP on stock cruise
+  ("toyota", "TOYOTA_COROLLA_TSS2", True, False),
+])
+def test_other_cars_never_run_the_unified_controller(brand, fingerprint, openpilot_long, pcm_cruise):
+  v_ego = 30.0
+  cp = _make_preap_params()
+  cp.brand = brand
+  cp.carFingerprint = fingerprint
+  cp.openpilotLongitudinalControl = openpilot_long
+  cp.pcmCruise = pcm_cruise
+  planner = LongitudinalPlanner(cp, init_v=v_ego, params=_MutablePlannerParams(nap_follow_dist=2))
+  planner.mpc = _ConstantAccelerationMpc(v_ego, acceleration_mps2=-1.0)
+  inputs = _make_planner_inputs(v_ego)
+  _set_v_cruise_ms(inputs, 40.0)
+  _own_lead(inputs, 35.0, v_ego - 1.13, a_lead=-1.18)
+  for _ in range(40):
     planner.update(inputs)
-  assert params.unified_reads == 1
-  for _ in range(15):
-    planner.update(inputs)
-  assert params.unified_reads == 2
+  assert planner._is_preap is False
+  assert planner._unified_following is False
+  assert float(planner.unified_a_target) == 0.0
+  publisher = _CapturingPubMaster()
+  planner.publish(inputs, publisher)
+  assert publisher.message.longitudinalPlan.unifiedATarget == 0.0
 
 
-def test_unified_shadow_fault_with_toggle_off_matches_legacy(monkeypatch):
-  """Toggle off stays on the legacy command when the shadow compute raises.
+def test_unified_fault_latches_and_publishes_the_lead_free_command(monkeypatch):
+  """An exception must not escape update() or be logged more than once.
 
-  The published accel matches a healthy toggle-off planner. The shadow field
-  is the fallback 0, and cloudlog.exception runs once across many frames.
+  The mutation gate only counts AssertionError as a killed mutant, so a
+  propagating exception is turned into an assertion failure here.
   """
   v_ego = 30.0
-  v_lead = v_ego - 1.13
-  faulted, inputs, _ = _planner(v_ego, unified=False, accel=-3.5)
-  legacy, legacy_inputs, _ = _planner(v_ego, unified=False, accel=-3.5)
-  _own_lead(inputs, 35.0, v_lead, a_lead=-1.18)
-  _own_lead(legacy_inputs, 35.0, v_lead, a_lead=-1.18)
-  logs = _spy_cloudlog_exception(monkeypatch)
-  captured = _capture_pre_mix(monkeypatch, faulted)
-  step_calls = {"n": 0}
-
-  def _boom(*_args, **_kwargs):
-    step_calls["n"] += 1
-    raise RuntimeError("unified shadow compute failed")
-
-  monkeypatch.setattr(faulted._unified, "step", _boom)
-
-  for _ in range(12):
-    escaped = _guarded_updates(faulted, inputs, 1)
-    assert escaped == [], escaped
-    legacy.update(legacy_inputs)
-    assert faulted._mode_w == 0.0
-    assert faulted._plan_engaged is True
-    assert faulted.output_a_target == pytest.approx(captured[-1], abs=1e-9)
-    assert faulted.output_a_target == pytest.approx(legacy.output_a_target, abs=1e-9)
-    assert faulted.unified_a_target == 0.0
-
-  assert step_calls["n"] == 1
-  assert faulted._unified_faulted is True
-  assert faulted._unified_fault_count == 1
-  assert len(logs) == 1
-  assert logs[0][1] == 1
-  assert legacy.unified_a_target <= -0.5
-
-  fault_pub = _CapturingPubMaster()
-  legacy_pub = _CapturingPubMaster()
-  faulted.publish(inputs, fault_pub)
-  legacy.publish(legacy_inputs, legacy_pub)
-  assert fault_pub.message.longitudinalPlan.aTarget == pytest.approx(
-    legacy_pub.message.longitudinalPlan.aTarget, abs=1e-9,
-  )
-  assert fault_pub.message.longitudinalPlan.unifiedATarget == 0.0
-
-
-def test_unified_shadow_fault_with_toggle_on_falls_back_to_legacy(monkeypatch):
-  """Engaged with the toggle on, a shadow exception must not escape.
-
-  The mode weight slews to 0 over the existing 1 s blend, mixing the last
-  good unified value with the legacy command. Later frames stay faulted.
-  """
-  v_ego = 30.0
-  v_lead = v_ego - 1.13
-  planner, inputs, _ = _planner(v_ego, unified=True, accel=-3.5)
-  _own_lead(inputs, 35.0, v_lead, a_lead=-1.18)
+  planner, inputs, _ = _planner(v_ego, accel=-3.5)
+  _own_lead(inputs, 35.0, v_ego - 1.13, a_lead=-1.18)
   logs = _spy_cloudlog_exception(monkeypatch)
   _run(planner, inputs, 80)
-  assert planner._plan_engaged is True
-  assert planner._mode_w == 1.0
   assert planner._unified_faulted is False
-  last_good = float(planner.unified_a_target)
-  assert last_good == pytest.approx(float(planner.output_a_target), abs=1e-6)
-  assert last_good <= -0.5
+  assert float(planner.unified_a_target) <= -0.5
   assert logs == []
 
-  captured = _capture_pre_mix(monkeypatch, planner)
+  captured = _capture_lead_free(monkeypatch, planner)
   step_calls = {"n": 0}
 
   def _boom(*_args, **_kwargs):
     step_calls["n"] += 1
-    raise RuntimeError("unified shadow compute failed")
+    raise RuntimeError("unified compute failed")
 
   monkeypatch.setattr(planner._unified, "step", _boom)
   escaped = _guarded_updates(planner, inputs, 1)
   assert escaped == [], escaped
   assert planner._unified_faulted is True
+  assert planner._unified_fault_count == 1
+  assert planner._unified_following is False
   assert planner.unified_a_target == 0.0
-  step = float(planner.dt) / MODE_BLEND_S
-  assert planner._mode_w == pytest.approx(1.0 - step, abs=1e-9)
-  existing = captured[-1]
-  expected = ((1.0 - planner._mode_w) * existing) + (planner._mode_w * last_good)
-  assert planner.output_a_target == pytest.approx(expected, abs=1e-6)
+  assert planner.output_a_target == pytest.approx(captured[-1], abs=1e-9)
   assert len(logs) == 1
   assert logs[0][1] == 1
 
   escaped = _guarded_updates(planner, inputs, 19)
   assert escaped == [], escaped
-  assert planner._mode_w == 0.0
   assert planner.output_a_target == pytest.approx(captured[-1], abs=1e-9)
-  assert planner.unified_a_target == 0.0
   assert planner._unified_fault_count == 1
   assert step_calls["n"] == 1
   assert len(logs) == 1
@@ -541,24 +413,39 @@ def test_unified_shadow_fault_with_toggle_on_falls_back_to_legacy(monkeypatch):
   assert escaped == [], escaped
   assert sentinel_calls["n"] == 0
   assert planner._unified_faulted is True
-  assert planner._mode_w == 0.0
-  assert planner.unified_a_target == 0.0
   assert planner.output_a_target == pytest.approx(captured[-1], abs=1e-9)
   assert planner.output_a_target != pytest.approx(4.0, abs=0.5)
-  assert len(logs) == 1
 
   inputs["controlsState"].longControlState = LongCtrlState.off
-  escaped = _guarded_updates(planner, inputs, 1)
-  assert escaped == [], escaped
-  assert planner._plan_engaged is False
-  assert planner._unified_faulted is True
-  assert planner._mode_w == 0.0
+  assert _guarded_updates(planner, inputs, 1) == []
   inputs["controlsState"].longControlState = LongCtrlState.pid
-  escaped = _guarded_updates(planner, inputs, 3)
-  assert escaped == [], escaped
-  assert planner._plan_engaged is True
+  assert _guarded_updates(planner, inputs, 3) == []
   assert planner._unified_faulted is True
-  assert planner._mode_w == 0.0
   assert sentinel_calls["n"] == 0
-  assert planner.unified_a_target == 0.0
   assert len(logs) == 1
+
+
+def test_cycle_time_log_reports_mean_and_max_per_window():
+  log_ = CycleTimeLog(every_n=4)
+  assert [log_.record(t) for t in (0.001, 0.002, 0.003)] == [None, None, None]
+  window = log_.record(0.010)
+  assert window is not None
+  n, mean_ms, max_ms = window
+  assert n == 4
+  assert mean_ms == pytest.approx(4.0)
+  assert max_ms == pytest.approx(10.0)
+  assert log_.record(0.001) is None
+  assert log_.n == 1
+
+
+def test_planner_update_cycle_stays_cheap_with_a_lead():
+  """Guard rail only (stub MPC): the lead-follow step must stay well under a model frame."""
+  v_ego = 25.0
+  planner, inputs, _ = _planner(v_ego, accel=0.0)
+  _own_lead(inputs, 45.0, v_ego - 0.5, a_lead=-0.3)
+  _run(planner, inputs, 20)
+  frames = 400
+  t0 = time.perf_counter()
+  _run(planner, inputs, frames)
+  mean_ms = 1000.0 * (time.perf_counter() - t0) / frames
+  assert mean_ms < 5.0

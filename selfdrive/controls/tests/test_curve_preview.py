@@ -1,4 +1,4 @@
-"""Curve handling from true curvature and the model path (Pre-AP, legacy and unified).
+"""Curve handling from true curvature and the model path (Pre-AP).
 
 Lateral target vs speed, preview slowing 0–5 s ahead that can only lower
 the command, and a turn clip that returns +a near the apex.
@@ -161,12 +161,11 @@ def test_preview_sweep_has_no_jump():
   assert saw_brake
 
 
-@pytest.mark.parametrize("unified", [False, True])
 @pytest.mark.parametrize("mpc_accel", [-0.3, 0.0, 0.8])
-def test_planner_preview_only_lowers_the_command(unified, mpc_accel):
+def test_planner_preview_only_lowers_the_command(mpc_accel):
   v = 20.0
-  bend, bend_in, _ = _planner(v, unified=unified, accel=mpc_accel)
-  plain, plain_in, _ = _planner(v, unified=unified, accel=mpc_accel)
+  bend, bend_in, _ = _planner(v, accel=mpc_accel)
+  plain, plain_in, _ = _planner(v, accel=mpc_accel)
   s = 0.0
   lowered = False
   for _ in range(160):
