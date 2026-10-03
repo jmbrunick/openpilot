@@ -78,6 +78,7 @@ jobs:
           selfdrive/controls/lib/tests/test_roundabout_guide.py \
           selfdrive/controls/lib/tests/test_roundabout_ring_hold.py \
           selfdrive/controls/lib/tests/test_driver_lateral_handoff_early_yield.py \
+          selfdrive/controls/lib/tests/test_driver_lateral_handoff_wheel_resume.py \
           selfdrive/controls/lib/tests/test_lat_yield_inference_guard.py \
           selfdrive/car/tesla/tests/test_preap_lat_yield.py \
           selfdrive/controls/tests/test_roundabout_planner.py \
