@@ -159,16 +159,6 @@ def leave_weight(abs_y: float, vy_away: float, gap: float, v_ego: float,
   return clear_w * overlap_w
 
 
-def release_lead_brake(a_cmd: float, weight: float, a_free: float) -> float:
-  """Move a lead brake toward the lead-free command. Never raises above it."""
-  w = min(1.0, max(0.0, float(weight)))
-  a = float(a_cmd)
-  free = float(a_free)
-  if w <= 0.0 or a >= free:
-    return a
-  return a + w * (free - a)
-
-
 class LeadLeavingEstimator:
   """Filters offset / lateral velocity / confidence trend per lead track."""
 

@@ -169,9 +169,6 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"NAPPedalCalibZero", {PERSISTENT, FLOAT, "0.0"}},
     {"NAPPedalCanBus", {PERSISTENT, INT, "2"}},
     {"NAPAdaptiveAccel", {PERSISTENT, BOOL, "1"}},
-    // Settings → NAP, first row of the top-level panel. Default Off.
-    // One continuous lead-follow equation. Off keeps today's layered planner.
-    {"NAPLongUnified", {PERSISTENT, BOOL, "0"}},
     // Settings → NAP → Lateral Control. Default On (Pre-AP only). Turn
     // geometry correction: low-speed lag + rear reference offset (m) in
     // modeld's plan sampling time. On also drops the legacy roundabout
