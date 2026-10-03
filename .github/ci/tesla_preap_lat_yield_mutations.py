@@ -29,6 +29,7 @@ HistoricalMutation = parent.HistoricalMutation
 TL = "selfdrive/car/tesla/tests/test_preap_lat_yield.py"
 TE = "selfdrive/controls/lib/tests/test_driver_lateral_handoff_early_yield.py"
 TG = "selfdrive/controls/lib/tests/test_lat_yield_inference_guard.py"
+TW = "selfdrive/controls/lib/tests/test_driver_lateral_handoff_wheel_resume.py"
 CARD = "selfdrive/car/tesla/preap_blinker_lat_pause.py"
 CAR_SPECIFIC = "selfdrive/car/car_specific.py"
 NUDGE = "selfdrive/controls/lib/lane_change_nudge.py"
@@ -37,7 +38,7 @@ CONTROLSD = "selfdrive/controls/controlsd.py"
 CARCONTROLLER = "opendbc_repo/opendbc/car/tesla/carcontroller.py"
 LAT_YIELD = "opendbc_repo/opendbc/car/tesla/preap/lat_yield.py"
 HEADER = "opendbc_repo/opendbc/safety/modes/tesla_preap_latyield.h"
-EXPECTED_COUNT = 22
+EXPECTED_COUNT = 40
 
 
 def _m(name, source_path, original, replacement, *test_nodes):
@@ -128,9 +129,85 @@ MUTATIONS = (
   _m("contract-note-removed-from-safety-header", HEADER,
      b"// INFERENCE CONTRACT: openpilot does not send panda", b"// NOTE: openpilot does not send panda",
      f"{TG}::test_inference_contract_comment_present"),
+  # -- wheel-resume gate: no take-back while the wheel is still uncoiling -
+  _m("wheel-gate-removed-from-yielded-resume", HANDOFF,
+     b"      else:\n        self._hands_off_s += dt\n        if (self._hands_off_s + 1e-12 >= HANDS_OFF_CONFIRM_S\n            and not self._wheel_gate_holds(steering_angle_deg, dt)):\n",
+     b"      else:\n        self._hands_off_s += dt\n        if (self._hands_off_s + 1e-12 >= HANDS_OFF_CONFIRM_S):\n",
+     f"{TW}::test_uncoil_from_large_angle_does_not_resume_until_straight",
+     f"{TW}::test_low_speed_lot_is_gated_and_crossing_10mph_at_lock_does_not_resume"),
+  _m("wheel-gate-removed-from-inhibit-cleared-resume", HANDOFF,
+     b"      if not (hands_on or firm_push):\n        self._hands_off_s += dt\n        if (self._hands_off_s + 1e-12 >= HANDS_OFF_CONFIRM_S\n            and not self._wheel_gate_holds(steering_angle_deg, dt)):\n",
+     b"      if not (hands_on or firm_push):\n        self._hands_off_s += dt\n        if (self._hands_off_s + 1e-12 >= HANDS_OFF_CONFIRM_S):\n",
+     f"{TW}::test_inhibit_cleared_landing_cannot_blend_in_one_big_step"),
+  _m("wheel-gate-straight-window-too-wide", HANDOFF,
+     b"    if a <= WHEEL_RESUME_STRAIGHT_DEG:\n      self._straight_s += dt\n",
+     b"    if a <= 90.0:\n      self._straight_s += dt\n",
+     f"{TW}::test_just_outside_the_window_still_holds",
+     f"{TW}::test_uncoil_from_large_angle_does_not_resume_until_straight"),
+  _m("wheel-gate-straight-window-never-opens", HANDOFF,
+     b"    if a <= WHEEL_RESUME_STRAIGHT_DEG:\n      self._straight_s += dt\n",
+     b"    if a <= 0.0:\n      self._straight_s += dt\n",
+     f"{TW}::test_blend_starts_within_dwell_of_entering_the_window"),
+  _m("wheel-gate-dwell-removed", HANDOFF,
+     b"      return self._straight_s + 1e-12 < WHEEL_STRAIGHT_DWELL_S\n",
+     b"      return False\n",
+     f"{TW}::test_rapid_swing_through_centre_is_not_straight",
+     f"{TW}::test_blend_starts_within_dwell_of_entering_the_window"),
+  _m("wheel-gate-armed-for-every-angle", HANDOFF,
+     b"    if self._peak_angle_deg < WHEEL_GATE_ARM_DEG:\n      return False\n",
+     b"    if False:\n      return False\n",
+     f"{TW}::test_small_angle_nudge_resumes_as_before"),
+  _m("wheel-gate-never-armed", HANDOFF,
+     b"    if self._peak_angle_deg < WHEEL_GATE_ARM_DEG:\n      return False\n",
+     b"    if True:\n      return False\n",
+     f"{TW}::test_uncoil_from_large_angle_does_not_resume_until_straight"),
+  _m("wheel-gate-safety-valve-removed", HANDOFF,
+     b"    if self._gate_hold_s >= WHEEL_GATE_MAX_HOLD_S:\n      return False\n",
+     b"    if False:\n      return False\n",
+     f"{TW}::test_safety_valve_lets_go_after_max_hold"),
+  _m("wheel-gate-peak-never-tracked", HANDOFF,
+     b"    if np.isfinite(a) and a > self._peak_angle_deg:\n",
+     b"    if False and np.isfinite(a) and a > self._peak_angle_deg:\n",
+     f"{TW}::test_uncoil_from_large_angle_does_not_resume_until_straight",
+     f"{TW}::test_arming_is_the_peak_since_the_yield_not_the_start_angle"),
+  _m("wheel-gate-peak-kept-after-blend-completes", HANDOFF,
+     b"          self._quiet_s = 0.0\n          self._peak_angle_deg = 0.0\n",
+     b"          self._quiet_s = 0.0\n",
+     f"{TW}::test_completed_blend_clears_the_peak"),
+  _m("wheel-gate-peak-lost-on-standstill-blip", HANDOFF,
+     b"      self._peak_angle_deg = peak\n",
+     b"      self._peak_angle_deg = 0.0\n",
+     f"{TW}::test_standstill_blip_keeps_the_peak_when_inhibited"),
+  _m("wheel-gate-peak-uses-signed-angle", HANDOFF,
+     b"    a = abs(float(steering_angle_deg))\n    if np.isfinite(a) and a > self._peak_angle_deg:\n",
+     b"    a = float(steering_angle_deg)\n    if np.isfinite(a) and a > self._peak_angle_deg:\n",
+     f"{TW}::test_sign_of_the_angle_does_not_matter"),
+  _m("wheel-gate-window-uses-signed-angle", HANDOFF,
+     b"    a = abs(float(steering_angle_deg))\n    if not np.isfinite(a):\n      return False\n",
+     b"    a = float(steering_angle_deg)\n    if not np.isfinite(a):\n      return False\n",
+     f"{TW}::test_sign_of_the_angle_does_not_matter"),
+  _m("wheel-gate-non-finite-angle-blocks-resume", HANDOFF,
+     b"    if not np.isfinite(a):\n      return False\n    if self._peak_angle_deg",
+     b"    if False:\n      return False\n    if self._peak_angle_deg",
+     f"{TW}::test_non_finite_or_missing_angle_never_blocks"),
+  _m("wheel-gate-controlsd-drops-the-angle", CONTROLSD,
+     b"      steering_angle_deg=float(CS.steeringAngleDeg),\n",
+     b"",
+     f"{TW}::test_controlsd_passes_the_steering_angle_to_the_handoff"),
+  _m("wheel-gate-dwell-kept-across-hands-on", HANDOFF,
+     b"    self._gate_hold_s = 0.0\n    self._straight_s = 0.0\n    self.authority = 0.0\n    self.ui_paused = True\n    if self._yield_age_s is None:\n",
+     b"    self._gate_hold_s = 0.0\n    self.authority = 0.0\n    self.ui_paused = True\n    if self._yield_age_s is None:\n",
+     f"{TW}::test_hands_on_during_the_dwell_restarts_the_dwell"),
+  _m("wheel-gate-valve-kept-across-hands-on", HANDOFF,
+     b"    self._gate_hold_s = 0.0\n    self._straight_s = 0.0\n    self.authority = 0.0\n    self.ui_paused = True\n    if self._yield_age_s is None:\n",
+     b"    self._straight_s = 0.0\n    self.authority = 0.0\n    self.ui_paused = True\n    if self._yield_age_s is None:\n",
+     f"{TW}::test_hands_on_restarts_the_safety_valve"),
+  _m("wheel-gate-note-removed-from-handoff-module", HANDOFF,
+     b"WHEEL-RESUME GATE (rapid back-and-forth turns).", b"NOTE (rapid back-and-forth turns).",
+     f"{TW}::test_gate_is_written_in_the_module_docstring_and_pins_the_contract"),
 )
 
-BASELINE_NODES = (TL, TE, TG)
+BASELINE_NODES = (TL, TE, TG, TW)
 
 
 def main() -> int:
