@@ -180,6 +180,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // outer bias. Off = previous lateral behavior.
     {"NAPLatTurnGeom", {PERSISTENT, BOOL, "1"}},
     {"NAPLatRefOffset", {PERSISTENT, FLOAT, "0.35"}},
+    {"NAPTurnInDelay", {PERSISTENT, INT, "0"}},
     // Settings → NAP → Driving Mannerisms → Roundabout Steering Assist.
     // Pre-AP, default Off. Near / on a mapped OSM ring, blends the model's
     // curvature toward the lane's circle curvature (map-match confidence
