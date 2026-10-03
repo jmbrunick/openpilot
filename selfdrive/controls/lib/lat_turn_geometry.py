@@ -25,6 +25,16 @@ the cap rises to 0.25 s and the plan is sampled directly down to 0.2 s
 instead of slewing back to stock. At >= 10 mph every output is identical to
 7c49a8e.
 
+Turn-in delay trim (NAPTurnInDelay, integer steps -2..+3, default 0). A
+user trim on top of the low-speed correction above, for "turn-in is good but
+still a little early": every step moves the lookahead by TURN_IN_STEP_S
+(30 ms), positive = shorter lookahead = later turn-in, negative = earlier. It
+is scaled by the same low-speed band as the reach (full from 3-4 mph up to
+8 mph, gone by 10 mph, nothing below 1.5 m/s), so >= 10 mph is untouched.
+Step 0 returns the existing output unchanged, bit for bit. The shifted
+lookahead never goes below TURN_IN_MIN_LOOKAHEAD_S (0.10 s) or above stock,
+and the trim only acts while Turn Geometry Correction is on.
+
 Off, or not Pre-AP, returns the stock lookahead unchanged.
 """
 from __future__ import annotations
@@ -35,6 +45,7 @@ from openpilot.selfdrive.controls.lib.drive_helpers import MIN_STABLE_DELAY, cur
 
 PARAM_TURN_GEOMETRY = "NAPLatTurnGeom"
 PARAM_REF_OFFSET = "NAPLatRefOffset"
+PARAM_TURN_IN_DELAY = "NAPTurnInDelay"
 
 REF_OFFSET_DEFAULT_M = 0.35
 REF_OFFSET_MIN_M = 0.0
@@ -57,6 +68,12 @@ LOW_SPEED_REACH_END_MS = 10.0 * MPH
 LOW_SPEED_MAX_REDUCTION_S = 0.25
 LOW_SPEED_SAMPLE_FLOOR_S = MIN_LOOKAHEAD_S   # plan sampled directly down to 0.2 s
 
+# Turn-in delay trim (user step, low-speed band only).
+TURN_IN_STEP_MIN = -2
+TURN_IN_STEP_MAX = 3
+TURN_IN_STEP_S = 0.030            # lookahead change per step at full weight
+TURN_IN_MIN_LOOKAHEAD_S = 0.10    # trimmed lookahead / sample time never below
+
 # Steering rate limit hold-off. Pre-AP MAX_ANGLE_RATE is 5 deg per 20 ms.
 STEER_RATE_LIMIT_DEG_S = 250.0
 RATE_LIMIT_FRACTION = 0.8        # output moving >= 200 deg/s
@@ -73,6 +90,17 @@ def clamp_ref_offset(offset_m) -> float:
   if not np.isfinite(v):
     return REF_OFFSET_DEFAULT_M
   return float(min(REF_OFFSET_MAX_M, max(REF_OFFSET_MIN_M, v)))
+
+
+def clamp_turn_in_step(step) -> int:
+  """NAPTurnInDelay as an int in [TURN_IN_STEP_MIN, TURN_IN_STEP_MAX]; junk -> 0."""
+  try:
+    v = float(step)
+  except (TypeError, ValueError):
+    return 0
+  if not np.isfinite(v):
+    return 0
+  return int(min(TURN_IN_STEP_MAX, max(TURN_IN_STEP_MIN, round(v))))
 
 
 def delay_offset_s(v_ego: float) -> float:
@@ -120,7 +148,10 @@ def plan_curvature(yaws, yaw_rates, t_idxs, v_ego: float, action_t: float,
   floor = float(sample_floor)
   if floor >= MIN_STABLE_DELAY or float(action_t) >= MIN_STABLE_DELAY:
     return get_curvature_from_plan(yaws, yaw_rates, t_idxs, v_ego, action_t)
-  t = max(float(action_t), floor, LOW_SPEED_SAMPLE_FLOOR_S)
+  if floor < LOW_SPEED_SAMPLE_FLOOR_S:   # turn-in trim: sampled below 0.2 s
+    t = max(float(action_t), floor, TURN_IN_MIN_LOOKAHEAD_S)
+  else:
+    t = max(float(action_t), floor, LOW_SPEED_SAMPLE_FLOOR_S)
   psi_target = np.interp(t, t_idxs, yaws)
   return curv_from_psis(psi_target, yaw_rates[0], v_ego, t)
 
@@ -139,6 +170,27 @@ def apply_reduction(stock_lookahead_s: float, reduction_s: float, cap_s: float =
   if red <= 0.0:
     return stock
   return max(min(stock, MIN_LOOKAHEAD_S), stock - red)
+
+
+def turn_in_weight(v_ego: float) -> float:
+  """Low-speed band of the trim: 0 below 1.5 m/s, full from 2.5 m/s to 8 mph, 0 from 10 mph."""
+  return low_speed_reach_weight(v_ego) * speed_fade(v_ego)
+
+
+def turn_in_shift_s(step, v_ego: float) -> float:
+  """Lookahead shift (s) the trim asks for at this speed. + = later turn-in."""
+  return clamp_turn_in_step(step) * TURN_IN_STEP_S * turn_in_weight(v_ego)
+
+
+def apply_turn_in_trim(lookahead_s: float, stock_lookahead_s: float, shift_s: float) -> float:
+  """Shift the lookahead by shift_s; 0 returns it unchanged. Bounded, never above stock."""
+  L = float(lookahead_s)
+  shift = float(shift_s)
+  if shift == 0.0:
+    return L
+  if shift > 0.0:
+    return max(min(L, TURN_IN_MIN_LOOKAHEAD_S), L - shift)
+  return min(max(L, float(stock_lookahead_s)), L - shift)
 
 
 def steer_rate_limited(cmd_angle_deg: float, out_angle_deg: float, out_angle_prev_deg: float,
@@ -161,8 +213,10 @@ class TurnGeometryCorrection:
     self._out_prev: float | None = None
     self.rate_limited = False
     self.sample_floor_s = MIN_STABLE_DELAY
+    self.trim_s = 0.0
 
   def reset(self) -> None:
+    self.trim_s = 0.0
     self.reduction_s = 0.0
     self._hold_s = 0.0
     self._out_prev = None
@@ -170,7 +224,8 @@ class TurnGeometryCorrection:
     self.sample_floor_s = MIN_STABLE_DELAY
 
   def update(self, *, enabled: bool, stock_lookahead_s: float, v_ego: float, ref_offset_m: float,
-             lat_active: bool = True, cmd_angle_deg: float = 0.0, out_angle_deg: float | None = None) -> float:
+             lat_active: bool = True, cmd_angle_deg: float = 0.0, out_angle_deg: float | None = None,
+             turn_in_step: int = 0) -> float:
     """Return the lookahead to use. enabled=False returns stock_lookahead_s exactly."""
     if not enabled:
       self.reset()
@@ -189,6 +244,15 @@ class TurnGeometryCorrection:
     step = REDUCTION_SLEW_S_PER_S * self.dt
     self.reduction_s += float(np.clip(target - self.reduction_s, -step, step))
     self.sample_floor_s = sample_floor_s(v_ego)
+    # User turn-in trim: slewed so a menu change is not a step in the steering.
+    shift_target = turn_in_shift_s(turn_in_step, v_ego)
+    trim_step = REDUCTION_SLEW_S_PER_S * self.dt
+    self.trim_s += float(np.clip(shift_target - self.trim_s, -trim_step, trim_step))
+    if self.trim_s != 0.0:
+      trim_floor = self.sample_floor_s - self.trim_s
+      self.sample_floor_s = float(min(MIN_STABLE_DELAY, max(TURN_IN_MIN_LOOKAHEAD_S, trim_floor)))
+      lookahead = apply_reduction(stock_lookahead_s, self.reduction_s, reduction_cap_s(v_ego))
+      return apply_turn_in_trim(lookahead, stock_lookahead_s, self.trim_s)
     return apply_reduction(stock_lookahead_s, self.reduction_s, reduction_cap_s(v_ego))
 
 
