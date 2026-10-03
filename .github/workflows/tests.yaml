@@ -73,12 +73,16 @@ jobs:
           selfdrive/mapd/tests/test_roundabout_map.py \
           selfdrive/controls/lib/tests/test_roundabout_guide.py \
           selfdrive/controls/lib/tests/test_roundabout_ring_hold.py \
+          selfdrive/controls/lib/tests/test_driver_lateral_handoff_early_yield.py \
+          selfdrive/controls/lib/tests/test_lat_yield_inference_guard.py \
+          selfdrive/car/tesla/tests/test_preap_lat_yield.py \
           selfdrive/controls/tests/test_roundabout_planner.py \
           selfdrive/controls/tests/test_tesla_preap_longcontrol.py \
           selfdrive/controls/tests/test_tesla_preap_gas_lift_handoff.py \
           selfdrive/controls/tests/test_tesla_preap_brake_cancel_regen.py \
           selfdrive/controls/tests/test_tesla_preap_one_pedal_long.py \
           opendbc_repo/opendbc/car/tesla/preap/tests/test_preap_engagement.py \
+          opendbc_repo/opendbc/car/tesla/preap/tests/test_lat_yield.py \
           opendbc_repo/opendbc/car/tesla/preap/tests/test_longitudinal_tuning.py \
           opendbc_repo/opendbc/car/tesla/preap/tests/test_virtual_das.py \
           opendbc_repo/opendbc/car/tesla/preap/tests/test_vdas_grade_control.py
@@ -88,6 +92,8 @@ jobs:
       run: python .github/ci/tesla_preap_roundabout_mutations.py
     - name: Run lane-change mutation checks
       run: python .github/ci/tesla_preap_lane_change_mutations.py
+    - name: Run lateral-yield mutation checks
+      run: python .github/ci/tesla_preap_lat_yield_mutations.py
 
   build_release:
     name: build release
