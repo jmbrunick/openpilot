@@ -1,4 +1,3 @@
-# ruff: noqa: F403, F405
 import os
 import subprocess
 import sys
@@ -6,8 +5,13 @@ import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from tesla_preap_mutation_common import *
-from tesla_preap_mutation_common import REPO_ROOT, HistoricalMutation
+from tesla_preap_mutation_common import (
+  FOLLOWING_TEST_PATH,
+  HistoricalMutation,
+  LONGCONTROL_TEST_PATH,
+  NOISE_GATE_TEST_NODE,
+  REPO_ROOT,
+)
 from tesla_preap_mutation_defs_a import MUTATIONS_A
 from tesla_preap_mutation_defs_b import MUTATIONS_B
 
