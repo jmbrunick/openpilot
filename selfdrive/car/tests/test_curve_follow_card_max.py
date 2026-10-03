@@ -35,7 +35,7 @@ def test_off_and_shadow_still_cap_max_in_a_bend(mode):
 def test_active_never_touches_max():
   h, cs, _ = _curve(2, seconds_in=4.0)
   assert h.v_cruise_helper.v_cruise_kph == pytest.approx(70.0 * MPH, abs=0.3)
-  assert h._curve_max.cap_kph is None
+  assert h._curve_max._cap_kph is None
   _run(h, cs, 10.0, 40.0, 40.0, steer=lambda _x: 0.0)
   assert h.v_cruise_helper.v_cruise_kph == pytest.approx(70.0 * MPH, abs=0.3)
 
