@@ -27,6 +27,16 @@ from openpilot.selfdrive.controls.lib.curve_preview import (
   path_lat_accel_ahead,
   turn_accel_limit,
 )
+from openpilot.selfdrive.controls.lib.curve_follow import (
+  LOG_PERIOD_CYCLES,
+  LOG_QUIET_PERIOD_CYCLES,
+  MODE_ACTIVE,
+  MODE_OFF,
+  CurveFollow,
+  format_log_line,
+  path_is_relevant,
+  read_curve_follow_mode,
+)
 from openpilot.selfdrive.controls.lib.radar_path_gate import model_path_xy, path_lateral_m
 from openpilot.selfdrive.controls.lib.lead_leaving import LeadLeavingEstimator
 from openpilot.selfdrive.controls.lib.unified_lead import UnifiedLeadController, unified_follow_desired
@@ -187,6 +197,14 @@ class LongitudinalPlanner:
     self._corner_curvature = 0.0
     self._curve_preview = CurvePreview()
     self.curve_preview_a = PREVIEW_FREE_A_MS2
+    # Curve-follow (NAPCurveFollow 0 off / 1 shadow / 2 active). Shadow computes
+    # and logs only; the old preview and CurveMaxHold stay in force.
+    self._cf_mode = read_curve_follow_mode(self._params) if self._is_preap else MODE_OFF
+    self._curve_follow = CurveFollow()
+    self.curve_follow_a = PREVIEW_FREE_A_MS2
+    self._cf_trusted = False
+    self._cf_faulted = False
+    self._cf_cycle = 0
     self._turn_a_max = None
 
     self.a_desired = init_a
@@ -283,6 +301,7 @@ class LongitudinalPlanner:
         read_map_speed_params(self._params)
       )
       self._follow_blend.read_setpoints(self._params)
+      self._cf_mode = read_curve_follow_mode(self._params)
 
     if len(sm['carControl'].orientationNED) == 3:
       accel_coast = get_coast_accel(sm['carControl'].orientationNED[1])
@@ -528,6 +547,12 @@ class LongitudinalPlanner:
       else:
         a_prev_raw = curve_preview_accel(v_ego, *curve_path)
         self.curve_preview_a = float(self._curve_preview.update(v_ego, a_prev_raw, self.dt))
+      # Curve-follow: computed and logged in shadow (1) and active (2). Only
+      # active replaces the old preview's ceiling; the lead law still takes it
+      # through the same a_map slot, so nothing else changes.
+      old_preview_a = float(self.curve_preview_a)
+      self._update_curve_follow(sm, float(v_ego), curve_path, old_preview_a, rb_v is not None,
+                                float(output_a_target))
       output_a_target = min(float(output_a_target), self.curve_preview_a)
 
     for idx in range(2):
@@ -535,6 +560,65 @@ class LongitudinalPlanner:
     self.output_a_target = np.clip(output_a_target, accel_clip[0], accel_clip[1])
     self.prev_accel_clip = accel_clip
     self._apply_lead_follow(sm, float(v_ego))
+
+  def _update_curve_follow(self, sm, v_ego: float, curve_path, old_preview_a: float, rb_active: bool,
+                           a_target: float) -> None:
+    """Curve-follow step. Never raises; a fault latches it off (old preview stays)."""
+    self._cf_trusted = False
+    self.curve_follow_a = PREVIEW_FREE_A_MS2
+    if self._cf_mode == MODE_OFF or self._cf_faulted:
+      return
+    try:
+      model = sm['modelV2']
+      meta = model.meta
+      ts, ds, ks = curve_path if curve_path is not None else (None, None, None)
+      y_std = list(model.position.yStd)
+      y_std = y_std if (ts is not None and len(y_std) == len(ts)) else None
+      car_state = sm['carState']
+      blinker = bool(car_state.leftBlinker or car_state.rightBlinker)
+      lane_change = str(meta.laneChangeState) != "off"
+      frame_drop = float(model.frameDropPerc)
+      a_cf = float(self._curve_follow.step(
+        dt=self.dt, v_ego=v_ego, ts=ts, ds=ds, ks=ks, y_std=y_std, lane_change=lane_change,
+        blinker=blinker, frame_drop_pct=frame_drop, rb_active=rb_active, valid=curve_path is not None,
+      ))
+      self.curve_follow_a = a_cf
+      self._cf_trusted = bool(self._curve_follow.trusted)
+      if self._cf_mode == MODE_ACTIVE:
+        self.curve_preview_a = a_cf
+      self._cf_cycle += 1
+      if v_ego >= 2.0 and ts is not None and self._cf_cycle % LOG_PERIOD_CYCLES == 0:
+        arrays = (path_is_relevant(ks, a_cf, old_preview_a, self._curve_follow.conf)
+                  or self._cf_cycle % LOG_QUIET_PERIOD_CYCLES == 0)
+        self._log_curve_follow(sm, model, v_ego, a_target, old_preview_a, ts, ds, ks, y_std, blinker,
+                               lane_change, frame_drop, rb_active, arrays)
+    except Exception:
+      self._cf_faulted = True
+      self._cf_trusted = False
+      self.curve_follow_a = PREVIEW_FREE_A_MS2
+      cloudlog.exception("curve_follow fault: old preview stays in force")
+
+  def _log_curve_follow(self, sm, model, v_ego, a_target, old_preview_a, ts, ds, ks, y_std, blinker,
+                        lane_change, frame_drop, rb_active, arrays) -> None:
+    """2 Hz JSON line through errorLogMessage, which qlog keeps (same route the roundabout summary uses)."""
+    try:
+      desire = list(model.meta.desireState)
+      d_idx = max(range(len(desire)), key=lambda i: desire[i]) if desire else -1
+      meta = {
+        "bl": int(bool(sm['carState'].leftBlinker)) + 2 * int(bool(sm['carState'].rightBlinker)),
+        "lc": str(model.meta.laneChangeState), "ds": [d_idx, round(float(desire[d_idx]), 2) if desire else 0.0],
+        "df": round(frame_drop, 1), "cn": str(model.confidence), "rb": int(rb_active),
+        "llp": [round(float(p), 2) for p in list(model.laneLineProbs)[:4]],
+        "res": [round(float(p), 2) for p in list(model.roadEdgeStds)[:2]],
+      }
+      t_s = float(sm.logMonoTime['modelV2']) * 1e-9
+      cloudlog.error(format_log_line(
+        mode=self._cf_mode, t=t_s, v=v_ego, a_ego=float(sm['carState'].aEgo),
+        v_cruise_kph=float(sm['carState'].vCruise), a_target=a_target, cf=self._curve_follow,
+        old_a=old_preview_a, ts=ts, ds=ds, ks=ks, y_std=y_std, meta=meta, arrays=arrays,
+      ))
+    except Exception:
+      pass  # logging must never touch the command
 
   def _update_lead_leave(self, sm, v_ego: float, reset_state: bool) -> None:
     """Leaving-path weight for radard's leadOne (feeds the lead-follow controller)."""
@@ -632,7 +716,10 @@ class LongitudinalPlanner:
     # True cornering (vehicle-model curvature) with the speed-dependent
     # lateral target, not the steer model (which reads ~12% high at speed).
     v_curve = curve_speed_for_curvature(float(self._corner_curvature))
-    if v_curve is not None and v_ego >= 5.0:
+    # Active curve-follow already covers the present curvature (its point 0);
+    # the reactive cap is the dead-camera fallback, used when it is not trusted.
+    cf_owns_curve = self._cf_mode == MODE_ACTIVE and self._cf_trusted and not self._cf_faulted
+    if v_curve is not None and v_ego >= 5.0 and not cf_owns_curve:
       v_cap = min(v_cap, float(v_curve))
     a_map = None
     if self._map_speed_mode in (MODE_CAP, MODE_FOLLOW):
