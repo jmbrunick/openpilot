@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import os
 import time
 import threading
@@ -26,7 +27,8 @@ from openpilot.selfdrive.mapd.map_speed_policy import (
   map_slew_a_ms2, read_map_speed_params, should_write_preap_pedal, slew_map_speed_ms,
 )
 from openpilot.selfdrive.mapd.roundabout import live_map_roundabout_hint, roundabout_ease_v_ms
-from openpilot.selfdrive.controls.lib.curve_max_hold import CurveMaxHold
+from openpilot.selfdrive.controls.lib.curve_follow import MODE_ACTIVE, MODE_SHADOW, read_curve_follow_mode
+from openpilot.selfdrive.controls.lib.curve_max_hold import CurveMaxDecision, CurveMaxHold
 from openpilot.selfdrive.controls.lib.follow_distance import published_cruise_ms
 from openpilot.selfdrive.controls.lib.hypermile import (
   FollowStalkGesture, button_event_closer, button_event_released,
@@ -49,6 +51,26 @@ def map_slew_from_displayed_kph(displayed_kph: float, offset_kph: float) -> floa
 
 # forward
 carlog.addHandler(ForwardingHandler(cloudlog))
+
+
+def log_curve_max(owner, curve_out, hud_in_kph, posted_kph, CS) -> None:
+  """2 Hz `curvemax` line (errorLogMessage -> qlog) while the MAX cap is in play. Never touches MAX."""
+  try:
+    owner._curve_log_n = getattr(owner, "_curve_log_n", 0) + 1
+    cap = getattr(owner._curve_max, "_cap_kph", None)
+    if owner._curve_log_n % 50 != 0 or not (curve_out.active or cap is not None):
+      return
+    rec = {
+      "m": int(getattr(owner, "_curve_follow_mode", MODE_SHADOW)), "act": int(bool(curve_out.active)),
+      "cap": None if cap is None else round(float(cap), 1), "hud_in": round(float(hud_in_kph), 1),
+      "hud": round(float(curve_out.hud_kph), 1),
+      "seed": None if curve_out.restore_seed_kph is None else round(float(curve_out.restore_seed_kph), 1),
+      "frz": int(bool(curve_out.freeze_posted)), "posted": None if posted_kph is None else round(float(posted_kph), 1),
+      "v": round(float(CS.vEgo), 2),
+    }
+    cloudlog.error("curvemax " + json.dumps(rec, separators=(",", ":")))
+  except Exception:
+    pass
 
 
 def obd_callback(params: Params) -> ObdCallback:
@@ -328,20 +350,28 @@ class Car:
     last_hud_kph = float(self.v_cruise_helper.v_cruise_kph)
     steer_deg = float(getattr(CS, 'steeringAngleDeg', 0.0) or 0.0)
     curve_kappa, curve_yaw = self._curve_cornering()
-    policy_posted_kph, _ = self._curve_max.begin_cycle(
-      self._map_hold,
-      last_hud_kph=last_hud_kph,
-      posted_kph=posted_kph,
-      v_ego_ms=float(CS.vEgo),
-      angle_steers_deg=steer_deg,
-      steer_ratio=float(getattr(self.CP, 'steerRatio', 0.0) or 0.0),
-      wheelbase=float(getattr(self.CP, 'wheelbase', 0.0) or 0.0),
-      engaged=session_engaged,
-      take_speed_now=take_speed_now,
-      dt=DT_CTRL,
-      curvature=curve_kappa,
-      yaw_rate=curve_yaw,
-    )
+    # NAPCurveFollow = 2: the planner's continuous curve term owns bends and
+    # MAX is never touched (no cap, snapshot, restore or posted freeze).
+    # 0 / 1 (shadow): CurveMaxHold runs exactly as before.
+    curve_follow_on = getattr(self, "_curve_follow_mode", MODE_SHADOW) == MODE_ACTIVE
+    if curve_follow_on:
+      self._curve_max.reset()
+      policy_posted_kph = posted_kph
+    else:
+      policy_posted_kph, _ = self._curve_max.begin_cycle(
+        self._map_hold,
+        last_hud_kph=last_hud_kph,
+        posted_kph=posted_kph,
+        v_ego_ms=float(CS.vEgo),
+        angle_steers_deg=steer_deg,
+        steer_ratio=float(getattr(self.CP, 'steerRatio', 0.0) or 0.0),
+        wheelbase=float(getattr(self.CP, 'wheelbase', 0.0) or 0.0),
+        engaged=session_engaged,
+        take_speed_now=take_speed_now,
+        dt=DT_CTRL,
+        curvature=curve_kappa,
+        yaw_rate=curve_yaw,
+      )
     dec = decide_map_cruise(
       self._map_hold,
       engaged=session_engaged,
@@ -430,23 +460,27 @@ class Car:
       self._map_slew_ms = float(rb_lim)
     # Temporary curve cap may lower HUD MAX. Restore seed puts pre-curve
     # MAX back after the bend. Do not let that cap rebase sticky / held.
-    curve_out = self._curve_max.finish(
-      hud_kph=preap_v_cruise_kph,
-      hold=self._map_hold,
-      posted_kph=posted_kph,
-      v_ego_ms=float(CS.vEgo),
-      angle_steers_deg=steer_deg,
-      steer_ratio=float(getattr(self.CP, 'steerRatio', 0.0) or 0.0),
-      wheelbase=float(getattr(self.CP, 'wheelbase', 0.0) or 0.0),
-      engaged=session_engaged,
-      stalk_pressed=stalk_pressed,
-      take_speed_now=take_speed_now,
-      dt=DT_CTRL,
-      curvature=curve_kappa,
-      yaw_rate=curve_yaw,
-      restore_a_ms2=map_accel_a_ms2(self._map_speed_lookahead, self._map_speed_accel),
-      long_active=soft_long,
-    )
+    if curve_follow_on:
+      curve_out = CurveMaxDecision(float(preap_v_cruise_kph), None, False, False)
+    else:
+      curve_out = self._curve_max.finish(
+        hud_kph=preap_v_cruise_kph,
+        hold=self._map_hold,
+        posted_kph=posted_kph,
+        v_ego_ms=float(CS.vEgo),
+        angle_steers_deg=steer_deg,
+        steer_ratio=float(getattr(self.CP, 'steerRatio', 0.0) or 0.0),
+        wheelbase=float(getattr(self.CP, 'wheelbase', 0.0) or 0.0),
+        engaged=session_engaged,
+        stalk_pressed=stalk_pressed,
+        take_speed_now=take_speed_now,
+        dt=DT_CTRL,
+        curvature=curve_kappa,
+        yaw_rate=curve_yaw,
+        restore_a_ms2=map_accel_a_ms2(self._map_speed_lookahead, self._map_speed_accel),
+        long_active=soft_long,
+      )
+    log_curve_max(self, curve_out, preap_v_cruise_kph, posted_kph, CS)
     preap_v_cruise_kph = float(curve_out.hud_kph)
     restore_seed_kph = curve_out.restore_seed_kph
     seed_kph = dec.seed_kph if restore_seed_kph is None else float(restore_seed_kph)
@@ -719,6 +753,7 @@ class Car:
     self.CS_prev = CS
 
   def _refresh_map_speed_params(self):
+    self._curve_follow_mode = read_curve_follow_mode(self.params)
     mode, offset, lookahead, accel = read_map_speed_params(self.params)
     hm_on = read_hypermile_params(self.params)
     self._map_speed_mode = mode
