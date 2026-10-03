@@ -49,6 +49,7 @@ class _MutablePlannerParams:
     self.city = nap_follow_dist
     self.hwy = nap_follow_dist
     self.migrated = True
+    self.curve_follow = 1
 
   def __bool__(self):
     return False
@@ -69,6 +70,8 @@ class _MutablePlannerParams:
       return 0
     if key == "NAPMapSpeedLookahead":
       return 2
+    if key == "NAPCurveFollow":
+      return self.curve_follow
     raise AssertionError(key)
 
   def get_bool(self, key):
