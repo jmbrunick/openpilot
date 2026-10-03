@@ -2,6 +2,7 @@ from cereal import car, log
 from opendbc.car import DT_CTRL, structs
 from opendbc.car.car_helpers import interfaces
 from opendbc.car.interfaces import MAX_CTRL_SPEED
+from opendbc.car.tesla.preap.lat_yield import stash_full_control
 from opendbc.car.toyota.values import ToyotaFlags
 
 from openpilot.selfdrive.controls.lib.blinker_lateral_pause import (
@@ -220,9 +221,16 @@ class CarSpecificEvents:
       getattr(CS, 'turnSignalStalkState', 0), self.blinker_lat_hold,
       emergency=emergency, alc_confirm=alc_confirm)
     disengage_edge = bool(CS.steeringDisengage and not CS_prev.steeringDisengage)
+    # Pre-AP: a wheel yank cancels only while OP is in full lateral control
+    # (A). With lateral yielded (B) it is a driver maneuver. The card
+    # stashes that on steeringTorqueEps; see opendbc preap/lat_yield.py.
+    lat_full_control = True
+    if self.CP.carFingerprint == "TESLA_MODEL_S_PREAP":
+      lat_full_control = stash_full_control(getattr(CS, 'steeringTorqueEps', 0.0))
     if steer_disengage_this_frame(
         confirm=confirm, release=release, release_prev=self._yank_release_prev,
-        disengage_edge=disengage_edge, blocks=blocks):
+        disengage_edge=disengage_edge, blocks=blocks,
+        lat_full_control=lat_full_control):
       events.add(EventName.steerDisengage)
     self._yank_release_prev = release
     if CS.brakePressed and CS.standstill:
