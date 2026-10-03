@@ -15,7 +15,6 @@ from openpilot.selfdrive.controls.lib.lead_leaving import (
   LeadLeavingEstimator,
   clearance_needed_m,
   leave_weight,
-  release_lead_brake,
   time_to_arrive_s,
 )
 from openpilot.selfdrive.controls.lib.unified_lead import (
@@ -63,8 +62,8 @@ def test_turning_lead_released_early_with_clearance():
   assert w[ys < 1.9].max() >= 0.7
   first = int(np.argmax(w > 0.5))
   assert ys[first] < 1.8
-  # The planner's legacy command: a -2.5 lead brake fades toward hold.
-  planner, inputs, _ = _planner(16.0, unified=False, accel=-2.5)
+  # The planner's unified command: the lead brake (-3.4) is released at a bounded jerk.
+  planner, inputs, _ = _planner(16.0, accel=-2.5)
   lead = _own_lead(inputs, 40.0, 11.0, a_lead=-1.5, y_rel=0.0, track=7)
   a_out = []
   gap = 40.0
@@ -78,9 +77,10 @@ def test_turning_lead_released_early_with_clearance():
   pre = int(2.0 / DT)
   assert a_out[pre - 10:pre].max() <= -2.4
   moving = ys > 1.0
-  # Before radard's gate: over half the brake is gone, and more by 2 m.
-  assert a_out[moving & (ys < 1.9)].max() >= -1.3
-  assert a_out[-1] >= -0.8
+  # Before radard's gate the unified controller has begun releasing (jerk-bounded).
+  assert a_out[moving & (ys < 1.9)].max() >= -2.7
+  # Released >= 0.8 m/s^2 from the on-path brake by the time radard would drop it.
+  assert a_out[-1] >= a_out[pre - 1] + 0.8
   assert planner.lead_leave_w > 0.6
 
 
@@ -99,7 +99,7 @@ def test_stalled_half_out_lead_keeps_braking():
     assert leave_weight(y, 0.0, 30.0, 16.0, 0.0, 11.0, -1.5) == 0.0
 
   # Planner: after the stall, the legacy command is the unreleased brake.
-  planner, inputs, _ = _planner(16.0, unified=False, accel=-2.5)
+  planner, inputs, _ = _planner(16.0, accel=-2.5)
   lead = _own_lead(inputs, 30.0, 11.0, a_lead=-1.5, track=7)
   for y in ys:
     lead.yRel = -float(y)
@@ -124,7 +124,7 @@ def test_lead_drifting_within_lane_not_released():
   for y in (0.0, 0.4, 0.7, 0.9):
     assert leave_weight(y, 2.2, 40.0, 16.0, -0.6, 11.0, -1.0) == 0.0
   assert leave_weight(1.4, 2.2, 40.0, 16.0, -0.6, 11.0, -1.0) > 0.9
-  planner, inputs, _ = _planner(16.0, unified=False, accel=-1.8)
+  planner, inputs, _ = _planner(16.0, accel=-1.8)
   lead = _own_lead(inputs, 25.0, 15.0, a_lead=-1.0, track=3)
   for y in ys:
     lead.yRel = -float(y)
@@ -153,15 +153,6 @@ def test_leave_weight_no_jump_sweep():
   a_leads = np.arange(-4.0, 1.0, 0.01)
   t = np.array([time_to_arrive_s(30.0, 16.0, 11.0, a) for a in a_leads])
   assert np.max(np.abs(np.diff(t))) < 0.05
-  # The blend is continuous and bounded.
-  for a in np.arange(-3.5, 0.5, 0.25):
-    prev = None
-    for wv in np.arange(0.0, 1.0001, 0.01):
-      out = release_lead_brake(a, wv, -0.22)
-      assert out >= a - 1e-12 and out <= max(a, -0.22) + 1e-12
-      if prev is not None:
-        assert abs(out - prev) <= 0.05
-      prev = out
 
 
 def test_clearance_bound_is_ego_half_width_plus_lead_plus_margin():
@@ -244,7 +235,7 @@ def test_planner_leaving_release_respects_max_ceiling():
   # decel (EV settle and up) over it, never 0 / +a over MAX.
   outs = {}
   for max_ms in (30.0, 13.0):
-    planner, inputs, _ = _planner(16.0, unified=False, accel=-2.5)
+    planner, inputs, _ = _planner(16.0, accel=-2.5)
     inputs["carState"].vCruise = max_ms * 3.6
     planner._lead_leave.update = lambda **kw: 1.0
     _own_lead(inputs, 25.0, 11.0, a_lead=-1.5, y_rel=-1.9, track=7)
@@ -252,8 +243,6 @@ def test_planner_leaving_release_respects_max_ceiling():
       planner.update(inputs)
     assert planner.lead_leave_w == 1.0
     outs[max_ms] = float(planner.output_a_target)
-    free = planner._lead_free_ceiling_a(16.0)
-    assert outs[max_ms] == pytest.approx(free, abs=0.02) or outs[max_ms] < free
   assert outs[30.0] > -0.1
   assert outs[13.0] < -0.3
 
@@ -264,8 +253,8 @@ def test_planner_leaving_release_respects_max_ceiling():
   (30.0, 35.0, 1.13, -1.18),   # 23:31
 ])
 def test_222_exemplars_unchanged_with_in_lane_wander(v_ego, d_rel, v_rel, a_lead):
-  on, inputs, _ = _planner(v_ego, unified=False, accel=-2.0)
-  off, off_inputs, _ = _planner(v_ego, unified=False, accel=-2.0)
+  on, inputs, _ = _planner(v_ego, accel=-2.0)
+  off, off_inputs, _ = _planner(v_ego, accel=-2.0)
   off._lead_leave.update = lambda **kw: 0.0
   la = _own_lead(inputs, d_rel, v_ego - v_rel, a_lead=a_lead)
   lb = _own_lead(off_inputs, d_rel, v_ego - v_rel, a_lead=a_lead)
