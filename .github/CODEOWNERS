@@ -7,6 +7,9 @@
 /.github/ci/test_validate_process_replay_release.py @daggerhashjack
 /.github/workflows/tests.yaml @daggerhashjack @SloPOS
 /.github/ci/tesla_preap_longitudinal_mutations.py @daggerhashjack @SloPOS
+/.github/ci/tesla_preap_mutation_common.py @daggerhashjack @SloPOS
+/.github/ci/tesla_preap_mutation_defs_a.py @daggerhashjack @SloPOS
+/.github/ci/tesla_preap_mutation_defs_b.py @daggerhashjack @SloPOS
 /.github/ci/test_tesla_preap_longitudinal_workflow.py @daggerhashjack @SloPOS
 /selfdrive/controls/tests/test_tesla_preap_longcontrol.py @daggerhashjack @SloPOS
 /opendbc_repo @daggerhashjack @SloPOS
