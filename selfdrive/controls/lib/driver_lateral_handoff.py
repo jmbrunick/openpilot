@@ -121,6 +121,24 @@ INFERENCE CONTRACT (lateral yield is inferred, never announced):
   fails when BLEND_TIME_S / HANDS_OFF_CONFIRM_S and the lat_yield windows
   diverge; fix lat_yield.py + tesla_preap_latyield.h first, then the pins.
 
+WHEEL-RESUME GATE (rapid back-and-forth turns). A driver who lets the wheel
+uncoil through light / open hands (roundabout, switchback, parking lot) has
+handsOnLevel 0 while the rim is still far from straight. The hands-off
+confirm used to start the 1 s take-back blend there, so OP grabbed lateral
+mid-uncoil and fought the next turn. Now, once the wheel angle since the
+yield began has exceeded WHEEL_GATE_ARM_DEG, neither resume path may start
+the blend until |angle| <= WHEEL_RESUME_STRAIGHT_DEG (named, 10-15 deg) for
+WHEEL_STRAIGHT_DWELL_S (a swing through centre into the next turn is not
+"straight").
+Speed does not matter (lots, and a 10 mph crossing with the wheel at lock).
+The yield simply lasts longer (latActive stays false the whole time), which
+the inference contract allows (only a *minimum* yield length is assumed).
+Hands back on, or a firm push, behave exactly as before. Safety valve:
+after WHEEL_GATE_MAX_HOLD_S of hands-off hold the gate lets go so a wheel
+that never centres cannot leave lateral off forever. steering_angle_deg=None
+(not wired / old callers) disables the gate: bit-identical to before.
+ALC / lane-change turn / disengage reset the whole latch (gate included).
+
 Early yield (steeringPressed, no hands gate): EPAS_handsOnLevel lags the
 torsion bar, so a firm push can reach hands >= 2 before the hands-gated
 soft yield above has fired. EARLY_YIELD_FRAMES consecutive steeringPressed
@@ -198,6 +216,18 @@ YIELD_EMERGENCY_WINDOW_S = 2.0
 # ALC tip-hold / FCW / AEB are not this path.
 LAT_REENABLE_MIN_V_EGO_MPH = 10.0
 LAT_REENABLE_MIN_V_EGO = LAT_REENABLE_MIN_V_EGO_MPH * CV.MPH_TO_MS
+
+# --- wheel-resume gate (see WHEEL-RESUME GATE in the module docstring) ---
+# No resume while |wheel| is above this after a big-angle handoff. 10-15 deg.
+WHEEL_RESUME_STRAIGHT_DEG = 12.0
+# Peak |wheel| since the yield began that arms the gate (a real turn, not a
+# highway nudge). Below this the resume is unchanged.
+WHEEL_GATE_ARM_DEG = 30.0
+# The wheel must stay within WHEEL_RESUME_STRAIGHT_DEG this long (not just
+# sweep through centre between two turns) before the blend may start.
+WHEEL_STRAIGHT_DWELL_S = 0.15
+# Hands-off time the gate may hold the resume before it lets go.
+WHEEL_GATE_MAX_HOLD_S = 6.0
 
 # --- timing / UI ---
 QUIET_WAIT_S = 0.0
@@ -490,6 +520,9 @@ class DriverLateralHandoff:
     self._hands_off_s = 0.0
     self._decel_cnt = 0
     self._yield_age_s: float | None = None
+    self._peak_angle_deg = 0.0
+    self._gate_hold_s = 0.0
+    self._straight_s = 0.0
 
   def reset(self):
     self._reset()
@@ -577,12 +610,40 @@ class DriverLateralHandoff:
       self.ui_paused = self._yielded or self._blending or (
         self.authority < UI_LATERAL_RETURN_AUTHORITY)
 
+  def _note_angle(self, steering_angle_deg: float | None):
+    """Track peak |wheel| while a yield / blend / lat-down is in play."""
+    if steering_angle_deg is None:
+      return
+    a = abs(float(steering_angle_deg))
+    if np.isfinite(a) and a > self._peak_angle_deg:
+      self._peak_angle_deg = a
+
+  def _wheel_gate_holds(self, steering_angle_deg: float | None, dt: float) -> bool:
+    """True: do not start the take-back blend yet (wheel still uncoiling)."""
+    if steering_angle_deg is None:
+      return False
+    a = abs(float(steering_angle_deg))
+    if not np.isfinite(a):
+      return False
+    if self._peak_angle_deg < WHEEL_GATE_ARM_DEG:
+      return False
+    self._gate_hold_s += dt
+    if self._gate_hold_s >= WHEEL_GATE_MAX_HOLD_S:
+      return False
+    if a <= WHEEL_RESUME_STRAIGHT_DEG:
+      self._straight_s += dt
+      return self._straight_s + 1e-12 < WHEEL_STRAIGHT_DWELL_S
+    self._straight_s = 0.0
+    return True
+
   def _enter_yield(self):
     self._yielded = True
     self._blending = False
     self._quiet_s = 0.0
     self._blend_s = 0.0
     self._hands_off_s = 0.0
+    self._gate_hold_s = 0.0
+    self._straight_s = 0.0
     self.authority = 0.0
     self.ui_paused = True
     if self._yield_age_s is None:
@@ -594,6 +655,8 @@ class DriverLateralHandoff:
     self._blend_s = 0.0
     self._quiet_s = 0.0
     self._hands_off_s = 0.0
+    self._gate_hold_s = 0.0
+    self._straight_s = 0.0
     self.authority = 0.0
     self.ui_paused = True
 
@@ -608,7 +671,8 @@ class DriverLateralHandoff:
              v_ego: float = 15.0, dt: float | None = None,
              emergency_yank: bool = False,
              lane_change_confirm: bool = False,
-             steering_pressed: bool = False) -> HandoffOutput:
+             steering_pressed: bool = False,
+             steering_angle_deg: float | None = None) -> HandoffOutput:
     if dt is None:
       dt = DT_CTRL
 
@@ -646,8 +710,10 @@ class DriverLateralHandoff:
     inhibited = lat_reenable_inhibited(blinker_paused=blinker_paused, v_ego=v_ego)
     if not lat_would_be_active:
       remember = self._blinker_was_paused or inhibited
+      peak = self._peak_angle_deg if remember else 0.0
       self._reset()
       self._blinker_was_paused = remember
+      self._peak_angle_deg = peak
       return self._identity()
 
     mag = abs(float(steering_torque))
@@ -658,6 +724,9 @@ class DriverLateralHandoff:
       pressed = self._pressed = True
     hands_on = hands_still_on(hands_on_level)
     firm_push = mag >= SOFT_YIELD_TRIGGER_NM
+    if (self._yielded or self._blending or self._blinker_was_paused
+        or pressed):
+      self._note_angle(steering_angle_deg)
 
     if inhibited:
       # Keep control if we still have it. A driver push may still yield.
@@ -679,7 +748,8 @@ class DriverLateralHandoff:
       self._enter_yield()
       if not (hands_on or firm_push):
         self._hands_off_s += dt
-        if self._hands_off_s + 1e-12 >= HANDS_OFF_CONFIRM_S:
+        if (self._hands_off_s + 1e-12 >= HANDS_OFF_CONFIRM_S
+            and not self._wheel_gate_holds(steering_angle_deg, dt)):
           self._start_blend()
     elif not self._yielded and not self._blending:
       if pressed:
@@ -692,7 +762,8 @@ class DriverLateralHandoff:
         self._enter_yield()
       else:
         self._hands_off_s += dt
-        if self._hands_off_s + 1e-12 >= HANDS_OFF_CONFIRM_S:
+        if (self._hands_off_s + 1e-12 >= HANDS_OFF_CONFIRM_S
+            and not self._wheel_gate_holds(steering_angle_deg, dt)):
           self._start_blend()
     elif self._blending:
       # Hands back on or a firm push cancels the return. Mid-band
@@ -709,6 +780,7 @@ class DriverLateralHandoff:
           self._blending = False
           self._blend_s = 0.0
           self._quiet_s = 0.0
+          self._peak_angle_deg = 0.0
 
     emergency = self._update_emergency(
       brake_applied=brake_applied, a_ego=a_ego, v_ego=v_ego, dt=dt)
