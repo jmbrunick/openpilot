@@ -212,7 +212,7 @@ class NAPLayoutMici(NavScroller):
 
     # Force Offroad / simulate look / false alert ignore live in the nap triple-tap overlay.
 
-    # ── Longitudinal control ─────────────────────────────
+    # ── Longitudinal control ─────────────────────────
     pedal_enabled = BigParamControl("pedal interceptor", NAPParamKeys.PEDAL_ENABLED,
                                      toggle_callback=_reboot_on_toggle)
     pedal_enabled.set_enabled(ui_state.is_offroad)
@@ -235,7 +235,7 @@ class NAPLayoutMici(NavScroller):
                             ))
     install_weights_btn.set_enabled(ui_state.is_offroad)
 
-    # ── Pedal hardware ─────────────────────────────────
+    # ── Pedal hardware ───────────────────────────────
     # default_value=2 matches NAPPedalCanBus declared default in params_keys.h
     # and the runtime fallback ("any nonzero is bus 2"). If the param is set
     # to an out-of-range value (1, etc.), the widget rewrites it to 2 rather
@@ -271,7 +271,7 @@ class NAPLayoutMici(NavScroller):
     radar_settings_btn = BigButton("radar settings", "open")
     radar_settings_btn.set_click_callback(lambda: gui_app.push_widget(RadarSettingsLayoutMici()))
 
-    # ── iBooster (locked off) ────────────────────────────────
+    # ── iBooster (locked off) ────────────────────────
     wiper_control = BigMultiValueParamToggle(
       "wiper control",
       NAP_WIPER_SPEED,
@@ -299,7 +299,7 @@ class NAPLayoutMici(NavScroller):
     ibooster_enabled = BigParamControl("ibooster enabled", NAPParamKeys.IBOOSTER_ENABLED)
     ibooster_enabled.set_enabled(False)
 
-    # ── Advanced (locked on) ───────────────────────────────
+    # ── Advanced (locked on) ─────────────────────────
     force_pre_ap = BigParamControl("force pre-ap mode", NAPParamKeys.FORCE_PRE_AP)
     force_pre_ap.set_enabled(False)
 
@@ -351,3 +351,4 @@ class NAPLayoutMici(NavScroller):
   def show_event(self):
     super().show_event()
     self._weights_status.set_value(weights_status_summary())
+
