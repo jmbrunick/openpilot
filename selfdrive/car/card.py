@@ -29,6 +29,7 @@ from openpilot.selfdrive.mapd.map_speed_policy import (
 from openpilot.selfdrive.mapd.roundabout import live_map_roundabout_hint, roundabout_ease_v_ms
 from openpilot.selfdrive.controls.lib.curve_follow import MODE_ACTIVE, MODE_SHADOW, read_curve_follow_mode
 from openpilot.selfdrive.controls.lib.curve_max_hold import CurveMaxHold
+from openpilot.selfdrive.controls.lib.radar_status_log import RadarStatusLogger
 from openpilot.selfdrive.controls.lib.follow_distance import published_cruise_ms
 from openpilot.selfdrive.controls.lib.hypermile import (
   FollowStalkGesture, button_event_closer, button_event_released,
@@ -217,6 +218,8 @@ class Car:
     self.radar_donor_vin = None
     tesla_preap = any(cfg.safetyModel == car.CarParams.SafetyModel.teslaPreap for cfg in self.CP.safetyConfigs)
     self._tesla_preap = tesla_preap
+    # 2 Hz radarstat line (radar status bits + track summary) for Pre-AP Bosch digs.
+    self._radar_stat = RadarStatusLogger() if tesla_preap else None
     if tesla_preap:
       from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import install_blinker_lat_pause
       from openpilot.selfdrive.car.tesla.preap_body_controls import install_body_controls_test
@@ -257,6 +260,11 @@ class Car:
 
     # Update radar tracks from CAN
     RD: structs.RadarDataT | None = self.RI.update(can_list)
+    radar_stat = getattr(self, "_radar_stat", None)
+    if radar_stat is not None:
+      stat_line = radar_stat.update(self._can_packets, getattr(RD, "points", None), CS.vEgo)
+      if stat_line is not None:
+        cloudlog.error(stat_line)
 
     self.sm.update(0)
 

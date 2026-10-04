@@ -58,6 +58,7 @@ def test_focused_tests_and_mutations_are_pinned():
     "selfdrive/controls/tests/test_radard.py",
     "selfdrive/controls/tests/test_radar_path_gate.py",
     "selfdrive/controls/tests/test_rain_radar_hold.py",
+    "selfdrive/controls/tests/test_radar_sensor_dirty.py",
     "selfdrive/controls/tests/test_tesla_preap_following.py",
     "selfdrive/controls/tests/test_curve_preview.py",
     "selfdrive/controls/tests/test_curve_follow.py",

@@ -17,8 +17,9 @@ from tesla_preap_mutation_defs_b import MUTATIONS_B
 from tesla_preap_mutation_defs_c import MUTATIONS_C
 from tesla_preap_mutation_defs_d import MUTATIONS_D
 from tesla_preap_mutation_defs_e import MUTATIONS_E
+from tesla_preap_mutation_defs_f import MUTATIONS_F
 
-MUTATIONS = MUTATIONS_A + MUTATIONS_B + MUTATIONS_C + MUTATIONS_D + MUTATIONS_E
+MUTATIONS = MUTATIONS_A + MUTATIONS_B + MUTATIONS_C + MUTATIONS_D + MUTATIONS_E + MUTATIONS_F
 
 
 class JUnitReportError(RuntimeError):

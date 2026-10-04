@@ -213,6 +213,8 @@ class TestAlerts:
     assert ET.IMMEDIATE_DISABLE not in event_types
     assert ET.NO_ENTRY not in event_types
     alert = event_types[ET.WARNING]
+    if not isinstance(alert, Alert):  # text follows radarPreferReason (sensorDirty variant)
+      alert = alert(self.CP, self.CS, self.sm, False, 100, log.LongitudinalPersonality.standard)
     assert alert.alert_text_1 == "Radar Unreliable"
     assert alert.alert_text_2 == "Using camera lead"
     assert alert.alert_size == AlertSize.mid
