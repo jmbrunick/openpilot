@@ -20,6 +20,11 @@ from openpilot.selfdrive.controls.lib.radar_path_gate import (
   radar_follow_ok,
   vision_lead_follow_ok,
 )
+from openpilot.selfdrive.controls.lib.radar_sensor_dirty import (
+  SensorDirtyPolicy,
+  reason_token,
+  sensor_dirty_ignore_enabled,
+)
 from openpilot.selfdrive.controls.lib.rain_radar_hold import (
   RAIN_RADAR_LOST_HOLD_FRAMES,
   RAIN_VISION_ONLY_MIN_PROB,
@@ -334,6 +339,19 @@ class RadarD:
     self.rain_gate = rain_gate if rain_gate is not None else RainRadarGate()
     self.reliability = RadarReliability()
     self.engaged = False
+    # Bosch SensorDirty: degrade (keep the radar lead) instead of soft-disable.
+    self.sensor_dirty = SensorDirtyPolicy()
+    self._sensor_dirty_ignore_override: bool | None = None
+    self._live_measured = False
+
+  def set_sensor_dirty_ignore_override(self, ignore: bool | None) -> None:
+    """Test hook. None reads NAPRadarIgnoreSensorDirty (default on)."""
+    self._sensor_dirty_ignore_override = None if ignore is None else bool(ignore)
+
+  def read_sensor_dirty_ignore(self) -> bool:
+    if self._sensor_dirty_ignore_override is not None:
+      return self._sensor_dirty_ignore_override
+    return sensor_dirty_ignore_enabled(self.rain_gate._get_params())
 
   def update(self, sm: messaging.SubMaster, rr: car.RadarData):
     self.ready = sm.seen['modelV2']
@@ -357,6 +375,7 @@ class RadarD:
       self.last_radar_update_time = radar_update_time
       self.kalman_params = KalmanParams(radar_dt)
       ar_pts = {pt.trackId: [pt.dRel, pt.yRel, pt.vRel, pt.measured] for pt in rr.points}
+      self._live_measured = any(rpt[3] for rpt in ar_pts.values())
 
       # *** remove missing points from meta data ***
       for ids in list(self.tracks.keys()):
@@ -377,6 +396,7 @@ class RadarD:
     elif self.last_radar_update_time is None or self.current_time - self.last_radar_update_time > RADAR_MEASUREMENT_TIMEOUT:
       self.tracks.clear()
       radar_timed_out = self.last_radar_update_time is not None
+      self._live_measured = False
 
     # *** publish radarState ***
     # Exclude liveTracks from validity check: it arrives at radar rate (8Hz for
@@ -387,6 +407,16 @@ class RadarD:
     self.radar_state.mdMonoTime = sm.logMonoTime['modelV2']
     self.radar_state.radarErrors = rr.errors
     self.radar_state.carStateMonoTime = sm.logMonoTime['carState']
+    # SensorDirty is the radar's own obstruction self-report. With live
+    # measured tracks it must not soft-disable or lock out re-engage
+    # (I-40 gorge, Oct 4 03:03:59 CT). Only that one flag is masked, and only
+    # until it persists with no live tracks (SENSOR_DIRTY_PERSIST_S).
+    sensor_dirty_flag = bool(getattr(rr.errors, 'radarUnavailableTemporary', False))
+    sensor_dirty_mask = self.sensor_dirty.update(
+      sensor_dirty_flag, self._live_measured and not radar_timed_out, DT_MDL,
+      ignore=self.read_sensor_dirty_ignore())
+    if sensor_dirty_mask:
+      self.radar_state.radarErrors.radarUnavailableTemporary = False
 
     if len(sm['modelV2'].velocity.x):
       model_v_ego = sm['modelV2'].velocity.x[0]
@@ -398,7 +428,7 @@ class RadarD:
     # Health first so association uses the new prefer; HUD after so a
     # path-associated lead can suppress clutter / timeout flashes.
     healthy = self.reliability.update(
-      tracks=self.tracks, errors=rr.errors, v_ego=self.v_ego,
+      tracks=self.tracks, errors=self.radar_state.radarErrors, v_ego=self.v_ego,
       timed_out=radar_timed_out,
       ignore_hw_fail=self.rain_gate.read_ignore_hw_fail(),
       engaged=self.engaged)
@@ -425,9 +455,11 @@ class RadarD:
     self.reliability.set_path_lead(path_lead)
     self.rain_gate.set_reliable(healthy, alert=self.reliability.should_alert)
     if hasattr(self.radar_state, "radarPreferFallback"):
-      self.radar_state.radarPreferFallback = bool(self.rain_gate.fallback_alert)
+      # Degraded SensorDirty reuses the existing fallback event (selfdrived maps it to a
+      # WARNING, never a disable); events.py words it from radarPreferReason.
+      self.radar_state.radarPreferFallback = bool(self.rain_gate.fallback_alert) or sensor_dirty_mask
     if hasattr(self.radar_state, "radarPreferReason"):
-      self.radar_state.radarPreferReason = str(self.reliability.log_reason)
+      self.radar_state.radarPreferReason = reason_token(self.reliability.log_reason, sensor_dirty_mask)
 
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None
