@@ -10,6 +10,7 @@ import cereal.messaging as messaging
 from openpilot.common.constants import CV
 from openpilot.common.git import get_short_branch
 from openpilot.common.realtime import DT_CTRL
+from openpilot.selfdrive.controls.lib.radar_sensor_dirty import sensor_dirty_degraded
 from openpilot.selfdrive.locationd.calibrationd import MIN_SPEED_FILTER
 from openpilot.system.micd import SAMPLE_RATE, SAMPLE_BUFFER
 from openpilot.selfdrive.ui.feedback.feedbackd import FEEDBACK_MAX_DURATION
@@ -391,6 +392,34 @@ def high_cpu_usage_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubM
 
 def modeld_lagging_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
   return NormalPermanentAlert("Driving Model Lagging", f"{sm['modelV2'].frameDropPerc:.1f}% frames dropped")
+
+
+def _radar_sensor_dirty_active(sm: messaging.SubMaster) -> bool:
+  """radard tagged radarPreferReason with sensorDirty (radar lead still live)."""
+  try:
+    return sensor_dirty_degraded(getattr(sm['radarState'], 'radarPreferReason', ''))
+  except Exception:
+    return False
+
+
+def radar_prefer_fallback_permanent_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool,
+                                          soft_disable_time: int, personality) -> Alert:
+  if _radar_sensor_dirty_active(sm):
+    return NormalPermanentAlert("Radar Sensor Dirty", "Radar lead still active")
+  return NormalPermanentAlert("Radar Unreliable", "Using camera lead")
+
+
+def radar_prefer_fallback_warning_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool,
+                                        soft_disable_time: int, personality) -> Alert:
+  if _radar_sensor_dirty_active(sm):
+    title, sub = "Radar Sensor Dirty", "Radar lead still active"
+  else:
+    title, sub = "Radar Unreliable", "Using camera lead"
+  return Alert(
+    title,
+    sub,
+    AlertStatus.userPrompt, AlertSize.mid,
+    Priority.MID, VisualAlert.none, AudibleAlert.none, 0.2)
 
 
 def wrong_car_mode_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
@@ -974,7 +1003,7 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
 
   EventName.accFaulted: {
     ET.IMMEDIATE_DISABLE: ImmediateDisableAlert("Cruise Fault: Restart the Car"),
-    ET.PERMANENT: NormalPermanentAlert("Cruise Fault: Restart the car to engage"),
+    ET.PERMANENT: NormalPermanentAlert("Cruise Fault: Restart the car to enable"),
     ET.NO_ENTRY: NoEntryAlert("Cruise Fault: Restart the Car"),
   },
 
@@ -1133,12 +1162,8 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
   },
 
   EventName.radarPreferFallback: {
-    ET.PERMANENT: NormalPermanentAlert("Radar Unreliable", "Using camera lead"),
-    ET.WARNING: Alert(
-      "Radar Unreliable",
-      "Using camera lead",
-      AlertStatus.userPrompt, AlertSize.mid,
-      Priority.MID, VisualAlert.none, AudibleAlert.none, 0.2),
+    ET.PERMANENT: radar_prefer_fallback_permanent_alert,
+    ET.WARNING: radar_prefer_fallback_warning_alert,
   },
 
 
