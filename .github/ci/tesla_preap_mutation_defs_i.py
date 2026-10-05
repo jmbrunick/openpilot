@@ -40,7 +40,7 @@ MUTATIONS_I = (
      b"KIN_GATE_WIDEN_A_BOUND_RAMP = 0.10\n", b"KIN_GATE_WIDEN_A_BOUND_RAMP = 0.001\n",
      _CONST, _CONT),
   _m("gate-widen-pd-cap-raised",
-     b"KIN_GATE_WIDEN_A_CAP = 0.60\n", b"KIN_GATE_WIDEN_A_CAP = 2.0\n",
+     b"KIN_GATE_WIDEN_A_CAP = 0.50\n", b"KIN_GATE_WIDEN_A_CAP = 2.0\n",
      _CONST, "test_widen_full_weight_and_cap", _FIRM),
   _m("gate-widen-gain-halved",
      b"KIN_GATE_WIDEN_K = 1.0  #", b"KIN_GATE_WIDEN_K = 0.5  #",
