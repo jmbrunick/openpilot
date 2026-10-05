@@ -33,6 +33,11 @@ REGEN_DEMAND_TRIGGER_MARGIN = 0.2  # m/s² below the envelope floor
 REGEN_DEMAND_CLEAR_MARGIN = 0.05  # m/s²
 REGEN_DEMAND_MIN_SPEED = 2.0  # m/s; do not prompt for a stopped/settling car
 REGEN_DEMAND_CLEAR_SPEED = 1.0  # m/s
+# The prompt means "regen cannot cover this, add friction brake". With a
+# post-guard command available, a plan below the floor only prompts once the
+# command itself is pinned at the rail (15d 15:27:31: plan -1.94 but the
+# actuator sat at -0.22, so the car was not asking for more than regen had).
+REGEN_DEMAND_CMD_PIN_MARGIN = 0.05  # m/s² above the envelope floor
 
 
 class PreAPChimeState(NamedTuple):
@@ -96,7 +101,11 @@ def gas_should_user_disable(*, disengage_on_accelerator: bool,
 
 
 class RegenDemandCheck:
-  """Prompt when planned deceleration exceeds what the regen envelope allows."""
+  """Prompt when planned deceleration exceeds what the regen envelope allows.
+
+  With the post-guard command (`a_cmd`), the trigger also needs that command
+  pinned at the envelope floor. Keeping an active prompt is plan-only.
+  """
 
   def __init__(self):
     self.active = False
@@ -107,7 +116,7 @@ class RegenDemandCheck:
     self.evidence_updates = 0
 
   def update(self, *, pedal_long_active: bool, brake_pressed: bool,
-             a_target: float, v_ego: float) -> bool:
+             a_target: float, v_ego: float, a_cmd: float | None = None) -> bool:
     if not pedal_long_active or brake_pressed or not math.isfinite(a_target):
       self.reset()
       return False
@@ -123,9 +132,16 @@ class RegenDemandCheck:
         self.reset()
       return self.active
 
+    # `a_cmd` is the post-guard actuator command. Unknown (None / not finite)
+    # keeps the plan-only rule: when in doubt, prompt.
+    cmd_pinned = (
+      a_cmd is None or not math.isfinite(a_cmd)
+      or a_cmd <= accel_floor + REGEN_DEMAND_CMD_PIN_MARGIN
+    )
     demanding = (
       v_ego >= REGEN_DEMAND_MIN_SPEED
       and a_target <= accel_floor - REGEN_DEMAND_TRIGGER_MARGIN
+      and cmd_pinned
     )
     if demanding:
       self.evidence_updates = min(self.evidence_updates + 1, REGEN_DEMAND_EVIDENCE_COUNT)
