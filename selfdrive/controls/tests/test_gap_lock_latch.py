@@ -23,7 +23,7 @@ from openpilot.selfdrive.controls.lib.lead_approach import (
 
 def _step(latch, **kw):
   base = dict(enabled=True, long_on=True, seq=0, status=True, radar=True,
-              track_id=4, d_rel=28.0, stalk_exit=False)
+              track_id=4, d_rel=28.0, stalk_exit=False, y_rel=0.0)
   base.update(kw)
   latch.update(0.05, **base)
 
@@ -71,27 +71,86 @@ def test_failed_arm_keeps_an_existing_lock():
   assert latch.hud == HUD_UNAVAILABLE
 
 
-def test_flicker_under_half_second_holds_then_clears():
+def test_status_loss_holds_about_two_seconds_then_clears():
   latch = GapLockLatch()
   _arm(latch)
-  for _ in range(9):
+  for _ in range(39):
     _step(latch, seq=1, status=False, radar=False, d_rel=None)
   assert latch.gap_m == pytest.approx(28.0)
+  assert latch.hud == 0
   _step(latch, seq=1, status=True, radar=True, d_rel=27.0)
   assert latch.gap_m == pytest.approx(28.0)
-  for _ in range(9):
+  assert latch.track_id == 4
+  # Just under 2 s still holds. The frame that reaches 2 s clears.
+  for _ in range(39):
     _step(latch, seq=1, status=False, radar=False, d_rel=None)
   assert latch.gap_m == pytest.approx(28.0)
-  for _ in range(2):
-    _step(latch, seq=1, status=False, radar=False, d_rel=None)
+  _step(latch, seq=1, status=False, radar=False, d_rel=None)
   assert latch.gap_m is None
   assert latch.hud == HUD_LOST
 
 
-def test_new_track_clears_same_frame_and_recapture_updates():
+def test_same_gap_radar_rematch_keeps_the_lock():
+  """16:08:53: 2088 → 2698 at ~27 m while locked near 25 m. No toast."""
+  latch = GapLockLatch()
+  _arm(latch, d_rel=25.1, track_id=2088)
+  _step(latch, seq=1, track_id=2698, d_rel=26.6, y_rel=0.3)
+  assert latch.gap_m == pytest.approx(25.1)
+  assert latch.track_id == 2698
+  assert latch.hud == 0
+  for _ in range(20):
+    _step(latch, seq=1, track_id=2698, d_rel=27.4, y_rel=-0.4)
+  assert latch.gap_m == pytest.approx(25.1)
+  assert latch.track_id == 2698
+  assert latch.hud == 0
+
+
+def test_rematch_window_is_five_meters_and_one_lane():
+  latch = GapLockLatch()
+  _arm(latch, d_rel=25.0, track_id=1)
+  _step(latch, seq=1, track_id=2, d_rel=30.0, y_rel=1.5)
+  assert latch.track_id == 2
+  assert latch.gap_m == pytest.approx(25.0)
+  assert latch.hud == 0
+
+  outside = GapLockLatch()
+  _arm(outside, d_rel=25.0, track_id=1)
+  _step(outside, seq=1, track_id=2, d_rel=30.2, y_rel=0.0)
+  assert outside.track_id == 1
+  assert outside.gap_m == pytest.approx(25.0)
+  assert outside.hud == 0
+
+  offset = GapLockLatch()
+  _arm(offset, d_rel=25.0, track_id=1)
+  _step(offset, seq=1, track_id=2, d_rel=28.0, y_rel=-1.6)
+  assert offset.track_id == 1
+  assert offset.gap_m == pytest.approx(25.0)
+
+
+def test_vision_only_holds_and_the_same_track_resets_the_timer():
+  latch = GapLockLatch()
+  _arm(latch)
+  for _ in range(30):
+    _step(latch, seq=1, status=True, radar=False, track_id=4, d_rel=28.0)
+  assert latch.gap_m == pytest.approx(28.0)
+  assert latch.hud == 0
+  _step(latch, seq=1, status=True, radar=True, track_id=4, d_rel=27.5)
+  assert latch.track_id == 4
+  for _ in range(30):
+    _step(latch, seq=1, status=True, radar=False, track_id=-1, d_rel=28.0)
+  assert latch.gap_m == pytest.approx(28.0)
+  assert latch.hud == 0
+
+
+def test_different_gap_clears_after_two_seconds_then_recapture():
   latch = GapLockLatch()
   _arm(latch, track_id=4)
-  _step(latch, seq=1, track_id=9, d_rel=30.0)
+  _step(latch, seq=1, track_id=9, d_rel=50.0, y_rel=0.2)
+  assert latch.gap_m == pytest.approx(28.0)
+  assert latch.track_id == 4
+  assert latch.hud == 0
+  for _ in range(40):
+    _step(latch, seq=1, track_id=9, d_rel=50.0, y_rel=0.2)
   assert latch.gap_m is None
   assert latch.hud == HUD_LOST
   for _ in range(8):

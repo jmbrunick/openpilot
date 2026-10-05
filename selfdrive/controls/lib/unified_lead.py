@@ -88,6 +88,15 @@ K_A_NEAR = 1.10  # slightly over 1: a closing ego must shed more than the lead b
 K_A_FAR = 0.45
 K_A_NEAR_M = 18.0
 K_A_FAR_M = 70.0
+# Braking a_lead fades out when the lead is still far in both meters and
+# time (15:56: ~83 m of slack, ~38 s to the gap, command was k_a·aLead).
+# Full weight near the gap, on a short time-to-gap, or on a hard lead decel.
+ALEAD_FADE_SLACK_LO_M = 20.0
+ALEAD_FADE_SLACK_HI_M = 55.0
+ALEAD_FADE_TTG_LO_S = 12.0
+ALEAD_FADE_TTG_HI_S = 30.0
+ALEAD_FADE_EMERG_LO_MS2 = 2.6
+ALEAD_FADE_EMERG_HI_MS2 = 3.4
 # The a_lead weight also grows with how hard the lead brakes: mild slowing is
 # under-matched (a gradual, matched ease), real braking over-matched.
 K_A_MILD = 0.75
@@ -300,6 +309,29 @@ def _k_a_brake_scale(a_lead: float) -> float:
   """0.75× for mild lead slowing, 1.10× for real braking, smooth in between."""
   t = _smooth01((-float(a_lead) - K_A_FIRM_A0_MS2) / K_A_FIRM_BAND_MS2)
   return K_A_MILD + (K_A_FIRM - K_A_MILD) * t
+
+
+def _braking_alead_weight(slack: float, v_close: float, a_lead: float) -> float:
+  """How much of a braking lead to copy, in [0, 1].
+
+  0 when there is a lot of slack and a long time to the gap, and the lead
+  is not braking hard. 1 near the gap, on a short time-to-gap, or when the
+  lead decel is emergency-sized. Positive a_lead is not scaled here.
+  """
+  if float(a_lead) >= 0.0:
+    return 1.0
+  slack_f = float(slack)
+  near = 1.0 - _smooth01(
+    (slack_f - ALEAD_FADE_SLACK_LO_M) / (ALEAD_FADE_SLACK_HI_M - ALEAD_FADE_SLACK_LO_M))
+  if slack_f <= 0.0:
+    short = 1.0
+  else:
+    ttg = slack_f / max(float(v_close), 0.3)
+    short = 1.0 - _smooth01(
+      (ttg - ALEAD_FADE_TTG_LO_S) / (ALEAD_FADE_TTG_HI_S - ALEAD_FADE_TTG_LO_S))
+  emerg = _smooth01(
+    (-float(a_lead) - ALEAD_FADE_EMERG_LO_MS2) / (ALEAD_FADE_EMERG_HI_MS2 - ALEAD_FADE_EMERG_LO_MS2))
+  return 1.0 - (1.0 - near) * (1.0 - short) * (1.0 - emerg)
 
 
 def lead_decel_anticipation(a_lead: float, lead_jerk: float, gap: float, v_ego: float) -> float:
@@ -526,7 +558,8 @@ def unified_follow_desired(gap: float, v_ego: float, v_lead: float, a_lead: floa
                            leave_w: float = 0.0,
                            model_prob: float | None = None,
                            radar: bool | None = None,
-                           gap_set_override_m: float | None = None) -> float:
+                           gap_set_override_m: float | None = None,
+                           v_curve_cap: float | None = None) -> float:
   """Unslewed follow accel from filtered lead signals. Continuous in its inputs.
 
   `gap_set_override_m` replaces only the meter setpoint used for slack
@@ -534,7 +567,9 @@ def unified_follow_desired(gap: float, v_ego: float, v_lead: float, a_lead: floa
   A lock is still this law: the near-gap "do not chase" opening gain,
   the positive-accel trickle, and the far soft-close are skipped so a
   speed deficit left by the pre-lock ease tracks the locked meters
-  instead of opening the gap and creeping back.
+  instead of opening the gap and creeping back. Cruise MAX is not applied
+  while the lock is the setpoint, so the car may go above MAX to hold
+  those meters. `v_curve_cap` still slows the car for a bend.
   """
   gap_f = max(0.0, float(gap))
   v_l = max(0.0, float(v_lead))
@@ -584,15 +619,26 @@ def unified_follow_desired(gap: float, v_ego: float, v_lead: float, a_lead: floa
   a_kin = _a_kin(slack, v_close, gap_f, v_e, t_follow, v_l)
   # Braking-lead contribution on the bound. Positive a_lead stays in a_pd only.
   a_bound = a_kin + min(a_l, 0.0) * k_a
+  # Far slack and a long time-to-gap: do not copy a mild or mid lead brake.
+  # The unfaded bound above is what the far-gap catch-up still treats as a
+  # real lead brake. The command uses the faded copy. Near the gap, a short
+  # time-to-gap, or an emergency lead decel keeps the full term.
+  a_pd_full = a_pd
+  brake_w = _braking_alead_weight(slack, v_close, a_l)
+  if a_l < 0.0 and brake_w < 1.0:
+    a_pd = a_gv + k_a * a_l * brake_w
+    a_bound_cmd = a_kin + a_l * k_a * brake_w
+  else:
+    a_bound_cmd = a_bound
   # a_pd above is the classic PD term. Swap only its gap piece; the gate,
   # trickle, trust, and speed ceiling below run on the result.
   a_gap_classic = (k_g * slack) * keep
   if not locked:
-    a_gap = _far_gap_catchup_gap(a_gap_classic, slack, v_err, keep, a_pd, a_bound)
+    a_gap = _far_gap_catchup_gap(a_gap_classic, slack, v_err, keep, a_pd_full, a_bound)
     a_pd = a_pd + (a_gap - a_gap_classic)
-  gate_w = KIN_GATE_MS + _kin_gate_widen(slack, a_pd, a_bound)
+  gate_w = KIN_GATE_MS + _kin_gate_widen(slack, a_pd_full, a_bound)
   gate = _smooth01(v_close / gate_w) if v_close > 0.0 else 0.0
-  limited = min(a_pd, a_bound)
+  limited = min(a_pd, a_bound_cmd)
   a_cmd = ((1.0 - gate) * a_pd) + (gate * limited)
 
   # Pulling away near the gap: trickle, not a catch-up lunge.
@@ -606,8 +652,8 @@ def unified_follow_desired(gap: float, v_ego: float, v_lead: float, a_lead: floa
     trickle = TRICKLE_A * math.tanh(a_cmd / TRICKLE_SCALE)
     a_cmd = w * min(a_cmd, trickle) + (1.0 - w) * a_cmd
 
-  # Off-path / leaving lead: its command (brake included) fades toward 0;
-  # the MAX / map / curve terms below still apply in full.
+  # Off-path / leaving lead: its command (brake included) fades toward 0.
+  # Curve still applies below. MAX applies only when the gap is not locked.
   fade = _leave_fade(y_rel, curvature, gap_f, path_lat, leave_w)
   if fade > 0.0:
     a_cmd *= (1.0 - fade)
@@ -617,8 +663,12 @@ def unified_follow_desired(gap: float, v_ego: float, v_lead: float, a_lead: floa
   trust = lead_trust(gap_f, v_e, v_l, y_rel, curvature, path_lat, model_prob, radar)
   a_cmd = trust_bound(a_cmd, hard_decel_floor(gap_f, v_e, v_l, a_l, t_follow), trust)
 
-  if v_ceiling is not None and float(v_ceiling) > 0.5:
+  # A locked gap is the driver's setpoint. MAX does not hold it back.
+  # A curve cap, when the planner passes one, still does.
+  if (not locked) and v_ceiling is not None and float(v_ceiling) > 0.5:
     a_cmd = min(a_cmd, speed_ceiling_accel(v_e, float(v_ceiling)))
+  if v_curve_cap is not None and float(v_curve_cap) > 0.5:
+    a_cmd = min(a_cmd, speed_ceiling_accel(v_e, float(v_curve_cap)))
   if a_map is not None:
     a_cmd = min(a_cmd, float(a_map))
   if a_cmd < A_MIN_MS2:
@@ -684,7 +734,8 @@ class UnifiedLeadController:
            curvature: float = 0.0, a_max: float | None = None,
            path_lat: float | None = None, model_prob: float | None = None,
            radar: bool | None = None, leave_w: float = 0.0,
-           gap_set_override_m: float | None = None) -> float:
+           gap_set_override_m: float | None = None,
+           v_curve_cap: float | None = None) -> float:
     """One planner frame. Returns the slewed road-relative accel, or 0 with no lead."""
     frame_dt = 0.05 if dt is None or float(dt) <= 1e-6 else float(dt)
     if not present:
@@ -719,7 +770,7 @@ class UnifiedLeadController:
       gap, v_ego, self._v_f, a_eff, t_follow,
       v_ceiling=v_ceiling, a_map=a_map, y_rel=y_rel, curvature=curvature,
       path_lat=path_lat, leave_w=leave_w, model_prob=model_prob, radar=radar,
-      gap_set_override_m=gap_set_override_m,
+      gap_set_override_m=gap_set_override_m, v_curve_cap=v_curve_cap,
     )
     if a_max is not None:
       desired = min(desired, float(a_max))
@@ -762,8 +813,10 @@ class UnifiedLeadController:
     # it (Sep 28 11:07:22). MAX / map terms keep their own depth.
     trust = lead_trust(gap, v_ego, self._v_f, y_rel, curvature, path_lat, model_prob, radar)
     floor = hard_decel_floor(gap, v_ego, self._v_f, self._a_f, t_follow)
-    if v_ceiling is not None and float(v_ceiling) > 0.5:
+    if gap_set_override_m is None and v_ceiling is not None and float(v_ceiling) > 0.5:
       floor = min(floor, speed_ceiling_accel(float(v_ego), float(v_ceiling)))
+    if v_curve_cap is not None and float(v_curve_cap) > 0.5:
+      floor = min(floor, speed_ceiling_accel(float(v_ego), float(v_curve_cap)))
     if a_map is not None:
       floor = min(floor, float(a_map))
     carry = min(desired, floor)

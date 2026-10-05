@@ -1179,14 +1179,58 @@ def test_latch_tracks_locked_meters_instead_of_opening_then_creeping_back():
   assert abs(v_lead - v_ego) < 0.3
 
 
-def test_gap_set_override_does_not_pass_the_max_ceiling():
-  """Overspeed still starts at the mild settle. The lock does not bypass MAX."""
+def test_gap_lock_may_go_above_max_to_hold_the_gap():
+  """Locked meters win over MAX. Clearing the lock brings MAX back.
+
+  A curve cap still brakes. Matching speed on the locked gap, already
+  above the cap, is a hold — not the mild MAX settle.
+  """
   v_cap = 25.0
-  v_ego = v_cap + 0.45
+  v_ego = v_cap + 1.5
   locked = 40.0
-  accel = unified_follow_desired(
+  held = unified_follow_desired(
     locked, v_ego, v_ego, 0.0, 1.3, v_ceiling=v_cap, gap_set_override_m=locked,
   )
-  ceil = speed_ceiling_accel(v_ego, v_cap)
-  assert accel == pytest.approx(ceil, abs=1e-9)
-  assert ceil == pytest.approx(-0.22, abs=0.05)
+  blocked = unified_follow_desired(
+    locked, v_ego, v_ego, 0.0, 1.3, v_ceiling=v_cap,
+  )
+  assert held > -0.05
+  assert blocked < -0.15
+  assert held > blocked + 0.1
+  # Lead is above MAX and the gap is still long: close, do not sit on the cap.
+  catching = unified_follow_desired(
+    locked + 6.0, v_cap, v_cap + 2.5, 0.0, 1.3, v_ceiling=v_cap, gap_set_override_m=locked,
+  )
+  sitting = unified_follow_desired(
+    locked + 6.0, v_cap, v_cap + 2.5, 0.0, 1.3, v_ceiling=v_cap,
+  )
+  assert 0.15 < catching < 1.6
+  assert sitting <= 0.05
+  curved = unified_follow_desired(
+    locked, v_ego, v_ego, 0.0, 1.3, v_ceiling=v_cap, v_curve_cap=v_ego - 4.0,
+    gap_set_override_m=locked,
+  )
+  assert curved < -0.2
+
+
+def test_far_slack_lead_brake_is_not_copied_near_gap_still_is():
+  """15:56: ~108 m, ~83 m slack, aLead ~−2.1 once closing past 0.4 m/s.
+
+  That used to command about −1.05 from k_a·aLead. The close itself needs
+  almost nothing. The same lead brake near the gap, on a short time-to-gap,
+  or at emergency decel still comes through.
+  """
+  v_lead = 27.9
+  v_ego = v_lead + 2.2
+  gap = 108.1
+  tf = 0.70
+  far = unified_follow_desired(gap, v_ego, v_lead, -2.1, tf, v_ceiling=31.3, radar=True)
+  assert far > -0.35
+  near_gap = gap_set_m(v_lead, tf) + 4.0
+  near = unified_follow_desired(near_gap, v_ego, v_lead, -2.1, tf, v_ceiling=40.0, radar=True)
+  assert near < -1.0
+  # Short time-to-gap from far out: the lead brake is copied again.
+  fast = unified_follow_desired(gap, v_lead + 12.0, v_lead, -2.0, tf, v_ceiling=40.0, radar=True)
+  assert fast < -0.8
+  panic = unified_follow_desired(gap, v_ego, v_lead, -3.5, tf, v_ceiling=40.0, radar=True)
+  assert panic < -1.0
