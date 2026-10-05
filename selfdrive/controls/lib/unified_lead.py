@@ -619,27 +619,27 @@ def unified_follow_desired(gap: float, v_ego: float, v_lead: float, a_lead: floa
   a_kin = _a_kin(slack, v_close, gap_f, v_e, t_follow, v_l)
   # Braking-lead contribution on the bound. Positive a_lead stays in a_pd only.
   a_bound = a_kin + min(a_l, 0.0) * k_a
-  # Far slack and a long time-to-gap: do not copy a mild or mid lead brake.
-  # The unfaded bound above is what the far-gap catch-up still treats as a
-  # real lead brake. The command uses the faded copy. Near the gap, a short
-  # time-to-gap, or an emergency lead decel keeps the full term.
-  a_pd_full = a_pd
+  # Command copy. Far slack and a long time-to-gap drop a mild or mid lead
+  # brake. a_pd and a_bound stay unfaded: catch-up and the kinematic gate
+  # still see a real lead brake, so they do not open just because the
+  # command stopped copying it. Near the gap, a short time-to-gap, or an
+  # emergency lead decel keeps the full term on the command too.
   brake_w = _braking_alead_weight(slack, v_close, a_l)
   if a_l < 0.0 and brake_w < 1.0:
-    a_pd = a_gv + k_a * a_l * brake_w
+    a_pd_cmd = a_gv + k_a * a_l * brake_w
     a_bound_cmd = a_kin + a_l * k_a * brake_w
   else:
+    a_pd_cmd = a_pd
     a_bound_cmd = a_bound
-  # a_pd above is the classic PD term. Swap only its gap piece; the gate,
-  # trickle, trust, and speed ceiling below run on the result.
+  # Swap only the command's gap piece. The gate below still reads a_pd.
   a_gap_classic = (k_g * slack) * keep
   if not locked:
-    a_gap = _far_gap_catchup_gap(a_gap_classic, slack, v_err, keep, a_pd_full, a_bound)
-    a_pd = a_pd + (a_gap - a_gap_classic)
-  gate_w = KIN_GATE_MS + _kin_gate_widen(slack, a_pd_full, a_bound)
+    a_gap = _far_gap_catchup_gap(a_gap_classic, slack, v_err, keep, a_pd, a_bound)
+    a_pd_cmd = a_pd_cmd + (a_gap - a_gap_classic)
+  gate_w = KIN_GATE_MS + _kin_gate_widen(slack, a_pd, a_bound)
   gate = _smooth01(v_close / gate_w) if v_close > 0.0 else 0.0
-  limited = min(a_pd, a_bound_cmd)
-  a_cmd = ((1.0 - gate) * a_pd) + (gate * limited)
+  limited = min(a_pd_cmd, a_bound_cmd)
+  a_cmd = ((1.0 - gate) * a_pd_cmd) + (gate * limited)
 
   # Pulling away near the gap: trickle, not a catch-up lunge.
   # A locked setpoint is the distance the driver asked to hold, so a
