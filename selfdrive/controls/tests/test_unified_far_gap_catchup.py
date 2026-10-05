@@ -2,7 +2,7 @@
 
 At a large gap with nearly matched speed, k_g·slack asks for +1.2…+1.8 m/s²
 and the kinematic gate bangs that into catch-up pulses. The classic gap term
-fades from 15 → 40 m of slack and the faded portion becomes a desired closing
+fades from 15 → 50 m of slack and the faded portion becomes a desired closing
 speed of about 0.10–0.35 m/s. The blend is off for a near gap, a braking PD
 term, and a kinematic bound that is already a real brake. The shipped gate
 widen is unchanged.
@@ -23,6 +23,7 @@ from openpilot.selfdrive.controls.lib.unified_lead import (
   V_DES_CLOSE_LO,
   V_DES_CLOSE_RAMP_M,
   V_DES_CLOSE_SPAN,
+  UnifiedLeadController,
   _far_gap_catchup_gap,
   gap_set_m,
   unified_follow_desired,
@@ -46,7 +47,7 @@ def _rising_crossings(cmds, level):
 
 def test_constants_match_the_approved_closing_speed():
   assert GAP_FADE_LO_M == 15.0
-  assert GAP_FADE_HI_M == 40.0
+  assert GAP_FADE_HI_M == 50.0
   assert V_DES_CLOSE_LO == 0.10
   assert V_DES_CLOSE_SPAN == 0.25
   assert V_DES_CLOSE_RAMP_M == 30.0
@@ -70,13 +71,49 @@ def test_bound_weight_keeps_the_gap_term_on_a_real_brake():
 
 
 def test_matched_far_command_is_a_soft_ease():
-  """Matched speed, slack past the fade: about +0.07, never a highway pull."""
-  for slack in (40.0, 50.0, 60.0, 80.0):
+  """Matched speed past the fade: about +0.07, never a highway pull.
+
+  Slack 40 m is still inside the fade, so a little of the classic gap term
+  remains. It stays well under the old slam. At 50 m and beyond the fade is
+  done.
+  """
+  assert 0.0 <= _cmd(40.0, 0.0) < 0.25
+  for slack in (50.0, 60.0, 80.0):
     cmd = _cmd(slack, 0.0)
     assert 0.0 <= cmd <= 0.15, (slack, cmd)
   # Trickle has faded out; the command is K_CATCH * 0.35.
   assert _cmd(60.0, 0.0) == pytest.approx(0.07, abs=1e-6)
   assert _cmd(80.0, 0.0) == pytest.approx(0.07, abs=1e-6)
+
+
+def test_follow7_recovery_comes_back_inside_the_maneuver_ceiling():
+  """Close lead, Follow 7, 60 s. The real maneuver must finish ≤ 83.5 m.
+
+  This plant is the unified controller plus the cruise accel cap, and it
+  tracks that maneuver about 1 m closer. Ending the fade at 40 m finished
+  here at 85 m (86.4 m on the real plant). The fade has to leave enough
+  catch-up in the 30 m slack band to come back.
+  """
+  v_lead = 25.0
+  t_follow = 1.9
+  ctrl = UnifiedLeadController()
+  v_ego = v_lead
+  d_ego = 0.0
+  d_lead = 20.0
+  for _ in range(int(60.0 / DT)):
+    gap = max(0.0, d_lead - d_ego)
+    a_max = float(np.interp(v_ego, [0.0, 10.0, 25.0, 40.0], [1.6, 1.2, 0.8, 0.6]))
+    accel = ctrl.step(
+      dt=DT, present=True, gap=gap, v_ego=v_ego, v_lead=v_lead, a_lead=0.0,
+      t_follow=t_follow, lead_id=1, seed_a=0.0, v_ceiling=50.0, a_max=a_max,
+    )
+    v_ego = max(0.0, v_ego + accel * DT)
+    d_lead += v_lead * DT
+    d_ego += v_ego * DT
+  gap = d_lead - d_ego
+  assert gap >= 53.0
+  assert gap < 82.0
+  assert v_ego == pytest.approx(v_lead, abs=0.5)
 
 
 def test_e2_shaped_open_loop_does_not_pulse(monkeypatch):

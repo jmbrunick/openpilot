@@ -25,7 +25,7 @@ firm straight away; a small miss at the gap edge is not a -3.5 spike
 A pulling-away lead near the gap gets a trickle, not a catch-up lunge
 (Sep 25 09:47 / 10:54). Far from the gap, with speed already matched, the
 proportional gap term would still demand a highway pull; that term fades
-out between 15 and 40 m of slack and a soft desired closing speed
+out between 15 and 50 m of slack and a soft desired closing speed
 (about 0.10–0.35 m/s) takes its place. Braking, the near gap, and the
 follow distance are unchanged. Speed ceilings (MAX, curve) are a
 speed-error term: never accelerate above the cap, and above it start
@@ -141,12 +141,16 @@ KIN_GATE_WIDEN_K = 1.0  # 1/s: gate width = a_pd / K, capped at A_CAP / K
 # Far-gap soft closing speed. k_g·slack grows without bound, so a nearly
 # matched lead 40–60 m out asks for +1.2…+1.8 m/s² and the kinematic gate
 # bangs that into ~3 s catch-up pulses (15a 11:27). Fade the classic gap
-# attraction from 15 → 40 m and replace the faded portion with a desired
-# closing speed that saturates near 0.35 m/s. The blend is on only where
-# the classic PD term would accelerate and the kinematic bound is not a
-# real brake, so near-gap follow, #222, and braking stay on today's path.
+# attraction from 15 → 50 m and replace the faded portion with a desired
+# closing speed that saturates near 0.35 m/s. The fade finishes at 50 m,
+# not 40: a Follow-7 recovery still has ~30 m of slack when it needs to
+# come back, and ending the fade at 40 m left that catch-up too weak to
+# finish inside 83.5 m. Past 50 m the highway matched case is fully soft.
+# The blend is on only where the classic PD term would accelerate and the
+# kinematic bound is not a real brake, so near-gap follow, #222, and
+# braking stay on today's path.
 GAP_FADE_LO_M = 15.0
-GAP_FADE_HI_M = 40.0
+GAP_FADE_HI_M = 50.0
 V_DES_CLOSE_LO = 0.10           # m/s at the start of the fade
 V_DES_CLOSE_SPAN = 0.25         # → 0.35 m/s, 30 m of slack later
 V_DES_CLOSE_RAMP_M = 30.0
