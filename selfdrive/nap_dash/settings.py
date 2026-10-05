@@ -22,6 +22,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   MAP_SPEED_MODES,
   MAP_SPEED_OFFSETS_MPH,
   NAP_DRIVER_LAT_HANDOFF,
+  NAP_GAP_LOCK,
   NAP_ONE_PEDAL_LONG,
 )
 
@@ -77,6 +78,7 @@ _BOOL_SPECS: dict[str, dict[str, Any]] = {
   "adaptive_accel": {"param": PARAM_ADAPTIVE_ACCEL, "default": True},
   "driver_lat_handoff": {"param": NAP_DRIVER_LAT_HANDOFF, "default": True},
   "one_pedal_long": {"param": NAP_ONE_PEDAL_LONG, "default": False},
+  "gap_lock": {"param": NAP_GAP_LOCK, "default": False},
   "experimental": {"param": PARAM_EXPERIMENTAL, "default": False},
 }
 
@@ -209,6 +211,8 @@ def setting_catalog() -> list[dict[str, Any]]:
      "label": "Soft Lateral Handoff", "kind": "bool"},
     {"name": "one_pedal_long", "param": NAP_ONE_PEDAL_LONG, "section": "mannerisms",
      "label": "One-Pedal Long", "kind": "bool"},
+    {"name": "gap_lock", "param": NAP_GAP_LOCK, "section": "mannerisms",
+     "label": "Gap lock", "kind": "bool"},
     {"name": "map_speed_mode", "param": PARAM_MAP_MODE, "section": "map_speed",
      "label": "Map Speed (MAX)", "kind": "choice",
      "choices": ["Off", "Display", "Cap", "Follow"]},

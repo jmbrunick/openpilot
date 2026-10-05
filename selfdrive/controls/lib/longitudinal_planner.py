@@ -40,6 +40,11 @@ from openpilot.selfdrive.controls.lib.curve_follow import (
 from openpilot.selfdrive.controls.lib.radar_path_gate import model_path_xy, path_lateral_m
 from openpilot.selfdrive.controls.lib.lead_leaving import LeadLeavingEstimator
 from openpilot.selfdrive.controls.lib.unified_lead import UnifiedLeadController, unified_follow_desired
+from openpilot.selfdrive.controls.lib.gap_lock import (
+  GapLockLatch,
+  gap_lock_param_enabled,
+  stalk_follow_exit,
+)
 from openpilot.selfdrive.controls.lib.lead_approach import (
   lead_approach_track_ok,
   lead_close_should_cap,
@@ -215,6 +220,8 @@ class LongitudinalPlanner:
     # Continuous lead follow: the one longitudinal controller for a lead on Pre-AP.
     self.unified_a_target = 0.0
     self._unified = UnifiedLeadController()
+    self._gap_lock = GapLockLatch()
+    self._gap_lock_enabled = False
     self._lead_leave = LeadLeavingEstimator()
     self.lead_leave_w = 0.0
     self._unified_v_cap_ms = 0.0
@@ -302,6 +309,7 @@ class LongitudinalPlanner:
       )
       self._follow_blend.read_setpoints(self._params)
       self._cf_mode = read_curve_follow_mode(self._params)
+      self._gap_lock_enabled = gap_lock_param_enabled(self._params)
 
     if len(sm['carControl'].orientationNED) == 3:
       accel_coast = get_coast_accel(sm['carControl'].orientationNED[1])
@@ -674,6 +682,62 @@ class LongitudinalPlanner:
       self._unified_fault_count,
     )
 
+  def _refresh_gap_lock(self, sm, lead) -> None:
+    """Latch or clear. A throw here must not latch the unified fault."""
+    cs = sm["carState"]
+    long_on = False
+    try:
+      long_on = (cs.enableLongControl is True) and (cs.cruiseState.enabled is True)
+    except Exception:
+      long_on = False
+    try:
+      seq = int(cs.gapLockArmSeq)
+    except (TypeError, ValueError, AttributeError):
+      seq = 0
+    status = False
+    radar = False
+    track_id = -1
+    d_rel = None
+    try:
+      status = bool(lead.status)
+      radar = bool(lead.radar)
+      track_id = int(lead.radarTrackId)
+      if status:
+        d_rel = float(lead.dRel)
+    except (TypeError, ValueError, AttributeError):
+      status = False
+      radar = False
+      track_id = -1
+      d_rel = None
+    self._gap_lock.update(
+      self.dt,
+      enabled=self._gap_lock_enabled is True,
+      long_on=long_on,
+      seq=seq,
+      status=status,
+      radar=radar,
+      track_id=track_id,
+      d_rel=d_rel,
+      stalk_exit=stalk_follow_exit(cs),
+    )
+
+  def _gap_set_override(self, lead, live: bool, held: bool):
+    """Locked meters while this radar id is live, or through the flicker hold."""
+    try:
+      if self._gap_lock.gap_m is None or self._gap_lock.track_id is None:
+        return None
+      if live:
+        if lead.radar is not True:
+          return None
+        if int(lead.radarTrackId) != int(self._gap_lock.track_id):
+          return None
+        return float(self._gap_lock.gap_m)
+      if held:
+        return float(self._gap_lock.gap_m)
+    except (TypeError, ValueError, AttributeError):
+      return None
+    return None
+
   def _apply_lead_follow(self, sm, v_ego: float) -> None:
     """The one lead-follow controller (Pre-AP).
 
@@ -688,6 +752,10 @@ class LongitudinalPlanner:
       return
 
     lead = sm["radarState"].leadOne
+    try:
+      self._refresh_gap_lock(sm, lead)
+    except Exception:
+      pass
     live = bool(lead.status) and lead_close_should_cap(
       lead.dRel, lead.modelProb, lead.radar, active=False,
     )
@@ -746,6 +814,7 @@ class LongitudinalPlanner:
     existing = float(self.output_a_target)
     seed = existing
     command = None
+    override = self._gap_set_override(lead, live, held)
     if not self._unified_faulted:
       try:
         if gap is not None and not self._unified_following:
@@ -758,6 +827,7 @@ class LongitudinalPlanner:
             v_ceiling=v_cap, a_map=a_map, y_rel=y_rel,
             curvature=float(self._corner_curvature), path_lat=path_lat,
             leave_w=float(self.lead_leave_w), model_prob=model_prob, radar=radar,
+            gap_set_override_m=override,
           )
           wanted = min(wanted, a_max_u)
           if wanted >= 0.0:
@@ -786,6 +856,7 @@ class LongitudinalPlanner:
           model_prob=model_prob,
           radar=radar,
           leave_w=float(self.lead_leave_w),
+          gap_set_override_m=override,
         ))
       except Exception:
         self._note_unified_fault()
@@ -839,5 +910,7 @@ class LongitudinalPlanner:
     longitudinalPlan.allowThrottle = bool(self.allow_throttle)
     longitudinalPlan.napFollowDistance = self.active_nap_follow_dist or 0
     longitudinalPlan.tFollow = self.t_follow
+    longitudinalPlan.gapLockM = float(self._gap_lock.gap_m or 0.0)
+    longitudinalPlan.gapLockEvent = int(self._gap_lock.hud) & 0xFF
 
     pm.send('longitudinalPlan', plan_send)

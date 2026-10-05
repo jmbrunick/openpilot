@@ -585,6 +585,20 @@ class SelfdriveD:
       if wiper_evt is not None:
         self.events.add(wiper_evt)
 
+    # Gap lock: meters while latched, unavailable / lost while the planner holds the code.
+    gap_evt = getattr(EventName, "gapLock", None)
+    if gap_evt is not None:
+      gap_m = 0.0
+      gap_ev = 0
+      try:
+        plan = self.sm["longitudinalPlan"]
+        gap_m = float(getattr(plan, "gapLockM", 0.0) or 0.0)
+        gap_ev = int(getattr(plan, "gapLockEvent", 0) or 0)
+      except Exception:
+        gap_m, gap_ev = 0.0, 0
+      if gap_m > 0.0 or gap_ev in (2, 3):
+        self.events.add(gap_evt)
+
   def data_sample(self):
     _car_state = messaging.recv_one(self.car_state_sock)
     CS = _car_state.carState if _car_state else self.CS_prev

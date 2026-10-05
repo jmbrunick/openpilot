@@ -63,6 +63,8 @@ jobs:
           selfdrive/controls/tests/test_radar_sensor_dirty.py \
           selfdrive/controls/tests/test_tesla_preap_following.py \
           selfdrive/controls/tests/test_unified_lead.py \
+          selfdrive/controls/tests/test_gap_lock_gesture.py \
+          selfdrive/controls/tests/test_gap_lock_latch.py \
           selfdrive/controls/tests/test_unified_far_gap_gate.py \
           selfdrive/controls/tests/test_unified_far_gap_catchup.py \
           selfdrive/controls/tests/test_unified_lead_planner.py \

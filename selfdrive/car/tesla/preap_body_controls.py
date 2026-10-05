@@ -1167,6 +1167,17 @@ def stock_cc_update_with_overlay(self, CS, frame, tesla_can, can_bus_party):
     had_stw = any(msg[0] == STW_ACTN_RQ_ADDR for msg in can_sends)
   if cancel and had_stw:
     _note_wiper_cancel_frame()
+  # Qualified engage-stalk hold: keep stock CC asleep. In-session CANCEL TX
+  # does not drop lateral (tesla_preap_tx.h: lever==CANCEL only when
+  # !controls_allowed). Do not reset the spoofer's cancel_frame.
+  hold = getattr(CS, "preap_cc_cancel_hold", False)
+  if hold is True:
+    from openpilot.selfdrive.controls.lib.gap_lock import gap_lock_cancel_hold_tx
+    if gap_lock_cancel_hold_tx(had_stw, True, frame):
+      from opendbc.car.tesla.values import CruiseButtons
+      sent = self._send(CS, tesla_can, can_bus_party, int(CruiseButtons.CANCEL))
+      if sent is not None:
+        can_sends.append(sent)
   return can_sends
 
 

@@ -1,3 +1,7 @@
+NAP gap lock (2026-10-05)
+========================
+* Pre-AP, default Off (`NAPGapLock`). With pedal long already on, hold the engage stalk toward you for 3 seconds to keep the current radar gap (8–80 m) instead of the time gap. Same follow law, a custom distance. A tip, cancel, brake, or One-Pedal pause returns to Follow Distance. Another 3 second hold stores a new distance. No panda flash.
+
 NAP release firm lead brake when the gap opens or the lead leaves the lane (2026-09-23)
 ========================
 * Pre-AP: a slightly negative lead acceleration no longer holds a full brake when the car ahead is pulling away with gap left (Scallywag 09:57 and 10:05). That firm brake now needs a real close — still coming together, a closing residual, or already inside the follow gap. After a short run of the gap opening, the command publishes the mild ease (−0.22), not a zero coast and not the full brake. A lead that slides out of the lane (about 2.5 m off the path) with gap still left does the same (08:57:50–52). An on-path close, including a hard brake for a slowing lead, stays firm. A broken construction path is pickier about starting a new lead that is already a couple of meters to the side. No panda flash.

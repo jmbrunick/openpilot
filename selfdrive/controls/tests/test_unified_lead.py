@@ -1089,3 +1089,46 @@ def test_222_exemplars_are_fully_trusted_so_unchanged():
   for rows in (SEP20_0755_ROWS, SEP23_2214_ROWS, SEP22_2331_ROWS):
     for d, v_lead, _, v_ego, _ in _interp_rows(rows):
       assert lead_trust(d, v_ego, v_lead, 0.0, model_prob=0.9, radar=True) == 1.0
+
+
+def test_gap_set_override_none_matches_time_gap():
+  """Unlocked follow is the time-gap law, including an explicit None."""
+  v = 25.0
+  tf = 1.3
+  gap = gap_set_m(v, tf)
+  base = unified_follow_desired(gap, v, v, 0.0, tf, v_ceiling=40.0)
+  none = unified_follow_desired(gap, v, v, 0.0, tf, v_ceiling=40.0, gap_set_override_m=None)
+  same = unified_follow_desired(gap, v, v, 0.0, tf, v_ceiling=40.0, gap_set_override_m=gap)
+  assert none == base
+  assert same == pytest.approx(base, abs=1e-9)
+  kw = dict(gap=gap, v_ego=v, v_lead=v, a_lead=0.0, t_follow=tf, v_ceiling=40.0)
+  settled, _ = _settle(40, **kw)
+  settled_none, _ = _settle(40, gap_set_override_m=None, **kw)
+  settled_same, _ = _settle(40, gap_set_override_m=gap, **kw)
+  assert settled_none == settled
+  assert settled_same == pytest.approx(settled, abs=1e-9)
+
+
+def test_gap_set_override_inside_is_a_soft_brake():
+  """3 m inside the locked meters is more negative than matched, still above full regen."""
+  v = 25.0
+  tf = 1.3
+  locked = 30.0
+  at = unified_follow_desired(locked, v, v, 0.0, tf, v_ceiling=40.0, gap_set_override_m=locked)
+  inside = unified_follow_desired(locked - 3.0, v, v, 0.0, tf, v_ceiling=40.0, gap_set_override_m=locked)
+  assert inside < at
+  assert inside > -1.2
+  assert abs(at) < 0.05
+
+
+def test_gap_set_override_does_not_pass_the_max_ceiling():
+  """Overspeed still starts at the mild settle. The lock does not bypass MAX."""
+  v_cap = 25.0
+  v_ego = v_cap + 0.45
+  locked = 40.0
+  accel = unified_follow_desired(
+    locked, v_ego, v_ego, 0.0, 1.3, v_ceiling=v_cap, gap_set_override_m=locked,
+  )
+  ceil = speed_ceiling_accel(v_ego, v_cap)
+  assert accel == pytest.approx(ceil, abs=1e-9)
+  assert ceil == pytest.approx(-0.22, abs=0.05)
