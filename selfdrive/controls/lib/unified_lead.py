@@ -23,9 +23,14 @@ firm straight away; a small miss at the gap edge is not a -3.5 spike
 (Sep 25 09:21:44). There is no far soft cap and no far comfort cap.
 
 A pulling-away lead near the gap gets a trickle, not a catch-up lunge
-(Sep 25 09:47 / 10:54). Speed ceilings (MAX, curve) are a speed-error term:
-never accelerate above the cap, and above it start near the EV's mild
--0.22 m/s² settle, firmer only when well over (Sep 25 10:43:56).
+(Sep 25 09:47 / 10:54). Far from the gap, with speed already matched, the
+proportional gap term would still demand a highway pull; that term fades
+out between 15 and 50 m of slack and a soft desired closing speed
+(about 0.10–0.95 m/s, matched command still under 0.15 m/s²) takes its
+place. Braking, the near gap, and the follow distance are unchanged. Speed ceilings (MAX, curve) are a
+speed-error term: never accelerate above the cap, and above it start
+near the EV's mild -0.22 m/s² settle, firmer only when well over
+(Sep 25 10:43:56).
 
 A lead is weighted by a continuous confidence: consistent, on-path, radar
 or confident-vision readings ramp to full weight; a fast close ramps within
@@ -43,6 +48,9 @@ Driver-likeness (Justin's fingerprint, Sep 20–27 qlogs):
   real braking is over-matched (1.10×). One smooth blend, no threshold.
 - Inside the gap the glide keeps a small ease until the gap recovers.
 - A far, slow close coasts: the closing gain fades with time-to-gap 12→30 s.
+- A far, nearly matched gap eases in instead of k_g·slack. The desired
+  close is fast enough to finish a 100 m settle inside 240 s, and the
+  matched command stays under 0.15 m/s² so it does not pulse.
 
 How hard a lead may brake us depends on how much we trust it (Sep 28
 11:07:22, a half-lane-over lead 80–120 m ahead drove −3.5 for ~1 s). The
@@ -131,6 +139,33 @@ KIN_GATE_WIDEN_A_BOUND_LO = -0.10
 KIN_GATE_WIDEN_A_BOUND_RAMP = 0.10
 KIN_GATE_WIDEN_A_CAP = 0.50
 KIN_GATE_WIDEN_K = 1.0  # 1/s: gate width = a_pd / K, capped at A_CAP / K
+
+# Far-gap soft closing speed. k_g·slack grows without bound, so a nearly
+# matched lead 40–60 m out asks for +1.2…+1.8 m/s² and the kinematic gate
+# bangs that into ~3 s catch-up pulses (15a 11:27). Fade the classic gap
+# attraction from 15 → 50 m and replace the faded portion with a desired
+# closing speed that saturates near 0.95 m/s. The fade finishes at 50 m,
+# not 40: a Follow-7 recovery still has ~30 m of slack when it needs to
+# come back, and ending the fade at 40 m left that catch-up too weak to
+# finish inside 83.5 m. Past 50 m the highway matched case is fully soft.
+# The blend is on only where the classic PD term would accelerate and the
+# kinematic bound is not a real brake, so near-gap follow, #222, and
+# braking stay on today's path.
+GAP_FADE_LO_M = 15.0
+GAP_FADE_HI_M = 50.0
+V_DES_CLOSE_LO = 0.10           # m/s at the start of the fade
+# The ramp still finishes 30 m above the fade floor, but the ceiling is
+# 0.95 m/s rather than 0.35. A 0.35 m/s ease from a 100 m start is still
+# inside the set gap at 240 s (Follow 2 landed 1.6 m short). The higher
+# desired close gets every Follow setting through that settle in time.
+# K_CATCH is lower so the matched command stays about +0.13, under the
+# 0.15 soft cap: no highway pull, no gate pulses.
+V_DES_CLOSE_SPAN = 0.85         # → 0.95 m/s once the ramp is done
+V_DES_CLOSE_RAMP_M = 30.0
+K_CATCH = 0.14                  # 1/s
+GAP_CATCH_A_ON = 0.15           # classic a_pd at which the rewrite is full
+GAP_CATCH_A_BOUND_LO = -0.10    # at or below this the bound is a real brake
+GAP_CATCH_A_BOUND_RAMP = 0.10
 
 # Short headway: pull firmer below ~0.6 s even at small closing.
 SHORT_HW_S = 0.60
@@ -460,6 +495,29 @@ def _kin_gate_widen(slack: float, a_pd: float, a_bound: float) -> float:
   return wide * w_slack * w_bound
 
 
+def _far_gap_catchup_gap(a_gap_classic: float, slack: float, v_err: float, keep: float,
+                         a_pd_classic: float, a_bound: float) -> float:
+  """Gap term with the far positive catch-up replaced by a soft closing speed.
+
+  Classic k_g·slack below GAP_FADE_LO_M. Above that, and only while the
+  classic PD term is a catch-up and the kinematic bound is not a real
+  brake, blend toward K_CATCH·(v_des + v_err). v_des rises from 0.10 to
+  0.95 m/s. A negative soft term is clipped, so closing faster than v_des
+  does not add gap braking. The blend never exceeds the classic gap term.
+  """
+  w_slack = _smooth01((slack - GAP_FADE_LO_M) / (GAP_FADE_HI_M - GAP_FADE_LO_M))
+  w_accel = _smooth01(a_pd_classic / GAP_CATCH_A_ON)
+  w_bound = _smooth01((a_bound - GAP_CATCH_A_BOUND_LO) / GAP_CATCH_A_BOUND_RAMP)
+  w = w_slack * w_accel * w_bound
+  v_des_close = V_DES_CLOSE_LO + V_DES_CLOSE_SPAN * _smooth01(
+    (slack - GAP_FADE_LO_M) / V_DES_CLOSE_RAMP_M)
+  a_soft = K_CATCH * (v_des_close + v_err) * keep
+  # min keeps a lead that is already faster from getting a harder gap pull
+  # than classic: a_soft includes v_err, which can exceed k_g·slack.
+  a_gap = (1.0 - w) * a_gap_classic + w * max(0.0, a_soft)
+  return min(a_gap, a_gap_classic)
+
+
 def unified_follow_desired(gap: float, v_ego: float, v_lead: float, a_lead: float,
                            t_follow: float, *, v_ceiling: float | None = None,
                            a_map: float | None = None, y_rel: float = 0.0,
@@ -507,6 +565,11 @@ def unified_follow_desired(gap: float, v_ego: float, v_lead: float, a_lead: floa
   a_kin = _a_kin(slack, v_close, gap_f, v_e, t_follow, v_l)
   # Braking-lead contribution on the bound. Positive a_lead stays in a_pd only.
   a_bound = a_kin + min(a_l, 0.0) * k_a
+  # a_pd above is the classic PD term. Swap only its gap piece; the gate,
+  # trickle, trust, and speed ceiling below run on the result.
+  a_gap_classic = (k_g * slack) * keep
+  a_gap = _far_gap_catchup_gap(a_gap_classic, slack, v_err, keep, a_pd, a_bound)
+  a_pd = a_pd + (a_gap - a_gap_classic)
   gate_w = KIN_GATE_MS + _kin_gate_widen(slack, a_pd, a_bound)
   gate = _smooth01(v_close / gate_w) if v_close > 0.0 else 0.0
   limited = min(a_pd, a_bound)
