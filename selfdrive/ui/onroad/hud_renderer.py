@@ -1,6 +1,7 @@
 import pyray as rl
 from dataclasses import dataclass
 from openpilot.common.constants import CV
+from openpilot.selfdrive.controls.lib.gap_lock import gap_lock_hud_chip
 from openpilot.selfdrive.ui.onroad.exp_button import ExpButton
 from openpilot.selfdrive.ui.onroad.speed_sign_hud import SpeedSignHud
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
@@ -67,6 +68,7 @@ class HudRenderer(Widget):
     self.speed: float = 0.0
     self.map_speed_valid: bool = False
     self.map_speed_limit: float = 0.0
+    self.gap_lock_chip: str | None = None
 
     self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
     self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
@@ -82,6 +84,7 @@ class HudRenderer(Widget):
       self.is_cruise_set = False
       self.set_speed = SET_SPEED_NA
       self.speed = 0.0
+      self.gap_lock_chip = None
       return
 
     controls_state = sm['controlsState']
@@ -106,6 +109,9 @@ class HudRenderer(Widget):
 
     self.map_speed_valid = False
     self.map_speed_limit = 0.0
+    self.gap_lock_chip = None
+    if sm.valid.get("longitudinalPlan", False):
+      self.gap_lock_chip = gap_lock_hud_chip(getattr(sm["longitudinalPlan"], "gapLockM", 0.0))
     if "liveMapDataNAP" in sm.valid and sm.valid["liveMapDataNAP"]:
       md = sm["liveMapDataNAP"]
       if md.speedLimitValid and md.speedLimit > 0:
@@ -127,6 +133,7 @@ class HudRenderer(Widget):
     if self.is_cruise_available:
       self._draw_set_speed(rect)
       self._draw_map_speed_limit(rect)
+      self._draw_gap_lock(rect)
 
     self._draw_current_speed(rect)
     self._speed_sign_hud.render(rect)
@@ -179,6 +186,30 @@ class HudRenderer(Widget):
       FONT_SIZES.set_speed,
       0,
       set_speed_color,
+    )
+
+  def _draw_gap_lock(self, rect: rl.Rectangle) -> None:
+    """Chip under MAX while a gap lock is latched. Gone when the lock clears."""
+    text = self.gap_lock_chip
+    if not text:
+      return
+    set_speed_width = UI_CONFIG.set_speed_width_metric if ui_state.is_metric else UI_CONFIG.set_speed_width_imperial
+    x = rect.x + 60 + (UI_CONFIG.set_speed_width_imperial - set_speed_width) // 2
+    y = rect.y + 45 + UI_CONFIG.set_speed_height + 14
+    font_size = 36
+    text_size = measure_text_cached(self._font_bold, text, font_size)
+    w = max(float(set_speed_width), text_size.x + 28)
+    h = 58
+    chip = rl.Rectangle(x, y, w, h)
+    rl.draw_rectangle_rounded(chip, 0.35, 8, COLORS.BLACK_TRANSLUCENT)
+    rl.draw_rectangle_rounded_lines_ex(chip, 0.35, 8, 4, COLORS.ENGAGED)
+    rl.draw_text_ex(
+      self._font_bold,
+      text,
+      rl.Vector2(x + (w - text_size.x) / 2, y + (h - text_size.y) / 2),
+      font_size,
+      0,
+      COLORS.ENGAGED,
     )
 
   def _draw_map_speed_limit(self, rect: rl.Rectangle) -> None:

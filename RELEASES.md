@@ -1,6 +1,6 @@
 NAP gap lock (2026-10-05)
 ========================
-* Pre-AP, default Off (`NAPGapLock`). With pedal long already on, hold the engage stalk toward you for 3 seconds to keep the current radar gap (8–80 m) instead of the time gap. Same follow law, a custom distance. A tip, cancel, brake, or One-Pedal pause returns to Follow Distance. Another 3 second hold stores a new distance. No panda flash.
+* Pre-AP, default Off (`NAPGapLock`). Hold the engage stalk toward you for 2 seconds to keep the current radar gap (8–80 m) instead of the time gap. Long can be on, paused, or not yet taken; a finished hold resumes it. Same follow law, a custom distance. The 3X shows the lock while it is on. A tip, cancel, brake, or One-Pedal pause returns to Follow Distance. Another 2 second hold stores a new distance. No panda flash.
 
 NAP release firm lead brake when the gap opens or the lead leaves the lane (2026-09-23)
 ========================

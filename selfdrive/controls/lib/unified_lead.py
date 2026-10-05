@@ -531,6 +531,10 @@ def unified_follow_desired(gap: float, v_ego: float, v_lead: float, a_lead: floa
 
   `gap_set_override_m` replaces only the meter setpoint used for slack
   (gap lock). `t_follow` still sizes intrusion room, trust, and FCW.
+  A lock is still this law: the near-gap "do not chase" opening gain,
+  the positive-accel trickle, and the far soft-close are skipped so a
+  speed deficit left by the pre-lock ease tracks the locked meters
+  instead of opening the gap and creeping back.
   """
   gap_f = max(0.0, float(gap))
   v_l = max(0.0, float(v_lead))
@@ -547,20 +551,28 @@ def unified_follow_desired(gap: float, v_ego: float, v_lead: float, a_lead: floa
   k_g = K_G_LO + (K_G_HI - K_G_LO) * sev
   # High severity uses the smaller velocity gain (K_V_HI < K_V_LO).
   k_v_close = K_V_LO + (K_V_HI - K_V_LO) * sev
-  # A far, slow close coasts: the closing gain fades with time-to-gap.
-  ttg_far = slack / max(v_close, 0.3)
-  k_v_close *= 1.0 - (1.0 - K_V_FAR_MIN) * _smooth01(
-    (ttg_far - K_V_FAR_TTG_LO_S) / max(1e-3, K_V_FAR_TTG_HI_S - K_V_FAR_TTG_LO_S))
-  # Opening: small gain at/over the setpoint (a lead pulling away is not
-  # chased), growing with slack. Inside the gap the opening speed keeps the
-  # closing gain so braking unwinds as soon as the gap starts recovering.
-  open_far = _smooth01((slack - 5.0) / 30.0)
-  k_v_open = K_V_OPEN_NEAR + (K_V_OPEN_FAR - K_V_OPEN_NEAR) * open_far
-  inside_w = _smooth01(-slack / OPEN_INSIDE_M)
-  k_v_open = inside_w * k_v_close + (1.0 - inside_w) * k_v_open
-  # Blend the two across v_err = 0 so the gain has no step.
-  side = _smooth01((v_err + 0.3) / 0.6)
-  k_v = (1.0 - side) * k_v_close + side * k_v_open
+  locked = gap_set_override_m is not None
+  if locked:
+    # Closing gain on both sides, and not the small near-gap opening
+    # gain. A leftover speed deficit has to fold back onto the locked
+    # meters in a few seconds. 0.40 /s is a 1 m/s miss at 0.40 m/s²,
+    # still well under the follow ceiling.
+    k_v = max(k_v_close, 0.40)
+  else:
+    # A far, slow close coasts: the closing gain fades with time-to-gap.
+    ttg_far = slack / max(v_close, 0.3)
+    k_v_close *= 1.0 - (1.0 - K_V_FAR_MIN) * _smooth01(
+      (ttg_far - K_V_FAR_TTG_LO_S) / max(1e-3, K_V_FAR_TTG_HI_S - K_V_FAR_TTG_LO_S))
+    # Opening: small gain at/over the setpoint (a lead pulling away is not
+    # chased), growing with slack. Inside the gap the opening speed keeps the
+    # closing gain so braking unwinds as soon as the gap starts recovering.
+    open_far = _smooth01((slack - 5.0) / 30.0)
+    k_v_open = K_V_OPEN_NEAR + (K_V_OPEN_FAR - K_V_OPEN_NEAR) * open_far
+    inside_w = _smooth01(-slack / OPEN_INSIDE_M)
+    k_v_open = inside_w * k_v_close + (1.0 - inside_w) * k_v_open
+    # Blend the two across v_err = 0 so the gain has no step.
+    side = _smooth01((v_err + 0.3) / 0.6)
+    k_v = (1.0 - side) * k_v_close + side * k_v_open
   k_a = _k_a(slack) * _k_a_brake_scale(a_l)
   glide = _glide(slack, v_err, a_l)
   glide_keep = GLIDE_KEEP + (GLIDE_KEEP_INSIDE - GLIDE_KEEP) * _smooth01(-slack / GLIDE_GAP_M)
@@ -575,15 +587,18 @@ def unified_follow_desired(gap: float, v_ego: float, v_lead: float, a_lead: floa
   # a_pd above is the classic PD term. Swap only its gap piece; the gate,
   # trickle, trust, and speed ceiling below run on the result.
   a_gap_classic = (k_g * slack) * keep
-  a_gap = _far_gap_catchup_gap(a_gap_classic, slack, v_err, keep, a_pd, a_bound)
-  a_pd = a_pd + (a_gap - a_gap_classic)
+  if not locked:
+    a_gap = _far_gap_catchup_gap(a_gap_classic, slack, v_err, keep, a_pd, a_bound)
+    a_pd = a_pd + (a_gap - a_gap_classic)
   gate_w = KIN_GATE_MS + _kin_gate_widen(slack, a_pd, a_bound)
   gate = _smooth01(v_close / gate_w) if v_close > 0.0 else 0.0
   limited = min(a_pd, a_bound)
   a_cmd = ((1.0 - gate) * a_pd) + (gate * limited)
 
   # Pulling away near the gap: trickle, not a catch-up lunge.
-  if a_cmd > 0.0:
+  # A locked setpoint is the distance the driver asked to hold, so a
+  # positive error is not trickled down to the 0.12 m/s² cap.
+  if a_cmd > 0.0 and not locked:
     # Compression weight rises across the setpoint (recovering from inside
     # is not compressed) and fades once the slack is a real catch-up.
     far = _smooth01((slack - TRICKLE_FAR_LO_M) / (TRICKLE_FAR_HI_M - TRICKLE_FAR_LO_M))
@@ -763,6 +778,12 @@ class UnifiedLeadController:
 
     opening = v_err > 0.25 and slack > 1.0
     release_base = JERK_RELEASE_OPEN_MS3 if (opening or fade > 0.35) else JERK_RELEASE_MS3
+    # The frame a lock replaces a time-gap ease, the command in force is
+    # still that brake. Release it at the physical jerk so the gap does
+    # not keep opening while the slew catches up. Braking (target below
+    # the command) is unchanged.
+    if gap_set_override_m is not None and float(target) > prev:
+      release_base = JERK_PHYS_MS3
     err = float(target) - prev
     # Proportional: far too firm releases fast, near the target gently.
     up = min(JERK_PHYS_MS3, release_base + JERK_PROP_1_S * max(0.0, err)) * frame_dt

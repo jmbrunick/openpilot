@@ -694,6 +694,11 @@ class LongitudinalPlanner:
       seq = int(cs.gapLockArmSeq)
     except (TypeError, ValueError, AttributeError):
       seq = 0
+    holding = False
+    try:
+      holding = bool(cs.gapLockHold)
+    except (TypeError, ValueError, AttributeError):
+      holding = False
     status = False
     radar = False
     track_id = -1
@@ -719,21 +724,31 @@ class LongitudinalPlanner:
       track_id=track_id,
       d_rel=d_rel,
       stalk_exit=stalk_follow_exit(cs),
+      holding=holding,
     )
 
   def _gap_set_override(self, lead, live: bool, held: bool):
-    """Locked meters while this radar id is live, or through the flicker hold."""
+    """Locked meters, or the in-hold median, for this radar id.
+
+    The hold publishes the running median before the latch so the ease
+    toward the time gap stops as soon as the stalk hold starts.
+    """
     try:
-      if self._gap_lock.gap_m is None or self._gap_lock.track_id is None:
+      gap_m = self._gap_lock.gap_m
+      track = self._gap_lock.track_id
+      if gap_m is None:
+        gap_m = self._gap_lock.preview_m
+        track = self._gap_lock.preview_track
+      if gap_m is None or track is None:
         return None
       if live:
         if lead.radar is not True:
           return None
-        if int(lead.radarTrackId) != int(self._gap_lock.track_id):
+        if int(lead.radarTrackId) != int(track):
           return None
-        return float(self._gap_lock.gap_m)
+        return float(gap_m)
       if held:
-        return float(self._gap_lock.gap_m)
+        return float(gap_m)
     except (TypeError, ValueError, AttributeError):
       return None
     return None

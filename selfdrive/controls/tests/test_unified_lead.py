@@ -1121,6 +1121,64 @@ def test_gap_set_override_inside_is_a_soft_brake():
   assert abs(at) < 0.05
 
 
+def test_locked_speed_deficit_is_not_trickled_and_not_a_wall():
+  """A just-latched gap with ego already slow must accelerate, under 1 m/s²."""
+  locked = 40.0
+  tf = 2.2
+  caught = unified_follow_desired(
+    locked, 28.5, 30.0, 0.0, tf, v_ceiling=40.0, gap_set_override_m=locked,
+  )
+  eased = unified_follow_desired(locked, 28.5, 30.0, 0.0, tf, v_ceiling=40.0)
+  assert caught > 0.15
+  assert caught < 1.0
+  assert eased < -0.3
+
+
+def test_latch_tracks_locked_meters_instead_of_opening_then_creeping_back():
+  """Hold previews the median, then the latch freezes it.
+
+  Without that, a longer time gap has already eased ego slow and the
+  lock opens several meters before it creeps back. With the preview the
+  gap stays on the distance the hold started at.
+  """
+  ctrl = UnifiedLeadController()
+  gap = 40.0
+  v_ego = 30.0
+  v_lead = 30.0
+  tf = 2.2
+  dt = DT
+  trail: list[float] = []
+  locked = None
+  for _ in range(int(2.0 / dt)):
+    trail.append(gap)
+    window = trail[-8:]
+    preview = sorted(window)[len(window) // 2]
+    accel = ctrl.step(
+      dt=dt, present=True, gap=gap, v_ego=v_ego, v_lead=v_lead, a_lead=0.0,
+      t_follow=tf, lead_id=("radar", 4), seed_a=0.0, v_ceiling=40.0,
+      gap_set_override_m=preview,
+    )
+    v_ego = max(0.0, v_ego + accel * dt)
+    gap += (v_lead - v_ego) * dt
+  trail.append(gap)
+  window = trail[-8:]
+  locked = sorted(window)[len(window) // 2]
+  opened = 0.0
+  for _ in range(int(8.0 / dt)):
+    accel = ctrl.step(
+      dt=dt, present=True, gap=gap, v_ego=v_ego, v_lead=v_lead, a_lead=0.0,
+      t_follow=tf, lead_id=("radar", 4), seed_a=0.0, v_ceiling=40.0,
+      gap_set_override_m=locked,
+    )
+    v_ego = max(0.0, v_ego + accel * dt)
+    gap += (v_lead - v_ego) * dt
+    opened = max(opened, gap - locked)
+  assert abs(locked - 40.0) < 0.5
+  assert opened < 1.0
+  assert abs(gap - locked) < 0.5
+  assert abs(v_lead - v_ego) < 0.3
+
+
 def test_gap_set_override_does_not_pass_the_max_ceiling():
   """Overspeed still starts at the mild settle. The lock does not bypass MAX."""
   v_cap = 25.0

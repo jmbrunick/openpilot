@@ -167,6 +167,28 @@ class TestAlerts:
     assert stock.alert_text_1 == "TAKE CONTROL IMMEDIATELY"
     assert stock.audible_alert == AudibleAlert.warningImmediate
 
+  def test_gap_lock_engaged_alert_is_obvious_and_clears(self):
+    from openpilot.selfdrive.selfdrived.events import Priority, gap_lock_alert
+
+    plan = self.sm["longitudinalPlan"]
+    plan.gapLockM = 32.4
+    plan.gapLockEvent = 0
+    args = (self.CP, self.CS, self.sm, False, 100, log.LongitudinalPersonality.standard)
+    alert = gap_lock_alert(*args)
+    assert alert.alert_text_1 == "Gap lock engaged 32 m"
+    assert alert.alert_text_2 == ""
+    assert alert.alert_size == AlertSize.small
+    assert alert.priority == Priority.LOW
+
+    plan.gapLockM = 0
+    plan.gapLockEvent = 0
+    cleared = gap_lock_alert(*args)
+    assert cleared.alert_text_1 == "Gap lock off"
+
+    plan.gapLockEvent = 2
+    unavailable = gap_lock_alert(*args)
+    assert unavailable.alert_text_1 == "Gap lock unavailable"
+
   def test_follow_distance_changed_alert_matches_mannerisms(self):
     follow_evt = getattr(log.OnroadEvent.EventName, "hypermileFollowChanged", None) or getattr(
       log.OnroadEvent.EventName, "followDistanceChanged", None,

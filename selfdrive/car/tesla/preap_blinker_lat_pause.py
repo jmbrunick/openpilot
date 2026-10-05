@@ -420,8 +420,8 @@ def _drop_longitudinal_keep_lateral(self):
   return result
 
 
-def _step_gap_lock(self, cruise_buttons, prev_cruise_buttons, curr_time_ms, use_pedal, qualify_press):
-  """3 s MAIN hold while long is already on. Does not touch stalk_pull_time_ms."""
+def _step_gap_lock(self, cruise_buttons, prev_cruise_buttons, curr_time_ms, use_pedal, qualify_press, brake=False):
+  """2 s MAIN hold. Long may be paused. Does not touch stalk_pull_time_ms."""
   from openpilot.selfdrive.controls.lib.gap_lock import GapLockGesture, gap_lock_enabled
 
   gesture = getattr(self, "_nap_gap_lock", None)
@@ -435,13 +435,63 @@ def _step_gap_lock(self, cruise_buttons, prev_cruise_buttons, curr_time_ms, use_
     cruise_buttons=cruise_buttons,
     prev=prev_cruise_buttons,
     now_ms=float(curr_time_ms or 0),
-    long_on=bool(self.enableLongControl),
     cruise_on=bool(self.cruiseEnabled),
     qualify_press=bool(qualify_press),
+    brake=bool(brake),
   )
   if gesture.cancel_hold:
     # Keep a read-back CANCEL inside the spoof echo window for this hold.
     self.preap_last_cc_spoof_ms = float(curr_time_ms or 0)
+
+
+def _speed_units(args, kwargs) -> str:
+  if len(args) >= 3:
+    return str(args[2] or "MPH")
+  return str(kwargs.get("speed_units", "MPH") or "MPH")
+
+
+def _take_long_for_gap_lock(self, args, kwargs) -> None:
+  """A finished hold takes longitudinal so the locked meters are the setpoint."""
+  if not self.cruiseEnabled or self.enableLongControl:
+    return
+  if not _long_control_allowed(args, kwargs) or _real_brake_pressed(args, kwargs):
+    return
+  self.enableLongControl = True
+  self.enableJustCC = False
+  self.pending_enable = False
+  self._nap_set_resume_long = True
+  self._nap_long_resume_pending = False
+  self._nap_resume_wait_gas = False
+  if hasattr(self, "_clear_pedal_unavailable"):
+    self._clear_pedal_unavailable()
+  if float(getattr(self, "pedal_speed_kph", 0.0) or 0.0) <= 0.0:
+    _restore_held_max(self)
+  if float(getattr(self, "pedal_speed_kph", 0.0) or 0.0) <= 0.0:
+    self.pedal_speed_kph = type(self)._capture_target_speed(
+      _v_ego_ms(args, kwargs), _speed_units(args, kwargs))
+  gas = _gas_pressed(self)
+  if hasattr(self, "_clear_one_pedal_pause_latch"):
+    self._clear_one_pedal_pause_latch()
+  else:
+    self._one_pedal_pause_latched = False
+  # Foot still down: same grace as SET-while-gas, so this hold is not
+  # immediately re-paused by One-Pedal. A later from-rest press still pauses
+  # and that pause still clears the lock.
+  if gas:
+    self._one_pedal_armed_with_gas = True
+    self._one_pedal_had_long_at_rest = False
+  else:
+    self._one_pedal_had_long_at_rest = True
+  if hasattr(self, "longCtrlEvent"):
+    self.longCtrlEvent = "pccEnabled"
+
+
+def _gap_lock_after_buttons(self, cruise_buttons, prev_cruise_buttons, curr_time_ms, use_pedal, qualify_press, brake, args, kwargs):
+  from openpilot.selfdrive.controls.lib.gap_lock import gap_lock_arm_seq
+  before = gap_lock_arm_seq(self)
+  _step_gap_lock(self, cruise_buttons, prev_cruise_buttons, curr_time_ms, use_pedal, qualify_press, brake)
+  if gap_lock_arm_seq(self) != before:
+    _take_long_for_gap_lock(self, args, kwargs)
 
 
 def _peek_can_valid(can_parsers) -> bool:
@@ -601,6 +651,16 @@ def _process_buttons(self, cruise_buttons, prev_cruise_buttons, *args, **kwargs)
   )
   swallow_set = in_session_long_set and not in_double_window
   take_now_in_session = in_session_long_set and in_double_window
+  # 2 s hold arms with long on, paused, or not yet taken. A second pull
+  # inside the double-SET window is still take-speed-now, not a lock.
+  # Brake does not start a hold (and aborts one already running).
+  gap_qualify = (
+    set_edge
+    and bool(use_pedal)
+    and not brake
+    and not take_now_in_session
+    and not _should_drop_long_for_turn(self)
+  )
 
   # Foot on gas + SET (from disengaged or lat-only): do not leave
   # lat-only after cancelling Tesla CC — that is regen-only until a
@@ -644,7 +704,8 @@ def _process_buttons(self, cruise_buttons, prev_cruise_buttons, *args, **kwargs)
 
   if not self.cruiseEnabled:
     _clear_session_max_flags(self)
-    _step_gap_lock(self, cruise_buttons, prev_cruise_buttons, curr_time_ms, use_pedal, swallow_set)
+    _gap_lock_after_buttons(
+      self, cruise_buttons, prev_cruise_buttons, curr_time_ms, use_pedal, gap_qualify, brake, args, kwargs)
     return result
 
   # Armed stop-SET: gas touch completes held-MAX resume. Brake still down
@@ -681,7 +742,8 @@ def _process_buttons(self, cruise_buttons, prev_cruise_buttons, *args, **kwargs)
   if self.enableLongControl:
     self._nap_long_resume_pending = False
     self._nap_resume_wait_gas = False
-  _step_gap_lock(self, cruise_buttons, prev_cruise_buttons, curr_time_ms, use_pedal, swallow_set)
+  _gap_lock_after_buttons(
+    self, cruise_buttons, prev_cruise_buttons, curr_time_ms, use_pedal, gap_qualify, brake, args, kwargs)
   return result
 
 
@@ -757,10 +819,15 @@ def _update_preap(cs, can_parsers):
   ret = _ORIG_UPDATE(cs, can_parsers)
   engagement = getattr(cs, "engagement", None)
   if engagement is not None:
-    from openpilot.selfdrive.controls.lib.gap_lock import gap_lock_arm_seq, gap_lock_cancel_hold
+    from openpilot.selfdrive.controls.lib.gap_lock import (
+      gap_lock_arm_seq, gap_lock_cancel_hold, gap_lock_holding)
     cs.preap_cc_cancel_hold = gap_lock_cancel_hold(engagement)
     try:
       ret.gapLockArmSeq = gap_lock_arm_seq(engagement)
+    except Exception:
+      pass
+    try:
+      ret.gapLockHold = gap_lock_holding(engagement)
     except Exception:
       pass
   hands = int(getattr(cs, 'hands_on_level', 0) or 0)
@@ -843,6 +910,14 @@ def _update_preap(cs, can_parsers):
           cs.one_pedal_pause_latched = bool(engagement._one_pedal_pause_latched)
       except Exception:
         pass
+    # Orig wrote enableLongControl before standstill-gas complete and the
+    # One-Pedal overlay. A finished gap-lock hold takes long inside
+    # process_buttons; publish that final flag so the planner sees long-on
+    # on the same carState as the new arm sequence.
+    try:
+      ret.enableLongControl = bool(engagement.enableLongControl)
+    except Exception:
+      pass
   return ret
 
 
