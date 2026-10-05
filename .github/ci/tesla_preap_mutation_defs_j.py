@@ -1,6 +1,6 @@
 """Far-gap soft closing-speed mutation definitions.
 
-The catch-up blend fades k_g·slack from 15 → 40 m and replaces it with a soft
+The catch-up blend fades k_g·slack from 15 → 50 m and replaces it with a soft
 desired closing speed, and only while the classic PD term is a catch-up and
 the kinematic bound is not a real brake. Each entry breaks one of those guards
 and must fail the pinned tests with an AssertionError.
@@ -41,7 +41,7 @@ MUTATIONS_J = (
      _W, b"  w = w_slack * w_accel\n",
      _BOUND, _BRAKE, _PROP),
   _m("catchup-gain-raised-fivefold",
-     b"K_CATCH = 0.20", b"K_CATCH = 1.00",
+     b"K_CATCH = 0.14", b"K_CATCH = 1.00",
      _SOFT),
   _m("catchup-negative-soft-term-not-clipped",
      b"  a_gap = (1.0 - w) * a_gap_classic + w * max(0.0, a_soft)\n",

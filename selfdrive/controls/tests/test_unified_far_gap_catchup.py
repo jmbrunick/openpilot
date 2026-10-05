@@ -3,7 +3,8 @@
 At a large gap with nearly matched speed, k_g·slack asks for +1.2…+1.8 m/s²
 and the kinematic gate bangs that into catch-up pulses. The classic gap term
 fades from 15 → 50 m of slack and the faded portion becomes a desired closing
-speed of about 0.10–0.35 m/s. The blend is off for a near gap, a braking PD
+speed of about 0.10–0.95 m/s. The gain is low enough that a matched gap still
+commands under 0.15 m/s². The blend is off for a near gap, a braking PD
 term, and a kinematic bound that is already a real brake. The shipped gate
 widen is unchanged.
 """
@@ -49,9 +50,9 @@ def test_constants_match_the_approved_closing_speed():
   assert GAP_FADE_LO_M == 15.0
   assert GAP_FADE_HI_M == 50.0
   assert V_DES_CLOSE_LO == 0.10
-  assert V_DES_CLOSE_SPAN == 0.25
+  assert V_DES_CLOSE_SPAN == 0.85
   assert V_DES_CLOSE_RAMP_M == 30.0
-  assert K_CATCH == 0.20
+  assert K_CATCH == 0.14
   assert GAP_CATCH_A_ON == 0.15
   assert GAP_CATCH_A_BOUND_LO == -0.10
   assert GAP_CATCH_A_BOUND_RAMP == 0.10
@@ -71,7 +72,7 @@ def test_bound_weight_keeps_the_gap_term_on_a_real_brake():
 
 
 def test_matched_far_command_is_a_soft_ease():
-  """Matched speed past the fade: about +0.07, never a highway pull.
+  """Matched speed past the fade: about +0.13, never a highway pull.
 
   Slack 40 m is still inside the fade, so a little of the classic gap term
   remains. It stays well under the old slam. At 50 m and beyond the fade is
@@ -81,9 +82,9 @@ def test_matched_far_command_is_a_soft_ease():
   for slack in (50.0, 60.0, 80.0):
     cmd = _cmd(slack, 0.0)
     assert 0.0 <= cmd <= 0.15, (slack, cmd)
-  # Trickle has faded out; the command is K_CATCH * 0.35.
-  assert _cmd(60.0, 0.0) == pytest.approx(0.07, abs=1e-6)
-  assert _cmd(80.0, 0.0) == pytest.approx(0.07, abs=1e-6)
+  # Trickle has faded out; the command is K_CATCH * 0.95.
+  assert _cmd(60.0, 0.0) == pytest.approx(0.133, abs=1e-6)
+  assert _cmd(80.0, 0.0) == pytest.approx(0.133, abs=1e-6)
 
 
 def test_follow7_recovery_comes_back_inside_the_maneuver_ceiling():
@@ -114,6 +115,40 @@ def test_follow7_recovery_comes_back_inside_the_maneuver_ceiling():
   assert gap >= 53.0
   assert gap < 82.0
   assert v_ego == pytest.approx(v_lead, abs=0.5)
+
+
+def test_follow_settings_land_inside_the_240s_band():
+  """Same-speed close from 100 m, 240 s, every Follow time.
+
+  The Pre-AP maneuver requires the final gap within ±1.5 m of
+  t_follow·v + 6. This plant tracks that maneuver closely. A desired
+  close of 0.35 m/s left Follow 2 about 1.6 m inside the set gap at
+  240 s, on the trough of the settle. The higher desired close has to
+  put every setting inside a tighter band here, and the Follow 7
+  recovery above still has to finish under 82 m.
+  """
+  v_lead = 25.0
+  follow_times = (0.7, 0.9, 1.1, 1.3, 1.5, 1.7, 1.9)
+  gaps = []
+  for t_follow in follow_times:
+    ctrl = UnifiedLeadController()
+    v_ego = v_lead
+    d_ego = 0.0
+    d_lead = 100.0
+    for _ in range(int(240.0 / DT)):
+      gap = max(0.0, d_lead - d_ego)
+      a_max = float(np.interp(v_ego, [0.0, 10.0, 25.0, 40.0], [1.6, 1.2, 0.8, 0.6]))
+      accel = ctrl.step(
+        dt=DT, present=True, gap=gap, v_ego=v_ego, v_lead=v_lead, a_lead=0.0,
+        t_follow=t_follow, lead_id=1, seed_a=0.0, v_ceiling=50.0, a_max=a_max,
+      )
+      v_ego = max(0.0, v_ego + accel * DT)
+      d_lead += v_lead * DT
+      d_ego += v_ego * DT
+    gaps.append(d_lead - d_ego)
+  expected = [t_follow * v_lead + 6.0 for t_follow in follow_times]
+  assert gaps == pytest.approx(expected, abs=1.40)
+  assert np.all(np.diff(gaps) > 0.0)
 
 
 def test_e2_shaped_open_loop_does_not_pulse(monkeypatch):
