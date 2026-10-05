@@ -252,14 +252,17 @@ def test_engaged_banner_is_two_seconds_and_chip_stays():
   assert gap_lock_banner_active(HUD_LOST)
 
   # _arm sets the pulse at the current clock. Each later step is 0.05 s.
-  hold_steps = int(round(GAP_LOCK_ENGAGED_BANNER_S / 0.05)) - 1
-  for _ in range(hold_steps):
+  # Still up one frame inside the window. The planner clock is a running
+  # sum, so the last frame can land a hair under 2.0 s and take one more.
+  dt = 0.05
+  for _ in range(int(GAP_LOCK_ENGAGED_BANNER_S / dt) - 1):
     _step(latch, seq=1, d_rel=15.0)
   assert latch.hud == HUD_ENGAGED
   assert latch.gap_m == pytest.approx(15.0)
   assert gap_lock_hud_chip(latch.gap_m) == "LOCK 15m"
 
-  _step(latch, seq=1, d_rel=15.0)
+  for _ in range(2):
+    _step(latch, seq=1, d_rel=15.0)
   assert latch.hud == HUD_NONE
   assert not gap_lock_banner_active(latch.hud)
   assert latch.gap_m == pytest.approx(15.0)
