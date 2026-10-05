@@ -462,6 +462,23 @@ def nap_wiper_changed_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.S
   return NormalPermanentAlert(wiper_hud_text(), duration=WIPER_HUD_DURATION_S)
 
 
+def gap_lock_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
+  """Short line. The planner holds unavailable / lost for 1.5 s; meters stay while locked."""
+  event = 0
+  meters = 0.0
+  try:
+    plan = sm['longitudinalPlan']
+    event = int(getattr(plan, 'gapLockEvent', 0) or 0)
+    meters = float(getattr(plan, 'gapLockM', 0.0) or 0.0)
+  except Exception:
+    event, meters = 0, 0.0
+  if event == 2:
+    return NormalPermanentAlert("Gap lock unavailable", duration=0.2)
+  if event == 3 or meters <= 0.0:
+    return NormalPermanentAlert("Gap lock off", duration=0.2)
+  return NormalPermanentAlert(f"Gap lock {int(round(meters))} m", duration=0.2)
+
+
 def invalid_lkas_setting_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
   text = "Toggle stock LKAS on or off to engage"
   if CP.brand == "tesla":
@@ -1190,6 +1207,13 @@ if _nap_wiper_changed is not None:
   EVENTS[_nap_wiper_changed] = {
     ET.WARNING: nap_wiper_changed_alert,
     ET.PERMANENT: nap_wiper_changed_alert,
+  }
+
+_gap_lock = getattr(EventName, "gapLock", None)
+if _gap_lock is not None:
+  EVENTS[_gap_lock] = {
+    ET.WARNING: gap_lock_alert,
+    ET.PERMANENT: gap_lock_alert,
   }
 
 

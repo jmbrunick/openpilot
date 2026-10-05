@@ -420,6 +420,40 @@ def _drop_longitudinal_keep_lateral(self):
   return result
 
 
+def _step_gap_lock(self, cruise_buttons, prev_cruise_buttons, curr_time_ms, use_pedal, qualify_press):
+  """3 s MAIN hold while long is already on. Does not touch stalk_pull_time_ms."""
+  from openpilot.selfdrive.controls.lib.gap_lock import GapLockGesture, gap_lock_enabled
+
+  gesture = getattr(self, "_nap_gap_lock", None)
+  if gesture is None:
+    gesture = GapLockGesture()
+    self._nap_gap_lock = gesture
+  gesture.update(
+    enabled=gap_lock_enabled(self),
+    use_pedal=bool(use_pedal),
+    can_valid=getattr(self, "_nap_can_valid", True) is not False,
+    cruise_buttons=cruise_buttons,
+    prev=prev_cruise_buttons,
+    now_ms=float(curr_time_ms or 0),
+    long_on=bool(self.enableLongControl),
+    cruise_on=bool(self.cruiseEnabled),
+    qualify_press=bool(qualify_press),
+  )
+  if gesture.cancel_hold:
+    # Keep a read-back CANCEL inside the spoof echo window for this hold.
+    self.preap_last_cc_spoof_ms = float(curr_time_ms or 0)
+
+
+def _peek_can_valid(can_parsers) -> bool:
+  try:
+    from opendbc.car.tesla.values import Bus
+    cp = can_parsers[Bus.chassis]
+    valid = getattr(cp, "can_valid", True)
+    return False if valid is False else True
+  except Exception:
+    return True
+
+
 def _curr_time_ms(args, kwargs):
   if args:
     return args[0]
@@ -610,6 +644,7 @@ def _process_buttons(self, cruise_buttons, prev_cruise_buttons, *args, **kwargs)
 
   if not self.cruiseEnabled:
     _clear_session_max_flags(self)
+    _step_gap_lock(self, cruise_buttons, prev_cruise_buttons, curr_time_ms, use_pedal, swallow_set)
     return result
 
   # Armed stop-SET: gas touch completes held-MAX resume. Brake still down
@@ -646,6 +681,7 @@ def _process_buttons(self, cruise_buttons, prev_cruise_buttons, *args, **kwargs)
   if self.enableLongControl:
     self._nap_long_resume_pending = False
     self._nap_resume_wait_gas = False
+  _step_gap_lock(self, cruise_buttons, prev_cruise_buttons, curr_time_ms, use_pedal, swallow_set)
   return result
 
 
@@ -693,6 +729,7 @@ def _update_preap(cs, can_parsers):
   stalk, v_ego = _peek_stalk_and_speed(can_parsers)
   engagement = getattr(cs, "engagement", None)
   if engagement is not None:
+    engagement._nap_can_valid = _peek_can_valid(can_parsers)
     engagement._nap_left_blinker = left
     engagement._nap_right_blinker = right
     engagement._nap_steering_pressed = pressed or disengage
@@ -718,6 +755,14 @@ def _update_preap(cs, can_parsers):
       torque_nm=torque_nm, hands_on_level=hands, fast_rise=fast_rise,
       over_torque=tracker.over_torque, alc_direction=alc_direction)
   ret = _ORIG_UPDATE(cs, can_parsers)
+  engagement = getattr(cs, "engagement", None)
+  if engagement is not None:
+    from openpilot.selfdrive.controls.lib.gap_lock import gap_lock_arm_seq, gap_lock_cancel_hold
+    cs.preap_cc_cancel_hold = gap_lock_cancel_hold(engagement)
+    try:
+      ret.gapLockArmSeq = gap_lock_arm_seq(engagement)
+    except Exception:
+      pass
   hands = int(getattr(cs, 'hands_on_level', 0) or 0)
   if hands <= 0:
     hands = _peek_hands_on_level(can_parsers)

@@ -43,6 +43,7 @@
   <label>Follow Distance <input id="follow_distance" type="number" min="1" max="7" step="1"></label>
   <label>Soft Lateral Handoff <input id="driver_lat_handoff" type="checkbox"></label>
   <label>One-Pedal Long <input id="one_pedal_long" type="checkbox"></label>
+  <label>Gap lock <input id="gap_lock" type="checkbox"></label>
 
   <h2>Map Speed</h2>
   <label>Map Speed (MAX)
@@ -97,7 +98,7 @@
   <label>Go offline <input id="offline" type="checkbox"></label>
 </main>
 <script>
-const BOOLS = ["adaptive_accel", "driver_lat_handoff", "one_pedal_long", "experimental"];
+const BOOLS = ["adaptive_accel", "driver_lat_handoff", "one_pedal_long", "gap_lock", "experimental"];
 const INTS = ["accel", "follow_distance", "map_speed_mode", "map_speed_offset_mph", "map_speed_lookahead", "personality"];
 const statusEl = document.getElementById("status");
 

@@ -96,6 +96,7 @@ Writes go only through `Params`. SL / FAI use the exclusive helpers. Hypermile i
 | Follow Distance 1–7 | `NAPFollowDistance` |
 | Soft Lateral Handoff | `NAPDriverLatHandoff` |
 | One-Pedal Long | `NAPOnePedalLong` |
+| Gap lock | `NAPGapLock` |
 
 ### Map Speed (Settings → NAP → Map Speed Limit)
 

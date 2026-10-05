@@ -29,6 +29,7 @@ from openpilot.selfdrive.nap_dash.settings import (
 )
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   NAP_DRIVER_LAT_HANDOFF,
+  NAP_GAP_LOCK,
   NAP_ONE_PEDAL_LONG,
 )
 
@@ -136,7 +137,7 @@ def test_catalog_matches_release_mannerisms_order():
   params = {item["param"] for item in setting_catalog()}
   for key in (
     PARAM_ACCEL, PARAM_ADAPTIVE_ACCEL, PARAM_FOLLOW_DISTANCE, NAP_DRIVER_LAT_HANDOFF,
-    NAP_ONE_PEDAL_LONG, PARAM_MAP_MODE, PARAM_MAP_OFFSET, PARAM_MAP_LOOKAHEAD,
+    NAP_ONE_PEDAL_LONG, NAP_GAP_LOCK, PARAM_MAP_MODE, PARAM_MAP_OFFSET, PARAM_MAP_LOOKAHEAD,
     PARAM_PERSONALITY, PARAM_EXPERIMENTAL, PARAM_SL, PARAM_FAI,
   ):
     assert key in params

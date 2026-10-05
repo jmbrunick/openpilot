@@ -144,6 +144,7 @@ struct OnroadEvent @0xc4fa6047f024e718 {
     hypermileFollowChanged @108;
     radarPreferFallback @109;
     napWiperChanged @110;
+    gapLock @111;
 
     soundsUnavailableDEPRECATED @47;
   }
@@ -1182,6 +1183,9 @@ struct LongitudinalPlan @0xe00b5b3eba12876c {
   # Shadow of the continuous lead-follow controller. Logged every frame,
   # including while NAPLongUnified is off.
   unifiedATarget @42 :Float32;
+  # Gap lock meters. 0 = time-gap follow. Event: 0 none, 2 unavailable, 3 lead lost.
+  gapLockM @43 :Float32;
+  gapLockEvent @44 :UInt8;
 
 
   solverExecutionTime @35 :Float32;

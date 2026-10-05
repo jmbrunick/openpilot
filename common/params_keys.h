@@ -196,6 +196,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // regen through interceptor pass-through — not a GAS_COMMAND rewrite.
     // Off = stock gas override + A+B/A3 resume climb.
     {"NAPOnePedalLong", {PERSISTENT, BOOL, "0"}},
+    // Settings → NAP → Driving Mannerisms → Gap lock. Default Off.
+    // Pedal long already on: 3 s engage-stalk hold latches radar dRel.
+    {"NAPGapLock", {PERSISTENT, BOOL, "0"}},
     {"NAPPedalEnabled", {PERSISTENT, BOOL}},
     {"NAPPedalProfile", {PERSISTENT, INT, "4"}},
     {"NAPRadarBehindNosecone", {PERSISTENT, BOOL}},

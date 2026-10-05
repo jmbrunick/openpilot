@@ -525,13 +525,20 @@ def unified_follow_desired(gap: float, v_ego: float, v_lead: float, a_lead: floa
                            path_lat: float | None = None,
                            leave_w: float = 0.0,
                            model_prob: float | None = None,
-                           radar: bool | None = None) -> float:
-  """Unslewed follow accel from filtered lead signals. Continuous in its inputs."""
+                           radar: bool | None = None,
+                           gap_set_override_m: float | None = None) -> float:
+  """Unslewed follow accel from filtered lead signals. Continuous in its inputs.
+
+  `gap_set_override_m` replaces only the meter setpoint used for slack
+  (gap lock). `t_follow` still sizes intrusion room, trust, and FCW.
+  """
   gap_f = max(0.0, float(gap))
   v_l = max(0.0, float(v_lead))
   v_e = max(0.0, float(v_ego))
   a_l = float(a_lead)
   gap_set = gap_set_m(v_l, t_follow)
+  if gap_set_override_m is not None:
+    gap_set = float(gap_set_override_m)
   slack = gap_f - gap_set
   v_err = v_l - v_e  # lead faster is positive, matching k_v(v_lead - v_ego)
   v_close = max(0.0, -v_err)
@@ -661,7 +668,8 @@ class UnifiedLeadController:
            a_map: float | None = None, y_rel: float = 0.0,
            curvature: float = 0.0, a_max: float | None = None,
            path_lat: float | None = None, model_prob: float | None = None,
-           radar: bool | None = None, leave_w: float = 0.0) -> float:
+           radar: bool | None = None, leave_w: float = 0.0,
+           gap_set_override_m: float | None = None) -> float:
     """One planner frame. Returns the slewed road-relative accel, or 0 with no lead."""
     frame_dt = 0.05 if dt is None or float(dt) <= 1e-6 else float(dt)
     if not present:
@@ -696,13 +704,17 @@ class UnifiedLeadController:
       gap, v_ego, self._v_f, a_eff, t_follow,
       v_ceiling=v_ceiling, a_map=a_map, y_rel=y_rel, curvature=curvature,
       path_lat=path_lat, leave_w=leave_w, model_prob=model_prob, radar=radar,
+      gap_set_override_m=gap_set_override_m,
     )
     if a_max is not None:
       desired = min(desired, float(a_max))
     self.last_desired = desired
 
     v_err = float(self._v_f) - float(v_ego)
-    slack = float(gap) - gap_set_m(self._v_f, t_follow)
+    gap_set = gap_set_m(self._v_f, t_follow)
+    if gap_set_override_m is not None:
+      gap_set = float(gap_set_override_m)
+    slack = float(gap) - gap_set
     a_kin = _a_kin(slack, max(0.0, -v_err), max(0.0, float(gap)), float(v_ego),
                    t_follow, float(self._v_f))
 
