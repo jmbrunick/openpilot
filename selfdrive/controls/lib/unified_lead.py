@@ -129,7 +129,7 @@ KIN_GATE_WIDEN_SLACK_LO_M = 15.0
 KIN_GATE_WIDEN_SLACK_RAMP_M = 5.0
 KIN_GATE_WIDEN_A_BOUND_LO = -0.10
 KIN_GATE_WIDEN_A_BOUND_RAMP = 0.10
-KIN_GATE_WIDEN_A_CAP = 0.80
+KIN_GATE_WIDEN_A_CAP = 0.60
 KIN_GATE_WIDEN_K = 1.0  # 1/s: gate width = a_pd / K, capped at A_CAP / K
 
 # Short headway: pull firmer below ~0.6 s even at small closing.
