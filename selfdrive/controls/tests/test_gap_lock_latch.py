@@ -1,5 +1,6 @@
 """Gap-lock latch, clear, and actuator-guard slack."""
 
+import pathlib
 from unittest.mock import MagicMock
 
 import pytest
@@ -8,6 +9,8 @@ from openpilot.selfdrive.controls.lib.gap_lock import (
   HUD_LOST,
   HUD_UNAVAILABLE,
   GapLockLatch,
+  gap_lock_engaged_text,
+  gap_lock_hud_chip,
   gap_lock_param_enabled,
   slack_for_guard,
 )
@@ -130,6 +133,47 @@ def test_param_reader_ignores_mocks_and_missing_keys():
   assert gap_lock_param_enabled(Missing()) is False
   assert gap_lock_param_enabled(Off()) is False
   assert gap_lock_param_enabled(On()) is True
+
+
+def test_hold_preview_is_the_median_and_clears_once_latched():
+  latch = GapLockLatch()
+  for _ in range(8):
+    _step(latch, seq=0, d_rel=30.0, holding=True)
+  assert latch.gap_m is None
+  assert latch.preview_m == pytest.approx(30.0)
+  assert latch.preview_track == 4
+  _step(latch, seq=1, d_rel=30.0, holding=True)
+  assert latch.gap_m == pytest.approx(30.0)
+  assert latch.preview_m is None
+
+
+def test_preview_drops_when_the_hold_ends_without_a_latch():
+  latch = GapLockLatch()
+  for _ in range(4):
+    _step(latch, holding=True, d_rel=22.0)
+  assert latch.preview_m == pytest.approx(22.0)
+  _step(latch, holding=False, d_rel=22.0)
+  assert latch.preview_m is None
+  assert latch.gap_m is None
+
+
+def test_preview_while_long_is_paused():
+  latch = GapLockLatch()
+  for _ in range(6):
+    _step(latch, long_on=False, holding=True, d_rel=36.0)
+  assert latch.gap_m is None
+  assert latch.preview_m == pytest.approx(36.0)
+
+
+def test_onroad_text_and_chip_while_locked_gone_when_clear():
+  assert gap_lock_engaged_text(0) is None
+  assert gap_lock_engaged_text(None) is None
+  assert gap_lock_hud_chip(0.0) is None
+  assert gap_lock_engaged_text(28.4) == "Gap lock engaged 28 m"
+  assert gap_lock_hud_chip(28.4) == "LOCK 28m"
+  hud = (pathlib.Path(__file__).resolve().parents[3] / "selfdrive/ui/onroad/hud_renderer.py").read_text()
+  assert "gap_lock_hud_chip" in hud
+  assert "_draw_gap_lock" in hud
 
 
 def test_guard_slack_uses_locked_meters_and_keeps_mild_floor():

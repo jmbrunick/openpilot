@@ -76,7 +76,7 @@ class DrivingMannerismsLayoutMici(NavScroller):
     one_pedal.set_value("Off default — gas pause stays until SET")
 
     gap_lock = BigParamControl("gap lock", NAP_GAP_LOCK)
-    gap_lock.set_value("Off default — 3 s engage hold keeps radar meters")
+    gap_lock.set_value("Off default — 2 s engage hold keeps radar meters")
 
     hypermile = BigParamControl("hypermile", NAP_HYPERMILE, toggle_callback=on_hypermile)
     hypermile.set_value("Off default — early light eco, not max regen")

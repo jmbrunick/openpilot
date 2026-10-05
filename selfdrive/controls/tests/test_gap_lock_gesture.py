@@ -1,4 +1,4 @@
-"""3 s engage-stalk hold while pedal long is already on.
+"""2 s engage-stalk hold. Long may be on, paused, or not yet taken.
 
 In-session CANCEL TX does not drop lateral. opendbc safety
 `tesla_preap_tx.h` applies `pcm_cruise_check(false)` for lever == CANCEL
@@ -42,7 +42,7 @@ def _seq(eng) -> int:
   return gap_lock_arm_seq(eng)
 
 
-def test_three_seconds_arms_once_and_keeps_long():
+def test_two_seconds_arms_once_and_keeps_long():
   install_blinker_lat_pause()
   eng = _engaged()
   speed = eng.pedal_speed_kph
@@ -50,33 +50,35 @@ def test_three_seconds_arms_once_and_keeps_long():
   assert _seq(eng) == 0
   assert eng.stalk_pull_time_ms == 10000
   assert eng.enableLongControl and eng.cruiseEnabled
-  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, prev=CruiseButtons.MAIN, t_ms=12900)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, prev=CruiseButtons.MAIN, t_ms=11900)
   assert _seq(eng) == 0
-  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, prev=CruiseButtons.MAIN, t_ms=13000)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, prev=CruiseButtons.MAIN, t_ms=12000)
   assert _seq(eng) == 1
   assert eng.pedal_speed_kph == speed
   assert eng.enableLongControl and eng.cruiseEnabled
   assert not eng.preap_cc_cancel_needed
   assert eng._nap_gap_lock.cancel_hold
-  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, prev=CruiseButtons.MAIN, t_ms=14000)
+  assert eng._nap_gap_lock.holding
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, prev=CruiseButtons.MAIN, t_ms=13000)
   assert _seq(eng) == 1
-  _buttons(eng, cruise_buttons=0, prev=CruiseButtons.MAIN, t_ms=14100)
+  _buttons(eng, cruise_buttons=0, prev=CruiseButtons.MAIN, t_ms=13100)
   assert not eng._nap_set_take_speed_now
   assert eng.enableLongControl and eng.cruiseEnabled
   assert eng.stalk_pull_time_ms == 10000
   assert not eng._nap_gap_lock.cancel_hold
+  assert not eng._nap_gap_lock.holding
   _buttons(eng, cruise_buttons=CruiseButtons.MAIN, prev=0, t_ms=20000)
-  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, prev=CruiseButtons.MAIN, t_ms=23000)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, prev=CruiseButtons.MAIN, t_ms=22000)
   assert _seq(eng) == 2
 
 
-def test_release_before_three_seconds_does_not_add():
+def test_release_before_two_seconds_does_not_add():
   install_blinker_lat_pause()
   eng = _engaged()
   _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=10000)
   _buttons(eng, prev=CruiseButtons.MAIN, t_ms=11000)
   _buttons(eng, cruise_buttons=CruiseButtons.MAIN, prev=0, t_ms=12000)
-  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, prev=CruiseButtons.MAIN, t_ms=14500)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, prev=CruiseButtons.MAIN, t_ms=13900)
   assert _seq(eng) == 0
 
 
@@ -95,52 +97,75 @@ def test_cancel_hold_starts_at_half_a_second():
   assert not gap_lock_cancel_hold_tx(False, False, 10)
 
 
-def test_disengaged_hold_does_not_arm():
+def test_disengaged_hold_arms_and_takes_long():
   install_blinker_lat_pause()
   eng = PreAPEngagement(double_pull_enabled=True, double_pull_window_ms=750)
   eng._nap_gap_lock_enabled_override = True
   _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=1000)
   assert eng.cruiseEnabled
   assert not eng.enableLongControl
-  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, prev=CruiseButtons.MAIN, t_ms=4000)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, prev=CruiseButtons.MAIN, t_ms=2999)
   assert _seq(eng) == 0
   assert not eng.enableLongControl
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, prev=CruiseButtons.MAIN, t_ms=3000)
+  assert _seq(eng) == 1
+  assert eng.enableLongControl and eng.cruiseEnabled
+  assert eng.pedal_speed_kph > 0
 
 
-def test_resume_from_brake_hold_does_not_arm():
+def test_disengaged_tap_stays_lat_only():
+  install_blinker_lat_pause()
+  eng = PreAPEngagement(double_pull_enabled=True, double_pull_window_ms=750)
+  eng._nap_gap_lock_enabled_override = True
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=1000)
+  _buttons(eng, prev=CruiseButtons.MAIN, t_ms=1500)
+  assert eng.cruiseEnabled
+  assert not eng.enableLongControl
+  assert _seq(eng) == 0
+
+
+def test_resume_from_brake_hold_arms():
   install_blinker_lat_pause()
   eng = _engaged()
   _buttons(eng, brake=True, t_ms=2000)
   _buttons(eng, brake=False, t_ms=3000)
   _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=4000)
   assert eng.enableLongControl
-  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, prev=CruiseButtons.MAIN, t_ms=7000)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, prev=CruiseButtons.MAIN, t_ms=5999)
   assert _seq(eng) == 0
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, prev=CruiseButtons.MAIN, t_ms=6000)
+  assert _seq(eng) == 1
+  assert eng.enableLongControl
 
 
-def test_one_pedal_resume_hold_does_not_arm():
+def test_one_pedal_resume_hold_arms():
   install_blinker_lat_pause()
   eng = _engaged()
   eng.enableLongControl = False
   eng._one_pedal_pause_latched = True
   _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=4000)
   assert eng.enableLongControl
-  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, prev=CruiseButtons.MAIN, t_ms=7000)
-  assert _seq(eng) == 0
+  assert not eng._one_pedal_pause_latched
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, prev=CruiseButtons.MAIN, t_ms=6000)
+  assert _seq(eng) == 1
+  assert eng.enableLongControl
 
 
-def test_engage_while_gas_hold_does_not_arm():
+def test_engage_while_gas_hold_arms():
   install_blinker_lat_pause()
   eng = PreAPEngagement(double_pull_enabled=True, double_pull_window_ms=750)
   eng._nap_gap_lock_enabled_override = True
   eng._nap_di_pedal_pos = 10.0
   _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=1000)
   assert eng.enableLongControl
-  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, prev=CruiseButtons.MAIN, t_ms=4000)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, prev=CruiseButtons.MAIN, t_ms=2999)
   assert _seq(eng) == 0
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, prev=CruiseButtons.MAIN, t_ms=3000)
+  assert _seq(eng) == 1
+  assert eng.enableLongControl
 
 
-def test_standstill_wait_for_gas_hold_does_not_arm():
+def test_standstill_hold_arms_and_takes_long():
   install_blinker_lat_pause()
   eng = _engaged()
   _buttons(eng, brake=True, t_ms=2000, v_ego=0.0)
@@ -148,8 +173,23 @@ def test_standstill_wait_for_gas_hold_does_not_arm():
   _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=4000, v_ego=0.0)
   assert not eng.enableLongControl
   assert eng._nap_resume_wait_gas
-  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, prev=CruiseButtons.MAIN, t_ms=7000, v_ego=0.0)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, prev=CruiseButtons.MAIN, t_ms=5999, v_ego=0.0)
   assert _seq(eng) == 0
+  assert not eng.enableLongControl
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, prev=CruiseButtons.MAIN, t_ms=6000, v_ego=0.0)
+  assert _seq(eng) == 1
+  assert eng.enableLongControl
+  assert not eng._nap_resume_wait_gas
+
+
+def test_long_dropped_during_hold_still_arms():
+  install_blinker_lat_pause()
+  eng = _engaged()
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=10000)
+  eng.enableLongControl = False
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, prev=CruiseButtons.MAIN, t_ms=12000)
+  assert _seq(eng) == 1
+  assert eng.enableLongControl and eng.cruiseEnabled
 
 
 def test_brake_during_hold_does_not_arm():

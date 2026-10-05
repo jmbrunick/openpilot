@@ -63,10 +63,10 @@ FOLLOW_DISTANCE_HWY_DESCRIPTION = (
 NAP_ONE_PEDAL_LONG = "NAPOnePedalLong"
 NAP_GAP_LOCK = "NAPGapLock"
 GAP_LOCK_DESCRIPTION = (
-  "Default Off. Pedal mode, long already on. Hold the engage stalk toward "
-  + "you for 3 seconds to keep the current radar gap in meters. A stalk tip, "
-  + "cancel, brake, or One-Pedal pause returns to Follow Distance. Another "
-  + "3 second hold stores a new distance."
+  "Default Off. Pedal mode. Hold the engage stalk toward you for 2 seconds "
+  + "to keep the current radar gap in meters, even if long is paused. A stalk "
+  + "tip, cancel, brake, or One-Pedal pause returns to Follow Distance. "
+  + "Another 2 second hold stores a new distance."
 )
 ONE_PEDAL_LONG_DESCRIPTION = (
   "Default Off. Pedal mode only. With OP long already on, pressing the "
