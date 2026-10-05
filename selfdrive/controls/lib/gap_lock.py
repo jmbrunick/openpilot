@@ -34,7 +34,10 @@ GAP_LOCK_CANCEL_AFTER_S = 0.5
 GAP_LOCK_MIN_M = 8.0
 GAP_LOCK_MAX_M = 80.0
 GAP_LOCK_MEDIAN_S = 0.4
+# Unavailable / lost bottom toasts. Already brief; not the engaged banner.
 GAP_LOCK_HUD_S = 1.5
+# Bottom "Gap lock engaged …" toast. The under-MAX chip is not on this timer.
+GAP_LOCK_ENGAGED_BANNER_S = 2.0
 # Same-gap radar id swap (16:08:53, 2088 → 2698 at ~27 m). A new radar
 # lead within this window of the locked meters, and in the lane, is the
 # same car. Anything else keeps the lock for GAP_LOCK_ABSENT_S, then
@@ -44,6 +47,7 @@ GAP_LOCK_REMATCH_Y_M = 1.5
 GAP_LOCK_ABSENT_S = 2.0
 
 HUD_NONE = 0
+HUD_ENGAGED = 1
 HUD_UNAVAILABLE = 2
 HUD_LOST = 3
 
@@ -106,8 +110,17 @@ def _positive_meters(meters):
   return value
 
 
+def gap_lock_banner_active(event) -> bool:
+  """Bottom toast only. The under-MAX chip follows the latched meters on its own."""
+  try:
+    code = int(event or 0)
+  except (TypeError, ValueError):
+    return False
+  return code in (HUD_ENGAGED, HUD_UNAVAILABLE, HUD_LOST)
+
+
 def gap_lock_engaged_text(meters) -> str | None:
-  """Onroad alert line while a lock is latched. None when it is clear."""
+  """Bottom-banner line for a fresh lock. None when there is no distance."""
   value = _positive_meters(meters)
   if value is None:
     return None
@@ -336,8 +349,7 @@ class GapLockLatch:
     self.track_id = tid
     self.gap_m = float(med)
     self._absent = 0.0
-    self.hud = HUD_NONE
-    self._hud_until = 0.0
+    self._pulse(HUD_ENGAGED, GAP_LOCK_ENGAGED_BANNER_S)
 
   def _plausible_rematch(self, status, radar, track_id, d_rel, y_rel) -> bool:
     """New radar id, still the locked gap and in the lane."""
@@ -388,9 +400,10 @@ class GapLockLatch:
       self.hud = HUD_NONE
       self._hud_until = 0.0
 
-  def _pulse(self, code: int) -> None:
+  def _pulse(self, code: int, duration: float | None = None) -> None:
     self.hud = int(code)
-    self._hud_until = self._t + GAP_LOCK_HUD_S
+    hold = GAP_LOCK_HUD_S if duration is None else float(duration)
+    self._hud_until = self._t + hold
 
   def _decay_hud(self) -> None:
     if self.hud and self._t >= self._hud_until:
