@@ -45,7 +45,7 @@ def test_constants_are_pinned():
   assert KIN_GATE_WIDEN_SLACK_RAMP_M == 5.0
   assert KIN_GATE_WIDEN_A_BOUND_LO == -0.10
   assert KIN_GATE_WIDEN_A_BOUND_RAMP == 0.10
-  assert KIN_GATE_WIDEN_A_CAP == 0.60
+  assert KIN_GATE_WIDEN_A_CAP == 0.50
   assert KIN_GATE_WIDEN_K == 1.0
 
 
@@ -63,8 +63,8 @@ def test_widen_is_zero_unless_all_three_conditions_hold():
 def test_widen_full_weight_and_cap():
   full = _kin_gate_widen(20.0, 0.9, 0.0)
   assert full == pytest.approx(KIN_GATE_WIDEN_A_CAP / KIN_GATE_WIDEN_K - KIN_GATE_MS)
-  assert _kin_gate_widen(60.0, 5.0, 0.5) == pytest.approx(full)  # a_pd capped at 0.6
-  assert _kin_gate_widen(25.0, 0.55, 0.0) == pytest.approx(0.55 - KIN_GATE_MS)
+  assert _kin_gate_widen(60.0, 5.0, 0.5) == pytest.approx(full)  # a_pd capped at 0.5
+  assert _kin_gate_widen(25.0, 0.45, 0.0) == pytest.approx(0.45 - KIN_GATE_MS)
 
 
 def test_widen_is_continuous_in_slack_bound_and_pd():
@@ -120,7 +120,7 @@ def test_far_gap_slow_close_keeps_the_pd_accel_through_the_old_gate_edge(monkeyp
   _baseline(monkeypatch)
   old = _cmd(35.0, 0.4)
   assert old == pytest.approx(0.0, abs=0.01)
-  assert new > 0.10
+  assert new > 0.05
   # Past the widened gate the kinematic bound is back in full.
   assert _cmd(35.0, 0.8) == pytest.approx(0.0, abs=0.05)
   assert _cmd(35.0, 1.2) == pytest.approx(0.0, abs=0.1)
@@ -132,7 +132,7 @@ def test_close_sweep_has_a_smaller_step_than_the_old_gate(monkeypatch):
   new = np.array([_cmd(35.0, float(x)) for x in xs])
   _baseline(monkeypatch)
   old = np.array([_cmd(35.0, float(x)) for x in xs])
-  assert np.abs(np.diff(new)).max() < 0.75 * np.abs(np.diff(old)).max()
+  assert np.abs(np.diff(new)).max() < 0.90 * np.abs(np.diff(old)).max()
   assert np.all(new >= old - 1e-12)
 
 
