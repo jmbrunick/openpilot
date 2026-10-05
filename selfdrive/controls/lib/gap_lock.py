@@ -9,6 +9,10 @@ One-Pedal, brake, standstill wait), or not yet taken. A completed hold
 resumes long so those meters become the setpoint. A tip, cancel, brake,
 One-Pedal pause, or toggle off still clears a lock that is already on.
 
+A radar track-id swap at the same gap is the same lead: the new id is
+adopted and the locked meters stay, with no toast. If nothing plausible
+is there, the meters stay for about two seconds and then clear.
+
 Stock DI still sees the physical pull (0x45 is relayed). After 0.5 s of
 a qualified hold, the openpilot overlay repeats CANCEL on the existing
 10 Hz spoof slot until the lever returns to idle. Panda does not treat
@@ -23,10 +27,7 @@ import time
 
 from opendbc.car.tesla.values import CruiseButtons
 
-from openpilot.selfdrive.controls.lib.lead_approach import (
-  LEAD_CLOSE_HOLD_S,
-  lead_follow_slack_m,
-)
+from openpilot.selfdrive.controls.lib.lead_approach import lead_follow_slack_m
 
 GAP_LOCK_HOLD_S = 2.0
 GAP_LOCK_CANCEL_AFTER_S = 0.5
@@ -34,6 +35,13 @@ GAP_LOCK_MIN_M = 8.0
 GAP_LOCK_MAX_M = 80.0
 GAP_LOCK_MEDIAN_S = 0.4
 GAP_LOCK_HUD_S = 1.5
+# Same-gap radar id swap (16:08:53, 2088 → 2698 at ~27 m). A new radar
+# lead within this window of the locked meters, and in the lane, is the
+# same car. Anything else keeps the lock for GAP_LOCK_ABSENT_S, then
+# clears with the lost toast. The old 0.5 s hold only covered status=0.
+GAP_LOCK_REMATCH_M = 5.0
+GAP_LOCK_REMATCH_Y_M = 1.5
+GAP_LOCK_ABSENT_S = 2.0
 
 HUD_NONE = 0
 HUD_UNAVAILABLE = 2
@@ -249,7 +257,8 @@ class GapLockLatch:
     self._hud_until = 0.0
 
   def update(self, dt, *, enabled: bool, long_on: bool, seq, status: bool,
-             radar: bool, track_id, d_rel, stalk_exit: bool, holding: bool = False) -> None:
+             radar: bool, track_id, d_rel, stalk_exit: bool, holding: bool = False,
+             y_rel=None) -> None:
     frame_dt = 0.05 if dt is None or float(dt) <= 0.0 else float(dt)
     self._t += frame_dt
     self._decay_hud()
@@ -275,7 +284,7 @@ class GapLockLatch:
     if seq_changed:
       self._seen_seq = seq_i
       self._try_arm(status, radar, track_id)
-    self._follow_track(frame_dt, status, radar, track_id)
+    self._follow_track(frame_dt, status, radar, track_id, d_rel, y_rel)
     self._set_preview(holding and enabled and not stalk_exit, track_id)
 
   def _push_sample(self, status, radar, track_id, d_rel) -> None:
@@ -330,7 +339,25 @@ class GapLockLatch:
     self.hud = HUD_NONE
     self._hud_until = 0.0
 
-  def _follow_track(self, dt: float, status, radar, track_id) -> None:
+  def _plausible_rematch(self, status, radar, track_id, d_rel, y_rel) -> bool:
+    """New radar id, still the locked gap and in the lane."""
+    if status is not True or radar is not True or self.gap_m is None:
+      return False
+    tid = _track_id(track_id)
+    if tid is None or tid < 0 or tid == self.track_id:
+      return False
+    try:
+      dist = float(d_rel)
+      lateral = 0.0 if y_rel is None else abs(float(y_rel))
+    except (TypeError, ValueError):
+      return False
+    if dist != dist or lateral != lateral:
+      return False
+    if abs(dist - float(self.gap_m)) > GAP_LOCK_REMATCH_M:
+      return False
+    return lateral <= GAP_LOCK_REMATCH_Y_M
+
+  def _follow_track(self, dt: float, status, radar, track_id, d_rel, y_rel) -> None:
     if self.gap_m is None or self.track_id is None:
       self._absent = 0.0
       return
@@ -338,13 +365,14 @@ class GapLockLatch:
     if status is True and radar is True and tid == self.track_id:
       self._absent = 0.0
       return
-    if status is True and (radar is not True or tid != self.track_id):
-      self._clear(toast=True)
+    # Same car, new radar id. Keep the locked meters and follow the new id.
+    if self._plausible_rematch(status, radar, track_id, d_rel, y_rel):
+      self.track_id = tid
+      self._absent = 0.0
       return
-    if status is True:
-      return
+    # Vision-only, a different car, or no lead. Hold, then toast.
     self._absent += dt
-    if self._absent > LEAD_CLOSE_HOLD_S:
+    if self._absent >= GAP_LOCK_ABSENT_S:
       self._clear(toast=True)
 
   def _clear(self, *, toast: bool) -> None:

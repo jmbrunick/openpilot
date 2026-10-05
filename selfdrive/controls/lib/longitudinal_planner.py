@@ -703,6 +703,7 @@ class LongitudinalPlanner:
     radar = False
     track_id = -1
     d_rel = None
+    y_rel = None
     try:
       status = bool(lead.status)
       radar = bool(lead.radar)
@@ -714,6 +715,11 @@ class LongitudinalPlanner:
       radar = False
       track_id = -1
       d_rel = None
+    if status:
+      try:
+        y_rel = float(lead.yRel)
+      except (TypeError, ValueError, AttributeError):
+        y_rel = None
     self._gap_lock.update(
       self.dt,
       enabled=self._gap_lock_enabled is True,
@@ -725,6 +731,7 @@ class LongitudinalPlanner:
       d_rel=d_rel,
       stalk_exit=stalk_follow_exit(cs),
       holding=holding,
+      y_rel=y_rel,
     )
 
   def _gap_set_override(self, lead, live: bool, held: bool):
@@ -742,7 +749,9 @@ class LongitudinalPlanner:
       if gap_m is None or track is None:
         return None
       if live:
-        if lead.radar is not True:
+        # A brief vision-only dip of the locked track keeps the meters.
+        # The in-hold preview still wants a radar id.
+        if self._gap_lock.gap_m is None and lead.radar is not True:
           return None
         if int(lead.radarTrackId) != int(track):
           return None
@@ -802,15 +811,22 @@ class LongitudinalPlanner:
     # Active curve-follow already covers the present curvature (its point 0);
     # the reactive cap is the dead-camera fallback, used when it is not trusted.
     cf_owns_curve = self._cf_mode == MODE_ACTIVE and self._cf_trusted and not self._cf_faulted
+    curve_cap = None
     if v_curve is not None and v_ego >= 5.0 and not cf_owns_curve:
       v_cap = min(v_cap, float(v_curve))
+      curve_cap = float(v_curve)
+    # Locked meters are the setpoint, including above MAX. Map-speed
+    # braking back to the cap is skipped while the lock is on. A curve
+    # cap is passed separately so a bend still slows the car.
+    override = self._gap_set_override(lead, live, held)
     a_map = None
-    if self._map_speed_mode in (MODE_CAP, MODE_FOLLOW):
+    if override is None and self._map_speed_mode in (MODE_CAP, MODE_FOLLOW):
       a_map = map_track_decel_ms2(
         v_ego, float(self._unified_v_cap_ms), map_brake_a_ms2(self._map_speed_lookahead),
       )
     if self.curve_preview_a < PREVIEW_FREE_A_MS2:
       a_map = self.curve_preview_a if a_map is None else min(float(a_map), self.curve_preview_a)
+    v_curve_cap = curve_cap if override is not None else None
     a_max_u = float(get_max_accel(v_ego))
     if self._turn_a_max is not None:
       a_max_u = min(a_max_u, float(self._turn_a_max))
@@ -829,7 +845,6 @@ class LongitudinalPlanner:
     existing = float(self.output_a_target)
     seed = existing
     command = None
-    override = self._gap_set_override(lead, live, held)
     if not self._unified_faulted:
       try:
         if gap is not None and not self._unified_following:
@@ -842,7 +857,7 @@ class LongitudinalPlanner:
             v_ceiling=v_cap, a_map=a_map, y_rel=y_rel,
             curvature=float(self._corner_curvature), path_lat=path_lat,
             leave_w=float(self.lead_leave_w), model_prob=model_prob, radar=radar,
-            gap_set_override_m=override,
+            gap_set_override_m=override, v_curve_cap=v_curve_cap,
           )
           wanted = min(wanted, a_max_u)
           if wanted >= 0.0:
@@ -872,6 +887,7 @@ class LongitudinalPlanner:
           radar=radar,
           leave_w=float(self.lead_leave_w),
           gap_set_override_m=override,
+          v_curve_cap=v_curve_cap,
         ))
       except Exception:
         self._note_unified_fault()
