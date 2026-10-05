@@ -251,12 +251,14 @@ class SelfdriveD:
         # Two shapes of "regen is not enough, add friction brake": the carstate
         # flag covers weak regen under-delivering an in-envelope request; the
         # demand check covers a planned deceleration the envelope cannot cover,
-        # which the clamped actuator request hides from the car entirely.
+        # which the clamped actuator request hides from the car entirely. It
+        # only triggers while the post-guard command is also at the rail.
         regen_demand_overflow = self.preap_regen_demand.update(
           pedal_long_active=pedal_long_active,
           brake_pressed=CS.brakePressed,
           a_target=float(self.sm['longitudinalPlan'].aTarget),
           v_ego=CS.vEgo,
+          a_cmd=float(self.sm['carControl'].actuators.accel),
         )
         if getattr(CS, 'pedalMaxRegen', False) or regen_demand_overflow:
           self.events.add(EventName.pedalMaxRegen)
