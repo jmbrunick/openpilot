@@ -115,23 +115,28 @@ def test_never_firmer_and_unchanged_where_the_old_command_braked(monkeypatch):
 
 
 def test_far_gap_slow_close_keeps_the_pd_accel_through_the_old_gate_edge(monkeypatch):
-  """E2 shape: slack 35 m, closing 0.4 m/s. The old gate dropped it to ~0."""
-  new = _cmd(35.0, 0.4)
+  """A 0.4 m/s close at the old gate edge used to drop to ~0.
+
+  The soft closing-speed law retires the large PD term past ~30 m, so this
+  exemplar sits at 22 m, where the PD term still clears the base width.
+  The widened gate keeps a small accel; the old gate does not.
+  """
+  new = _cmd(22.0, 0.4)
   _baseline(monkeypatch)
-  old = _cmd(35.0, 0.4)
+  old = _cmd(22.0, 0.4)
   assert old == pytest.approx(0.0, abs=0.01)
-  assert new > 0.05
-  # Past the widened gate the kinematic bound is back in full.
-  assert _cmd(35.0, 0.8) == pytest.approx(0.0, abs=0.05)
-  assert _cmd(35.0, 1.2) == pytest.approx(0.0, abs=0.1)
+  assert new > 0.015
+  # A faster close is back on the kinematic bound.
+  assert _cmd(22.0, 0.8) == pytest.approx(0.0, abs=0.05)
+  assert _cmd(22.0, 1.2) == pytest.approx(0.0, abs=0.1)
 
 
 def test_close_sweep_has_a_smaller_step_than_the_old_gate(monkeypatch):
   """The pulse driver is the gate edge: the command steps less per 10 mm/s of closing speed."""
   xs = np.arange(-0.2, 1.6, 0.01)
-  new = np.array([_cmd(35.0, float(x)) for x in xs])
+  new = np.array([_cmd(22.0, float(x)) for x in xs])
   _baseline(monkeypatch)
-  old = np.array([_cmd(35.0, float(x)) for x in xs])
+  old = np.array([_cmd(22.0, float(x)) for x in xs])
   assert np.abs(np.diff(new)).max() < 0.90 * np.abs(np.diff(old)).max()
   assert np.all(new >= old - 1e-12)
 
