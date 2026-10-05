@@ -117,6 +117,20 @@ REACTION_S = 0.3
 KIN_ROOM_MIN_M = 1.5
 # Closing speed below this contributes no kinematic bound (fades in).
 KIN_GATE_MS = 0.40
+# Far-gap widening of that gate (F3). A slow close at a far gap with the PD
+# term wanting to accelerate made the gate flip the command between the PD
+# and a near-zero kinematic bound (accCmd pulses at 15a 11:27, 159 08:03).
+# While slack is past WIDEN_SLACK_LO_M (full weight at +WIDEN_SLACK_RAMP_M)
+# and the bound is not a real brake (weight 1 at >= 0, 0 at <= WIDEN_A_BOUND_LO),
+# the gate width grows with the PD accel, so the bound fades in over a wider
+# closing speed. Never firmer than before; unchanged for a real bound
+# (<= -0.10), a non-accelerating PD, or slack under 15 m.
+KIN_GATE_WIDEN_SLACK_LO_M = 15.0
+KIN_GATE_WIDEN_SLACK_RAMP_M = 5.0
+KIN_GATE_WIDEN_A_BOUND_LO = -0.10
+KIN_GATE_WIDEN_A_BOUND_RAMP = 0.10
+KIN_GATE_WIDEN_A_CAP = 0.50
+KIN_GATE_WIDEN_K = 1.0  # 1/s: gate width = a_pd / K, capped at A_CAP / K
 
 # Short headway: pull firmer below ~0.6 s even at small closing.
 SHORT_HW_S = 0.60
@@ -435,6 +449,17 @@ def speed_ceiling_accel(v_ego: float, v_cap: float) -> float:
   return -OVERSPEED_MAX_MS2 * math.tanh(raw / OVERSPEED_MAX_MS2)
 
 
+def _kin_gate_widen(slack: float, a_pd: float, a_bound: float) -> float:
+  """Extra kinematic-gate width (m/s) at a far gap while the PD term accelerates."""
+  # a_pd <= 0 (not accelerating) never clears the base width: wide < 0.
+  wide = min(a_pd, KIN_GATE_WIDEN_A_CAP) / KIN_GATE_WIDEN_K - KIN_GATE_MS
+  if wide <= 0.0:
+    return 0.0
+  w_slack = _smooth01((slack - KIN_GATE_WIDEN_SLACK_LO_M) / KIN_GATE_WIDEN_SLACK_RAMP_M)
+  w_bound = _smooth01((a_bound - KIN_GATE_WIDEN_A_BOUND_LO) / KIN_GATE_WIDEN_A_BOUND_RAMP)
+  return wide * w_slack * w_bound
+
+
 def unified_follow_desired(gap: float, v_ego: float, v_lead: float, a_lead: float,
                            t_follow: float, *, v_ceiling: float | None = None,
                            a_map: float | None = None, y_rel: float = 0.0,
@@ -482,7 +507,8 @@ def unified_follow_desired(gap: float, v_ego: float, v_lead: float, a_lead: floa
   a_kin = _a_kin(slack, v_close, gap_f, v_e, t_follow, v_l)
   # Braking-lead contribution on the bound. Positive a_lead stays in a_pd only.
   a_bound = a_kin + min(a_l, 0.0) * k_a
-  gate = _smooth01(v_close / KIN_GATE_MS) if v_close > 0.0 else 0.0
+  gate_w = KIN_GATE_MS + _kin_gate_widen(slack, a_pd, a_bound)
+  gate = _smooth01(v_close / gate_w) if v_close > 0.0 else 0.0
   limited = min(a_pd, a_bound)
   a_cmd = ((1.0 - gate) * a_pd) + (gate * limited)
 
