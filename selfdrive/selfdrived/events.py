@@ -463,8 +463,12 @@ def nap_wiper_changed_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.S
 
 
 def gap_lock_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
-  """Engaged line stays up while locked. Unavailable / lost are the 1.5 s planner pulse."""
-  from openpilot.selfdrive.controls.lib.gap_lock import gap_lock_engaged_text
+  """Bottom toast. Engaged, unavailable, and lost follow the planner pulse.
+
+  Duration is a refresh so the line drops when the planner stops publishing
+  the code. The under-MAX chip reads gapLockM and stays for the whole latch.
+  """
+  from openpilot.selfdrive.controls.lib.gap_lock import HUD_LOST, HUD_UNAVAILABLE, gap_lock_engaged_text
   event = 0
   meters = 0.0
   try:
@@ -473,10 +477,10 @@ def gap_lock_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster,
     meters = float(getattr(plan, 'gapLockM', 0.0) or 0.0)
   except Exception:
     event, meters = 0, 0.0
-  if event == 2:
+  if event == HUD_UNAVAILABLE:
     return NormalPermanentAlert("Gap lock unavailable", duration=0.2)
   engaged = gap_lock_engaged_text(meters)
-  if event == 3 or engaged is None:
+  if event == HUD_LOST or engaged is None:
     return NormalPermanentAlert("Gap lock off", duration=0.2)
   # LOW so a lock is not hidden by LOWER background lines. Real warnings
   # (MID and above) still cover it; the HUD chip stays either way.

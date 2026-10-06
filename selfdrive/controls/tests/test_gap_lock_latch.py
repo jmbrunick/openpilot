@@ -6,9 +6,13 @@ from unittest.mock import MagicMock
 import pytest
 
 from openpilot.selfdrive.controls.lib.gap_lock import (
+  GAP_LOCK_ENGAGED_BANNER_S,
+  HUD_ENGAGED,
   HUD_LOST,
+  HUD_NONE,
   HUD_UNAVAILABLE,
   GapLockLatch,
+  gap_lock_banner_active,
   gap_lock_engaged_text,
   gap_lock_hud_chip,
   gap_lock_param_enabled,
@@ -43,7 +47,7 @@ def test_median_in_range_latches_on_seq_change():
   _step(latch, seq=1, d_rel=28)
   assert latch.track_id == 4
   assert latch.gap_m == pytest.approx(28.0)
-  assert latch.hud == 0
+  assert latch.hud == HUD_ENGAGED
 
 
 def test_vision_only_no_lead_and_out_of_range_do_not_latch():
@@ -77,7 +81,9 @@ def test_status_loss_holds_about_two_seconds_then_clears():
   for _ in range(39):
     _step(latch, seq=1, status=False, radar=False, d_rel=None)
   assert latch.gap_m == pytest.approx(28.0)
-  assert latch.hud == 0
+  # The engage banner may still be in its 2 s window. The hold itself
+  # must not have fired the lost toast.
+  assert latch.hud != HUD_LOST
   _step(latch, seq=1, status=True, radar=True, d_rel=27.0)
   assert latch.gap_m == pytest.approx(28.0)
   assert latch.track_id == 4
@@ -85,6 +91,7 @@ def test_status_loss_holds_about_two_seconds_then_clears():
   for _ in range(39):
     _step(latch, seq=1, status=False, radar=False, d_rel=None)
   assert latch.gap_m == pytest.approx(28.0)
+  assert latch.hud == HUD_NONE
   _step(latch, seq=1, status=False, radar=False, d_rel=None)
   assert latch.gap_m is None
   assert latch.hud == HUD_LOST
@@ -97,12 +104,20 @@ def test_same_gap_radar_rematch_keeps_the_lock():
   _step(latch, seq=1, track_id=2698, d_rel=26.6, y_rel=0.3)
   assert latch.gap_m == pytest.approx(25.1)
   assert latch.track_id == 2698
-  assert latch.hud == 0
+  assert latch.hud != HUD_LOST
   for _ in range(20):
     _step(latch, seq=1, track_id=2698, d_rel=27.4, y_rel=-0.4)
   assert latch.gap_m == pytest.approx(25.1)
   assert latch.track_id == 2698
-  assert latch.hud == 0
+  assert latch.hud != HUD_LOST
+  # Once the engage banner has timed out, a same-gap swap still has no toast.
+  for _ in range(30):
+    _step(latch, seq=1, track_id=2698, d_rel=27.4, y_rel=-0.4)
+  assert latch.hud == HUD_NONE
+  _step(latch, seq=1, track_id=3001, d_rel=27.0, y_rel=0.2)
+  assert latch.track_id == 3001
+  assert latch.gap_m == pytest.approx(25.1)
+  assert latch.hud == HUD_NONE
 
 
 def test_rematch_window_is_five_meters_and_one_lane():
@@ -111,14 +126,14 @@ def test_rematch_window_is_five_meters_and_one_lane():
   _step(latch, seq=1, track_id=2, d_rel=30.0, y_rel=1.5)
   assert latch.track_id == 2
   assert latch.gap_m == pytest.approx(25.0)
-  assert latch.hud == 0
+  assert latch.hud != HUD_LOST
 
   outside = GapLockLatch()
   _arm(outside, d_rel=25.0, track_id=1)
   _step(outside, seq=1, track_id=2, d_rel=30.2, y_rel=0.0)
   assert outside.track_id == 1
   assert outside.gap_m == pytest.approx(25.0)
-  assert outside.hud == 0
+  assert outside.hud != HUD_LOST
 
   offset = GapLockLatch()
   _arm(offset, d_rel=25.0, track_id=1)
@@ -133,7 +148,7 @@ def test_vision_only_holds_and_the_same_track_resets_the_timer():
   for _ in range(30):
     _step(latch, seq=1, status=True, radar=False, track_id=4, d_rel=28.0)
   assert latch.gap_m == pytest.approx(28.0)
-  assert latch.hud == 0
+  assert latch.hud != HUD_LOST
   _step(latch, seq=1, status=True, radar=True, track_id=4, d_rel=27.5)
   assert latch.track_id == 4
   for _ in range(30):
@@ -148,7 +163,7 @@ def test_different_gap_clears_after_two_seconds_then_recapture():
   _step(latch, seq=1, track_id=9, d_rel=50.0, y_rel=0.2)
   assert latch.gap_m == pytest.approx(28.0)
   assert latch.track_id == 4
-  assert latch.hud == 0
+  assert latch.hud != HUD_LOST
   for _ in range(40):
     _step(latch, seq=1, track_id=9, d_rel=50.0, y_rel=0.2)
   assert latch.gap_m is None
@@ -158,7 +173,7 @@ def test_different_gap_clears_after_two_seconds_then_recapture():
   _step(latch, seq=2, track_id=9, d_rel=40.0)
   assert latch.track_id == 9
   assert latch.gap_m == pytest.approx(40.0)
-  assert latch.hud == 0
+  assert latch.hud == HUD_ENGAGED
 
 
 def test_disengage_brake_stalk_and_param_clear_without_lost_toast():
@@ -222,6 +237,50 @@ def test_preview_while_long_is_paused():
     _step(latch, long_on=False, holding=True, d_rel=36.0)
   assert latch.gap_m is None
   assert latch.preview_m == pytest.approx(36.0)
+
+
+def test_engaged_banner_is_two_seconds_and_chip_stays():
+  assert GAP_LOCK_ENGAGED_BANNER_S == pytest.approx(2.0)
+  latch = GapLockLatch()
+  _arm(latch, d_rel=15.0)
+  assert latch.gap_m == pytest.approx(15.0)
+  assert latch.hud == HUD_ENGAGED
+  assert gap_lock_banner_active(latch.hud)
+  assert gap_lock_hud_chip(latch.gap_m) == "LOCK 15m"
+  assert not gap_lock_banner_active(HUD_NONE)
+  assert gap_lock_banner_active(HUD_UNAVAILABLE)
+  assert gap_lock_banner_active(HUD_LOST)
+
+  # _arm sets the pulse at the current clock. Each later step is 0.05 s.
+  # Still up one frame inside the window. The planner clock is a running
+  # sum, so the last frame can land a hair under 2.0 s and take one more.
+  dt = 0.05
+  for _ in range(int(GAP_LOCK_ENGAGED_BANNER_S / dt) - 1):
+    _step(latch, seq=1, d_rel=15.0)
+  assert latch.hud == HUD_ENGAGED
+  assert latch.gap_m == pytest.approx(15.0)
+  assert gap_lock_hud_chip(latch.gap_m) == "LOCK 15m"
+
+  for _ in range(2):
+    _step(latch, seq=1, d_rel=15.0)
+  assert latch.hud == HUD_NONE
+  assert not gap_lock_banner_active(latch.hud)
+  assert latch.gap_m == pytest.approx(15.0)
+  assert gap_lock_hud_chip(latch.gap_m) == "LOCK 15m"
+
+  # A new hold starts the banner again. A soft clear still has no toast.
+  _step(latch, seq=2, d_rel=15.0)
+  assert latch.hud == HUD_ENGAGED
+  _step(latch, seq=2, stalk_exit=True)
+  assert latch.gap_m is None
+  assert latch.hud == HUD_NONE
+  assert not gap_lock_banner_active(latch.hud)
+
+  # The onroad event follows the pulse. A latched gapLockM alone must not
+  # keep the bottom banner up; the chip reads that field on its own.
+  src = (pathlib.Path(__file__).resolve().parents[3] / "selfdrive/selfdrived/selfdrived.py").read_text()
+  assert "gap_lock_banner_active" in src
+  assert "gap_m > 0.0 or gap_ev" not in src
 
 
 def test_onroad_text_and_chip_while_locked_gone_when_clear():

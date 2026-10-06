@@ -585,18 +585,19 @@ class SelfdriveD:
       if wiper_evt is not None:
         self.events.add(wiper_evt)
 
-    # Gap lock: meters while latched, unavailable / lost while the planner holds the code.
+    # Gap lock bottom banner only while the planner is pulsing it.
+    # Engaged is ~2 s (GAP_LOCK_ENGAGED_BANNER_S). Unavailable / lost stay
+    # their short pulse. Soft clears publish no code. The under-MAX chip
+    # reads gapLockM for the whole latch and does not use this event.
     gap_evt = getattr(EventName, "gapLock", None)
     if gap_evt is not None:
-      gap_m = 0.0
       gap_ev = 0
       try:
-        plan = self.sm["longitudinalPlan"]
-        gap_m = float(getattr(plan, "gapLockM", 0.0) or 0.0)
-        gap_ev = int(getattr(plan, "gapLockEvent", 0) or 0)
+        gap_ev = int(getattr(self.sm["longitudinalPlan"], "gapLockEvent", 0) or 0)
       except Exception:
-        gap_m, gap_ev = 0.0, 0
-      if gap_m > 0.0 or gap_ev in (2, 3):
+        gap_ev = 0
+      from openpilot.selfdrive.controls.lib.gap_lock import gap_lock_banner_active
+      if gap_lock_banner_active(gap_ev):
         self.events.add(gap_evt)
 
   def data_sample(self):
