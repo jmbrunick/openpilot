@@ -38,6 +38,12 @@ from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, S
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
 from openpilot.selfdrive.controls.lib.gap_lock import slack_for_guard
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl
+from openpilot.selfdrive.controls.lib.preap_driver_brake import (
+  driver_brake_applied,
+  preap_longitudinal_active,
+  preap_pedal_long,
+  published_long_accel,
+)
 from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 
@@ -300,7 +306,18 @@ class Controls:
       soft_lat_on=self.lat_handoff.enabled,
       driver_turn=self._lane_change_turn.turning,
     )
-    CC.longActive = CC.enabled and not any(e.overrideLongitudinal for e in self.sm['onroadEvents']) and self.CP.openpilotLongitudinalControl
+    # Pre-AP: brake and a long pause keep lateral, but must not log longActive
+    # or a decel the interceptor is not executing. Other cars keep the stock
+    # formula (enabled, no longitudinal override, openpilot longitudinal).
+    preap_pedal = preap_pedal_long(self.CP)
+    CC.longActive = preap_longitudinal_active(
+      enabled=CC.enabled,
+      longitudinal_override=any(e.overrideLongitudinal for e in self.sm['onroadEvents']),
+      openpilot_longitudinal=self.CP.openpilotLongitudinalControl,
+      preap_pedal=preap_pedal,
+      enable_long_control=bool(getattr(CS, "enableLongControl", False)),
+      driver_brake=driver_brake_applied(CS),
+    )
     # turn_active is the latched driver-turn blinker (not ALC, not the
     # post-turn hand-on hold). Soft-lat ORs that with v_ego < 10 mph
     # as re-enable inhibit + falling-edge enter-yield. Soft-lat Off
@@ -360,13 +377,17 @@ class Controls:
       gap_lock_m = getattr(long_plan, "gapLockM", 0.0)
       lead_slack = slack_for_guard(lead_d_rel, float(lead.vLead), float(long_plan.tFollow), gap_lock_m)
       lead_a_lead = float(lead.aLeadK)
-    actuators.accel = float(self.LoC.update(
-      CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop, pid_accel_limits,
-      lead_v_rel=lead_v_rel, lead_d_rel=lead_d_rel, lead_slack=lead_slack,
-      lead_fcw=bool(long_plan.fcw),
-      lead_v_ego=float(CS.vEgo), lead_v_cruise=float(CS.vCruise) * CV.KPH_TO_MS,
-      lead_a_lead=lead_a_lead,
-    ))
+    actuators.accel = published_long_accel(
+      long_active=bool(CC.longActive),
+      preap_pedal=preap_pedal,
+      loc_accel=self.LoC.update(
+        CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop, pid_accel_limits,
+        lead_v_rel=lead_v_rel, lead_d_rel=lead_d_rel, lead_slack=lead_slack,
+        lead_fcw=bool(long_plan.fcw),
+        lead_v_ego=float(CS.vEgo), lead_v_cruise=float(CS.vCruise) * CV.KPH_TO_MS,
+        lead_a_lead=lead_a_lead,
+      ),
+    )
 
     # Steering PID loop and lateral MPC
     # Reset desired curvature to current to avoid violating the limits on engage.

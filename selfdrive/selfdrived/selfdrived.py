@@ -21,6 +21,12 @@ from openpilot.selfdrive.controls.lib.blinker_lateral_pause import (
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 from openpilot.selfdrive.selfdrived.events import Events, ET
 from openpilot.selfdrive.selfdrived.helpers import ExcessiveActuationCheck, preap_not_in_drive_clears_mismatch
+from openpilot.selfdrive.controls.lib.preap_driver_brake import (
+  BrakeLongOverlap,
+  brake_signal_disables,
+  driver_brake_applied,
+  preap_pedal_long,
+)
 from openpilot.selfdrive.selfdrived.preap_regen import (
   PreAPChimeState, RegenDemandCheck, gas_should_user_disable, orphan_pull_requests_enable,
   update_preap_chimes,
@@ -146,6 +152,7 @@ class SelfdriveD:
     self.rk = Ratekeeper(100, print_delay_threshold=None)
     self.prev_preap_chimes = PreAPChimeState()
     self.preap_regen_demand = RegenDemandCheck()
+    self.preap_brake_long = BrakeLongOverlap()
 
     # Determine startup event
     self.startup_event = EventName.startup if build_metadata.openpilot.comma_remote and build_metadata.tested_channel else EventName.startupMaster
@@ -279,15 +286,27 @@ class SelfdriveD:
         # only triggers while the post-guard command is also at the rail.
         regen_demand_overflow = self.preap_regen_demand.update(
           pedal_long_active=pedal_long_active,
-          brake_pressed=CS.brakePressed,
+          brake_pressed=driver_brake_applied(CS),
           a_target=float(self.sm['longitudinalPlan'].aTarget),
           v_ego=CS.vEgo,
           a_cmd=float(self.sm['carControl'].actuators.accel),
         )
         if getattr(CS, 'pedalMaxRegen', False) or regen_demand_overflow:
           self.events.add(EventName.pedalMaxRegen)
+        # Pedal RELEASE is the next 50 Hz command. Longer overlap is a
+        # regression. Log it; do not alert or chime.
+        fault, rising = self.preap_brake_long.update(
+          driver_brake=driver_brake_applied(CS),
+          pedal_long_active=bool(getattr(CS, "pedalLongActive", False)),
+          dt=DT_CTRL,
+        )
+        if fault:
+          self.events.add(EventName.preapBrakeLongActive)
+          if rising:
+            cloudlog.error("preapBrakeLongActive: driver brake down while pedal long still active")
       else:
         self.prev_preap_chimes = PreAPChimeState()
+        self.preap_brake_long.reset()
 
       if self.CP.notCar:
         # wait for everything to init first
@@ -302,15 +321,20 @@ class SelfdriveD:
       # This mirrors expected "steering-only on brake" behavior for pedal-long cars.
       # One-Pedal Long On: rising gas is that same silent long pause, never
       # EventName.pedalPressed USER_DISABLE / full session cancel.
-      brake_or_regen_disable = (
-        (CS.brakePressed and (not self.CS_prev.brakePressed or not CS.standstill)) or
-        (CS.regenBraking and (not self.CS_prev.regenBraking or not CS.standstill))
-      )
-      preap_steering_only_brake = (
-        self.CP.brand == "tesla"
-        and self.CP.carFingerprint == "TESLA_MODEL_S_PREAP"
-        and self.CP.openpilotLongitudinalControl
-        and not self.CP.pcmCruise
+      # Pre-AP reads driverBrakeApplied. brakePressed stays false so this
+      # path cannot see the pedal, and a true brakePressed must not be
+      # treated as the switch. The Pre-AP branch below is long-only
+      # (gasPressedOverride): lateral stays, a stalk pull resumes long.
+      preap_steering_only_brake = preap_pedal_long(self.CP)
+      brake_or_regen_disable = brake_signal_disables(
+        preap_pedal=preap_steering_only_brake,
+        driver_brake=driver_brake_applied(CS),
+        prev_driver_brake=driver_brake_applied(self.CS_prev),
+        brake_pressed=bool(CS.brakePressed),
+        prev_brake_pressed=bool(self.CS_prev.brakePressed),
+        regen_braking=bool(CS.regenBraking),
+        prev_regen_braking=bool(self.CS_prev.regenBraking),
+        standstill=bool(CS.standstill),
       )
       gas_disable = (
         CS.gasPressed and not self.CS_prev.gasPressed
