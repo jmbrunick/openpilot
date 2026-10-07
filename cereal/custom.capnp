@@ -93,6 +93,15 @@ struct PathObstacleNAP @0xda96579883444c35 {
   scanUs @29 :Float32;
   visionUs @30 :Float32;
   livelyScore @31 :Float32;     # 0 still .. 1 moved in the last ~2 s
+  # Radar-stage fields forwarded to the camera helper. Additive.
+  y @32 :Float32;                # device frame, +left
+  along @33 :Float32;            # m/s ground speed along the road
+  radarClass @34 :ObjectClass;
+  memberIds @35 :List(UInt64);
+  laneProbMin @36 :Float32;      # min(left, right) lane prob, for lighting
+  pathYStd3s @37 :Float32;       # model y std near t=3 s
+  overBudget @38 :Bool;
+  heartbeat @39 :Bool;
 
   enum ObjectClass {
     unknown @0;
@@ -109,7 +118,27 @@ struct PathObstacleNAP @0xda96579883444c35 {
   }
 }
 
-struct CustomReserved4 @0x80ae746ee2596b11 {
+# Camera-helper result. Same type id as the old empty CustomReserved4.
+# The chime reads this. radard does not.
+struct PathObstacleVisionNAP @0x80ae746ee2596b11 {
+  trackId @0 :UInt64;
+  visionEvaluated @1 :Bool;
+  visionConf @2 :Float32;
+  visionConfHuman @3 :Float32;
+  visionConfAnimal @4 :Float32;
+  visionConfObstacle @5 :Float32;
+  lightingScore @6 :Float32;
+  wRadar @7 :Float32;
+  wVision @8 :Float32;
+  fusedScore @9 :Float32;
+  agree @10 :Bool;
+  objectClass @11 :PathObstacleNAP.ObjectClass;
+  zone @12 :PathObstacleNAP.Zone;
+  brakeGate @13 :Bool;
+  chimed @14 :Bool;
+  chimeReason @15 :Text;
+  livelyScore @16 :Float32;
+  visionUs @17 :Float32;
 }
 
 struct CustomReserved5 @0xa5cd762cd951a455 {

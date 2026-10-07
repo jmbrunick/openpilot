@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
-"""Log-only path obstacle detector. Little cores, nice 19.
+"""Camera helper for the path-obstacle chime. Little cores, nice 19.
 
-Radar scans every liveTracks frame. The camera is read only after a
-candidate has already persisted, and at most 5 times a second. A crash
-here must not disengage: manager starts this process as optional.
+radard owns the radar scan and publishes pathObstacleNAP. This process
+blocks on that socket (no poll loop) and opens the camera only while a
+candidate is active, at most 5 times a second. A crash here must not
+disengage: manager starts this process as optional.
 """
 from __future__ import annotations
 
+import math
 import os
 import time
+from dataclasses import replace
 
 from openpilot.selfdrive.controls.lib.path_obstacle import (
   PARAM_OBSTACLE_CHIME,
   PARAM_OBSTACLE_LOG,
-  ConeHint,
   PathObstacleDetector,
+  hit_from_msg,
   lighting_score,
   patch_change_score,
   patch_signature,
@@ -23,9 +26,7 @@ from openpilot.selfdrive.controls.lib.path_obstacle import (
   prune_thumbs,
   save_ppm,
   score_row_patches,
-  vehicle_exclusion_points,
 )
-from openpilot.selfdrive.controls.lib.radar_path_gate import model_path_xy
 
 # comma 3X road camera (OS04C10). Wide focal is the stock fisheye guess.
 ROAD_W, ROAD_H, ROAD_F = 1344, 760, 1141.5
@@ -38,6 +39,8 @@ THUMB_DIR = "/data/media/0/realdata/path_obstacle_thumbs"
 THUMB_GAP_S = 2.0
 NICE = 19
 CORES = [0, 1, 2, 3]
+# Block in the kernel until radard publishes, or this long for a param refresh.
+RADAR_TIMEOUT_MS = 1500
 
 
 def _bool_param(params, key: str, default: bool) -> bool:
@@ -54,112 +57,66 @@ def _cam_size(sensor) -> tuple[int, int, float, float]:
   return ROAD_W, ROAD_H, ROAD_F, WIDE_F
 
 
-def _cone_hint(msg) -> ConeHint | None:
-  try:
-    return ConeHint(
-      active=bool(msg.active),
-      side=int(msg.side),
-      lat_near=float(msg.latNear),
-      lat_mid=float(msg.latMid),
-      lat_far=float(msg.latFar),
-      barrier=bool(msg.barrier),
-      parked=bool(msg.parked),
-    )
-  except Exception:
+def _own(plane):
+  """Copy a crop out of camerad's live VisionIPC buffer before reading it."""
+  if plane is None:
     return None
-
-
-def _tracked_vehicles(model, radar_state):
-  """lead0 and lead1, any other model vehicle, and both radard leads."""
   try:
-    leads_v3 = model.leadsV3
+    return plane.copy()
   except Exception:
-    leads_v3 = ()
+    return plane
+
+
+def _lighting_from(body, cam, gps) -> float:
+  """Lane and path std come from radard. Exposure and sun are local."""
   try:
-    leads_v2 = model.leads
+    lane = float(body.laneProbMin)
   except Exception:
-    leads_v2 = ()
-  radar = []
-  for name in ("leadOne", "leadTwo"):
-    try:
-      radar.append(getattr(radar_state, name))
-    except Exception:
-      continue
+    lane = 1.0
+  if not math.isfinite(lane):
+    lane = 1.0
   try:
-    return vehicle_exclusion_points(leads_v3, leads_v2, radar)
+    std = float(body.pathYStd3s)
   except Exception:
-    return [], []
-
-
-def _path_std(model) -> float | None:
-  try:
-    ts = [float(v) for v in model.position.t]
-    stds = [float(v) for v in model.position.yStd]
-  except Exception:
-    return None
-  if not ts or not stds:
-    return None
-  n = min(len(ts), len(stds))
-  idx = min(range(n), key=lambda i: abs(ts[i] - 3.0))
-  return stds[idx]
-
-
-def _lane(model, index: int) -> float:
-  try:
-    return float(model.laneLineProbs[index])
-  except Exception:
-    return 1.0
-
-
-def _headlights(cs) -> bool:
-  for name in ("headlights", "lowBeamOn", "highBeamOn"):
-    try:
-      value = getattr(cs, name)
-    except Exception:
-      continue
-    if isinstance(value, bool) and value:
-      return True
-  return False
-
-
-def _lighting(sm) -> float:
-  model = sm["modelV2"]
-  cam = sm["roadCameraState"]
+    std = float("nan")
+  path_std = std if math.isfinite(std) else None
   sun = False
   try:
     from openpilot.selfdrive.controls.lib.lat_low_visibility import sun_ahead_from_fix
-    gps = sm["gpsLocationExternal"]
-    got = sun_ahead_from_fix(
-      latitude=gps.latitude,
-      longitude=gps.longitude,
-      unix_timestamp_millis=gps.unixTimestampMillis,
-      bearing_deg=gps.bearingDeg,
-      horizontal_accuracy_m=gps.horizontalAccuracy,
-    )
-    sun = bool(got)
+    if gps is not None:
+      got = sun_ahead_from_fix(
+        latitude=gps.latitude,
+        longitude=gps.longitude,
+        unix_timestamp_millis=gps.unixTimestampMillis,
+        bearing_deg=gps.bearingDeg,
+        horizontal_accuracy_m=gps.horizontalAccuracy,
+      )
+      sun = bool(got)
   except Exception:
     sun = False
-  try:
-    integ = float(cam.integLines)
-  except Exception:
-    integ = None
-  try:
-    gain = float(cam.gain)
-  except Exception:
-    gain = None
-  try:
-    grey = float(cam.measuredGreyFraction)
-  except Exception:
-    grey = None
+  integ = gain = grey = None
+  if cam is not None:
+    try:
+      integ = float(cam.integLines)
+    except Exception:
+      integ = None
+    try:
+      gain = float(cam.gain)
+    except Exception:
+      gain = None
+    try:
+      grey = float(cam.measuredGreyFraction)
+    except Exception:
+      grey = None
   return lighting_score(
-    lane_left=_lane(model, 1),
-    lane_right=_lane(model, 2),
-    path_y_std=_path_std(model),
+    lane_left=lane,
+    lane_right=lane,
+    path_y_std=path_std,
     integ_lines=integ,
     gain=gain,
     grey=grey,
     sun_ahead=sun,
-    headlights=_headlights(sm["carState"]),
+    headlights=False,
   )
 
 
@@ -199,7 +156,7 @@ def _crop(plane, box):
   ry0 = min(height - 1, y1)
   ry1 = min(height, ry0 + road_h)
   road = plane[ry0:ry1, x0:x1] if ry1 - ry0 >= 2 else patch[-road_h:, :]
-  return patch, road
+  return _own(patch), _own(road)
 
 
 def math_ceil(value: float) -> int:
@@ -247,6 +204,23 @@ class _Cameras:
       return y_plane_from_nv12(buf)
     except Exception:
       return None
+
+
+class _View:
+  """The three conflated inputs _calib / _vision_for already index by name."""
+
+  def __init__(self, cam, cal, gps):
+    self._d = {
+      "roadCameraState": cam,
+      "liveCalibration": cal,
+      "gpsLocationExternal": gps,
+    }
+
+  def __getitem__(self, key):
+    value = self._d.get(key)
+    if value is None:
+      raise KeyError(key)
+    return value
 
 
 def _project(hit, roll, pitch, yaw, height, focal, width, cam_h):
@@ -314,130 +288,164 @@ def _maybe_thumb(patch, now: float, last: float) -> float:
   return last
 
 
-def _fill(msg, sample, scan_us: float, vision_us: float) -> None:
-  body = msg.pathObstacleNAP
-  body.active = bool(sample.active)
-  body.trackId = int(sample.track_id)
-  body.range = float(sample.range_m)
-  body.lateral = float(sample.lateral)
-  body.vRel = float(sample.v_rel)
-  body.vLat = float(sample.v_lat)
-  body.radarConf = float(sample.radar_conf)
-  body.visionConf = float(sample.vision_conf)
+def _finite_or_nan(value) -> float:
+  try:
+    num = float(value)
+  except (TypeError, ValueError):
+    return float("nan")
+  if not math.isfinite(num):
+    return float("nan")
+  return num
+
+
+def _publish_vision(pm, messaging, sample, vision_us: float) -> None:
+  msg = messaging.new_message("pathObstacleVisionNAP", valid=True)
+  body = msg.pathObstacleVisionNAP
+  body.trackId = int(sample.track_id) & 0xFFFFFFFFFFFFFFFF
   body.visionEvaluated = bool(sample.vision_evaluated)
+  body.visionConf = _finite_or_nan(sample.vision_conf)
+  body.visionConfHuman = _finite_or_nan(sample.vision_conf_human)
+  body.visionConfAnimal = _finite_or_nan(sample.vision_conf_animal)
+  body.visionConfObstacle = _finite_or_nan(sample.vision_conf_obstacle)
   body.lightingScore = float(sample.lighting_score)
   body.wRadar = float(sample.w_radar)
   body.wVision = float(sample.w_vision)
   body.fusedScore = float(sample.fused_score)
   body.agree = bool(sample.agree)
-  body.rejectReason = str(sample.reject_reason)
-  body.inPath = bool(sample.in_path)
-  body.timeToReach = float(sample.time_to_reach)
-  body.objectClass = sample.object_class
-  body.visionConfHuman = float(sample.vision_conf_human)
-  body.visionConfAnimal = float(sample.vision_conf_animal)
-  body.visionConfObstacle = float(sample.vision_conf_obstacle)
-  body.clusterCount = int(sample.cluster_count)
-  body.spanM = float(sample.span_m)
-  body.timeToEnter = float(sample.time_to_enter)
-  body.entering = bool(sample.entering)
-  body.zone = sample.zone if sample.zone in ("none", "inPath", "entering", "roadside") else "none"
+  obj = sample.object_class if sample.object_class in ("unknown", "human", "animal", "obstacle") else "unknown"
+  zone = sample.zone if sample.zone in ("none", "inPath", "entering", "roadside") else "none"
+  body.objectClass = obj
+  body.zone = zone
   body.brakeGate = bool(sample.brake_gate)
   body.chimed = bool(sample.chimed)
   body.chimeReason = str(sample.chime_reason)
   body.livelyScore = float(sample.lively_score)
-  body.scanUs = float(scan_us)
   body.visionUs = float(vision_us)
+  pm.send("pathObstacleVisionNAP", msg)
 
 
-def _publish_disabled(pm, messaging) -> None:
-  from openpilot.selfdrive.controls.lib.path_obstacle import ObstacleSample
-  msg = messaging.new_message("pathObstacleNAP")
-  _fill(msg, ObstacleSample(reject_reason="disabled", chime_reason="disabled"), 0.0, 0.0)
-  pm.send("pathObstacleNAP", msg)
+class Helper:
+  """Blocks on radard. VisionIPC stays closed until a candidate is active."""
+
+  def __init__(self, det: PathObstacleDetector | None = None):
+    self.det = det or PathObstacleDetector()
+    self.cams = _Cameras()
+    self.log_on = True
+    self.chime_on = True
+    self.param_t = 0.0
+    self.next_vision = 0.0
+    self.cam = None
+    self.cal = None
+    self.gps = None
+
+  def refresh_params(self, params, now: float) -> None:
+    if now - self.param_t <= 1.0:
+      return
+    self.log_on = _bool_param(params, PARAM_OBSTACLE_LOG, True)
+    self.chime_on = _bool_param(params, PARAM_OBSTACLE_CHIME, True)
+    self.param_t = now
+
+  def absorb(self, cam, cal, gps) -> None:
+    if cam is not None:
+      self.cam = cam
+    if cal is not None:
+      self.cal = cal
+    if gps is not None:
+      self.gps = gps
+
+  def on_radar(self, msg, now: float):
+    """Fusion and chime for one active radar hit. None if there is nothing to do.
+
+    The camera is grabbed only when the 5 Hz budget allows it.
+    """
+    if not self.log_on or msg is None:
+      if not self.log_on:
+        self.det.reset()
+      return None
+    try:
+      body = msg.pathObstacleNAP
+    except Exception:
+      return None
+    if not bool(getattr(body, "active", False)):
+      return None
+    hit = replace(hit_from_msg(body), lighting=_lighting_from(body, self.cam, self.gps))
+    vision = None
+    vision_us = 0.0
+    motion = 0.0
+    patch = None
+    if now >= self.next_vision:
+      vision, vision_us, patch = _vision_for(hit, _View(self.cam, self.cal, self.gps), self.cams)
+      gap = 1.0 / VISION_HZ
+      if vision_us > VISION_BUDGET_S * 1e6:
+        gap = max(gap, 0.40)
+      self.next_vision = time.monotonic() + gap
+      if patch is not None and hit.track_id:
+        sig = patch_signature(patch)
+        prev = self.cams.patch_sig.get(int(hit.track_id))
+        if prev is not None:
+          motion = patch_change_score(prev, sig)
+        self.cams.patch_sig[int(hit.track_id)] = sig
+        if len(self.cams.patch_sig) > 32:
+          self.cams.patch_sig.pop(next(iter(self.cams.patch_sig)))
+      if vision is not None and patch is not None and vision.conf >= 0.30:
+        self.cams.last_thumb = _maybe_thumb(patch, now, self.cams.last_thumb)
+    sample = self.det.commit(hit, vision, chime_enabled=self.chime_on, now=now, vision_motion=motion)
+    return sample, vision_us
+
+
+def _latest_body(messaging, sock):
+  last = None
+  while True:
+    msg = messaging.recv_one_or_none(sock)
+    if msg is None:
+      return last
+    try:
+      last = getattr(msg, msg.which())
+    except Exception:
+      last = msg
 
 
 def _run() -> None:
   import cereal.messaging as messaging
   from openpilot.common.params import Params
-  from openpilot.common.realtime import Ratekeeper
 
   params = Params()
-  sm = messaging.SubMaster([
-    "modelV2", "carState", "liveTracks", "liveCalibration", "coneLineNAP",
-    "radarState", "roadCameraState", "wideRoadCameraState", "deviceState",
-    "gpsLocationExternal",
-  ], poll="liveTracks")
-  pm = messaging.PubMaster(["pathObstacleNAP"])
-  det = PathObstacleDetector()
-  cams = _Cameras()
-  rk = Ratekeeper(8, print_delay_threshold=None)
-  log_on = True
-  chime_on = True
-  param_t = 0.0
-  last_mono = 0.0
-  next_vision = 0.0
-  last_disabled = 0.0
+  # No carState, modelV2, radarState, liveTracks, or deviceState. Those
+  # services are at or near the msgq reader cap. radard already has them.
+  sock = messaging.sub_sock("pathObstacleNAP", timeout=RADAR_TIMEOUT_MS)
+  cam_sock = messaging.sub_sock("roadCameraState", conflate=True)
+  cal_sock = messaging.sub_sock("liveCalibration", conflate=True)
+  gps_sock = messaging.sub_sock("gpsLocationExternal", conflate=True)
+  pm = messaging.PubMaster(["pathObstacleVisionNAP"])
+  helper = Helper()
 
   while True:
-    sm.update(100)
+    msg = messaging.recv_one(sock)
     now = time.monotonic()
-    if now - param_t > 1.0:
-      log_on = _bool_param(params, PARAM_OBSTACLE_LOG, True)
-      chime_on = _bool_param(params, PARAM_OBSTACLE_CHIME, True)
-      param_t = now
-    if not log_on:
-      det.reset()
-      if now - last_disabled > 1.0:
-        _publish_disabled(pm, messaging)
-        last_disabled = now
-      rk.keep_time()
+    helper.refresh_params(params, now)
+    if msg is None or not helper.log_on:
+      if not helper.log_on:
+        helper.det.reset()
       continue
-    if not sm.updated["liveTracks"]:
-      rk.keep_time()
-      continue
-    mono = float(sm.logMonoTime["liveTracks"]) * 1e-9
-    dt = 0.1 if last_mono <= 0.0 else min(0.5, max(0.0, mono - last_mono))
-    last_mono = mono
     try:
-      v_ego = float(sm["carState"].vEgo)
+      active = bool(msg.pathObstacleNAP.active)
     except Exception:
-      v_ego = 0.0
-    path_x, path_y = model_path_xy(sm["modelV2"])
-    lead_ids, vehicle_pts = _tracked_vehicles(sm["modelV2"], sm["radarState"])
-    t0 = time.monotonic()
-    hit = det.begin(
-      sm["liveTracks"], v_ego, path_x, path_y, dt,
-      lead_ids=lead_ids,
-      cone=_cone_hint(sm["coneLineNAP"]),
-      model_leads=vehicle_pts,
-      lighting=_lighting(sm),
-    )
-    scan_us = (time.monotonic() - t0) * 1e6
-    vision = None
-    vision_us = 0.0
-    motion = 0.0
-    if hit.active and now >= next_vision:
-      vision, vision_us, patch = _vision_for(hit, sm, cams)
-      gap = 1.0 / VISION_HZ
-      if vision_us > VISION_BUDGET_S * 1e6:
-        gap = max(gap, 0.40)
-      next_vision = time.monotonic() + gap
-      if patch is not None and hit.track_id:
-        sig = patch_signature(patch)
-        prev = cams.patch_sig.get(int(hit.track_id))
-        if prev is not None:
-          motion = patch_change_score(prev, sig)
-        cams.patch_sig[int(hit.track_id)] = sig
-        if len(cams.patch_sig) > 32:
-          cams.patch_sig.pop(next(iter(cams.patch_sig)))
-      if vision is not None and patch is not None and vision.conf >= 0.30:
-        cams.last_thumb = _maybe_thumb(patch, now, cams.last_thumb)
-    sample = det.commit(hit, vision, chime_enabled=chime_on, now=now, vision_motion=motion)
-    msg = messaging.new_message("pathObstacleNAP")
-    _fill(msg, sample, scan_us, vision_us)
-    pm.send("pathObstacleNAP", msg)
-    rk.keep_time()
+      continue
+    if not active:
+      continue
+    try:
+      helper.absorb(
+        _latest_body(messaging, cam_sock),
+        _latest_body(messaging, cal_sock),
+        _latest_body(messaging, gps_sock),
+      )
+      result = helper.on_radar(msg, now)
+      if result is None:
+        continue
+      sample, vision_us = result
+      _publish_vision(pm, messaging, sample, vision_us)
+    except Exception:
+      continue
 
 
 def main() -> None:

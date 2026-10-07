@@ -19,7 +19,6 @@ from openpilot.selfdrive.controls.lib.blinker_lateral_pause import (
   preap_blinker_pause_hides_controls_mismatch,
 )
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
-from openpilot.selfdrive.controls.lib.path_obstacle import should_raise_chime
 from openpilot.selfdrive.selfdrived.events import Events, ET
 from openpilot.selfdrive.selfdrived.helpers import ExcessiveActuationCheck, preap_not_in_drive_clears_mismatch
 from openpilot.selfdrive.selfdrived.preap_regen import (
@@ -84,7 +83,7 @@ class SelfdriveD:
     # TODO: de-couple selfdrived with card/conflate on carState without introducing controls mismatches
     self.car_state_sock = messaging.sub_sock('carState', timeout=20)
 
-    ignore = self.sensor_packets + self.gps_packets + ['alertDebug', 'lateralManeuverPlan', 'pathObstacleNAP']
+    ignore = self.sensor_packets + self.gps_packets + ['alertDebug', 'lateralManeuverPlan', 'pathObstacleNAP', 'pathObstacleVisionNAP']
     if SIMULATION:
       ignore += ['driverCameraState', 'managerState']
     if REPLAY:
@@ -95,7 +94,7 @@ class SelfdriveD:
                                    'carOutput', 'driverMonitoringState', 'longitudinalPlan', 'livePose', 'liveDelay',
                                    'managerState', 'liveParameters', 'radarState', 'liveTorqueParameters',
                                    'controlsState', 'carControl', 'driverAssistance', 'alertDebug', 'userBookmark', 'audioFeedback',
-                                   'lateralManeuverPlan', 'pathObstacleNAP'] + \
+                                   'lateralManeuverPlan', 'pathObstacleVisionNAP'] + \
                                    self.camera_packets + self.sensor_packets + self.gps_packets,
                                   ignore_alive=ignore, ignore_avg_freq=ignore,
                                   ignore_valid=ignore, frequency=int(1/DT_CTRL))
@@ -355,8 +354,9 @@ class SelfdriveD:
     # It does not enter the state machine as a disable or a no-entry.
     if self.obstacle_chime:
       try:
-        if self.sm.updated['pathObstacleNAP']:
-          obs = self.sm['pathObstacleNAP']
+        from openpilot.selfdrive.controls.lib.path_obstacle import should_raise_chime
+        if self.sm.updated['pathObstacleVisionNAP']:
+          obs = self.sm['pathObstacleVisionNAP']
           if should_raise_chime(obs.chimed, obs.objectClass):
             chime = getattr(EventName, 'obstacleChime', None)
             if chime is not None:

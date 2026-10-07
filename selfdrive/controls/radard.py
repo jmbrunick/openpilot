@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import math
+import time
 import numpy as np
 from collections import deque
 from typing import Any
@@ -11,6 +12,12 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL, Priority, config_realtime_process
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.simple_kalman import KF1D
+from openpilot.selfdrive.controls.lib.path_obstacle import (
+  ConeHint,
+  ObstacleStage,
+  hit_to_msg,
+  vehicle_exclusion_points,
+)
 from openpilot.selfdrive.controls.lib.cone_line import (
   ConeLineDetector,
   ConeLineSample,
@@ -325,6 +332,110 @@ class LeadTrackAssociation:
     return lead_dict
 
 
+def _capnp_attr(obj, name):
+  try:
+    return getattr(obj, name)
+  except Exception:
+    return None
+
+
+def _radar_point(pt) -> dict:
+  """Plain snapshot so the scan never writes back into the live radar message."""
+  measured = _capnp_attr(pt, "measured")
+  item = {
+    "dRel": _capnp_attr(pt, "dRel"),
+    "yRel": _capnp_attr(pt, "yRel"),
+    "vRel": _capnp_attr(pt, "vRel"),
+    "trackId": _capnp_attr(pt, "trackId"),
+    "measured": True if measured is None else bool(measured),
+  }
+  yv = _capnp_attr(pt, "yvRel")
+  if yv is not None:
+    item["yvRel"] = yv
+  rcs = _capnp_attr(pt, "rcs")
+  if rcs is None:
+    rcs = _capnp_attr(pt, "rcsDb")
+  if rcs is not None:
+    item["rcs"] = rcs
+  return item
+
+
+def _radar_lead(lead) -> dict | None:
+  try:
+    if lead is None or not bool(lead.status):
+      return None
+    track = _capnp_attr(lead, "radarTrackId")
+    prob = _capnp_attr(lead, "modelProb")
+    return {
+      "status": True,
+      "dRel": float(lead.dRel),
+      "yRel": float(lead.yRel),
+      "modelProb": 1.0 if prob is None else float(prob),
+      "radarTrackId": -1 if track is None else int(track),
+    }
+  except Exception:
+    return None
+
+
+def _model_lead_tuples(leads, xyva: bool) -> list:
+  out = []
+  try:
+    seq = list(leads) if leads is not None else []
+  except TypeError:
+    return out
+  for item in seq:
+    try:
+      prob = float(item.prob)
+      if xyva:
+        xy = item.xyva
+        out.append((float(xy[0]), float(xy[1]), prob))
+      else:
+        out.append((float(item.x[0]), float(item.y[0]), prob))
+    except Exception:
+      continue
+  return out
+
+
+def _cone_hint(sample) -> ConeHint | None:
+  if sample is None:
+    return None
+  try:
+    return ConeHint(
+      active=bool(sample.active),
+      side=int(sample.side),
+      lat_near=float(sample.lat_near),
+      lat_mid=float(sample.lat_mid),
+      lat_far=float(sample.lat_far),
+      barrier=bool(sample.barrier),
+      parked=bool(sample.parked),
+    )
+  except Exception:
+    return None
+
+
+def _lane_prob_min(model) -> float:
+  try:
+    probs = list(model.laneLineProbs)
+    if len(probs) >= 3:
+      return float(min(float(probs[1]), float(probs[2])))
+  except Exception:
+    pass
+  return 1.0
+
+
+def _path_y_std_3s(model):
+  try:
+    ts = [float(v) for v in model.position.t]
+    stds = [float(v) for v in model.position.yStd]
+  except Exception:
+    return None
+  if not ts or not stds:
+    return None
+  n = min(len(ts), len(stds))
+  idx = min(range(n), key=lambda i: abs(ts[i] - 3.0))
+  return stds[idx]
+
+
 class RadarD:
   def __init__(self, delay: float = 0.0, rain_gate: RainRadarGate | None = None):
     self.current_time = 0.0
@@ -356,6 +467,12 @@ class RadarD:
     self._cone_dirty = False
     self._cone_log_on = True
     self._cone_log_check_t = -1.0
+    # Radar half of the path-obstacle log. The scan runs after radarState
+    # is published, so a slow or failing scan cannot change lead selection.
+    self._obstacle = ObstacleStage()
+    self._obstacle_pending = False
+    self._obstacle_dt = RADAR_DT
+    self._obstacle_inputs = None
 
   def set_sensor_dirty_ignore_override(self, ignore: bool | None) -> None:
     """Test hook. None reads NAPRadarIgnoreSensorDirty (default on)."""
@@ -367,6 +484,7 @@ class RadarD:
     return sensor_dirty_ignore_enabled(self.rain_gate._get_params())
 
   def update(self, sm: messaging.SubMaster, rr: car.RadarData):
+    self._obstacle_pending = False
     self.ready = sm.seen['modelV2']
     self.current_time = 1e-9*max(sm.logMonoTime.values())
 
@@ -407,6 +525,8 @@ class RadarD:
           self.tracks[ids] = Track(ids, v_lead, self.kalman_params)
         self.tracks[ids].update(rpt[0], rpt[1], rpt[2], v_lead, rpt[3], self.kalman_params)
       self._update_cone_line(sm, rr.points, radar_dt)
+      self._obstacle_dt = radar_dt
+      self._obstacle_pending = True
     elif self.last_radar_update_time is None or self.current_time - self.last_radar_update_time > RADAR_MEASUREMENT_TIMEOUT:
       self.tracks.clear()
       radar_timed_out = self.last_radar_update_time is not None
@@ -475,6 +595,8 @@ class RadarD:
       self.radar_state.radarPreferFallback = bool(self.rain_gate.fallback_alert) or sensor_dirty_mask
     if hasattr(self.radar_state, "radarPreferReason"):
       self.radar_state.radarPreferReason = reason_token(self.reliability.log_reason, sensor_dirty_mask)
+    if self._obstacle_pending:
+      self._stash_obstacle(sm, rr, path_x, path_y, leads_v3)
 
   def _cone_logging(self) -> bool:
     """NAPConeLineLog, cached ~1 s. Default On. Missing params stay On."""
@@ -507,6 +629,79 @@ class RadarD:
       self._cone_sample = None
       self._cone_dirty = False
 
+  def _stash_obstacle(self, sm, rr, path_x, path_y, leads_v3) -> None:
+    """Copy the inputs the scan needs. Failures stay off the lead path."""
+    try:
+      points = [_radar_point(pt) for pt in rr.points]
+    except Exception:
+      cloudlog.exception("path obstacle stash failed")
+      self._obstacle_inputs = None
+      self._obstacle_pending = False
+      return
+    lead_ids: list = []
+    model_leads: list = []
+    try:
+      leads_v2 = sm['modelV2'].leads
+      radar_leads = []
+      if self.radar_state is not None:
+        radar_leads = [_radar_lead(self.radar_state.leadOne), _radar_lead(self.radar_state.leadTwo)]
+      lead_ids, model_leads = vehicle_exclusion_points(
+        _model_lead_tuples(leads_v3, xyva=False),
+        _model_lead_tuples(leads_v2, xyva=True),
+        [lead for lead in radar_leads if lead is not None],
+      )
+    except Exception:
+      lead_ids, model_leads = [], []
+    try:
+      lane = _lane_prob_min(sm['modelV2'])
+      path_std = _path_y_std_3s(sm['modelV2'])
+    except Exception:
+      lane, path_std = 1.0, None
+    self._obstacle_inputs = {
+      "points": points,
+      "dt": float(self._obstacle_dt),
+      "v_ego": float(self.v_ego),
+      "path_x": list(path_x) if path_x is not None else None,
+      "path_y": list(path_y) if path_y is not None else None,
+      "lead_ids": lead_ids,
+      "model_leads": model_leads,
+      "cone": _cone_hint(self._cone_sample),
+      "lane_prob_min": lane,
+      "path_y_std": path_std,
+    }
+
+  def run_obstacle(self, pm) -> None:
+    """Radar scan and pathObstacleNAP publish. Call after radarState is sent."""
+    if not self._obstacle_pending:
+      return
+    self._obstacle_pending = False
+    inputs = self._obstacle_inputs
+    self._obstacle_inputs = None
+    if not inputs:
+      return
+    try:
+      hit = self._obstacle.step(
+        inputs["points"], inputs["v_ego"], inputs["path_x"], inputs["path_y"], inputs["dt"],
+        inputs["lead_ids"], inputs["cone"], inputs["model_leads"], time.monotonic(),
+      )
+      if hit is None or pm is None:
+        return
+      self._publish_obstacle(pm, hit, inputs)
+    except Exception:
+      cloudlog.exception("path obstacle radar stage failed")
+      self._obstacle.note_failure()
+
+  def _publish_obstacle(self, pm, hit, inputs) -> None:
+    msg = messaging.new_message("pathObstacleNAP", valid=True)
+    dest = msg.pathObstacleNAP
+    hit_to_msg(hit, dest)
+    dest.laneProbMin = float(inputs.get("lane_prob_min", 1.0))
+    std = inputs.get("path_y_std")
+    dest.pathYStd3s = float("nan") if std is None else float(std)
+    dest.overBudget = hit.reject_reason == "over_budget"
+    dest.heartbeat = bool(self._obstacle.heartbeat)
+    pm.send("pathObstacleNAP", msg)
+
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None
 
@@ -533,7 +728,7 @@ def main() -> None:
 
   # *** setup messaging
   sm = messaging.SubMaster(['modelV2', 'carState', 'liveTracks'], poll='modelV2')
-  pm = messaging.PubMaster(['radarState', 'coneLineNAP'])
+  pm = messaging.PubMaster(['radarState', 'coneLineNAP', 'pathObstacleNAP'])
 
   RD = RadarD(CP.radarDelay)
 
@@ -543,6 +738,7 @@ def main() -> None:
     if sm.updated['modelV2']:
       RD.update(sm, sm['liveTracks'])
       RD.publish(pm)
+      RD.run_obstacle(pm)
 
 
 if __name__ == "__main__":

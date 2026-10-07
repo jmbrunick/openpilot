@@ -1242,10 +1242,10 @@ def obstacle_chime_alert(CP, CS, sm, metric, soft_disable_time, personality):
   AudibleAlert stays none so we do not need a new car.capnp ordinal.
   Permanent: the chime plays whether or not openpilot is engaged.
   """
-  from openpilot.selfdrive.controls.lib.path_obstacle import chime_banner
   title = "Object ahead"
   try:
-    obs = sm['pathObstacleNAP']
+    from openpilot.selfdrive.controls.lib.path_obstacle import chime_banner
+    obs = sm['pathObstacleVisionNAP']
     title = chime_banner(obs.objectClass, obs.zone)
   except Exception:
     pass

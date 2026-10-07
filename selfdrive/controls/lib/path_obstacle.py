@@ -49,12 +49,20 @@ stationary-cluster shapes.
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass, replace
 
 from openpilot.selfdrive.controls.lib.radar_path_gate import RADAR_TO_CAMERA_M, path_y_at_x
 
 PARAM_OBSTACLE_LOG = "NAPObstacleLog"
 PARAM_OBSTACLE_CHIME = "NAPObstacleChime"
+
+# radard runs the scan. One iteration past this is the most a cycle may run.
+BUDGET_S = 0.004
+MAX_POINTS = 48
+BREAKER_TRIPS = 3
+BREAKER_WINDOW_S = 10.0
+HEARTBEAT_S = 1.0
 
 # In the lane or stepping in, any agreed solid object chimes.
 # On the shoulder, only a living class or a high lively score.
@@ -112,6 +120,23 @@ LEAD_PROB = 0.40
 
 CLASS_ORDER = ("unknown", "human", "animal", "obstacle")
 ZONE_ORDER = ("none", "inPath", "entering", "roadside")
+
+
+class _OverBudget(Exception):
+  """Raised inside the scan when the per-cycle deadline has passed."""
+
+
+def _check_deadline(deadline: float | None) -> None:
+  if deadline is not None and time.monotonic() > deadline:
+    raise _OverBudget
+
+
+def _enum_name(raw, order: tuple[str, ...]) -> str:
+  name = _class_name(raw)
+  if name.isdigit():
+    idx = int(name)
+    return order[idx] if 0 <= idx < len(order) else order[0]
+  return name if name in order else order[0]
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:
@@ -893,7 +918,7 @@ class PathObstacleDetector:
 
   def begin(self, points, v_ego: float, path_x, path_y, dt: float, *,
             lead_ids=(), cone: ConeHint | None = None, model_leads=(),
-            lighting: float = 1.0) -> _Hit:
+            lighting: float = 1.0, deadline: float | None = None) -> _Hit:
     dt = 0.0 if dt is None else float(dt)
     if not math.isfinite(dt) or dt < 0.0:
       dt = 0.0
@@ -908,56 +933,65 @@ class PathObstacleDetector:
     if not math.isfinite(light):
       light = 1.0
 
-    parsed = []
     try:
-      iterator = list(points) if points is not None else []
-    except TypeError:
-      iterator = []
-    for raw in iterator:
-      item = _point(raw)
-      if item is not None:
-        parsed.append(item)
-    returns = self._advance(parsed, dt, v_ego_f, path_x, path_y)
-    leads = {int(i) for i in lead_ids if i is not None}
-    near_reason = "no_candidate"
-    near_ret = None
-    kept = []
-    for ret in returns:
-      reason = self._keep_reason(ret, leads, cone, model_leads)
-      if reason is None:
-        kept.append(ret)
-      elif near_ret is None or ret["x"] < near_ret["x"]:
-        near_ret = ret
-        near_reason = reason
-    clusters = _cluster(kept)
-    best = None
-    best_key = None
-    rejected = near_reason
-    rejected_members = [near_ret] if near_ret is not None else []
-    for group in clusters:
-      why = _cluster_reject(group)
-      if why is None and _popin(group):
-        why = "road_surface"
-      if why is not None:
-        if best is None:
-          rejected = why
-          rejected_members = group
-        continue
-      hit = self._score_group(group, light)
-      if hit is None:
-        continue
-      key = (
-        1 if hit.zone in ("inPath", "entering") else 0,
-        1 if hit.radar_class in ("human", "animal") else 0,
-        hit.radar_conf,
-        -hit.x,
-      )
-      if best_key is None or key > best_key:
-        best = hit
-        best_key = key
-    if best is not None:
-      return best
-    return self._miss(rejected_members, rejected, light)
+      _check_deadline(deadline)
+      parsed = []
+      try:
+        iterator = list(points) if points is not None else []
+      except TypeError:
+        iterator = []
+      for raw in iterator:
+        _check_deadline(deadline)
+        item = _point(raw)
+        if item is not None:
+          parsed.append(item)
+      if len(parsed) > MAX_POINTS:
+        parsed.sort(key=lambda item: item["x"])
+        del parsed[MAX_POINTS:]
+      returns = self._advance(parsed, dt, v_ego_f, path_x, path_y, deadline)
+      leads = {int(i) for i in lead_ids if i is not None}
+      near_reason = "no_candidate"
+      near_ret = None
+      kept = []
+      for ret in returns:
+        reason = self._keep_reason(ret, leads, cone, model_leads)
+        if reason is None:
+          kept.append(ret)
+        elif near_ret is None or ret["x"] < near_ret["x"]:
+          near_ret = ret
+          near_reason = reason
+      clusters = _cluster(kept)
+      best = None
+      best_key = None
+      rejected = near_reason
+      rejected_members = [near_ret] if near_ret is not None else []
+      for group in clusters:
+        _check_deadline(deadline)
+        why = _cluster_reject(group)
+        if why is None and _popin(group):
+          why = "road_surface"
+        if why is not None:
+          if best is None:
+            rejected = why
+            rejected_members = group
+          continue
+        hit = self._score_group(group, light)
+        if hit is None:
+          continue
+        key = (
+          1 if hit.zone in ("inPath", "entering") else 0,
+          1 if hit.radar_class in ("human", "animal") else 0,
+          hit.radar_conf,
+          -hit.x,
+        )
+        if best_key is None or key > best_key:
+          best = hit
+          best_key = key
+      if best is not None:
+        return best
+      return self._miss(rejected_members, rejected, light)
+    except _OverBudget:
+      return self._miss([], "over_budget", light)
 
   def commit(self, hit: _Hit, vision: VisionScore | None, *,
              chime_enabled: bool = True, now: float = 0.0,
@@ -1032,10 +1066,11 @@ class PathObstacleDetector:
     )
     return self.commit(hit, vision, chime_enabled=chime_enabled, now=now, vision_motion=vision_motion)
 
-  def _advance(self, parsed, dt, v_ego, path_x, path_y) -> list[dict]:
+  def _advance(self, parsed, dt, v_ego, path_x, path_y, deadline=None) -> list[dict]:
     seen = set()
     out = []
     for item in parsed:
+      _check_deadline(deadline)
       seen.add(item["id"])
       prev = self._tracks.get(item["id"])
       if prev is None or prev["gap"] > 0.35:
@@ -1213,6 +1248,209 @@ class PathObstacleDetector:
       (max(lats) - min(lats)) if len(lats) > 1 else 0.0, reason, lighting,
       max(float(m.get("lively", 0.0)) for m in group),
     )
+
+
+def _obstacle_body(msg):
+  if msg is None:
+    return None
+  try:
+    which = msg.which()
+  except Exception:
+    return msg
+  if which == "pathObstacleNAP":
+    return getattr(msg, which)
+  return msg
+
+
+def hit_to_msg(hit: _Hit, dest) -> None:
+  """Write every _Hit field onto a pathObstacleNAP builder."""
+  dest.active = bool(hit.active)
+  dest.trackId = int(hit.track_id) & 0xFFFFFFFFFFFFFFFF
+  ids = tuple(int(i) & 0xFFFFFFFFFFFFFFFF for i in hit.member_ids)
+  slots = dest.init("memberIds", len(ids))
+  for i, mid in enumerate(ids):
+    slots[i] = mid
+  dest.range = float(hit.x)
+  dest.y = float(hit.y)
+  dest.lateral = float(hit.lateral)
+  dest.vRel = float(hit.v_rel)
+  dest.vLat = float(hit.v_lat)
+  dest.along = float(hit.along)
+  dest.radarConf = float(hit.radar_conf) if hit.cluster_count else 0.0
+  radar_class = _enum_name(hit.radar_class, CLASS_ORDER)
+  dest.radarClass = radar_class
+  dest.objectClass = radar_class
+  zone = _enum_name(hit.zone, ZONE_ORDER)
+  dest.zone = zone
+  dest.inPath = zone == "inPath"
+  dest.entering = zone == "entering"
+  dest.timeToReach = float(hit.time_to_reach)
+  dest.timeToEnter = float(hit.time_to_enter)
+  dest.clusterCount = int(min(255, max(0, hit.cluster_count)))
+  dest.spanM = float(hit.span_m)
+  dest.rejectReason = str(hit.reject_reason)
+  dest.lightingScore = float(hit.lighting)
+  dest.livelyScore = float(hit.lively) if hit.cluster_count else 0.0
+  w_r, w_v = fusion_weights(hit.lighting)
+  dest.wRadar = w_r
+  dest.wVision = w_v
+  dest.visionEvaluated = False
+  dest.visionConf = _nan()
+  dest.visionConfHuman = _nan()
+  dest.visionConfAnimal = _nan()
+  dest.visionConfObstacle = _nan()
+
+
+def hit_from_msg(msg) -> _Hit:
+  """Inverse of hit_to_msg. Accepts the event or the struct."""
+  body = _obstacle_body(msg)
+  try:
+    member_ids = tuple(int(i) for i in body.memberIds)
+  except Exception:
+    member_ids = ()
+  return _Hit(
+    active=bool(body.active),
+    track_id=int(body.trackId),
+    member_ids=member_ids,
+    x=float(body.range),
+    y=float(body.y),
+    lateral=float(body.lateral),
+    v_rel=float(body.vRel),
+    v_lat=float(body.vLat),
+    along=float(body.along),
+    radar_conf=float(body.radarConf),
+    radar_class=_enum_name(body.radarClass, CLASS_ORDER),
+    zone=_enum_name(body.zone, ZONE_ORDER),
+    time_to_reach=float(body.timeToReach),
+    time_to_enter=float(body.timeToEnter),
+    cluster_count=int(body.clusterCount),
+    span_m=float(body.spanM),
+    reject_reason=str(body.rejectReason or ""),
+    lighting=float(body.lightingScore),
+    lively=float(body.livelyScore),
+  )
+
+
+def _quantize(value, digits: int):
+  try:
+    num = float(value)
+  except (TypeError, ValueError):
+    return None
+  if not math.isfinite(num):
+    return None
+  return round(num, digits)
+
+
+class ObstacleStage:
+  """Radar half of the detector. radard calls step() after radarState is sent.
+
+  Returns a hit to publish, or None when this cycle should stay silent.
+  commit() stays on the camera helper; this object only scans.
+  """
+
+  def __init__(self) -> None:
+    self.det = PathObstacleDetector()
+    self.heartbeat = False
+    self._log_on = True
+    self._log_override: bool | None = None
+    self._log_check_t = -1.0
+    self._skip = 0
+    self._exc_times: list[float] = []
+    self._disabled = False
+    self._sig = None
+    self._last_pub = -1e9
+    self._reset_done = False
+
+  def note_failure(self) -> None:
+    """Count a failure outside begin(), such as a publish error."""
+    self._note_exception()
+
+  def _note_exception(self) -> None:
+    if self._disabled:
+      return
+    now = time.monotonic()
+    self._exc_times = [t for t in self._exc_times if now - t <= BREAKER_WINDOW_S]
+    self._exc_times.append(now)
+    if len(self._exc_times) < BREAKER_TRIPS:
+      return
+    self._disabled = True
+    try:
+      from openpilot.common.swaglog import cloudlog
+      cloudlog.exception("path obstacle detector disabled until next drive")
+    except Exception:
+      pass
+
+  def _logging(self, now: float) -> bool:
+    if self._log_override is not None:
+      return bool(self._log_override)
+    if self._log_check_t >= 0.0 and now - self._log_check_t < 1.0:
+      return self._log_on
+    self._log_check_t = now
+    try:
+      from openpilot.common.params import Params
+      self._log_on = bool(Params().get_bool(PARAM_OBSTACLE_LOG))
+    except Exception:
+      self._log_on = True
+    return self._log_on
+
+  def _idle(self, now: float, reason: str) -> _Hit | None:
+    if now - self._last_pub < HEARTBEAT_S:
+      return None
+    self._last_pub = now
+    self.heartbeat = True
+    return self.det._miss([], reason, 1.0)
+
+  def step(self, points, v_ego, path_x, path_y, dt, lead_ids, cone, model_leads, now) -> _Hit | None:
+    """Scan one radar frame. None means nothing to publish."""
+    self.heartbeat = False
+    try:
+      now_f = float(now)
+    except (TypeError, ValueError):
+      now_f = time.monotonic()
+    if not math.isfinite(now_f):
+      now_f = time.monotonic()
+    if self._disabled:
+      return self._idle(now_f, "disabled")
+    if not self._logging(now_f):
+      if not self._reset_done:
+        self.det.reset()
+        self._reset_done = True
+        self._sig = None
+      return self._idle(now_f, "disabled")
+    self._reset_done = False
+    if self._skip > 0:
+      self._skip -= 1
+      return self._idle(now_f, "over_budget")
+    started = time.monotonic()
+    try:
+      hit = self.det.begin(
+        points, v_ego, path_x, path_y, dt,
+        lead_ids=lead_ids, cone=cone, model_leads=model_leads,
+        lighting=1.0, deadline=started + BUDGET_S,
+      )
+    except Exception:
+      self._note_exception()
+      try:
+        self.det.reset()
+      except Exception:
+        pass
+      return self._idle(now_f, "error")
+    if hit.reject_reason == "over_budget":
+      elapsed = max(0.0, time.monotonic() - started)
+      self._skip = max(1, math.ceil(elapsed / BUDGET_S))
+    sig = (
+      bool(hit.active), int(hit.track_id), tuple(hit.member_ids),
+      hit.zone, hit.radar_class, hit.reject_reason,
+      _quantize(hit.x, 1), _quantize(hit.lateral, 2),
+    )
+    changed = sig != self._sig
+    due = now_f - self._last_pub >= HEARTBEAT_S
+    if not (hit.active or changed or due):
+      return None
+    self._sig = sig
+    self._last_pub = now_f
+    self.heartbeat = bool(due and not hit.active and not changed)
+    return hit
 
 
 def _cluster(members: list[dict]) -> list[list[dict]]:
