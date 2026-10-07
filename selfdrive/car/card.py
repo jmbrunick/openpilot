@@ -50,6 +50,80 @@ def map_slew_from_displayed_kph(displayed_kph: float, offset_kph: float) -> floa
   """Slew state tracks the raw OSM limit. HUD / pedal MAX already includes offset."""
   return (float(displayed_kph) - float(offset_kph)) * CV.KPH_TO_MS
 
+
+def _kph_near(a, b, eps: float = 1.0) -> bool:
+  if a is None or b is None:
+    return False
+  try:
+    return abs(float(a) - float(b)) <= eps
+  except (TypeError, ValueError):
+    return False
+
+
+def _snapshot_cruise_hold(hold) -> dict:
+  return {
+    "sticky_set_kph": hold.sticky_set_kph,
+    "held_max_kph": hold.held_max_kph,
+    "policy_kph": hold.policy_kph,
+    "last_raw": hold.last_raw_kph,
+  }
+
+
+def _refresh_ring_snapshot(pre: dict, hold, ring_kph: float) -> None:
+  """Posted / stalk changes that are not the ring speed become the resume target."""
+  if pre is None or _kph_near(hold.held_max_kph, ring_kph):
+    return
+  pre["held_max_kph"] = hold.held_max_kph
+  pre["policy_kph"] = hold.policy_kph
+  pre["sticky_set_kph"] = hold.sticky_set_kph
+  pre["last_raw"] = hold.last_raw_kph
+
+
+def _unwind_ring_speed_set(hold, pre, ring_kph: float) -> bool:
+  """Drop a MAX that was stored as the ring speed. Keep a pre-ring set.
+
+  Returns True when a ring-speed latch was removed. Gap lock is a lead
+  setpoint and is not touched; MAX stays the cruise ceiling.
+  """
+  if pre is None:
+    return False
+  changed = False
+  for field in ("sticky_set_kph", "held_max_kph", "policy_kph"):
+    cur = getattr(hold, field)
+    old = pre.get(field)
+    if _kph_near(cur, ring_kph) and not _kph_near(old, ring_kph):
+      setattr(hold, field, old)
+      changed = True
+  if changed and _kph_near(hold.last_raw_kph, ring_kph):
+    old_raw = pre.get("last_raw")
+    if old_raw is not None:
+      hold.last_raw_kph = old_raw
+  return changed
+
+
+def _ring_exit_target_ms(hold, lim, posted_kph) -> float | None:
+  """Posted limit, else the pre-ring set. None when nothing is known."""
+  if hold.sticky_set_kph is None and lim is not None and float(lim) > 0.0:
+    return float(lim)
+  for val in (hold.sticky_set_kph, hold.held_max_kph, hold.policy_kph, posted_kph):
+    if val is not None and float(val) > 0.0:
+      return float(val) * CV.KPH_TO_MS
+  return None
+
+
+def _apply_ring_exit_max(target_ms, floor_ms, lookahead, accel_level):
+  """Start the ramp at least at current speed, then ease toward the target.
+
+  One map-rate step, so a ring exit does not publish the ring speed and
+  does not step MAX down in a single frame.
+  """
+  start = float(floor_ms)
+  if target_ms is None or float(target_ms) <= 0.0:
+    return start * CV.MS_TO_KPH, start
+  a = map_slew_a_ms2(start, float(target_ms), lookahead, accel_level)
+  nxt = slew_map_speed_ms(start, float(target_ms), DT_CTRL, a)
+  return nxt * CV.MS_TO_KPH, nxt
+
 # forward
 carlog.addHandler(ForwardingHandler(cloudlog))
 
@@ -434,6 +508,23 @@ class Car:
       rb_lim = roundabout_ease_v_ms(rb_hint, float(CS.vEgo), posted_ms, self._map_speed_lookahead)
       if rb_lim is not None and map_valid and md is not None:
         lim = rb_lim if lim is None else min(float(lim), rb_lim)
+    was_on_ring = bool(getattr(self, "_rb_active", False))
+    exiting_ring = was_on_ring and rb_lim is None
+    if exiting_ring:
+      ring_kph = float(getattr(self, "_rb_target_ms", 0.0) or 0.0) * CV.MS_TO_KPH
+      if _unwind_ring_speed_set(self._map_hold, getattr(self, "_rb_pre", None), ring_kph):
+        dec.sticky = self._map_hold.sticky_set_kph is not None
+        dec.follow_override = bool(dec.sticky)
+        if not dec.sticky and map_valid and md is not None:
+          lim = effective_map_limit_ms(
+            float(md.speedLimit),
+            float(md.nextSpeedLimit),
+            float(md.nextSpeedLimitDistance),
+            float(CS.vEgo),
+            self._map_speed_lookahead,
+            self._map_speed_accel,
+            sticky=False,
+          )
     if map_valid and md is not None and lim is not None and lim > 0:
       if rb_lim is not None:
         # Instant RB latch: MAX is the ring target now. Do not Accel-5
@@ -473,8 +564,13 @@ class Car:
         op_long_software_cruise=True,
         driver_override=dec.follow_override,
       )
+    ring_capped = False
     if rb_lim is not None:
       rb_kph = float(rb_lim) * CV.MS_TO_KPH
+      # The ring ceiling is the HUD MAX only. A higher set stays the
+      # resume target so a SET in the ring cannot latch the ring speed.
+      if float(preap_v_cruise_kph) > rb_kph + MANUAL_SET_EPS_KPH:
+        ring_capped = True
       preap_v_cruise_kph = min(float(preap_v_cruise_kph), rb_kph)
       self._map_slew_ms = float(rb_lim)
     # Temporary curve cap may lower HUD MAX. Restore seed puts pre-curve
@@ -502,6 +598,15 @@ class Car:
     seed_kph = dec.seed_kph if restore_seed_kph is None else float(restore_seed_kph)
     if restore_seed_kph is not None:
       self._map_slew_ms = map_slew_from_displayed_kph(float(restore_seed_kph), map_offset_kph)
+    if exiting_ring:
+      # Leave the ring at least at current speed and ramp toward the
+      # posted / pre-ring MAX. MAX stays a hard ceiling (the slew target).
+      # Gap lock still owns the lead gap; this does not raise it.
+      floor_ms = max(float(getattr(self, "_rb_target_ms", 0.0) or 0.0), float(CS.vEgo))
+      target_ms = _ring_exit_target_ms(self._map_hold, None if dec.sticky else lim, posted_kph)
+      preap_v_cruise_kph, self._map_slew_ms = _apply_ring_exit_max(
+        target_ms, floor_ms, self._map_speed_lookahead, self._map_speed_accel,
+      )
     # Write engage/posted/stalk seed, or when HUD MAX rose. Never write
     # the same sticky MAX every frame. Pause still writes a rebase /
     # resume seed onto pedal_speed so one SET keeps the held MAX.
@@ -509,13 +614,29 @@ class Car:
     write_max = long_active or soft_long or resume_held or take_speed_now or (
       session_engaged and seed_kph is not None
     )
-    if write_max and should_write_preap_pedal(seed_kph, preap_v_cruise_kph, self._last_pedal_kph):
+    if write_max and should_write_preap_pedal(seed_kph, preap_v_cruise_kph, self._last_pedal_kph) and not ring_capped:
       self._write_preap_pedal_speed(CS, preap_v_cruise_kph)
       self._last_pedal_kph = float(preap_v_cruise_kph)
       self._pedal_self_write_kph = float(preap_v_cruise_kph)
     elif not session_enabled:
       self._last_pedal_kph = None
       self._pedal_self_write_kph = None
+    if rb_lim is not None:
+      ring_kph = float(rb_lim) * CV.MS_TO_KPH
+      if not was_on_ring or getattr(self, "_rb_pre", None) is None:
+        self._rb_pre = _snapshot_cruise_hold(self._map_hold)
+      else:
+        _refresh_ring_snapshot(self._rb_pre, self._map_hold, ring_kph)
+      _unwind_ring_speed_set(self._map_hold, self._rb_pre, ring_kph)
+      eng = self._preap_engagement()
+      if eng is not None and _kph_near(getattr(eng, "_nap_held_max_kph", None), ring_kph):
+        restore = None if self._rb_pre is None else self._rb_pre.get("held_max_kph")
+        if restore is not None and not _kph_near(restore, ring_kph):
+          eng._nap_held_max_kph = restore
+      self._rb_target_ms = float(rb_lim)
+      self._rb_active = True
+    else:
+      self._rb_active = False
     self.v_cruise_helper.v_cruise_kph_last = self.v_cruise_helper.v_cruise_kph
     self.v_cruise_helper.v_cruise_kph = preap_v_cruise_kph
     self.v_cruise_helper.v_cruise_cluster_kph = preap_v_cruise_kph
