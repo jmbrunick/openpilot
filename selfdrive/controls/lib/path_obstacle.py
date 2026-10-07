@@ -19,8 +19,12 @@ Thresholds (device frame, y +left, path-relative lateral):
                                 (about 8.9 m from the path center),
                                 and inside a 52° radar half-angle
   slow along the road           |ground speed| <= 3 m/s
-  person along the road         up to 9 m/s (a cyclist) if compact
-                                and not the lead
+  traffic, do not chime         ground speed above 5 m/s with
+                                little lateral speed (cars and
+                                motorcycles in the flow). Also any
+                                radar point on a model lead (every
+                                leadsV3 entry) or a radard lead, and
+                                a parked-car cluster
   lateral motion                |v_lat| >= 0.45 m/s, or toward the path
   persist                       0.40 s before active; confidence
                                 saturates near 0.80 s
@@ -68,6 +72,9 @@ ROADSIDE_OUTER_M = PATH_HALF_M + ROADSIDE_EXTRA_M
 FOV_HALF_DEG = 52.0
 SLOW_ALONG_MPS = 3.0
 HUMAN_ALONG_MAX_MPS = 9.0
+# With the flow of traffic: too fast to be a walker, and not darting sideways.
+TRAFFIC_ALONG_MPS = 5.0
+TRAFFIC_VLAT_MPS = 1.2
 LATERAL_MOVE_MPS = 0.45
 ENTER_HORIZON_S = 3.2
 HUMAN_ENTER_HORIZON_S = 4.5
@@ -540,6 +547,113 @@ def _point(raw) -> dict | None:
   }
 
 
+def _iter_items(value):
+  if value is None:
+    return
+  try:
+    iterator = iter(value)
+  except TypeError:
+    return
+  yield from iterator
+
+
+def _field(obj, *names):
+  if isinstance(obj, dict):
+    for name in names:
+      if name in obj:
+        return obj[name]
+    return None
+  for name in names:
+    try:
+      return getattr(obj, name)
+    except Exception:
+      continue
+  return None
+
+
+def _xy_prob(item, xy_name: str | None = None):
+  """Device-frame (x, y, prob) from a model lead, or None."""
+  if isinstance(item, (tuple, list)):
+    if len(item) < 3:
+      return None
+    x, y, prob = _finite(item[0]), _finite(item[1]), _finite(item[2])
+    if x is None or y is None or prob is None or prob < LEAD_PROB:
+      return None
+    if len(item) > 3:
+      try:
+        return x, y, prob, int(item[3])
+      except (TypeError, ValueError):
+        return x, y, prob
+    return x, y, prob
+  prob = _finite(_field(item, "prob"))
+  if prob is None or prob < LEAD_PROB:
+    return None
+  if xy_name:
+    xyva = _field(item, xy_name)
+    try:
+      x, y = _finite(xyva[0]), _finite(xyva[1])
+    except Exception:
+      return None
+  else:
+    raw_x, raw_y = _field(item, "x"), _field(item, "y")
+    try:
+      x = _finite(raw_x if isinstance(raw_x, (int, float)) else raw_x[0])
+      y = _finite(raw_y if isinstance(raw_y, (int, float)) else raw_y[0])
+    except Exception:
+      return None
+  if x is None or y is None:
+    return None
+  return x, y, prob
+
+
+def vehicle_exclusion_points(leads_v3=(), leads_v2=(), radar_leads=()):
+  """Every tracked vehicle the chime must not treat as an obstacle.
+
+  Model leadsV3 (lead0, lead1, and any further entries) and legacy
+  leads V2 are device-frame points. A radard lead (leadOne and leadTwo)
+  is included when status is set: its track id, and its position with
+  y flipped from right-positive yRel to device +left. Prob under 0.40
+  is ignored for the model. A selected radar lead is kept even if
+  modelProb is low.
+
+  Returns (track_ids, points). Points are (x, y, prob) or
+  (x, y, prob, track_id).
+  """
+  ids: list[int] = []
+  points: list[tuple] = []
+  for item in _iter_items(leads_v3):
+    parsed = _xy_prob(item)
+    if parsed is not None:
+      points.append(parsed)
+  for item in _iter_items(leads_v2):
+    parsed = _xy_prob(item, "xyva") if not isinstance(item, (tuple, list)) else _xy_prob(item)
+    if parsed is not None:
+      points.append(parsed)
+  for lead in _iter_items(radar_leads):
+    if lead is None or not bool(_field(lead, "status")):
+      continue
+    d_rel = _finite(_field(lead, "dRel", "d_rel"))
+    y_rel = _finite(_field(lead, "yRel", "y_rel"))
+    if d_rel is None or y_rel is None:
+      continue
+    prob = _finite(_field(lead, "modelProb", "prob"))
+    if prob is None or prob < LEAD_PROB:
+      prob = 1.0
+    track = _field(lead, "radarTrackId", "radar_track_id")
+    try:
+      track_id = int(track) if track is not None else -1
+    except (TypeError, ValueError):
+      track_id = -1
+    x = d_rel + RADAR_TO_CAMERA_M
+    y = -y_rel
+    if track_id >= 0:
+      ids.append(track_id)
+      points.append((x, y, prob, track_id))
+    else:
+      points.append((x, y, prob))
+  return ids, points
+
+
 def _line_lat(cone: ConeHint, x: float) -> float | None:
   pts = ((15.0, cone.lat_near), (30.0, cone.lat_mid), (45.0, cone.lat_far))
   if x <= pts[0][0]:
@@ -563,7 +677,7 @@ def _cone_reject(lat: float, x: float, cone: ConeHint | None) -> str | None:
   if cone.active and line is not None and abs(lat - line) < 0.80 and same_side:
     return "cone_line"
   if cone.parked and 1.5 < abs(lat) < 4.5:
-    return "parked"
+    return "exclVehicle"
   return None
 
 
@@ -749,7 +863,7 @@ def _cluster_reject(members: list[dict]) -> str | None:
     return "cone_line"
   straddles = min(lats) < -0.2 and max(lats) > 0.2
   if x_span < 8.0 and lat_span >= 1.0 and abs(mean_lat) > 2.0 and not straddles and count >= 3:
-    return "parked"
+    return "exclVehicle"
   return None
 
 
@@ -975,29 +1089,35 @@ class PathObstacleDetector:
     if not _fov_ok(x, ret["y"]):
       return "fov"
     if ret["id"] in leads:
-      return "lead"
+      return "exclVehicle"
     for lead in model_leads or ():
       try:
-        lx, ly, prob = lead
-      except (TypeError, ValueError):
+        lx, ly, prob = lead[0], lead[1], lead[2]
+      except (TypeError, ValueError, IndexError):
         continue
       if _finite(prob) is None or float(prob) < LEAD_PROB:
         continue
+      lead_id = lead[3] if len(lead) > 3 else None
+      if lead_id is not None and int(lead_id) == ret["id"]:
+        return "exclVehicle"
       if abs(x - float(lx)) < LEAD_X_M and abs(ret["y"] - float(ly)) < LEAD_Y_M:
-        return "lead"
+        return "exclVehicle"
     cone_why = _cone_reject(lat, x, cone)
     if cone_why is not None:
       return cone_why
     along, v_lat = ret["along"], ret["v_lat"]
+    # Cars and motorcycles going with traffic. A stopped car the model
+    # has not tagged is left for the chime. A sideways dart is not traffic.
+    if along > TRAFFIC_ALONG_MPS and abs(v_lat) <= TRAFFIC_VLAT_MPS:
+      return "exclVehicle"
     toward = _toward(lat, v_lat)
     human = _humanish(lat, v_lat, along, toward)
     moving = abs(v_lat) >= LATERAL_MOVE_MPS
     slow = abs(along) <= SLOW_ALONG_MPS
-    cyclist = abs(lat) <= PATH_HALF_M + 0.4 and 2.0 < along <= HUMAN_ALONG_MAX_MPS and abs(v_lat) < 2.0
-    if along < -2.5 and abs(v_lat) < 1.2 and not human:
-      return "vehicle"
-    if not (slow or moving or human or cyclist) or abs(along) > HUMAN_ALONG_MAX_MPS + 0.5:
-      return "vehicle"
+    if along < -2.5 and abs(v_lat) <= TRAFFIC_VLAT_MPS and not human:
+      return "exclVehicle"
+    if not (slow or moving or human) or abs(along) > HUMAN_ALONG_MAX_MPS + 0.5:
+      return "exclVehicle"
     zone, _t = _zone_of(lat, v_lat, along)
     if zone == "none":
       return "off_path"

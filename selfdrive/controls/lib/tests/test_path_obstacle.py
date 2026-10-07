@@ -29,6 +29,7 @@ from openpilot.selfdrive.controls.lib.path_obstacle import (
   prune_thumbs,
   save_ppm,
   should_raise_chime,
+  vehicle_exclusion_points,
 )
 from openpilot.selfdrive.ui.obstacle_chime import OBSTACLE_CHIME_ID, alert_sound_id
 
@@ -127,7 +128,7 @@ def test_stationary_in_path_deer_chimes_only_when_vision_says_animal():
   assert debris.brake_gate is True
 
 
-def test_human_entering_and_cyclist_chime_and_can_brake_later():
+def test_human_entering_chimes_and_can_brake_later():
   walker = [_pt(25.0, -2.3, -V_EGO, 8, yv_rel=1.0)]
   person = _run(PathObstacleDetector(), walker, vision=HUMAN)
   assert person.object_class == "human"
@@ -142,23 +143,108 @@ def test_human_entering_and_cyclist_chime_and_can_brake_later():
   assert weak.object_class == "human"
   assert weak.chimed is False and weak.chime_reason == "no_agree"
 
-  cyclist = [_pt(22.0, 0.0, 6.0 - V_EGO, 9)]
-  rider = _run(PathObstacleDetector(), cyclist, vision=HUMAN)
+  # Below the traffic cutoff a narrow in-path rider can still chime.
+  slow_bike = [_pt(22.0, 0.0, 4.0 - V_EGO, 9, yv_rel=0.1)]
+  rider = _run(PathObstacleDetector(), slow_bike, vision=HUMAN)
   assert rider.object_class == "human" and rider.zone == "inPath" and rider.chimed
-  lead = _run(PathObstacleDetector(), cyclist, vision=HUMAN, lead_ids=(9,))
-  assert lead.reject_reason == "lead" and lead.chimed is False
 
 
-def test_rejects_clutter_vehicles_and_a_lane_spanning_tree():
+def test_excludes_traffic_motorcycles_and_parked_cars():
+  # Motorcycle-like: one narrow return, with the flow, almost no lateral speed.
+  bike = [_pt(22.0, 0.15, 7.5 - V_EGO, 9, yv_rel=0.1)]
+  moto = _run(PathObstacleDetector(), bike, vision=HUMAN)
+  assert moto.reject_reason == "exclVehicle" and moto.chimed is False
+
+  # A dart across the lane is not traffic, even above 5 m/s along the road.
+  dart = [_pt(22.0, 0.2, 6.5 - V_EGO, 19, yv_rel=-2.6)]
+  crossing = _run(PathObstacleDetector(), dart, vision=ANIMAL)
+  assert crossing.reject_reason != "exclVehicle"
+  assert crossing.zone == "inPath" and crossing.chimed
+
+  # Adjacent-lane car: ~3.7 m to the right, ground speed ~11 m/s, small v_lat.
+  traffic = [_pt(35.0, 3.7, 11.0 - V_EGO, 44, yv_rel=-0.15)]
+  lane = _run(PathObstacleDetector(), traffic, vision=DEBRIS)
+  assert lane.reject_reason == "exclVehicle" and lane.chimed is False
+
+  # coneLineNAP parked-car cluster on the shoulder.
+  parked = ConeHint(parked=True)
+  shoulder = _run(PathObstacleDetector(), [_pt(18.0, -3.2, -V_EGO, 7)], cone=parked, vision=DEBRIS)
+  assert shoulder.reject_reason == "exclVehicle" and shoulder.chimed is False
+  cluster = [
+    _pt(22.0, -2.4, -V_EGO, 71),
+    _pt(22.0, -3.2, -V_EGO, 72),
+    _pt(23.0, -4.0, -V_EGO, 73),
+  ]
+  cars = _run(PathObstacleDetector(), cluster, vision=DEBRIS)
+  assert cars.reject_reason == "exclVehicle" and cars.chimed is False
+
+  # Stopped in the path, and the model has not tagged it: still an object.
+  stopped = [_pt(30.0, 0.0, -V_EGO, 4)]
+  bare = _run(PathObstacleDetector(), stopped, vision=DEBRIS)
+  assert bare.zone == "inPath" and bare.chimed and bare.reject_reason == "none"
+  # lead0 is a far car. lead1 is this one. Both count, not only the current lead.
+  tagged = _run(
+    PathObstacleDetector(), stopped, vision=DEBRIS,
+    model_leads=[(90.0, 0.0, 0.95), (30.0, 0.0, 0.80)],
+  )
+  assert tagged.reject_reason == "exclVehicle" and tagged.chimed is False
+  far_only = _run(
+    PathObstacleDetector(), stopped, vision=DEBRIS,
+    model_leads=[(90.0, 0.0, 0.95)],
+  )
+  assert far_only.chimed and far_only.reject_reason == "none"
+  # The second radard lead, not only leadOne.
+  other = _run(PathObstacleDetector(), stopped, vision=DEBRIS, lead_ids=(11, 4))
+  assert other.reject_reason == "exclVehicle" and other.chimed is False
+  assert _run(PathObstacleDetector(), stopped, vision=DEBRIS, lead_ids=(11,)).chimed
+  # A weak model probability does not count as a tracked vehicle.
+  weak_lead = _run(
+    PathObstacleDetector(), stopped, vision=DEBRIS,
+    model_leads=[(30.0, 0.0, 0.20)],
+  )
+  assert weak_lead.chimed
+
+
+def test_vehicle_points_cover_both_model_leads_and_both_radar_leads():
+  leads_v3 = [
+    SimpleNamespace(x=[90.0], y=[0.0], prob=0.95),
+    SimpleNamespace(x=[22.0], y=[0.4], prob=0.70),
+    SimpleNamespace(x=[40.0], y=[1.0], prob=0.10),
+  ]
+  leads_v2 = [SimpleNamespace(prob=0.80, xyva=[50.0, -1.0, 12.0, 0.0])]
+  radar = [
+    SimpleNamespace(status=True, dRel=22.0 - 1.52, yRel=-0.4, radarTrackId=9, modelProb=0.7),
+    SimpleNamespace(status=False, dRel=10.0, yRel=0.0, radarTrackId=3, modelProb=0.9),
+    SimpleNamespace(status=True, dRel=60.0 - 1.52, yRel=1.0, radarTrackId=-1, modelProb=0.0),
+  ]
+  ids, points = vehicle_exclusion_points(leads_v3, leads_v2, radar)
+  assert ids == [9]
+  assert (90.0, 0.0, 0.95) in points
+  assert (22.0, 0.4, 0.70) in points
+  assert (50.0, -1.0, 0.80) in points
+  assert (22.0, 0.4, 0.7, 9) in points
+  assert (60.0, -1.0, 1.0) in points
+  assert all(p[2] >= 0.40 for p in points)
+  assert not any(len(p) > 3 and p[3] == 3 for p in points)
+
+  # Position from the helper excludes a second return on lead1, y in device frame.
+  _ids, pts = vehicle_exclusion_points(leads_v3, (), ())
+  stopped = [_pt(22.0, -0.4, -V_EGO, 80)]
+  hit = _run(PathObstacleDetector(), stopped, vision=DEBRIS, model_leads=pts)
+  assert hit.reject_reason == "exclVehicle"
+  other_side = [_pt(22.0, 1.5, -V_EGO, 81)]
+  kept = _run(PathObstacleDetector(), other_side, vision=DEBRIS, model_leads=pts)
+  assert kept.reject_reason != "exclVehicle" and kept.chimed
+
+
+def test_rejects_clutter_and_a_lane_spanning_tree():
   det = PathObstacleDetector()
-  assert _run(det, [_pt(30.0, 0.0, -V_EGO, 4)], lead_ids=(4,)).reject_reason == "lead"
+  assert _run(det, [_pt(30.0, 0.0, -V_EGO, 4)], lead_ids=(4,)).reject_reason == "exclVehicle"
   cones = ConeHint(active=True, side=1, lat_near=2.0, lat_mid=2.0, lat_far=2.0)
   assert _run(PathObstacleDetector(), [_pt(20.0, -2.0, -V_EGO, 5)], cone=cones).reject_reason == "cone_line"
   rail = ConeHint(barrier=True, side=-1, lat_near=-3.0, lat_mid=-3.0, lat_far=-3.0)
   assert _run(PathObstacleDetector(), [_pt(20.0, 3.0, -V_EGO, 6)], cone=rail).reject_reason == "barrier"
-  parked = ConeHint(parked=True)
-  assert _run(PathObstacleDetector(), [_pt(18.0, -3.2, -V_EGO, 7)], cone=parked).reject_reason == "parked"
-  assert _run(PathObstacleDetector(), [_pt(40.0, 0.0, 18.0 - V_EGO, 11)]).reject_reason == "vehicle"
+  assert _run(PathObstacleDetector(), [_pt(40.0, 0.0, 18.0 - V_EGO, 11)]).reject_reason == "exclVehicle"
   assert _run(PathObstacleDetector(), [_pt(10.0, 0.0, -V_EGO, 12)]).reject_reason == "road_surface"
   assert _run(PathObstacleDetector(), [_pt(40.0, -15.0, -V_EGO, 13)]).reject_reason == "off_path"
   assert _run(PathObstacleDetector(), [_pt(8.0, -12.0, -V_EGO, 14)]).reject_reason == "fov"
@@ -389,6 +475,10 @@ def test_wiring_stays_off_the_control_core_and_off_longitudinal():
   assert "self._all_items.append(self._turn_in_buttons)" in manner
 
   proc = text("selfdrive/pathobstacled/pathobstacled.py")
+  assert "vehicle_exclusion_points" in proc
+  assert "leadsV3" in proc and "model.leads" in proc
+  assert "leadOne" in proc and "leadTwo" in proc
+  assert "exclVehicle" in text("selfdrive/controls/lib/path_obstacle.py")
   assert "CORES = [0, 1, 2, 3]" in proc
   assert "set_core_affinity(CORES)" in proc
   assert "os.nice(NICE)" in proc

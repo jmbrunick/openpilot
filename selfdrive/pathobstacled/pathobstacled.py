@@ -23,6 +23,7 @@ from openpilot.selfdrive.controls.lib.path_obstacle import (
   prune_thumbs,
   save_ppm,
   score_row_patches,
+  vehicle_exclusion_points,
 )
 from openpilot.selfdrive.controls.lib.radar_path_gate import model_path_xy
 
@@ -68,30 +69,26 @@ def _cone_hint(msg) -> ConeHint | None:
     return None
 
 
-def _lead_ids(radar_state) -> list[int]:
-  ids = []
+def _tracked_vehicles(model, radar_state):
+  """lead0 and lead1, any other model vehicle, and both radard leads."""
+  try:
+    leads_v3 = model.leadsV3
+  except Exception:
+    leads_v3 = ()
+  try:
+    leads_v2 = model.leads
+  except Exception:
+    leads_v2 = ()
+  radar = []
   for name in ("leadOne", "leadTwo"):
     try:
-      lead = getattr(radar_state, name)
-      if bool(getattr(lead, "status", False)):
-        ids.append(int(lead.radarTrackId))
+      radar.append(getattr(radar_state, name))
     except Exception:
       continue
-  return ids
-
-
-def _model_leads(model) -> list[tuple[float, float, float]]:
-  out = []
   try:
-    leads = model.leadsV3
+    return vehicle_exclusion_points(leads_v3, leads_v2, radar)
   except Exception:
-    return out
-  for lead in leads:
-    try:
-      out.append((float(lead.x[0]), float(lead.y[0]), float(lead.prob)))
-    except Exception:
-      continue
-  return out
+    return [], []
 
 
 def _path_std(model) -> float | None:
@@ -407,12 +404,13 @@ def _run() -> None:
     except Exception:
       v_ego = 0.0
     path_x, path_y = model_path_xy(sm["modelV2"])
+    lead_ids, vehicle_pts = _tracked_vehicles(sm["modelV2"], sm["radarState"])
     t0 = time.monotonic()
     hit = det.begin(
       sm["liveTracks"], v_ego, path_x, path_y, dt,
-      lead_ids=_lead_ids(sm["radarState"]),
+      lead_ids=lead_ids,
       cone=_cone_hint(sm["coneLineNAP"]),
-      model_leads=_model_leads(sm["modelV2"]),
+      model_leads=vehicle_pts,
       lighting=_lighting(sm),
     )
     scan_us = (time.monotonic() - t0) * 1e6
