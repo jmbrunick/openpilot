@@ -23,7 +23,8 @@ from openpilot.selfdrive.controls.lib.path_obstacle import should_raise_chime
 from openpilot.selfdrive.selfdrived.events import Events, ET
 from openpilot.selfdrive.selfdrived.helpers import ExcessiveActuationCheck, preap_not_in_drive_clears_mismatch
 from openpilot.selfdrive.selfdrived.preap_regen import (
-  PreAPChimeState, RegenDemandCheck, gas_should_user_disable, update_preap_chimes,
+  PreAPChimeState, RegenDemandCheck, gas_should_user_disable, orphan_pull_requests_enable,
+  update_preap_chimes,
 )
 from openpilot.selfdrive.selfdrived.state import StateMachine
 from openpilot.selfdrive.selfdrived.alertmanager import AlertManager, set_offroad_alert
@@ -251,8 +252,26 @@ class SelfdriveD:
         )
         if chimes.long_engage:
           self.events.add(EventName.pedalCruiseEnabled)
-        elif chimes.long_disengage:
+        elif chimes.long_disengage and self.enabled:
+          # A session openpilot never took (startup / noEntry) must reset
+          # quietly. A real cancel still chimes: self.enabled is still true
+          # until the state machine runs after this.
           self.events.add(EventName.pedalCruiseDisabled)
+        set_press = any(be.type == ButtonType.setCruise and be.pressed for be in CS.buttonEvents)
+        use_pedal = True
+        if set_press:
+          try:
+            use_pedal = bool(self.params.get_bool("NAPPedalEnabled"))
+          except Exception:
+            use_pedal = True
+        if orphan_pull_requests_enable(
+            cruise_enabled=bool(CS.cruiseState.enabled),
+            op_enabled=bool(self.enabled),
+            set_pressed=set_press,
+            use_pedal=use_pedal,
+            long_on=bool(getattr(CS, "enableLongControl", False)),
+        ):
+          self.events.add(EventName.pcmEnable)
 
         # Two shapes of "regen is not enough, add friction brake": the carstate
         # flag covers weak regen under-delivering an in-envelope request; the

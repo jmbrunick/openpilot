@@ -218,6 +218,7 @@ class Car:
     self.radar_donor_vin = None
     tesla_preap = any(cfg.safetyModel == car.CarParams.SafetyModel.teslaPreap for cfg in self.CP.safetyConfigs)
     self._tesla_preap = tesla_preap
+    self._nap_orphan_s = 0.0
     # 2 Hz radarstat line (radar status bits + track summary) for Pre-AP Bosch digs.
     self._radar_stat = RadarStatusLogger() if tesla_preap else None
     if tesla_preap:
@@ -276,6 +277,19 @@ class Car:
 
     if can_rcv_valid and REPLAY:
       self.can_log_mono_time = messaging.log_from_bytes(can_strs[0]).logMonoTime
+
+    if getattr(self, "_tesla_preap", False):
+      # Cruise latched on the car side, openpilot not actually engaged
+      # (startup, noEntry, missed rising edge). Quiet reset after 0.75 s.
+      from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import reconcile_orphan_session
+      self._nap_orphan_s, _canceled = reconcile_orphan_session(
+        getattr(getattr(self.CI, "CS", None), "engagement", None),
+        op_enabled=bool(self.sm['carControl'].enabled),
+        orphan_s=float(getattr(self, "_nap_orphan_s", 0.0)),
+        dt=DT_CTRL,
+        cereal_cs=CS,
+        interface_cs=getattr(self.CI, "CS", None),
+      )
 
     try:
       preap_software_cruise = (

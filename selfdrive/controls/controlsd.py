@@ -87,6 +87,9 @@ class Controls:
     self._lat_handoff = self.lat_handoff.update(
       engaged=False, lat_would_be_active=False,
       steering_torque=0.0, steering_rate_deg=0.0)
+    # napStalkSeq rides the carState subscription above. Do not add another.
+    self._nap_stalk_seq = 0
+    self._nap_stalk_seen = False
     # Low-visibility fade. Default On. Does not touch longitudinal.
     self.low_vis = LowVisibility()
     self._low_vis = self.low_vis.update(enabled=False)
@@ -254,8 +257,11 @@ class Controls:
     # Emergency (spike / opposite) or a sustained same-direction takeover
     # (held until the hands come off) yields lateral now; only the
     # emergency also disengages (car_specific steerDisengage).
+    # Resting EPAS offset (~+0.25 Nm on this car). Relative torque keeps a
+    # hands-off reading from looking like a left-lane nudge.
+    driver_tq = float(CS.steeringTorque) - float(self.lat_handoff.rest_bias)
     self._lane_change_torque.update(
-      torque_nm=float(CS.steeringTorque), hands_on_level=cs_hands_on_level(CS),
+      torque_nm=driver_tq, hands_on_level=cs_hands_on_level(CS),
       direction=nudge_dir, tipped=tipped_alc, dt=DT_CTRL)
     lane_change_confirm = self._lane_change_torque.confirm
     # Turning the wheel well past a lane change in its direction ends the
@@ -263,7 +269,7 @@ class Controls:
     # blinker until the turn completes, pause lat like a latched stalk.
     turn_hold_dir = self._lane_change_turn.update(
       lc_state=lc_state, lc_direction=nudge_dir, steering_angle_deg=float(CS.steeringAngleDeg),
-      torque_nm=float(CS.steeringTorque), lat_active=self._lat_active_prev,
+      torque_nm=driver_tq, lat_active=self._lat_active_prev,
       v_ego=float(CS.vEgo), stalk_state=getattr(CS, 'turnSignalStalkState', 0),
       engaged=bool(CC.enabled), dt=DT_CTRL)
     # Soft yield frees the EPS the same way blinker pause does (latActive
@@ -299,6 +305,12 @@ class Controls:
     # post-turn hand-on hold). Soft-lat ORs that with v_ego < 10 mph
     # as re-enable inhibit + falling-edge enter-yield. Soft-lat Off
     # ignores it (identity).
+    # In-session stalk pull: clear a lateral yield. Seq lives on carState.
+    stalk_seq = int(getattr(CS, "napStalkSeq", 0) or 0) & 0xFF
+    if self._nap_stalk_seen and stalk_seq != self._nap_stalk_seq:
+      self.lat_handoff.driver_resume_request()
+    self._nap_stalk_seen = True
+    self._nap_stalk_seq = stalk_seq
     self._lat_handoff = self.lat_handoff.update(
       engaged=bool(CC.enabled),
       lat_would_be_active=bool(lat_would_be_active),

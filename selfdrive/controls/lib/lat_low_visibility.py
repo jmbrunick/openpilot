@@ -10,10 +10,11 @@ may sit from the wheel. Settings → NAP → Driving Mannerisms can turn it
 Off (NAPLowVisBackoff, default On). Off is identity: authority stays 1
 and the alert stays down.
 
-Enter (model): either side's lane/road-edge confidence below 0.30 AND
-path lateral std at ~3 s above 2 m, held 0.40 s.
-Exit: both sides at or above 0.55 AND path std below 1.2 m, held 0.80 s.
-A single frame cannot flip the latch.
+Enter (model): either side's worse of lane line and road edge below
+0.30 AND path lateral std at ~3 s above 2 m, held 0.40 s.
+Exit: both sides' better of lane line and road edge at or above 0.55,
+held 0.80 s. Path uncertainty alone cannot hold the latch once both
+sides are clearly visible. A single frame cannot flip the latch.
 
 Enter (camera): integration lines fall below 0.45× a recent bright
 baseline (0.65× when the sun is within 12° of the horizon and 22° of
@@ -111,6 +112,29 @@ def side_confidences(lane_probs, edge_stds) -> tuple[float, float]:
   return min(lane(1), edge(0)), min(lane(2), edge(1))
 
 
+def side_confidences_exit(lane_probs, edge_stds) -> tuple[float, float]:
+  """(left, right) for the exit check only. Missing signals count as seen.
+
+  Same indexes as side_confidences. A side is the better of its lane
+  probability and its road-edge confidence, so a healthy lane line can
+  leave low-visibility even when the road-edge std is still wide.
+  """
+  probs = list(lane_probs or [])
+  edges = list(edge_stds or [])
+
+  def lane(i: int) -> float:
+    if i >= len(probs):
+      return 1.0
+    return _finite(probs[i], 1.0)
+
+  def edge(i: int) -> float:
+    if i >= len(edges):
+      return 1.0
+    return edge_confidence(edges[i])
+
+  return max(lane(1), edge(0)), max(lane(2), edge(1))
+
+
 def path_y_std_at(times, y_stds, t_query: float = PATH_T_S) -> float | None:
   """Interpolate lateral path std (m) at ``t_query`` seconds. None if unusable."""
   try:
@@ -143,9 +167,14 @@ def model_is_poor(left: float, right: float, y_std: float | None) -> bool:
 
 
 def model_is_clear(left: float, right: float, y_std: float | None) -> bool:
-  if y_std is None or not math.isfinite(y_std):
-    return False
-  return left >= LANE_CONF_EXIT and right >= LANE_CONF_EXIT and y_std < PATH_Y_STD_EXIT_M
+  """Exit bar. ``left``/``right`` are exit confidences (better of lane and edge).
+
+  Once both sides are clearly visible, path std cannot hold the latch.
+  ``y_std`` stays in the signature so callers and older tests still pass it;
+  it does not block a clear exit.
+  """
+  del y_std
+  return left >= LANE_CONF_EXIT and right >= LANE_CONF_EXIT
 
 
 def fade_curvature(model_k: float, measured_k: float, authority: float) -> float:
@@ -328,22 +357,28 @@ class LowVisibility:
              sun_ahead: bool = False, dt: float = 0.01) -> LowVisibilityOutput:
     dt = float(dt) if dt and math.isfinite(float(dt)) else 0.01
     left, right = side_confidences(lane_probs, edge_stds)
+    exit_left, exit_right = side_confidences_exit(lane_probs, edge_stds)
     y_std = path_y_std_at(path_t, path_y_std, PATH_T_S)
     poor = model_is_poor(left, right, y_std)
-    clear = model_is_clear(left, right, y_std)
-    if poor:
+    clear = model_is_clear(exit_left, exit_right, y_std)
+    # Entry still uses the worse of lane and edge, plus path std. Once
+    # the latch is up, the better of lane and edge on each side can
+    # leave even if the other signal (or path std) would still look poor.
+    if self._model:
+      if clear:
+        self._clear_s += dt
+        self._poor_s = 0.0
+        if self._clear_s + 1e-12 >= MODEL_EXIT_S:
+          self._model = False
+      else:
+        self._poor_s = 0.0
+        self._clear_s = 0.0
+    elif poor:
       self._poor_s += dt
       self._clear_s = 0.0
       if self._poor_s + 1e-12 >= MODEL_ENTER_S:
         self._model = True
-    elif clear:
-      self._clear_s += dt
-      self._poor_s = 0.0
-      if self._clear_s + 1e-12 >= MODEL_EXIT_S:
-        self._model = False
     else:
-      # Between the enter and exit bars: hold the latch, don't let one
-      # frame of either side restart the timer.
       self._poor_s = 0.0
       self._clear_s = 0.0
 
