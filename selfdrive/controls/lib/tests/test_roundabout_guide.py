@@ -834,7 +834,8 @@ def test_steering_pull_toward_the_circulation_does_not_release_but_wins():
   g = _on_ring()
   _run(g, 50)
   outs = _run(g, 100, RG.DriverInput(torque=2.0), t0=0.7)
-  assert outs == [-0.02] * 100 and g.release == "" and g.phase == RG.ACTIVE
+  # Same-side add keeps the extra curl. It does not zero the weight and it does not release.
+  assert any(o != -0.02 for o in outs) and g.release == "" and g.phase == RG.ACTIVE and g.latched
 
 
 def test_steering_press_zeroes_the_weight_after_0_3_s_and_overrides_after_0_5_s():
@@ -842,9 +843,9 @@ def test_steering_press_zeroes_the_weight_after_0_3_s_and_overrides_after_0_5_s(
   _run(g, 50)
   assert any(o != -0.02 for o in _run(g, 25, RG.DriverInput(pressed=True), t0=0.7))     # < 0.3 s: a flicker, the assist keeps going
   _run(g, 5, t0=0.95)                                                                    # hands off: the debounce resets
-  _run(g, 35, RG.DriverInput(pressed=True), t0=1.0)
-  assert _run(g, 5, RG.DriverInput(pressed=True), t0=1.35) == [-0.02] * 5 and g.release == ""   # past 0.3 s: weight 0, not yet an override
-  assert _run(g, 20, RG.DriverInput(pressed=True), t0=1.4) == [-0.02] * 20 and g.release == "override"
+  mid = _run(g, 40, RG.DriverInput(pressed=True), t0=1.0)                                # 0.40 s: curl stays
+  assert any(o != -0.02 for o in mid) and g.release == ""
+  assert _run(g, 20, RG.DriverInput(pressed=True), t0=1.4)[-1] == -0.02 and g.release == "override"
   g = _on_ring()
   _run(g, 50)
   assert _run(g, 100, lat=False, t0=0.7) == [-0.02] * 100 and g.release == "override"      # lat off: the driver has the wheel

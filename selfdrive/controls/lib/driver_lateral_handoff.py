@@ -164,7 +164,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from cereal import log
-from opendbc.car.tesla.preap.lat_yield import GRACE_DELAY_S
+from opendbc.car.tesla.preap.lat_yield import GRACE_DELAY_S, immediate_lat_yield
 from opendbc.car.tesla.values import STEER_THRESHOLD
 from openpilot.common.constants import CV
 from openpilot.selfdrive.controls.lib.lane_change_nudge import (
@@ -978,7 +978,10 @@ class DriverLateralHandoff:
              steering_pressed: bool = False,
              steering_angle_deg: float | None = None,
              model_curvature: float | None = None,
-             measured_curvature: float | None = None) -> HandoffOutput:
+             measured_curvature: float | None = None,
+             commanded_angle_deg: float | None = None,
+             roundabout_yield: bool = False,
+             undertrack: bool = False) -> HandoffOutput:
     if dt is None:
       dt = DT_CTRL
     # steering_rate_deg is SNA (-4095.5) on this Pre-AP car. Wheel-still
@@ -1046,6 +1049,17 @@ class DriverLateralHandoff:
       wants = False
     else:
       wants = self._update_soft(tq, dt) or self._update_early(tq, bool(steering_pressed))
+      # Same-direction hands-on, or any steering input on a roundabout,
+      # yields on this frame. An opposite yank is not this path: the
+      # session-cancel edge still owns it. Raw torque, not the resting
+      # offset, so the sign matches panda.
+      if not wants and immediate_lat_yield(
+          hands=hands_on_level, torque_nm=steering_torque,
+          commanded_angle_deg=commanded_angle_deg,
+          measured_angle_deg=steering_angle_deg,
+          undertrack=bool(undertrack), roundabout=bool(roundabout_yield),
+          steering_pressed=bool(steering_pressed)):
+        wants = True
     if (self._yielded or self._blending or self._blinker_was_paused or wants):
       self._note_angle(steering_angle_deg)
 

@@ -17,6 +17,7 @@ from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   cs_hands_on_level, cs_real_brake_pressed, handoff_enabled,
   handoff_new_desired_curvature, lat_active_after_handoff,
   pin_desired_curvature_to_measured)
+from opendbc.car.tesla.preap.lat_yield import UNDERTRACK_CURVATURE, roundabout_yield_context
 from openpilot.selfdrive.controls.lib.cone_line_hold import PARAM_CONE_LINE_HOLD, ConeLineHold
 from openpilot.selfdrive.controls.lib.lat_low_visibility import (
   PARAM_LOW_VIS_BACKOFF, LowVisibility, fade_curvature, sun_ahead_from_fix)
@@ -94,6 +95,11 @@ class Controls:
     self.low_vis = LowVisibility()
     self._low_vis = self.low_vis.update(enabled=False)
     self._raw_model_curvature = 0.0
+    # Previous cycle's yield context. Card sends the same bits to panda
+    # after this loop, so the next hands edge sees what panda already has.
+    self._cmd_angle_prev = None
+    self._under_prev = False
+    self._rb_yield_prev = False
     # Cone-line offset hold. Default On. Identity until a real push.
     self.cone_hold = ConeLineHold()
     self._cone_out = self.cone_hold.update(
@@ -325,6 +331,9 @@ class Controls:
       v_ego=float(CS.vEgo),
       emergency_yank=bool(self._lane_change_torque.release),
       lane_change_confirm=bool(lane_change_confirm),
+      commanded_angle_deg=self._cmd_angle_prev,
+      roundabout_yield=bool(self._rb_yield_prev),
+      undertrack=bool(self._under_prev),
       steering_angle_deg=float(CS.steeringAngleDeg),
       steering_pressed=bool(CS.steeringPressed),
       model_curvature=float(self._raw_model_curvature),
@@ -447,6 +456,14 @@ class Controls:
       actuators.steeringAngleDeg = float(steeringAngleDeg)
     if self._low_vis.authority < 1.0:
       actuators.torque = float(actuators.torque) * float(self._low_vis.authority)
+    # Latch what this cycle will tell panda (0x561) for the next hands edge.
+    self._cmd_angle_prev = float(actuators.steeringAngleDeg)
+    self._under_prev = abs(float(actuators.curvature) - float(self.curvature)) > UNDERTRACK_CURVATURE
+    _md = self.sm['liveMapDataNAP'] if self.sm.alive.get('liveMapDataNAP', False) else None
+    _hint = live_map_roundabout_hint(_md)
+    self._rb_yield_prev = bool(
+      _hint is not None and roundabout_yield_context(
+        _hint.on_roundabout, _hint.approaching, _hint.distance_m))
     # Ensure no NaNs/Infs
     for p in ACTUATOR_FIELDS:
       attr = getattr(actuators, p)
