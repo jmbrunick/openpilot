@@ -13,15 +13,8 @@ from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import (
 )
 from openpilot.selfdrive.controls.lib.desire_helper import _driver_torque_nm
 from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
-  BLEND_AUTHORITY_RATE_PER_S,
-  FIGHT_BLEND_RATE_PER_S,
-  FIGHT_MAX_HOLD_S,
-  FIGHT_POST_INHIBIT_S,
-  FIGHT_QUIET_S,
-  FIGHT_TORQUE_HOLD_S,
-  FIGHT_TORQUE_NM,
-  HANDS_OFF_CONFIRM_S,
   LAT_REENABLE_MIN_V_EGO,
+  RELEASE_HOLD_S,
   DriverLateralHandoff,
 )
 from openpilot.selfdrive.controls.lib.lane_change_nudge import TippedLaneChangeTorque
@@ -57,7 +50,7 @@ def _run(h, seconds, **kw):
   return out
 
 
-def _yield_once(h, torque):
+def _yield_once(h, torque=1.5):
   out = None
   for _ in range(12):
     out = _step(h, torque=torque, hands=1, pressed=True)
@@ -66,100 +59,61 @@ def _yield_once(h, torque):
 
 
 def test_resting_offset_returns_lateral_after_a_held_turn():
-  """Logged pattern: hands-off sits near +0.25 Nm, so raw < 0.20 never happens."""
+  """Logged pattern: hands-off sits near +0.25 Nm. The free-wheel offset learns it."""
   h = DriverLateralHandoff()
-  _run(h, 12.0, torque=REST_NM, hands=0, engaged=False, lat=False, angle=0.0, rate=0.0)
+  _run(h, 12.0, torque=REST_NM, hands=0, engaged=False, lat=False, angle=0.0, rate=-4095.5)
   assert 0.20 < h.rest_bias < 0.28
+  assert 0.20 < h.rest_bias_free < 0.28
 
-  # A turn at cruise speed must not bank fight evidence, even at ~2 Nm.
   turn = REST_NM + 2.0
   out = _run(h, 6.0, torque=turn, hands=1, pressed=True, blinker=True, engaged=True, lat=True)
   assert out.yielded
-  assert not h._fight
 
-  # Blinker off, torque back at the resting reading, hands off: blend
-  # starts on the normal confirm, inside the post-turn grace.
   out = None
-  for _ in range(int((HANDS_OFF_CONFIRM_S + 0.15) / DT)):
+  for _ in range(int((RELEASE_HOLD_S + 0.05) / DT)):
     out = _step(h, torque=REST_NM, hands=0, blinker=False, pressed=False)
     if out.blending:
       break
   assert out is not None and out.blending and not out.yielded
-  assert not h._fight
-  # Well under the 1.5 s grace: this was not a tug-of-war.
-  assert h._blend_s < FIGHT_POST_INHIBIT_S
 
 
-def test_blinker_and_low_speed_do_not_arm_a_fight():
+def test_blinker_and_low_speed_hold_the_yield():
   h = DriverLateralHandoff()
-  h._rest_bias = REST_NM
-  push = REST_NM + 0.85
+  push = 1.5
   _yield_once(h, push)
-  out = _run(h, 6.0, torque=push, hands=1, pressed=True, blinker=True)
-  assert out.yielded and not h._fight
+  out = _run(h, 1.0, torque=0.0, hands=0, blinker=True)
+  assert out.yielded and not out.blending
 
-  # Under 10 mph the same hold is a turn, not a fight.
   h2 = DriverLateralHandoff()
-  h2._rest_bias = REST_NM
   _yield_once(h2, push)
-  out = _run(h2, 6.0, torque=REST_NM + FIGHT_TORQUE_NM + 0.10, hands=1,
-             pressed=True, v_ego=SLOW_V, blinker=False)
-  assert not h2._fight
-
-  # Crossing 10 mph starts the 1.5 s grace. A fight-level hold inside it
-  # still does not arm. After the grace, 5 s above the fight floor does.
-  _run(h2, FIGHT_POST_INHIBIT_S - 0.05, torque=REST_NM + 0.40, hands=1,
-       pressed=False, v_ego=CRUISE_V, blinker=False)
-  assert not h2._fight
-  _run(h2, FIGHT_TORQUE_HOLD_S + 0.2, torque=REST_NM + 0.40, hands=0,
-       pressed=False, v_ego=CRUISE_V, model_k=MODEL_K, wheel_k=WHEEL_K)
-  assert h2._fight
+  out = _run(h2, 1.0, torque=0.0, hands=0, v_ego=SLOW_V, blinker=False)
+  assert out.yielded and not out.blending
+  # Crossing 10 mph lands in yield; a quiet wheel then returns.
+  out = _run(h2, RELEASE_HOLD_S + 0.05, torque=0.0, hands=0, v_ego=CRUISE_V, blinker=False)
+  assert out.blending and not out.yielded
 
 
-def test_six_seconds_hands_quiet_retakes_without_curvature_agreement():
+def test_light_hold_returns_without_curvature_agreement():
   h = DriverLateralHandoff()
-  _yield_once(h, 0.85)
-  _run(h, FIGHT_TORQUE_HOLD_S + 0.05, torque=FIGHT_TORQUE_NM + 0.10, hands=0)
-  assert h._fight
-  # Quiet, but the model is still wrong: the 2 s path must keep the yield.
-  early = _run(h, FIGHT_QUIET_S + 0.5, torque=0.0, hands=0, model_k=MODEL_K, wheel_k=WHEEL_K)
+  _yield_once(h, 1.5)
+  early = _run(h, 2.0, torque=0.5, hands=0, model_k=MODEL_K, wheel_k=WHEEL_K)
   assert early.yielded and not early.blending
-
-  out = None
-  # Quiet already ran; the cap is 6 s from the start of quiet.
-  remain = FIGHT_MAX_HOLD_S - (FIGHT_QUIET_S + 0.5) + HANDS_OFF_CONFIRM_S + 0.05
-  for _ in range(int(remain / DT) + 5):
-    out = _step(h, torque=0.0, hands=0, model_k=MODEL_K, wheel_k=WHEEL_K)
-    if out.blending:
-      break
-  assert out is not None and out.blending and not out.yielded
-  prev = out.authority
-  nxt = _step(h, torque=0.0, hands=0, model_k=MODEL_K, wheel_k=WHEEL_K)
-  assert nxt.authority - prev <= FIGHT_BLEND_RATE_PER_S * DT + 1e-9
-  assert FIGHT_BLEND_RATE_PER_S < BLEND_AUTHORITY_RATE_PER_S
+  out = _run(h, 0.6, torque=0.5, hands=0, model_k=MODEL_K, wheel_k=WHEEL_K)
+  assert out.blending and not out.yielded
 
 
-def test_single_pull_clears_a_fight_latch():
+def test_single_pull_forces_the_return():
   h = DriverLateralHandoff()
-  _yield_once(h, 0.85)
-  _run(h, FIGHT_TORQUE_HOLD_S + 0.05, torque=0.40, hands=0, model_k=MODEL_K)
-  assert h._fight and h._yielded
-  # Hands already off and not in a turn: the pull starts the normal blend.
-  _step(h, torque=0.05, hands=0, model_k=MODEL_K)
-  assert h._yielded and not h._last_driver_hold and not h._last_inhibited
+  _yield_once(h, 1.5)
+  _run(h, 0.5, torque=1.0, hands=1, model_k=MODEL_K)
+  assert h._yielded
+  h._soften = True
   h.driver_resume_request()
-  assert not h._fight
-  assert h._blending and not h._fight_release
-
-  held = DriverLateralHandoff()
-  _yield_once(held, 0.85)
-  _run(held, FIGHT_TORQUE_HOLD_S + 0.05, torque=0.40, hands=1, model_k=MODEL_K)
-  assert held._fight and held._yielded
-  _step(held, torque=0.85, hands=1, pressed=True, model_k=MODEL_K)
-  assert held._last_driver_hold
-  held.driver_resume_request()
-  assert not held._fight
-  assert held._yielded and not held._blending
+  assert not h._soften
+  assert h._pull_pending and h._yielded and not h._blending
+  out = _step(h, torque=1.0, hands=1, model_k=MODEL_K)
+  assert out.blending and not out.yielded
+  assert not h._pull_pending
 
 
 def test_learned_offset_is_not_a_left_lane_nudge():
