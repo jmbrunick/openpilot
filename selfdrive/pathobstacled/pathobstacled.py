@@ -35,6 +35,17 @@ AR_W, AR_H, AR_F, AR_WIDE_F = 1928, 1208, 2648.0, 567.0
 VISION_HZ = 5.0
 VISION_BUDGET_S = 0.008
 RECV_TIMEOUT_MS = 20
+CONNECT_BACKOFF_S = 0.50
+CONNECT_BACKOFF_MAX_S = 5.0
+STALE_FRAME_NS = 500_000_000
+VISION_FAIL_REASONS = (
+  "no_connection",
+  "no_frame",
+  "stale_frame",
+  "roi_out_of_frame",
+  "budget",
+  "model_error",
+)
 THUMB_DIR = "/data/media/0/realdata/path_obstacle_thumbs"
 THUMB_GAP_S = 2.0
 NICE = 19
@@ -187,46 +198,213 @@ def math_ceil(value: float) -> int:
   return iv if iv == value or value < 0 else iv + 1
 
 
+def _buf_stale(buf) -> bool:
+  """True when timestamp_eof is a boot-time ns value older than half a second.
+
+  A missing or zero timestamp is not stale: tests and a fresh subscribe
+  sometimes have no clock, and those frames are still scored.
+  """
+  ts = getattr(buf, "timestamp_eof", None)
+  if ts is None:
+    return False
+  try:
+    stamp = int(ts)
+  except (TypeError, ValueError):
+    return False
+  if stamp <= 0:
+    return False
+  try:
+    now = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
+  except Exception:
+    return False
+  age = now - stamp
+  if age < 0:
+    return False
+  return age > STALE_FRAME_NS
+
+
 class _Cameras:
+  """VisionIPC for the road and wide cameras.
+
+  connect() is checked. A failure is not cached as a live client, and the
+  next try waits on a backoff so a down camerad cannot spin this process.
+  """
+
   def __init__(self):
     self.road = None
     self.wide = None
     self._vipc = None
+    self._next_connect = {"road": 0.0, "wide": 0.0}
+    self._backoff = {"road": CONNECT_BACKOFF_S, "wide": CONNECT_BACKOFF_S}
+    self._fail = {"road": "", "wide": ""}
     self.last_thumb = 0.0
+    self.last_reason = ""
     self.patch_sig: dict[int, tuple] = {}
 
-  def _client(self, stream):
+  def _types(self):
     if self._vipc is None:
       from msgq.visionipc import VisionIpcClient, VisionStreamType
       self._vipc = (VisionIpcClient, VisionStreamType)
-    VisionIpcClient, VisionStreamType = self._vipc
-    kind = VisionStreamType.VISION_STREAM_WIDE_ROAD if stream == "wide" else VisionStreamType.VISION_STREAM_ROAD
-    client = VisionIpcClient("camerad", kind, True)
-    client.connect(False)
-    return client
+    return self._vipc
 
-  def grab(self, wide: bool):
+  def _kind(self, stream: str):
+    _client, VisionStreamType = self._types()
+    if stream == "wide":
+      return VisionStreamType.VISION_STREAM_WIDE_ROAD
+    return VisionStreamType.VISION_STREAM_ROAD
+
+  def _slot(self, stream: str):
+    return self.wide if stream == "wide" else self.road
+
+  def _set_slot(self, stream: str, client) -> None:
+    if stream == "wide":
+      self.wide = client
+    else:
+      self.road = client
+
+  def _healthy(self, client) -> bool:
+    if client is None:
+      return False
+    ask = getattr(client, "is_connected", None)
+    if ask is not None:
+      try:
+        if not bool(ask()):
+          return False
+      except Exception:
+        return False
+    buffers = getattr(client, "num_buffers", None)
+    if buffers is None:
+      return True
+    try:
+      return int(buffers) > 0
+    except (TypeError, ValueError):
+      return False
+
+  def _streams(self, prefer: str) -> list[str]:
+    """Preferred camera first, then the other one when it is actually up.
+
+    An empty availability list means camerad has not advertised yet, so
+    both streams are still tried. A list that names only one camera is
+    respected.
+    """
+    other = "road" if prefer == "wide" else "wide"
+    try:
+      VisionIpcClient, VisionStreamType = self._types()
+      ask = getattr(VisionIpcClient, "available_streams", None)
+      avail = ask("camerad", block=False) if ask is not None else None
+    except Exception:
+      return [prefer, other]
+    if not avail:
+      return [prefer, other]
+    wanted = {
+      "road": VisionStreamType.VISION_STREAM_ROAD,
+      "wide": VisionStreamType.VISION_STREAM_WIDE_ROAD,
+    }
+    have = [name for name in ("road", "wide") if wanted[name] in list(avail)]
+    if not have:
+      return []
+    if prefer in have:
+      have.remove(prefer)
+      have.insert(0, prefer)
+    return have
+
+  def _ensure(self, stream: str, now: float) -> str | None:
+    """None when the stream is connected. Otherwise a reason code."""
+    client = self._slot(stream)
+    if self._healthy(client):
+      self._backoff[stream] = CONNECT_BACKOFF_S
+      self._fail[stream] = ""
+      return None
+    if now < self._next_connect[stream]:
+      return self._fail[stream] or "no_connection"
+    self._set_slot(stream, None)
+    self._next_connect[stream] = now + self._backoff[stream]
+    self._backoff[stream] = min(CONNECT_BACKOFF_MAX_S, max(CONNECT_BACKOFF_S, self._backoff[stream] * 2.0))
+    try:
+      VisionIpcClient, _kind = self._types()
+      client = VisionIpcClient("camerad", self._kind(stream), True)
+      ok = client.connect(False)
+    except Exception:
+      self._fail[stream] = "no_connection"
+      return "no_connection"
+    if ok is not True or not self._healthy(client):
+      self._fail[stream] = "no_connection"
+      return "no_connection"
+    self._set_slot(stream, client)
+    self._backoff[stream] = CONNECT_BACKOFF_S
+    self._fail[stream] = ""
+    return None
+
+  def _recv(self, stream: str, timeout_ms: int):
+    client = self._slot(stream)
+    if client is None:
+      return None, "no_connection"
+    try:
+      buf = client.recv(timeout_ms=timeout_ms)
+    except Exception:
+      self._set_slot(stream, None)
+      self._fail[stream] = "no_frame"
+      return None, "no_frame"
+    if buf is None:
+      if not self._healthy(client):
+        self._set_slot(stream, None)
+        self._fail[stream] = "no_connection"
+        return None, "no_connection"
+      return None, "no_frame"
+    if _buf_stale(buf):
+      try:
+        nxt = client.recv(timeout_ms=0)
+      except Exception:
+        nxt = None
+      if nxt is not None and not _buf_stale(nxt):
+        buf = nxt
+      else:
+        return None, "stale_frame"
     try:
       from openpilot.selfdrive.speedsignd.nv12 import y_plane_from_nv12
+      plane = y_plane_from_nv12(buf)
     except Exception:
-      return None
+      return None, "model_error"
+    if plane is None:
+      return None, "no_frame"
+    return plane, ""
+
+  def grab(self, wide: bool, now: float, deadline: float | None = None):
+    """Return (Y plane or None, reason). Reason is empty when a frame is ready."""
+    if deadline is not None and now >= deadline:
+      self.last_reason = "budget"
+      return None, "budget"
+    prefer = "wide" if wide else "road"
     try:
-      if wide:
-        if self.wide is None:
-          self.wide = self._client("wide")
-        buf = self.wide.recv(timeout_ms=RECV_TIMEOUT_MS)
-      else:
-        if self.road is None:
-          self.road = self._client("road")
-        buf = self.road.recv(timeout_ms=RECV_TIMEOUT_MS)
+      streams = self._streams(prefer)
     except Exception:
-      return None
-    if buf is None:
-      return None
-    try:
-      return y_plane_from_nv12(buf)
-    except Exception:
-      return None
+      self.last_reason = "no_connection"
+      return None, "no_connection"
+    if not streams:
+      self.last_reason = "no_connection"
+      return None, "no_connection"
+    remain_s = RECV_TIMEOUT_MS / 1000.0 if deadline is None else deadline - now
+    if remain_s <= 0.0:
+      self.last_reason = "budget"
+      return None, "budget"
+    timeout_ms = max(0, min(RECV_TIMEOUT_MS, int(remain_s * 1000.0)))
+    if timeout_ms <= 0:
+      self.last_reason = "budget"
+      return None, "budget"
+    reason = "no_connection"
+    for stream in streams:
+      reason = self._ensure(stream, now) or ""
+      if reason:
+        continue
+      plane, reason = self._recv(stream, timeout_ms)
+      if plane is not None:
+        self.last_reason = ""
+        return plane, ""
+      if reason in ("no_frame", "stale_frame", "model_error"):
+        self.last_reason = reason
+        return None, reason
+    self.last_reason = reason or "no_connection"
+    return None, self.last_reason
 
 
 def _project(hit, roll, pitch, yaw, height, focal, width, cam_h):
@@ -242,8 +420,8 @@ def _project(hit, roll, pitch, yaw, height, focal, width, cam_h):
   return ground, top
 
 
-def _vision_for(hit, cam, calib, cams: _Cameras):
-  """Return (score or None, microseconds, patch or None)."""
+def _vision_for(hit, cam, calib, cams: _Cameras, now: float):
+  """Return (score or None, microseconds, patch or None, fail reason)."""
   started = time.monotonic()
 
   def elapsed():
@@ -264,19 +442,24 @@ def _vision_for(hit, cam, calib, cams: _Cameras):
     focal = wide_f
     ground, top = _project(hit, roll + wr, pitch + wp, yaw + wy, height, focal, width, cam_h)
   if ground is None or top is None:
-    return None, elapsed(), None
-  plane = cams.grab(use_wide)
+    return None, elapsed(), None, "roi_out_of_frame"
+  plane, reason = cams.grab(use_wide, now, now + VISION_BUDGET_S)
   if plane is None:
-    return None, elapsed(), None
+    return None, elapsed(), None, reason or "no_frame"
   box = projection_box(ground[0], top[1], ground[1], focal, hit.x)
-  patch, road = _crop(plane, box)
+  try:
+    patch, road = _crop(plane, box)
+  except Exception:
+    return None, elapsed(), None, "model_error"
   if patch is None:
-    return None, elapsed(), None
+    return None, elapsed(), None, "roi_out_of_frame"
   try:
     score = score_row_patches(patch, road)
   except Exception:
-    return None, elapsed(), None
-  return score, elapsed(), patch
+    return None, elapsed(), None, "model_error"
+  if score is None or not getattr(score, "evaluated", False):
+    return None, elapsed(), None, "model_error"
+  return score, elapsed(), patch, ""
 
 
 def _maybe_thumb(patch, now: float, last: float) -> float:
@@ -326,6 +509,10 @@ def _publish_vision(pm, messaging, sample, vision_us: float) -> None:
   body.chimeReason = str(sample.chime_reason)
   body.livelyScore = float(sample.lively_score)
   body.visionUs = float(vision_us)
+  reason = str(getattr(sample, "vision_fail_reason", "") or "")
+  if reason and reason not in VISION_FAIL_REASONS:
+    reason = "model_error"
+  body.visionFailReason = reason
   pm.send("pathObstacleVisionNAP", msg)
 
 
@@ -343,6 +530,7 @@ class Helper:
     self.cam = None
     self.gps = None
     self.calib = _DEFAULT_CALIB
+    self._fail_logged = ""
 
   def refresh_params(self, params, now: float) -> None:
     if now - self.param_t > 1.0:
@@ -382,12 +570,23 @@ class Helper:
     vision_us = 0.0
     motion = 0.0
     patch = None
-    if now >= self.next_vision:
-      vision, vision_us, patch = _vision_for(hit, self.cam, self.calib, self.cams)
+    fail = ""
+    attempted = now >= self.next_vision
+    if attempted:
+      vision, vision_us, patch, fail = _vision_for(hit, self.cam, self.calib, self.cams, now)
+      if fail and fail != self._fail_logged:
+        self._fail_logged = fail
+        try:
+          from openpilot.common.swaglog import cloudlog
+          cloudlog.warning("pathobstacled vision %s", fail)
+        except Exception:
+          pass
+      elif not fail:
+        self._fail_logged = ""
       gap = 1.0 / VISION_HZ
       if vision_us > VISION_BUDGET_S * 1e6:
         gap = max(gap, 0.40)
-      self.next_vision = time.monotonic() + gap
+      self.next_vision = now + gap
       if patch is not None and hit.track_id:
         sig = patch_signature(patch)
         prev = self.cams.patch_sig.get(int(hit.track_id))
@@ -399,6 +598,8 @@ class Helper:
       if vision is not None and patch is not None and vision.conf >= 0.30:
         self.cams.last_thumb = _maybe_thumb(patch, now, self.cams.last_thumb)
     sample = self.det.commit(hit, vision, chime_enabled=self.chime_on, now=now, vision_motion=motion)
+    if attempted and vision is None:
+      sample = replace(sample, vision_fail_reason=fail or "no_frame")
     return sample, vision_us
 
 
