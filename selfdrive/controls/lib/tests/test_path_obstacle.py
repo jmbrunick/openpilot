@@ -484,6 +484,10 @@ def test_wiring_stays_off_the_control_core_and_off_longitudinal():
   assert "leadOne" in radar and "leadTwo" in radar
   assert "run_obstacle" in radar
   assert "sub_sock('carState'" not in proc and 'sub_sock("carState"' not in proc
+  assert "get_gps_location_service" in proc
+  assert 'sub_sock("gpsLocationExternal"' not in proc and "sub_sock('gpsLocationExternal'" not in proc
+  assert 'sub_sock("liveCalibration"' not in proc and "sub_sock('liveCalibration'" not in proc
+  assert "CalibrationParams" in proc
   assert "pathObstacleVisionNAP" in proc
   assert ".copy()" in proc
   assert "exclVehicle" in text("selfdrive/controls/lib/path_obstacle.py")

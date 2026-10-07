@@ -3632,3 +3632,36 @@ def test_int_on_still_uses_tipwipe_and_leaves_collar(monkeypatch):
   assert stw_collar_posn(dat) == 2
   assert body.requested_auto_collar_posn(True) is None
 
+
+def test_read_cereal_gear_never_subscribes(monkeypatch):
+  """Gear comes from the carState card just published, never a new subscriber."""
+  import inspect
+  from pathlib import Path
+  from types import SimpleNamespace
+
+  import cereal.messaging as messaging
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  def _boom(*_args, **_kwargs):
+    raise AssertionError("carState subscriber created")
+
+  monkeypatch.setattr(messaging, "SubMaster", _boom)
+  monkeypatch.setattr(messaging, "sub_sock", _boom)
+  body.reset_auto_gates()
+  try:
+    assert body._read_cereal_gear() == (None, "none")
+    body.note_published_car_state(SimpleNamespace(gearShifter="drive"))
+    assert body._read_cereal_gear() == ("drive", "cereal")
+    assert body.in_drive_gear()
+    body.reset_auto_gates()
+    assert body._read_cereal_gear() == (None, "none")
+  finally:
+    body.reset_auto_gates()
+
+  src = inspect.getsource(body._read_cereal_gear)
+  assert "SubMaster" not in src
+  assert "sub_sock" not in src
+  card = Path(__file__).resolve().parents[2].joinpath("card.py").read_text()
+  assert "note_published_car_state(cs_send.carState)" in card
+

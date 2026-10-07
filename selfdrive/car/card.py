@@ -690,6 +690,9 @@ class Car:
     cs_send.carState.canErrorCounter = self.can_rcv_cum_timeout_counter
     cs_send.carState.cumLagMs = -self.rk.remaining * 1000.
     self.pm.send('carState', cs_send)
+    if self._tesla_preap:
+      from openpilot.selfdrive.car.tesla.preap_body_controls import note_published_car_state
+      note_published_car_state(cs_send.carState)
 
     if RD is not None:
       tracks_msg = messaging.new_message('liveTracks')

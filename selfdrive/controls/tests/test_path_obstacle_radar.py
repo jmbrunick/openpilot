@@ -299,6 +299,34 @@ def test_helper_without_trigger_does_not_open_visionipc():
   assert helper.cams.road is None and helper.cams.wide is None
 
 
+def test_calibration_is_read_from_params():
+  import cereal.messaging as messaging
+  from openpilot.selfdrive.pathobstacled.pathobstacled import _DEFAULT_CALIB, _calibration_from_params
+
+  class _Empty:
+    def get(self, _key):
+      return None
+
+  assert _calibration_from_params(_Empty()) == _DEFAULT_CALIB
+
+  msg = messaging.new_message("liveCalibration", valid=True)
+  msg.liveCalibration.rpyCalib = [0.1, -0.2, 0.3]
+  msg.liveCalibration.wideFromDeviceEuler = [0.01, 0.02, -0.03]
+  msg.liveCalibration.height = [1.41]
+
+  class _Stored:
+    def get(self, key):
+      assert key == "CalibrationParams"
+      return msg.to_bytes()
+
+  roll, pitch, yaw, height, wr, wp, wy = _calibration_from_params(_Stored())
+  for got, want in (
+    (roll, 0.1), (pitch, -0.2), (yaw, 0.3), (height, 1.41),
+    (wr, 0.01), (wp, 0.02), (wy, -0.03),
+  ):
+    assert math.isclose(got, want, rel_tol=0.0, abs_tol=1e-5)
+
+
 def test_crop_is_detached_from_the_camera_buffer():
   plane = np.arange(400, dtype=np.uint8).reshape(20, 20)
   before = plane.copy()

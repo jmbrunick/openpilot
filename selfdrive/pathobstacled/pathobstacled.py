@@ -41,6 +41,10 @@ NICE = 19
 CORES = [0, 1, 2, 3]
 # Block in the kernel until radard publishes, or this long for a param refresh.
 RADAR_TIMEOUT_MS = 1500
+# CalibrationParams is written by calibrationd every few blocks, not every frame.
+CAL_REFRESH_S = 10.0
+# roll, pitch, yaw, height, wide-from-device euler. Height 1.22 m is the stock fallback.
+_DEFAULT_CALIB = (0.0, 0.0, 0.0, 1.22, 0.0, 0.0, 0.0)
 
 
 def _bool_param(params, key: str, default: bool) -> bool:
@@ -120,26 +124,45 @@ def _lighting_from(body, cam, gps) -> float:
   )
 
 
-def _calib(sm) -> tuple[float, float, float, float]:
+def _finite_list(values) -> list[float]:
   try:
-    cal = sm["liveCalibration"]
-    rpy = [float(v) for v in cal.rpyCalib]
-    height = float(cal.height) if float(cal.height) > 0.2 else 1.22
-  except Exception:
-    return 0.0, 0.0, 0.0, 1.22
-  while len(rpy) < 3:
-    rpy.append(0.0)
-  return rpy[0], rpy[1], rpy[2], height
+    seq = list(values)
+  except TypeError:
+    return []
+  out = []
+  for value in seq:
+    try:
+      num = float(value)
+    except (TypeError, ValueError):
+      continue
+    if math.isfinite(num):
+      out.append(num)
+  return out
 
 
-def _wide_euler(sm) -> tuple[float, float, float]:
+def _calibration_from_params(params):
+  """rpy, height, and wide euler from CalibrationParams. No liveCalibration socket."""
   try:
-    rpy = [float(v) for v in sm["liveCalibration"].wideFromDeviceEuler]
+    raw = params.get("CalibrationParams")
   except Exception:
-    return 0.0, 0.0, 0.0
+    raw = None
+  if not raw:
+    return _DEFAULT_CALIB
+  try:
+    from cereal import log
+    with log.Event.from_bytes(raw) as msg:
+      cal = msg.liveCalibration
+      rpy = _finite_list(cal.rpyCalib)
+      wide = _finite_list(cal.wideFromDeviceEuler)
+      heights = _finite_list(cal.height)
+  except Exception:
+    return _DEFAULT_CALIB
   while len(rpy) < 3:
     rpy.append(0.0)
-  return rpy[0], rpy[1], rpy[2]
+  while len(wide) < 3:
+    wide.append(0.0)
+  height = heights[0] if heights and heights[0] > 0.2 else 1.22
+  return (rpy[0], rpy[1], rpy[2], height, wide[0], wide[1], wide[2])
 
 
 def _crop(plane, box):
@@ -206,23 +229,6 @@ class _Cameras:
       return None
 
 
-class _View:
-  """The three conflated inputs _calib / _vision_for already index by name."""
-
-  def __init__(self, cam, cal, gps):
-    self._d = {
-      "roadCameraState": cam,
-      "liveCalibration": cal,
-      "gpsLocationExternal": gps,
-    }
-
-  def __getitem__(self, key):
-    value = self._d.get(key)
-    if value is None:
-      raise KeyError(key)
-    return value
-
-
 def _project(hit, roll, pitch, yaw, height, focal, width, cam_h):
   cx, cy = width / 2.0, cam_h / 2.0
   ground = project_road_point(
@@ -236,16 +242,16 @@ def _project(hit, roll, pitch, yaw, height, focal, width, cam_h):
   return ground, top
 
 
-def _vision_for(hit, sm, cams: _Cameras):
+def _vision_for(hit, cam, calib, cams: _Cameras):
   """Return (score or None, microseconds, patch or None)."""
   started = time.monotonic()
 
   def elapsed():
     return (time.monotonic() - started) * 1e6
 
-  roll, pitch, yaw, height = _calib(sm)
+  roll, pitch, yaw, height, wr, wp, wy = calib if calib is not None else _DEFAULT_CALIB
   try:
-    sensor = sm["roadCameraState"].sensor
+    sensor = "" if cam is None else cam.sensor
   except Exception:
     sensor = ""
   width, cam_h, road_f, wide_f = _cam_size(sensor)
@@ -255,7 +261,6 @@ def _vision_for(hit, sm, cams: _Cameras):
     use_wide = True
   focal = road_f
   if use_wide:
-    wr, wp, wy = _wide_euler(sm)
     focal = wide_f
     ground, top = _project(hit, roll + wr, pitch + wp, yaw + wy, height, focal, width, cam_h)
   if ground is None or top is None:
@@ -333,23 +338,27 @@ class Helper:
     self.log_on = True
     self.chime_on = True
     self.param_t = 0.0
+    self.calib_t = 0.0
     self.next_vision = 0.0
     self.cam = None
-    self.cal = None
     self.gps = None
+    self.calib = _DEFAULT_CALIB
 
   def refresh_params(self, params, now: float) -> None:
-    if now - self.param_t <= 1.0:
-      return
-    self.log_on = _bool_param(params, PARAM_OBSTACLE_LOG, True)
-    self.chime_on = _bool_param(params, PARAM_OBSTACLE_CHIME, True)
-    self.param_t = now
+    if now - self.param_t > 1.0:
+      prev_log = self.log_on
+      self.log_on = _bool_param(params, PARAM_OBSTACLE_LOG, True)
+      self.chime_on = _bool_param(params, PARAM_OBSTACLE_CHIME, True)
+      self.param_t = now
+      if self.log_on and not prev_log:
+        self.calib_t = 0.0
+    if now - self.calib_t > CAL_REFRESH_S:
+      self.calib = _calibration_from_params(params)
+      self.calib_t = now
 
-  def absorb(self, cam, cal, gps) -> None:
+  def absorb(self, cam, gps) -> None:
     if cam is not None:
       self.cam = cam
-    if cal is not None:
-      self.cal = cal
     if gps is not None:
       self.gps = gps
 
@@ -374,7 +383,7 @@ class Helper:
     motion = 0.0
     patch = None
     if now >= self.next_vision:
-      vision, vision_us, patch = _vision_for(hit, _View(self.cam, self.cal, self.gps), self.cams)
+      vision, vision_us, patch = _vision_for(hit, self.cam, self.calib, self.cams)
       gap = 1.0 / VISION_HZ
       if vision_us > VISION_BUDGET_S * 1e6:
         gap = max(gap, 0.40)
@@ -410,12 +419,14 @@ def _run() -> None:
   from openpilot.common.params import Params
 
   params = Params()
-  # No carState, modelV2, radarState, liveTracks, or deviceState. Those
-  # services are at or near the msgq reader cap. radard already has them.
+  from openpilot.common.gps import get_gps_location_service
+  # No carState, modelV2, radarState, liveTracks, deviceState, or
+  # liveCalibration. Those services are at or near the msgq reader cap.
+  # Sun uses whichever GPS this device publishes. Calibration is the param.
+  gps_service = get_gps_location_service(params)
   sock = messaging.sub_sock("pathObstacleNAP", timeout=RADAR_TIMEOUT_MS)
   cam_sock = messaging.sub_sock("roadCameraState", conflate=True)
-  cal_sock = messaging.sub_sock("liveCalibration", conflate=True)
-  gps_sock = messaging.sub_sock("gpsLocationExternal", conflate=True)
+  gps_sock = messaging.sub_sock(gps_service, conflate=True)
   pm = messaging.PubMaster(["pathObstacleVisionNAP"])
   helper = Helper()
 
@@ -436,7 +447,6 @@ def _run() -> None:
     try:
       helper.absorb(
         _latest_body(messaging, cam_sock),
-        _latest_body(messaging, cal_sock),
         _latest_body(messaging, gps_sock),
       )
       result = helper.on_radar(msg, now)
