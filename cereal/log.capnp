@@ -145,6 +145,7 @@ struct OnroadEvent @0xc4fa6047f024e718 {
     radarPreferFallback @109;
     napWiperChanged @110;
     gapLock @111;
+    lowVisibility @112;
 
     soundsUnavailableDEPRECATED @47;
   }
@@ -830,6 +831,7 @@ struct ControlsState @0x97ff69c53601abf1 {
   forceDecel @51 :Bool;
   latAuthority @67 :Float32;  # 0-1 NAP lateral actuator authority (Pre-AP driver wheel handoff)
   latHandoffPaused @68 :Bool;  # HUD: yielded or blending below 70% authority
+  lowVisibility @69 :Bool;  # NAP: model/camera blind, lateral eased toward the driver
 
   lateralControlState :union {
     pidState @53 :LateralPIDState;

@@ -1224,6 +1224,17 @@ if _gap_lock is not None:
     ET.PERMANENT: gap_lock_alert,
   }
 
+# One text for model-blind and camera-blind. Warning only: no disable.
+_low_visibility = getattr(EventName, "lowVisibility", None)
+if _low_visibility is not None:
+  EVENTS[_low_visibility] = {
+    ET.WARNING: Alert(
+      "Low visibility",
+      "Take over if needed",
+      AlertStatus.userPrompt, AlertSize.mid,
+      Priority.MID, VisualAlert.steerRequired, AudibleAlert.none, 0.5),
+  }
+
 
 if HARDWARE.get_device_type() == 'mici':
   EVENTS.update({

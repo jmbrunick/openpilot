@@ -17,6 +17,8 @@ from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   cs_hands_on_level, cs_real_brake_pressed, handoff_enabled,
   handoff_new_desired_curvature, lat_active_after_handoff,
   pin_desired_curvature_to_measured)
+from openpilot.selfdrive.controls.lib.lat_low_visibility import (
+  PARAM_LOW_VIS_BACKOFF, LowVisibility, fade_curvature, sun_ahead_from_fix)
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.selfdrive.controls.lib.lane_change_nudge import TippedLaneChangeTorque
 from openpilot.selfdrive.controls.lib.lane_change_turn import LaneChangeTurnHold, blinker_with_turn_hold
@@ -55,7 +57,9 @@ class Controls:
     self.sm = messaging.SubMaster(['liveDelay', 'liveParameters', 'liveTorqueParameters', 'modelV2', 'selfdriveState',
                                    'liveCalibration', 'livePose', 'longitudinalPlan', 'lateralManeuverPlan', 'carState', 'carOutput',
                                    'driverMonitoringState', 'onroadEvents', 'driverAssistance', 'liveMapDataNAP', 'radarState',
-                                   'gpsLocation', 'gpsLocationExternal'], poll='selfdriveState')
+                                   'gpsLocation', 'gpsLocationExternal', 'roadCameraState'], poll='selfdriveState',
+                                  ignore_alive=['roadCameraState'], ignore_avg_freq=['roadCameraState'],
+                                  ignore_valid=['roadCameraState'])
     self.pm = messaging.PubMaster(['carControl', 'controlsState'])
 
     self.steer_limited_by_safety = False
@@ -80,6 +84,10 @@ class Controls:
     self._lat_handoff = self.lat_handoff.update(
       engaged=False, lat_would_be_active=False,
       steering_torque=0.0, steering_rate_deg=0.0)
+    # Low-visibility fade. Default On. Does not touch longitudinal.
+    self.low_vis = LowVisibility()
+    self._low_vis = self.low_vis.update(enabled=False)
+    self._raw_model_curvature = 0.0
 
     self.pose_calibrator = PoseCalibrator()
     self.calibrated_pose: Pose | None = None
@@ -101,6 +109,54 @@ class Controls:
     if self.sm.updated["livePose"]:
       device_pose = Pose.from_live_pose(self.sm['livePose'])
       self.calibrated_pose = self.pose_calibrator.build_calibrated_pose(device_pose)
+
+  def _update_low_visibility(self, engaged: bool):
+    """Scale lateral authority when the camera or the model cannot see the road.
+
+    Longitudinal is not read or written here. Off (or disengaged) is identity.
+    """
+    try:
+      param_on = bool(self.params.get_bool(PARAM_LOW_VIS_BACKOFF))
+    except Exception:
+      param_on = True
+    model = self.sm['modelV2']
+    try:
+      lane_probs = [float(p) for p in model.laneLineProbs]
+    except Exception:
+      lane_probs = []
+    try:
+      edge_stds = [float(s) for s in model.roadEdgeStds]
+    except Exception:
+      edge_stds = []
+    try:
+      path_t = [float(t) for t in model.position.t]
+      path_y = [float(y) for y in model.position.yStd]
+    except Exception:
+      path_t, path_y = [], []
+    integ = None
+    if self.sm.recv_frame.get('roadCameraState', 0) > 0:
+      try:
+        integ = int(self.sm['roadCameraState'].integLines)
+      except Exception:
+        integ = None
+    sun_ahead = False
+    for key in ('gpsLocationExternal', 'gpsLocation'):
+      if self.sm.recv_frame.get(key, 0) <= 0:
+        continue
+      fix = self.sm[key]
+      ahead = sun_ahead_from_fix(
+        latitude=fix.latitude, longitude=fix.longitude,
+        unix_timestamp_millis=fix.unixTimestampMillis,
+        bearing_deg=fix.bearingDeg,
+        horizontal_accuracy_m=fix.horizontalAccuracy)
+      if ahead is not None:
+        sun_ahead = bool(ahead)
+        break
+    return self.low_vis.update(
+      enabled=bool(engaged) and param_on,
+      lane_probs=lane_probs, edge_stds=edge_stds,
+      path_t=path_t, path_y_std=path_y, integ_lines=integ,
+      sun_ahead=sun_ahead, dt=DT_CTRL)
 
   def state_control(self):
     CS = self.sm['carState']
@@ -217,7 +273,10 @@ class Controls:
       lane_change_confirm=bool(lane_change_confirm),
       steering_angle_deg=float(CS.steeringAngleDeg),
       steering_pressed=bool(CS.steeringPressed),
+      model_curvature=float(self._raw_model_curvature),
+      measured_curvature=float(self.curvature),
     )
+    self._low_vis = self._update_low_visibility(bool(CC.enabled))
     CC.latActive = lat_active_after_handoff(
       lat_would_be_active, self._lat_handoff.yielded)
     self._lat_active_prev = bool(CC.latActive)
@@ -291,6 +350,12 @@ class Controls:
     )
     # The legacy outer bias never stacks on the assist.
     model_or_plan_curvature = float(model_or_plan_curvature) + (0.0 if self.rb_assist.active else rb_bias)
+    # Raw model curvature feeds the fight-hold resume (not the faded command).
+    self._raw_model_curvature = float(model_or_plan_curvature)
+    # Low visibility eases the lateral target toward the wheel. Longitudinal
+    # accel above is unchanged, and latActive / enabled are unchanged.
+    model_or_plan_curvature = fade_curvature(
+      model_or_plan_curvature, self.curvature, self._low_vis.authority)
     new_desired_curvature = handoff_new_desired_curvature(
       yielded=bool(self._lat_handoff.yielded),
       lat_active=bool(CC.latActive),
@@ -323,6 +388,8 @@ class Controls:
     else:
       actuators.torque = float(steer)
       actuators.steeringAngleDeg = float(steeringAngleDeg)
+    if self._low_vis.authority < 1.0:
+      actuators.torque = float(actuators.torque) * float(self._low_vis.authority)
     # Ensure no NaNs/Infs
     for p in ACTUATOR_FIELDS:
       attr = getattr(actuators, p)
@@ -391,6 +458,7 @@ class Controls:
     if self.lat_handoff.enabled:
       cs.latAuthority = float(self._lat_handoff.authority)
       cs.latHandoffPaused = bool(self._lat_handoff.ui_paused)
+    cs.lowVisibility = bool(self._low_vis.alert)
     cs.longControlState = self.LoC.long_control_state
     cs.upAccelCmd = float(self.LoC.pid.p)
     cs.uiAccelCmd = float(self.LoC.pid.i)

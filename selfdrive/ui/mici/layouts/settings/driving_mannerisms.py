@@ -11,6 +11,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   FOLLOW_DISTANCE_VALUES,
   MAP_SPEED_ACCEL, MAP_SPEED_ACCEL_DEFAULT, MAP_SPEED_ACCEL_LABELS,
   NAP_DRIVER_LAT_HANDOFF,
+  NAP_LOW_VIS_BACKOFF,
   NAP_FOLLOW_DISTANCE_CITY,
   NAP_FOLLOW_DISTANCE_HWY,
   NAP_HYPERMILE,
@@ -72,6 +73,9 @@ class DrivingMannerismsLayoutMici(NavScroller):
     lat_handoff = BigParamControl("soft lateral handoff", NAP_DRIVER_LAT_HANDOFF)
     lat_handoff.set_value("On — free-wheel yield; Off if false-yield")
 
+    low_vis = BigParamControl("low visibility back-off", NAP_LOW_VIS_BACKOFF)
+    low_vis.set_value("On — ease lateral and show Low visibility")
+
     one_pedal = BigParamControl("one-pedal long", NAP_ONE_PEDAL_LONG)
     one_pedal.set_value("Off default — gas pause stays until SET")
 
@@ -96,6 +100,7 @@ class DrivingMannerismsLayoutMici(NavScroller):
       self._follow_distance_hwy,
       self._turn_in_delay,
       lat_handoff,
+      low_vis,
       one_pedal,
       gap_lock,
       hypermile,
