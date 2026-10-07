@@ -82,6 +82,18 @@ hands-off or direction-change during the dodge must not start
 take-back. Renewed hands-on or a firm >= 0.55 Nm push during that
 wait or the blend cancels and re-yields (delay resets).
 
+Fight hold (one-sided tug). A single dodge still resumes on the
+0.15 s confirm + 1 s blend. After FIGHT_YIELD_COUNT same-direction
+yields inside FIGHT_WINDOW_S, or one-sided torque at/above
+FIGHT_TORQUE_NM for FIGHT_TORQUE_HOLD_S while a yield is recent,
+resume waits until torque has been below FIGHT_QUIET_NM for
+FIGHT_QUIET_S and |model curvature − measured| has been under
+FIGHT_CURVATURE_ERR for FIGHT_CURVATURE_HOLD_S. That re-take uses
+FIGHT_BLEND_RATE_PER_S (still finished inside BLEND_TIME_S, so the
+inference grace is unchanged). Callers that omit model/measured
+curvature keep the previous resume. BLEND_TIME_S and
+HANDS_OFF_CONFIRM_S are not changed.
+
 Emergency / hard brake (see emergency_brake() and docs-nap/engagement.md):
   Pre-AP has no analog brake pressure on parsed buses — only digital
   Applied (DI_brakePedal / BrakeMessage.driverBrakeStatus). Light brake
@@ -248,7 +260,23 @@ YIELD_AUTHORITY_TIME_S = 0.0
 TESLA_MAX_ANGLE_RATE_DEG_PER_20MS = 5.0
 
 # smoothstep(t) = t^2 (3-2t); max |ds/dt| on t in [0,1] is 1.5.
+# With BLEND_TIME_S == 1 that is also the max authority rise per second.
 SMOOTHSTEP_MAX_SLOPE = 1.5
+BLEND_AUTHORITY_RATE_PER_S = SMOOTHSTEP_MAX_SLOPE / BLEND_TIME_S
+
+# One-sided fight: stay yielded instead of sawtoothing back onto a
+# path the driver is refusing. Timing of a normal blend is unchanged.
+FIGHT_YIELD_COUNT = 3
+FIGHT_WINDOW_S = 20.0
+FIGHT_TORQUE_NM = 0.30
+FIGHT_TORQUE_HOLD_S = 5.0
+FIGHT_QUIET_NM = 0.20
+FIGHT_QUIET_S = 2.0
+FIGHT_CURVATURE_ERR = 0.0015
+FIGHT_CURVATURE_HOLD_S = 0.30
+# Gentler than the smoothstep peak (1.5/s) and still reaches 1 inside
+# BLEND_TIME_S, so panda's re-arm grace still covers the re-take.
+FIGHT_BLEND_RATE_PER_S = 1.15
 
 PREAP_FINGERPRINT = "TESLA_MODEL_S_PREAP"
 # Settings → NAP. Default On. Turn Off if gravel / wind still false-yields.
@@ -408,6 +436,20 @@ def smoothstep(t: float) -> float:
   return t * t * (3.0 - 2.0 * t)
 
 
+def limit_authority_step(prev: float, target: float, dt: float, rate_per_s: float) -> float:
+  """Rise toward ``target`` no faster than ``rate_per_s``. Falls immediately.
+
+  The normal 1 s blend uses BLEND_AUTHORITY_RATE_PER_S, which matches
+  the smoothstep peak, so a 100 Hz smoothstep is unchanged. The fight
+  re-take passes FIGHT_BLEND_RATE_PER_S.
+  """
+  prev_a = float(np.clip(prev, 0.0, 1.0))
+  target_a = float(np.clip(target, 0.0, 1.0))
+  if target_a <= prev_a:
+    return target_a
+  return float(min(target_a, prev_a + max(0.0, float(rate_per_s)) * max(0.0, float(dt))))
+
+
 def lat_active_after_handoff(lat_would_be_active: bool, yielded: bool) -> bool:
   """EPS request bit after blinker / standstill / soft-yield.
 
@@ -523,6 +565,15 @@ class DriverLateralHandoff:
     self._peak_angle_deg = 0.0
     self._gate_hold_s = 0.0
     self._straight_s = 0.0
+    self._clock_s = 0.0
+    self._yield_log: list[tuple[float, int]] = []
+    self._fight = False
+    self._fight_sign = 0
+    self._fight_release = False
+    self._torque_hold_s = 0.0
+    self._torque_hold_sign = 0
+    self._fight_quiet_s = 0.0
+    self._fight_agree_s = 0.0
 
   def reset(self):
     self._reset()
@@ -639,6 +690,7 @@ class DriverLateralHandoff:
   def _enter_yield(self):
     self._yielded = True
     self._blending = False
+    self._fight_release = False
     self._quiet_s = 0.0
     self._blend_s = 0.0
     self._hands_off_s = 0.0
@@ -650,6 +702,10 @@ class DriverLateralHandoff:
       self._yield_age_s = 0.0
 
   def _start_blend(self):
+    # A fight re-take is rate-limited. Leave the latch up so a curvature
+    # jump during the blend re-yields instead of snatching the wheel.
+    # A normal dodge (_fight False) keeps the 1 s smoothstep.
+    self._fight_release = bool(self._fight)
     self._yielded = False
     self._blending = True
     self._blend_s = 0.0
@@ -659,6 +715,63 @@ class DriverLateralHandoff:
     self._straight_s = 0.0
     self.authority = 0.0
     self.ui_paused = True
+
+  def _note_yield(self, torque_nm: float):
+    sign = 1 if float(torque_nm) > 0.05 else -1 if float(torque_nm) < -0.05 else 0
+    if sign == 0:
+      sign = self._fight_sign or self._torque_hold_sign
+    now = self._clock_s
+    self._yield_log.append((now, sign))
+    self._yield_log = [(t, s) for t, s in self._yield_log if now - t <= FIGHT_WINDOW_S]
+    if sign == 0:
+      return
+    same = sum(1 for _t, s in self._yield_log if s == sign)
+    if same >= FIGHT_YIELD_COUNT:
+      self._fight = True
+      self._fight_sign = sign
+
+  def _update_sustained_fight(self, torque_nm: float, dt: float):
+    """Arm stay-yielded on a long one-sided hold after a recent yield."""
+    mag = abs(float(torque_nm))
+    sign = 1 if float(torque_nm) > 0.0 else -1 if float(torque_nm) < 0.0 else 0
+    # A hold already in progress stays "recent" after a 1 s blend finishes.
+    # Otherwise a 0.3–0.5 Nm push (under the 0.55 yield trigger) would
+    # take lateral back and then forget the push that was still on the wheel.
+    recent = (
+      self._yielded or self._blending or self._torque_hold_s > 0.0
+      or any(self._clock_s - t <= FIGHT_WINDOW_S for t, _s in self._yield_log)
+    )
+    same_sign = self._torque_hold_sign in (0, sign)
+    if recent and mag >= FIGHT_TORQUE_NM and sign != 0 and same_sign:
+      if self._torque_hold_sign == 0:
+        self._torque_hold_sign = sign
+      self._torque_hold_s += dt
+      if self._torque_hold_s >= FIGHT_TORQUE_HOLD_S:
+        self._fight = True
+        self._fight_sign = sign
+    elif mag < FIGHT_QUIET_NM or (sign != 0 and self._torque_hold_sign not in (0, sign)):
+      self._torque_hold_s = 0.0
+      self._torque_hold_sign = 0
+
+  def _fight_resume_allowed(self, torque_nm: float, curv_err: float, dt: float) -> bool:
+    """True when a fight hold may start the normal hands-off confirm."""
+    if not self._fight:
+      return True
+    if abs(float(torque_nm)) < FIGHT_QUIET_NM:
+      self._fight_quiet_s += dt
+    else:
+      self._fight_quiet_s = 0.0
+    # Wider bar once the re-take has started so one noisy frame
+    # does not cancel a blend that already agreed.
+    err_limit = FIGHT_CURVATURE_ERR * (2.0 if self._fight_release else 1.0)
+    if float(curv_err) < err_limit:
+      self._fight_agree_s += dt
+    else:
+      self._fight_agree_s = 0.0
+    return (
+      self._fight_quiet_s + 1e-12 >= FIGHT_QUIET_S
+      and self._fight_agree_s + 1e-12 >= FIGHT_CURVATURE_HOLD_S
+    )
 
   def _identity(self, *, emergency_cancel: bool = False) -> HandoffOutput:
     return HandoffOutput(1.0, False, False, False, emergency_cancel)
@@ -672,7 +785,9 @@ class DriverLateralHandoff:
              emergency_yank: bool = False,
              lane_change_confirm: bool = False,
              steering_pressed: bool = False,
-             steering_angle_deg: float | None = None) -> HandoffOutput:
+             steering_angle_deg: float | None = None,
+             model_curvature: float | None = None,
+             measured_curvature: float | None = None) -> HandoffOutput:
     if dt is None:
       dt = DT_CTRL
 
@@ -716,6 +831,25 @@ class DriverLateralHandoff:
       self._peak_angle_deg = peak
       return self._identity()
 
+    self._clock_s += dt
+    fight_on = model_curvature is not None and measured_curvature is not None
+    if fight_on:
+      try:
+        curv_err = abs(float(model_curvature) - float(measured_curvature))
+      except (TypeError, ValueError):
+        curv_err = 0.0
+        fight_on = False
+      if not np.isfinite(curv_err):
+        curv_err = 0.0
+        fight_on = False
+    else:
+      curv_err = 0.0
+    if fight_on:
+      self._update_sustained_fight(steering_torque, dt)
+      resume_allowed = self._fight_resume_allowed(steering_torque, curv_err, dt)
+    else:
+      resume_allowed = True
+
     mag = abs(float(steering_torque))
     pressed = self._update_intent(
       steering_torque, steering_rate_deg,
@@ -728,6 +862,9 @@ class DriverLateralHandoff:
         or pressed):
       self._note_angle(steering_angle_deg)
 
+    driver_hold = hands_on or firm_push
+    # Fight hold blocks the take-back only. A normal single dodge
+    # (resume_allowed True) is the same state machine as before.
     if inhibited:
       # Keep control if we still have it. A driver push may still yield.
       # Already yielded / blending / coming back from lat-down: stay
@@ -737,8 +874,11 @@ class DriverLateralHandoff:
         self._enter_yield()
         self._blinker_was_paused = True
       elif pressed:
+        rising = not self._yielded
         self._enter_yield()
         self._blinker_was_paused = True
+        if fight_on and rising:
+          self._note_yield(steering_torque)
     elif self._blinker_was_paused:
       # Inhibit just cleared (blinker off and/or speed crossed 10 mph,
       # or lat came back after a blinker / low-speed standstill/fault).
@@ -746,19 +886,24 @@ class DriverLateralHandoff:
       # hands-off confirm owns the resume.
       self._blinker_was_paused = False
       self._enter_yield()
-      if not (hands_on or firm_push):
+      if not driver_hold and resume_allowed:
         self._hands_off_s += dt
         if (self._hands_off_s + 1e-12 >= HANDS_OFF_CONFIRM_S
             and not self._wheel_gate_holds(steering_angle_deg, dt)):
           self._start_blend()
     elif not self._yielded and not self._blending:
-      if pressed:
+      if pressed or (fight_on and self._fight and not resume_allowed):
+        rising = not self._yielded
         self._enter_yield()
+        if fight_on and rising and pressed:
+          self._note_yield(steering_torque)
     elif self._yielded:
       # Stay yielded while still maneuvering: hands on the rim OR a
       # renewed firm push. Mid-dodge torsion dips (below release) must
       # not start the blend. Hands 0 for ~0.15 s → 1 s smoothstep.
-      if hands_on or firm_push:
+      # A fight hold also stays yielded until torque is quiet and the
+      # model path is close to the wheel.
+      if driver_hold or not resume_allowed:
         self._enter_yield()
       else:
         self._hands_off_s += dt
@@ -769,15 +914,29 @@ class DriverLateralHandoff:
       # Hands back on or a firm push cancels the return. Mid-band
       # torque during the blend is OP/caster, not a new push. Re-yield
       # does not re-require rate agreement (already in the maneuver).
-      if hands_on or firm_push:
+      # Fight hold cancels a re-take that the model is still fighting.
+      if driver_hold or not resume_allowed:
         self._enter_yield()
+        if fight_on and driver_hold:
+          self._note_yield(steering_torque)
       else:
         self._blend_s += dt
-        t = self._blend_s / BLEND_TIME_S
-        self.authority = smoothstep(t)
-        if self._blend_s + 1e-12 >= BLEND_TIME_S:
+        t_norm = self._blend_s / BLEND_TIME_S
+        target = 1.0 if t_norm >= 1.0 else smoothstep(t_norm)
+        rate = FIGHT_BLEND_RATE_PER_S if self._fight_release else BLEND_AUTHORITY_RATE_PER_S
+        self.authority = limit_authority_step(self.authority, target, dt, rate)
+        if self._blend_s + 1e-12 >= BLEND_TIME_S and self.authority + 1e-9 >= 1.0:
           self.authority = 1.0
           self._blending = False
+          self._fight = False
+          self._fight_release = False
+          self._fight_sign = 0
+          self._fight_quiet_s = 0.0
+          self._fight_agree_s = 0.0
+          # Leave the sustained-torque timer alone. A clean re-take is
+          # quiet, so the timer is already 0. A push still under the
+          # yield trigger must keep counting toward the 5 s stay-yielded.
+          self._yield_log.clear()
           self._blend_s = 0.0
           self._quiet_s = 0.0
           self._peak_angle_deg = 0.0

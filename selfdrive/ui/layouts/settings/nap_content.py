@@ -105,6 +105,7 @@ HYPERMILE_HILL_CLIMB_DESCRIPTION = (
 
 NAP_SPEED_SIGN_LOG = "NAPSpeedSignLog"
 NAP_DRIVER_LAT_HANDOFF = "NAPDriverLatHandoff"
+NAP_LOW_VIS_BACKOFF = "NAPLowVisBackoff"
 NAP_DM_SIMULATE_LOOKING = "NAPDmSimulateLooking"
 NAP_DM_FALSE_ALERT_IGNORE = "NAPDmFalseAlertIgnore"
 NAP_FORCE_OFFROAD = "NAPForceOffroad"
@@ -112,6 +113,14 @@ DRIVER_LAT_HANDOFF_DESCRIPTION = (
   "Default On. A light purposeful push frees the wheel. Hands off "
   + "~0.15 s, then it blends back. Turn Off if rumble false-yields. "
   + "Off = stock lat."
+)
+LOW_VIS_BACKOFF_DESCRIPTION = (
+  "Default On. When the camera is blinded or the model loses the lane "
+  + "(a side below about 0.3 and the path unsure at 3 seconds), lateral "
+  + "eases toward your steering and shows Low visibility. It comes back "
+  + "smoothly when the road is clear. Longitudinal stays on. A repeated "
+  + "one-sided fight also stays yielded until the model agrees with the "
+  + "wheel. Off = stock lateral, no Low visibility alert."
 )
 DM_SIMULATE_LOOKING_DESCRIPTION = (
   "Default On. nap-dev experiment. While engaged, after the look-at-road "

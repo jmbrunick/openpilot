@@ -338,6 +338,13 @@ class SelfdriveD:
       if self.sm['driverAssistance'].leftLaneDeparture or self.sm['driverAssistance'].rightLaneDeparture:
         self.events.add(EventName.ldw)
 
+    # Model or camera cannot see the road. Lateral is easing toward the
+    # driver in controlsd; this does not disengage and does not touch long.
+    if self.enabled and bool(getattr(self.sm['controlsState'], 'lowVisibility', False)):
+      low_vis = getattr(EventName, 'lowVisibility', None)
+      if low_vis is not None:
+        self.events.add(low_vis)
+
     # ******************************************************************************************
     #  NOTE: To fork maintainers.
     #  Disabling or nerfing safety features will get you and your users banned from our servers.

@@ -252,6 +252,12 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // handsOnLevel >= 1; blend after ~80 ms hands-off. Hard brake during
     // yield fully cancels. Settings can turn Off.
     {"NAPDriverLatHandoff", {PERSISTENT, BOOL, "1"}},
+    // Low-visibility lateral back-off. Default On. When lane/road-edge
+    // confidence collapses with a wide path, or road-camera exposure
+    // collapses (sooner if the sun is low and ahead), lateral eases
+    // toward the driver and the HUD says Low visibility. Longitudinal
+    // stays engaged. Off = stock lateral, no alert.
+    {"NAPLowVisBackoff", {PERSISTENT, BOOL, "1"}},
     // Pre-AP DM: while engaged, full looking-path wipe on the stock
     // vision path (no-face / uncertain / phone / pose / eye). After
     // drain past 1.0 s, fire at random in the next 2.0 s (fire in

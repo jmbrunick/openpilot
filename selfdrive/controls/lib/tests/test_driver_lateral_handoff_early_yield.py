@@ -89,7 +89,13 @@ def test_controlsd_and_card_pass_steering_pressed_to_the_handoff():
   from pathlib import Path
   repo = Path(__file__).resolve().parents[4]
   controlsd = (repo / "selfdrive/controls/controlsd.py").read_text()
-  call_tail = "      steering_pressed=bool(CS.steeringPressed),\n    )\n    CC.latActive = lat_active_after_handoff("
+  call_tail = (
+    "      steering_pressed=bool(CS.steeringPressed),\n"
+    "      model_curvature=float(self._raw_model_curvature),\n"
+    "      measured_curvature=float(self.curvature),\n"
+    "    )\n"
+  )
   assert call_tail in controlsd
+  assert "CC.latActive = lat_active_after_handoff(" in controlsd
   card = (repo / "selfdrive/car/tesla/preap_blinker_lat_pause.py").read_text()
   assert 'steering_pressed=bool(getattr(ret, "steeringPressed", False)),' in card
