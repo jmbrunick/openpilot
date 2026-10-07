@@ -195,9 +195,15 @@ def test_stash_decodes_hands_level_for_every_level_and_state():
 
 
 def test_card_handoff_forwards_steering_pressed_to_the_early_yield():
+  from pathlib import Path
+
   from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import _handoff_for, update_card_lat_handoff
   from openpilot.selfdrive.controls.lib.driver_lateral_handoff import EARLY_YIELD_FRAMES
 
+  # 1.4 Nm / 80 ms yields without steeringPressed, so a 3 Nm push still
+  # yields if this kwarg is dropped. The forward itself is the contract.
+  card = Path(__file__).resolve().parents[4] / "selfdrive/car/tesla/preap_blinker_lat_pause.py"
+  assert "    steering_pressed=steering_pressed,\n    dt=dt,\n" in card.read_text()
   eng = Rig().eng
   for _ in range(EARLY_YIELD_FRAMES):
     update_card_lat_handoff(
