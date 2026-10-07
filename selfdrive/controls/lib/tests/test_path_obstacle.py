@@ -460,24 +460,36 @@ def test_wiring_stays_off_the_control_core_and_off_longitudinal():
   assert "obstacle_chime_alert" in events
 
   selfd = text("selfdrive/selfdrived/selfdrived.py")
+  assert "'pathObstacleVisionNAP'" in selfd
   assert "'pathObstacleNAP'" in selfd
   assert "should_raise_chime" in selfd
+  assert "path_obstacle" not in selfd.split("class SelfdriveD", 1)[0]
   assert "a_cmd=float(self.sm['carControl'].actuators.accel),\n" in selfd
 
   keys = text("common/params_keys.h")
   assert '{"NAPObstacleChime", {PERSISTENT, BOOL, "1"}}' in keys
   assert '{"NAPObstacleLog", {PERSISTENT, BOOL, "1"}}' in keys
   services = text("cereal/services.py")
-  assert '"pathObstacleNAP": (True, 8., 2)' in services
+  assert '"pathObstacleNAP": (True, 0., 1)' in services
+  assert '"pathObstacleVisionNAP": (True, 0., 1)' in services
   manner = text("selfdrive/ui/layouts/settings/driving_mannerisms.py")
   assert "Live object detection chime" in manner
   assert "livelyScore" in text("cereal/custom.capnp")
   assert "self._all_items.append(self._turn_in_buttons)" in manner
 
   proc = text("selfdrive/pathobstacled/pathobstacled.py")
-  assert "vehicle_exclusion_points" in proc
-  assert "leadsV3" in proc and "model.leads" in proc
-  assert "leadOne" in proc and "leadTwo" in proc
+  radar = text("selfdrive/controls/radard.py")
+  assert "vehicle_exclusion_points" in radar
+  assert "leadsV3" in radar and ".leads" in radar
+  assert "leadOne" in radar and "leadTwo" in radar
+  assert "run_obstacle" in radar
+  assert "sub_sock('carState'" not in proc and 'sub_sock("carState"' not in proc
+  assert "get_gps_location_service" in proc
+  assert 'sub_sock("gpsLocationExternal"' not in proc and "sub_sock('gpsLocationExternal'" not in proc
+  assert 'sub_sock("liveCalibration"' not in proc and "sub_sock('liveCalibration'" not in proc
+  assert "CalibrationParams" in proc
+  assert "pathObstacleVisionNAP" in proc
+  assert ".copy()" in proc
   assert "exclVehicle" in text("selfdrive/controls/lib/path_obstacle.py")
   assert "CORES = [0, 1, 2, 3]" in proc
   assert "set_core_affinity(CORES)" in proc
@@ -486,9 +498,9 @@ def test_wiring_stays_off_the_control_core_and_off_longitudinal():
   assert "config_realtime_process(4" not in proc
   cfg = text("system/manager/process_config.py")
   assert 'PythonProcess("pathobstacled"' in cfg
-  assert "optional=True" in cfg.split('PythonProcess("pathobstacled"', 1)[1][:240]
+  assert "optional=True" in cfg.split('PythonProcess("pathobstacled"', 1)[1][:400]
   optional = text("system/manager/optional_procs.py")
   assert "pathobstacled" in optional
   assert '"card"' not in optional or "card" not in optional.split("OPTIONAL_PROCESS_NAMES", 1)[1][:200]
   onroad = text("selfdrive/test/test_onroad.py")
-  assert '"selfdrive.pathobstacled.pathobstacled": 6.0' in onroad
+  assert '"selfdrive.pathobstacled.pathobstacled": 1.0' in onroad

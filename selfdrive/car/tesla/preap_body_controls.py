@@ -122,7 +122,8 @@ _gear_override = None
 _v_ego_override = None
 _cereal_gear_override = None
 _cereal_gear_forced = False
-_cereal_sm = None
+# Last carState card published. Not a subscriber — card is already at the cap.
+_published_car_state = None
 # Names for Drive/Reverse. Pre-AP DI_torque2 is DI_GEAR_D / DI_GEAR_R.
 _DRIVE_GEARS = (
   "drive", "reverse", "d", "r",
@@ -519,12 +520,19 @@ def set_cereal_gear(gear) -> None:
   _cereal_gear_override = gear
 
 
+def note_published_car_state(cs) -> None:
+  """card.state_publish passes the carState it just sent. No socket."""
+  global _published_car_state
+  _published_car_state = cs
+
+
 def reset_auto_gates() -> None:
   global _live_cs, _vehicle_on_override, _gear_override, _last_gear_src, _last_wiper_req
   global _cereal_gear_override, _cereal_gear_forced, _wiper_cancel_burst
   global _last_auto_log_t, _last_status_put_t, _last_status_gate, _auto_since_t
-  global _v_ego_override, _status_disk_once
+  global _v_ego_override, _status_disk_once, _published_car_state
   _live_cs = None
+  _published_car_state = None
   _vehicle_on_override = None
   _gear_override = None
   _v_ego_override = None
@@ -739,13 +747,10 @@ def _read_cereal_gear() -> tuple[object, str]:
     if _gear_present(_cereal_gear_override):
       return _cereal_gear_override, "cereal"
     return None, "none"
-  global _cereal_sm
+  cs = _published_car_state
+  if cs is None:
+    return None, "none"
   try:
-    if _cereal_sm is None:
-      import cereal.messaging as messaging
-      _cereal_sm = messaging.SubMaster(["carState"])
-    _cereal_sm.update(0)
-    cs = _cereal_sm["carState"]
     gear = _attr_gear(cs, "gearShifter")
     if not _gear_present(gear):
       gear = _attr_gear(cs, "gear")

@@ -2586,7 +2586,7 @@ struct Event {
     liveSpeedSignNAP @108 :Custom.LiveSpeedSignNAP;
     coneLineNAP @109 :Custom.ConeLineNAP;
     pathObstacleNAP @110 :Custom.PathObstacleNAP;
-    customReserved4 @111 :Custom.CustomReserved4;
+    pathObstacleVisionNAP @111 :Custom.PathObstacleVisionNAP;
     customReserved5 @112 :Custom.CustomReserved5;
     customReserved6 @113 :Custom.CustomReserved6;
     customReserved7 @114 :Custom.CustomReserved7;
