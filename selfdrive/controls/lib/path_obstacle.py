@@ -14,7 +14,7 @@ The radar scan runs only at or above 15 mph (6.7 m/s), with a
 stage publishes an inactive lowSpeed heartbeat and the camera helper
 stays asleep.
 
-Thresholds (device frame, y +left, path-relative lateral):
+Thresholds (device frame, y +right, path-relative lateral):
   range                         5–120 m ahead of the camera
   in the path                   |lateral| <= 1.70 m
   human band                    in the path, or within 0.9 m (3 ft)
@@ -722,7 +722,7 @@ def vehicle_exclusion_points(leads_v3=(), leads_v2=(), radar_leads=()):
   Model leadsV3 (lead0, lead1, and any further entries) and legacy
   leads V2 are device-frame points. A radard lead (leadOne and leadTwo)
   is included when status is set: its track id, and its position with
-  y flipped from right-positive yRel to device +left. Prob under 0.40
+  y flipped from left-positive yRel to device +right. Prob under 0.40
   is ignored for the model. A selected radar lead is kept even if
   modelProb is low.
 
@@ -783,9 +783,10 @@ def _cone_reject(lat: float, x: float, cone: ConeHint | None) -> str | None:
   line = _line_lat(cone, x)
   if cone.barrier and line is not None and abs(lat - line) < 1.15:
     return "barrier"
-  # Distance to the line, not the side label. The label is mirrored
-  # relative to steering torque; the lateral numbers are not.
-  if cone.active and line is not None and abs(lat - line) < 0.80:
+  # lat is +right. cone.side is the real side: +1 left, -1 right,
+  # so a left line has negative lat. side +1 agrees with lat < 0.
+  same_side = cone.side == 0 or (lat > 0.0) == (cone.side < 0) or abs(lat) < 0.4
+  if cone.active and line is not None and abs(lat - line) < 0.80 and same_side:
     return "cone_line"
   if cone.parked and 1.5 < abs(lat) < 4.5:
     return "exclVehicle"
