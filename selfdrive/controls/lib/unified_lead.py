@@ -995,13 +995,15 @@ class UnifiedLeadController:
       self._conf = 0.0
       self._lead_id = lead_id
       # Do not inherit the previous lead's accel. Speed starts at this sample.
-      # Seed a_lead from the first radar value so a 0 → aLeadK step is not
-      # read as brake onset. A lead we are already closing on, and that is
-      # already braking hard, still ramps from 0: copying that decel on the
-      # first frame is the Sep 28 far-lead flash.
+      # A pulling-away cut-in is seeded from the first radar accel so the
+      # 0 → aLeadK step is not read as brake onset. Every other new lead
+      # still ramps from 0: copying a closing lead's decel on the first
+      # frame is the Sep 28 far-lead flash, and a mild opening lead
+      # (about +0.5 m/s, aLeadK near −0.3) keeps the onset the plant
+      # already follows down to the −0.22 settle.
       self._v_f = float(v_lead)
       opening0 = float(v_lead) - float(v_ego)
-      if opening0 >= 0.0 or float(a_lead) > APPROACH_BRAKE_A_MS2:
+      if opening0 >= CUTIN_PULL_ENTER_MS:
         self._a_f = float(a_lead)
       else:
         self._a_f = 0.0
