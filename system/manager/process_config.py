@@ -113,6 +113,7 @@ procs = [
   PythonProcess("maneuversd", "tools.longitudinal_maneuvers.maneuversd", long_maneuver),
   PythonProcess("lateral_maneuversd", "tools.lateral_maneuvers.lateral_maneuversd", lat_maneuver),
   PythonProcess("radard", "selfdrive.controls.radard", only_onroad),
+  PythonProcess("pathobstacled", "selfdrive.pathobstacled.pathobstacled", only_onroad, optional=True),
   PythonProcess("hardwared", "system.hardware.hardwared", always_run),
   PythonProcess("modem", "system.hardware.tici.modem", always_run, enabled=TICI),
   PythonProcess("tombstoned", "system.tombstoned", always_run, enabled=not PC),

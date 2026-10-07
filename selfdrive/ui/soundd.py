@@ -13,6 +13,7 @@ from openpilot.common.swaglog import cloudlog
 
 from openpilot.system import micd
 from openpilot.system.hardware import HARDWARE
+from openpilot.selfdrive.ui.obstacle_chime import OBSTACLE_CHIME_FILE, OBSTACLE_CHIME_ID, alert_sound_id
 
 SAMPLE_RATE = 48000
 SAMPLE_BUFFER = 4096 # (approx 100ms)
@@ -51,6 +52,8 @@ if HARDWARE.get_device_type() == "tizi":
     AudibleAlert.engage: ("engage_tizi.wav", 1, MAX_VOLUME),
     AudibleAlert.disengage: ("disengage_tizi.wav", 1, MAX_VOLUME),
   })
+# Negative id: not an AudibleAlert ordinal. Played from alertType obstacleChime/*.
+sound_list[OBSTACLE_CHIME_ID] = (OBSTACLE_CHIME_FILE, 1, MAX_VOLUME)
 
 def check_selfdrive_timeout_alert(sm):
   ss_missing = time.monotonic() - sm.recv_time['selfdriveState']
@@ -84,19 +87,27 @@ class Soundd:
     for sound in sound_list:
       filename, play_count, volume = sound_list[sound]
 
-      with wave.open(BASEDIR + "/selfdrive/assets/sounds/" + filename, 'r') as wavefile:
-        assert wavefile.getnchannels() == 1
-        assert wavefile.getsampwidth() == 2
-        assert wavefile.getframerate() == SAMPLE_RATE
+      try:
+        with wave.open(BASEDIR + "/selfdrive/assets/sounds/" + filename, 'r') as wavefile:
+          assert wavefile.getnchannels() == 1
+          assert wavefile.getsampwidth() == 2
+          assert wavefile.getframerate() == SAMPLE_RATE
 
-        length = wavefile.getnframes()
-        self.loaded_sounds[sound] = np.frombuffer(wavefile.readframes(length), dtype=np.int16).astype(np.float32) / (2**16/2)
+          length = wavefile.getnframes()
+          self.loaded_sounds[sound] = np.frombuffer(wavefile.readframes(length), dtype=np.int16).astype(np.float32) / (2**16/2)
+      except Exception:
+        if sound == OBSTACLE_CHIME_ID:
+          cloudlog.exception("obstacle chime wav failed to load")
+          continue
+        raise
 
   def get_sound_data(self, frames): # get "frames" worth of data from the current alert sound, looping when required
 
     ret = np.zeros(frames, dtype=np.float32)
 
-    if self.current_alert != AudibleAlert.none:
+    if (self.current_alert != AudibleAlert.none
+        and self.current_alert in sound_list
+        and self.current_alert in self.loaded_sounds):
       num_loops = sound_list[self.current_alert][1]
       sound_data = self.loaded_sounds[self.current_alert]
       written_frames = 0
@@ -119,7 +130,12 @@ class Soundd:
     data_out[:frames, 0] = self.get_sound_data(frames)
 
   def update_alert(self, new_alert):
-    current_alert_played_once = self.current_alert == AudibleAlert.none or self.current_sound_frame > len(self.loaded_sounds[self.current_alert])
+    loaded = self.current_alert in self.loaded_sounds
+    current_alert_played_once = (
+      self.current_alert == AudibleAlert.none
+      or not loaded
+      or self.current_sound_frame > len(self.loaded_sounds[self.current_alert])
+    )
     if self.current_alert != new_alert and (new_alert != AudibleAlert.none or current_alert_played_once):
       if new_alert == AudibleAlert.warningImmediate:
         self.ramp_start_volume = self.current_volume
@@ -129,7 +145,8 @@ class Soundd:
 
   def get_audible_alert(self, sm):
     if sm.updated['selfdriveState']:
-      new_alert = sm['selfdriveState'].alertSound.raw
+      ss = sm['selfdriveState']
+      new_alert = alert_sound_id(ss.alertSound.raw, getattr(ss, "alertType", ""))
       self.update_alert(new_alert)
     elif check_selfdrive_timeout_alert(sm):
       self.update_alert(AudibleAlert.warningImmediate)

@@ -1236,6 +1236,34 @@ if _low_visibility is not None:
   }
 
 
+def obstacle_chime_alert(CP, CS, sm, metric, soft_disable_time, personality):
+  """Small text only. The wav is selected in soundd from this alert type.
+
+  AudibleAlert stays none so we do not need a new car.capnp ordinal.
+  Permanent: the chime plays whether or not openpilot is engaged.
+  """
+  from openpilot.selfdrive.controls.lib.path_obstacle import chime_banner
+  title = "Animal ahead"
+  try:
+    obs = sm['pathObstacleNAP']
+    title = chime_banner(obs.objectClass, obs.zone)
+  except Exception:
+    pass
+  return Alert(
+    title, "",
+    AlertStatus.normal, AlertSize.small,
+    Priority.LOW, VisualAlert.none, AudibleAlert.none, 1.2,
+  )
+
+
+# Permanent only. No enable, no entry block, no disengage.
+_obstacle_chime = getattr(EventName, "obstacleChime", None)
+if _obstacle_chime is not None:
+  EVENTS[_obstacle_chime] = {
+    ET.PERMANENT: obstacle_chime_alert,
+  }
+
+
 if HARDWARE.get_device_type() == 'mici':
   EVENTS.update({
     EventName.driverDistracted1: {

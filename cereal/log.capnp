@@ -146,6 +146,7 @@ struct OnroadEvent @0xc4fa6047f024e718 {
     napWiperChanged @110;
     gapLock @111;
     lowVisibility @112;
+    obstacleChime @113;
 
     soundsUnavailableDEPRECATED @47;
   }
@@ -2584,7 +2585,7 @@ struct Event {
     liveMapDataNAP @107 :Custom.LiveMapDataNAP;
     liveSpeedSignNAP @108 :Custom.LiveSpeedSignNAP;
     coneLineNAP @109 :Custom.ConeLineNAP;
-    customReserved3 @110 :Custom.CustomReserved3;
+    pathObstacleNAP @110 :Custom.PathObstacleNAP;
     customReserved4 @111 :Custom.CustomReserved4;
     customReserved5 @112 :Custom.CustomReserved5;
     customReserved6 @113 :Custom.CustomReserved6;
