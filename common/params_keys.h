@@ -271,7 +271,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"NAPObstacleLog", {PERSISTENT, BOOL, "1"}},
     // Chime when radar and vision agree on an animal or a person in the
     // lane, entering it, or on the shoulder. Default On. Same sound for
-    // both. Trees and debris stay quiet. Does not change engagement.
+    // both. A dead-still mailbox or post is less likely to chime.
+    // Trees and debris stay quiet. Does not change engagement.
     {"NAPObstacleChime", {PERSISTENT, BOOL, "1"}},
     // Pre-AP DM: while engaged, full looking-path wipe on the stock
     // vision path (no-face / uncertain / phone / pose / eye). After

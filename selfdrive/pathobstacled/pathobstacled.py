@@ -16,6 +16,8 @@ from openpilot.selfdrive.controls.lib.path_obstacle import (
   ConeHint,
   PathObstacleDetector,
   lighting_score,
+  patch_change_score,
+  patch_signature,
   project_road_point,
   projection_box,
   prune_thumbs,
@@ -214,6 +216,7 @@ class _Cameras:
     self.wide = None
     self._vipc = None
     self.last_thumb = 0.0
+    self.patch_sig: dict[int, tuple] = {}
 
   def _client(self, stream):
     if self._vipc is None:
@@ -345,6 +348,7 @@ def _fill(msg, sample, scan_us: float, vision_us: float) -> None:
   body.brakeGate = bool(sample.brake_gate)
   body.chimed = bool(sample.chimed)
   body.chimeReason = str(sample.chime_reason)
+  body.livelyScore = float(sample.lively_score)
   body.scanUs = float(scan_us)
   body.visionUs = float(vision_us)
 
@@ -414,15 +418,24 @@ def _run() -> None:
     scan_us = (time.monotonic() - t0) * 1e6
     vision = None
     vision_us = 0.0
+    motion = 0.0
     if hit.active and now >= next_vision:
       vision, vision_us, patch = _vision_for(hit, sm, cams)
       gap = 1.0 / VISION_HZ
       if vision_us > VISION_BUDGET_S * 1e6:
         gap = max(gap, 0.40)
       next_vision = time.monotonic() + gap
+      if patch is not None and hit.track_id:
+        sig = patch_signature(patch)
+        prev = cams.patch_sig.get(int(hit.track_id))
+        if prev is not None:
+          motion = patch_change_score(prev, sig)
+        cams.patch_sig[int(hit.track_id)] = sig
+        if len(cams.patch_sig) > 32:
+          cams.patch_sig.pop(next(iter(cams.patch_sig)))
       if vision is not None and patch is not None and vision.conf >= 0.30:
         cams.last_thumb = _maybe_thumb(patch, now, cams.last_thumb)
-    sample = det.commit(hit, vision, chime_enabled=chime_on, now=now)
+    sample = det.commit(hit, vision, chime_enabled=chime_on, now=now, vision_motion=motion)
     msg = messaging.new_message("pathObstacleNAP")
     _fill(msg, sample, scan_us, vision_us)
     pm.send("pathObstacleNAP", msg)

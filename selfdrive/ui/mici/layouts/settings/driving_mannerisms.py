@@ -81,8 +81,8 @@ class DrivingMannerismsLayoutMici(NavScroller):
     cone_hold = BigParamControl("hold my line near cones", NAP_CONE_LINE_HOLD)
     cone_hold.set_value("On — keep your line after a push past cones")
 
-    obstacle_chime = BigParamControl("animal & person chime", NAP_OBSTACLE_CHIME)
-    obstacle_chime.set_value("On — chime for an animal or person; trees stay quiet")
+    obstacle_chime = BigParamControl("live object detection chime", NAP_OBSTACLE_CHIME)
+    obstacle_chime.set_value("On — chime for an animal or person; still posts stay quiet")
 
     one_pedal = BigParamControl("one-pedal long", NAP_ONE_PEDAL_LONG)
     one_pedal.set_value("Off default — gas pause stays until SET")

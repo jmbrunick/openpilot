@@ -22,7 +22,10 @@ from openpilot.selfdrive.controls.lib.path_obstacle import (
   fuse_scores,
   fusion_weights,
   future_brake_intent,
+  lively_from_history,
+  patch_change_score,
   project_road_point,
+  scale_living_vision,
   prune_thumbs,
   save_ppm,
   should_raise_chime,
@@ -33,7 +36,7 @@ ROOT = Path(__file__).resolve().parents[4]
 V_EGO = 12.0
 PATH_X = [0.0, 100.0]
 PATH_Y = [0.0, 0.0]
-ANIMAL = VisionScore(conf=0.70, human=0.10, animal=0.62, obstacle=0.18)
+ANIMAL = VisionScore(conf=0.70, human=0.10, animal=0.82, obstacle=0.18)
 HUMAN = VisionScore(conf=0.72, human=0.64, animal=0.10, obstacle=0.14)
 DEBRIS = VisionScore(conf=0.80, human=0.08, animal=0.10, obstacle=0.70)
 WEAK = VisionScore(conf=0.20, human=0.90, animal=0.05, obstacle=0.05)
@@ -111,6 +114,8 @@ def test_stationary_in_path_deer_chimes_only_when_vision_says_animal():
   seen = _run(PathObstacleDetector(), deer, vision=ANIMAL)
   assert seen.active and seen.zone == "inPath"
   assert seen.object_class == "animal"
+  assert seen.lively_score < 0.2
+  assert 0.25 < seen.vision_conf_animal < 0.55
   assert seen.agree and seen.vision_evaluated
   assert seen.chimed and seen.chime_reason == "chimed"
   assert seen.brake_gate is False
@@ -177,10 +182,20 @@ def test_rejects_clutter_vehicles_and_a_lane_spanning_tree():
   assert _run(PathObstacleDetector(), curtain).reject_reason == "overhead"
 
 
-def test_roadside_person_chimes_and_does_not_brake():
+def test_still_mailbox_stays_quiet_and_a_moving_person_chimes():
+  mailbox = VisionScore(conf=0.70, human=0.64, animal=0.10, obstacle=0.16)
   shoulder = [_pt(24.0, -4.5, -V_EGO, 41)]
-  person = _run(PathObstacleDetector(), shoulder, n=8, vision=HUMAN)
+  still = _run(PathObstacleDetector(), shoulder, n=16, vision=mailbox)
+  assert still.zone == "roadside"
+  assert still.lively_score < 0.15
+  assert still.object_class != "human"
+  assert still.chimed is False
+  assert still.vision_conf_human > 0.15
+
+  walking = [_pt(24.0, -4.5, 1.6 - V_EGO, 42)]
+  person = _run(PathObstacleDetector(), walking, n=8, vision=mailbox)
   assert person.zone == "roadside" and person.object_class == "human"
+  assert person.lively_score > 0.8
   assert person.agree and person.chimed and person.chime_reason == "chimed"
   assert person.brake_gate is False
   assert future_brake_intent(person) is None
@@ -192,6 +207,37 @@ def test_roadside_person_chimes_and_does_not_brake():
   quiet = _run(PathObstacleDetector(), shoulder, n=8, vision=WEAK)
   assert quiet.chimed is False
   assert quiet.chime_reason == "class"
+
+
+def test_wander_and_patch_change_raise_lively_without_zeroing_a_freeze():
+  frozen = scale_living_vision(ANIMAL, 0.0)
+  assert frozen.animal > 0.30
+  assert frozen.animal < ANIMAL.animal
+  moving = scale_living_vision(ANIMAL, 1.0)
+  assert abs(moving.animal - ANIMAL.animal) < 1e-9
+
+  assert lively_from_history([(0.0, 20.0, 0.0, 0.0, 0.0), (1.5, 20.1, 0.05, 0.0, 0.0)]) < 0.05
+  assert lively_from_history([(0.0, 20.0, 0.0, 1.6, 0.0)]) > 0.8
+  assert lively_from_history([(0.0, 20.0, 0.0, 0.0, 1.2)]) > 0.8
+  wandered = [(i * 0.1, 24.0, 4.0 + 0.12 * i, 0.0, 0.0) for i in range(16)]
+  assert lively_from_history(wandered) > 0.4
+
+  det = PathObstacleDetector()
+  sample = None
+  chimed = False
+  for i in range(16):
+    y_rel = -4.0 - 0.12 * i
+    sample = det.update([_pt(24.0, y_rel, -V_EGO, 43)], V_EGO, PATH_X, PATH_Y, 0.1, vision=HUMAN, now=200.0 + i * 0.1)
+    chimed = chimed or bool(sample.chimed)
+  assert sample is not None and chimed
+  assert sample.lively_score > 0.4 and sample.object_class == "human"
+
+  still_patch = [[40, 40, 40], [40, 42, 40], [40, 40, 40]]
+  moved_patch = [[40, 180, 40], [180, 40, 180], [40, 180, 40]]
+  assert patch_change_score(still_patch, still_patch) == 0.0
+  assert patch_change_score(still_patch, moved_patch) > 0.5
+  boosted = _run(PathObstacleDetector(), [_pt(24.0, -4.5, -V_EGO, 44)], n=8, vision=HUMAN, vision_motion=1.0)
+  assert boosted.lively_score > 0.8 and boosted.object_class == "human" and boosted.chimed
 
 
 def test_chime_hold_cooldown_and_shared_classes():
@@ -326,7 +372,8 @@ def test_wiring_stays_off_the_control_core_and_off_longitudinal():
   services = text("cereal/services.py")
   assert '"pathObstacleNAP": (True, 8., 2)' in services
   manner = text("selfdrive/ui/layouts/settings/driving_mannerisms.py")
-  assert "Animal & person chime" in manner
+  assert "Live object detection chime" in manner
+  assert "livelyScore" in text("cereal/custom.capnp")
   assert "self._all_items.append(self._turn_in_buttons)" in manner
 
   proc = text("selfdrive/pathobstacled/pathobstacled.py")

@@ -125,7 +125,7 @@ class DrivingMannerismsLayout(Widget):
     self._all_items.append(self._cone_hold)
 
     self._obstacle_chime = toggle_item(
-      "Animal & person chime",
+      "Live object detection chime",
       description=OBSTACLE_CHIME_DESCRIPTION,
       initial_state=self._params.get_bool(NAP_OBSTACLE_CHIME),
       callback=self._on_obstacle_chime,

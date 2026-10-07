@@ -92,6 +92,7 @@ struct PathObstacleNAP @0xda96579883444c35 {
   chimeReason @28 :Text;
   scanUs @29 :Float32;
   visionUs @30 :Float32;
+  livelyScore @31 :Float32;     # 0 still .. 1 moved in the last ~2 s
 
   enum ObjectClass {
     unknown @0;

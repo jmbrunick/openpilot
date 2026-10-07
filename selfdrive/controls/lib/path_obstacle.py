@@ -31,6 +31,11 @@ Thresholds (device frame, y +left, path-relative lateral):
                                 {inPath, entering, roadside}, once per
                                 track, 9 s global cooldown
   chime does not include        obstacle (tree, debris, post)
+  lively                        0 still, 1 has moved in the last 2 s.
+                                Ground speed, lateral speed, or
+                                position wander past radar noise.
+                                Dead-still cuts animal/person class
+                                confidence to 0.45, not to zero.
 
 Road-surface pop-in (first seen inside 14 m, stationary, not spanning)
 and a thin wide curtain (span >= 9 m, depth < 2.5 m) are rejected.
@@ -76,6 +81,16 @@ WR_GOOD = 0.50
 WR_POOR = 0.78
 CHIME_COOLDOWN_S = 9.0
 CHIME_HOLD_S = 0.35
+LIVELY_WINDOW_S = 2.0
+# Below this, a Bosch return is noise. Above the full value, the cue is 1.
+SPEED_NOISE_MPS = 0.40
+SPEED_FULL_MPS = 1.40
+VLAT_NOISE_MPS = 0.30
+VLAT_FULL_MPS = 1.10
+WANDER_NOISE_M = 0.40
+WANDER_FULL_M = 1.15
+# A frozen deer keeps this fraction of its animal/person class score.
+LIVELY_FLOOR = 0.45
 CLUSTER_DX_M = 5.5
 CLUSTER_DY_M = 3.2
 LANE_SPAN_M = 1.8
@@ -179,6 +194,7 @@ class ObstacleSample:
   brake_gate: bool = False
   chimed: bool = False
   chime_reason: str = "no_candidate"
+  lively_score: float = 0.0
   scan_us: float = 0.0
   vision_us: float = 0.0
   member_ids: tuple[int, ...] = ()
@@ -209,6 +225,7 @@ class _Hit:
   span_m: float
   reject_reason: str
   lighting: float
+  lively: float = 0.0
 
 
 def project_road_point(x: float, y: float, z: float, *,
@@ -583,6 +600,95 @@ def _closing_time(x: float, v_rel: float) -> float:
   return x / closing
 
 
+def _ramp(value: float, noise: float, full: float) -> float:
+  span = full - noise
+  if span <= 1e-6:
+    return 0.0
+  return _clamp((abs(value) - noise) / span, 0.0, 1.0)
+
+
+def lively_from_history(hist) -> float:
+  """Max living-motion evidence in the last ~2 s. 0 is dead still.
+
+  Ground speed, lateral speed, and position wander each count. One real
+  cue in the window is enough. Jitter inside radar noise stays at 0.
+  """
+  if not hist:
+    return 0.0
+  now = float(hist[-1][0])
+  window = [row for row in hist if now - float(row[0]) <= LIVELY_WINDOW_S]
+  if not window:
+    window = [hist[-1]]
+  best = 0.0
+  xs: list[float] = []
+  ys: list[float] = []
+  for _age, x, y, along, v_lat in window:
+    xs.append(float(x))
+    ys.append(float(y))
+    speed = math.hypot(float(along), float(v_lat))
+    best = max(best, _ramp(speed, SPEED_NOISE_MPS, SPEED_FULL_MPS), _ramp(v_lat, VLAT_NOISE_MPS, VLAT_FULL_MPS))
+  span_t = float(window[-1][0]) - float(window[0][0])
+  if span_t >= 1.0 and len(window) >= 4:
+    mx = sum(xs) / len(xs)
+    my = sum(ys) / len(ys)
+    wander = max(math.hypot(x - mx, y - my) for x, y in zip(xs, ys))
+    best = max(best, _ramp(wander, WANDER_NOISE_M, WANDER_FULL_M))
+  return best
+
+
+def scale_living_vision(vision: VisionScore, lively: float) -> VisionScore:
+  """Lively raises animal/person class scores. Still lowers them, not to 0."""
+  scale = LIVELY_FLOOR + (1.0 - LIVELY_FLOOR) * _clamp(lively if math.isfinite(lively) else 0.0, 0.0, 1.0)
+  return VisionScore(
+    conf=vision.conf,
+    human=_clamp(vision.human * scale, 0.0, 1.0),
+    animal=_clamp(vision.animal * scale, 0.0, 1.0),
+    obstacle=vision.obstacle,
+    evaluated=vision.evaluated,
+  )
+
+
+def patch_signature(rows, grid: int = 8) -> tuple[float, ...]:
+  """Coarse mean grid so a 5 Hz check can see the patch move."""
+  data = [list(row) for row in (rows or []) if row]
+  if not data:
+    return ()
+  height = len(data)
+  width = min(len(row) for row in data)
+  if width < 2 or height < 2:
+    return ()
+  cells = []
+  for gy in range(grid):
+    y0 = gy * height // grid
+    y1 = max(y0 + 1, (gy + 1) * height // grid)
+    for gx in range(grid):
+      x0 = gx * width // grid
+      x1 = max(x0 + 1, (gx + 1) * width // grid)
+      acc = 0.0
+      count = 0
+      for row in data[y0:y1]:
+        for value in row[x0:x1]:
+          num = _finite(value)
+          if num is not None:
+            acc += num
+            count += 1
+      cells.append(acc / count if count else 0.0)
+  return tuple(cells)
+
+
+def patch_change_score(prev, rows) -> float:
+  """0 when the patch matches, 1 when the gray levels really moved.
+
+  About 12 counts of change is camera noise. Around 40 counts is motion.
+  """
+  old = prev if isinstance(prev, tuple) else patch_signature(prev)
+  new = rows if isinstance(rows, tuple) else patch_signature(rows)
+  if not old or not new or len(old) != len(new):
+    return 0.0
+  delta = sum(abs(a - b) for a, b in zip(old, new)) / len(old)
+  return _clamp((delta - 12.0) / 28.0, 0.0, 1.0)
+
+
 def _fuse_class(radar_class: str, span: float, count: int, vision: VisionScore | None) -> str:
   if count >= 2 and span >= LANE_SPAN_M:
     return "obstacle"
@@ -736,9 +842,18 @@ class PathObstacleDetector:
     return self._miss(rejected_members, rejected, light)
 
   def commit(self, hit: _Hit, vision: VisionScore | None, *,
-             chime_enabled: bool = True, now: float = 0.0) -> ObstacleSample:
+             chime_enabled: bool = True, now: float = 0.0,
+             vision_motion: float = 0.0) -> ObstacleSample:
+    try:
+      motion = float(vision_motion)
+    except (TypeError, ValueError):
+      motion = 0.0
+    if not math.isfinite(motion):
+      motion = 0.0
+    lively = _clamp(max(float(hit.lively), _clamp(motion, 0.0, 1.0)), 0.0, 1.0)
     use_vision = bool(hit.active and vision is not None and vision.evaluated)
-    final_class = _fuse_class(hit.radar_class, hit.span_m, hit.cluster_count, vision if use_vision else None)
+    scored = scale_living_vision(vision, lively) if use_vision and vision is not None else None
+    final_class = _fuse_class(hit.radar_class, hit.span_m, hit.cluster_count, scored)
     if not hit.cluster_count:
       final_class = "unknown"
     vision_conf = vision.conf if use_vision and vision is not None else None
@@ -749,9 +864,9 @@ class PathObstacleDetector:
     entering = zone == "entering"
     t_enter = 0.0 if in_path else hit.time_to_enter
     brake = bool(agree and final_class in BRAKE_CLASSES and zone in BRAKE_ZONES)
-    if use_vision and vision is not None:
-      vh, va, vo = vision.human, vision.animal, vision.obstacle
-      vconf = vision.conf
+    if scored is not None:
+      vh, va, vo = scored.human, scored.animal, scored.obstacle
+      vconf = vision.conf if vision is not None else scored.conf
     else:
       vh = va = vo = vconf = _nan()
     sample = ObstacleSample(
@@ -782,6 +897,7 @@ class PathObstacleDetector:
       entering=entering,
       zone=zone,
       brake_gate=brake,
+      lively_score=lively if hit.cluster_count else 0.0,
       member_ids=hit.member_ids,
     )
     chimed, reason = self._chime.consider(sample, chime_enabled, now)
@@ -790,12 +906,13 @@ class PathObstacleDetector:
   def update(self, points, v_ego: float, path_x, path_y, dt: float, *,
              lead_ids=(), cone: ConeHint | None = None, model_leads=(),
              vision: VisionScore | None = None, lighting: float = 1.0,
-             chime_enabled: bool = True, now: float = 0.0) -> ObstacleSample:
+             chime_enabled: bool = True, now: float = 0.0,
+             vision_motion: float = 0.0) -> ObstacleSample:
     hit = self.begin(
       points, v_ego, path_x, path_y, dt,
       lead_ids=lead_ids, cone=cone, model_leads=model_leads, lighting=lighting,
     )
-    return self.commit(hit, vision, chime_enabled=chime_enabled, now=now)
+    return self.commit(hit, vision, chime_enabled=chime_enabled, now=now, vision_motion=vision_motion)
 
   def _advance(self, parsed, dt, v_ego, path_x, path_y) -> list[dict]:
     seen = set()
@@ -804,7 +921,7 @@ class PathObstacleDetector:
       seen.add(item["id"])
       prev = self._tracks.get(item["id"])
       if prev is None or prev["gap"] > 0.35:
-        state = {"age": dt, "first_x": item["x"], "gap": 0.0, "y": item["y"], "v_lat": 0.0}
+        state = {"age": dt, "first_x": item["x"], "gap": 0.0, "y": item["y"], "v_lat": 0.0, "hist": []}
       else:
         state = prev
         state["age"] = float(state["age"]) + dt
@@ -817,6 +934,12 @@ class PathObstacleDetector:
       if item["yv_rel"] is not None:
         state["v_lat"] = -float(item["yv_rel"])
       state["x"] = item["x"]
+      hist = state.setdefault("hist", [])
+      hist.append((
+        float(state["age"]), float(item["x"]), float(item["y"]),
+        float(item["v_rel"]) + v_ego, float(state["v_lat"]),
+      ))
+      state["hist"] = [row for row in hist if float(state["age"]) - float(row[0]) <= LIVELY_WINDOW_S + 0.05][-24:]
       self._tracks[item["id"]] = state
       py = path_y_at_x(path_x, path_y, item["x"])
       lat = item["y"] if py is None else item["y"] - py
@@ -831,6 +954,7 @@ class PathObstacleDetector:
         "rcs": item["rcs"],
         "age": float(state["age"]),
         "first_x": float(state["first_x"]),
+        "lively": lively_from_history(state.get("hist") or ()),
       })
     for track_id in list(self._tracks):
       if track_id in seen:
@@ -946,13 +1070,14 @@ class PathObstacleDetector:
       span_m=span,
       reject_reason="none" if active else "not_persistent",
       lighting=lighting,
+      lively=max(float(m.get("lively", 0.0)) for m in members),
     )
 
   def _miss(self, members, reason: str, lighting: float) -> _Hit:
     if not members or members[0] is None:
       return _Hit(
         False, 0, (), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "unknown", "none",
-        _nan(), _nan(), 0, 0.0, reason, lighting,
+        _nan(), _nan(), 0, 0.0, reason, lighting, 0.0,
       )
     group = [m for m in members if m is not None]
     rep = min(group, key=lambda m: m["x"])
@@ -962,6 +1087,7 @@ class PathObstacleDetector:
       rep["v_rel"], rep["v_lat"], rep["along"], 0.0, "unknown", "none",
       _closing_time(rep["x"], rep["v_rel"]), _nan(), len(group),
       (max(lats) - min(lats)) if len(lats) > 1 else 0.0, reason, lighting,
+      max(float(m.get("lively", 0.0)) for m in group),
     )
 
 
