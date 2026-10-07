@@ -41,32 +41,39 @@ struct LiveSpeedSignNAP @0xaedffd8f31e7b55d {
   detectPaused @4 :Bool;   # OP commanding actuators — YOLO skipped; HUD shows WAIT (not cereal-unknown)
 }
 
-# NAP radar cone-line sample. Log only. y is path-relative, +left.
-# wouldLimit is the signed path shift (+left) that would leave ~1 m of clearance.
+# NAP radar cone-line sample. Log only. Does not steer.
+# lat*, wouldLimit, and wouldSteer are path-relative device y, +right
+# (modelV2.position.y and PathObstacle y). radarState.yRel is +left;
+# device y = -yRel. side is the real side of the lane and therefore
+# has the opposite sign from lat: +1 left, -1 right.
+# wouldSteer is the shift away from the line, capped at 0.4 m, for
+# later evaluation. controlsd does not apply it.
 struct ConeLineNAP @0xf35cc4560bbf6ec2 {
   active @0 :Bool;
   side @1 :Int8;             # +1 left of the path, -1 right, 0 none
   confidence @2 :Float32;
   count @3 :UInt8;
-  latNear @4 :Float32;       # line lateral at ~15 m
-  latMid @5 :Float32;        # ~30 m
-  latFar @6 :Float32;        # ~45 m
-  wouldLimit @7 :Float32;    # m, +left
+  latNear @4 :Float32;       # path-relative y at ~15 m, +right
+  latMid @5 :Float32;        # ~30 m, +right
+  latFar @6 :Float32;        # ~45 m, +right
+  wouldLimit @7 :Float32;    # m, +right; shift that would leave ~1 m of clearance
   barrier @8 :Bool;          # continuous guardrail / barrier, not a cone line
   parked @9 :Bool;           # short wide cluster rejected as a parked car
   spanM @10 :Float32;
+  wouldSteer @11 :Float32;   # m, +right; proposed offset away from the line, |v| <= 0.4. Not applied.
 }
 
 # NAP in-path / roadside obstacle sample. Log only, plus an animal/person
-# chime. y is path-relative, +left. Vision fields are NaN until a radar
-# trigger asks for a patch. brakeGate is a future hook and is not applied.
+# chime. y is path-relative, +right (device frame; radarState.yRel is +left
+# and y = -yRel). Vision fields are NaN until a radar trigger asks for a
+# patch. brakeGate is a future hook and is not applied.
 struct PathObstacleNAP @0xda96579883444c35 {
   active @0 :Bool;
   trackId @1 :UInt64;
   range @2 :Float32;             # m, camera frame
-  lateral @3 :Float32;           # m, path-relative, +left
+  lateral @3 :Float32;           # m, path-relative, +right
   vRel @4 :Float32;              # m/s, radar longitudinal relative
-  vLat @5 :Float32;              # m/s, +left
+  vLat @5 :Float32;              # m/s, +right
   radarConf @6 :Float32;         # 0..1
   visionConf @7 :Float32;        # 0..1, NaN if not evaluated
   visionEvaluated @8 :Bool;
@@ -94,7 +101,7 @@ struct PathObstacleNAP @0xda96579883444c35 {
   visionUs @30 :Float32;
   livelyScore @31 :Float32;     # 0 still .. 1 moved in the last ~2 s
   # Radar-stage fields forwarded to the camera helper. Additive.
-  y @32 :Float32;                # device frame, +left
+  y @32 :Float32;                # device frame, +right
   along @33 :Float32;            # m/s ground speed along the road
   radarClass @34 :ObjectClass;
   memberIds @35 :List(UInt64);

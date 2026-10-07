@@ -4,14 +4,22 @@ Acts only after the driver has already pushed away from the cones. While
 lateral is yielded this does not steer and does not change the yield.
 On the re-take the curvature target is the driver's line (their offset
 from the model path) instead of the model path that bends back toward
-the cones. The offset eases off after the line has been gone for a few
-seconds, or if the driver steers back toward it.
+the cones. The hold stays until the cone line has been gone for a few
+seconds, or the driver steers back toward it. It does not follow a
+logged would-steer offset; the cone line never steers on its own.
 
 Never commands a path closer to the cone line than the line the driver
 was holding. Longitudinal is not an input or an output.
 
+Frames:
+  cone.side           +1 left of the path, -1 right
+  steeringTorque      +left. Away from left cones is negative torque.
+  model path y, curvature   +right (negative is a left bend). Toward
+                      left cones is negative y / curvature.
+
 Thresholds:
-  push          >= 0.55 Nm away from the cones for 2.0 s (a 0.40 s gap resets)
+  push          >= 0.55 Nm away from the cones for 0.85 s (a 0.40 s gap resets).
+                A 0.9 s push is enough.
   model pull    path is >= 0.12 m toward the cone line at the lookahead
   lookahead     vEgo * 1.6 s, clamped to 12–40 m, frozen when the line is captured
   min offset    0.15 m; shifts larger than 1.5 m are clipped
@@ -28,7 +36,7 @@ from openpilot.selfdrive.controls.lib.radar_path_gate import path_y_at_x
 PARAM_CONE_LINE_HOLD = "NAPConeLineHold"
 PARAM_CONE_LINE_LOG = "NAPConeLineLog"
 
-PUSH_ARM_S = 2.0
+PUSH_ARM_S = 0.85
 PUSH_NM = 0.55
 PUSH_GAP_S = 0.40
 PULL_Y_M = 0.12
@@ -72,7 +80,7 @@ def _finite(value, default: float = 0.0) -> float:
 @dataclass(frozen=True)
 class ConeHoldOutput:
   active: bool
-  offset_m: float  # applied path shift, +left; 0 when not steering it
+  offset_m: float  # applied path shift, +right; 0 when not steering it
   curvature: float
 
 
@@ -178,7 +186,10 @@ class ConeLineHold:
     # do not slide past their line toward the cones.
     y_hold = y_model_cmd + delta
     y_cmd = y_model_cmd + self._gain * delta
-    if line_here and not self._releasing and self._side * (y_cmd - y_hold) > 0.02:
+    # Path y is +right. Cone-ward from the driver's line is -side
+    # (left cones, side +1, sit at negative y). Do not step past the
+    # line they were holding while the cones are still there.
+    if line_here and not self._releasing and (y_hold - y_cmd) * self._side > 0.02:
       y_cmd = y_hold
     shift = y_cmd - y_model_cmd
     delta_k = 2.0 * shift / (self._x_la * self._x_la)
@@ -191,10 +202,13 @@ class ConeLineHold:
   def _pulls_toward(self, y_model, model_k: float, side: int) -> bool:
     if side not in (-1, 1) or y_model is None:
       return False
-    return side * y_model > PULL_Y_M or side * model_k > PULL_K
+    # side +1 is left. Path y and curvature are +right, so the cones
+    # lie in the -side direction.
+    toward = -side
+    return toward * y_model > PULL_Y_M or toward * model_k > PULL_K
 
   def _pushing_away(self, torque: float, side: int) -> bool:
-    # steeringTorque is +left. Away from a right-side line (side -1) is +torque.
+    # steeringTorque is +left, side is +1 left. Away is the other way.
     return side in (-1, 1) and torque * side < 0.0 and abs(torque) >= PUSH_NM
 
   def _toward_cones(self, torque: float) -> bool:
@@ -204,7 +218,9 @@ class ConeLineHold:
     if y_model is None or side not in (-1, 1):
       return 0.0
     y_driver = 0.5 * measured_k * x_la * x_la
-    return (y_driver - y_model) * (-side)
+    # Positive means the driver is on the safe side of the model path.
+    # Away from left cones (side +1) is +y in the +right frame.
+    return (y_driver - y_model) * side
 
   def _follow_further_away(self, measured: float, y_model, dt: float) -> None:
     """Keep the captured line if the driver moves further from the cones."""
@@ -220,7 +236,7 @@ class ConeLineHold:
 
   def _capped_delta(self, y_driver: float, y_model: float) -> float:
     delta = y_driver - y_model
-    away_sign = -self._side
+    away_sign = self._side
     away = delta * away_sign
     if away > MAX_OFFSET_M:
       return away_sign * MAX_OFFSET_M

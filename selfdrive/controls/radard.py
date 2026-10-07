@@ -21,6 +21,7 @@ from openpilot.selfdrive.controls.lib.path_obstacle import (
 from openpilot.selfdrive.controls.lib.cone_line import (
   ConeLineDetector,
   ConeLineSample,
+  model_yaw_rate_right,
   publish_cone_line,
   road_edges_xy,
 )
@@ -622,7 +623,8 @@ class RadarD:
     try:
       path_x, path_y = model_path_xy(sm['modelV2'])
       self._cone_sample = self._cone.update(
-        points, self.v_ego, path_x, path_y, road_edges_xy(sm['modelV2']), dt)
+        points, self.v_ego, path_x, path_y, road_edges_xy(sm['modelV2']), dt,
+        model_yaw_rate_right(sm['modelV2']))
       self._cone_dirty = True
     except Exception:
       cloudlog.exception("cone line detector failed")

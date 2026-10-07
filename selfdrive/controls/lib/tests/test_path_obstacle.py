@@ -240,9 +240,15 @@ def test_vehicle_points_cover_both_model_leads_and_both_radar_leads():
 def test_rejects_clutter_and_a_lane_spanning_tree():
   det = PathObstacleDetector()
   assert _run(det, [_pt(30.0, 0.0, -V_EGO, 4)], lead_ids=(4,)).reject_reason == "exclVehicle"
-  cones = ConeHint(active=True, side=1, lat_near=2.0, lat_mid=2.0, lat_far=2.0)
+  # yRel is +left, PathObstacle lat is +right. yRel -2 is 2 m to the right.
+  cones = ConeHint(active=True, side=-1, lat_near=2.0, lat_mid=2.0, lat_far=2.0)
   assert _run(PathObstacleDetector(), [_pt(20.0, -2.0, -V_EGO, 5)], cone=cones).reject_reason == "cone_line"
-  rail = ConeHint(barrier=True, side=-1, lat_near=-3.0, lat_mid=-3.0, lat_far=-3.0)
+  # Oct 7 posts: left side, side +1, lat negative.
+  left = ConeHint(active=True, side=1, lat_near=-2.0, lat_mid=-2.0, lat_far=-2.0)
+  assert _run(PathObstacleDetector(), [_pt(20.0, 2.0, -V_EGO, 15)], cone=left).reject_reason == "cone_line"
+  other = _run(PathObstacleDetector(), [_pt(20.0, -2.0, -V_EGO, 16)], cone=left)
+  assert other.reject_reason != "cone_line"
+  rail = ConeHint(barrier=True, side=1, lat_near=-3.0, lat_mid=-3.0, lat_far=-3.0)
   assert _run(PathObstacleDetector(), [_pt(20.0, 3.0, -V_EGO, 6)], cone=rail).reject_reason == "barrier"
   assert _run(PathObstacleDetector(), [_pt(40.0, 0.0, 18.0 - V_EGO, 11)]).reject_reason == "exclVehicle"
   assert _run(PathObstacleDetector(), [_pt(10.0, 0.0, -V_EGO, 12)]).reject_reason == "road_surface"
