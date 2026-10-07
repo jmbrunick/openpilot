@@ -12,10 +12,13 @@ from openpilot.selfdrive.controls.lib.path_obstacle import (
   LIVING_CLASSES,
   PARAM_OBSTACLE_CHIME,
   PARAM_OBSTACLE_LOG,
+  SPEED_DISABLE_MPS,
+  SPEED_ENABLE_MPS,
   BrakeIntent,
   ChimeGate,
   ConeHint,
   ObstacleSample,
+  ObstacleStage,
   PathObstacleDetector,
   VisionScore,
   chime_banner,
@@ -243,11 +246,12 @@ def test_rejects_clutter_and_a_lane_spanning_tree():
   # yRel is +left, PathObstacle lat is +right. yRel -2 is 2 m to the right.
   cones = ConeHint(active=True, side=-1, lat_near=2.0, lat_mid=2.0, lat_far=2.0)
   assert _run(PathObstacleDetector(), [_pt(20.0, -2.0, -V_EGO, 5)], cone=cones).reject_reason == "cone_line"
-  # Oct 7 posts: left side, side +1, lat negative.
+  # Oct 7 posts: left side, side +1, lat negative. The opposite side stays.
   left = ConeHint(active=True, side=1, lat_near=-2.0, lat_mid=-2.0, lat_far=-2.0)
   assert _run(PathObstacleDetector(), [_pt(20.0, 2.0, -V_EGO, 15)], cone=left).reject_reason == "cone_line"
   other = _run(PathObstacleDetector(), [_pt(20.0, -2.0, -V_EGO, 16)], cone=left)
   assert other.reject_reason != "cone_line"
+  # Left rail. lat is +right, so the rail sits at negative y. Side is +1.
   rail = ConeHint(barrier=True, side=1, lat_near=-3.0, lat_mid=-3.0, lat_far=-3.0)
   assert _run(PathObstacleDetector(), [_pt(20.0, 3.0, -V_EGO, 6)], cone=rail).reject_reason == "barrier"
   assert _run(PathObstacleDetector(), [_pt(40.0, 0.0, 18.0 - V_EGO, 11)]).reject_reason == "exclVehicle"
@@ -286,13 +290,23 @@ def test_still_mailbox_stays_quiet_and_a_moving_person_chimes():
   assert still.chimed is False
   assert still.vision_conf_human > 0.15
 
+  # 4.5 m is about 2.8 m outside the corridor, past the 0.9 m human band.
   walking = [_pt(24.0, -4.5, 1.6 - V_EGO, 42)]
   person = _run(PathObstacleDetector(), walking, n=8, vision=mailbox)
-  assert person.zone == "roadside" and person.object_class == "human"
-  assert person.lively_score > 0.8
-  assert person.agree and person.chimed and person.chime_reason == "chimed"
-  assert person.brake_gate is False
-  assert future_brake_intent(person) is None
+  assert person.chimed is False and person.chime_reason == "off_zone"
+
+  near = [_pt(24.0, -2.2, 1.6 - V_EGO, 45)]
+  close = _run(PathObstacleDetector(), near, n=8, vision=mailbox)
+  assert close.zone == "roadside" and close.object_class == "human"
+  assert close.lively_score > 0.8
+  assert close.agree and close.chimed and close.chime_reason == "chimed"
+  assert close.brake_gate is False
+  assert future_brake_intent(close) is None
+
+  deer_side = [_pt(24.0, -4.5, -V_EGO, 46)]
+  animal = _run(PathObstacleDetector(), deer_side, n=8, vision=ANIMAL)
+  assert animal.zone == "roadside" and animal.object_class == "animal"
+  assert animal.agree and animal.chimed and animal.brake_gate is False
   assert chime_banner("human", "roadside") == "Object near road"
   assert chime_banner(1, 3) == "Object near road"
   assert chime_banner("obstacle", "inPath") == "Object ahead"
@@ -320,8 +334,12 @@ def test_wander_and_patch_change_raise_lively_without_zeroing_a_freeze():
   sample = None
   chimed = False
   for i in range(16):
-    y_rel = -4.0 - 0.12 * i
-    sample = det.update([_pt(24.0, y_rel, -V_EGO, 43)], V_EGO, PATH_X, PATH_Y, 0.1, vision=HUMAN, now=200.0 + i * 0.1)
+    # Stay inside the 0.9 m human band while the return is clearly moving.
+    y_rel = -2.05 - 0.02 * i
+    sample = det.update(
+      [_pt(24.0, y_rel, 1.6 - V_EGO, 43)], V_EGO, PATH_X, PATH_Y, 0.1,
+      vision=HUMAN, now=200.0 + i * 0.1,
+    )
     chimed = chimed or bool(sample.chimed)
   assert sample is not None and chimed
   assert sample.lively_score > 0.4 and sample.object_class == "human"
@@ -330,7 +348,7 @@ def test_wander_and_patch_change_raise_lively_without_zeroing_a_freeze():
   moved_patch = [[40, 180, 40], [180, 40, 180], [40, 180, 40]]
   assert patch_change_score(still_patch, still_patch) == 0.0
   assert patch_change_score(still_patch, moved_patch) > 0.5
-  boosted = _run(PathObstacleDetector(), [_pt(24.0, -4.5, -V_EGO, 44)], n=8, vision=HUMAN, vision_motion=1.0)
+  boosted = _run(PathObstacleDetector(), [_pt(24.0, -2.2, -V_EGO, 44)], n=8, vision=HUMAN, vision_motion=1.0)
   assert boosted.lively_score > 0.8 and boosted.object_class == "human" and boosted.chimed
 
 
@@ -371,9 +389,96 @@ def test_chime_hold_cooldown_and_shared_classes():
   assert gate_still.consider(_agreed("unknown", "inPath", 8), True, 0.0) == (True, "chimed")
   lively_post = ObstacleSample(
     active=True, track_id=9, object_class="obstacle", zone="roadside", agree=True,
-    member_ids=(9,), reject_reason="none", lively_score=0.8,
+    member_ids=(9,), reject_reason="none", lively_score=0.8, lateral=4.5,
   )
-  assert ChimeGate().consider(lively_post, True, 0.0) == (True, "chimed")
+  assert ChimeGate().consider(lively_post, True, 0.0) == (False, "inanimate")
+
+
+def test_stationary_human_guess_outside_the_band_is_dropped():
+  # toward ~0.5 m/s makes the radar class "human", but the return has not moved.
+  post = [_pt(24.0, -4.0, -V_EGO, 51, yv_rel=0.5)]
+  got = _run(PathObstacleDetector(), post, n=8, vision=HUMAN)
+  assert got.reject_reason == "off_zone"
+  assert got.active is False and got.chimed is False
+
+  far_animal = _run(PathObstacleDetector(), [_pt(30.0, -9.0, -V_EGO, 52)], vision=ANIMAL)
+  assert far_animal.reject_reason == "off_path" and far_animal.chimed is False
+
+
+def test_highway_stationary_in_path_needs_a_real_approach_and_a_vision_class():
+  stuck = [_pt(40.0, 0.0, -25.0, 61)]
+  det = PathObstacleDetector()
+  chimed = False
+  sample = None
+  for i in range(25):
+    sample = det.update(stuck, 25.0, PATH_X, PATH_Y, 0.1, vision=DEBRIS, now=10.0 + i * 0.1)
+    chimed = chimed or bool(sample.chimed)
+  assert sample is not None
+  assert chimed is False
+  assert sample.reject_reason == "not_closing"
+  assert sample.active is False
+
+  weak = VisionScore(conf=0.55, human=0.10, animal=0.10, obstacle=0.10)
+  det = PathObstacleDetector()
+  sample = None
+  for i in range(10):
+    x = 50.0 - i * 2.5
+    sample = det.update([_pt(x, 0.0, -25.0, 62)], 25.0, PATH_X, PATH_Y, 0.1, vision=weak, now=30.0 + i * 0.1)
+  assert sample is not None and sample.active and sample.agree
+  assert sample.object_class == "unknown"
+  assert sample.chimed is False and sample.chime_reason == "no_agree"
+
+  det = PathObstacleDetector()
+  chimed = False
+  for i in range(10):
+    x = 50.0 - i * 2.5
+    sample = det.update([_pt(x, 0.0, -25.0, 63)], 25.0, PATH_X, PATH_Y, 0.1, vision=None, now=40.0 + i * 0.1)
+    chimed = chimed or bool(sample.chimed)
+  assert chimed is False
+
+  det = PathObstacleDetector()
+  chimed = False
+  for i in range(10):
+    x = 50.0 - i * 2.5
+    sample = det.update([_pt(x, 0.0, -25.0, 64)], 25.0, PATH_X, PATH_Y, 0.1, vision=DEBRIS, now=50.0 + i * 0.1)
+    chimed = chimed or bool(sample.chimed)
+  assert chimed is True
+
+
+def test_speed_gate_skips_the_scan_below_15_mph():
+  stage = ObstacleStage()
+  stage._log_override = True
+  calls = {"n": 0}
+  real_begin = stage.det.begin
+
+  def wrapped(*args, **kwargs):
+    calls["n"] += 1
+    return real_begin(*args, **kwargs)
+
+  stage.det.begin = wrapped
+  points = [_pt(30.0, 0.0, -20.0, 1)]
+  path = [0.0, 100.0]
+  t = 1000.0
+
+  def step(speed, at):
+    return stage.step(points, speed, path, path, 0.05, [], None, [], at)
+
+  below = step(SPEED_ENABLE_MPS - 0.2, t)
+  assert below is not None and below.reject_reason == "lowSpeed" and below.active is False
+  assert calls["n"] == 0
+  # 14 mph is under 15 and above 13, but the gate has never armed.
+  assert step(6.26, t + 2.0).reject_reason == "lowSpeed"
+  assert calls["n"] == 0
+
+  armed = step(SPEED_ENABLE_MPS, t + 4.0)
+  assert armed is None or armed.reject_reason != "lowSpeed"
+  assert calls["n"] == 1
+  # Hysteresis holds through 14 mph.
+  step(SPEED_DISABLE_MPS + 0.4, t + 6.0)
+  assert calls["n"] == 2
+  dropped = step(SPEED_DISABLE_MPS - 0.2, t + 8.0)
+  assert dropped is not None and dropped.reject_reason == "lowSpeed" and dropped.active is False
+  assert calls["n"] == 2
 
 
 def test_future_brake_is_any_agreed_object_in_or_entering():
@@ -481,6 +586,8 @@ def test_wiring_stays_off_the_control_core_and_off_longitudinal():
   manner = text("selfdrive/ui/layouts/settings/driving_mannerisms.py")
   assert "Live object detection chime" in manner
   assert "livelyScore" in text("cereal/custom.capnp")
+  assert "visionFailReason" in text("cereal/custom.capnp")
+  assert "lowSpeed" in lib
   assert "self._all_items.append(self._turn_in_buttons)" in manner
 
   proc = text("selfdrive/pathobstacled/pathobstacled.py")

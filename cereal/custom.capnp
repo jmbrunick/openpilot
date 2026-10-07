@@ -146,6 +146,9 @@ struct PathObstacleVisionNAP @0x80ae746ee2596b11 {
   chimeReason @15 :Text;
   livelyScore @16 :Float32;
   visionUs @17 :Float32;
+  # Set when this attempt produced no score. Empty when a score was written.
+  # no_connection, no_frame, stale_frame, roi_out_of_frame, budget, model_error.
+  visionFailReason @18 :Text;
 }
 
 struct CustomReserved5 @0xa5cd762cd951a455 {
