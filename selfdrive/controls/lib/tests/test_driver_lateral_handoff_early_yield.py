@@ -81,6 +81,52 @@ def test_not_in_tipped_lane_change():
   assert not _run([4.0] * 40, alc=True).yielded
 
 
+def test_same_direction_hands_edge_yields_on_one_frame():
+  """Helping torque + hands 3 yields before the 80 ms counter. Opposite does not."""
+  h = DriverLateralHandoff(enabled=True)
+  out = h.update(engaged=True, lat_would_be_active=True, steering_torque=-3.5,
+                 steering_rate_deg=0.0, hands_on_level=3, v_ego=15.0,
+                 steering_angle_deg=-30.0, commanded_angle_deg=-40.0,
+                 steering_pressed=True)
+  assert out.yielded and out.authority == 0.0
+
+  h = DriverLateralHandoff(enabled=True)
+  out = h.update(engaged=True, lat_would_be_active=True, steering_torque=3.5,
+                 steering_rate_deg=0.0, hands_on_level=3, v_ego=15.0,
+                 steering_angle_deg=-30.0, commanded_angle_deg=-40.0,
+                 steering_pressed=True, undertrack=True)
+  assert not out.yielded and out.authority == 1.0
+
+
+def test_roundabout_any_input_yields_immediately():
+  h = DriverLateralHandoff(enabled=True)
+  out = h.update(engaged=True, lat_would_be_active=True, steering_torque=2.0,
+                 steering_rate_deg=0.0, hands_on_level=2, v_ego=8.0,
+                 steering_angle_deg=-20.0, commanded_angle_deg=-10.0,
+                 roundabout_yield=True, steering_pressed=True)
+  assert out.yielded
+  h = DriverLateralHandoff(enabled=True)
+  out = h.update(engaged=True, lat_would_be_active=True, steering_torque=1.2,
+                 steering_rate_deg=0.0, hands_on_level=0, v_ego=8.0,
+                 roundabout_yield=True, steering_pressed=True)
+  assert out.yielded
+
+
+def test_farm_trace_yields_on_the_final_helping_yank():
+  torques = [0.70, -0.95, 0.47, -2.19, 0.86, -1.79, 0.15, -1.00, -3.29, -3.77]
+  h = DriverLateralHandoff(enabled=True)
+  out = None
+  for i, tq in enumerate(torques):
+    meas = -26.0 + (-44.0 + 26.0) * i / (len(torques) - 1)
+    out = h.update(engaged=True, lat_would_be_active=True, steering_torque=tq,
+                   steering_rate_deg=0.0, hands_on_level=3 if i == len(torques) - 1 else 0,
+                   v_ego=8.0, steering_angle_deg=meas, commanded_angle_deg=meas + 8.0,
+                   undertrack=True, steering_pressed=abs(tq) >= 1.0)
+    if i < len(torques) - 1:
+      assert not out.yielded
+  assert out.yielded
+
+
 def test_handoff_off_is_identity():
   out = _run([4.0] * 40, enabled=False)
   assert not out.yielded and out.authority == 1.0
