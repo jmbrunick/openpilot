@@ -275,9 +275,7 @@ def test_preap_longcontrol_does_not_dump_regen_when_planner_near_zero():
   # The plant dump is VirtualDAS inner-PID; this seam only clips if the
   # actuator would go below MILD.
   assert commanded == pytest.approx(0.0, abs=0.05)
-  assert guard_follow_actuator_regen(-1.23, 0.0) == pytest.approx(
-    LEAD_FOLLOW_ACT_REGEN_FLOOR_MS2
-  )
+  assert guard_follow_actuator_regen(-1.23, 0.0) == pytest.approx(0.0)
 
   # Planner asked for firm regen: do not clip.
   state.aEgo = 0.0
@@ -303,8 +301,9 @@ def test_preap_coasting_command_cannot_reach_regen_rail():
 
   for planner_a in (-0.039, 0.008, 0.0):
     commanded = guard_follow_actuator_regen(-1.50, planner_a)
-    assert commanded >= -0.25
-    assert commanded == pytest.approx(LEAD_FOLLOW_ACT_REGEN_FLOOR_MS2)
+    # Steady / coast tracks the command. It does not settle at mild.
+    assert commanded == pytest.approx(min(planner_a, 0.0))
+    assert commanded > LEAD_FOLLOW_ACT_REGEN_FLOOR_MS2
 
   original = VirtualDAS.update
   try:
@@ -316,11 +315,11 @@ def test_preap_coasting_command_cannot_reach_regen_rail():
       0.008, v_ego=30.0, prev_pedal_di=4.0, a_ego=0.4,
       accel_effort_limits=plant_regen_effort_limits(0.008, None),
     )
-    assert vdas.prev_accel_effort >= -0.25
+    assert vdas.prev_accel_effort >= -0.05
     # The installed seam applies that bound even if the caller does not.
     vdas.inner_pid.i = -5.0
     vdas.update(-0.039, v_ego=30.0, prev_pedal_di=vdas.prev_pedal_di, a_ego=0.2)
-    assert vdas.prev_accel_effort >= -0.25
+    assert vdas.prev_accel_effort >= -0.08
     # Firm planner brake still reaches the rail.
     vdas.inner_pid.i = -5.0
     pedal = vdas.prev_pedal_di

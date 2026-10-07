@@ -252,6 +252,12 @@ DEPART_Y1_M = DEPART_Y0_M + 0.7
 # when it is both far and a long time-to-collision away; a remote lead's
 # trust tops out at TRUST_REMOTE and shrinks with lateral offset and a weak
 # read. Decel past the physical need (with margin) is scaled by trust.
+# The path-collapse gate does not cover this. It only blocks a *new*
+# association while lane lines are down and the near path is absurd, and
+# it leaves an already-followed lead alone. A far lead's rapid decel is
+# a different path: the emergency a_lead restore below. That restore, and
+# the lead-brake share of the kinematic floor, require the lead to sit on
+# the predicted path. Close and short-TTC leads (#222) do not.
 TRUST_RANGE_LO_M = 60.0
 TRUST_RANGE_HI_M = 110.0
 TRUST_TTC_LO_S = 4.0
@@ -262,6 +268,14 @@ TRUST_LAT_MIN = 0.35   # at the static depart line
 NEED_KEEP_TF_FRAC = 0.5  # keep distance: standstill + half the follow time
 NEED_MARGIN = 1.25
 NEED_MILD_MS2 = 0.22  # an untrusted lead may always ease at the EV's mild settle
+
+# Far rapid-brake path. Full credit inside our own half-width. None once
+# the lead is past a lane line (drifting out, adjacent lane, or a lateral
+# ghost). Smooth between, so a noisy yRel does not step the command.
+# The controller filters this offset; one frame cannot flip it.
+RAPID_PATH_Y_IN_M = 0.9
+RAPID_PATH_Y_OUT_M = 1.8
+TAU_RAPID_PATH_S = 0.25
 
 
 def _smooth01(x: float) -> float:
@@ -311,12 +325,46 @@ def _k_a_brake_scale(a_lead: float) -> float:
   return K_A_MILD + (K_A_FIRM - K_A_MILD) * t
 
 
-def _braking_alead_weight(slack: float, v_close: float, a_lead: float) -> float:
+def rapid_path_offset_m(y_rel: float, curvature: float, gap: float,
+                        path_lat: float | None = None) -> float:
+  """Lateral distance from the predicted path, in meters.
+
+  `path_lat` wins: a lead in a bend stays on-path even when raw yRel is
+  large, and an adjacent-lane car at yRel ≈ 0 does not. Without a path,
+  curve geometry is taken back out of yRel. A missing reading is 0, which
+  is on-path — do not invent an off-path block.
+  """
+  if path_lat is not None and math.isfinite(float(path_lat)):
+    return abs(float(path_lat))
+  try:
+    y = abs(float(y_rel))
+  except (TypeError, ValueError):
+    return 0.0
+  if not math.isfinite(y):
+    return 0.0
+  lane = abs(0.5 * float(curvature) * float(gap) * float(gap))
+  return max(0.0, y - lane)
+
+
+def rapid_path_credit(y_abs: float) -> float:
+  """1 on the predicted path, 0 once the lead has left it."""
+  if not math.isfinite(float(y_abs)):
+    return 1.0
+  span = max(1e-3, RAPID_PATH_Y_OUT_M - RAPID_PATH_Y_IN_M)
+  return 1.0 - _smooth01((float(y_abs) - RAPID_PATH_Y_IN_M) / span)
+
+
+def _braking_alead_weight(slack: float, v_close: float, a_lead: float,
+                          path_credit: float = 1.0) -> float:
   """How much of a braking lead to copy, in [0, 1].
 
   0 when there is a lot of slack and a long time to the gap, and the lead
   is not braking hard. 1 near the gap, on a short time-to-gap, or when the
-  lead decel is emergency-sized. Positive a_lead is not scaled here.
+  lead decel is emergency-sized. The emergency restore is the far
+  rapid-brake path: it is scaled by path credit, so a far lead that is
+  drifting out, off the predicted path, or a lateral ghost does not firm
+  ego braking. A close or short-TTC lead ignores that credit. Positive
+  a_lead is not scaled here.
   """
   if float(a_lead) >= 0.0:
     return 1.0
@@ -329,9 +377,31 @@ def _braking_alead_weight(slack: float, v_close: float, a_lead: float) -> float:
     ttg = slack_f / max(float(v_close), 0.3)
     short = 1.0 - _smooth01(
       (ttg - ALEAD_FADE_TTG_LO_S) / (ALEAD_FADE_TTG_HI_S - ALEAD_FADE_TTG_LO_S))
+  credit = 1.0 if path_credit is None or not math.isfinite(float(path_credit)) else min(
+    1.0, max(0.0, float(path_credit)))
   emerg = _smooth01(
     (-float(a_lead) - ALEAD_FADE_EMERG_LO_MS2) / (ALEAD_FADE_EMERG_HI_MS2 - ALEAD_FADE_EMERG_LO_MS2))
+  emerg *= credit
   return 1.0 - (1.0 - near) * (1.0 - short) * (1.0 - emerg)
+
+
+def credited_rapid_lead(a_lead: float, slack: float, v_close: float,
+                        path_credit: float) -> float:
+  """Lead accel the kinematic floor may treat as a real in-path stop.
+
+  Near the gap or on a short time-to-gap the whole decel counts (#222).
+  A far rapid decel counts only in proportion to path credit. Off-path,
+  that decel does not deepen the floor, so an inherited firm command is
+  not justified by a lead that is leaving or a radar ghost.
+  """
+  a = float(a_lead)
+  if a >= 0.0:
+    return a
+  base = _braking_alead_weight(slack, v_close, a, path_credit=0.0)
+  credit = 0.0 if path_credit is None or not math.isfinite(float(path_credit)) else min(
+    1.0, max(0.0, float(path_credit)))
+  keep = base + (1.0 - base) * credit
+  return a * keep
 
 
 def lead_decel_anticipation(a_lead: float, lead_jerk: float, gap: float, v_ego: float) -> float:
@@ -559,7 +629,8 @@ def unified_follow_desired(gap: float, v_ego: float, v_lead: float, a_lead: floa
                            model_prob: float | None = None,
                            radar: bool | None = None,
                            gap_set_override_m: float | None = None,
-                           v_curve_cap: float | None = None) -> float:
+                           v_curve_cap: float | None = None,
+                           rapid_path_w: float | None = None) -> float:
   """Unslewed follow accel from filtered lead signals. Continuous in its inputs.
 
   `gap_set_override_m` replaces only the meter setpoint used for slack
@@ -624,7 +695,15 @@ def unified_follow_desired(gap: float, v_ego: float, v_lead: float, a_lead: floa
   # still see a real lead brake, so they do not open just because the
   # command stopped copying it. Near the gap, a short time-to-gap, or an
   # emergency lead decel keeps the full term on the command too.
-  brake_w = _braking_alead_weight(slack, v_close, a_l)
+  if rapid_path_w is None:
+    path_credit = rapid_path_credit(rapid_path_offset_m(y_rel, curvature, gap_f, path_lat))
+  elif not math.isfinite(float(rapid_path_w)):
+    path_credit = 1.0
+  else:
+    path_credit = min(1.0, max(0.0, float(rapid_path_w)))
+  # Far rapid decel is copied only while the lead is on the predicted path.
+  # Near / short-TTC weight does not read path_credit.
+  brake_w = _braking_alead_weight(slack, v_close, a_l, path_credit)
   if a_l < 0.0 and brake_w < 1.0:
     a_pd_cmd = a_gv + k_a * a_l * brake_w
     a_bound_cmd = a_kin + a_l * k_a * brake_w
@@ -661,6 +740,9 @@ def unified_follow_desired(gap: float, v_ego: float, v_lead: float, a_lead: floa
   # Achievable hard decel follows trust: a remote, off-path, or weak lead
   # cannot brake us past what its kinematics need (Sep 28 11:07:22).
   trust = lead_trust(gap_f, v_e, v_l, y_rel, curvature, path_lat, model_prob, radar)
+  # Floor only. The command above already used the unscaled lead accel.
+  # Off-path far rapid decel must not keep a deep floor that re-firms the blend.
+  a_l = credited_rapid_lead(a_l, slack, v_close, path_credit)
   a_cmd = trust_bound(a_cmd, hard_decel_floor(gap_f, v_e, v_l, a_l, t_follow), trust)
 
   # A locked gap is the driver's setpoint. MAX does not hold it back.
@@ -722,6 +804,8 @@ class UnifiedLeadController:
     self.last_confidence = 0.0
     self.last_trust = 1.0
     self.last_floor = A_MIN_MS2
+    self._rapid_y: float | None = None
+    self.last_rapid_path_credit = 1.0
 
   @property
   def _cutin_w(self) -> float:
@@ -753,8 +837,17 @@ class UnifiedLeadController:
       self._v_f = float(v_lead)
       self._a_f = 0.0
       self._lead_jerk = 0.0
+      self._rapid_y = None
       if self._prev is None:
         self._prev = float(seed_a)
+
+    # Path consistency for the far rapid-brake path. A one-frame yRel
+    # spike moves this about a fifth of the way, so a ghost flicker does
+    # not firm ego braking and a true in-path lead does not drop out.
+    y_abs = rapid_path_offset_m(y_rel, curvature, gap, path_lat)
+    self._rapid_y = _filt(self._rapid_y, y_abs, frame_dt, TAU_RAPID_PATH_S)
+    path_credit = rapid_path_credit(self._rapid_y)
+    self.last_rapid_path_credit = float(path_credit)
 
     self._v_f = _filt(self._v_f, float(v_lead), frame_dt, TAU_V_S)
     a_prev = self._a_f
@@ -771,6 +864,7 @@ class UnifiedLeadController:
       v_ceiling=v_ceiling, a_map=a_map, y_rel=y_rel, curvature=curvature,
       path_lat=path_lat, leave_w=leave_w, model_prob=model_prob, radar=radar,
       gap_set_override_m=gap_set_override_m, v_curve_cap=v_curve_cap,
+      rapid_path_w=path_credit,
     )
     if a_max is not None:
       desired = min(desired, float(a_max))
@@ -812,7 +906,9 @@ class UnifiedLeadController:
     # in proportion to trust × confidence. A new or remote lead cannot carry
     # it (Sep 28 11:07:22). MAX / map terms keep their own depth.
     trust = lead_trust(gap, v_ego, self._v_f, y_rel, curvature, path_lat, model_prob, radar)
-    floor = hard_decel_floor(gap, v_ego, self._v_f, self._a_f, t_follow)
+    a_floor_lead = credited_rapid_lead(
+      float(self._a_f), slack, max(0.0, -v_err), path_credit)
+    floor = hard_decel_floor(gap, v_ego, self._v_f, a_floor_lead, t_follow)
     if gap_set_override_m is None and v_ceiling is not None and float(v_ceiling) > 0.5:
       floor = min(floor, speed_ceiling_accel(float(v_ego), float(v_ceiling)))
     if v_curve_cap is not None and float(v_curve_cap) > 0.5:
