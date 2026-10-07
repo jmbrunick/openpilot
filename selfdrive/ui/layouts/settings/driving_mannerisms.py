@@ -7,6 +7,7 @@ from openpilot.selfdrive.controls.lib.hypermile import apply_hypermile_toggle
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   ADAPTIVE_ACCEL_DESCRIPTION,
   CONE_LINE_HOLD_DESCRIPTION,
+  OBSTACLE_CHIME_DESCRIPTION,
   DRIVER_LAT_HANDOFF_DESCRIPTION,
   LOW_VIS_BACKOFF_DESCRIPTION,
   FOLLOW_DISTANCE_CITY_DESCRIPTION,
@@ -17,6 +18,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   MAP_SPEED_ACCEL, MAP_SPEED_ACCEL_DEFAULT, MAP_SPEED_ACCEL_DESCRIPTION,
   MAP_SPEED_ACCEL_LABELS,
   NAP_CONE_LINE_HOLD,
+  NAP_OBSTACLE_CHIME,
   NAP_DRIVER_LAT_HANDOFF,
   NAP_LOW_VIS_BACKOFF,
   NAP_HYPERMILE,
@@ -121,6 +123,14 @@ class DrivingMannerismsLayout(Widget):
       callback=self._on_cone_hold,
     )
     self._all_items.append(self._cone_hold)
+
+    self._obstacle_chime = toggle_item(
+      "Live object detection chime",
+      description=OBSTACLE_CHIME_DESCRIPTION,
+      initial_state=self._params.get_bool(NAP_OBSTACLE_CHIME),
+      callback=self._on_obstacle_chime,
+    )
+    self._all_items.append(self._obstacle_chime)
 
     self._turn_geom = toggle_item(
       "Turn Geometry Correction",
@@ -234,6 +244,9 @@ class DrivingMannerismsLayout(Widget):
   def _on_cone_hold(self, state):
     self._params.put_bool(NAP_CONE_LINE_HOLD, state)
 
+  def _on_obstacle_chime(self, state):
+    self._params.put_bool(NAP_OBSTACLE_CHIME, state)
+
   def _on_turn_geom(self, state):
     self._params.put_bool(NAP_LAT_TURN_GEOM, state)
 
@@ -278,6 +291,7 @@ class DrivingMannerismsLayout(Widget):
     self._lat_handoff.action_item.set_state(self._params.get_bool(NAP_DRIVER_LAT_HANDOFF))
     self._low_vis.action_item.set_state(self._params.get_bool(NAP_LOW_VIS_BACKOFF))
     self._cone_hold.action_item.set_state(self._params.get_bool(NAP_CONE_LINE_HOLD))
+    self._obstacle_chime.action_item.set_state(self._params.get_bool(NAP_OBSTACLE_CHIME))
     self._turn_geom.action_item.set_state(self._params.get_bool(NAP_LAT_TURN_GEOM))
     self._ref_offset_buttons.action_item.set_selected_button(lat_ref_offset_index(self._params))
     self._turn_in_buttons.action_item.set_selected_button(turn_in_delay_index(self._params))

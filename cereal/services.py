@@ -96,6 +96,8 @@ _services: dict[str, tuple] = {
   "liveSpeedSignNAP": (True, 4., 4),
   # Radar-rate cone line. Decimation 2 keeps ~4 Hz in the qlog.
   "coneLineNAP": (True, 8., 2),
+  # Radar-rate obstacle log. Decimation 2 keeps ~4 Hz in the qlog.
+  "pathObstacleNAP": (True, 8., 2),
   "customReservedRawData0": (True, 0.),
 }
 SERVICE_LIST = {name: Service(*vals) for

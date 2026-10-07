@@ -11,6 +11,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   FOLLOW_DISTANCE_VALUES,
   MAP_SPEED_ACCEL, MAP_SPEED_ACCEL_DEFAULT, MAP_SPEED_ACCEL_LABELS,
   NAP_CONE_LINE_HOLD,
+  NAP_OBSTACLE_CHIME,
   NAP_DRIVER_LAT_HANDOFF,
   NAP_LOW_VIS_BACKOFF,
   NAP_FOLLOW_DISTANCE_CITY,
@@ -80,6 +81,9 @@ class DrivingMannerismsLayoutMici(NavScroller):
     cone_hold = BigParamControl("hold my line near cones", NAP_CONE_LINE_HOLD)
     cone_hold.set_value("On — keep your line after a push past cones")
 
+    obstacle_chime = BigParamControl("live object detection chime", NAP_OBSTACLE_CHIME)
+    obstacle_chime.set_value("On — solid objects in the lane; animals or people near the road")
+
     one_pedal = BigParamControl("one-pedal long", NAP_ONE_PEDAL_LONG)
     one_pedal.set_value("Off default — gas pause stays until SET")
 
@@ -106,6 +110,7 @@ class DrivingMannerismsLayoutMici(NavScroller):
       lat_handoff,
       low_vis,
       cone_hold,
+      obstacle_chime,
       one_pedal,
       gap_lock,
       hypermile,

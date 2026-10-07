@@ -265,6 +265,15 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Log-only cone-line detector (coneLineNAP in the qlog). Default On.
     // Off stops the publish; the hold then sees no line. Does not steer.
     {"NAPConeLineLog", {PERSISTENT, BOOL, "1"}},
+    // Log-only radar obstacle detector (pathObstacleNAP). Default On.
+    // Animals, people, and solid debris in or beside the lane. Does not
+    // brake or steer. Off stops the log and the chime.
+    {"NAPObstacleLog", {PERSISTENT, BOOL, "1"}},
+    // Chime when radar and vision agree something solid is in the lane
+    // or stepping into it, and for an animal or a person near the road.
+    // Default On. A still mailbox or post on the shoulder stays quiet.
+    // Does not brake, steer, or change engagement.
+    {"NAPObstacleChime", {PERSISTENT, BOOL, "1"}},
     // Pre-AP DM: while engaged, full looking-path wipe on the stock
     // vision path (no-face / uncertain / phone / pose / eye). After
     // drain past 1.0 s, fire at random in the next 2.0 s (fire in

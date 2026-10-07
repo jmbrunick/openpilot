@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-OPTIONAL_PROCESS_NAMES = frozenset({"nap_dash"})
+OPTIONAL_PROCESS_NAMES = frozenset({"nap_dash", "pathobstacled"})
 
 
 def missing_required_processes(processes: Iterable[Any], optional_names: set[str] | frozenset[str] | None = None) -> list[str]:

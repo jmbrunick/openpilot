@@ -57,7 +57,56 @@ struct ConeLineNAP @0xf35cc4560bbf6ec2 {
   spanM @10 :Float32;
 }
 
-struct CustomReserved3 @0xda96579883444c35 {
+# NAP in-path / roadside obstacle sample. Log only, plus an animal/person
+# chime. y is path-relative, +left. Vision fields are NaN until a radar
+# trigger asks for a patch. brakeGate is a future hook and is not applied.
+struct PathObstacleNAP @0xda96579883444c35 {
+  active @0 :Bool;
+  trackId @1 :UInt64;
+  range @2 :Float32;             # m, camera frame
+  lateral @3 :Float32;           # m, path-relative, +left
+  vRel @4 :Float32;              # m/s, radar longitudinal relative
+  vLat @5 :Float32;              # m/s, +left
+  radarConf @6 :Float32;         # 0..1
+  visionConf @7 :Float32;        # 0..1, NaN if not evaluated
+  visionEvaluated @8 :Bool;
+  lightingScore @9 :Float32;     # 0 poor .. 1 good
+  wRadar @10 :Float32;
+  wVision @11 :Float32;
+  fusedScore @12 :Float32;
+  agree @13 :Bool;               # both confidences over their bars
+  rejectReason @14 :Text;
+  inPath @15 :Bool;
+  timeToReach @16 :Float32;      # s, NaN if not closing
+  objectClass @17 :ObjectClass;
+  visionConfHuman @18 :Float32;
+  visionConfAnimal @19 :Float32;
+  visionConfObstacle @20 :Float32;
+  clusterCount @21 :UInt8;
+  spanM @22 :Float32;            # lateral span of the cluster, m
+  timeToEnter @23 :Float32;      # s, 0 if already in the path
+  entering @24 :Bool;
+  zone @25 :Zone;
+  brakeGate @26 :Bool;           # log-only: agree + in path or entering, any class
+  chimed @27 :Bool;
+  chimeReason @28 :Text;
+  scanUs @29 :Float32;
+  visionUs @30 :Float32;
+  livelyScore @31 :Float32;     # 0 still .. 1 moved in the last ~2 s
+
+  enum ObjectClass {
+    unknown @0;
+    human @1;
+    animal @2;
+    obstacle @3;
+  }
+
+  enum Zone {
+    none @0;
+    inPath @1;
+    entering @2;
+    roadside @3;
+  }
 }
 
 struct CustomReserved4 @0x80ae746ee2596b11 {

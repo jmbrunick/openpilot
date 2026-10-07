@@ -19,6 +19,7 @@ from openpilot.selfdrive.controls.lib.blinker_lateral_pause import (
   preap_blinker_pause_hides_controls_mismatch,
 )
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
+from openpilot.selfdrive.controls.lib.path_obstacle import should_raise_chime
 from openpilot.selfdrive.selfdrived.events import Events, ET
 from openpilot.selfdrive.selfdrived.helpers import ExcessiveActuationCheck, preap_not_in_drive_clears_mismatch
 from openpilot.selfdrive.selfdrived.preap_regen import (
@@ -83,7 +84,7 @@ class SelfdriveD:
     # TODO: de-couple selfdrived with card/conflate on carState without introducing controls mismatches
     self.car_state_sock = messaging.sub_sock('carState', timeout=20)
 
-    ignore = self.sensor_packets + self.gps_packets + ['alertDebug', 'lateralManeuverPlan']
+    ignore = self.sensor_packets + self.gps_packets + ['alertDebug', 'lateralManeuverPlan', 'pathObstacleNAP']
     if SIMULATION:
       ignore += ['driverCameraState', 'managerState']
     if REPLAY:
@@ -94,7 +95,7 @@ class SelfdriveD:
                                    'carOutput', 'driverMonitoringState', 'longitudinalPlan', 'livePose', 'liveDelay',
                                    'managerState', 'liveParameters', 'radarState', 'liveTorqueParameters',
                                    'controlsState', 'carControl', 'driverAssistance', 'alertDebug', 'userBookmark', 'audioFeedback',
-                                   'lateralManeuverPlan'] + \
+                                   'lateralManeuverPlan', 'pathObstacleNAP'] + \
                                    self.camera_packets + self.sensor_packets + self.gps_packets,
                                   ignore_alive=ignore, ignore_avg_freq=ignore,
                                   ignore_valid=ignore, frequency=int(1/DT_CTRL))
@@ -104,6 +105,11 @@ class SelfdriveD:
     self.is_ldw_enabled = self.params.get_bool("IsLdwEnabled")
     self.disengage_on_accelerator = self.params.get_bool("DisengageOnAccelerator")
     self.one_pedal_long = self.params.get_bool("NAPOnePedalLong")
+    self.obstacle_chime = True
+    try:
+      self.obstacle_chime = bool(self.params.get_bool("NAPObstacleChime"))
+    except Exception:
+      self.obstacle_chime = True
 
     car_recognized = self.CP.brand != 'mock'
 
@@ -344,6 +350,19 @@ class SelfdriveD:
       low_vis = getattr(EventName, 'lowVisibility', None)
       if low_vis is not None:
         self.events.add(low_vis)
+
+    # Animal or person chime. Permanent, so it sounds engaged or not.
+    # It does not enter the state machine as a disable or a no-entry.
+    if self.obstacle_chime:
+      try:
+        if self.sm.updated['pathObstacleNAP']:
+          obs = self.sm['pathObstacleNAP']
+          if should_raise_chime(obs.chimed, obs.objectClass):
+            chime = getattr(EventName, 'obstacleChime', None)
+            if chime is not None:
+              self.events.add(chime)
+      except Exception:
+        pass
 
     # ******************************************************************************************
     #  NOTE: To fork maintainers.
@@ -721,6 +740,10 @@ class SelfdriveD:
       self.is_ldw_enabled = self.params.get_bool("IsLdwEnabled")
       self.disengage_on_accelerator = self.params.get_bool("DisengageOnAccelerator")
       self.one_pedal_long = self.params.get_bool("NAPOnePedalLong")
+      try:
+        self.obstacle_chime = bool(self.params.get_bool("NAPObstacleChime"))
+      except Exception:
+        self.obstacle_chime = True
       self.experimental_mode = self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl
       self.personality = self.params.get("LongitudinalPersonality", return_default=True)
       time.sleep(0.1)

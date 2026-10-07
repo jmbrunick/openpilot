@@ -108,6 +108,8 @@ NAP_DRIVER_LAT_HANDOFF = "NAPDriverLatHandoff"
 NAP_LOW_VIS_BACKOFF = "NAPLowVisBackoff"
 NAP_CONE_LINE_HOLD = "NAPConeLineHold"
 NAP_CONE_LINE_LOG = "NAPConeLineLog"
+NAP_OBSTACLE_CHIME = "NAPObstacleChime"
+NAP_OBSTACLE_LOG = "NAPObstacleLog"
 NAP_DM_SIMULATE_LOOKING = "NAPDmSimulateLooking"
 NAP_DM_FALSE_ALERT_IGNORE = "NAPDmFalseAlertIgnore"
 NAP_FORCE_OFFROAD = "NAPForceOffroad"
@@ -123,6 +125,13 @@ LOW_VIS_BACKOFF_DESCRIPTION = (
   + "smoothly when the road is clear. Longitudinal stays on. A repeated "
   + "one-sided fight also stays yielded until the model agrees with the "
   + "wheel. Off = stock lateral, no Low visibility alert."
+)
+OBSTACLE_CHIME_DESCRIPTION = (
+  "Default On. A short chime when the radar and the camera agree "
+  + "something solid is in your lane or stepping into it, and when an "
+  + "animal or a person is near the road. A still mailbox or post on "
+  + "the shoulder stays quiet. It does not brake, steer, or turn "
+  + "cruise off. Off stops the chime; the log still runs."
 )
 CONE_LINE_HOLD_DESCRIPTION = (
   "Default On. After you push the wheel away from a line of cones or "

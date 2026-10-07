@@ -46,6 +46,7 @@ PROCS = {
   "selfdrive.nap_dash.server": 2.0,
   "system.sensord.sensord": 13.0,
   "selfdrive.controls.radard": 2.0,
+  "selfdrive.pathobstacled.pathobstacled": 6.0,
   "selfdrive.modeld.modeld": 22.0,
   "selfdrive.modeld.dmonitoringmodeld": 18.0,
   "system.hardware.hardwared": 4.0,
