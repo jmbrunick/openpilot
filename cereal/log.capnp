@@ -143,7 +143,8 @@ struct OnroadEvent @0xc4fa6047f024e718 {
     pedalUnavailable @107;
     followDistanceChanged @108;
     radarPreferFallback @109;
-    # @110 is nap-dev's wiper HUD event. Gap lock uses the same ordinal as nap-dev.
+    # Slot only, so gapLock stays @111 like nap-dev. Not emitted. nap-dev uses this ordinal for the wiper HUD.
+    gapLockOrdinalPadDEPRECATED @110;
     gapLock @111;
 
     soundsUnavailableDEPRECATED @47;
