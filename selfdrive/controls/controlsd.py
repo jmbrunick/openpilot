@@ -26,7 +26,7 @@ from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, STEER_ANGLE_SATURATION_THRESHOLD
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
-from openpilot.selfdrive.controls.lib.lead_approach import lead_follow_slack_m
+from openpilot.selfdrive.controls.lib.gap_lock import slack_for_guard
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl
 from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
@@ -218,7 +218,8 @@ class Controls:
       lead = self.sm['radarState'].leadOne
       lead_d_rel = float(lead.dRel)
       lead_v_rel = float(CS.vEgo) - float(lead.vLead)
-      lead_slack = lead_follow_slack_m(lead_d_rel, float(lead.vLead), float(long_plan.tFollow))
+      gap_lock_m = getattr(long_plan, "gapLockM", 0.0)
+      lead_slack = slack_for_guard(lead_d_rel, float(lead.vLead), float(long_plan.tFollow), gap_lock_m)
       lead_a_lead = float(lead.aLeadK)
     actuators.accel = float(self.LoC.update(
       CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop, pid_accel_limits,

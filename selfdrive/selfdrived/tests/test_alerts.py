@@ -167,6 +167,39 @@ class TestAlerts:
     assert stock.alert_text_1 == "TAKE CONTROL IMMEDIATELY"
     assert stock.audible_alert == AudibleAlert.warningImmediate
 
+  def test_gap_lock_engaged_alert_is_obvious_and_clears(self):
+    from openpilot.selfdrive.controls.lib.gap_lock import HUD_ENGAGED, HUD_LOST, HUD_UNAVAILABLE
+    from openpilot.selfdrive.selfdrived.events import Priority, gap_lock_alert
+
+    plan = self.sm["longitudinalPlan"]
+    plan.gapLockM = 32.4
+    plan.gapLockEvent = HUD_ENGAGED
+    args = (self.CP, self.CS, self.sm, False, 100, log.LongitudinalPersonality.standard)
+    alert = gap_lock_alert(*args)
+    assert alert.alert_text_1 == "Gap lock engaged 32 m"
+    assert alert.alert_text_2 == ""
+    assert alert.alert_size == AlertSize.small
+    assert alert.priority == Priority.LOW
+    # Short refresh. The 2 s window is the planner pulse, so the line
+    # drops when that pulse ends instead of sticking for the whole lock.
+    assert alert.duration == int(0.2 / DT_CTRL)
+
+    plan.gapLockM = 0
+    plan.gapLockEvent = 0
+    cleared = gap_lock_alert(*args)
+    assert cleared.alert_text_1 == "Gap lock off"
+    assert cleared.duration == int(0.2 / DT_CTRL)
+
+    plan.gapLockEvent = HUD_LOST
+    lost = gap_lock_alert(*args)
+    assert lost.alert_text_1 == "Gap lock off"
+    assert lost.duration == int(0.2 / DT_CTRL)
+
+    plan.gapLockEvent = HUD_UNAVAILABLE
+    unavailable = gap_lock_alert(*args)
+    assert unavailable.alert_text_1 == "Gap lock unavailable"
+    assert unavailable.duration == int(0.2 / DT_CTRL)
+
   def test_follow_distance_changed_alert_matches_mannerisms(self):
     follow_evt = getattr(log.OnroadEvent.EventName, "hypermileFollowChanged", None) or getattr(
       log.OnroadEvent.EventName, "followDistanceChanged", None,

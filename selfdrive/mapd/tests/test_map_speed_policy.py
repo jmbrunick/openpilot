@@ -502,12 +502,6 @@ def test_accel_climb_gradient_baby_steps_at_1_and_stays_brisk_at_10():
   b10 = map_track_accel_ms2(v_set - dv_1mph, v_set, a10, accel_level=10)
   assert b1 is not None and b1 < 0.10
   assert b10 is not None and b10 > b1
-  from openpilot.selfdrive.controls.lib.lead_approach import lead_close_accel_ms2
-  assert abs(lead_close_accel_ms2(1, v_rel=0.0, slack=80.0, a_personality=c1) - c1) < 1e-9
-  assert abs(lead_close_accel_ms2(10, v_rel=0.0, slack=80.0, a_personality=c10) - c10) < 1e-9
-  assert abs(lead_close_accel_ms2(1, v_rel=0.0, slack=80.0, a_personality=g1) - g1) < 1e-9
-  assert abs(lead_close_accel_ms2(10, v_rel=0.0, slack=80.0, a_personality=g10) - g10) < 1e-9
-  assert lead_close_accel_ms2(10, v_rel=0.0, slack=80.0, a_personality=g10) <= a10 + 1e-9
 
 
 def test_map_track_decel_loses_to_stronger_lead_brake():
@@ -1464,16 +1458,12 @@ def test_planner_and_mpc_keep_radar_after_map_cap():
   mpc_at = planner.find("self.mpc.update(sm['radarState'], v_cruise")
   hold_at = planner.find("map_in_track_deadband(v_ego, v_hud_ms)")
   track_at = planner.find("a_brake = map_track_decel_ms2")
-  lead_at = planner.find("a_lead = lead_approach_decel_ms2")
-  close_at = planner.find("lead_close_accel_ms2(")
   assert 0 <= cap_at < mpc_at
-  assert 0 <= mpc_at < hold_at < track_at < lead_at
-  assert 0 <= close_at < mpc_at
+  assert 0 <= mpc_at < hold_at < track_at
   assert "map_brake_a_ms2" in planner
   assert "map_track_accel_ms2" in planner
-  assert "a_env = 0.0 if a_grad is None else min(a_peak, float(a_grad))" in planner
   assert "resolve_lead_close_hold" in planner
-  assert "soft_limit_mpc_a_target" in planner
+  assert "_apply_lead_follow" in planner
   assert "min(float(output_a_target), a_brake)" in planner
   assert "if float(output_a_target) >= 0.0:" in planner
   assert "output_a_target = 0.0" in planner

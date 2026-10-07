@@ -52,6 +52,17 @@ def test_focused_tests_and_mutations_are_pinned():
     "selfdrive/controls/tests/test_following_distance.py",
     "selfdrive/controls/tests/test_follow_distance.py",
     "selfdrive/controls/tests/test_lead_approach.py",
+    "selfdrive/controls/tests/test_firm_brake_latch.py",
+    "selfdrive/selfdrived/tests/test_preap_regen_cmd_pin.py",
+    "selfdrive/car/tests/test_preap_engage_max_after_pause.py",
+    "selfdrive/controls/tests/test_unified_lead.py",
+    "selfdrive/controls/tests/test_unified_lead_planner.py",
+    "selfdrive/controls/tests/test_unified_far_gap_gate.py",
+    "selfdrive/controls/tests/test_unified_far_gap_catchup.py",
+    "selfdrive/controls/tests/test_lead_leaving.py",
+    "selfdrive/controls/tests/test_gap_lock_gesture.py",
+    "selfdrive/controls/tests/test_gap_lock_latch.py",
+    "selfdrive/controls/lib/tests/test_curve_max_hold.py",
     "selfdrive/mapd/tests/test_map_speed_policy.py",
     "selfdrive/controls/tests/test_radard.py",
     "selfdrive/controls/tests/test_radar_path_gate.py",
@@ -94,6 +105,9 @@ def test_additive_follow_telemetry_is_ignored_by_process_replay():
 
   assert '"longitudinalPlan.napFollowDistance"' in plannerd_config.group("body")
   assert '"longitudinalPlan.tFollow"' in plannerd_config.group("body")
+  assert '"longitudinalPlan.unifiedATarget"' in plannerd_config.group("body")
+  assert '"longitudinalPlan.gapLockM"' in plannerd_config.group("body")
+  assert '"longitudinalPlan.gapLockEvent"' in plannerd_config.group("body")
 
 
 def main():

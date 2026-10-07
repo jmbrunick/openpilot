@@ -18,7 +18,9 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   NAP_HYPERMILE,
   NAP_HYPERMILE_HILL_CLIMB,
   NAP_HYPERMILE_STEP_DOWN,
+  NAP_GAP_LOCK,
   NAP_ONE_PEDAL_LONG,
+  GAP_LOCK_DESCRIPTION,
   ONE_PEDAL_LONG_DESCRIPTION,
 )
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys
@@ -102,6 +104,14 @@ class DrivingMannerismsLayout(Widget):
     )
     self._all_items.append(self._one_pedal)
 
+    self._gap_lock = toggle_item(
+      "Gap lock",
+      description=GAP_LOCK_DESCRIPTION,
+      initial_state=self._gap_lock_on(),
+      callback=self._on_gap_lock,
+    )
+    self._all_items.append(self._gap_lock)
+
     self._hypermile = toggle_item(
       "Hypermile",
       description=HYPERMILE_DESCRIPTION,
@@ -156,6 +166,18 @@ class DrivingMannerismsLayout(Widget):
   def _on_lat_handoff(self, state):
     self._params.put_bool(NAP_DRIVER_LAT_HANDOFF, state)
 
+  def _gap_lock_on(self) -> bool:
+    try:
+      return self._params.get_bool(NAP_GAP_LOCK) is True
+    except Exception:
+      return False
+
+  def _on_gap_lock(self, state):
+    try:
+      self._params.put_bool(NAP_GAP_LOCK, state)
+    except Exception:
+      pass
+
   def _on_one_pedal(self, state):
     self._params.put_bool(NAP_ONE_PEDAL_LONG, state)
 
@@ -175,6 +197,7 @@ class DrivingMannerismsLayout(Widget):
     self._follow_hwy_buttons.action_item.set_selected_button(max(0, min(6, hwy - 1)))
     self._lat_handoff.action_item.set_state(self._params.get_bool(NAP_DRIVER_LAT_HANDOFF))
     self._one_pedal.action_item.set_state(self._params.get_bool(NAP_ONE_PEDAL_LONG))
+    self._gap_lock.action_item.set_state(self._gap_lock_on())
 
   def show_event(self):
     self._scroller.show_event()
