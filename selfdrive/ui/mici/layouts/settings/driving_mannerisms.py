@@ -10,6 +10,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   FOLLOW_DISTANCE_LABELS,
   FOLLOW_DISTANCE_VALUES,
   MAP_SPEED_ACCEL, MAP_SPEED_ACCEL_DEFAULT, MAP_SPEED_ACCEL_LABELS,
+  NAP_CONE_LINE_HOLD,
   NAP_DRIVER_LAT_HANDOFF,
   NAP_LOW_VIS_BACKOFF,
   NAP_FOLLOW_DISTANCE_CITY,
@@ -76,6 +77,9 @@ class DrivingMannerismsLayoutMici(NavScroller):
     low_vis = BigParamControl("low visibility back-off", NAP_LOW_VIS_BACKOFF)
     low_vis.set_value("On — ease lateral and show Low visibility")
 
+    cone_hold = BigParamControl("hold my line near cones", NAP_CONE_LINE_HOLD)
+    cone_hold.set_value("On — keep your line after a push past cones")
+
     one_pedal = BigParamControl("one-pedal long", NAP_ONE_PEDAL_LONG)
     one_pedal.set_value("Off default — gas pause stays until SET")
 
@@ -101,6 +105,7 @@ class DrivingMannerismsLayoutMici(NavScroller):
       self._turn_in_delay,
       lat_handoff,
       low_vis,
+      cone_hold,
       one_pedal,
       gap_lock,
       hypermile,

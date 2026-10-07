@@ -258,6 +258,13 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // toward the driver and the HUD says Low visibility. Longitudinal
     // stays engaged. Off = stock lateral, no alert.
     {"NAPLowVisBackoff", {PERSISTENT, BOOL, "1"}},
+    // After a ~2 s push away from a radar cone line, the soft-handoff
+    // re-take holds that lateral offset instead of blending onto the
+    // model path. Default On. Longitudinal is unchanged.
+    {"NAPConeLineHold", {PERSISTENT, BOOL, "1"}},
+    // Log-only cone-line detector (coneLineNAP in the qlog). Default On.
+    // Off stops the publish; the hold then sees no line. Does not steer.
+    {"NAPConeLineLog", {PERSISTENT, BOOL, "1"}},
     // Pre-AP DM: while engaged, full looking-path wipe on the stock
     // vision path (no-face / uncertain / phone / pose / eye). After
     // drain past 1.0 s, fire at random in the next 2.0 s (fire in

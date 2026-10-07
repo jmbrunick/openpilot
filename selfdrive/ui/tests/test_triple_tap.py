@@ -100,7 +100,7 @@ def test_hidden_toggles_removed_from_normal_lists():
   assert "Simulate Look" in popup
   assert "False Alert Ignore" in popup
   assert "Force Offroad" in popup
-  assert "[self._offroad_item, self._dm_item, self._fai_item]" in popup
+  assert "[self._offroad_item, self._dm_item, self._fai_item, self._cone_log_item]" in popup
   assert "NAP_DM_SIMULATE_LOOKING" in popup
   assert "NAP_DM_FALSE_ALERT_IGNORE" in popup
   assert "NAP_FORCE_OFFROAD" in popup

@@ -41,7 +41,20 @@ struct LiveSpeedSignNAP @0xaedffd8f31e7b55d {
   detectPaused @4 :Bool;   # OP commanding actuators — YOLO skipped; HUD shows WAIT (not cereal-unknown)
 }
 
-struct CustomReserved2 @0xf35cc4560bbf6ec2 {
+# NAP radar cone-line sample. Log only. y is path-relative, +left.
+# wouldLimit is the signed path shift (+left) that would leave ~1 m of clearance.
+struct ConeLineNAP @0xf35cc4560bbf6ec2 {
+  active @0 :Bool;
+  side @1 :Int8;             # +1 left of the path, -1 right, 0 none
+  confidence @2 :Float32;
+  count @3 :UInt8;
+  latNear @4 :Float32;       # line lateral at ~15 m
+  latMid @5 :Float32;        # ~30 m
+  latFar @6 :Float32;        # ~45 m
+  wouldLimit @7 :Float32;    # m, +left
+  barrier @8 :Bool;          # continuous guardrail / barrier, not a cone line
+  parked @9 :Bool;           # short wide cluster rejected as a parked car
+  spanM @10 :Float32;
 }
 
 struct CustomReserved3 @0xda96579883444c35 {
