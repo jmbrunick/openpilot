@@ -20,6 +20,7 @@ from openpilot.selfdrive.controls.lib.cone_line_hold import (
 )
 from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   HANDS_OFF_CONFIRM_S,
+  RELEASE_HOLD_S,
   DriverLateralHandoff,
   apply_lat_authority,
 )
@@ -171,7 +172,7 @@ def test_ridgewood_retake_blends_toward_the_driver_line():
   assert co.active is False
   assert co.curvature == model_k
 
-  for _ in range(int((HANDS_OFF_CONFIRM_S + 0.05) / DT)):
+  for _ in range(int((RELEASE_HOLD_S + 0.05) / DT)):
     ho, co = both(torque=0.0, hands=0)
   assert ho.yielded is False
   assert ho.blending is True

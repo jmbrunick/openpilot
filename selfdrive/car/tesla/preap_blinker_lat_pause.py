@@ -1038,6 +1038,8 @@ def _update_preap(cs, can_parsers):
     )
     try:
       h = getattr(engagement, "_nap_lat_handoff", None)
+      # Offset the card handoff just applied. steeringRateDeg is SNA on
+      # this car; the learner uses steeringAngleDeg for the wheel-still test.
       ret.napRestTorqueNm = float(h.rest_bias) if h is not None else 0.0
     except Exception:
       pass

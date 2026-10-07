@@ -36,7 +36,11 @@ def test_one_frame_short_does_not_yield():
 
 
 def test_below_threshold_does_not_yield():
-  assert not _run([EARLY_YIELD_NM - 0.05] * 40).yielded
+  # 1.95 Nm is above the 1.4 Nm / 80 ms path, so it yields. Resting and
+  # short firm-but-not-1.4 pushes do not.
+  assert not _run([0.85] * 40).yielded
+  assert not _run([1.2] * 8, pressed=False).yielded
+  assert _run([1.2] * 15, pressed=False).yielded
 
 
 def test_alternating_sign_chatter_does_not_yield():
@@ -50,8 +54,27 @@ def test_gap_restarts_the_count():
   assert not _run(([3.0] * (EARLY_YIELD_FRAMES - 1) + [0.0]) * 4).yielded
 
 
-def test_requires_steering_pressed():
-  assert not _run([4.0] * 40, pressed=False).yielded
+def test_firm_torque_yields_without_steering_pressed():
+  """1.4 Nm / 80 ms does not wait for steeringPressed or a hands level."""
+  assert _run([1.4] * 8, pressed=False).yielded
+  assert _run([4.0] * 8, pressed=False).yielded
+  assert not _run([1.2] * 8, pressed=False).yielded
+
+
+def test_resting_band_never_yields():
+  """Hands resting at 0.15–0.35 Nm never enter yield or a take-back taper.
+
+  The check is every frame. A dropped 0.9 Nm threshold lets 0.25 Nm yield
+  and then R1 give the wheel back, so the final frame is full lateral again.
+  """
+  for tq in (0.15, 0.25, 0.35, -0.30):
+    for pressed, hands in ((False, 0), (True, 1)):
+      h = DriverLateralHandoff(enabled=True)
+      for _ in range(400):
+        out = h.update(engaged=True, lat_would_be_active=True, steering_torque=tq,
+                       steering_rate_deg=0.0, hands_on_level=hands, v_ego=20.0,
+                       steering_pressed=pressed)
+        assert not out.yielded and not out.blending and out.authority == 1.0
 
 
 def test_not_in_tipped_lane_change():
@@ -66,7 +89,7 @@ def test_handoff_off_is_identity():
 def test_yield_frees_the_eps_then_blends_back_after_hands_off():
   from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
     BLEND_TIME_S,
-    HANDS_OFF_CONFIRM_S,
+    RELEASE_HOLD_S,
     lat_active_after_handoff,
   )
   h = DriverLateralHandoff()
@@ -77,7 +100,7 @@ def test_yield_frees_the_eps_then_blends_back_after_hands_off():
   for _ in range(EARLY_YIELD_FRAMES):
     out = step(3.0, True)
   assert out.yielded and not lat_active_after_handoff(True, out.yielded)
-  for _ in range(int(HANDS_OFF_CONFIRM_S / 0.01) + 3):
+  for _ in range(int(RELEASE_HOLD_S / 0.01) + 3):
     out = step(0.0, False)
   assert out.blending and lat_active_after_handoff(True, out.yielded)
   for _ in range(int(BLEND_TIME_S / 0.01) + 3):
