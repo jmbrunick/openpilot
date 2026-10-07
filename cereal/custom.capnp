@@ -87,7 +87,7 @@ struct PathObstacleNAP @0xda96579883444c35 {
   timeToEnter @23 :Float32;      # s, 0 if already in the path
   entering @24 :Bool;
   zone @25 :Zone;
-  brakeGate @26 :Bool;           # log-only: agree + human + in path/entering
+  brakeGate @26 :Bool;           # log-only: agree + in path or entering, any class
   chimed @27 :Bool;
   chimeReason @28 :Text;
   scanUs @29 :Float32;

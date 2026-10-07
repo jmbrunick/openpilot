@@ -127,12 +127,11 @@ LOW_VIS_BACKOFF_DESCRIPTION = (
   + "wheel. Off = stock lateral, no Low visibility alert."
 )
 OBSTACLE_CHIME_DESCRIPTION = (
-  "Default On. A short chime when the radar and the camera agree a "
-  + "living thing, an animal or a person, is in your lane, stepping "
-  + "into it, or on the shoulder. Something that sits perfectly still, "
-  + "like a mailbox or a post, is less likely to chime. It does not "
-  + "brake, steer, or turn cruise off. Trees and debris stay quiet. "
-  + "Off stops the chime; the log still runs."
+  "Default On. A short chime when the radar and the camera agree "
+  + "something solid is in your lane or stepping into it, and when an "
+  + "animal or a person is near the road. A still mailbox or post on "
+  + "the shoulder stays quiet. It does not brake, steer, or turn "
+  + "cruise off. Off stops the chime; the log still runs."
 )
 CONE_LINE_HOLD_DESCRIPTION = (
   "Default On. After you push the wheel away from a line of cones or "

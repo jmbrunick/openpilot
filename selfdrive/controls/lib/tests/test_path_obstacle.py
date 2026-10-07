@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from openpilot.selfdrive.controls.lib.path_obstacle import (
-  CHIME_CLASSES,
+  LIVING_CLASSES,
   PARAM_OBSTACLE_CHIME,
   PARAM_OBSTACLE_LOG,
   BrakeIntent,
@@ -118,12 +118,13 @@ def test_stationary_in_path_deer_chimes_only_when_vision_says_animal():
   assert 0.25 < seen.vision_conf_animal < 0.55
   assert seen.agree and seen.vision_evaluated
   assert seen.chimed and seen.chime_reason == "chimed"
-  assert seen.brake_gate is False
-  assert future_brake_intent(seen) is None
+  assert seen.brake_gate is True
+  assert future_brake_intent(seen) is not None
 
   debris = _run(PathObstacleDetector(), deer, vision=DEBRIS)
   assert debris.object_class == "obstacle"
-  assert debris.chimed is False and debris.chime_reason == "class"
+  assert debris.chimed and debris.chime_reason == "chimed"
+  assert debris.brake_gate is True
 
 
 def test_human_entering_and_cyclist_chime_and_can_brake_later():
@@ -135,7 +136,7 @@ def test_human_entering_and_cyclist_chime_and_can_brake_later():
   assert person.brake_gate is True
   intent = future_brake_intent(person)
   assert isinstance(intent, BrakeIntent) and intent.allowed and intent.decel == 0.0
-  assert chime_banner(person.object_class, person.zone) == "Person ahead"
+  assert chime_banner(person.object_class, person.zone) == "Object ahead"
 
   weak = _run(PathObstacleDetector(), walker, vision=WEAK)
   assert weak.object_class == "human"
@@ -170,8 +171,9 @@ def test_rejects_clutter_vehicles_and_a_lane_spanning_tree():
   fallen = _run(PathObstacleDetector(), tree, vision=ANIMAL)
   assert fallen.object_class == "obstacle"
   assert fallen.cluster_count == 3 and fallen.span_m >= 1.8
-  assert fallen.chimed is False and fallen.chime_reason == "class"
-  assert future_brake_intent(fallen) is None
+  assert fallen.agree and fallen.chimed and fallen.chime_reason == "chimed"
+  assert fallen.brake_gate is True
+  assert future_brake_intent(fallen) is not None
 
   curtain = [
     _pt(40.0, 5.0, -V_EGO, 31),
@@ -199,14 +201,14 @@ def test_still_mailbox_stays_quiet_and_a_moving_person_chimes():
   assert person.agree and person.chimed and person.chime_reason == "chimed"
   assert person.brake_gate is False
   assert future_brake_intent(person) is None
-  assert chime_banner("human", "roadside") == "Person near road"
-  assert chime_banner(1, 3) == "Person near road"
-  assert chime_banner("animal", "roadside") == "Animal near road"
-  assert chime_banner("animal", "inPath") == "Animal ahead"
+  assert chime_banner("human", "roadside") == "Object near road"
+  assert chime_banner(1, 3) == "Object near road"
+  assert chime_banner("obstacle", "inPath") == "Object ahead"
+  assert chime_banner("unknown", "entering") == "Object ahead"
 
   quiet = _run(PathObstacleDetector(), shoulder, n=8, vision=WEAK)
   assert quiet.chimed is False
-  assert quiet.chime_reason == "class"
+  assert quiet.chime_reason == "inanimate"
 
 
 def test_wander_and_patch_change_raise_lively_without_zeroing_a_freeze():
@@ -268,18 +270,27 @@ def test_chime_hold_cooldown_and_shared_classes():
 
   off = _run(PathObstacleDetector(), deer, vision=ANIMAL, chime_enabled=False)
   assert off.chime_reason == "disabled" and off.chimed is False
-  assert should_raise_chime(True, "human") and should_raise_chime(True, "animal")
-  assert not should_raise_chime(True, "obstacle")
+  assert should_raise_chime(True, "human") and should_raise_chime(True, "obstacle")
+  assert should_raise_chime(True, "unknown")
   assert not should_raise_chime(False, "human")
-  assert CHIME_CLASSES == frozenset({"animal", "human"})
+  assert LIVING_CLASSES == frozenset({"animal", "human"})
+  gate_still = ChimeGate()
+  assert gate_still.consider(_agreed("obstacle", "roadside", 8), True, 0.0) == (False, "inanimate")
+  assert gate_still.consider(_agreed("unknown", "inPath", 8), True, 0.0) == (True, "chimed")
+  lively_post = ObstacleSample(
+    active=True, track_id=9, object_class="obstacle", zone="roadside", agree=True,
+    member_ids=(9,), reject_reason="none", lively_score=0.8,
+  )
+  assert ChimeGate().consider(lively_post, True, 0.0) == (True, "chimed")
 
 
-def test_future_brake_is_humans_in_or_entering_only():
-  assert future_brake_intent(_agreed("animal", "inPath", 1)) is None
-  assert future_brake_intent(_agreed("obstacle", "inPath", 1)) is None
+def test_future_brake_is_any_agreed_object_in_or_entering():
+  assert future_brake_intent(_agreed("animal", "inPath", 1)) is not None
+  assert future_brake_intent(_agreed("obstacle", "inPath", 1)) is not None
+  assert future_brake_intent(_agreed("unknown", "entering", 1)) is not None
   assert future_brake_intent(_agreed("human", "roadside", 1)) is None
-  assert future_brake_intent(_agreed("human", "inPath", 1)) is not None
-  assert future_brake_intent(_agreed("human", "entering", 1)) is not None
+  quiet = ObstacleSample(active=True, agree=False, zone="inPath", object_class="obstacle", member_ids=(1,))
+  assert future_brake_intent(quiet) is None
 
 
 def test_alert_sound_id_and_unique_wav():
@@ -358,7 +369,8 @@ def test_wiring_stays_off_the_control_core_and_off_longitudinal():
   assert "NO_ENTRY" not in block
   assert "SOFT_DISABLE" not in block
   assert "IMMEDIATE_DISABLE" not in block
-  assert "Person ahead" not in events  # words come from chime_banner
+  assert "Person ahead" not in events
+  assert "Object ahead" in events
   assert "obstacle_chime_alert" in events
 
   selfd = text("selfdrive/selfdrived/selfdrived.py")

@@ -1243,7 +1243,7 @@ def obstacle_chime_alert(CP, CS, sm, metric, soft_disable_time, personality):
   Permanent: the chime plays whether or not openpilot is engaged.
   """
   from openpilot.selfdrive.controls.lib.path_obstacle import chime_banner
-  title = "Animal ahead"
+  title = "Object ahead"
   try:
     obs = sm['pathObstacleNAP']
     title = chime_banner(obs.objectClass, obs.zone)

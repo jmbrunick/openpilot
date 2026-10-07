@@ -27,10 +27,10 @@ Thresholds (device frame, y +left, path-relative lateral):
   agree                         radar >= 0.55 and vision >= 0.45
   lighting weights              good light wR = 0.50, poor wR = 0.78,
                                 linear in the lighting score
-  chime                         animal or human, agree, zone in
-                                {inPath, entering, roadside}, once per
-                                track, 9 s global cooldown
-  chime does not include        obstacle (tree, debris, post)
+  chime                         agree, any class, zone inPath or
+                                entering. Roadside only for an animal,
+                                a person, or livelyScore >= 0.50.
+                                Once per track, 9 s global cooldown
   lively                        0 still, 1 has moved in the last 2 s.
                                 Ground speed, lateral speed, or
                                 position wander past radar noise.
@@ -52,12 +52,12 @@ from openpilot.selfdrive.controls.lib.radar_path_gate import RADAR_TO_CAMERA_M, 
 PARAM_OBSTACLE_LOG = "NAPObstacleLog"
 PARAM_OBSTACLE_CHIME = "NAPObstacleChime"
 
-# Classes that may chime. Add nothing else without a new product decision.
-# Generic obstacles stay log-only.
-CHIME_CLASSES = frozenset({"animal", "human"})
-CHIME_ZONES = frozenset({"inPath", "entering", "roadside"})
-# Future braking. Humans first, and never for a roadside-only detection.
-BRAKE_CLASSES = frozenset({"human"})
+# In the lane or stepping in, any agreed solid object chimes.
+# On the shoulder, only a living class or a high lively score.
+LIVING_CLASSES = frozenset({"animal", "human"})
+PATH_CHIME_ZONES = frozenset({"inPath", "entering"})
+# Future braking. Any agreed object in or entering the path. Not wired.
+# Roadside never.
 BRAKE_ZONES = frozenset({"inPath", "entering"})
 
 X_MIN_M = 5.0
@@ -91,6 +91,8 @@ WANDER_NOISE_M = 0.40
 WANDER_FULL_M = 1.15
 # A frozen deer keeps this fraction of its animal/person class score.
 LIVELY_FLOOR = 0.45
+# Roadside chime when the track has clearly moved, even if class is unknown.
+LIVELY_CHIME = 0.50
 CLUSTER_DX_M = 5.5
 CLUSTER_DY_M = 3.2
 LANE_SPAN_M = 1.8
@@ -424,43 +426,42 @@ def _class_name(raw) -> str:
   return str(raw).split(".")[-1]
 
 
-def should_raise_chime(chimed, object_class, enabled: bool = True) -> bool:
-  """selfdrived uses this. It does not look at longitudinal state."""
+def should_raise_chime(chimed, object_class=None, enabled: bool = True) -> bool:
+  """selfdrived uses this. The detector already chose whether to chime."""
+  del object_class
   if not enabled or not chimed:
     return False
-  return _class_name(object_class) in CHIME_CLASSES
+  return True
 
 
 def chime_banner(object_class, zone) -> str:
-  """Short HUD line. Same chime sound; the words say person or animal."""
-  name = _class_name(object_class)
+  """One line for the driver. Class stays in the log, not on screen."""
+  del object_class
   zone_name = _class_name(zone)
   if zone_name.isdigit():
     idx = int(zone_name)
     zone_name = ZONE_ORDER[idx] if 0 <= idx < len(ZONE_ORDER) else "none"
-  if name.isdigit():
-    idx = int(name)
-    name = CLASS_ORDER[idx] if 0 <= idx < len(CLASS_ORDER) else "unknown"
-  roadside = zone_name == "roadside"
-  if name == "human":
-    return "Person near road" if roadside else "Person ahead"
-  return "Animal near road" if roadside else "Animal ahead"
+  if zone_name == "roadside":
+    return "Object near road"
+  return "Object ahead"
+
+
+def _roadside_living(sample: ObstacleSample) -> bool:
+  return sample.object_class in LIVING_CLASSES or float(sample.lively_score) >= LIVELY_CHIME
 
 
 def future_brake_intent(sample: ObstacleSample) -> BrakeIntent | None:
-  """Humans in or entering the path, and only when both sensors agree.
+  """Any agreed object in or entering the path. Roadside never.
 
-  Roadside never brakes. Animals and debris never brake in this stage.
+  Not consumed by any controller. decel stays 0.
   """
-  if not sample.agree or sample.object_class not in BRAKE_CLASSES:
+  if not sample.agree or sample.zone not in BRAKE_ZONES:
     return None
-  if sample.zone not in BRAKE_ZONES:
-    return None
-  return BrakeIntent(True, "agree_human", 0.0)
+  return BrakeIntent(True, "agree_in_path", 0.0)
 
 
 class ChimeGate:
-  """Once per track id, plus a global gap. Animals and people share it."""
+  """Once per track id, plus a global gap. Every class shares it."""
 
   def __init__(self, cooldown_s: float = CHIME_COOLDOWN_S, hold_s: float = CHIME_HOLD_S):
     self.cooldown_s = float(cooldown_s)
@@ -486,9 +487,12 @@ class ChimeGate:
       if sample.reject_reason == "not_persistent":
         return False, "not_persistent"
       return False, sample.reject_reason or "no_candidate"
-    if sample.object_class not in CHIME_CLASSES:
-      return False, "class"
-    if sample.zone not in CHIME_ZONES:
+    if sample.zone in PATH_CHIME_ZONES:
+      pass
+    elif sample.zone == "roadside":
+      if not _roadside_living(sample):
+        return False, "inanimate"
+    else:
       return False, "zone"
     if not sample.agree:
       return False, "no_agree"
@@ -863,7 +867,7 @@ class PathObstacleDetector:
     in_path = zone == "inPath"
     entering = zone == "entering"
     t_enter = 0.0 if in_path else hit.time_to_enter
-    brake = bool(agree and final_class in BRAKE_CLASSES and zone in BRAKE_ZONES)
+    brake = bool(agree and zone in BRAKE_ZONES)
     if scored is not None:
       vh, va, vo = scored.human, scored.animal, scored.obstacle
       vconf = vision.conf if vision is not None else scored.conf
