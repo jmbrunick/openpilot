@@ -112,9 +112,10 @@ class LongControl:
 
     self.last_output_accel = np.clip(output_accel, accel_limits[0], accel_limits[1])
     # Pre-AP follow comfort: coast / MILD must not dump firm regen.
-    # Mid-gap slow close hard-caps to slight lift. Stopping / starting /
-    # off keep stock authority. Planner ≤ −0.5 outside that settle,
-    # FCW, and a near bumper still reach the plant.
+    # A non-braking slow close follows the planner (the old mid-gap
+    # −0.22 / −0.45 cap is retired for that case). Stopping / starting /
+    # off keep stock authority. Firm leads, #222 residuals, FCW, and a
+    # near bumper still reach the plant.
     if (self.long_control_state == LongCtrlState.pid
         and _is_tesla_preap_long(self.CP)):
       if lead_v_rel is None:
