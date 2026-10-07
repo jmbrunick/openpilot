@@ -407,7 +407,7 @@ def test_planner_and_ui_wire_city_hwy_follow():
   content = (root / "selfdrive/ui/layouts/settings/nap_content.py").read_text()
   nap_params = (root / "opendbc_repo/opendbc/car/tesla/preap/nap_params.py").read_text()
   assert "FollowDistanceBlend" in planner
-  assert "v_cruise=v_hud_ms" in planner
+  assert "v_cruise=follow_max_ms" in planner
   assert "NAPFollowDistanceCity" in keys
   assert "NAPFollowDistanceHwy" in keys
   assert "FOLLOW_DISTANCE_CITY" in nap_params

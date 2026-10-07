@@ -143,6 +143,9 @@ struct OnroadEvent @0xc4fa6047f024e718 {
     pedalUnavailable @107;
     followDistanceChanged @108;
     radarPreferFallback @109;
+    # Slot only, so gapLock stays @111 like nap-dev. Not emitted. nap-dev uses this ordinal for the wiper HUD.
+    gapLockOrdinalPadDEPRECATED @110;
+    gapLock @111;
 
     soundsUnavailableDEPRECATED @47;
   }
@@ -1178,6 +1181,11 @@ struct LongitudinalPlan @0xe00b5b3eba12876c {
   allowBrake @39: Bool;
   napFollowDistance @40 :UInt8;
   tFollow @41 :Float32;
+  # Continuous lead-follow command, logged every frame.
+  unifiedATarget @42 :Float32;
+  # Gap lock meters. 0 = time-gap follow. Event: 0 none, 1 engaged, 2 unavailable, 3 lead lost.
+  gapLockM @43 :Float32;
+  gapLockEvent @44 :UInt8;
 
 
   solverExecutionTime @35 :Float32;

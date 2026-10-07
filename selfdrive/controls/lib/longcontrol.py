@@ -2,6 +2,11 @@ import numpy as np
 from cereal import car
 from openpilot.common.realtime import DT_CTRL
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
+from openpilot.selfdrive.controls.lib.firm_brake_latch import (
+  FirmBrakeLatch,
+  apply_firm_brake_latch,
+  lead_midgap_firm_close_hit,
+)
 from openpilot.selfdrive.controls.lib.lead_approach import (
   LeadResidualWindow,
   guard_follow_actuator_regen,
@@ -67,10 +72,13 @@ class LongControl:
     # ~0.5 s of lead v_rel and measured aEgo. One 100 Hz radar step
     # must not read as a #222 residual brake.
     self._lead_residual = LeadResidualWindow()
+    # Keeps a firm mid-gap brake from being re-clipped to MILD mid-ease.
+    self._firm_latch = FirmBrakeLatch()
 
   def reset(self):
     self.pid.reset()
     self._lead_residual.reset()
+    self._firm_latch.reset()
 
   def update(self, active, CS, a_target, should_stop, accel_limits,
              lead_v_rel=None, lead_d_rel=None, lead_slack=None, lead_fcw=False,
@@ -118,11 +126,27 @@ class LongControl:
         prev_v_rel, residual_dt, residual_a = self._lead_residual.update(
           float(lead_v_rel), float(getattr(CS, "aEgo", 0.0)), DT_CTRL,
         )
-      self.last_output_accel = float(guard_follow_actuator_regen(
-        self.last_output_accel, a_target,
+      hold_pass = self._firm_latch.update(
+        a_target, lead_v_rel,
+        lead_v_rel is not None and lead_midgap_firm_close_hit(
+          lead_v_rel, lead_d_rel, lead_slack, a_lead=lead_a_lead,
+          prev_v_rel=prev_v_rel, a_ego=residual_a, dt=residual_dt,
+          should_stop=bool(should_stop),
+        ),
+        DT_CTRL,
+      )
+      raw_accel = self.last_output_accel
+      guarded_accel = float(guard_follow_actuator_regen(
+        raw_accel, a_target,
         v_rel=lead_v_rel, d_rel=lead_d_rel, slack=lead_slack, fcw=lead_fcw,
         v_ego=lead_v_ego, v_cruise=lead_v_cruise, a_lead=lead_a_lead,
         prev_v_rel=prev_v_rel, a_ego=residual_a,
         dt=residual_dt, should_stop=bool(should_stop),
+      ))
+      # F1: a firm mid-gap brake is not re-clipped to MILD while the plan
+      # stays firm. Never softer than the guard's own output.
+      self.last_output_accel = float(apply_firm_brake_latch(
+        guarded_accel, raw_accel, a_target, hold_pass,
+        v_rel=lead_v_rel, slack=lead_slack, a_lead=lead_a_lead,
       ))
     return self.last_output_accel

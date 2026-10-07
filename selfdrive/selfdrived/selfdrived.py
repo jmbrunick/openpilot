@@ -250,11 +250,13 @@ class SelfdriveD:
         # flag covers weak regen under-delivering an in-envelope request; the
         # demand check covers a planned deceleration the envelope cannot cover,
         # which the clamped actuator request hides from the car entirely.
+        # Only prompt when the post-guard command is also pinned at the rail.
         regen_demand_overflow = self.preap_regen_demand.update(
           pedal_long_active=pedal_long_active,
           brake_pressed=CS.brakePressed,
           a_target=float(self.sm['longitudinalPlan'].aTarget),
           v_ego=CS.vEgo,
+          a_cmd=float(self.sm['carControl'].actuators.accel),
         )
         if getattr(CS, 'pedalMaxRegen', False) or regen_demand_overflow:
           self.events.add(EventName.pedalMaxRegen)
@@ -566,6 +568,20 @@ class SelfdriveD:
       follow_evt = getattr(EventName, "hypermileFollowChanged", None) or getattr(EventName, "followDistanceChanged", None)
       if follow_evt is not None:
         self.events.add(follow_evt)
+
+    # Gap lock bottom banner only while the planner is pulsing it.
+    # Engaged is about 2 seconds. The under-MAX chip reads gapLockM for
+    # the whole latch and does not use this event.
+    gap_evt = getattr(EventName, "gapLock", None)
+    if gap_evt is not None:
+      gap_ev = 0
+      try:
+        gap_ev = int(getattr(self.sm["longitudinalPlan"], "gapLockEvent", 0) or 0)
+      except Exception:
+        gap_ev = 0
+      from openpilot.selfdrive.controls.lib.gap_lock import gap_lock_banner_active
+      if gap_lock_banner_active(gap_ev):
+        self.events.add(gap_evt)
 
   def data_sample(self):
     _car_state = messaging.recv_one(self.car_state_sock)

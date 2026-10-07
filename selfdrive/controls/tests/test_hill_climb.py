@@ -479,17 +479,21 @@ def test_planner_lead_still_wins_on_uphill():
   lead.vLead = v_lead
   for _ in range(16):
     planner.update(inputs)
-  assert planner.output_a_target < 0.0
-  assert planner.output_a_target == pytest.approx(-LEAD_APPROACH_MILD_A_MS2, abs=0.08)
+  # The unified controller owns the lead: it brakes for the 4.4 m/s close on the
+  # hill (proportional to the kinematic need, firmer than the EV mild settle),
+  # and never lets the climb's +a through.
+  steady = float(planner.output_a_target)
+  assert -1.2 <= steady < -LEAD_APPROACH_MILD_A_MS2
 
   planner.mpc = h["_ConstantAccelerationMpc"](v_ego, acceleration_mps2=-2.0)
   planner.update(inputs)
-  # Closing 4.4 under rapid, lead not braking: stay on MILD.
-  assert planner.output_a_target == pytest.approx(-LEAD_APPROACH_MILD_A_MS2, abs=0.08)
+  assert float(planner.output_a_target) == pytest.approx(steady, abs=0.1)
   lead.aLeadK = -0.80
   planner.mpc = h["_ConstantAccelerationMpc"](v_ego, acceleration_mps2=-2.0)
   planner.update(inputs)
-  assert planner.output_a_target == pytest.approx(-2.0, abs=0.08)
+  # A braking lead is firmer still, within the jerk limit and short of a brick wall.
+  assert float(planner.output_a_target) < steady
+  assert float(planner.output_a_target) >= -1.5
 
 
 def test_planner_crest_ease_near_max():

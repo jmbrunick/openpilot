@@ -427,6 +427,31 @@ def hypermile_follow_changed_alert(CP: car.CarParams, CS: car.CarState, sm: mess
   return NormalPermanentAlert(follow_distance_hud_text(read_follow_distance(Params())), duration=1.5)
 
 
+def gap_lock_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
+  """Bottom toast. Engaged, unavailable, and lost follow the planner pulse.
+
+  Duration is a refresh so the line drops when the planner stops publishing
+  the code. The under-MAX chip reads gapLockM and stays for the whole latch.
+  """
+  from openpilot.selfdrive.controls.lib.gap_lock import HUD_LOST, HUD_UNAVAILABLE, gap_lock_engaged_text
+  event = 0
+  meters = 0.0
+  try:
+    plan = sm['longitudinalPlan']
+    event = int(getattr(plan, 'gapLockEvent', 0) or 0)
+    meters = float(getattr(plan, 'gapLockM', 0.0) or 0.0)
+  except Exception:
+    event, meters = 0, 0.0
+  if event == HUD_UNAVAILABLE:
+    return NormalPermanentAlert("Gap lock unavailable", duration=0.2)
+  engaged = gap_lock_engaged_text(meters)
+  if event == HUD_LOST or engaged is None:
+    return NormalPermanentAlert("Gap lock off", duration=0.2)
+  # LOW so a lock is not hidden by LOWER background lines. Real warnings
+  # (MID and above) still cover it; the HUD chip stays either way.
+  return NormalPermanentAlert(engaged, duration=0.2, priority=Priority.LOW)
+
+
 def invalid_lkas_setting_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
   text = "Toggle stock LKAS on or off to engage"
   if CP.brand == "tesla":
@@ -1152,6 +1177,13 @@ if _hypermile_follow_changed is not None:
   EVENTS[_hypermile_follow_changed] = {
     ET.WARNING: hypermile_follow_changed_alert,
     ET.PERMANENT: hypermile_follow_changed_alert,
+  }
+
+_gap_lock = getattr(EventName, "gapLock", None)
+if _gap_lock is not None:
+  EVENTS[_gap_lock] = {
+    ET.WARNING: gap_lock_alert,
+    ET.PERMANENT: gap_lock_alert,
   }
 
 

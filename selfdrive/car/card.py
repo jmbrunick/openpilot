@@ -193,11 +193,13 @@ class Car:
     self._tesla_preap = tesla_preap
     if tesla_preap:
       from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import install_blinker_lat_pause
+      from openpilot.selfdrive.car.tesla.preap_gap_lock_tx import install_gap_lock_tx
       from opendbc.car.tesla.preap.nap_conf import nap_conf
       from opendbc.car.tesla.preap.radar_donor_vin import RadarDonorVinCommissioner
       from openpilot.selfdrive.controls.lib.lead_approach import install_preap_plant_regen_guard
 
       install_blinker_lat_pause()
+      install_gap_lock_tx()
       install_preap_plant_regen_guard()
 
       def store_donor_vin(vin: str) -> None:
@@ -407,6 +409,7 @@ class Car:
       curvature=curve_kappa,
       yaw_rate=curve_yaw,
       restore_a_ms2=map_accel_a_ms2(self._map_speed_lookahead, self._map_speed_accel),
+      long_active=soft_long,
     )
     preap_v_cruise_kph = float(curve_out.hud_kph)
     restore_seed_kph = curve_out.restore_seed_kph

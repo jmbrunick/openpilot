@@ -16,6 +16,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   NAP_HYPERMILE,
   NAP_HYPERMILE_HILL_CLIMB,
   NAP_HYPERMILE_STEP_DOWN,
+  NAP_GAP_LOCK,
   NAP_ONE_PEDAL_LONG,
 )
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys
@@ -63,6 +64,9 @@ class DrivingMannerismsLayoutMici(NavScroller):
     one_pedal = BigParamControl("one-pedal long", NAP_ONE_PEDAL_LONG)
     one_pedal.set_value("Off default — gas pause stays until SET")
 
+    gap_lock = BigParamControl("gap lock", NAP_GAP_LOCK)
+    gap_lock.set_value("Off default — 2 s engage hold keeps radar meters")
+
     hypermile = BigParamControl("hypermile", NAP_HYPERMILE, toggle_callback=on_hypermile)
     hypermile.set_value("Off default — early light eco, not max regen")
 
@@ -81,6 +85,7 @@ class DrivingMannerismsLayoutMici(NavScroller):
       self._follow_distance_hwy,
       lat_handoff,
       one_pedal,
+      gap_lock,
       hypermile,
       step_down,
       hill_climb,
