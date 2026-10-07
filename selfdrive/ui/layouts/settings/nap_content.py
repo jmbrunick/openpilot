@@ -106,6 +106,8 @@ HYPERMILE_HILL_CLIMB_DESCRIPTION = (
 NAP_SPEED_SIGN_LOG = "NAPSpeedSignLog"
 NAP_DRIVER_LAT_HANDOFF = "NAPDriverLatHandoff"
 NAP_LOW_VIS_BACKOFF = "NAPLowVisBackoff"
+NAP_CONE_LINE_HOLD = "NAPConeLineHold"
+NAP_CONE_LINE_LOG = "NAPConeLineLog"
 NAP_DM_SIMULATE_LOOKING = "NAPDmSimulateLooking"
 NAP_DM_FALSE_ALERT_IGNORE = "NAPDmFalseAlertIgnore"
 NAP_FORCE_OFFROAD = "NAPForceOffroad"
@@ -121,6 +123,19 @@ LOW_VIS_BACKOFF_DESCRIPTION = (
   + "smoothly when the road is clear. Longitudinal stays on. A repeated "
   + "one-sided fight also stays yielded until the model agrees with the "
   + "wheel. Off = stock lateral, no Low visibility alert."
+)
+CONE_LINE_HOLD_DESCRIPTION = (
+  "Default On. After you push the wheel away from a line of cones or "
+  + "drums for about 2 seconds, openpilot keeps your line when it takes "
+  + "the wheel back, instead of steering toward the cones. That offset "
+  + "eases off once the line has been gone for a few seconds, or if you "
+  + "steer back. Longitudinal stays on. A hard yank still cancels. "
+  + "Off = the usual soft-handoff blend."
+)
+CONE_LINE_LOG_DESCRIPTION = (
+  "Default On. Log-only radar cone-line detector (coneLineNAP in the "
+  + "qlog). Does not steer by itself. Off stops the log; Hold my line "
+  + "near cones then sees no line."
 )
 DM_SIMULATE_LOOKING_DESCRIPTION = (
   "Default On. nap-dev experiment. While engaged, after the look-at-road "

@@ -832,6 +832,8 @@ struct ControlsState @0x97ff69c53601abf1 {
   latAuthority @67 :Float32;  # 0-1 NAP lateral actuator authority (Pre-AP driver wheel handoff)
   latHandoffPaused @68 :Bool;  # HUD: yielded or blending below 70% authority
   lowVisibility @69 :Bool;  # NAP: model/camera blind, lateral eased toward the driver
+  coneLineHold @70 :Bool;   # NAP: re-take is holding the driver's offset near cones
+  coneLineOffset @71 :Float32;  # m, +left, path shift applied (0 when not holding)
 
   lateralControlState :union {
     pidState @53 :LateralPIDState;
@@ -2581,7 +2583,7 @@ struct Event {
     # DON'T change which struct it points to
     liveMapDataNAP @107 :Custom.LiveMapDataNAP;
     liveSpeedSignNAP @108 :Custom.LiveSpeedSignNAP;
-    customReserved2 @109 :Custom.CustomReserved2;
+    coneLineNAP @109 :Custom.ConeLineNAP;
     customReserved3 @110 :Custom.CustomReserved3;
     customReserved4 @111 :Custom.CustomReserved4;
     customReserved5 @112 :Custom.CustomReserved5;

@@ -11,6 +11,13 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL, Priority, config_realtime_process
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.simple_kalman import KF1D
+from openpilot.selfdrive.controls.lib.cone_line import (
+  ConeLineDetector,
+  ConeLineSample,
+  publish_cone_line,
+  road_edges_xy,
+)
+from openpilot.selfdrive.controls.lib.cone_line_hold import PARAM_CONE_LINE_LOG
 from openpilot.selfdrive.controls.lib.radar_path_gate import (
   PATH_INCUMBENT_HALF_WIDTH_M,
   collapse_blocks_new_lead,
@@ -343,6 +350,12 @@ class RadarD:
     self.sensor_dirty = SensorDirtyPolicy()
     self._sensor_dirty_ignore_override: bool | None = None
     self._live_measured = False
+    # Cone line is log-only. It does not select a lead or touch longitudinal.
+    self._cone = ConeLineDetector()
+    self._cone_sample = None
+    self._cone_dirty = False
+    self._cone_log_on = True
+    self._cone_log_check_t = -1.0
 
   def set_sensor_dirty_ignore_override(self, ignore: bool | None) -> None:
     """Test hook. None reads NAPRadarIgnoreSensorDirty (default on)."""
@@ -393,10 +406,12 @@ class RadarD:
         if ids not in self.tracks:
           self.tracks[ids] = Track(ids, v_lead, self.kalman_params)
         self.tracks[ids].update(rpt[0], rpt[1], rpt[2], v_lead, rpt[3], self.kalman_params)
+      self._update_cone_line(sm, rr.points, radar_dt)
     elif self.last_radar_update_time is None or self.current_time - self.last_radar_update_time > RADAR_MEASUREMENT_TIMEOUT:
       self.tracks.clear()
       radar_timed_out = self.last_radar_update_time is not None
       self._live_measured = False
+      self._update_cone_line(sm, (), RADAR_DT)
 
     # *** publish radarState ***
     # Exclude liveTracks from validity check: it arrives at radar rate (8Hz for
@@ -461,6 +476,37 @@ class RadarD:
     if hasattr(self.radar_state, "radarPreferReason"):
       self.radar_state.radarPreferReason = reason_token(self.reliability.log_reason, sensor_dirty_mask)
 
+  def _cone_logging(self) -> bool:
+    """NAPConeLineLog, cached ~1 s. Default On. Missing params stay On."""
+    now = self.current_time if self.current_time else 0.0
+    if self._cone_log_check_t >= 0.0 and now - self._cone_log_check_t < 1.0:
+      return self._cone_log_on
+    self._cone_log_check_t = now
+    try:
+      self._cone_log_on = bool(Params().get_bool(PARAM_CONE_LINE_LOG))
+    except Exception:
+      self._cone_log_on = True
+    return self._cone_log_on
+
+  def _update_cone_line(self, sm, points, dt: float) -> None:
+    """One O(n) scan at radar rate. Failures stay off the lead path."""
+    if not self._cone_logging():
+      # One inactive sample so a held line starts its clear timer, then silence.
+      was_active = self._cone_sample is not None and self._cone_sample.active
+      self._cone.reset()
+      self._cone_sample = ConeLineSample() if was_active else None
+      self._cone_dirty = self._cone_sample is not None
+      return
+    try:
+      path_x, path_y = model_path_xy(sm['modelV2'])
+      self._cone_sample = self._cone.update(
+        points, self.v_ego, path_x, path_y, road_edges_xy(sm['modelV2']), dt)
+      self._cone_dirty = True
+    except Exception:
+      cloudlog.exception("cone line detector failed")
+      self._cone_sample = None
+      self._cone_dirty = False
+
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None
 
@@ -468,6 +514,12 @@ class RadarD:
     radar_msg.valid = self.radar_state_valid
     radar_msg.radarState = self.radar_state
     pm.send("radarState", radar_msg)
+    if self._cone_dirty:
+      self._cone_dirty = False
+      try:
+        publish_cone_line(pm, self._cone_sample)
+      except Exception:
+        cloudlog.exception("coneLineNAP publish failed")
 
 
 # fuses camera and radar data for best lead detection
@@ -481,7 +533,7 @@ def main() -> None:
 
   # *** setup messaging
   sm = messaging.SubMaster(['modelV2', 'carState', 'liveTracks'], poll='modelV2')
-  pm = messaging.PubMaster(['radarState'])
+  pm = messaging.PubMaster(['radarState', 'coneLineNAP'])
 
   RD = RadarD(CP.radarDelay)
 

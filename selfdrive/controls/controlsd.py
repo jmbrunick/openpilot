@@ -17,8 +17,10 @@ from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   cs_hands_on_level, cs_real_brake_pressed, handoff_enabled,
   handoff_new_desired_curvature, lat_active_after_handoff,
   pin_desired_curvature_to_measured)
+from openpilot.selfdrive.controls.lib.cone_line_hold import PARAM_CONE_LINE_HOLD, ConeLineHold
 from openpilot.selfdrive.controls.lib.lat_low_visibility import (
   PARAM_LOW_VIS_BACKOFF, LowVisibility, fade_curvature, sun_ahead_from_fix)
+from openpilot.selfdrive.controls.lib.radar_path_gate import model_path_xy
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.selfdrive.controls.lib.lane_change_nudge import TippedLaneChangeTorque
 from openpilot.selfdrive.controls.lib.lane_change_turn import LaneChangeTurnHold, blinker_with_turn_hold
@@ -57,9 +59,10 @@ class Controls:
     self.sm = messaging.SubMaster(['liveDelay', 'liveParameters', 'liveTorqueParameters', 'modelV2', 'selfdriveState',
                                    'liveCalibration', 'livePose', 'longitudinalPlan', 'lateralManeuverPlan', 'carState', 'carOutput',
                                    'driverMonitoringState', 'onroadEvents', 'driverAssistance', 'liveMapDataNAP', 'radarState',
-                                   'gpsLocation', 'gpsLocationExternal', 'roadCameraState'], poll='selfdriveState',
-                                  ignore_alive=['roadCameraState'], ignore_avg_freq=['roadCameraState'],
-                                  ignore_valid=['roadCameraState'])
+                                   'gpsLocation', 'gpsLocationExternal', 'roadCameraState', 'coneLineNAP'], poll='selfdriveState',
+                                  ignore_alive=['roadCameraState', 'coneLineNAP'],
+                                  ignore_avg_freq=['roadCameraState', 'coneLineNAP'],
+                                  ignore_valid=['roadCameraState', 'coneLineNAP'])
     self.pm = messaging.PubMaster(['carControl', 'controlsState'])
 
     self.steer_limited_by_safety = False
@@ -88,6 +91,12 @@ class Controls:
     self.low_vis = LowVisibility()
     self._low_vis = self.low_vis.update(enabled=False)
     self._raw_model_curvature = 0.0
+    # Cone-line offset hold. Default On. Identity until a real push.
+    self.cone_hold = ConeLineHold()
+    self._cone_out = self.cone_hold.update(
+      enabled=False, engaged=False, cone=None, torque_nm=0.0, measured_k=0.0,
+      model_k=0.0, path_x=None, path_y=None, v_ego=0.0, yielded=False,
+      lat_active=False, dt=DT_CTRL)
 
     self.pose_calibrator = PoseCalibrator()
     self.calibrated_pose: Pose | None = None
@@ -157,6 +166,39 @@ class Controls:
       lane_probs=lane_probs, edge_stds=edge_stds,
       path_t=path_t, path_y_std=path_y, integ_lines=integ,
       sun_ahead=sun_ahead, dt=DT_CTRL)
+
+  def _cone_curvature(self, model_k: float, CS) -> float:
+    """Shift the lateral target onto the driver's line after a cone-line push.
+
+    Returns model_k unchanged until that push has already yielded lateral.
+    Does not read or write longitudinal.
+    """
+    try:
+      enabled = bool(self.params.get_bool(PARAM_CONE_LINE_HOLD))
+    except Exception:
+      enabled = True
+    cone = None
+    if self.sm.seen.get("coneLineNAP", False) and self.sm.alive.get("coneLineNAP", False):
+      cone = self.sm["coneLineNAP"]
+    cone_active = bool(getattr(cone, "active", False)) if cone is not None else False
+    path_x = path_y = None
+    if cone_active or self.cone_hold.busy:
+      path_x, path_y = model_path_xy(self.sm["modelV2"])
+    self._cone_out = self.cone_hold.update(
+      enabled=enabled,
+      engaged=bool(self.sm["selfdriveState"].enabled),
+      cone=cone,
+      torque_nm=float(CS.steeringTorque),
+      measured_k=float(self.curvature),
+      model_k=float(model_k),
+      path_x=path_x,
+      path_y=path_y,
+      v_ego=float(CS.vEgo),
+      yielded=bool(self._lat_handoff.yielded),
+      lat_active=bool(self._lat_active_prev),
+      dt=DT_CTRL,
+    )
+    return float(self._cone_out.curvature)
 
   def state_control(self):
     CS = self.sm['carState']
@@ -352,6 +394,9 @@ class Controls:
     model_or_plan_curvature = float(model_or_plan_curvature) + (0.0 if self.rb_assist.active else rb_bias)
     # Raw model curvature feeds the fight-hold resume (not the faded command).
     self._raw_model_curvature = float(model_or_plan_curvature)
+    # Cone-line hold, after a real push, aims the re-take at the driver's
+    # line. Identity otherwise. Longitudinal accel above is unchanged.
+    model_or_plan_curvature = self._cone_curvature(float(model_or_plan_curvature), CS)
     # Low visibility eases the lateral target toward the wheel. Longitudinal
     # accel above is unchanged, and latActive / enabled are unchanged.
     model_or_plan_curvature = fade_curvature(
@@ -459,6 +504,8 @@ class Controls:
       cs.latAuthority = float(self._lat_handoff.authority)
       cs.latHandoffPaused = bool(self._lat_handoff.ui_paused)
     cs.lowVisibility = bool(self._low_vis.alert)
+    cs.coneLineHold = bool(self._cone_out.active)
+    cs.coneLineOffset = float(self._cone_out.offset_m)
     cs.longControlState = self.LoC.long_control_state
     cs.upAccelCmd = float(self.LoC.pid.p)
     cs.uiAccelCmd = float(self.LoC.pid.i)
