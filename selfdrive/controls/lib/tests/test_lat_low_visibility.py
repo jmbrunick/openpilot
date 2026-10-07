@@ -21,6 +21,7 @@ from openpilot.selfdrive.controls.lib.lat_low_visibility import (
   model_is_poor,
   path_y_std_at,
   side_confidences,
+  side_confidences_exit,
   solar_position,
   sun_ahead_from_fix,
   sun_low_and_ahead,
@@ -30,14 +31,16 @@ DT = 0.05  # one model frame
 
 
 def _step(lv, *, left=0.95, right=0.95, ystd=0.4, seconds=DT, integ=700,
-          sun=False, enabled=True, dt=DT):
+          sun=False, enabled=True, dt=DT, edges=None):
   n = max(1, int(round(seconds / dt)))
   out = None
+  if edges is None:
+    edges = [0.12, 0.12]
   for _ in range(n):
     out = lv.update(
       enabled=enabled,
       lane_probs=[0.5, left, right, 0.5],
-      edge_stds=[0.12, 0.12],
+      edge_stds=edges,
       path_t=[0.0, 1.5, 3.0, 6.0],
       path_y_std=[0.2, 0.3, ystd, ystd],
       integ_lines=integ,
@@ -58,6 +61,13 @@ def test_side_confidence_and_path_std_match_the_incident_numbers():
   assert not model_is_poor(0.95, 0.92, 0.4)
   assert model_is_clear(0.95, 0.92, 0.4)
   assert not model_is_clear(0.40, 0.90, 0.4)  # between the bars
+  # Path std cannot hold a clear exit once both sides are at the bar.
+  assert model_is_clear(0.90, 0.90, 5.0)
+  exit_left, exit_right = side_confidences_exit([0.4, 0.90, 0.85, 0.3], [8.0, 8.0])
+  assert exit_left >= LANE_CONF_EXIT and exit_right >= LANE_CONF_EXIT
+  # Entry still uses the worse signal, so a wide edge keeps the side poor.
+  enter_left, enter_right = side_confidences([0.4, 0.90, 0.85, 0.3], [8.0, 8.0])
+  assert enter_left < LANE_CONF_ENTER and enter_right < LANE_CONF_ENTER
   assert edge_confidence(0.1) > 0.8
   assert edge_confidence(1.5) < LANE_CONF_ENTER
 
@@ -76,8 +86,9 @@ def test_hysteresis_ignores_one_frame_and_the_middle_band():
   assert out.active and out.alert and out.model_poor
   assert out.authority < 1.0
 
-  # Middle band (right 0.40, y std 1.5) is neither enter nor exit.
-  held = _step(lv, left=0.90, right=0.40, ystd=1.5, seconds=2.0)
+  # Middle band: the better of lane and edge on the weak side is 0.40.
+  # A sharp road edge would count as seen; a wide one must not release.
+  held = _step(lv, left=0.90, right=0.40, ystd=1.5, seconds=2.0, edges=[8.0, 8.0])
   assert held.active
 
   # Exit needs the high bar for MODEL_EXIT_S. Short of that, stay latched.
@@ -89,13 +100,15 @@ def test_hysteresis_ignores_one_frame_and_the_middle_band():
 
 def test_backoff_ramps_down_and_recovers_without_a_step():
   lv = LowVisibility()
-  _step(lv, left=0.56, right=0.10, ystd=4.1, seconds=MODEL_ENTER_S, dt=0.01)
+  # Blind edges, so the weak lane stays the better signal and the latch holds.
+  blind = [8.0, 8.0]
+  _step(lv, left=0.56, right=0.10, ystd=4.1, seconds=MODEL_ENTER_S, dt=0.01, edges=blind)
   assert lv.active
   start = lv.authority
-  mid = _step(lv, left=0.56, right=0.10, ystd=4.1, seconds=0.50, dt=0.01)
+  mid = _step(lv, left=0.56, right=0.10, ystd=4.1, seconds=0.50, dt=0.01, edges=blind)
   assert mid.authority < start
   assert abs((start - mid.authority) - 0.50 * AUTHORITY_DOWN_PER_S) < 0.02
-  floor = _step(lv, left=0.56, right=0.10, ystd=4.1, seconds=1.0, dt=0.01)
+  floor = _step(lv, left=0.56, right=0.10, ystd=4.1, seconds=1.0, dt=0.01, edges=blind)
   assert floor.authority == 0.0
   # Still engaged-shaped: authority 0 fades curvature fully onto the wheel.
   assert fade_curvature(0.02, 0.0, floor.authority) == 0.0
@@ -232,3 +245,34 @@ def test_alert_text_and_toggle_are_wired():
   accel = controls.split("actuators.accel = float(self.LoC.update(", 1)[1].split("Steering PID", 1)[0]
   assert "low_vis" not in accel
   assert "NAPLatRefOffset" not in controls.split("fade_curvature", 1)[1][:400]
+
+
+def test_exit_uses_the_better_side_and_ignores_path_std():
+  """Lanes 0.8–0.95 clear the latch even when edges and path std stay wide."""
+  lv = LowVisibility()
+  entered = _step(lv, left=0.56, right=0.12, ystd=4.1, seconds=MODEL_ENTER_S + DT)
+  assert entered.active and entered.model_poor
+
+  def _held(*, left, right, ystd, edges, seconds):
+    n = max(1, int(round(seconds / DT)))
+    out = None
+    for _ in range(n):
+      out = lv.update(
+        enabled=True,
+        lane_probs=[0.5, left, right, 0.5],
+        edge_stds=edges,
+        path_t=[0.0, 1.5, 3.0, 6.0],
+        path_y_std=[0.2, 0.3, ystd, ystd],
+        integ_lines=700,
+        sun_ahead=False,
+        dt=DT,
+      )
+    return out
+
+  # A side still between the bars stays latched, even with a tight path.
+  held = _held(left=0.90, right=0.40, ystd=0.3, edges=[8.0, 8.0], seconds=MODEL_EXIT_S + 0.4)
+  assert held.active
+
+  # Healthy lane lines, useless road edges, path std still 4 m: exit.
+  cleared = _held(left=0.92, right=0.85, ystd=4.0, edges=[8.0, 8.0], seconds=MODEL_EXIT_S)
+  assert not cleared.active and not cleared.alert and not cleared.model_poor

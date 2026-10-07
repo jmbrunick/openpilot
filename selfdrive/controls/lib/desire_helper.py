@@ -80,6 +80,24 @@ DESIRES = {
 }
 
 
+def _driver_torque_nm(carstate) -> float:
+  """Torsion relative to the car's learned hands-off offset.
+
+  ``napRestTorqueNm`` is published on carState (already subscribed).
+  Missing field is 0, so callers without the offset are unchanged.
+  A resting +0.25 Nm must not read as a left nudge.
+  """
+  try:
+    raw = float(getattr(carstate, "steeringTorque", 0.0) or 0.0)
+  except (TypeError, ValueError):
+    raw = 0.0
+  try:
+    rest = float(getattr(carstate, "napRestTorqueNm", 0.0) or 0.0)
+  except (TypeError, ValueError):
+    rest = 0.0
+  return raw - rest
+
+
 class DesireHelper:
   def __init__(self):
     self.lane_change_state = LaneChangeState.off
@@ -154,7 +172,7 @@ class DesireHelper:
     """Driver override (steeringPressed) against the lane-change direction."""
     if not bool(getattr(carstate, "steeringPressed", False)):
       return False
-    torque = float(getattr(carstate, "steeringTorque", 0.0) or 0.0)
+    torque = _driver_torque_nm(carstate)
     if direction == 1:
       return torque <= -OPPOSITE_PULL_NM
     if direction == 2:
@@ -262,7 +280,7 @@ class DesireHelper:
     # same-direction stalk must stay on past STALK_ALC_TURN_HOLD_S (1.0s)
     # to cancel ALC as a turn. Classification uses the stalk, not lamps.
     self._tip_turn.update(carstate.turnSignalStalkState, DT_MDL)
-    torque_nm = float(getattr(carstate, "steeringTorque", 0.0) or 0.0)
+    torque_nm = _driver_torque_nm(carstate)
     fast_rise = self._yank.update(torque_nm, DT_MDL)
     if self.lane_change_state == LaneChangeState.off:
       lc_dir = 0
@@ -399,8 +417,8 @@ class DesireHelper:
       # must not start the maneuver.
       elif self.lane_change_state == LaneChangeState.preLaneChange:
         torque_applied = carstate.steeringPressed and \
-                         ((carstate.steeringTorque > 0 and self.lane_change_direction == LaneChangeDirection.left) or
-                          (carstate.steeringTorque < 0 and self.lane_change_direction == LaneChangeDirection.right))
+                         ((torque_nm > 0 and self.lane_change_direction == LaneChangeDirection.left) or
+                          (torque_nm < 0 and self.lane_change_direction == LaneChangeDirection.right))
         # A lighter same-direction nudge held SOFT_CONFIRM_SUSTAIN_S also confirms.
         torque_applied = torque_applied or soft_confirm
 
