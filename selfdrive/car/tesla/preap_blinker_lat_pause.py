@@ -18,8 +18,11 @@ After a brake pause, one stalk SET restores long (skipped double-pull
 first-pull) and keeps the held MAX. At a stop, that SET arms resume
 but does not take long until a light throttle. A second SET in the
 double-pull window forgets sticky and takes posted (maps on + known)
-or current traveled speed (maps off / unknown posted). Tip ALC was
-already not a driver turn and never used the long-pause path.
+or current traveled speed (maps off / unknown posted). From fully off
+in pedal mode, one rolling pull (foot off, brake not held) is that
+same lat+long take-speed-now engage. A stop with the foot off arms
+wait-for-gas instead of rolling. No-pedal mode still double-pulls.
+Tip ALC was already not a driver turn and never used the long-pause path.
 
 card.py imports tesla.carstate (binding update_preap) before this install.
 Patch both the source module and that imported name, or the live path
@@ -550,15 +553,45 @@ def _restore_held_max(engagement) -> None:
     engagement.pedal_speed_kph = float(held)
 
 
+def _di_gas(engagement) -> bool:
+  """Tesla DI pedal, not the interceptor. Rest noise stays below DI > 2."""
+  return float(getattr(engagement, "_nap_di_pedal_pos", 0.0) or 0.0) > PEDAL_DI_PRESSED_STOCK
+
+
+def _standstill_start_gas(engagement) -> bool:
+  """Gas that may take long after an armed stop.
+
+  A paused session uses gasPressed, including a light interceptor touch.
+  A fresh engage from a stop only starts on the Tesla DI pedal so
+  interceptor rest-noise cannot roll the car on the pull.
+  """
+  if getattr(engagement, "_nap_from_off_stop_take_now", False):
+    return _di_gas(engagement)
+  return _gas_pressed(engagement)
+
+
 def _complete_standstill_resume(engagement, *, long_allowed: bool) -> None:
-  """Gas (or rolling SET) after an armed stop-SET: take long, keep held MAX."""
+  """Gas after an armed stop: take long.
+
+  Paused session keeps held MAX. A fresh engage from a stop seeds
+  take-speed-now (posted + offset if known, else current speed).
+  """
   if not long_allowed or not engagement.cruiseEnabled:
     return
+  take_now = bool(getattr(engagement, "_nap_from_off_stop_take_now", False))
   engagement.enableLongControl = True
   engagement.enableJustCC = False
   engagement.pending_enable = False
-  engagement._nap_set_resume_long = True
-  _restore_held_max(engagement)
+  if take_now:
+    engagement._nap_set_take_speed_now = True
+    engagement._nap_set_resume_long = False
+    engagement._nap_held_max_kph = None
+    if hasattr(engagement, "longCtrlEvent"):
+      engagement.longCtrlEvent = "pccEnabled"
+  else:
+    engagement._nap_set_resume_long = True
+    _restore_held_max(engagement)
+  engagement._nap_from_off_stop_take_now = False
   engagement._nap_long_resume_pending = False
   engagement._nap_resume_wait_gas = False
   if hasattr(engagement, "_clear_pedal_unavailable"):
@@ -571,6 +604,7 @@ def _clear_session_max_flags(engagement):
   engagement._nap_set_resume_long = False
   engagement._nap_set_take_speed_now = False
   engagement._nap_resume_wait_gas = False
+  engagement._nap_from_off_stop_take_now = False
   if hasattr(engagement, "_clear_one_pedal_pause_latch"):
     engagement._clear_one_pedal_pause_latch()
   else:
@@ -597,13 +631,16 @@ def _process_buttons(self, cruise_buttons, prev_cruise_buttons, *args, **kwargs)
   at_stop = _at_standstill(self, v_ego)
   gas = _gas_pressed(self)
   brake = _real_brake_pressed(args, kwargs)
+  was_off = not bool(self.cruiseEnabled)
   set_edge = (
     cruise_buttons == CruiseButtons.MAIN
     and prev_cruise_buttons != CruiseButtons.MAIN
   )
   # Tesla DI percent (not interceptor). Sticky interceptor rest-noise
-  # must not skip double-pull. A real press (DI > 2) on a rolling SET
-  # is engage-while-gas: arm long on this pull, acquire on lift.
+  # must not look like a gas press. A real press (DI > 2) on a rolling
+  # SET is engage-while-gas: arm long on this pull, acquire on lift.
+  # Foot off while rolling still engages lat+long; the DI gate only
+  # chooses that path versus engage-while-gas.
   di_pedal_pct = float(getattr(self, "_nap_di_pedal_pos", 0.0) or 0.0)
   di_gas = di_pedal_pct > PEDAL_DI_PRESSED_STOCK
   window_ms = float(getattr(self, "double_pull_window_ms", 0) or 0)
@@ -662,24 +699,46 @@ def _process_buttons(self, cruise_buttons, prev_cruise_buttons, *args, **kwargs)
     and not _should_drop_long_for_turn(self)
   )
 
-  # Foot on gas + SET (from disengaged or lat-only): do not leave
-  # lat-only after cancelling Tesla CC — that is regen-only until a
-  # second pull. Arm long now; lift still ACQUIREs (A+B / A3).
-  # Foot off keeps stock double-pull (first SET stays lat-only).
-  engage_while_gas = (
+  # Pedal, long not yet on. Temporarily drop double-pull so orig
+  # takes lat+long on this edge (one engage; stock CC still cancels on
+  # the button / long rising edge).
+  # - DI > 2, rolling: engage-while-gas. Lift still ACQUIREs. Brake
+  #   still zeros long_control_allowed inside orig.
+  # - Fully off, rolling, foot off, brake not held: same lat+long
+  #   take-speed-now as the old second pull.
+  # Stop + foot off is not this branch (wait-for-gas below). Brake
+  # held and no-pedal stay on the stock double-pull path.
+  engage_from_off = (
     set_edge
-    and di_gas
-    and not at_stop
     and bool(use_pedal)
     and not resume
     and not bool(self.enableLongControl)
     and not _should_drop_long_for_turn(self)
+    and (
+      (di_gas and not at_stop)
+      or (was_off and not di_gas and not at_stop and not brake)
+    )
+  )
+  # Second pull while a from-off stop is still waiting must not take
+  # long. Orig would treat it as a double-pull and start rolling.
+  swallow_from_off_stop_repull = (
+    set_edge
+    and at_stop
+    and not di_gas
+    and not brake
+    and bool(use_pedal)
+    and not resume
+    and not was_off
+    and bool(getattr(self, "_nap_from_off_stop_take_now", False))
+    and bool(self.cruiseEnabled)
+    and not bool(self.enableLongControl)
   )
 
   saved_double = self.enableDoublePull
-  if resume or engage_while_gas:
+  if resume or engage_from_off:
     self.enableDoublePull = False
-  orig_buttons = prev_cruise_buttons if (swallow_set or swallow_standstill_set) else cruise_buttons
+  swallow_press = swallow_set or swallow_standstill_set or swallow_from_off_stop_repull
+  orig_buttons = prev_cruise_buttons if swallow_press else cruise_buttons
   was_long = bool(self.enableLongControl)
   was_wait_gas = bool(getattr(self, "_nap_resume_wait_gas", False))
   try:
@@ -687,7 +746,7 @@ def _process_buttons(self, cruise_buttons, prev_cruise_buttons, *args, **kwargs)
   finally:
     self.enableDoublePull = saved_double
 
-  if swallow_set or swallow_standstill_set:
+  if swallow_press:
     self.stalk_pull_time_ms = curr_time_ms
     self.last_stalk_non_cancel_ms = curr_time_ms
   if swallow_standstill_set:
@@ -699,6 +758,20 @@ def _process_buttons(self, cruise_buttons, prev_cruise_buttons, *args, **kwargs)
       self._clear_one_pedal_pause_latch()
     else:
       self._one_pedal_pause_latched = False
+  # First pull from off at a stop: lat on, long waits for a real DI
+  # gas tap. Do not creep. MAX on that tap is take-speed-now.
+  if (
+    was_off
+    and set_edge
+    and at_stop
+    and not di_gas
+    and not brake
+    and bool(use_pedal)
+    and bool(self.cruiseEnabled)
+    and not bool(self.enableLongControl)
+  ):
+    self._nap_resume_wait_gas = True
+    self._nap_from_off_stop_take_now = True
 
   _drop_long_if_driver_turn(self)
 
@@ -713,14 +786,24 @@ def _process_buttons(self, cruise_buttons, prev_cruise_buttons, *args, **kwargs)
   if (
     getattr(self, "_nap_resume_wait_gas", False)
     and not self.enableLongControl
-    and gas and not brake
+    and _standstill_start_gas(self) and not brake
     and not bool(getattr(self, "_one_pedal_pause_latched", False))
     and not _should_drop_long_for_turn(self)
   ):
     _complete_standstill_resume(
       self, long_allowed=_long_control_allowed(args, kwargs))
 
-  if resume and self.enableLongControl:
+  if engage_from_off and self.enableLongControl and not was_long:
+    # Initial pedal engage (foot off, or engage-while-gas). Stamp the
+    # pull so a second pull inside the window is take-speed-now and
+    # does not look like a new first pull.
+    self._nap_set_take_speed_now = True
+    self._nap_held_max_kph = None
+    self.stalk_pull_time_ms = curr_time_ms
+    self.last_stalk_non_cancel_ms = curr_time_ms
+    if hasattr(self, "longCtrlEvent"):
+      self.longCtrlEvent = "pccEnabled"
+  elif resume and self.enableLongControl:
     # Second SET in the window after a stop-SET is still take-speed-now.
     if was_wait_gas and in_double_window and set_edge:
       self._nap_set_take_speed_now = True
@@ -735,13 +818,20 @@ def _process_buttons(self, cruise_buttons, prev_cruise_buttons, *args, **kwargs)
   elif take_now_in_session and self.enableLongControl:
     self._nap_set_take_speed_now = True
     self._nap_held_max_kph = None
-  elif self.enableLongControl and not was_long and not resume:
-    # Initial double-pull (or single-pull) engage from disengaged / lat-only.
+  elif (
+    self.enableLongControl and not was_long and not resume
+    and not getattr(self, "_nap_set_resume_long", False)
+  ):
+    # Second pull from lat-only (brake-held first pull, or no-pedal is
+    # not this flag). A paused stop-SET that just resumed held MAX sets
+    # `_nap_set_resume_long` and must not also take-speed-now.
     self._nap_set_take_speed_now = True
+    self._nap_held_max_kph = None
 
   if self.enableLongControl:
     self._nap_long_resume_pending = False
     self._nap_resume_wait_gas = False
+    self._nap_from_off_stop_take_now = False
   _gap_lock_after_buttons(
     self, cruise_buttons, prev_cruise_buttons, curr_time_ms, use_pedal, gap_qualify, brake, args, kwargs)
   return result
@@ -881,7 +971,7 @@ def _update_preap(cs, can_parsers):
         engagement._nap_standstill = True
       if (
         getattr(engagement, "_nap_resume_wait_gas", False)
-        and gas
+        and _standstill_start_gas(engagement)
         and not real_brake
         and not bool(getattr(engagement, "enableLongControl", False))
         and not bool(getattr(engagement, "_one_pedal_pause_latched", False))

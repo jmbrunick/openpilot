@@ -555,21 +555,31 @@ def test_one_pedal_set_after_lift_with_overlay_double_pull_acquires(monkeypatch)
 
 
 def _double_set_while_gas(controller, cc, cs, tesla_can, *, v_ego=22.8):
-  """Fully disengaged → double SET with foot on gas (One-Pedal On)."""
+  """Fully disengaged, foot on gas (DI > 2): first SET arms lat+long.
+
+  A second SET inside the window stays engaged. One-Pedal must not latch.
+  """
   from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import install_blinker_lat_pause
 
   install_blinker_lat_pause()
+  cs.engagement._nap_di_pedal_pos = 8.0
   _on_car_cycle(controller, cc, cs, tesla_can, 0, gas=True, interceptor_di=8.0,
                 t_ms=1000, v_ego=v_ego)
   assert not cs.engagement.cruiseEnabled
+  cs.engagement._nap_di_pedal_pos = 8.0
   _on_car_cycle(controller, cc, cs, tesla_can, 2, gas=True, set_edge=True,
                 interceptor_di=8.0, t_ms=2000, v_ego=v_ego)
   assert cs.engagement.cruiseEnabled
-  assert not cs.engagement.enableLongControl
+  assert cs.engagement.enableLongControl
+  assert not cs.engagement._one_pedal_pause_latched
+  assert cs.engagement.stalk_pull_time_ms == 2000
+  held = cs.engagement.pedal_speed_kph
+  cs.engagement._nap_di_pedal_pos = 6.0
   _on_car_cycle(controller, cc, cs, tesla_can, 4, gas=True, set_edge=True,
                 interceptor_di=6.0, t_ms=2400, v_ego=v_ego)
   assert cs.engagement.enableLongControl
   assert not cs.engagement._one_pedal_pause_latched
+  assert abs(cs.engagement.pedal_speed_kph - held) < 1e-6
   return cs.engagement.pedal_speed_kph
 
 
