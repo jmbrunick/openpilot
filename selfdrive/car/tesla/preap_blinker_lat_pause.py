@@ -228,6 +228,72 @@ def hard_cancel_session(engagement) -> None:
     h.reset()
 
 
+# Card latched cruise, but openpilot never took the engage (startup,
+# noEntry, or a rising edge consumed while update_events returned early).
+ORPHAN_SESSION_S = 0.75
+
+
+def silent_cancel_session(engagement) -> None:
+  """Drop a latched Pre-AP session without a disengage chime.
+
+  Same clears as hard_cancel_session, including the stock-CC cancel
+  spoof, but longCtrlEvent is left alone so pedalCruiseDisabled does
+  not fire. The next stalk pull is a fresh engage.
+  """
+  engagement.cruiseEnabled = False
+  engagement.enableLongControl = False
+  engagement.enableJustCC = False
+  engagement.pending_enable = False
+  engagement.pedal_speed_kph = 0.0
+  engagement.stalk_pull_time_ms = 0
+  engagement.prev_stalk_pull_time_ms = -1000
+  if hasattr(engagement, "pending_cancel_at_ms"):
+    engagement.pending_cancel_at_ms = 0
+  if hasattr(engagement, "_clear_pedal_unavailable"):
+    engagement._clear_pedal_unavailable()
+  _clear_session_max_flags(engagement)
+  engagement.preap_cc_cancel_needed = True
+  h = getattr(engagement, "_nap_lat_handoff", None)
+  if h is not None:
+    h.reset()
+
+
+def reconcile_orphan_session(engagement, *, op_enabled: bool, orphan_s: float,
+                             dt: float = DT_CTRL, cereal_cs=None,
+                             interface_cs=None) -> tuple[float, bool]:
+  """Quietly reset the session if openpilot has not engaged within 0.75 s.
+
+  Returns (orphan_timer_s, canceled_this_frame).
+  """
+  if engagement is None:
+    return 0.0, False
+  if bool(getattr(engagement, "cruiseEnabled", False)) and not bool(op_enabled):
+    orphan_s = float(orphan_s) + float(dt)
+  else:
+    return 0.0, False
+  if orphan_s + 1e-12 < ORPHAN_SESSION_S:
+    return orphan_s, False
+  silent_cancel_session(engagement)
+  if interface_cs is not None:
+    interface_cs.cruiseEnabled = False
+    interface_cs.enableLongControl = False
+    interface_cs.enableJustCC = False
+    interface_cs.pedal_speed_kph = 0.0
+    interface_cs.preap_cc_cancel_needed = True
+    if hasattr(interface_cs, "cruise_enabled_prev"):
+      interface_cs.cruise_enabled_prev = False
+  if cereal_cs is not None:
+    try:
+      cereal_cs.cruiseState.enabled = False
+    except Exception:
+      pass
+    try:
+      cereal_cs.enableLongControl = False
+    except Exception:
+      pass
+  return 0.0, True
+
+
 def _check_can_engage(self, door_open, gear_shifter, seatbelt_unlatched):
   """Door / gear-out-of-Drive / seatbelt must full-teardown, not a partial reset.
 
@@ -255,6 +321,7 @@ def update_card_lat_handoff(engagement, *, engaged: bool,
                             alc_active: bool = False,
                             blinker_paused: bool = False,
                             steering_pressed: bool = False,
+                            steering_angle_deg: float | None = None,
                             dt: float | None = None,
                             param_on: bool | None = None) -> bool:
   """Card-local intent tracker. Emergency hard-brake → full session cancel.
@@ -281,6 +348,7 @@ def update_card_lat_handoff(engagement, *, engaged: bool,
     v_ego=v_ego,
     steering_pressed=steering_pressed,
     dt=dt,
+    steering_angle_deg=steering_angle_deg,
   )
   if out.emergency_cancel and engaged:
     hard_cancel_session(engagement)
@@ -781,6 +849,18 @@ def _process_buttons(self, cruise_buttons, prev_cruise_buttons, *args, **kwargs)
       self, cruise_buttons, prev_cruise_buttons, curr_time_ms, use_pedal, gap_qualify, brake, args, kwargs)
     return result
 
+  # In-session pull (pedal single pull or either half of a no-pedal
+  # double pull). The counter sticks on carState so controlsd sees it
+  # on the subscription it already has, even if one frame is dropped.
+  if set_edge and not was_off:
+    seq = (int(getattr(self, "_nap_stalk_seq", 0)) + 1) & 0xFF
+    if seq == 0:
+      seq = 1
+    self._nap_stalk_seq = seq
+    h = getattr(self, "_nap_lat_handoff", None)
+    if h is not None:
+      h.driver_resume_request()
+
   # Armed stop-SET: gas touch completes held-MAX resume. Brake still down
   # stays waiting (silent pause would drop long again anyway).
   if (
@@ -920,6 +1000,11 @@ def _update_preap(cs, can_parsers):
       ret.gapLockHold = gap_lock_holding(engagement)
     except Exception:
       pass
+    # Same carState message controlsd already reads. Not a new subscriber.
+    try:
+      ret.napStalkSeq = int(getattr(engagement, "_nap_stalk_seq", 0)) & 0xFF
+    except Exception:
+      pass
   hands = int(getattr(cs, 'hands_on_level', 0) or 0)
   if hands <= 0:
     hands = _peek_hands_on_level(can_parsers)
@@ -949,7 +1034,13 @@ def _update_preap(cs, can_parsers):
       alc_active=bool(getattr(engagement, "_nap_alc_active", False)),
       blinker_paused=driver_turn,
       steering_pressed=bool(getattr(ret, "steeringPressed", False)),
+      steering_angle_deg=float(getattr(ret, "steeringAngleDeg", 0.0) or 0.0),
     )
+    try:
+      h = getattr(engagement, "_nap_lat_handoff", None)
+      ret.napRestTorqueNm = float(h.rest_bias) if h is not None else 0.0
+    except Exception:
+      pass
     if canceled:
       if hasattr(ret, "cruiseState"):
         try:

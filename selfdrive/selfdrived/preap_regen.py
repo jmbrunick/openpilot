@@ -86,6 +86,22 @@ def update_preap_chimes(*, lat_engaged: bool, long_engaged: bool,
   return chimes, PreAPChimeState(lat_engaged, long_engaged, long_paused)
 
 
+def orphan_pull_requests_enable(*, cruise_enabled: bool, op_enabled: bool,
+                                set_pressed: bool, use_pedal: bool,
+                                long_on: bool) -> bool:
+  """Stalk pull while the car session is latched and openpilot is not.
+
+  Pedal mode: that single pull is the engage. No-pedal: only a pull that
+  already has longitudinal on (the completing half of a double pull, or a
+  session that already took long). A lone first pull stays lateral-only.
+  """
+  if not (bool(cruise_enabled) and not bool(op_enabled) and bool(set_pressed)):
+    return False
+  if bool(use_pedal):
+    return True
+  return bool(long_on)
+
+
 def gas_should_user_disable(*, disengage_on_accelerator: bool,
                             one_pedal_long: bool) -> bool:
   """Rising-gas EventName.pedalPressed is stock DisengageOnAccelerator.

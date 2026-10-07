@@ -93,6 +93,15 @@ FIGHT_BLEND_RATE_PER_S (still finished inside BLEND_TIME_S, so the
 inference grace is unchanged). Callers that omit model/measured
 curvature keep the previous resume. BLEND_TIME_S and
 HANDS_OFF_CONFIRM_S are not changed.
+Fight evidence does not accumulate while a driver-turn blinker is
+on, while v_ego is under 10 mph, or for FIGHT_POST_INHIBIT_S after
+either ends. Thresholds are relative to a resting offset learned
+only while hands are off and the wheel is quiet, clamped to
+±REST_BIAS_CLAMP_NM. Hands-quiet is hands-on level 0, steeringPressed
+false, and |torque − offset| < FIGHT_QUIET_NM. After FIGHT_MAX_HOLD_S
+of that quiet the slow re-take starts even if curvature has not
+agreed. An in-session stalk pull clears the latch and starts the
+normal 1 s blend.
 
 Emergency / hard brake (see emergency_brake() and docs-nap/engagement.md):
   Pre-AP has no analog brake pressure on parsed buses — only digital
@@ -277,6 +286,17 @@ FIGHT_CURVATURE_HOLD_S = 0.30
 # Gentler than the smoothstep peak (1.5/s) and still reaches 1 inside
 # BLEND_TIME_S, so panda's re-arm grace still covers the re-take.
 FIGHT_BLEND_RATE_PER_S = 1.15
+# No fight evidence while a turn blinker is on, under 10 mph, or for
+# this long after either ends. A held turn is not a tug-of-war.
+FIGHT_POST_INHIBIT_S = 1.5
+# Hands-quiet this long starts the slow re-take even if curvature
+# never agrees. The blend is still FIGHT_BLEND_RATE_PER_S.
+FIGHT_MAX_HOLD_S = 6.0
+# Resting torsion (this EPAS reads about +0.25 Nm hands-off). Learned
+# only while clearly hands-off and quiet, then clamped.
+REST_BIAS_TAU_S = 3.0
+REST_BIAS_CLAMP_NM = 0.5
+REST_BIAS_MAX_RATE_DEG_S = 5.0
 
 PREAP_FINGERPRINT = "TESLA_MODEL_S_PREAP"
 # Settings → NAP. Default On. Turn Off if gravel / wind still false-yields.
@@ -544,7 +564,13 @@ class DriverLateralHandoff:
     # Product default On. controlsd still requires Pre-AP + param
     # (NAPDriverLatHandoff defaults true). Toggle Off to disable.
     self.enabled = bool(enabled)
+    # Survives _reset so a disengage does not forget the sensor offset.
+    self._rest_bias = 0.0
     self._reset()
+
+  @property
+  def rest_bias(self) -> float:
+    return float(self._rest_bias)
 
   def _reset(self):
     self.authority = 1.0
@@ -574,9 +600,78 @@ class DriverLateralHandoff:
     self._torque_hold_sign = 0
     self._fight_quiet_s = 0.0
     self._fight_agree_s = 0.0
+    # Eligible immediately. Only a blinker / low-speed inhibit zeros this.
+    self._post_inhibit_s = FIGHT_POST_INHIBIT_S
+    self._last_driver_hold = False
+    self._last_inhibited = False
 
   def reset(self):
     self._reset()
+
+  def driver_resume_request(self) -> None:
+    """In-session stalk pull: drop the tug-of-war latch.
+
+    If the wheel is already free (hands off, under the yield trigger, not
+    in a turn or under 10 mph), start the normal 1 s blend. A hand still
+    on the rim stays yielded; the latch is gone, so the usual 0.15 s
+    confirm owns the take-back once they let go. No chime lives here.
+    """
+    self._fight = False
+    self._fight_release = False
+    self._fight_sign = 0
+    self._fight_quiet_s = 0.0
+    self._fight_agree_s = 0.0
+    self._torque_hold_s = 0.0
+    self._torque_hold_sign = 0
+    self._yield_log.clear()
+    if not self.enabled or not self._yielded:
+      return
+    if self._last_inhibited or self._last_driver_hold:
+      return
+    self._start_blend()
+
+  def _compensated_torque(self, steering_torque: float) -> float:
+    try:
+      tq = float(steering_torque)
+    except (TypeError, ValueError):
+      return 0.0
+    if not np.isfinite(tq):
+      return 0.0
+    return tq - self._rest_bias
+
+  def _update_rest_bias(self, torque, rate_deg, hands_on_level, steering_pressed,
+                        _lat_would_be_active, steering_angle_deg, dt: float) -> None:
+    """Slow EMA of hands-off, nearly-straight torsion. Ignores a real push."""
+    if int(hands_on_level or 0) != 0 or bool(steering_pressed):
+      return
+    try:
+      rate = abs(float(rate_deg))
+      tq = float(torque)
+    except (TypeError, ValueError):
+      return
+    if not np.isfinite(rate) or not np.isfinite(tq):
+      return
+    if rate >= REST_BIAS_MAX_RATE_DEG_S or abs(tq) > REST_BIAS_CLAMP_NM:
+      return
+    # Anything at or above the fight floor is the driver's push, not this
+    # EPAS's resting reading. A steady +0.25 Nm still learns; 0.40 Nm does not.
+    if abs(tq) >= FIGHT_TORQUE_NM:
+      return
+    # Only a straight wheel. A yield with no angle (older callers, unit
+    # tests) is a maneuver, not a resting sample. A known-straight wheel
+    # may learn while yielded: that is the hands-off torsion.
+    if steering_angle_deg is None:
+      if self._yielded or self._blending:
+        return
+    else:
+      try:
+        if abs(float(steering_angle_deg)) > WHEEL_RESUME_STRAIGHT_DEG:
+          return
+      except (TypeError, ValueError):
+        return
+    alpha = 1.0 - float(np.exp(-max(float(dt), 0.0) / REST_BIAS_TAU_S))
+    self._rest_bias += alpha * (tq - self._rest_bias)
+    self._rest_bias = float(min(REST_BIAS_CLAMP_NM, max(-REST_BIAS_CLAMP_NM, self._rest_bias)))
 
   def _update_intent(self, torque_nm: float, rate_deg: float,
                      hands_on: bool, tracking_error: float) -> bool:
@@ -753,11 +848,22 @@ class DriverLateralHandoff:
       self._torque_hold_s = 0.0
       self._torque_hold_sign = 0
 
-  def _fight_resume_allowed(self, torque_nm: float, curv_err: float, dt: float) -> bool:
-    """True when a fight hold may start the normal hands-off confirm."""
+  def _fight_resume_allowed(self, torque_nm: float, curv_err: float, dt: float, *,
+                            hands_on_level: int = 0, steering_pressed: bool = False) -> bool:
+    """True when a fight hold may start the normal hands-off confirm.
+
+    ``torque_nm`` is already relative to the resting offset. Quiet also
+    requires the car's hands-off level and steeringPressed, because this
+    EPAS never sits under FIGHT_QUIET_NM in raw torsion.
+    """
     if not self._fight:
       return True
-    if abs(float(torque_nm)) < FIGHT_QUIET_NM:
+    quiet = (
+      int(hands_on_level or 0) == 0
+      and not bool(steering_pressed)
+      and abs(float(torque_nm)) < FIGHT_QUIET_NM
+    )
+    if quiet:
       self._fight_quiet_s += dt
     else:
       self._fight_quiet_s = 0.0
@@ -768,10 +874,14 @@ class DriverLateralHandoff:
       self._fight_agree_s += dt
     else:
       self._fight_agree_s = 0.0
-    return (
+    agreed = (
       self._fight_quiet_s + 1e-12 >= FIGHT_QUIET_S
       and self._fight_agree_s + 1e-12 >= FIGHT_CURVATURE_HOLD_S
     )
+    # Ceiling: genuinely hands-quiet this long starts the same slow
+    # re-take even when curvature never comes home.
+    capped = self._fight_quiet_s + 1e-12 >= FIGHT_MAX_HOLD_S
+    return agreed or capped
 
   def _identity(self, *, emergency_cancel: bool = False) -> HandoffOutput:
     return HandoffOutput(1.0, False, False, False, emergency_cancel)
@@ -794,6 +904,11 @@ class DriverLateralHandoff:
     if not self.enabled:
       self._reset()
       return self._identity()
+
+    self._update_rest_bias(
+      steering_torque, steering_rate_deg, hands_on_level, bool(steering_pressed),
+      bool(lat_would_be_active), steering_angle_deg, dt)
+    tq = self._compensated_torque(steering_torque)
 
     # lat_would_be_active is the *pre-yield* request (standstill / faults;
     # and lamp-latch pause only when soft-lat is Off). Caller drops
@@ -832,6 +947,14 @@ class DriverLateralHandoff:
       return self._identity()
 
     self._clock_s += dt
+    # A turn (blinker or under 10 mph) and a short grace after it are
+    # not a tug-of-war. An already-armed fight still uses the quiet test.
+    if inhibited:
+      self._post_inhibit_s = 0.0
+    else:
+      self._post_inhibit_s += dt
+    fight_evidence = (
+      not inhibited and self._post_inhibit_s + 1e-12 >= FIGHT_POST_INHIBIT_S)
     fight_on = model_curvature is not None and measured_curvature is not None
     if fight_on:
       try:
@@ -844,17 +967,23 @@ class DriverLateralHandoff:
         fight_on = False
     else:
       curv_err = 0.0
+    if fight_on and fight_evidence:
+      self._update_sustained_fight(tq, dt)
+    elif fight_on:
+      self._torque_hold_s = 0.0
+      self._torque_hold_sign = 0
     if fight_on:
-      self._update_sustained_fight(steering_torque, dt)
-      resume_allowed = self._fight_resume_allowed(steering_torque, curv_err, dt)
+      resume_allowed = self._fight_resume_allowed(
+        tq, curv_err, dt, hands_on_level=hands_on_level,
+        steering_pressed=bool(steering_pressed))
     else:
       resume_allowed = True
 
-    mag = abs(float(steering_torque))
+    mag = abs(float(tq))
     pressed = self._update_intent(
-      steering_torque, steering_rate_deg,
+      tq, steering_rate_deg,
       hands_still_on(hands_on_level), tracking_error)
-    if self._update_early(steering_torque, bool(steering_pressed)):
+    if self._update_early(tq, bool(steering_pressed)):
       pressed = self._pressed = True
     hands_on = hands_still_on(hands_on_level)
     firm_push = mag >= SOFT_YIELD_TRIGGER_NM
@@ -874,11 +1003,8 @@ class DriverLateralHandoff:
         self._enter_yield()
         self._blinker_was_paused = True
       elif pressed:
-        rising = not self._yielded
         self._enter_yield()
         self._blinker_was_paused = True
-        if fight_on and rising:
-          self._note_yield(steering_torque)
     elif self._blinker_was_paused:
       # Inhibit just cleared (blinker off and/or speed crossed 10 mph,
       # or lat came back after a blinker / low-speed standstill/fault).
@@ -895,8 +1021,8 @@ class DriverLateralHandoff:
       if pressed or (fight_on and self._fight and not resume_allowed):
         rising = not self._yielded
         self._enter_yield()
-        if fight_on and rising and pressed:
-          self._note_yield(steering_torque)
+        if fight_on and fight_evidence and rising and pressed:
+          self._note_yield(tq)
     elif self._yielded:
       # Stay yielded while still maneuvering: hands on the rim OR a
       # renewed firm push. Mid-dodge torsion dips (below release) must
@@ -917,8 +1043,8 @@ class DriverLateralHandoff:
       # Fight hold cancels a re-take that the model is still fighting.
       if driver_hold or not resume_allowed:
         self._enter_yield()
-        if fight_on and driver_hold:
-          self._note_yield(steering_torque)
+        if fight_on and fight_evidence and driver_hold:
+          self._note_yield(tq)
       else:
         self._blend_s += dt
         t_norm = self._blend_s / BLEND_TIME_S
@@ -941,6 +1067,8 @@ class DriverLateralHandoff:
           self._quiet_s = 0.0
           self._peak_angle_deg = 0.0
 
+    self._last_driver_hold = bool(hands_on or firm_push)
+    self._last_inhibited = bool(inhibited)
     emergency = self._update_emergency(
       brake_applied=brake_applied, a_ego=a_ego, v_ego=v_ego, dt=dt)
     self._set_ui_paused()
