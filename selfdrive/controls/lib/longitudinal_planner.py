@@ -804,6 +804,18 @@ class LongitudinalPlanner:
       y_rel = 0.0
       lead_id = None
 
+    v_lat = 0.0
+    long_on = True
+    if live:
+      try:
+        v_lat = float(lead.vLat)
+      except (TypeError, ValueError, AttributeError):
+        v_lat = 0.0
+    try:
+      cs = sm["carState"]
+      long_on = (cs.enableLongControl is True) and (cs.cruiseState.enabled is True)
+    except Exception:
+      long_on = True
     v_cap = float(self._unified_v_cap_ms)
     # True cornering (vehicle-model curvature) with the speed-dependent
     # lateral target, not the steer model (which reads ~12% high at speed).
@@ -888,6 +900,8 @@ class LongitudinalPlanner:
           leave_w=float(self.lead_leave_w),
           gap_set_override_m=override,
           v_curve_cap=v_curve_cap,
+          v_lat=v_lat,
+          long_on=long_on,
         ))
       except Exception:
         self._note_unified_fault()
