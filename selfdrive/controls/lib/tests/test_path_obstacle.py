@@ -23,14 +23,18 @@ from openpilot.selfdrive.controls.lib.path_obstacle import (
   PathObstacleDetector,
   VisionScore,
   chime_banner,
+  crop_light_stats,
   fuse_scores,
   fusion_weights,
   future_brake_intent,
+  is_night_lighting,
+  light_dominated,
   _fuse_class,
   lively_from_history,
   patch_change_score,
   project_road_point,
   scale_living_vision,
+  score_row_patches,
   prune_thumbs,
   save_ppm,
   should_raise_chime,
@@ -198,6 +202,10 @@ def test_excludes_traffic_motorcycles_and_parked_cars():
     model_leads=[(90.0, 0.0, 0.95), (30.0, 0.0, 0.80)],
   )
   assert tagged.reject_reason == "exclVehicle" and tagged.chimed is False
+  # The lead does not take the slot from a different return.
+  both = [_pt(30.0, 0.0, -V_EGO, 4), _pt(55.0, 0.2, -V_EGO, 5)]
+  mixed = _run(PathObstacleDetector(), both, vision=DEBRIS, model_leads=[(30.0, 0.0, 0.80)])
+  assert mixed.track_id == 5 and mixed.chimed and mixed.reject_reason == "none"
   far_only = _run(
     PathObstacleDetector(), stopped, vision=DEBRIS,
     model_leads=[(90.0, 0.0, 0.95)],
@@ -606,6 +614,8 @@ def test_wiring_stays_off_the_control_core_and_off_longitudinal():
   assert "Live object detection chime" in manner
   assert "livelyScore" in text("cereal/custom.capnp")
   assert "visionFailReason" in text("cereal/custom.capnp")
+  assert "driveOverReason" in text("cereal/custom.capnp")
+  assert "modelLeadAgree" in text("cereal/custom.capnp")
   assert "lowSpeed" in lib
   assert "self._all_items.append(self._turn_in_buttons)" in manner
 
@@ -759,3 +769,131 @@ def test_oct7_single_look_does_not_chime_and_a_real_obstacle_does():
   assert last.zone == "inPath" and last.object_class == "obstacle"
   assert last.chimed and last.chime_reason == "chimed"
   assert chimed_at == 5
+
+
+def _solid_patch(lo, hi, size=28):
+  """Mid-gray structure. No pixel near saturation."""
+  span = max(hi - lo, 1)
+  return [[lo + ((x * 3 + y * 5) % span) for x in range(size)] for y in range(size)]
+
+
+def _blob_patch(background, blob, y0, y1, x0, x1, size=28):
+  img = [[background for _ in range(size)] for _ in range(size)]
+  for y in range(y0, y1):
+    for x in range(x0, x1):
+      img[y][x] = blob
+  return img
+
+
+def _night_run(points, vision, *, lighting=0.42, model_leads=(), v_ego=12.0, n=8):
+  det = PathObstacleDetector()
+  last = None
+  chimed = False
+  for i in range(n):
+    last = det.update(
+      points, v_ego, PATH_X, PATH_Y, 0.1,
+      vision=vision, lighting=lighting, model_leads=model_leads,
+      now=800.0 + i * 0.1,
+    )
+    chimed = chimed or bool(last.chimed)
+  return last, chimed
+
+
+def test_night_drive_over_suppresses_lights_and_keeps_real_obstacles():
+  """Stationary in-lane returns at night. The Oct 7 leftovers were rails
+  and road hardware whose crop was headlights or taillights.
+  """
+  assert is_night_lighting(0.43) and is_night_lighting(0.40)
+  assert is_night_lighting(1.0) is False
+  assert is_night_lighting(float("nan")) is False
+
+  road = [[25] * 28 for _ in range(10)]
+  headlights = _blob_patch(12, 252, 6, 20, 8, 22)
+  head_score = score_row_patches(headlights, road)
+  assert head_score.light_dominated
+  assert head_score.light_frac >= 0.12
+  assert head_score.conf >= 0.60 and head_score.obstacle >= 0.40
+
+  tree = _solid_patch(70, 140)
+  tree_score = score_row_patches(tree, road)
+  assert tree_score.light_dominated is False
+  assert tree_score.conf >= 0.60 and tree_score.obstacle >= 0.40
+
+  rails = [[40] * 28 for _ in range(28)]
+  rail_score = score_row_patches(rails, [[40] * 28 for _ in range(8)])
+  assert rail_score.light_dominated is False
+  assert rail_score.conf < 0.45
+
+  # Red taillight blob, and the same pattern as a bright Y plus high V.
+  red = [[(12, 12, 12) for _ in range(24)] for _ in range(24)]
+  for y in range(8, 16):
+    for x in range(4, 16):
+      red[y][x] = (255, 8, 8)
+  _near, _sat, red_frac, _blob = crop_light_stats(red)
+  assert red_frac >= 0.06
+  assert light_dominated(_near, _sat, red_frac, _blob)
+  y_plane = _blob_patch(20, 210, 8, 16, 4, 16, size=24)
+  v_plane = _blob_patch(128, 200, 4, 8, 2, 8, size=12)
+  _near_v, _sat_v, red_v, _blob_v = crop_light_stats(y_plane, v_plane)
+  assert red_v >= 0.06
+
+  # (1) Headlight-saturated crop at night, in the lane: no chime.
+  night_light, light_chimed = _night_run(
+    [_pt(45.0, 0.0, -18.0, 1741)], head_score, v_ego=18.0,
+  )
+  assert light_chimed is False
+  assert night_light.chime_reason == "drive_over"
+  assert night_light.drive_over_reason == "light"
+  assert night_light.zone == "inPath"
+
+  # (2) Railroad crossing: no model lead, crop is not a solid object.
+  rails_hit, rails_chimed = _night_run(
+    [_pt(48.0, 0.0, -18.0, 976)], rail_score, v_ego=18.0,
+  )
+  assert rails_chimed is False
+  assert rails_hit.chime_reason == "drive_over"
+  assert rails_hit.drive_over_reason == "no_solid"
+
+  # (3) Stalled car at night. The model lead is at the same spot, so it
+  # chimes even when the crop is the car's own taillights.
+  stalled, stalled_chimed = _night_run(
+    [_pt(32.0, 0.0, -12.0, 501)], head_score,
+    model_leads=[(32.0, 0.0, 0.80)],
+  )
+  assert stalled_chimed and stalled.chimed
+  assert stalled.chime_reason == "chimed"
+  assert stalled.object_class == "obstacle"
+  assert stalled.drive_over_reason == ""
+
+  # (4) Fallen tree: solid, not a light, inside 60 m.
+  fallen, fallen_chimed = _night_run([_pt(28.0, 0.0, -12.0, 880)], tree_score)
+  assert fallen_chimed and fallen.chimed and fallen.chime_reason == "chimed"
+  assert fallen.drive_over_reason == ""
+  far_tree, far_chimed = _night_run([_pt(75.0, 0.0, -12.0, 881)], tree_score)
+  assert far_chimed is False
+  assert far_tree.drive_over_reason == "beyond_60"
+
+  # (5) The same headlight crop in daylight still chimes.
+  day, day_chimed = _night_run(
+    [_pt(45.0, 0.0, -18.0, 1742)], head_score, lighting=1.0, v_ego=18.0,
+  )
+  assert day_chimed and day.chimed and day.chime_reason == "chimed"
+  assert day.drive_over_reason == ""
+
+  # Living things and anything crossing the lane are outside the rule.
+  deer, deer_chimed = _night_run([_pt(30.0, 0.0, -12.0, 77)], ANIMAL)
+  assert deer_chimed and deer.object_class == "animal" and deer.chime_reason == "chimed"
+  lit_deer = replace_light(ANIMAL)
+  still_deer, still_chimed = _night_run([_pt(30.0, 0.0, -12.0, 78)], lit_deer)
+  assert still_chimed and still_deer.object_class == "animal"
+  walker, walker_chimed = _night_run(
+    [_pt(25.0, -2.3, -12.0, 79, yv_rel=1.2)], replace_light(HUMAN),
+  )
+  assert walker_chimed and walker.zone == "entering" and walker.object_class == "human"
+
+
+def replace_light(score: VisionScore) -> VisionScore:
+  return VisionScore(
+    conf=score.conf, human=score.human, animal=score.animal, obstacle=score.obstacle,
+    light_dominated=True, light_frac=0.40, red_frac=0.10,
+  )

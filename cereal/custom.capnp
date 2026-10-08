@@ -109,6 +109,12 @@ struct PathObstacleNAP @0xda96579883444c35 {
   pathYStd3s @37 :Float32;       # model y std near t=3 s
   overBudget @38 :Bool;
   heartbeat @39 :Bool;
+  # Night drive-over. Radard sets modelLeadAgree when a model or radar
+  # lead sits on this stationary in-lane return. driveOverReason is the
+  # chime-side suppression (light, no_solid, beyond_60) and is empty
+  # until the camera helper decides. Daytime lead matches stay quiet.
+  modelLeadAgree @40 :Bool;
+  driveOverReason @41 :Text;
 
   enum ObjectClass {
     unknown @0;
@@ -149,6 +155,10 @@ struct PathObstacleVisionNAP @0x80ae746ee2596b11 {
   # Set when this attempt produced no score. Empty when a score was written.
   # no_connection, no_frame, stale_frame, roi_out_of_frame, budget, model_error.
   visionFailReason @18 :Text;
+  # Night drive-over suppression. Empty when the rule did not suppress.
+  # light: crop is headlights or taillights. no_solid: nothing solid in
+  # the crop and no model lead. beyond_60: farther than low-beam range.
+  driveOverReason @19 :Text;
 }
 
 struct CustomReserved5 @0xa5cd762cd951a455 {
