@@ -484,3 +484,88 @@ def test_card_and_mapd_never_read_the_assist_toggle():
   from openpilot.selfdrive.mapd import mapd
   for mod in (card, mapd):
     assert "NAPRoundaboutAssist" not in inspect.getsource(mod)
+
+
+def _leave_ring(md):
+  md.onRoundabout = False
+  md.approachingRoundabout = False
+
+
+def test_ring_exit_ramps_max_up_from_current_speed():
+  """Oct 7 14:43:57: after the ring, MAX was 18 while ego was 25 and the car braked.
+
+  The funnel may still show the ring speed on the way in. On the way out,
+  MAX starts at least at current speed and climbs toward the posted limit.
+  """
+  h, cs, md, run = _card_harness(40.0)
+  run(h, cs, 1.0)
+  assert _hud_mph(h) == pytest.approx(40.0, abs=0.4)
+  _set_ring(md, on=False, approaching=True, ring_mph=15.0, dist=135.0)
+  cs.vEgo = 36.0 * CV.MPH_TO_MS
+  run(h, cs, 0.4)
+  assert _hud_mph(h) == pytest.approx(18.0, abs=0.4)
+
+  _leave_ring(md)
+  cs.vEgo = 25.0 * CV.MPH_TO_MS
+  run(h, cs, 0.01)
+  hud = _hud_mph(h)
+  assert hud >= 24.5
+  assert hud < 28.0
+  run(h, cs, 1.0)
+  later = _hud_mph(h)
+  assert later > hud + 1.0
+  assert later < 40.5
+  prev = later
+  for _ in range(30):
+    run(h, cs, 0.01)
+    step = _hud_mph(h)
+    assert step > prev - 0.3
+    prev = step
+  run(h, cs, 25.0)
+  assert _hud_mph(h) == pytest.approx(40.0, abs=0.6)
+
+
+def test_set_inside_ring_does_not_latch_ring_speed():
+  """A SET while on the ring keeps the ring ceiling only until the exit."""
+  h, cs, md, run = _card_harness(40.0)
+  run(h, cs, 1.0)
+  _set_ring(md, on=True, approaching=False, ring_mph=15.0, dist=0.0)
+  cs.vEgo = 22.0 * CV.MPH_TO_MS
+  run(h, cs, 0.3)
+  assert _hud_mph(h) == pytest.approx(18.0, abs=0.4)
+  eng = h.CI.CS.engagement
+  eng._nap_set_resume_long = True
+  run(h, cs, 0.01)
+  assert _hud_mph(h) == pytest.approx(18.0, abs=0.4)
+  held = h._map_hold.held_max_kph
+  assert held is None or abs(held / CV.MPH_TO_KPH - 18.0) > 2.0
+  fsm = getattr(eng, "_nap_held_max_kph", None)
+  assert fsm is None or abs(float(fsm) / CV.MPH_TO_KPH - 18.0) > 2.0
+
+  _leave_ring(md)
+  cs.vEgo = 25.0 * CV.MPH_TO_MS
+  run(h, cs, 0.01)
+  assert _hud_mph(h) >= 24.5
+  run(h, cs, 2.0)
+  assert 26.0 < _hud_mph(h) < 40.5
+  assert h._map_hold.sticky_set_kph is None or abs(
+    h._map_hold.sticky_set_kph / CV.MPH_TO_KPH - 18.0) > 2.0
+
+
+def test_ring_exit_above_the_limit_eases_down():
+  """Over the posted limit, MAX starts at current speed and does not step to the ring."""
+  h, cs, md, run = _card_harness(30.0)
+  run(h, cs, 1.0)
+  _set_ring(md, approaching=True, ring_mph=15.0, dist=100.0)
+  run(h, cs, 0.2)
+  assert _hud_mph(h) == pytest.approx(18.0, abs=0.4)
+  _leave_ring(md)
+  cs.vEgo = 40.0 * CV.MPH_TO_MS
+  prev = None
+  for _ in range(20):
+    run(h, cs, 0.01)
+    hud = _hud_mph(h)
+    if prev is not None:
+      assert hud > prev - 0.5
+    prev = hud
+  assert _hud_mph(h) > 38.0

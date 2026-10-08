@@ -504,6 +504,9 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
 
   EventName.stockFcw: {},
   EventName.actuatorsApiUnavailable: {},
+  # Log only. No HUD text, no chime. A stalk pull resumes long; do not
+  # add a paused note.
+  EventName.preapBrakeLongActive: {},
 
   # ********** events only containing alerts displayed in all states **********
 
