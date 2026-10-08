@@ -11,14 +11,23 @@ Off (NAPLowVisBackoff, default On). Off is identity: authority stays 1
 and the alert stays down.
 
 Enter (model): either side's worse of lane line and road edge below
-0.30 AND path lateral std at ~3 s above 2 m, held 0.40 s.
-Exit: both sides' better of lane line and road edge at or above 0.55,
-held 0.80 s. Path uncertainty alone cannot hold the latch once both
-sides are clearly visible. A single frame cannot flip the latch.
+0.30 AND path lateral std at ~3 s above 2 m, held 0.40 s. That timer
+runs only above 20 mph, with no blinker, while lateral is not yielded,
+and only after the car has been out of a turn for the last 1 s
+(|measured| and |model curvature| under 0.01 1/m, radius over ~100 m).
+A turn holds the timer at 0. A road that is still unreadable 1 s after
+the turn enters normally.
+
+Exit: held 0.80 s of either both sides' better-of at or above 0.55, or
+one side's better-of at or above 0.55 with the path settled (lateral
+std at ~3 s under 1.2 m, desired curvature stable) and the car out of
+the turn. An alert that is already up when a turn starts stays up
+through the turn. A single frame cannot flip the latch.
 
 Enter (camera): integration lines fall below 0.45× a recent bright
 baseline (0.65× when the sun is within 12° of the horizon and 22° of
 the heading), held 0.30 s. Exit when lines are back above 0.70× for 1 s.
+The sun-glare check does not use the turn gate.
 """
 
 from __future__ import annotations
@@ -26,6 +35,8 @@ from __future__ import annotations
 import math
 from collections import deque
 from dataclasses import dataclass
+
+from openpilot.common.constants import CV
 
 # --- model confidence -------------------------------------------------------
 # laneLineProbs are already 0..1. Road-edge std (m) maps through
@@ -38,6 +49,12 @@ PATH_Y_STD_ENTER_M = 2.0
 PATH_Y_STD_EXIT_M = 1.2
 MODEL_ENTER_S = 0.40
 MODEL_EXIT_S = 0.80
+
+# Model-poor timer. Turns, blinkers, a yielded wheel, and town creep
+# are not low visibility: lane lines vanish in intersections.
+ENTRY_MIN_V_MS = 20.0 * CV.MPH_TO_MS  # strictly above 20 mph
+TURN_CURVATURE = 0.01                  # 1/m, radius ~100 m
+STRAIGHT_HOLD_S = 1.0                  # out of the turn this long before the timer runs
 
 # --- camera exposure --------------------------------------------------------
 EXPOSURE_WINDOW_S = 12.0
@@ -167,14 +184,61 @@ def model_is_poor(left: float, right: float, y_std: float | None) -> bool:
 
 
 def model_is_clear(left: float, right: float, y_std: float | None) -> bool:
-  """Exit bar. ``left``/``right`` are exit confidences (better of lane and edge).
+  """Both-sides exit bar. ``left``/``right`` are exit confidences.
 
   Once both sides are clearly visible, path std cannot hold the latch.
   ``y_std`` stays in the signature so callers and older tests still pass it;
-  it does not block a clear exit.
+  it does not block a clear exit. One settled side is ``model_one_side_clear``.
   """
   del y_std
   return left >= LANE_CONF_EXIT and right >= LANE_CONF_EXIT
+
+
+def _abs_curvature(value) -> float | None:
+  try:
+    k = float(value)
+  except (TypeError, ValueError):
+    return None
+  return abs(k) if math.isfinite(k) else None
+
+
+def in_turn(measured_k, model_k) -> bool:
+  """True when either curvature is a turn (radius under ~100 m) or unusable.
+
+  Measured curvature is the steered curvature (``self.curvature`` in
+  controlsd). Model curvature is the same desired curvature controlsd
+  already reads: lateralManeuverPlan when it is valid, otherwise
+  modelV2.action.desiredCurvature.
+  """
+  measured = _abs_curvature(measured_k)
+  model = _abs_curvature(model_k)
+  if measured is None or model is None:
+    return True
+  return measured >= TURN_CURVATURE or model >= TURN_CURVATURE
+
+
+def entry_speed_ok(v_ego) -> bool:
+  """Model-poor entry counts only above 20 mph."""
+  try:
+    v = float(v_ego)
+  except (TypeError, ValueError):
+    return False
+  return math.isfinite(v) and v > ENTRY_MIN_V_MS
+
+
+def model_one_side_clear(left: float, right: float, y_std: float | None) -> bool:
+  """One side clearly seen and the path std has settled.
+
+  ``left``/``right`` are exit confidences (better of lane line and road
+  edge). Settled path std is under ``PATH_Y_STD_EXIT_M``. The caller also
+  requires desired curvature to be stable and the car out of the turn
+  (both |k| under ``TURN_CURVATURE``).
+  """
+  if y_std is None or not math.isfinite(y_std):
+    return False
+  if y_std >= PATH_Y_STD_EXIT_M:
+    return False
+  return left >= LANE_CONF_EXIT or right >= LANE_CONF_EXIT
 
 
 def fade_curvature(model_k: float, measured_k: float, authority: float) -> float:
@@ -342,6 +406,9 @@ class LowVisibility:
     self._model = False
     self._poor_s = 0.0
     self._clear_s = 0.0
+    # No turn observed yet, so a straight at speed can enter immediately.
+    # A turn zeros this; the timer stays at 0 until it climbs back to 1 s.
+    self._straight_s = STRAIGHT_HOLD_S
     self._exposure = _Exposure()
 
   def reset_latch(self):
@@ -349,21 +416,47 @@ class LowVisibility:
     self._model = False
     self._poor_s = 0.0
     self._clear_s = 0.0
+    self._straight_s = STRAIGHT_HOLD_S
     self.authority = 1.0
     self._exposure.clear_latch()
 
   def update(self, *, enabled: bool, lane_probs=None, edge_stds=None,
              path_t=None, path_y_std=None, integ_lines=None,
-             sun_ahead: bool = False, dt: float = 0.01) -> LowVisibilityOutput:
+             sun_ahead: bool = False, dt: float = 0.01,
+             v_ego: float = 15.0, blinker: bool = False, yielded: bool = False,
+             measured_curvature: float = 0.0, model_curvature: float = 0.0) -> LowVisibilityOutput:
+    """``v_ego`` defaults above 20 mph and both curvatures default straight.
+
+    Confidence tests that omit the car state keep the previous straight-road
+    behavior. controlsd always passes the live speed, blinker, yield, and
+    the curvatures it already uses for the lateral command.
+    """
     dt = float(dt) if dt and math.isfinite(float(dt)) else 0.01
+    turning = in_turn(measured_curvature, model_curvature)
+    if turning:
+      self._straight_s = 0.0
+    else:
+      self._straight_s = min(STRAIGHT_HOLD_S, self._straight_s + dt)
+    straight_for_hold = self._straight_s + 1e-12 >= STRAIGHT_HOLD_S
+    # Desired curvature is stable when it is under the turn bar. That,
+    # with measured curvature, is also "out of the turn".
+    entry_ok = (
+      straight_for_hold
+      and entry_speed_ok(v_ego)
+      and not bool(blinker)
+      and not bool(yielded)
+    )
     left, right = side_confidences(lane_probs, edge_stds)
     exit_left, exit_right = side_confidences_exit(lane_probs, edge_stds)
     y_std = path_y_std_at(path_t, path_y_std, PATH_T_S)
     poor = model_is_poor(left, right, y_std)
-    clear = model_is_clear(exit_left, exit_right, y_std)
     # Entry still uses the worse of lane and edge, plus path std. Once
-    # the latch is up, the better of lane and edge on each side can
-    # leave even if the other signal (or path std) would still look poor.
+    # the latch is up, either both sides or one settled side can leave.
+    # In a turn the exit hold does not run, so an alert that is already
+    # up stays up until the turn is over.
+    one_side = (not turning) and model_one_side_clear(exit_left, exit_right, y_std)
+    both_sides = (not turning) and model_is_clear(exit_left, exit_right, y_std)
+    clear = both_sides or one_side
     if self._model:
       if clear:
         self._clear_s += dt
@@ -373,12 +466,13 @@ class LowVisibility:
       else:
         self._poor_s = 0.0
         self._clear_s = 0.0
-    elif poor:
+    elif poor and entry_ok:
       self._poor_s += dt
       self._clear_s = 0.0
       if self._poor_s + 1e-12 >= MODEL_ENTER_S:
         self._model = True
     else:
+      # Turn, blinker, yield, or under 20 mph: the enter timer stays at 0.
       self._poor_s = 0.0
       self._clear_s = 0.0
 

@@ -170,11 +170,32 @@ class Controls:
       if ahead is not None:
         sun_ahead = bool(ahead)
         break
+    # Same carState subscription controlsd already has. No new socket.
+    # Measured curvature is self.curvature (steered). Model curvature is
+    # the desired curvature this loop already reads for the lateral target.
+    try:
+      cs = self.sm['carState']
+      v_ego = float(cs.vEgo)
+      blinker = bool(cs.leftBlinker or cs.rightBlinker)
+    except Exception:
+      v_ego = 0.0
+      blinker = False
+    try:
+      if self.sm.valid['lateralManeuverPlan']:
+        model_k = float(self.sm['lateralManeuverPlan'].desiredCurvature)
+      else:
+        model_k = float(model.action.desiredCurvature)
+    except Exception:
+      model_k = 0.0
     return self.low_vis.update(
       enabled=bool(engaged) and param_on,
       lane_probs=lane_probs, edge_stds=edge_stds,
       path_t=path_t, path_y_std=path_y, integ_lines=integ,
-      sun_ahead=sun_ahead, dt=DT_CTRL)
+      sun_ahead=sun_ahead, dt=DT_CTRL,
+      v_ego=v_ego, blinker=blinker,
+      yielded=bool(self._lat_handoff.yielded),
+      measured_curvature=float(self.curvature),
+      model_curvature=model_k)
 
   def _cone_curvature(self, model_k: float, CS) -> float:
     """Shift the lateral target onto the driver's line after a cone-line push.
