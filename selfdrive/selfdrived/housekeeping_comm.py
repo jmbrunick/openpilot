@@ -96,6 +96,32 @@ def classify_comm_issue(
   return None
 
 
+def submaster_ignore_services(
+  sensor_packets: list[str],
+  gps_packets: list[str],
+  *,
+  simulation: bool,
+  replay: bool,
+) -> list[str]:
+  """Services dropped from SubMaster alive, average-frequency, and valid checks.
+
+  Mirrors SelfdriveD's ignore list, including the housekeeping append.
+  Driving services are not in this list.
+  """
+  ignore = list(sensor_packets) + list(gps_packets) + [
+    "alertDebug",
+    "lateralManeuverPlan",
+    "pathObstacleNAP",
+    "pathObstacleVisionNAP",
+  ]
+  if simulation:
+    ignore += ["driverCameraState", "managerState"]
+  if replay:
+    ignore += ["roadCameraState", "wideRoadCameraState", "driverCameraState", "managerState"]
+  ignore += list(HOUSEKEEPING_SERVICES)
+  return ignore
+
+
 def device_health_events(
   thermal_status,
   free_space_percent: float,
@@ -117,31 +143,3 @@ def device_health_events(
   if memory_usage_percent > 90 and not simulation:
     events.append("lowMemory")
   return events
-
-
-def submaster_ignore_services(
-  sensor_packets: list[str],
-  gps_packets: list[str],
-  *,
-  simulation: bool,
-  replay: bool,
-) -> list[str]:
-  """Services dropped from SubMaster alive, average-frequency, and valid checks.
-
-  Housekeeping is included so a short deviceState stall cannot fail
-  all_checks(). Every driving service stays on the strict checks.
-  """
-  ignore = list(sensor_packets) + list(gps_packets) + [
-    "alertDebug",
-    "lateralManeuverPlan",
-    "pathObstacleNAP",
-    "pathObstacleVisionNAP",
-    *HOUSEKEEPING_SERVICES,
-  ]
-  if simulation:
-    ignore += ["driverCameraState", "managerState"]
-  if replay:
-    # no vipc in replay will make them ignored anyways
-    # sanitized fixtures omit driverCameraState/managerState; ignore them in replay
-    ignore += ["roadCameraState", "wideRoadCameraState", "driverCameraState", "managerState"]
-  return ignore

@@ -22,11 +22,11 @@ from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 from openpilot.selfdrive.selfdrived.events import Events, ET
 from openpilot.selfdrive.selfdrived.helpers import ExcessiveActuationCheck, preap_not_in_drive_clears_mismatch
 from openpilot.selfdrive.selfdrived.housekeeping_comm import (
+  HOUSEKEEPING_SERVICES,
   classify_comm_issue,
   device_health_events,
   device_state_seen,
   housekeeping_silent_services,
-  submaster_ignore_services,
 )
 from openpilot.selfdrive.selfdrived.preap_regen import (
   PreAPChimeState, RegenDemandCheck, gas_should_user_disable, orphan_pull_requests_enable,
@@ -91,11 +91,17 @@ class SelfdriveD:
     # TODO: de-couple selfdrived with card/conflate on carState without introducing controls mismatches
     self.car_state_sock = messaging.sub_sock('carState', timeout=20)
 
+    ignore = self.sensor_packets + self.gps_packets + ['alertDebug', 'lateralManeuverPlan', 'pathObstacleNAP', 'pathObstacleVisionNAP']
+    if SIMULATION:
+      ignore += ['driverCameraState', 'managerState']
+    if REPLAY:
+      # no vipc in replay will make them ignored anyways
+      # sanitized fixtures omit driverCameraState/managerState; ignore them in replay
+      ignore += ['roadCameraState', 'wideRoadCameraState', 'driverCameraState', 'managerState']
     # deviceState and managerState are housekeeping. A few seconds of silence
     # there must not fail the strict alive/freq/valid checks (commIssue).
     # A real death is handled below with a 10 s receive-timestamp window.
-    ignore = submaster_ignore_services(
-      self.sensor_packets, self.gps_packets, simulation=SIMULATION, replay=REPLAY)
+    ignore += list(HOUSEKEEPING_SERVICES)
     self.sm = messaging.SubMaster(['deviceState', 'pandaStates', 'peripheralState', 'modelV2', 'liveCalibration',
                                    'carOutput', 'driverMonitoringState', 'longitudinalPlan', 'livePose', 'liveDelay',
                                    'managerState', 'liveParameters', 'radarState', 'liveTorqueParameters',

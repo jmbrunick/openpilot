@@ -138,6 +138,11 @@ def test_other_services_timeouts_unchanged():
   assert set(HOUSEKEEPING_SERVICES) <= set(ignore)
   for name in DRIVING_SERVICES:
     assert name not in ignore
+  # Replay fixtures and the obstacle-chime wiring both grep these literals.
+  selfd = (ROOT / "selfdrive" / "selfdrived" / "selfdrived.py").read_text()
+  assert "['alertDebug', 'lateralManeuverPlan', 'pathObstacleNAP', 'pathObstacleVisionNAP']" in selfd
+  assert "ignore += ['roadCameraState', 'wideRoadCameraState', 'driverCameraState', 'managerState']" in selfd
+  assert "ignore += list(HOUSEKEEPING_SERVICES)" in selfd
 
   # Strict failure of any remaining service still raises, at that service's own window.
   assert _kind(0.4, all_alive=False) == "commIssue"
@@ -165,7 +170,7 @@ def test_selfdrived_wires_ignore_list_and_last_device_state():
   src = (ROOT / "selfdrive" / "selfdrived" / "selfdrived.py").read_text()
   assert "ignore_alive=ignore, ignore_avg_freq=ignore" in src
   assert "ignore_valid=ignore" in src
-  assert "submaster_ignore_services(" in src
+  assert "ignore += list(HOUSEKEEPING_SERVICES)" in src
   assert "ds.thermalStatus, ds.freeSpacePercent, ds.memoryUsagePercent" in src
   assert "fan_desired = ds.fanSpeedPercentDesired if ds_seen else 0" in src
   # No new carState subscriber.
