@@ -194,6 +194,9 @@ def test_server_has_no_high_rate_cereal():
   assert "fetch(" not in html
   assert "Phone guidance" not in html
   assert "Cruise speed trim" not in html
+  assert "#2563eb" in html
+  assert "overflow:hidden" in html.replace(" ", "")
+  assert "float:left" not in html.replace(" ", "")
 
 
 def test_nap_dash_is_optional_and_ignored_by_process_not_running():

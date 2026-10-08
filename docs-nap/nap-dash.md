@@ -28,6 +28,8 @@ On every UI start the comma rewrites the hotspot profile if it still has an old 
 
 Tabs follow the on-device settings sidebar (Device, Network, Toggles, Software, NAP, Firehose, Developer). NAP subpages (Driving Mannerisms, Map Speed Limit, Radar, and the triple-tap Hidden card) are discovered from those screens.
 
+The page is laid out for the Pre-AP Model S 17" portrait MCU with the map on top and the browser on the bottom: a wide, short pane. Compact top tabs use a blue highlight on the selected tab. Each setting is a dark row with the control on the right, in the same order and sections as the comma screen. The tab bar stays put and the open panel scrolls inside itself, so the bottom of the pane is not clipped. A phone gets the same rows in one column.
+
 Toggles, choices, titles, and descriptions are parsed from the device UI source at startup (`selfdrive/ui/layouts/settings/*.py` and the constants those files import). There is no second hand-written toggle list. A new toggle added in that UI source shows up here after restart, with no web-side edit.
 
 Writes go through Params the same way the device does: plain `put` / `put_bool`, and the same helpers for Experimental Mode, Simulate Look / False Alert Ignore, Force Offroad, and Hypermile. Toggles the device locks while the car is on stay locked while `IsOnroad` is set. Toggles it locks while engaged stay locked while `IsEngaged` is set. Those two Params are written by `hardwared`; this process does not subscribe to cereal to read them. Dangerous toggles (Experimental Mode, alpha longitudinal, reboot, power off) ask for confirmation.

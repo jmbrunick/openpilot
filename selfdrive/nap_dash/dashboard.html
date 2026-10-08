@@ -2,66 +2,167 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <title>openpilot</title>
 <style>
-  html, body { margin: 0; padding: 0; background: #000; color: #f2f2f2; }
-  body { font: 22px/1.35 Arial, Helvetica, sans-serif; }
-  #nav { background: #000; padding: 12px; }
-  #nav button, #software button, .choice button, .soft button, .overlay button, .sub button {
-    font: 22px/1.2 Arial, Helvetica, sans-serif;
-    min-height: 64px;
-    padding: 16px 18px;
-    margin: 0 8px 8px 0;
-    border: 0;
-    border-radius: 10px;
-    background: #2a2a2a;
-    color: #f2f2f2;
-  }
-  #nav button.sel, .choice button.sel, .sub button.sel { background: #f2f2f2; color: #111; }
-  #main { padding: 8px 16px 48px; }
-  h1 { font-size: 28px; margin: 8px 0; }
-  h2 { font-size: 20px; color: #9a9a9a; font-weight: normal; margin: 22px 0 8px; }
-  .note, .desc, #status { color: #bdbdbd; font-size: 18px; }
-  .row {
-    background: #1c1c1c;
-    border-radius: 12px;
-    padding: 14px 16px;
-    margin: 0 0 10px;
-  }
-  .row h3 { margin: 0 0 6px; font-size: 24px; }
-  .row .desc { white-space: pre-wrap; margin: 0 0 10px; }
-  .row button.on { background: #1f7a3a; color: #fff; }
-  .row button.off { background: #3a3a3a; }
-  .row button:disabled, .row button.locked { background: #222; color: #777; }
-  .pill { display: inline-block; margin-left: 8px; color: #e0b050; font-size: 16px; }
-  .overlay {
-    position: fixed; left: 0; top: 0; right: 0; bottom: 0;
-    background: rgba(0,0,0,0.72);
-    padding: 40px 20px;
-  }
-  .card { background: #1c1c1c; border-radius: 16px; padding: 20px; max-width: 720px; margin: 0 auto; }
-  .hidden { display: none; }
-  @media (min-width: 900px) {
-    #nav { float: left; width: 280px; min-height: 100%; }
-    #nav button { display: block; width: 250px; text-align: left; }
-    #main { margin-left: 300px; }
-  }
+* { -webkit-box-sizing: border-box; box-sizing: border-box; }
+html, body { margin: 0; padding: 0; height: 100%; background: #121417; color: #e5e7eb; overflow: hidden; }
+body { font-family: Arial, Helvetica, sans-serif; font-size: 16px; -webkit-text-size-adjust: 100%; }
+#shell { position: absolute; top: 0; right: 0; bottom: 0; left: 0; }
+#chrome { position: relative; background: #121417; padding: 4px 6px 2px; }
+.top { display: table; width: 100%; }
+.topcell { display: table-cell; vertical-align: middle; }
+#nav { font-size: 0; }
+#nav button, #sub button, .choice button, .soft button, .go, .sq, .overlay button {
+  font-family: Arial, Helvetica, sans-serif;
+  font-weight: bold;
+  color: #111;
+  background: #d1d5db;
+  border: 2px solid #9ca3af;
+  border-radius: 8px;
+  -webkit-appearance: none;
+}
+#nav button {
+  display: inline-block;
+  min-height: 44px;
+  margin: 2px 4px 2px 0;
+  padding: 8px 12px;
+  font-size: 15px;
+}
+#nav button.on, #sub button.on, .choice button.on, .soft button.on, .go.on, .sq.on, .overlay button.on {
+  background: #2563eb;
+  color: #fff;
+  border-color: #93c5fd;
+}
+.banner {
+  display: inline-block;
+  min-width: 108px;
+  min-height: 44px;
+  line-height: 44px;
+  padding: 0 10px;
+  border-radius: 8px;
+  background: #d1d5db;
+  color: #111;
+  font-size: 15px;
+  font-weight: bold;
+  text-align: center;
+}
+.banner.on { background: #2563eb; color: #fff; }
+#sub { font-size: 0; }
+#sub button {
+  display: inline-block;
+  min-height: 40px;
+  margin: 2px 4px 2px 0;
+  padding: 6px 10px;
+  font-size: 14px;
+}
+#status { margin: 0; font-size: 12px; line-height: 1.2; color: #8b9198; }
+#status:empty { display: none; }
+#main {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 4px 6px 8px;
+}
+#content { font-size: 0; }
+.sech {
+  display: block;
+  width: 100%;
+  clear: both;
+  margin: 8px 0 4px;
+  font-size: 13px;
+  font-weight: bold;
+  color: #9aa0a6;
+}
+.row {
+  display: inline-block;
+  width: 100%;
+  vertical-align: top;
+  margin: 0 0 6px;
+  background: #17181c;
+  border: 2px solid #2c3036;
+  border-radius: 10px;
+  font-size: 16px;
+}
+.rowtable { display: table; width: 100%; table-layout: fixed; }
+.rowlabel, .rowgo { display: table-cell; vertical-align: middle; }
+.rowlabel { padding: 8px 8px 8px 10px; font-weight: bold; font-size: 16px; }
+.rowgo { width: 84px; padding: 6px 8px 6px 0; text-align: right; }
+.rowsub {
+  display: block;
+  margin-top: 2px;
+  font-size: 13px;
+  font-weight: normal;
+  color: #8b9198;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rowsub.open { white-space: normal; }
+.sq, .go {
+  min-width: 64px;
+  min-height: 52px;
+  height: 52px;
+  padding: 0 8px;
+  font-size: 16px;
+}
+.sq:disabled, .go:disabled, .choice button:disabled, .soft button:disabled {
+  background: #2a2e34;
+  color: #777;
+  border-color: #3a3f46;
+}
+.choice, .soft { padding: 0 8px 6px; font-size: 0; }
+.choice button, .soft button {
+  display: inline-block;
+  min-height: 48px;
+  margin: 0 6px 6px 0;
+  padding: 8px 12px;
+  font-size: 15px;
+  vertical-align: top;
+}
+.pill { color: #e0b050; font-size: 13px; font-weight: normal; }
+.overlay {
+  position: fixed;
+  left: 0; top: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.72);
+  padding: 24px 12px;
+  z-index: 20;
+}
+.card { background: #17181c; border: 2px solid #2c3036; border-radius: 10px; padding: 12px; max-width: 520px; margin: 0 auto; }
+.card h2 { margin: 0 0 8px; font-size: 18px; }
+.card p { margin: 0 0 10px; color: #8b9198; font-size: 14px; white-space: pre-wrap; }
+.card button { min-height: 52px; margin: 0 8px 0 0; padding: 8px 16px; font-size: 16px; }
+.hidden { display: none; }
+@media (min-width: 720px) {
+  #content .row { width: 49.5%; margin: 0 0.5% 6px 0; }
+  #content .row.span { width: 99.5%; }
+}
 </style>
 </head>
 <body>
-<div id="nav"></div>
-<div id="main">
-  <h1>openpilot</h1>
-  <p class="note" id="intro">Loading settings from the comma.</p>
-  <p id="status"></p>
-  <div id="content"></div>
+<div id="shell">
+  <div id="chrome">
+    <div class="top">
+      <div class="topcell" id="nav"></div>
+      <div class="topcell" style="width:120px;text-align:right">
+        <div id="drive" class="banner">STANDBY</div>
+      </div>
+    </div>
+    <div id="sub" class="hidden"></div>
+    <p id="status"></p>
+  </div>
+  <div id="main">
+    <div id="content"></div>
+  </div>
 </div>
 <div id="confirm" class="overlay hidden">
   <div class="card">
     <h2 id="confirm-title">Confirm</h2>
-    <p id="confirm-body" class="desc"></p>
-    <button id="confirm-yes" type="button">Confirm</button>
+    <p id="confirm-body"></p>
+    <button id="confirm-yes" type="button" class="on">Confirm</button>
     <button id="confirm-no" type="button">Cancel</button>
   </div>
 </div>
@@ -107,6 +208,14 @@ function postJSON(url, body, cb) {
 
 function setStatus(text) {
   document.getElementById("status").textContent = text || "";
+  fitPane();
+}
+
+function fitPane() {
+  var chrome = document.getElementById("chrome");
+  var main = document.getElementById("main");
+  if (!chrome || !main) return;
+  main.style.top = chrome.offsetHeight + "px";
 }
 
 function panels() {
@@ -172,6 +281,13 @@ function showPanel(id) {
   if (id === "software") loadSoftware();
 }
 
+function renderDrive() {
+  var el = document.getElementById("drive");
+  if (snap && snap.engaged) { el.className = "banner on"; el.textContent = "ENGAGED"; }
+  else if (snap && snap.onroad) { el.className = "banner"; el.textContent = "CAR ON"; }
+  else { el.className = "banner"; el.textContent = "STANDBY"; }
+}
+
 function renderNav() {
   var nav = document.getElementById("nav");
   while (nav.firstChild) nav.removeChild(nav.firstChild);
@@ -182,24 +298,32 @@ function renderNav() {
     var btn = document.createElement("button");
     btn.type = "button";
     btn.textContent = list[i].title;
-    if (list[i].id === current || (findPanel(current) && findPanel(current).parent === list[i].id)) btn.className = "sel";
+    if (list[i].id === current || (findPanel(current) && findPanel(current).parent === list[i].id)) btn.className = "on";
     btn.onclick = (function (id) {
       return function () { showPanel(id); };
     })(list[i].id);
     nav.appendChild(btn);
   }
+  renderDrive();
+  fitPane();
 }
 
-function addSubnav(parentId) {
+function renderSub() {
+  var bar = document.getElementById("sub");
+  while (bar.firstChild) bar.removeChild(bar.firstChild);
+  var panel = findPanel(current);
+  var parentId = panel && panel.parent ? panel.parent : current;
   var kids = childPanels(parentId);
-  if (!kids.length) return;
-  var bar = document.createElement("div");
-  bar.className = "sub";
+  if (!kids.length) {
+    bar.className = "hidden";
+    return;
+  }
+  bar.className = "";
   var parent = findPanel(parentId);
   var all = document.createElement("button");
   all.type = "button";
   all.textContent = parent ? parent.title : "Main";
-  if (current === parentId) all.className = "sel";
+  if (current === parentId) all.className = "on";
   all.onclick = function () { showPanel(parentId); };
   bar.appendChild(all);
   var i;
@@ -207,38 +331,27 @@ function addSubnav(parentId) {
     var btn = document.createElement("button");
     btn.type = "button";
     btn.textContent = kids[i].title;
-    if (kids[i].id === current) btn.className = "sel";
+    if (kids[i].id === current) btn.className = "on";
     btn.onclick = (function (id) {
       return function () { showPanel(id); };
     })(kids[i].id);
     bar.appendChild(btn);
   }
-  document.getElementById("content").appendChild(bar);
 }
 
 function renderMain() {
   var root = document.getElementById("content");
   while (root.firstChild) root.removeChild(root.firstChild);
+  renderSub();
+  renderDrive();
   var panel = findPanel(current);
-  var intro = document.getElementById("intro");
-  if (manifest && manifest.hotspot) {
-    intro.textContent = "Open " + manifest.hotspot.url + " on the Tesla browser or a phone. The page follows the comma's own settings list.";
-  }
-  if (snap && snap.onroad) {
-    var banner = document.createElement("p");
-    banner.className = "note";
-    banner.textContent = snap.engaged
-      ? "Openpilot is engaged. Toggles the comma locks while engaged stay locked here."
-      : "The car is on. Toggles the comma locks onroad stay locked here.";
-    root.appendChild(banner);
-  }
-  var parentId = panel && panel.parent ? panel.parent : current;
-  if (panel && (panel.parent || childPanels(panel.id).length)) addSubnav(parentId);
   if (panel && panel.layout === "software") {
     var soft = document.createElement("div");
     soft.id = "software";
+    soft.className = "row span";
     soft.textContent = "Loading software…";
     root.appendChild(soft);
+    fitPane();
     return;
   }
   var ctrls = controlsFor(current);
@@ -248,55 +361,81 @@ function renderMain() {
     if (isHidden(ctrls[i])) continue;
     if (ctrls[i].section && ctrls[i].section !== section) {
       section = ctrls[i].section;
-      var h = document.createElement("h2");
+      var h = document.createElement("div");
+      h.className = "sech";
       h.textContent = section;
       root.appendChild(h);
     }
     root.appendChild(renderControl(ctrls[i]));
   }
+  fitPane();
+}
+
+function addSub(row, text) {
+  if (!text) return;
+  var sub = document.createElement("span");
+  sub.className = "rowsub";
+  sub.textContent = plain(text);
+  sub.onclick = function () {
+    sub.className = sub.className.indexOf(" open") >= 0 ? "rowsub" : "rowsub open";
+  };
+  row.appendChild(sub);
 }
 
 function renderControl(ctrl) {
   var row = document.createElement("div");
-  row.className = "row";
-  var title = document.createElement("h3");
-  title.textContent = ctrl.title;
+  var wide = ctrl.kind === "choice" || ctrl.kind === "info";
+  row.className = wide ? "row span" : "row";
+  var table = document.createElement("div");
+  table.className = "rowtable";
+  var label = document.createElement("div");
+  label.className = "rowlabel";
+  label.appendChild(document.createTextNode(ctrl.title));
   var locked = lockText(ctrl);
   if (locked) {
     var pill = document.createElement("span");
     pill.className = "pill";
-    pill.textContent = locked;
-    title.appendChild(pill);
+    pill.textContent = " " + locked;
+    label.appendChild(pill);
   }
-  row.appendChild(title);
-  if (ctrl.description) {
-    var desc = document.createElement("p");
-    desc.className = "desc";
-    desc.textContent = plain(ctrl.description);
-    row.appendChild(desc);
+  var desc = ctrl.description || "";
+  if (ctrl.kind === "device_only") desc = desc || "On the comma screen.";
+  if (ctrl.needs_restart && desc.indexOf("restart openpilot") < 0) {
+    desc = (desc ? desc + " " : "") + "Changing this restarts openpilot if the car is powered on.";
   }
-  if (ctrl.kind === "info" || ctrl.kind === "device_only" || ctrl.kind === "text") {
-    if (ctrl.kind === "text") {
-      var shown = valueOf(ctrl);
-      var val = document.createElement("p");
-      val.textContent = shown === null || shown === undefined || shown === "" ? "—" : String(shown);
-      row.appendChild(val);
-    } else if (ctrl.kind === "device_only") {
-      var note = document.createElement("p");
-      note.className = "note";
-      note.textContent = "On the comma screen.";
-      row.appendChild(note);
+  if (ctrl.reboot_hint) desc = (desc ? desc + " " : "") + "Reboot the comma on the Device tab for this to apply.";
+  addSub(label, desc);
+  if (ctrl.kind === "text") {
+    var shown = valueOf(ctrl);
+    addSub(label, shown === null || shown === undefined || shown === "" ? "—" : String(shown));
+  }
+  table.appendChild(label);
+  var go = document.createElement("div");
+  go.className = "rowgo";
+  if (ctrl.kind === "link" || ctrl.kind === "action" || ctrl.kind === "toggle") {
+    var toggle = document.createElement("button");
+    toggle.type = "button";
+    if (ctrl.kind === "action") {
+      toggle.className = "go";
+      toggle.textContent = "Run";
+    } else if (ctrl.kind === "link") {
+      toggle.className = "go";
+      toggle.textContent = "Open";
+    } else {
+      var on = !!valueOf(ctrl);
+      toggle.className = on ? "sq on" : "sq";
+      toggle.textContent = on ? "On" : "Off";
     }
-    return row;
+    if (locked || ctrl.disabled) toggle.disabled = true;
+    toggle.onclick = function () {
+      if (ctrl.kind === "link") showPanel(ctrl.target_panel);
+      else if (ctrl.kind === "action") commit(ctrl, true, false);
+      else commit(ctrl, !valueOf(ctrl), false);
+    };
+    go.appendChild(toggle);
   }
-  if (ctrl.kind === "link") {
-    var link = document.createElement("button");
-    link.type = "button";
-    link.textContent = "Open";
-    link.onclick = function () { showPanel(ctrl.target_panel); };
-    row.appendChild(link);
-    return row;
-  }
+  table.appendChild(go);
+  row.appendChild(table);
   if (ctrl.kind === "choice") {
     var box = document.createElement("div");
     box.className = "choice";
@@ -306,7 +445,7 @@ function renderControl(ctrl) {
       var b = document.createElement("button");
       b.type = "button";
       b.textContent = ctrl.choices[n];
-      if (same(cur, ctrl.values[n])) b.className = "sel";
+      if (same(cur, ctrl.values[n])) b.className = "on";
       if (locked || ctrl.disabled) b.disabled = true;
       b.onclick = (function (value) {
         return function () { commit(ctrl, value, false); };
@@ -314,36 +453,8 @@ function renderControl(ctrl) {
       box.appendChild(b);
     }
     row.appendChild(box);
-    if (ctrl.reboot_hint) row.appendChild(hint("Reboot the comma on the Device tab for this to apply."));
-    return row;
   }
-  var on = !!valueOf(ctrl);
-  var toggle = document.createElement("button");
-  toggle.type = "button";
-  if (ctrl.kind === "action") {
-    toggle.textContent = ctrl.title;
-    toggle.className = locked ? "locked" : "";
-  } else {
-    toggle.textContent = on ? "On" : "Off";
-    toggle.className = on ? "on" : "off";
-    if (locked) toggle.className += " locked";
-  }
-  if (locked || ctrl.disabled) toggle.disabled = true;
-  toggle.onclick = function () {
-    if (ctrl.kind === "action") commit(ctrl, true, false);
-    else commit(ctrl, !on, false);
-  };
-  row.appendChild(toggle);
-  if (ctrl.needs_restart) row.appendChild(hint("Changing this restarts openpilot if the car is powered on."));
-  if (ctrl.reboot_hint) row.appendChild(hint("Reboot the comma on the Device tab for this to apply."));
   return row;
-}
-
-function hint(text) {
-  var p = document.createElement("p");
-  p.className = "note";
-  p.textContent = text;
-  return p;
 }
 
 function commit(ctrl, value, confirmed) {
@@ -380,23 +491,17 @@ function loadNetwork() {
     if (err || current !== "network") return;
     var root = document.getElementById("content");
     var box = document.createElement("div");
-    box.className = "row";
-    var h = document.createElement("h3");
-    h.textContent = "Addresses on this comma";
-    box.appendChild(h);
+    box.className = "row span";
+    var label = document.createElement("div");
+    label.className = "rowlabel";
+    label.textContent = "Addresses on this comma";
     var lines = (data.interfaces && data.interfaces.length) ? data.interfaces : [];
-    if (!lines.length) {
-      var empty = document.createElement("p");
-      empty.textContent = "No interface list from this machine. The hotspot address is still " + data.url;
-      box.appendChild(empty);
-    }
+    if (!lines.length) addSub(label, "No interface list from this machine. Hotspot " + data.url);
     var i;
-    for (i = 0; i < lines.length; i++) {
-      var p = document.createElement("p");
-      p.textContent = lines[i].name + "  " + lines[i].addr;
-      box.appendChild(p);
-    }
+    for (i = 0; i < lines.length; i++) addSub(label, lines[i].name + "  " + lines[i].addr);
+    box.appendChild(label);
     root.appendChild(box);
+    fitPane();
   });
 }
 
@@ -409,9 +514,11 @@ function loadSoftware() {
       root.textContent = err.message || "Software unavailable";
       return;
     }
-    root.appendChild(softRow("Current branch", data.git_branch || ""));
-    root.appendChild(softRow("Target branch", data.target_branch || ""));
-    root.appendChild(softRow("Updater", data.updater_state || "idle"));
+    var label = document.createElement("div");
+    label.className = "rowlabel";
+    label.textContent = data.git_branch || "";
+    addSub(label, "Target " + (data.target_branch || "") + " · " + (data.updater_state || "idle"));
+    root.appendChild(label);
     var branches = data.available_branches || [];
     var i;
     var box = document.createElement("div");
@@ -420,36 +527,34 @@ function loadSoftware() {
       var b = document.createElement("button");
       b.type = "button";
       b.textContent = branches[i];
-      if (branches[i] === data.target_branch) b.className = "sel";
+      if (branches[i] === data.target_branch) b.className = "on";
       b.onclick = (function (name) {
         return function () { software({action: "set_branch", branch: name}); };
       })(branches[i]);
       box.appendChild(b);
     }
     root.appendChild(box);
+    var actions = document.createElement("div");
+    actions.className = "soft";
     var check = document.createElement("button");
     check.type = "button";
-    check.textContent = "Check for update";
+    check.textContent = "Check";
     check.onclick = function () { software({action: "fetch"}); };
     var down = document.createElement("button");
     down.type = "button";
     down.textContent = "Download";
     down.onclick = function () { software({action: "download"}); };
-    root.appendChild(check);
-    root.appendChild(down);
     var offline = document.createElement("button");
     offline.type = "button";
-    offline.textContent = data.offline ? "Updates paused — resume" : "Go offline";
-    offline.className = data.offline ? "on" : "off";
+    offline.textContent = data.offline ? "Resume" : "Go offline";
+    if (data.offline) offline.className = "on";
     offline.onclick = function () { software({action: "set_offline", offline: !data.offline}); };
-    root.appendChild(offline);
+    actions.appendChild(check);
+    actions.appendChild(down);
+    actions.appendChild(offline);
+    root.appendChild(actions);
+    fitPane();
   });
-}
-
-function softRow(label, value) {
-  var p = document.createElement("p");
-  p.textContent = label + ": " + value;
-  return p;
 }
 
 function software(body) {
@@ -466,6 +571,7 @@ function refresh() {
     if (err) { setStatus("Settings unavailable"); return; }
     if (document.getElementById("confirm").className.indexOf("hidden") < 0) return;
     snap = data;
+    renderDrive();
     var stamp = JSON.stringify(data.values || {}) + JSON.stringify(data.locked || {}) + data.onroad + data.engaged + data.release;
     if (stamp === lastStamp) return;
     lastStamp = stamp;
@@ -491,6 +597,8 @@ document.getElementById("confirm-no").onclick = function () {
   document.getElementById("confirm").className = "overlay hidden";
   setStatus("");
 };
+
+window.onresize = fitPane;
 
 getJSON("/api/manifest", function (err, data) {
   if (err) { setStatus("Could not read the settings list"); return; }

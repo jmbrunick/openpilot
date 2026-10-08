@@ -152,6 +152,32 @@ def test_discovery_does_not_import_ui_or_cereal():
   assert "import openpilot.selfdrive.speedsignd" not in src
 
 
+def test_unmerged_speed_sign_panel_puts_logger_first(tmp_path):
+  """PR #296 (not merged) puts Speed Sign Logger first in Settings, NAP.
+
+  Discovery reads that panel as text. This test does not edit nap.py.
+  """
+  package = tmp_path / "opendbc" / "car" / "tesla" / "preap"
+  package.mkdir(parents=True)
+  (package / "nap_params.py").write_text(
+    '''\
+class NAPParamKeys:
+  PEDAL_ENABLED = "NAPPedalEnabled"
+''',
+    encoding="utf-8",
+  )
+  text = (Path(__file__).parent / "fixtures" / "nap_pr296_panel.txt").read_text(encoding="utf-8")
+  manifest = discover_manifest(ROOT, sources={"nap.py": text}, extra_module_dirs=[tmp_path])
+  nap = [ctrl for ctrl in manifest["controls"] if ctrl.get("panel") == "nap"]
+  assert nap[0]["title"] == "Speed Sign Logger"
+  assert nap[0]["param"] == "NAPSpeedSignLog"
+  assert nap[0]["section"] == "Speed Sign"
+  assert nap[0]["writer"] == "bool"
+  titles = [ctrl["title"] for ctrl in nap]
+  assert titles.index("Speed Sign Logger") < titles.index("Pedal Interceptor")
+  assert titles.index("Speed Sign Logger") < titles.index("Driving Mannerisms")
+
+
 def test_hidden_and_developer_rules():
   manifest = discover_manifest(ROOT)
   sim = _by_param(manifest, "NAPDmSimulateLooking")
