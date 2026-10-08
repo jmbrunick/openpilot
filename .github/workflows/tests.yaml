@@ -95,7 +95,9 @@ jobs:
           selfdrive/controls/tests/test_tesla_preap_longcontrol.py \
           selfdrive/controls/tests/test_tesla_preap_gas_lift_handoff.py \
           selfdrive/controls/tests/test_tesla_preap_brake_cancel_regen.py \
+          selfdrive/controls/tests/test_preap_brake_long_active.py \
           selfdrive/controls/tests/test_tesla_preap_one_pedal_long.py \
+          opendbc_repo/opendbc/car/tesla/preap/tests/test_preap_carstate.py \
           opendbc_repo/opendbc/car/tesla/preap/tests/test_preap_engagement.py \
           opendbc_repo/opendbc/car/tesla/preap/tests/test_lat_yield.py \
           opendbc_repo/opendbc/car/tesla/preap/tests/test_longitudinal_tuning.py \

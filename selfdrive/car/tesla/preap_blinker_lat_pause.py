@@ -167,11 +167,17 @@ def _publish_real_brake(ret, applied: bool) -> None:
   """Expose digital Applied without setting brakePressed.
 
   Pre-AP keeps brakePressed=False so generic OP brake-to-disengage never
-  fires. controlsd reads CS.brake >= 0.5 as the driver brake bit.
+  fires. driverBrakeApplied is that switch. CS.brake stays the 1.0/0.0
+  fallback controlsd and the lateral handoff already read.
   """
   if hasattr(ret, 'brake'):
     try:
       ret.brake = 1.0 if applied else 0.0
+    except Exception:
+      pass
+  if hasattr(ret, 'driverBrakeApplied'):
+    try:
+      ret.driverBrakeApplied = bool(applied)
     except Exception:
       pass
 
