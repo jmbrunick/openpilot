@@ -692,3 +692,99 @@ def test_overlay_helper_skips_extra_kick_on_stock_falling_edge():
   assert not maybe_one_pedal_overlay_kick(eng, 1.5)
   assert eng.enableLongControl
   assert not eng._one_pedal_pause_latched
+
+
+def _blip_engagement():
+  from opendbc.car.tesla.preap.engagement import PreAPEngagement
+  eng = PreAPEngagement(double_pull_enabled=True, double_pull_window_ms=400)
+  eng.cruiseEnabled = True
+  eng.enableLongControl = True
+  eng._gas_blip_clock = 0.0
+  eng._nap_gas_sensor = {
+    "gas": 0.0, "gas2": 0.0, "state": 0, "idx": 0, "gas_cmd": 0.0, "gas_cmd2": 0.0,
+  }
+  eng._nap_di_pedal_pos = 0.0
+  assert not eng.maybe_one_pedal_gas_kick(False, True, interceptor_di=0.0)
+  assert eng._one_pedal_had_long_at_rest
+  return eng
+
+
+def test_gas_blip_under_50ms_does_not_pause_long(monkeypatch):
+  """A pedal reading above the gate for less than 50 ms is not a pause.
+
+  Oct 7: eight of these, including the two roundabout latches, dropped long
+  and the car fell into Tesla lift regen.
+  """
+  from openpilot.selfdrive.car.tesla import preap_blinker_lat_pause as pause
+  from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import install_blinker_lat_pause
+
+  install_blinker_lat_pause()
+  eng = _blip_engagement()
+  logged = []
+  monkeypatch.setattr(
+    pause.cloudlog, "error",
+    lambda msg, *args, **kwargs: logged.append(msg % args if args else msg),
+  )
+  for i, di in enumerate((2.2, 1.8, 2.5, 1.4)):
+    eng._gas_blip_clock = 0.01 * (i + 1)
+    eng._nap_gas_sensor = {
+      "gas": di, "gas2": di - 0.1, "state": 0, "idx": i + 1,
+      "gas_cmd": 0.4, "gas_cmd2": 0.0,
+    }
+    eng._nap_di_pedal_pos = di
+    assert not eng.maybe_one_pedal_gas_kick(di > 2.0, True, interceptor_di=di)
+    assert eng.enableLongControl
+    assert not eng._one_pedal_pause_latched
+  eng._gas_blip_clock = 0.05
+  eng._nap_gas_sensor = {
+    "gas": 0.0, "gas2": 0.0, "state": 0, "idx": 9, "gas_cmd": 0.0, "gas_cmd2": 0.0,
+  }
+  assert not eng.maybe_one_pedal_gas_kick(False, True, interceptor_di=0.0)
+  assert eng.enableLongControl
+  assert not eng._one_pedal_pause_latched
+  ignored = [line for line in logged if isinstance(line, str) and line.startswith("gasblip ") and '"ignored"' in line]
+  assert ignored
+  assert '"gas":2.5' in ignored[-1] or '"gas": 2.5' in ignored[-1]
+  assert "gas_cmd" in ignored[-1]
+
+
+def test_firm_gas_press_pauses_long_on_that_frame(monkeypatch):
+  """DI > 4 is a deliberate press and pauses on the same 100 Hz frame."""
+  from openpilot.selfdrive.car.tesla import preap_blinker_lat_pause as pause
+  from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import install_blinker_lat_pause
+
+  install_blinker_lat_pause()
+  eng = _blip_engagement()
+  logged = []
+  monkeypatch.setattr(
+    pause.cloudlog, "error",
+    lambda msg, *args, **kwargs: logged.append(msg % args if args else msg),
+  )
+  eng._gas_blip_clock = 0.01
+  eng._nap_gas_sensor = {
+    "gas": 6.5, "gas2": 6.4, "state": 0, "idx": 3, "gas_cmd": 2.0, "gas_cmd2": 0.0,
+  }
+  assert eng.maybe_one_pedal_gas_kick(True, True, interceptor_di=6.5)
+  assert not eng.enableLongControl
+  assert eng._one_pedal_pause_latched
+  assert eng.cruiseEnabled
+  paused = [line for line in logged if isinstance(line, str) and '"pause"' in line]
+  assert paused and "6.5" in paused[-1]
+
+
+def test_light_gas_press_pauses_at_50ms():
+  """A real light press (DI > 1, not a spike) pauses on the fifth frame."""
+  from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import install_blinker_lat_pause
+
+  install_blinker_lat_pause()
+  eng = _blip_engagement()
+  for i in range(4):
+    eng._gas_blip_clock = 0.01 * (i + 1)
+    assert not eng.maybe_one_pedal_gas_kick(False, True, interceptor_di=1.5)
+    assert eng.enableLongControl
+    assert not eng._one_pedal_pause_latched
+  eng._gas_blip_clock = 0.05
+  assert eng.maybe_one_pedal_gas_kick(False, True, interceptor_di=1.5)
+  assert not eng.enableLongControl
+  assert eng._one_pedal_pause_latched
+  assert eng.cruiseEnabled

@@ -40,8 +40,11 @@ in tesla_preap.h keeps controls_allowed; selfdrived also hides the
 controlsMismatch that would otherwise full-cancel after 2s.
 """
 
+import time
+
 from opendbc.car.tesla.preap.lat_yield import encode_hands_stash
 from openpilot.common.constants import CV
+from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.controls.lib.blinker_lateral_pause import (
   BlinkerLateralHold,
   DT_CTRL,
@@ -63,6 +66,7 @@ _ORIG_UPDATE = None
 _ORIG_PROCESS = None
 _ORIG_DROP = None
 _ORIG_CHECK = None
+_ORIG_KICK = None
 _installed = False
 
 # Same floor as controlsd lat standstill: abs(vEgo) <= max(minSteerSpeed, 0.3).
@@ -73,6 +77,13 @@ RESUME_STANDSTILL_V_EGO = 0.3
 # Must match opendbc nap_conf.ONE_PEDAL_GAS_DI_PRESSED / PEDAL_DI_PRESSED.
 ONE_PEDAL_GAS_DI_PRESSED = 1.0
 PEDAL_DI_PRESSED_STOCK = 2.0
+# One sample this far above coast is a real press. Anything softer has to
+# hold for five 100 Hz frames (50 ms) before it pauses long. Oct 7: a
+# reading shorter than 0.1 s latched the pause and the car fell into
+# Tesla lift regen.
+ONE_PEDAL_GAS_FIRM_DI = 4.0
+ONE_PEDAL_GAS_CONFIRM_FRAMES = 5
+_GAS_BLIP_SAME_CYCLE_S = 0.005
 
 
 def one_pedal_gas_for_pause(interceptor_di) -> bool:
@@ -84,6 +95,169 @@ def one_pedal_gas_for_pause(interceptor_di) -> bool:
   if interceptor_di is None:
     return False
   return float(interceptor_di) > ONE_PEDAL_GAS_DI_PRESSED
+
+
+def _gas_blip_now(engagement) -> float:
+  """monotonic, or `_gas_blip_clock` when a test steps frames by hand."""
+  clock = getattr(engagement, "_gas_blip_clock", None)
+  if clock is not None:
+    try:
+      return float(clock)
+    except (TypeError, ValueError):
+      pass
+  return time.monotonic()
+
+
+def _remember_gas_sample(engagement, di) -> None:
+  """Keep the hottest pedal sample in this unconfirmed window for the log."""
+  raw = getattr(engagement, "_nap_gas_sensor", None)
+  snap = dict(raw) if isinstance(raw, dict) else {}
+  snap["di"] = di
+  snap["di_pedal"] = getattr(engagement, "_nap_di_pedal_pos", None)
+  peak = getattr(engagement, "_gas_blip_peak", None)
+  peak_di = None if not isinstance(peak, dict) else peak.get("di")
+  if peak is None or di is None or peak_di is None or float(di) >= float(peak_di):
+    engagement._gas_blip_peak = snap
+
+
+def _log_one_pedal_pedal(engagement, kind: str, frames: int) -> None:
+  """qlog line (errorLogMessage) with the raw GAS_SENSOR / GAS_COMMAND fields.
+
+  No new carState subscriber. The parser values are stashed on the
+  engagement object before the kick runs.
+  """
+  try:
+    import json
+    peak = getattr(engagement, "_gas_blip_peak", None)
+    raw = peak if isinstance(peak, dict) else (getattr(engagement, "_nap_gas_sensor", None) or {})
+    rec = {
+      "kind": kind,
+      "frames": int(frames),
+      "di": raw.get("di", getattr(engagement, "_gas_blip_di", None)),
+      "di_pedal": raw.get("di_pedal", getattr(engagement, "_nap_di_pedal_pos", None)),
+      "gas": raw.get("gas"),
+      "gas2": raw.get("gas2"),
+      "state": raw.get("state"),
+      "idx": raw.get("idx"),
+      "gas_cmd": raw.get("gas_cmd"),
+      "gas_cmd2": raw.get("gas_cmd2"),
+    }
+    cloudlog.error("gasblip " + json.dumps(rec, separators=(",", ":")))
+  except Exception:
+    pass
+
+
+def note_one_pedal_gas_sample(engagement, *, above: bool, firm: bool, now: float) -> bool:
+  """True when this pedal sample is allowed to pause long.
+
+  DI > 4 confirms on that sample. A lighter reading has to stay above
+  the pause gate for five control frames. Two calls in one 100 Hz cycle
+  (carstate kick, then the overlay kick) count as one frame.
+  """
+  last = float(getattr(engagement, "_gas_blip_mono", 0.0) or 0.0)
+  same = last > 0.0 and (float(now) - last) < _GAS_BLIP_SAME_CYCLE_S
+  if firm:
+    engagement._gas_blip_frames = ONE_PEDAL_GAS_CONFIRM_FRAMES
+    engagement._gas_blip_confirmed = True
+    if not same:
+      engagement._gas_blip_mono = float(now)
+    return True
+  if same:
+    return bool(getattr(engagement, "_gas_blip_confirmed", False))
+  frames = int(getattr(engagement, "_gas_blip_frames", 0) or 0)
+  if above:
+    frames += 1
+  else:
+    if 0 < frames < ONE_PEDAL_GAS_CONFIRM_FRAMES:
+      _log_one_pedal_pedal(engagement, "ignored", frames)
+    frames = 0
+    engagement._gas_blip_peak = None
+  confirmed = frames >= ONE_PEDAL_GAS_CONFIRM_FRAMES
+  engagement._gas_blip_frames = frames
+  engagement._gas_blip_mono = float(now)
+  engagement._gas_blip_confirmed = confirmed
+  return confirmed
+
+
+def _filtered_one_pedal_gas_kick(self, gas_pressed, one_pedal_long, interceptor_di=None):
+  """Installed over PreAPEngagement.maybe_one_pedal_gas_kick.
+
+  A from-rest blip shorter than 50 ms does not reach the latch. A firm
+  sample, a press with no sensor reading, an engage-while-gas arm, and
+  an already-latched pause still go straight through, so a real press
+  pauses on that frame. Samples before the first foot-off rest are not
+  debounced: hiding them would set the rest flag and pause on the next
+  frames.
+  """
+  if _ORIG_KICK is None or not bool(one_pedal_long):
+    return _ORIG_KICK(self, gas_pressed, one_pedal_long, interceptor_di)
+  di = None
+  if interceptor_di is not None:
+    try:
+      di = float(interceptor_di)
+    except (TypeError, ValueError):
+      di = None
+  self._gas_blip_di = di
+  above = bool(gas_pressed) or (di is not None and di > ONE_PEDAL_GAS_DI_PRESSED)
+  # No sensor sample means the caller asserted gas. That is a deliberate
+  # press, not the one-frame interceptor spike seen at the roundabout.
+  firm = (di is not None and di > ONE_PEDAL_GAS_FIRM_DI) or (
+    bool(gas_pressed) and interceptor_di is None
+  )
+  armed = bool(getattr(self, "_one_pedal_armed_with_gas", False))
+  was_latched = bool(getattr(self, "_one_pedal_pause_latched", False))
+  # Engage-while-gas has not had a foot-off rest yet. Hiding that sample
+  # would look like a release and set the rest flag, so the next frames
+  # would pause. Only a from-rest takeover is debounced.
+  at_rest = bool(getattr(self, "_one_pedal_had_long_at_rest", False))
+  debounce = at_rest and not armed and not was_latched
+  if above and (debounce or firm):
+    _remember_gas_sample(self, di)
+  if debounce or firm:
+    confirmed = note_one_pedal_gas_sample(
+      self, above=above, firm=firm, now=_gas_blip_now(self))
+  else:
+    confirmed = False
+  if firm or confirmed or not debounce or not above:
+    paused = _ORIG_KICK(self, gas_pressed, one_pedal_long, interceptor_di)
+    if paused and not was_latched:
+      _log_one_pedal_pedal(self, "pause", int(getattr(self, "_gas_blip_frames", 0) or 0))
+      self._gas_blip_peak = None
+    return paused
+  return _ORIG_KICK(self, False, one_pedal_long, 0.0)
+
+
+def _peek_pedal_raw(can_parsers) -> dict:
+  """GAS_SENSOR and, when the parser has it, GAS_COMMAND. Empty if absent."""
+  out = {}
+  try:
+    from opendbc.car import Bus
+    buses = []
+    for name in ("ap_party", "party", "pt", "chassis"):
+      bus = getattr(Bus, name, None)
+      if bus is not None:
+        buses.append(bus)
+    for bus in buses:
+      try:
+        vl = can_parsers[bus].vl
+      except Exception:
+        continue
+      getter = getattr(vl, "get", None)
+      if getter is None:
+        continue
+      sens = getter("GAS_SENSOR") or {}
+      if sens:
+        out["gas"] = sens.get("INTERCEPTOR_GAS")
+        out["gas2"] = sens.get("INTERCEPTOR_GAS2")
+        out["state"] = sens.get("STATE")
+        out["idx"] = sens.get("IDX")
+      cmd = getter("GAS_COMMAND") or {}
+      if cmd:
+        out["gas_cmd"] = cmd.get("GAS_COMMAND")
+        out["gas_cmd2"] = cmd.get("GAS_COMMAND2")
+  except Exception:
+    return out
+  return out
 
 
 def maybe_one_pedal_overlay_kick(engagement, interceptor_di) -> bool:
@@ -1016,6 +1190,7 @@ def _update_preap(cs, can_parsers):
     engagement._nap_v_ego = v_ego
     engagement._nap_di_pedal_pos = _peek_di_pedal_percent(can_parsers)
     engagement._nap_gas_pressed = _peek_gas_pressed(cs, can_parsers)
+    engagement._nap_gas_sensor = _peek_pedal_raw(can_parsers)
     engagement._nap_standstill = _peek_standstill(can_parsers)
     _hold_for(engagement).update(
       left, right, pressed, engaged=bool(getattr(engagement, "cruiseEnabled", False)),
@@ -1179,7 +1354,7 @@ def _rewire_tesla_carstate_update():
 
 def install_blinker_lat_pause():
   """Patch Pre-AP engagement so a lamp-on turn does not tear down cruise."""
-  global _installed, _ORIG_HANDLE, _ORIG_UPDATE, _ORIG_PROCESS, _ORIG_DROP, _ORIG_CHECK
+  global _installed, _ORIG_HANDLE, _ORIG_UPDATE, _ORIG_PROCESS, _ORIG_DROP, _ORIG_CHECK, _ORIG_KICK
   from opendbc.car.tesla.preap import carstate as preap_carstate
   from opendbc.car.tesla.preap.engagement import PreAPEngagement
 
@@ -1189,10 +1364,12 @@ def install_blinker_lat_pause():
     _ORIG_PROCESS = PreAPEngagement.process_buttons
     _ORIG_DROP = PreAPEngagement._drop_longitudinal_keep_lateral
     _ORIG_CHECK = PreAPEngagement.check_can_engage
+    _ORIG_KICK = PreAPEngagement.maybe_one_pedal_gas_kick
     PreAPEngagement.handle_steering_disengage = _handle_steering_disengage
     PreAPEngagement.process_buttons = _process_buttons
     PreAPEngagement._drop_longitudinal_keep_lateral = _drop_longitudinal_keep_lateral
     PreAPEngagement.check_can_engage = _check_can_engage
+    PreAPEngagement.maybe_one_pedal_gas_kick = _filtered_one_pedal_gas_kick
     preap_carstate.update_preap = _update_preap
     _installed = True
   _rewire_tesla_carstate_update()
