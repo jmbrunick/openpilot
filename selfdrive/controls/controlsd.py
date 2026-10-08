@@ -187,6 +187,16 @@ class Controls:
         model_k = float(model.action.desiredCurvature)
     except Exception:
       model_k = 0.0
+    # Same liveMapDataNAP read the lateral-yield roundabout flag uses.
+    # In or within 40 m: roundabout_yield_context. No new socket.
+    try:
+      md = self.sm['liveMapDataNAP'] if self.sm.alive.get('liveMapDataNAP', False) else None
+      hint = live_map_roundabout_hint(md)
+      near_roundabout = bool(
+        hint is not None and roundabout_yield_context(
+          hint.on_roundabout, hint.approaching, hint.distance_m))
+    except Exception:
+      near_roundabout = False
     return self.low_vis.update(
       enabled=bool(engaged) and param_on,
       lane_probs=lane_probs, edge_stds=edge_stds,
@@ -195,7 +205,8 @@ class Controls:
       v_ego=v_ego, blinker=blinker,
       yielded=bool(self._lat_handoff.yielded),
       measured_curvature=float(self.curvature),
-      model_curvature=model_k)
+      model_curvature=model_k,
+      near_roundabout=near_roundabout)
 
   def _cone_curvature(self, model_k: float, CS) -> float:
     """Shift the lateral target onto the driver's line after a cone-line push.
