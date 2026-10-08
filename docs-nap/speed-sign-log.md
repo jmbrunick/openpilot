@@ -6,17 +6,15 @@ Stock `modelV2` has no `speedSign` head. This is a separate process (`speedsignd
 
 **Driving model first.** Logger On + ONNX weights used to run YOLOv8s at 4 Hz via tinygrad `OnnxRunner` on CPU. That saturates a 3X core and can show “driving model is lagging”, ~35% `modeld` frame drops, **TAKE CONTROL IMMEDIATELY**, or “Communication Issue Between Processes.”
 
-**Logger On does not run YOLO while openpilot is actively controlling** (`selfdriveState.active`, or state in enabled / softDisabling / overriding). The process and SIGN / NO WT HUD still start. The plate shows **WAIT** only in that case — YOLO is skipped so `modeld` is not starved.
+**Logger On keeps running YOLO while openpilot is engaged** (`selfdriveState.active`, or state in enabled / softDisabling / overriding). The process and SIGN / NO WT HUD still start. The plate shows the held mph while engaged. It does **not** show **WAIT** for that — WAIT was the old pause, and it is why a drive that was engaged 95% of the time never read a sign.
 
-**WAIT while the UI looks disengaged is a bug.** Report `swaglog | grep speedsignd` lines (`enabled`, `active`, `state`, alive/valid). Do not treat a stuck WAIT as “drive parked” or “weights are bad.”
+Report `swaglog | grep "speedsignd timing"` (`read_interval_ms`, `infer_ms`, `engaged`, `backoff`). Do not treat a blank plate as “drive parked” or “weights are bad.”
 
-**Manual driving is the collection path** — including moving, no assist. This is **not** gated on park or Force Offroad. Drive yourself, Logger On, and log speed-limit signs + GNSS to JSONL. OSM upload is future work.
+**Engaged and manual driving both collect** — including moving, no assist. This is **not** gated on park or Force Offroad. Logger On, and log speed-limit signs + GNSS to JSONL. OSM upload is future work.
 
-Unknown cereal is **not** forever-WAIT. After a ~2 s startup, unread `selfdriveState` allows the same 1 Hz throttled detect and logs a warning. SubMaster polls at **20 Hz** so 100 Hz `selfdriveState` alive/valid cannot false-trigger WAIT; YOLO stays ≤ **1 Hz**. After you cancel, WAIT should hide within a fraction of a second — a ~10 s hang was the old 1 Hz + `recv_frame <= 0` bug.
+Unknown cereal is **not** a pause. After a ~2 s startup, unread `selfdriveState` allows the same throttled detect and logs a warning. SubMaster polls at **20 Hz** so 100 Hz `selfdriveState` alive/valid cannot flap the gate; YOLO stays ≤ **1 Hz** unless an infer is slower, in which case the next read starts when that infer finishes. Engaging does **not** abandon an in-flight ONNX.
 
-On re-engage, speedsignd **abandons** an in-flight ONNX (does not block the 20 Hz loop for 300–1500 ms) and will not start another infer. One leftover nice-19 infer may finish in the background; its result is dropped.
-
-Disengaged detect is **1 Hz**, skip-on-overrun, `SCHED_OTHER` + nice 19. **If TAKE CONTROL or lag comes back, turn Speed Sign Logger Off and use nap-release.** Do not raise `modeld` priority.
+Detect is **1 Hz** or one inference apart, `SCHED_OTHER` + nice 19, little cores 0–3, one thread — engaged and manual. **If TAKE CONTROL or lag comes back, turn Speed Sign Logger Off.** Do not raise `modeld` priority. A back-off line in swaglog means speedsignd saw CPU pressure or a model/controls alert and rested.
 
 ## Enable
 
@@ -25,15 +23,45 @@ Disengaged detect is **1 Hz**, skip-on-overrun, `SCHED_OTHER` + nice 19. **If TA
    (comma 4 / mici: **Settings → NAP → speed sign logger**)
 3. Or: `Params().put_bool("NAPSpeedSignLog", True)` / `echo -n 1 > /data/params/d/NAPSpeedSignLog`
 4. Go onroad. Manager starts `speedsignd` only when the param is true **and** the car is onroad.
-5. **Drive manually** (moving is OK). SIGN shows **WAIT** only while openpilot is **actively controlling**. That is YOLO skipped on purpose. After you cancel, WAIT should drop immediately (not ~10 s later). If WAIT stays up while the UI looks disengaged, it is a bug — grab swaglog. Do not SET if you want detections.
+5. **Drive, including engaged** (moving is OK). SIGN shows the mph while openpilot is **actively controlling**. It does not show **WAIT** for engage. If the plate stays blank on a clear sign, grab swaglog.
 
 Off (default): the process does not run. Logger On never changes that default.
 
 Reset to Defaults turns the logger back off. Weights on `/data` stay.
 
-Optional detect rate when **not controlling** (default 1 Hz, clamped 0.2–4): `NAP_SPEED_SIGN_HZ=0.5` in the process environment. Do not raise this on a 3X. While OP is controlling, detect is always 0 Hz, regardless of this env.
+Optional detect rate (default 1 Hz, clamped 0.2–4): `NAP_SPEED_SIGN_HZ=0.5` in the process environment. Do not raise this on a 3X. While engaged, detect stays at that rate or one inference apart if the inference is slower. It is not 0 Hz.
 
-Onroad, `swaglog` prints `speedsignd detect paused (controlling=True enabled=… active=… state=… alive=… valid=…)` when you SET, `speedsignd abandon in-flight ONNX` if a YOLO was still running, and `speedsignd timing hz=… infer_ms mean=… max=… n=… skip=…` about every 15 s while disengaged. Mean/max infer well above 100 ms is expected for YOLOv8s on tinygrad CPU; `skip` should climb when an infer overruns. If TAKE CONTROL / “driving model is lagging” / Communication Issue comes back, Logger Off + nap-release. If WAIT is stuck while you are driving manually, those same `speedsignd detect` lines explain why.
+Manual detect is **cheap-path** so Logger On is less likely to starve `modeld` even when YOLO still takes ~1 s:
+
+- ROAD **crop only** (right-biased 1208² on a 3X), downsample, then BT.601 — never a full-frame 1928×1208 RGB convert on the 20 Hz loop
+- **1 ONNX / BLAS thread** (`NAP_SPEED_SIGN_THREADS`, max 2)
+- pinned to **little cores 0–3** (modeld stays FIFO on core 7)
+- `NAP_SPEED_SIGN_INFER_CAP_MS` default **800** is logged only. It does **not** add another infer plus a 1 s gap. A slow infer starts the next read when it finishes (or at the period, if that is longer). Pressure (CPU run-queue, disk stall, or a model/controls alert on `selfdriveState`) adds one extra `max(infer, period)` rest.
+- `os.sched_yield()` while an infer is busy
+
+YOLOv8s-320 on tinygrad CPU is ~8.7 GFLOP plus Python `OnnxRunner` overhead. Justin measured **mean infer 1819 ms** on `cursor/speedsignd-manual-mph-b6f2` with full-frame RGB on the main thread. The crop path cuts preprocess (look for `prep=` tens of ms, `sess=` still the YOLO run). **Mean well under 500 ms is not feasible on stock 3X tinygrad with this 43 MB 320² export** — that needs `onnxruntime`, a nano re-export, or a precompiled TinyJit. This branch does not change weights or Hz.
+
+Onroad, `swaglog` prints `speedsignd detect paused (controlling=True enabled=… active=… state=… alive=… valid=…)` when you SET, `speedsignd abandon in-flight ONNX` if a YOLO was still running, and every infer:
+
+```
+speedsignd infer 420ms backend=tinygrad frame=1928x1208 letterbox=320 crop=720,0 1208x1208 … peak=0.72/speedLimit65 n_over=1 sl_peak=0.72/speedLimit65 … refine=50:0.71(class=65) luma=90/35 chroma=1 prep=18 sess=400 raw=[(50, 0.71)] hud=[(50, 0.71)] jsonl=[]
+```
+
+`refine=` is the crop digit read vs the YOLO class. A parked close **SPEED LIMIT 50** often peaks `speedLimit65:0.73` with `cls=50:0.00` (not a close race). HUD should still be **50** when `refine=50:… class=65`. Empty `refine=` means no in-threshold hit (digit OCR never ran). `refine=- class=65` means the crop read failed (not a 65). `refine=65:0.47` means OCR returned 65. SIGN never lights YOLO **40/60/65/70** without refine, and a weak refine of those values (<0.60) is dropped — that is the SIGN **70** / **40** leak on a real 50. A held 50 is not replaced by 40/60/65/70 unless refine is ≥0.60 and +0.10 over the held conf. Last accepted mph holds **~45 s**; any in-threshold speedLimit* box (even a failed refine) extends that hold so a parked real sign does not blank between multi-second infers.
+
+Every finished read logs a greppable line:
+
+```
+speedsignd timing read_interval_ms=4200 infer_ms=3980 engaged=1 backoff=0 reason=pace
+```
+
+`read_interval_ms` is the gap between read starts. On a 3.8–5.4 s infer that used to be about 8600–11800 (another infer, plus about 1 s). It should now sit near `infer_ms`, or near `1000/detect_hz` if that is longer. `engaged=1` while openpilot is controlling. A back-off is:
+
+```
+speedsignd timing backoff=1 reason=model-lag extra_ms=3980 infer_ms=3980 engaged=1
+```
+
+A 15 s summary still prints `speedsignd timing hz=… infer_ms mean=… max=… n=… skip=… engaged=…`. If TAKE CONTROL / “driving model is lagging” / Communication Issue comes back, Logger Off. The same `speedsignd timing` lines show whether detect was running.
 
 ## Install weights on the 3X
 
@@ -74,10 +102,10 @@ Source checkpoint (MIT): [cvtechniques/JC-Traffic-Sign-Detection](https://huggin
 
 After weights are installed and the logger is **On**, **drive manually** (do not engage openpilot). Pass a **clear, unobstructed MUTCD R2-1** (white SPEED LIMIT plate) in daylight — e.g. a roadside **55** or **60**. Moving is the intended path. Parked / Force Offroad is not required to detect.
 
-- SIGN shows **WAIT** only while OP is **controlling** — YOLO is off so `modeld` is not starved. Cancel / stay manual and WAIT hides. WAIT + a disengaged UI is a bug (report swaglog).
-- Within about **1–4 s** of a disengaged look (two frames at 1 Hz, or after a skip) a large opaque **SIGN** plate appears with that mph on the **left** (driver) side of the onroad UI.
+- SIGN shows the mph **while engaged**. It does not show **WAIT** just because openpilot is controlling. A blank plate on a clear sign is a miss, not a pause (report `swaglog | grep "speedsignd timing"`).
+- Within about one inference (often 4–6 s on device, not 9–12 s) a large opaque **SIGN** plate appears with that mph on the **left** (driver) side of the onroad UI.
 - **Yes** / **No** (“is this accurate?”) sit under the plate on 3X (beside it on comma 4). They are **stubs** right now — they do not change cruise, HUD MAX, or map speed. Later, Yes may confirm the marker (JSONL + optional OSM); No may discard a wrong read.
-- It holds **3.0 s** after the last confirmed detection, then hides (Yes/No hide with it).
+- It holds **~45 s** after the last accepted detection (the old **3.0 s** hold blanked between multi-second infers), then hides (Yes/No hide with it).
 - A JSONL row is appended only with a live GNSS fix (same mph near the last write is skipped ~8 s / ~40 m).
 - HUD **MAX** / cruise / OSM LIMIT do not change.
 
@@ -123,14 +151,14 @@ When the logger is **On**, a large opaque **SIGN** plate shows the mph the camer
 | Where (comma 4) | Left / driver side (top-left), same idea |
 | Yes / No | Shown only with a live mph. 3X: stacked under the plate (full-width, ~112 px tall). comma 4: beside the plate. **No-op stubs** (cloudlog debug only). |
 | Confirm | **2** detections of the same mph within **4.0 s**, conf ≥ **0.40** |
-| Hold | **3.0 s** after the last confirmed detection, then it hides |
-| Detect rate | **0 Hz while OP is controlling**. Manual / not-active default **1 Hz** (env `NAP_SPEED_SIGN_HZ`, clamped 0.2–4), including while moving. SubMaster **20 Hz**. Overrun → skip frames until free. |
-| Controlling plate | **WAIT** (quiet). No Yes/No. YOLO does not run. If the UI looks disengaged, WAIT is a bug. |
+| Hold | **~45 s** after the last accepted detection (old hold was **3.0 s**), then it hides |
+| Detect rate | Default **1 Hz** while engaged and while manual (env `NAP_SPEED_SIGN_HZ`, clamped 0.2–4), including while moving. A slower infer spaces reads one infer apart. SubMaster **20 Hz**. |
+| Engaged plate | The mph, not **WAIT**. YOLO keeps running. |
 | Source | cereal `liveSpeedSignNAP` (not the JSONL file) |
 
 White MUTCD-style plate, black digits, red border, **SIGN** label so it is not confused with HUD MAX or OSM LIMIT.
 
-If the logger is On and ONNX failed to load, the same left-side plate shows **NO WT** (not a mph) — **no Yes/No**. If the logger is On and openpilot is **controlling**, the plate shows **WAIT** — detect is paused so the driving model is not starved; cancel / drive manually to collect. After weights are installed and OP is not controlling, a blank plate means no confirmed detection — that is normal. Stuck WAIT while the UI looks disengaged is a bug (report swaglog).
+If the logger is On and ONNX failed to load, the same left-side plate shows **NO WT** (not a mph) — **no Yes/No**. If the logger is On and openpilot is **controlling**, the plate still shows the mph when a sign is read — detect is not paused. A blank plate with weights Installed means no confirmed detection yet — that is normal. Report `swaglog | grep "speedsignd timing"` if reads are many seconds apart or `engaged=0` for the whole drive.
 
 Yes/No do not write params, JSONL, or sqlite in this revision. The hook is `on_confirm_accuracy(mph, yes)` — future work may JSONL-confirm a good read and optionally push the marker to OSM.
 
@@ -139,18 +167,18 @@ Yes/No do not write params, JSONL, or sqlite in this revision. The hook is `on_c
 Speed Sign Logger On, onroad, but SIGN stays dark or never shows mph — almost always missing weights, not a bad model.
 
 1. Look at the onroad plate: **NO WT** means `/data/media/0/nap/speed_sign.onnx` is absent or failed to load. Settings → NAP → Speed Sign Weights should say **Missing**.
-2. Park or turn on Force Offroad (Settings → triple-tap **NAP**). Tap **Install weights** (Wi-Fi). Wait for the runner to finish — do not leave it spinning forever; an error prints on that screen. Or SSH: `python -m scripts.nap.install_speed_sign_weights`.
+2. Park or turn on Force Offroad. Tap **Install weights** (Wi-Fi). Wait for the runner to finish — do not leave it spinning forever; an error prints on that screen. Or SSH: `python -m scripts.nap.install_speed_sign_weights`.
 3. File should be ~43 MB. `ls -l /data/media/0/nap/speed_sign.onnx`. Settings should flip to **Installed**.
 4. No full reboot required: speedsignd retries ONNX every ~15 s. `swaglog` should show `speedsignd starting … backend=yolo-onnx` or `ONNX loaded after retry backend=yolo-onnx` (also `hz=` / `nice=19`).
-5. **Stay manual** (do not engage OP). **WAIT** means detect is paused because openpilot is **controlling**. If WAIT never clears while the UI looks disengaged, it is a bug — `swaglog | grep speedsignd` should show `enabled` / `active` / `state` / alive / valid. Then pass a clear, unobstructed MUTCD R2-1. Confirmed mph lights SIGN. A blank plate with weights Installed and OP not controlling means no detection yet (night, glare, tiny sign — see Accuracy limits).
+5. Engage or stay manual. Pass a clear, unobstructed MUTCD R2-1. Confirmed mph lights SIGN while **controlling**. `swaglog | grep "speedsignd timing"` should show `engaged=1` and `read_interval_ms` near `infer_ms`. A blank plate with weights Installed means no detection yet (night, glare, tiny sign — see Accuracy limits).
 
-Do not treat a blank plate as “the detector is running.” Blank + Installed + manual = no confirmed sign. **WAIT** = OP controlling, YOLO off (WAIT + disengaged UI = bug). Blank + Missing / **NO WT** = install weights.
+Do not treat a blank plate as “the detector is running.” Blank + Installed = no confirmed sign. **WAIT** is not the engaged state. Blank + Missing / **NO WT** = install weights.
 
 If you see **TAKE CONTROL IMMEDIATELY** or “Communication Issue Between Processes,” turn **Speed Sign Logger Off** and use **nap-release**.
 
 ## Accuracy limits (honest)
 
-This is a small CPU detector at **1 Hz when not controlling** (was 4 Hz always) on a 320² letterbox of the ROAD camera. It is **not** a modeld head and is **not** used for control. It must not starve `modeld`: **no ONNX while OP is controlling**; if a manual infer takes longer than the period or ~100 ms, speedsignd skips frames and sleeps instead of Ratekeeper catch-up. `swaglog` logs `speedsignd detect paused/running` with `enabled` / `active` / `state` / alive / valid on those edges and `speedsignd timing … infer_ms mean/max` / `skip=` about every 15 s so you can see cost on the device.
+This is a small CPU detector at **1 Hz** (was 4 Hz) on a 320² letterbox of the **right-biased ROAD crop**, including while **controlling**. It is **not** a modeld head and is **not** used for control. It must not starve `modeld`: little cores 0–3, nice 19, 1 thread, one infer at a time, and a back-off when the CPU is loaded or model/controls report lag. modeld stays FIFO on core 7; controlsd stays on core 4. `swaglog` logs `speedsignd detect paused/running` with `enabled` / `active` / `state` / alive / valid on those edges and every infer `backend=` `peak=` `refine=` `luma=` `chroma=` `prep=` `sess=` `raw=` plus `speedsignd timing read_interval_ms=… infer_ms=… engaged=… backoff=…`. On-car ROAD frames often class a clear **50** as **65**; crop digit OCR (`refine=`) overrides that pair for the HUD.
 
 **Usually works:** daylight, dry, a standard white R2-1 facing the car, large enough in the ROAD frame (near / mid roadside, not a speck on the horizon). 55 and 60 are in the trained class set.
 
