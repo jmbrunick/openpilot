@@ -341,11 +341,17 @@ def _publish_real_brake(ret, applied: bool) -> None:
   """Expose digital Applied without setting brakePressed.
 
   Pre-AP keeps brakePressed=False so generic OP brake-to-disengage never
-  fires. controlsd reads CS.brake >= 0.5 as the driver brake bit.
+  fires. driverBrakeApplied is that switch. CS.brake stays the 1.0/0.0
+  fallback controlsd and the lateral handoff already read.
   """
   if hasattr(ret, 'brake'):
     try:
       ret.brake = 1.0 if applied else 0.0
+    except Exception:
+      pass
+  if hasattr(ret, 'driverBrakeApplied'):
+    try:
+      ret.driverBrakeApplied = bool(applied)
     except Exception:
       pass
 
@@ -497,7 +503,10 @@ def update_card_lat_handoff(engagement, *, engaged: bool,
                             steering_pressed: bool = False,
                             steering_angle_deg: float | None = None,
                             dt: float | None = None,
-                            param_on: bool | None = None) -> bool:
+                            param_on: bool | None = None,
+                            commanded_angle_deg: float | None = None,
+                            roundabout_yield: bool = False,
+                            undertrack: bool = False) -> bool:
   """Card-local intent tracker. Emergency hard-brake → full session cancel.
 
   Returns True when this frame tore the session down. Light brake alone
@@ -523,11 +532,44 @@ def update_card_lat_handoff(engagement, *, engaged: bool,
     steering_pressed=steering_pressed,
     dt=dt,
     steering_angle_deg=steering_angle_deg,
+    commanded_angle_deg=commanded_angle_deg,
+    roundabout_yield=roundabout_yield,
+    undertrack=undertrack,
   )
   if out.emergency_cancel and engaged:
     hard_cancel_session(engagement)
     return True
   return False
+
+
+def _peek_meas_angle_deg(can_parsers) -> float:
+  """carState steering angle (positive left), same sign as CS.steeringAngleDeg."""
+  try:
+    from opendbc.car import Bus
+    epas = can_parsers[Bus.chassis].vl["EPAS_sysStatus"]
+    return -float(epas.get("EPAS_internalSAS", 0.0) or 0.0)
+  except Exception:
+    return 0.0
+
+
+def _yield_instead_of_disengage(engagement, steering_disengage) -> bool:
+  """Hands-on edge that should yield lateral instead of ending the session.
+
+  Uses this frame's torque and measured angle (peeked before CarState
+  update) and the previous type-1 command / roundabout flag. An EPAS
+  reject with hands off is not a yield.
+  """
+  if not steering_disengage or bool(getattr(engagement, "prev_steering_disengage", False)):
+    return False
+  from opendbc.car.tesla.preap.lat_yield import hands_edge_is_yield
+  return hands_edge_is_yield(
+    hands=int(getattr(engagement, "_nap_hands", 0) or 0),
+    torque_nm=float(getattr(engagement, "_nap_torque_nm", 0.0) or 0.0),
+    commanded_angle_deg=getattr(engagement, "_nap_cmd_angle_deg", None),
+    measured_angle_deg=float(getattr(engagement, "_nap_meas_angle_deg", 0.0) or 0.0),
+    undertrack=bool(getattr(engagement, "_nap_undertrack", False)),
+    roundabout=bool(getattr(engagement, "_nap_roundabout_yield", False)),
+  )
 
 
 def _peek_torsion_nm_and_hands(can_parsers):
@@ -1124,6 +1166,11 @@ def _handle_steering_disengage(self, steering_disengage, lat_full_control=True):
     # Keep prev in sync so lamp-off / hand-release is not a rising edge.
     self.prev_steering_disengage = steering_disengage
     return
+  # Helping push or roundabout: the B path (session and long stay, lat blocks).
+  # An opposite yank leaves lat_full_control as the tracker computed it.
+  if _yield_instead_of_disengage(self, steering_disengage):
+    lat_full_control = False
+    self._nap_yield_instead = True
   _ORIG_HANDLE(self, steering_disengage, lat_full_control)
   if not self.cruiseEnabled:
     _clear_session_max_flags(self)
@@ -1151,6 +1198,10 @@ def _update_preap(cs, can_parsers):
       **_hold_kwargs(engagement))
     _drop_long_if_driver_turn(engagement)
     torque_nm, hands = _peek_torsion_nm_and_hands(can_parsers)
+    engagement._nap_torque_nm = torque_nm
+    engagement._nap_hands = hands
+    engagement._nap_meas_angle_deg = _peek_meas_angle_deg(can_parsers)
+    engagement._nap_yield_instead = False
     tracker = getattr(engagement, "_nap_yank_tracker", None)
     if tracker is None:
       tracker = EmergencyYankTracker()
@@ -1163,6 +1214,10 @@ def _update_preap(cs, can_parsers):
       over_torque=tracker.over_torque, alc_direction=alc_direction)
   ret = _ORIG_UPDATE(cs, can_parsers)
   engagement = getattr(cs, "engagement", None)
+  if engagement is not None and getattr(engagement, "_nap_yield_instead", False):
+    # Tracker still says full control (type 1 was recent). The stash must
+    # say yielded so car_specific does not add steerDisengage this edge.
+    cs.lat_full_control = False
   if engagement is not None:
     from openpilot.selfdrive.controls.lib.gap_lock import (
       gap_lock_arm_seq, gap_lock_cancel_hold, gap_lock_holding)
@@ -1210,9 +1265,14 @@ def _update_preap(cs, can_parsers):
       blinker_paused=driver_turn,
       steering_pressed=bool(getattr(ret, "steeringPressed", False)),
       steering_angle_deg=float(getattr(ret, "steeringAngleDeg", 0.0) or 0.0),
+      commanded_angle_deg=getattr(engagement, "_nap_cmd_angle_deg", None),
+      roundabout_yield=bool(getattr(engagement, "_nap_roundabout_yield", False)),
+      undertrack=bool(getattr(engagement, "_nap_undertrack", False)),
     )
     try:
       h = getattr(engagement, "_nap_lat_handoff", None)
+      # Offset the card handoff just applied. steeringRateDeg is SNA on
+      # this car; the learner uses steeringAngleDeg for the wheel-still test.
       ret.napRestTorqueNm = float(h.rest_bias) if h is not None else 0.0
     except Exception:
       pass

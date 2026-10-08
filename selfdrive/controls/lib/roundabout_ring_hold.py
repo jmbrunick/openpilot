@@ -7,8 +7,8 @@ used by roundabout_guide.RoundaboutGuide (curvature + = right; sense = +1 CCW, c
   * widen_cap: model circulation-side curvature below CIRCLE_CAP_FRAC x the circle's -> cap widens toward the circle target, by <= CIRCLE_CAP_EXTRA
     over the model (still <= 2.2 m/s², 0.035 slew)
   * exit windows: EXIT_BEFORE_DEG before each exit branch (to EXIT_AFTER_DEG past it), no stalk -> output >= the circle target
-  * press debounce 0.3 s, light torque (< 1.5 Nm) toward the circulation ignored, a short flicker keeps the correction state; |torque| >= 1.5 Nm
-    (hard override) and a held stalk still win at once
+  * a same-side add (any magnitude) does not drop the curl; an exit-side pull (>= 1.5 Nm) or a held stalk wins at once.
+    steeringPressed with no same-side torque still debounces, and a short flicker keeps the correction state
   * early latch at the ring edge, release on a right blinker while on the exit arm
 A right blinker only releases the guide to the model (stalk held, or blinker + exit arm); it never routes the path onto the exit.
 """
@@ -108,16 +108,22 @@ def on_exit_arm(theta_rad: float, sense: float, exits: list[float], d_edge: floa
 
 
 def counts_as_press(pressed: bool, torque: float, sense: float) -> bool:
-  """steeringPressed that is not a light push toward the circulation (a resting hand)."""
-  return bool(pressed) and not (0.0 < sense * torque < LIGHT_TORQUE_NM)
+  """steeringPressed that is not torque toward the circulation.
+
+  A same-side add (sense * torque > 0), light or hard, is the driver
+  helping the ring and must not count. Zero torque and an exit-side press do.
+  """
+  return bool(pressed) and not (sense * torque > 0.0)
 
 
 def driver_wins(stalk_held: bool, pressed: bool, torque: float, sense: float, drv_s: float, dt: float) -> tuple[bool, float]:
-  """(weight 0 now?, debounce timer). At once: a held stalk or |torque| >= LIGHT_TORQUE_NM (a real input, the hard override as before).
-  steeringPressed alone (it trips at 1 Nm) counts only after PRESS_DEBOUNCE_S, and a light push toward the circulation (a resting
-  hand, 0..LIGHT_TORQUE_NM) not at all: a flicker shorter than the debounce changes nothing (the assist keeps its state)."""
+  """(weight 0 now?, debounce timer). At once: a held stalk, or an exit-side pull
+  (-sense * torque >= LIGHT_TORQUE_NM). A same-side add never zeroes the curl.
+  steeringPressed with no same-side torque still advances the timer (a flicker
+  shorter than PRESS_DEBOUNCE_S changes nothing) but does not itself zero the weight."""
+  exit_pull = (-sense * float(torque)) >= LIGHT_TORQUE_NM
   drv_s = drv_s + dt if counts_as_press(pressed, torque, sense) else 0.0
-  return bool(stalk_held or abs(torque) >= LIGHT_TORQUE_NM or drv_s >= PRESS_DEBOUNCE_S), drv_s
+  return bool(stalk_held or exit_pull), drv_s
 
 
 def latch_ready(align_deg: float, d_edge: float, tangent_deg: float) -> bool:
