@@ -16,6 +16,7 @@ from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   BLEND_TIME_S,
   DT_CTRL,
   HANDS_OFF_CONFIRM_S,
+  RELEASE_HOLD_S,
   WHEEL_GATE_ARM_DEG,
   WHEEL_GATE_MAX_HOLD_S,
   WHEEL_RESUME_STRAIGHT_DEG,
@@ -84,7 +85,7 @@ def test_without_angle_resume_is_unchanged():
   """No angle wired (None) -> hands-off confirm then blend, as before."""
   s = Sim(with_angle=False)
   s.push_to(200.0)
-  s.hands_off(HANDS_OFF_CONFIRM_S + 0.03, angle=200.0)
+  s.hands_off(RELEASE_HOLD_S + 0.03, angle=200.0)
   assert s.out.blending
 
 
@@ -154,7 +155,7 @@ def test_small_angle_nudge_resumes_as_before():
   """Highway lane nudge never reaches the arming angle: unchanged."""
   s = Sim(v_ego=30.0)
   s.push_to(WHEEL_GATE_ARM_DEG - 5.0)
-  s.hands_off(HANDS_OFF_CONFIRM_S + 0.03, angle=WHEEL_GATE_ARM_DEG - 5.0)
+  s.hands_off(RELEASE_HOLD_S + 0.03, angle=WHEEL_GATE_ARM_DEG - 5.0)
   assert s.out.blending
 
 
@@ -183,15 +184,19 @@ def test_hands_back_on_still_holds_and_hands_off_restarts():
 
 
 def test_hands_on_during_the_dwell_restarts_the_dwell():
+  """Torque back above the release band restarts the straight dwell.
+
+  A hand on the rim with no torque does not. The wheel-gate mutation that
+  forgets to zero the dwell is caught by the short wait after the bump.
+  """
   s = Sim()
   s.push_to(150.0)
-  s.hands_off(HANDS_OFF_CONFIRM_S + 0.10, angle=3.0)   # 0.10 s into the dwell
+  s.hands_off(RELEASE_HOLD_S + 0.10, angle=3.0)
   assert s.out.yielded and not s.out.blending
-  s.step(hands=1, angle=3.0)
-  # confirm (0.15) + full dwell (0.15) again; a stale dwell would end at ~0.20
-  s.hands_off(0.25, angle=3.0)
+  s.step(tq=1.0, hands=0, angle=3.0)
+  s.hands_off(RELEASE_HOLD_S + 0.06, angle=3.0)
   assert s.out.yielded and not s.out.blending
-  s.hands_off(0.10, angle=3.0)
+  s.hands_off(WHEEL_STRAIGHT_DWELL_S, angle=3.0)
   assert s.out.blending
 
 
@@ -199,17 +204,25 @@ def test_hands_on_restarts_the_safety_valve():
   s = Sim()
   s.push_to(150.0)
   s.hands_off(WHEEL_GATE_MAX_HOLD_S - 0.5, angle=90.0)
-  s.step(hands=1, angle=90.0)
+  assert s.out.yielded and not s.out.blending
+  s.step(tq=1.0, hands=0, angle=90.0)
   s.hands_off(2.0, angle=90.0)
   assert s.out.yielded and not s.out.blending
+  # Hands level alone does not restart the valve.
+  s2 = Sim()
+  s2.push_to(150.0)
+  s2.hands_off(WHEEL_GATE_MAX_HOLD_S - 0.2, angle=90.0)
+  s2.step(hands=1, tq=0.0, angle=90.0)
+  s2.hands_off(0.5, angle=90.0)
+  assert s2.out.blending
 
 
 def test_firm_push_in_window_cancels_blend_and_keeps_the_peak():
   s = Sim()
   s.push_to(150.0)
-  s.hands_off(0.3, angle=3.0)
+  s.hands_off(RELEASE_HOLD_S + WHEEL_STRAIGHT_DWELL_S + 0.05, angle=3.0)
   assert s.out.blending
-  for _ in range(5):
+  for _ in range(16):
     s.step(tq=1.5, hands=1, angle=60.0)
   assert s.out.yielded and not s.out.blending
   # still above the window: gate remembers the big-angle history
@@ -228,7 +241,7 @@ def test_completed_blend_clears_the_peak():
   assert s.out.authority == 1.0 and not s.out.blending
   # next small nudge is not gated by the old peak
   s.push_to(15.0)
-  s.hands_off(HANDS_OFF_CONFIRM_S + 0.03, angle=15.0)
+  s.hands_off(RELEASE_HOLD_S + 0.03, angle=15.0)
   assert s.out.blending
 
 
@@ -285,7 +298,7 @@ def test_inhibit_cleared_landing_cannot_blend_in_one_big_step():
   s.blinker = False
   out = s.h.update(
     engaged=True, lat_would_be_active=True, steering_torque=0.0, steering_rate_deg=0.0,
-    hands_on_level=0, v_ego=s.v, blinker_paused=False, dt=HANDS_OFF_CONFIRM_S + 0.05,
+    hands_on_level=0, v_ego=s.v, blinker_paused=False, dt=RELEASE_HOLD_S + 0.05,
     steering_angle_deg=200.0)
   assert out.yielded and not out.blending
 
@@ -323,7 +336,7 @@ def test_non_finite_or_missing_angle_never_blocks():
   for bad in (float("nan"), float("inf")):
     s = Sim()
     s.push_to(200.0)
-    s.hands_off(HANDS_OFF_CONFIRM_S + 0.03, angle=bad)
+    s.hands_off(RELEASE_HOLD_S + 0.03, angle=bad)
     assert s.out.blending
 
 

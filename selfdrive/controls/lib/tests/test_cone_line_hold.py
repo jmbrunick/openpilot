@@ -20,6 +20,7 @@ from openpilot.selfdrive.controls.lib.cone_line_hold import (
 )
 from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   HANDS_OFF_CONFIRM_S,
+  RELEASE_HOLD_S,
   DriverLateralHandoff,
   apply_lat_authority,
 )
@@ -28,7 +29,8 @@ from openpilot.selfdrive.controls.lib.radar_path_gate import path_y_at_x
 DT = 0.01
 V = 15.0
 # Model path bends right (toward the cones) by 0.55 m at the hold lookahead.
-Y_PULL = -0.55
+# Path y is +right, so that bend is positive.
+Y_PULL = 0.55
 
 
 def _path(x_la):
@@ -103,7 +105,7 @@ def test_offset_holds_on_retake_and_releases_after_the_line_clears():
   assert retake.active is True
   assert retake.offset_m == pytest.approx(-Y_PULL, abs=0.03)
   assert retake.curvature == pytest.approx(0.0, abs=1e-6)
-  assert retake.curvature > model_k  # less toward the cones than the model
+  assert retake.curvature < model_k  # less toward the cones than the model
   # Line still there: keep the driver's line.
   still = _step(hold, torque=0.0, seconds=3.0, yielded=False, lat_active=True)
   assert still.active is True
@@ -116,7 +118,7 @@ def test_offset_holds_on_retake_and_releases_after_the_line_clears():
   # and never goes past it toward the cones.
   mid = _step(hold, torque=0.0, seconds=CLEAR_S * 0.5 + RELEASE_S * 0.5,
               yielded=False, lat_active=True, cone=_cone(active=False, side=0))
-  assert model_k <= mid.curvature <= 0.05
+  assert -1e-4 <= mid.curvature <= model_k + 1e-4
   done = _step(hold, torque=0.0, seconds=RELEASE_S, yielded=False, lat_active=True,
                cone=_cone(active=False, side=0))
   assert done.active is False
@@ -171,7 +173,7 @@ def test_ridgewood_retake_blends_toward_the_driver_line():
   assert co.active is False
   assert co.curvature == model_k
 
-  for _ in range(int((HANDS_OFF_CONFIRM_S + 0.05) / DT)):
+  for _ in range(int((RELEASE_HOLD_S + 0.05) / DT)):
     ho, co = both(torque=0.0, hands=0)
   assert ho.yielded is False
   assert ho.blending is True
@@ -181,7 +183,7 @@ def test_ridgewood_retake_blends_toward_the_driver_line():
   for authority in (0.0, 0.25, ho.authority, 1.0):
     _torque, _angle, blended = apply_lat_authority(authority, 0.0, 0.0, 0.0, co.curvature, 0.0)
     assert blended == pytest.approx(0.0, abs=1e-6)
-    assert blended > model_k + 0.0005
+    assert blended < model_k - 0.0005
 
 
 def test_yield_machine_and_longitudinal_are_untouched():
@@ -217,3 +219,53 @@ def test_yield_machine_and_longitudinal_are_untouched():
   radard = (root / "selfdrive/controls/radard.py").read_text()
   assert "_update_cone_line" in radard
   assert "self.radar_state.leadOne" in radard
+  # The logged proposal is not a curvature command.
+  assert "wouldSteer" not in controls
+  assert "would_steer" not in controls
+  # radard already reads carState. The cone line must not add another subscriber.
+  assert radard.count("SubMaster(") == 1
+
+
+def test_oct7_push_away_from_left_posts_arms_and_the_retake_stays_off_them():
+  """14:21:19 CT. Posts on the left, model curvature -0.0028 (left, +right
+  frame). Torque is +left, so the push away from the posts is negative.
+  0.9 s of that push arms. On the re-take the command is the driver's
+  line, not the model bend into the posts, until the line ends.
+  A logged would_steer value is ignored.
+  """
+  v = 18.0
+  x_la = lookahead_m(v)
+  model_k = -0.0028
+  y_at = 0.5 * model_k * x_la * x_la
+  path = ([0.0, x_la, x_la * 2.0], [0.0, y_at, y_at * 2.0])
+  cone = SimpleNamespace(active=True, side=1, would_steer=0.4)
+  hold = ConeLineHold()
+
+  short = _step(hold, torque=-1.2, measured_k=0.0, model_k=model_k, yielded=True,
+                lat_active=False, cone=cone, seconds=0.70, v=v, path=path)
+  assert short.active is False
+  assert hold.busy is False
+
+  pushing = _step(hold, torque=-1.2, measured_k=0.0, model_k=model_k, yielded=True,
+                  lat_active=False, cone=cone, seconds=0.20, v=v, path=path)
+  assert pushing.active is False  # yielded: do not steer
+  assert pushing.curvature == model_k
+  assert hold.busy is True
+
+  retake = _step(hold, torque=0.0, measured_k=0.0, model_k=model_k, yielded=False,
+                 lat_active=True, cone=cone, seconds=0.3, v=v, path=path)
+  assert retake.active is True
+  assert retake.curvature == pytest.approx(0.0, abs=1e-4)
+  assert retake.curvature > model_k + 0.001  # not the bend into the posts
+  assert retake.offset_m > 0.2  # +right, away from the left posts
+
+  still = _step(hold, torque=0.0, measured_k=0.0, model_k=model_k, yielded=False,
+                lat_active=True, cone=cone, seconds=4.0, v=v, path=path)
+  assert still.active is True
+  assert still.curvature == pytest.approx(0.0, abs=1e-4)
+
+  toward = ConeLineHold()
+  blocked = _step(toward, torque=1.2, measured_k=0.0, model_k=model_k, yielded=True,
+                  lat_active=False, cone=cone, seconds=PUSH_ARM_S + 1.0, v=v, path=path)
+  assert blocked.active is False
+  assert toward.busy is False

@@ -368,10 +368,12 @@ def guard_follow_actuator_regen(actuator_a, planner_a, v_rel=None, d_rel=None,
   A steady command is held in the steady band. It does not open the
   mild settle. A command already on that settle is clipped to it, and
   the plant dwells before a flicker can leak steady following into mild.
-  Mid-gap slow close /
-  settle hard-caps to that floor even if the planner command is
-  already a cliff — PID / feedforward windup must not full-lift.
-  Near-gap match-aLead is a real brake and is not that hard cap.
+  A non-braking mid-gap close follows the planner command. The old
+  −0.22 / −0.45 comfort cap on that case is retired: it stepped off
+  at 6 m/s of closing speed and then released into a late slam.
+  Firm-lead and #222 residual closes still hard-cap, and the latch
+  keeps a firm plan from falling back to MILD. Near-gap match-aLead
+  is a real brake and is not that hard cap.
   Planner ≤ −0.5 outside that settle, FCW, confirmed rapid, and
   near-bumper pass through.
   """
@@ -408,6 +410,20 @@ def guard_follow_actuator_regen(actuator_a, planner_a, v_rel=None, d_rel=None,
       kin = lead_kinematic_approach_a(v_rel, slack, a_lead)
       if kin is not None:
         floor = min(floor, kin)
+      # Non-braking slow close: do not hold the actuator at the mild
+      # settle or the −0.45 kinematic cap after the follow law has
+      # already chosen the brake. That post-planner clamp is what let a
+      # 25 mph lead close to ~7 m (closing just under 6 m/s, slack still
+      # 8–50 m). Comfort for this case is the follow law's own filtered
+      # inputs. The floor may not be softer than the planner command.
+      # A coast or a command already on the mild settle is not below the
+      # floor, so plant windup protection is unchanged. Firm leads and
+      # #222 residuals keep the cap; the latch owns that cliff.
+      if (p < floor
+          and not lead_firm_alead(a_lead)
+          and not lead_rising_or_residual_brake(
+            v_rel, prev_v_rel, a_ego, dt)):
+        floor = p
     return a if a >= floor else floor
   if p <= LEAD_FOLLOW_ACT_REGEN_CMD_MS2:
     return a

@@ -133,7 +133,13 @@ from openpilot.selfdrive.controls.lib.path_obstacle import (  # noqa: E402
 )
 from openpilot.selfdrive.controls.radard import RadarD  # noqa: E402
 from openpilot.selfdrive.controls.tests.test_radard import RadarScenario  # noqa: E402
-from openpilot.selfdrive.pathobstacled.pathobstacled import Helper, _crop  # noqa: E402
+from openpilot.selfdrive.pathobstacled.pathobstacled import (  # noqa: E402
+  VISION_FAIL_REASONS,
+  Helper,
+  _Cameras,
+  _crop,
+  _vision_for,
+)
 import cereal.messaging as messaging  # noqa: E402
 
 
@@ -297,6 +303,189 @@ def test_helper_without_trigger_does_not_open_visionipc():
   assert helper.on_radar(idle, time.monotonic()) is None
   assert opened == []
   assert helper.cams.road is None and helper.cams.wide is None
+  low = messaging.new_message("pathObstacleNAP", valid=True)
+  low.pathObstacleNAP.active = False
+  low.pathObstacleNAP.rejectReason = "lowSpeed"
+  assert helper.on_radar(low, time.monotonic()) is None
+  assert opened == []
+
+
+def _y_buffer(width, height, stamp=0):
+  return SimpleNamespace(
+    width=width, height=height, stride=width,
+    data=bytes(width * height), timestamp_eof=stamp,
+  )
+
+
+def _install_vipc(client_cls, stream_type):
+  previous = sys.modules.get("msgq.visionipc")
+  vipc = types.ModuleType("msgq.visionipc")
+  vipc.VisionIpcClient = client_cls
+  vipc.VisionStreamType = stream_type
+  sys.modules["msgq.visionipc"] = vipc
+  return previous
+
+
+def _active_hit_msg():
+  hit = _Hit(
+    True, 1, (1,), 20.0, 0.0, 0.0, -12.0, 0.0, 0.0, 0.8,
+    "unknown", "inPath", float("nan"), 0.0, 1, 0.0, "none", 1.0, 0.0,
+  )
+  msg = messaging.new_message("pathObstacleNAP", valid=True)
+  hit_to_msg(hit, msg.pathObstacleNAP)
+  return msg
+
+
+def test_failed_camera_connection_is_reported_and_retried():
+  connects = {"n": 0}
+  streams = SimpleNamespace(VISION_STREAM_ROAD=1, VISION_STREAM_WIDE_ROAD=2)
+
+  class VisionIpcClient:
+    def __init__(self, *args, **kwargs):
+      self.args = args
+
+    @staticmethod
+    def available_streams(name, block=False):
+      assert name == "camerad"
+      return [streams.VISION_STREAM_ROAD]
+
+    def connect(self, blocking):
+      assert blocking is False
+      connects["n"] += 1
+      return False
+
+    def is_connected(self):
+      return False
+
+    def recv(self, timeout_ms=0):
+      raise AssertionError("recv on a failed connection")
+
+  previous = _install_vipc(VisionIpcClient, streams)
+  try:
+    helper = Helper()
+    msg = _active_hit_msg()
+    now = 1000.0
+    sample, _us = helper.on_radar(msg, now)
+    assert sample.vision_evaluated is False
+    assert sample.vision_fail_reason == "no_connection"
+    assert sample.vision_fail_reason in VISION_FAIL_REASONS
+    assert math.isnan(sample.vision_conf)
+    assert connects["n"] == 1
+    assert helper.cams.road is None
+
+    # Next 5 Hz slot is still inside the connect backoff.
+    sample, _us = helper.on_radar(msg, now + 0.25)
+    assert sample.vision_fail_reason == "no_connection"
+    assert connects["n"] == 1
+
+    sample, _us = helper.on_radar(msg, now + 0.70)
+    assert sample.vision_fail_reason == "no_connection"
+    assert connects["n"] == 2
+  finally:
+    if previous is None:
+      sys.modules.pop("msgq.visionipc", None)
+    else:
+      sys.modules["msgq.visionipc"] = previous
+
+
+def test_valid_frame_yields_a_vision_score():
+  streams = SimpleNamespace(VISION_STREAM_ROAD=1, VISION_STREAM_WIDE_ROAD=2)
+  frame = _y_buffer(1344, 760, stamp=0)
+
+  class VisionIpcClient:
+    def __init__(self, *args, **kwargs):
+      self.num_buffers = 4
+
+    @staticmethod
+    def available_streams(name, block=False):
+      return [streams.VISION_STREAM_ROAD]
+
+    def connect(self, blocking):
+      assert blocking is False
+      return True
+
+    def is_connected(self):
+      return True
+
+    def recv(self, timeout_ms=0):
+      return frame
+
+  previous = _install_vipc(VisionIpcClient, streams)
+  try:
+    helper = Helper()
+    sample, vision_us = helper.on_radar(_active_hit_msg(), time.monotonic())
+    assert sample.vision_evaluated is True
+    assert sample.vision_fail_reason == ""
+    assert math.isfinite(sample.vision_conf)
+    assert vision_us > 0.0
+    assert helper.cams.road is not None
+
+    behind = _Hit(
+      True, 2, (2,), -10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5,
+      "unknown", "inPath", float("nan"), 0.0, 1, 0.0, "none", 1.0, 0.0,
+    )
+    score, _us, patch, reason = _vision_for(behind, None, None, _Cameras(), 50.0)
+    assert score is None and patch is None and reason == "roi_out_of_frame"
+
+    cams = _Cameras()
+    plane, reason = cams.grab(False, now=10.0, deadline=10.0)
+    assert plane is None and reason == "budget"
+    assert reason in VISION_FAIL_REASONS
+
+    stale = _y_buffer(1344, 760, stamp=1)
+    cams = _Cameras()
+
+    class Fresh(VisionIpcClient):
+      def recv(self, timeout_ms=0):
+        return stale
+
+    cams.road = Fresh()
+    plane, reason = cams._recv("road", 0)
+    assert plane is None and reason == "stale_frame"
+  finally:
+    if previous is None:
+      sys.modules.pop("msgq.visionipc", None)
+    else:
+      sys.modules["msgq.visionipc"] = previous
+
+
+def test_wide_camera_is_used_when_road_is_absent():
+  streams = SimpleNamespace(VISION_STREAM_ROAD=1, VISION_STREAM_WIDE_ROAD=2)
+  seen = []
+  frame = _y_buffer(1344, 760)
+
+  class VisionIpcClient:
+    def __init__(self, endpoint, kind, conflate):
+      seen.append(kind)
+      self.num_buffers = 2
+
+    @staticmethod
+    def available_streams(name, block=False):
+      return [streams.VISION_STREAM_WIDE_ROAD]
+
+    def connect(self, blocking):
+      return True
+
+    def is_connected(self):
+      return True
+
+    def recv(self, timeout_ms=0):
+      return frame
+
+  previous = _install_vipc(VisionIpcClient, streams)
+  try:
+    hit = _Hit(
+      True, 3, (3,), 12.0, 0.0, 0.0, -12.0, 0.0, 0.0, 0.8,
+      "unknown", "inPath", float("nan"), 0.0, 1, 0.0, "none", 1.0, 0.0,
+    )
+    score, _us, patch, reason = _vision_for(hit, None, None, _Cameras(), time.monotonic())
+    assert reason == "" and patch is not None and score is not None and score.evaluated
+    assert seen == [streams.VISION_STREAM_WIDE_ROAD]
+  finally:
+    if previous is None:
+      sys.modules.pop("msgq.visionipc", None)
+    else:
+      sys.modules["msgq.visionipc"] = previous
 
 
 def test_calibration_is_read_from_params():

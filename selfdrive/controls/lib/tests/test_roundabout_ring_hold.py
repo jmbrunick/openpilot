@@ -74,22 +74,21 @@ def test_exit_windows_20_deg_before_and_5_after_for_both_senses():
 
 def test_press_debounce_and_light_torque():
   assert not RH.counts_as_press(False, 3.0, 1.0)
-  assert RH.counts_as_press(True, 0.0, 1.0) and RH.counts_as_press(True, 2.0, 1.0)
-  assert not RH.counts_as_press(True, 1.2, 1.0)                   # CCW: + (left) torque is toward the circulation, light: ignored
+  assert RH.counts_as_press(True, 0.0, 1.0)
+  assert not RH.counts_as_press(True, 2.0, 1.0)                   # same-side add, any magnitude, is not a press
+  assert not RH.counts_as_press(True, 1.2, 1.0)                   # CCW: + (left) torque is toward the circulation
   assert RH.counts_as_press(True, -1.2, 1.0)                      # toward the exit: counts
   assert not RH.counts_as_press(True, -1.2, -1.0) and RH.counts_as_press(True, 1.2, -1.0)    # CW mirror
   t = 0.0
-  for _ in range(29):
+  for _ in range(40):
     win, t = RH.driver_wins(False, True, 0.0, 1.0, t, DT)
-    assert not win
-  assert t == pytest.approx(0.29)
-  for _ in range(2):
-    win, t = RH.driver_wins(False, True, 0.0, 1.0, t, DT)
-  assert win
+    assert not win                                                 # zero-torque press does not zero the curl
+  assert t == pytest.approx(0.40)
   assert RH.driver_wins(False, True, 0.0, 1.0, 0.2, DT)[1] == pytest.approx(0.21)
   assert RH.driver_wins(False, False, 0.0, 1.0, 0.2, DT) == (False, 0.0)       # a gap resets the timer
-  assert RH.driver_wins(False, False, 2.0, 1.0, 0.0, DT)[0]                     # hard override: >= 1.5 Nm, at once
-  assert RH.driver_wins(False, False, -2.0, 1.0, 0.0, DT)[0]
+  assert not RH.driver_wins(False, False, 2.0, 1.0, 0.0, DT)[0]                 # same-side hard add does not win
+  assert not RH.driver_wins(False, True, 2.0, 1.0, 0.0, DT)[0]
+  assert RH.driver_wins(False, False, -2.0, 1.0, 0.0, DT)[0]                    # exit-side pull: at once
   assert RH.driver_wins(True, False, 0.0, 1.0, 0.0, DT)[0]                      # held stalk, at once
   assert not RH.driver_wins(False, True, 1.2, 1.0, 0.0, DT)[0]
 
@@ -173,12 +172,18 @@ def test_press_flicker_keeps_the_correction_but_a_held_press_and_hard_torque_sti
   g = _guide(298.0)
   _run(g, 60)
   assert _run(g, 29, driver=RG.DriverInput(pressed=True), t0=0.8) and g.debug["w"] > 0.0
-  held = _run(g, 60, driver=RG.DriverInput(pressed=True), t0=1.09)
-  assert held[-1] == -0.002 and g.debug["w"] == 0.0                     # >= 0.3 s: assist yields
+  still = _run(g, 10, driver=RG.DriverInput(pressed=True), t0=1.09)      # 0.39 s: debounce does not drop the curl
+  assert still[-1] != -0.002 and g.debug["w"] > 0.0 and g.release == ""
+  held = _run(g, 60, driver=RG.DriverInput(pressed=True), t0=1.19)
+  assert held[-1] == -0.002 and g.release == "override"                  # 0.5 s zero-torque press still overrides
   g = _guide(298.0)
   _run(g, 60)
   _run(g, 1, driver=RG.DriverInput(pressed=True, torque=-2.0), t0=0.8)
-  assert g.debug["w"] == 0.0                     # >= 1.5 Nm: at once (the hard override)
+  assert g.debug["w"] == 0.0                     # exit-side >= 1.5 Nm: at once
+  g = _guide(298.0)
+  _run(g, 60)
+  same = _run(g, 60, driver=RG.DriverInput(pressed=True, torque=2.0), t0=0.8)     # same-side add keeps the curl
+  assert same[-1] != -0.002 and g.release == "" and g.debug["w"] > 0.0
   g = _guide(298.0)
   _run(g, 60)
   light = _run(g, 60, driver=RG.DriverInput(pressed=True, torque=1.0), t0=0.8)    # resting hand toward the circulation: ignored

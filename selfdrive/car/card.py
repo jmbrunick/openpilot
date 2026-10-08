@@ -714,6 +714,32 @@ class Car:
       tracks_msg.liveTracks = RD
       self.pm.send('liveTracks', tracks_msg)
 
+  def _preap_lat_yield_flag(self, CC: car.CarControl):
+    """Host-only 0x561. Widens yield-not-disengage. Never an actuation bit.
+
+    Panda drops the frame (tx hook returns false). Stuck true means a
+    steering yank yields lateral instead of ending the session, which is
+    the existing yielded-lateral rule. Stuck false is today's disengage
+    plus the local angle-error help check. Doors, gear, stalk, brake,
+    and an EPAS reject with hands off still disengage.
+    """
+    from opendbc.car.tesla.preap.lat_yield import (
+      UNDERTRACK_CURVATURE, YIELD_FLAG_ADDR, encode_yield_flag, roundabout_yield_context)
+
+    md = self.sm['liveMapDataNAP'] if self.sm.alive.get('liveMapDataNAP', False) else None
+    hint = live_map_roundabout_hint(md)
+    on_rb = bool(hint is not None and roundabout_yield_context(
+      hint.on_roundabout, hint.approaching, hint.distance_m))
+    try:
+      under = abs(float(CC.actuators.curvature) - float(CC.currentCurvature)) > UNDERTRACK_CURVATURE
+    except (TypeError, ValueError):
+      under = False
+    eng = getattr(getattr(self.CI, "CS", None), "engagement", None)
+    if eng is not None:
+      eng._nap_roundabout_yield = on_rb
+      eng._nap_undertrack = bool(under)
+    return (YIELD_FLAG_ADDR, encode_yield_flag(on_rb, under), 0)
+
   def controls_update(self, CS: car.CarState, CC: car.CarControl):
     """control update loop, driven by carControl"""
 
@@ -729,6 +755,8 @@ class Car:
       now_nanos = self.can_log_mono_time if REPLAY else int(time.monotonic() * 1e9)
       self.last_actuators_output, can_sends = self.CI.apply(CC, now_nanos)
       can_sends = list(can_sends)
+      if getattr(self, "_tesla_preap", False):
+        can_sends.append(self._preap_lat_yield_flag(CC))
       if self.radar_donor_vin is not None:
         controls_allowed = False
         if self.sm.valid['pandaStates']:
