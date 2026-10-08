@@ -21,6 +21,7 @@ from openpilot.selfdrive.controls.lib.path_obstacle import (
 from openpilot.selfdrive.controls.lib.cone_line import (
   ConeLineDetector,
   ConeLineSample,
+  model_yaw_rate_right,
   publish_cone_line,
   road_edges_xy,
 )
@@ -622,7 +623,8 @@ class RadarD:
     try:
       path_x, path_y = model_path_xy(sm['modelV2'])
       self._cone_sample = self._cone.update(
-        points, self.v_ego, path_x, path_y, road_edges_xy(sm['modelV2']), dt)
+        points, self.v_ego, path_x, path_y, road_edges_xy(sm['modelV2']), dt,
+        model_yaw_rate_right(sm['modelV2']))
       self._cone_dirty = True
     except Exception:
       cloudlog.exception("cone line detector failed")
@@ -668,6 +670,8 @@ class RadarD:
       "cone": _cone_hint(self._cone_sample),
       "lane_prob_min": lane,
       "path_y_std": path_std,
+      # Same model yaw the cone-line scan uses. No extra carState reader.
+      "yaw_rate": model_yaw_rate_right(sm['modelV2']),
     }
 
   def run_obstacle(self, pm) -> None:
@@ -683,6 +687,7 @@ class RadarD:
       hit = self._obstacle.step(
         inputs["points"], inputs["v_ego"], inputs["path_x"], inputs["path_y"], inputs["dt"],
         inputs["lead_ids"], inputs["cone"], inputs["model_leads"], time.monotonic(),
+        inputs.get("yaw_rate", 0.0),
       )
       if hit is None or pm is None:
         return

@@ -9,15 +9,24 @@ persisted, and only on that spot. The driving model has no animal or
 pedestrian head, so the checker is a luma contrast/shape heuristic on
 the projected patch, not a network.
 
-Thresholds (device frame, y +left, path-relative lateral):
+The radar scan runs only at or above 15 mph (6.7 m/s), with a
+13 mph (5.81 m/s) floor so the gate does not flap. Below that the
+stage publishes an inactive lowSpeed heartbeat and the camera helper
+stays asleep.
+
+Thresholds (device frame, y +right, path-relative lateral):
   range                         5–120 m ahead of the camera
   in the path                   |lateral| <= 1.70 m
+  human band                    in the path, or within 0.9 m (3 ft)
+                                of that corridor on either side
+  animal band                   in the path, or within 6.1 m (20 ft)
+                                of that corridor on either side
   entering                      reaches the path within 3.2 s
                                 (4.5 s for a person, 5 s for a slow
                                 walker within 1 m of the lane edge)
-  roadside                      past the lane edge out to 7.2 m
-                                (about 8.9 m from the path center),
-                                and inside a 52° radar half-angle
+                                and is moving toward it at >= 0.55 m/s
+  roadside                      past the lane edge, inside the animal
+                                band, and inside a 52° radar half-angle
   slow along the road           |ground speed| <= 3 m/s
   traffic, do not chime         ground speed above 5 m/s with
                                 little lateral speed (cars and
@@ -28,13 +37,36 @@ Thresholds (device frame, y +left, path-relative lateral):
   lateral motion                |v_lat| >= 0.45 m/s, or toward the path
   persist                       0.40 s before active; confidence
                                 saturates near 0.80 s
-  agree                         radar >= 0.55 and vision >= 0.45
+  agree                         radar >= 0.55 and vision >= 0.45,
+                                and only while the target is within 85 m
   lighting weights              good light wR = 0.50, poor wR = 0.78,
                                 linear in the lighting score
-  chime                         agree, any class, zone inPath or
-                                entering. Roadside only for an animal,
-                                a person, or livelyScore >= 0.50.
-                                Once per track, 9 s global cooldown
+  chime                         radar and vision agree, and 2 of the
+                                last 3 camera looks score >= 0.60
+                                overall with >= 0.40 on that same class.
+                                Humans only inside the human band.
+                                Animals out to the animal band. Solid
+                                debris only in the path or entering it.
+                                Radar alone cannot call animal or human:
+                                a camera score under 0.30 for that class
+                                becomes an obstacle. A stationary radar
+                                "human" outside the human band is dropped
+                                before the camera runs. Once per track,
+                                9 s global cooldown
+  yaw                           v_lat = -yvRel + yaw_right * x, the same
+                                model yaw the cone-line scan already uses
+  night drive-over              lighting score <= 0.55 (the same exposure
+                                and lane signals the camera helper already
+                                folds into lighting). A stationary in-lane
+                                return that is not a person or animal, and
+                                is not moving across the path, chimes only
+                                when a model or radar lead sits on it, or
+                                the camera crop within 60 m is solid and
+                                not a headlight or taillight blob. Anything
+                                else is suppressed. Daytime, living things,
+                                and crossing objects are unchanged. On any
+                                error this rule is skipped and the chime
+                                follows the rules above.
   lively                        0 still, 1 has moved in the last 2 s.
                                 Ground speed, lateral speed, or
                                 position wander past radar noise.
@@ -64,8 +96,9 @@ BREAKER_TRIPS = 3
 BREAKER_WINDOW_S = 10.0
 HEARTBEAT_S = 1.0
 
-# In the lane or stepping in, any agreed solid object chimes.
-# On the shoulder, only a living class or a high lively score.
+# Solids chime in the path or entering it. Living classes also chime
+# on the shoulder, inside their own lateral band.
+
 LIVING_CLASSES = frozenset({"animal", "human"})
 PATH_CHIME_ZONES = frozenset({"inPath", "entering"})
 # Future braking. Any agreed object in or entering the path. Not wired.
@@ -75,10 +108,20 @@ BRAKE_ZONES = frozenset({"inPath", "entering"})
 X_MIN_M = 5.0
 X_MAX_M = 120.0
 PATH_HALF_M = 1.70
-ROADSIDE_EXTRA_M = 7.2
-ROADSIDE_OUTER_M = PATH_HALF_M + ROADSIDE_EXTRA_M
+# Justin: animals ~20 ft either side of the corridor, humans ~3 ft.
+HUMAN_BEYOND_M = 0.9
+ANIMAL_BEYOND_M = 6.1
+HUMAN_OUTER_M = PATH_HALF_M + HUMAN_BEYOND_M
+ANIMAL_OUTER_M = PATH_HALF_M + ANIMAL_BEYOND_M
 FOV_HALF_DEG = 52.0
 SLOW_ALONG_MPS = 3.0
+# Radar lateral noise on a post is below this. A real step-in is not.
+ENTER_TOWARD_MPS = 0.55
+# Scan only while moving. Enable at 15 mph, drop below ~13 mph.
+SPEED_ENABLE_MPS = 6.7
+SPEED_DISABLE_MPS = 5.81
+# A stopped in-path return at this speed must be closing, or it is a ghost.
+HIGHWAY_MPS = 20.0
 HUMAN_ALONG_MAX_MPS = 9.0
 # With the flow of traffic: too fast to be a walker, and not darting sideways.
 TRAFFIC_ALONG_MPS = 5.0
@@ -92,6 +135,16 @@ PERSIST_S = 0.40
 PERSIST_FULL_S = 0.80
 RADAR_AGREE = 0.55
 VISION_AGREE = 0.45
+# Radar animal/human needs the camera to score that class at least this high.
+VISION_LIVING_MIN = 0.30
+# Past this the night patch is ~20 px and the path lateral is loose.
+# Radar keeps the track; the camera verdict is not used.
+VISION_TRUST_M = 85.0
+# Two of the last three looks, same class. One lucky frame does not chime.
+VISION_LOOK_MIN = 0.60
+VISION_CLASS_MIN = 0.40
+VISION_LOOKS = 3
+VISION_LOOKS_NEED = 2
 WR_GOOD = 0.50
 WR_POOR = 0.78
 CHIME_COOLDOWN_S = 9.0
@@ -117,6 +170,27 @@ POPIN_X_M = 14.0
 LEAD_X_M = 4.5
 LEAD_Y_M = 1.6
 LEAD_PROB = 0.40
+# Night is the logged lighting band (about 0.40–0.43 on the Oct 7 drive).
+# Daytime scores sit near 1. Missing or non-finite lighting is not night.
+NIGHT_LIGHTING_MAX = 0.55
+# Low-beam range. Farther than this, a stationary in-lane return at night
+# needs a model lead; the crop is too small to call solid.
+DRIVE_OVER_SOLID_M = 60.0
+# Lead agreement for that night exception. Wider in range than the
+# exclusion box, same lateral tolerance, and a higher probability.
+DRIVE_OVER_LEAD_PROB = 0.50
+DRIVE_OVER_LEAD_X_M = 5.0
+DRIVE_OVER_LEAD_X_FRAC = 0.15
+DRIVE_OVER_LEAD_Y_M = LEAD_Y_M
+# Crop light test. Y is 0..255. Red is either an RGB pixel or a high NV12 V.
+NEAR_SAT_Y = 200.0
+SAT_Y = 235.0
+LIGHT_FRAC_REJECT = 0.12
+SAT_FRAC_REJECT = 0.05
+RED_FRAC_REJECT = 0.06
+BLOB_SHARE_REJECT = 0.55
+RED_V_MIN = 165.0
+RED_Y_MIN = 160.0
 
 CLASS_ORDER = ("unknown", "human", "animal", "obstacle")
 ZONE_ORDER = ("none", "inPath", "entering", "roadside")
@@ -166,13 +240,21 @@ def _toward(lat: float, v_lat: float) -> float:
 
 @dataclass(frozen=True)
 class VisionScore:
-  """Patch verdict. conf is 'something solid above the road', 0..1."""
+  """Patch verdict. conf is 'something solid above the road', 0..1.
+
+  light_dominated is the night drive-over veto: a large share of the crop
+  is saturated, or a red taillight pattern, or a clipped blob owns the
+  contrast. It does not change the conf used in daytime.
+  """
 
   conf: float = 0.0
   human: float = 0.0
   animal: float = 0.0
   obstacle: float = 0.0
   evaluated: bool = True
+  light_dominated: bool = False
+  light_frac: float = 0.0
+  red_frac: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -232,6 +314,10 @@ class ObstacleSample:
   scan_us: float = 0.0
   vision_us: float = 0.0
   member_ids: tuple[int, ...] = ()
+  vision_fail_reason: str = ""
+  # Empty, or why the night drive-over rule suppressed this chime:
+  # light, no_solid, beyond_60.
+  drive_over_reason: str = ""
 
   def with_chime(self, chimed: bool, reason: str) -> ObstacleSample:
     return replace(self, chimed=bool(chimed), chime_reason=str(reason))
@@ -260,6 +346,11 @@ class _Hit:
   reject_reason: str
   lighting: float
   lively: float = 0.0
+  v_ego: float = 0.0
+  # Stationary in-lane return that a model or radar lead agrees with.
+  # Kept through the scan so the night rule can chime. Daytime still
+  # excludes it as a vehicle.
+  model_lead: bool = False
 
 
 def project_road_point(x: float, y: float, z: float, *,
@@ -365,6 +456,38 @@ def lighting_score(*, lane_left: float = 1.0, lane_right: float = 1.0,
   return _clamp(0.42 * model + 0.58 * exposure, 0.0, 1.0)
 
 
+def is_night_lighting(lighting: float) -> bool:
+  """True when the existing lighting score is the night band.
+
+  Non-finite or missing scores are daytime, so a broken exposure reading
+  keeps the previous chime rules.
+  """
+  try:
+    score = float(lighting)
+  except (TypeError, ValueError):
+    return False
+  return math.isfinite(score) and score <= NIGHT_LIGHTING_MAX
+
+
+def _row_lists(value) -> list[list]:
+  """Rows from a list of lists or a numpy image. Empty when there is nothing to read."""
+  if value is None:
+    return []
+  try:
+    iterator = iter(value)
+  except TypeError:
+    return []
+  rows = []
+  for row in iterator:
+    try:
+      if len(row) == 0:
+        continue
+      rows.append(list(row))
+    except TypeError:
+      continue
+  return rows
+
+
 def _mean_std(vals: list[float]) -> tuple[float, float]:
   n = len(vals)
   if n == 0:
@@ -376,7 +499,7 @@ def _mean_std(vals: list[float]) -> tuple[float, float]:
 
 def metrics_from_rows(obj_rows, road_rows=None) -> dict:
   """Mean/std plus 3 column and 3 row means. Caps the sample count."""
-  rows = [list(r) for r in (obj_rows or []) if r]
+  rows = _row_lists(obj_rows)
   if not rows:
     return {"mean": 0.0, "std": 0.0, "cols": [0.0, 0.0, 0.0], "bands": [0.0, 0.0, 0.0], "road": 0.0}
   height = len(rows)
@@ -402,7 +525,7 @@ def metrics_from_rows(obj_rows, road_rows=None) -> dict:
       bands[band].append(pix)
   mean, std = _mean_std(vals)
   road_vals: list[float] = []
-  for row in list(road_rows or [])[::step]:
+  for row in _row_lists(road_rows)[::step]:
     for value in list(row)[:width:step]:
       num = _finite(value)
       if num is not None:
@@ -440,8 +563,9 @@ def vision_from_regions(obj_mean: float, obj_std: float, road_mean: float,
   tall = top_c > 12.0 and mid_c > 10.0
   low_only = bot_c > 12.0 and top_c < 8.0 and mid_c < 10.0
   mid_body = mid_c > 12.0 and top_c < mid_c * 0.75
-  human = solid * (0.85 if tall and not wide else 0.20 if tall else 0.05)
-  animal = solid * (0.80 if mid_body and not needle and not wide else 0.22 if mid_body else 0.08)
+  # A thin post (delineator, mailbox) is not a person or an animal.
+  human = solid * (0.85 if tall and not wide and not needle else 0.20 if tall and not needle else 0.05)
+  animal = solid * (0.80 if mid_body and not needle and not wide else 0.22 if mid_body and not needle else 0.08)
   obstacle = solid * (0.85 if wide or low_only or needle else 0.35)
   human = _clamp(human, 0.0, solid if solid > 0 else 1.0)
   animal = _clamp(animal, 0.0, 1.0)
@@ -449,9 +573,117 @@ def vision_from_regions(obj_mean: float, obj_std: float, road_mean: float,
   return VisionScore(conf=_clamp(solid, 0.0, 1.0), human=human, animal=animal, obstacle=obstacle, evaluated=True)
 
 
-def score_row_patches(obj_rows, road_rows) -> VisionScore:
+def _as_rgb(value):
+  """(r, g, b) when the pixel is a color triple. None for a luma sample."""
+  if isinstance(value, (bytes, str)) or isinstance(value, (int, float)):
+    return None
+  try:
+    seq = value.tolist() if hasattr(value, "tolist") else value
+    if isinstance(seq, (int, float)):
+      return None
+    seq = list(seq)
+  except TypeError:
+    return None
+  if len(seq) < 3:
+    return None
+  r, g, b = _finite(seq[0]), _finite(seq[1]), _finite(seq[2])
+  if r is None or g is None or b is None:
+    return None
+  return r, g, b
+
+
+def _luma_of(value) -> tuple[float, bool] | None:
+  """(luma 0..255, red-saturated?). None when the sample is not a pixel."""
+  color = _as_rgb(value)
+  if color is not None:
+    r, g, b = color
+    luma = 0.299 * r + 0.587 * g + 0.114 * b
+    # Saturated red, not a white headlight. Luma can stay moderate when
+    # G and B are near zero; the NV12 path catches the same pixels via V.
+    red = r >= 200.0 and r >= g + 40.0 and r >= b + 40.0
+    return luma, red
+  luma = _finite(value)
+  if luma is None:
+    return None
+  return luma, False
+
+
+def crop_light_stats(obj_rows, v_rows=None) -> tuple[float, float, float, float]:
+  """(near_sat_frac, sat_frac, red_frac, blob_share) for one crop.
+
+  near_sat is luma >= 200, sat is luma >= 235. red is an RGB taillight
+  pixel or, when v_rows is the NV12 V crop, a bright pixel with high V.
+  blob_share is how much of the contrast above the median sits in the
+  clipped pixels. Empty crops return zeros. Any bad pixel is skipped.
+  """
+  rows = _row_lists(obj_rows)
+  if not rows:
+    return 0.0, 0.0, 0.0, 0.0
+  height = len(rows)
+  width = min(len(row) for row in rows)
+  if width < 2 or height < 2:
+    return 0.0, 0.0, 0.0, 0.0
+  step = 1
+  cells = height * width
+  while cells / (step * step) > 2000 and step < 8:
+    step += 1
+  vdata = _row_lists(v_rows) if v_rows is not None else []
+  lumas: list[float] = []
+  reds = 0
+  for yi, row in enumerate(rows[::step]):
+    y_full = yi * step
+    fy = y_full / max(height - 1, 1)
+    for xi, value in enumerate(row[:width:step]):
+      parsed = _luma_of(value)
+      if parsed is None:
+        continue
+      luma, red = parsed
+      if vdata:
+        vy = min(len(vdata) - 1, int(fy * len(vdata)))
+        vrow = vdata[vy]
+        if vrow:
+          fx = (xi * step) / max(width - 1, 1)
+          vx = min(len(vrow) - 1, int(fx * len(vrow)))
+          v_val = _finite(vrow[vx])
+          if v_val is not None and luma >= RED_Y_MIN and v_val >= RED_V_MIN:
+            red = True
+      lumas.append(luma)
+      if red:
+        reds += 1
+  n = len(lumas)
+  if n == 0:
+    return 0.0, 0.0, 0.0, 0.0
+  near = sum(1 for v in lumas if v >= NEAR_SAT_Y) / n
+  sat = sum(1 for v in lumas if v >= SAT_Y) / n
+  red_frac = reds / n
+  ordered = sorted(lumas)
+  median = ordered[n // 2]
+  excess = [max(0.0, v - median) for v in lumas]
+  total = sum(excess)
+  if total <= 1.0:
+    blob = 0.0
+  else:
+    bright = sum(ex for v, ex in zip(lumas, excess) if v >= NEAR_SAT_Y)
+    blob = bright / total
+  return near, sat, red_frac, blob
+
+
+def light_dominated(near: float, sat: float, red: float, blob: float) -> bool:
+  """True when a headlight or taillight blob owns the crop."""
+  if near >= LIGHT_FRAC_REJECT or sat >= SAT_FRAC_REJECT or red >= RED_FRAC_REJECT:
+    return True
+  return blob >= BLOB_SHARE_REJECT and sat >= 0.015
+
+
+def score_row_patches(obj_rows, road_rows, v_rows=None) -> VisionScore:
   stats = metrics_from_rows(obj_rows, road_rows)
-  return vision_from_regions(stats["mean"], stats["std"], stats["road"], stats["cols"], stats["bands"])
+  score = vision_from_regions(stats["mean"], stats["std"], stats["road"], stats["cols"], stats["bands"])
+  try:
+    near, sat, red, blob = crop_light_stats(obj_rows, v_rows)
+    dominated = light_dominated(near, sat, red, blob)
+  except Exception:
+    near, red, dominated = 0.0, 0.0, False
+  return replace(score, light_dominated=dominated, light_frac=near, red_frac=red)
 
 
 def _class_name(raw) -> str:
@@ -478,8 +710,52 @@ def chime_banner(object_class, zone) -> str:
   return "Object ahead"
 
 
-def _roadside_living(sample: ObstacleSample) -> bool:
-  return sample.object_class in LIVING_CLASSES or float(sample.lively_score) >= LIVELY_CHIME
+def _beyond_corridor(lat: float) -> float:
+  return max(0.0, abs(float(lat)) - PATH_HALF_M)
+
+
+def _class_zone_block(sample: ObstacleSample) -> str | None:
+  """Why this sample must not chime. None means the class is inside its zone.
+
+  Humans count in the path and within 0.9 m of it. Animals count out to
+  6.1 m. Solid debris counts only in the path or entering it.
+  """
+  beyond = _beyond_corridor(sample.lateral)
+  cls = sample.object_class
+  if cls == "human" and sample.zone != "inPath" and beyond > HUMAN_BEYOND_M:
+    return "off_zone"
+  if cls == "animal" and sample.zone != "inPath" and beyond > ANIMAL_BEYOND_M:
+    return "off_zone"
+  if cls in LIVING_CLASSES:
+    if sample.zone in PATH_CHIME_ZONES or sample.zone == "roadside":
+      return None
+    return "zone"
+  if sample.zone in PATH_CHIME_ZONES:
+    return None
+  if sample.zone == "roadside":
+    return "inanimate"
+  return "zone"
+
+
+def _highway_still_unconfirmed(sample: ObstacleSample, v_ego: float) -> bool:
+  """Stopped in the lane at highway speed, and vision did not name it.
+
+  A weak solid score with class unknown is not agreement. A deer or a
+  piece of debris that vision actually classifies still can chime.
+  """
+  try:
+    speed = float(v_ego)
+  except (TypeError, ValueError):
+    return False
+  if not math.isfinite(speed) or speed < HIGHWAY_MPS:
+    return False
+  if sample.zone != "inPath":
+    return False
+  if float(sample.lively_score) >= 0.35:
+    return False
+  if not sample.vision_evaluated:
+    return True
+  return sample.object_class not in ("human", "animal", "obstacle")
 
 
 def future_brake_intent(sample: ObstacleSample) -> BrakeIntent | None:
@@ -519,13 +795,9 @@ class ChimeGate:
       if sample.reject_reason == "not_persistent":
         return False, "not_persistent"
       return False, sample.reject_reason or "no_candidate"
-    if sample.zone in PATH_CHIME_ZONES:
-      pass
-    elif sample.zone == "roadside":
-      if not _roadside_living(sample):
-        return False, "inanimate"
-    else:
-      return False, "zone"
+    blocked = _class_zone_block(sample)
+    if blocked is not None:
+      return False, blocked
     if not sample.agree:
       return False, "no_agree"
     if ids and ids & self._ids:
@@ -637,7 +909,7 @@ def vehicle_exclusion_points(leads_v3=(), leads_v2=(), radar_leads=()):
   Model leadsV3 (lead0, lead1, and any further entries) and legacy
   leads V2 are device-frame points. A radard lead (leadOne and leadTwo)
   is included when status is set: its track id, and its position with
-  y flipped from right-positive yRel to device +left. Prob under 0.40
+  y flipped from left-positive yRel to device +right. Prob under 0.40
   is ignored for the model. A selected radar lead is kept even if
   modelProb is low.
 
@@ -698,7 +970,9 @@ def _cone_reject(lat: float, x: float, cone: ConeHint | None) -> str | None:
   line = _line_lat(cone, x)
   if cone.barrier and line is not None and abs(lat - line) < 1.15:
     return "barrier"
-  same_side = cone.side == 0 or (lat > 0) == (cone.side > 0) or abs(lat) < 0.4
+  # lat is +right. cone.side is the real side: +1 left, -1 right,
+  # so a left line has negative lat. side +1 agrees with lat < 0.
+  same_side = cone.side == 0 or (lat > 0.0) == (cone.side < 0) or abs(lat) < 0.4
   if cone.active and line is not None and abs(lat - line) < 0.80 and same_side:
     return "cone_line"
   if cone.parked and 1.5 < abs(lat) < 4.5:
@@ -721,13 +995,13 @@ def _zone_of(lat: float, v_lat: float, along: float) -> tuple[str, float]:
     return "inPath", 0.0
   toward = _toward(lat, v_lat)
   dist = abs(lat) - PATH_HALF_M
-  t_enter = dist / toward if toward >= 0.20 else float("inf")
+  t_enter = dist / toward if toward >= ENTER_TOWARD_MPS else float("inf")
   horizon = HUMAN_ENTER_HORIZON_S if _humanish(lat, v_lat, along, toward) else ENTER_HORIZON_S
   if _humanish(lat, v_lat, along, toward) and PATH_HALF_M < abs(lat) <= WALKER_EDGE_M and toward >= 0.15:
     horizon = max(horizon, WALKER_ENTER_HORIZON_S)
   if math.isfinite(t_enter) and t_enter <= horizon:
     return "entering", t_enter
-  if PATH_HALF_M < abs(lat) <= ROADSIDE_OUTER_M:
+  if PATH_HALF_M < abs(lat) <= ANIMAL_OUTER_M:
     return "roadside", t_enter if math.isfinite(t_enter) else _nan()
   return "none", _nan()
 
@@ -782,18 +1056,16 @@ def lively_from_history(hist) -> float:
 def scale_living_vision(vision: VisionScore, lively: float) -> VisionScore:
   """Lively raises animal/person class scores. Still lowers them, not to 0."""
   scale = LIVELY_FLOOR + (1.0 - LIVELY_FLOOR) * _clamp(lively if math.isfinite(lively) else 0.0, 0.0, 1.0)
-  return VisionScore(
-    conf=vision.conf,
+  return replace(
+    vision,
     human=_clamp(vision.human * scale, 0.0, 1.0),
     animal=_clamp(vision.animal * scale, 0.0, 1.0),
-    obstacle=vision.obstacle,
-    evaluated=vision.evaluated,
   )
 
 
 def patch_signature(rows, grid: int = 8) -> tuple[float, ...]:
   """Coarse mean grid so a 5 Hz check can see the patch move."""
-  data = [list(row) for row in (rows or []) if row]
+  data = _row_lists(rows)
   if not data:
     return ()
   height = len(data)
@@ -832,8 +1104,49 @@ def patch_change_score(prev, rows) -> float:
   return _clamp((delta - 12.0) / 28.0, 0.0, 1.0)
 
 
-def _fuse_class(radar_class: str, span: float, count: int, vision: VisionScore | None) -> str:
+def _vision_in_range(x: float) -> bool:
+  """Camera verdicts count only out to VISION_TRUST_M. Beyond that, radar only."""
+  try:
+    dist = float(x)
+  except (TypeError, ValueError):
+    return False
+  return math.isfinite(dist) and dist <= VISION_TRUST_M
+
+
+def _vision_class_score(vision: VisionScore, cls: str) -> float:
+  if cls == "human":
+    value = vision.human
+  elif cls == "animal":
+    value = vision.animal
+  elif cls == "obstacle":
+    value = vision.obstacle
+  else:
+    return 0.0
+  try:
+    score = float(value)
+  except (TypeError, ValueError):
+    return 0.0
+  if not math.isfinite(score):
+    return 0.0
+  return score
+
+
+def _unrotate_y(x: float, y: float, psi: float) -> float:
+  """Lateral position with ego yaw removed. psi is +right radians since track start."""
+  return math.sin(psi) * x + math.cos(psi) * y
+
+
+def _fuse_class(radar_class: str, span: float, count: int, vision: VisionScore | None,
+                raw: VisionScore | None = None) -> str:
   if count >= 2 and span >= LANE_SPAN_M:
+    return "obstacle"
+  # Camera score for the radar's living class, before the lively scale.
+  # Below 0.30 the radar guess is not a person or an animal.
+  camera = raw if raw is not None else vision
+  if (
+    camera is not None and camera.evaluated and radar_class in LIVING_CLASSES
+    and _vision_class_score(camera, radar_class) < VISION_LIVING_MIN
+  ):
     return "obstacle"
   if vision is None or not vision.evaluated or vision.conf < VISION_AGREE:
     return radar_class
@@ -892,6 +1205,74 @@ def _cluster_reject(members: list[dict]) -> str | None:
   return None
 
 
+def _still_members(members: list[dict]) -> bool:
+  """Ground speed and lively score both say this cluster has not moved."""
+  for member in members:
+    if abs(float(member["along"])) > SLOW_ALONG_MPS:
+      return False
+    if float(member.get("lively") or 0.0) >= LIVELY_CHIME:
+      return False
+  return True
+
+
+def _group_zone(members: list[dict]) -> str:
+  lats = [m["lat"] for m in members]
+  span = (max(lats) - min(lats)) if len(lats) > 1 else 0.0
+  straddles = min(lats) < -0.2 and max(lats) > 0.2 and span >= 1.2
+  zones = [_zone_of(m["lat"], m["v_lat"], m["along"])[0] for m in members]
+  if straddles or any(zone == "inPath" for zone in zones):
+    return "inPath"
+  if any(zone == "entering" for zone in zones):
+    return "entering"
+  if any(zone == "roadside" for zone in zones):
+    return "roadside"
+  return "none"
+
+
+def _phantom_in_path(members: list[dict], v_ego: float) -> bool:
+  """Stationary in-path return at highway speed that is not being closed.
+
+  A real stopped object approaches at about ego speed and is gone after
+  the detection window. A 100 s 'in path' track at 25 m/s is a ghost or
+  a vehicle the lead logic missed, and it must not wake the camera.
+  """
+  if v_ego < HIGHWAY_MPS:
+    return False
+  if not any(abs(m["lat"]) <= PATH_HALF_M for m in members):
+    return False
+  if not all(abs(m["along"]) <= SLOW_ALONG_MPS for m in members):
+    return False
+  age = max(float(m["age"]) for m in members)
+  if age < 0.35:
+    return False
+  closed = max(float(m["first_x"]) - float(m["x"]) for m in members)
+  need = min(8.0, 0.35 * v_ego * age)
+  if closed + 1e-6 < need:
+    return True
+  window = (X_MAX_M - X_MIN_M) / max(v_ego, 1.0)
+  return age > window + 2.0
+
+
+def _candidate_block(members: list[dict], v_ego: float) -> str | None:
+  """Drop a cluster before vision. None means the camera may look."""
+  if _phantom_in_path(members, v_ego):
+    return "not_closing"
+  zone = _group_zone(members)
+  if zone == "none":
+    return "off_path"
+  lats = [m["lat"] for m in members]
+  span = (max(lats) - min(lats)) if len(lats) > 1 else 0.0
+  radar_class = _radar_class(members, span, zone)
+  beyond = _beyond_corridor(min(abs(m["lat"]) for m in members))
+  # Radar-only "human" on a stationary tall roadside return. Posts and
+  # delineators outside 3 ft of the corridor never reach the camera.
+  if radar_class == "human" and _still_members(members) and beyond > HUMAN_BEYOND_M:
+    return "off_zone"
+  if radar_class == "animal" and beyond > ANIMAL_BEYOND_M:
+    return "off_zone"
+  return None
+
+
 def _popin(members: list[dict]) -> bool:
   if any(m["first_x"] >= POPIN_X_M + 4.0 for m in members):
     return False
@@ -905,20 +1286,174 @@ def _popin(members: list[dict]) -> bool:
   return all(abs(m["v_lat"]) < 0.40 and abs(m["along"]) < SLOW_ALONG_MPS for m in members)
 
 
+def _still_in_lane(ret) -> bool:
+  """Stationary and already in the path. Crossing and roadside are not."""
+  try:
+    along = float(ret["along"])
+    v_lat = float(ret["v_lat"])
+    lat = float(ret["lat"])
+  except (TypeError, ValueError, KeyError):
+    return False
+  if not all(math.isfinite(v) for v in (along, v_lat, lat)):
+    return False
+  if abs(along) > SLOW_ALONG_MPS or abs(v_lat) >= ENTER_TOWARD_MPS:
+    return False
+  zone, _t = _zone_of(lat, v_lat, along)
+  return zone == "inPath"
+
+
+def _lead_flags(ret, leads, model_leads) -> tuple[bool, bool]:
+  """(old vehicle exclusion, night drive-over lead agreement)."""
+  try:
+    x = float(ret["x"])
+    y = float(ret["y"])
+    tid = int(ret["id"])
+  except (TypeError, ValueError, KeyError):
+    return False, False
+  lead_ids = set()
+  for raw in leads or ():
+    try:
+      lead_ids.add(int(raw))
+    except (TypeError, ValueError):
+      continue
+  old = tid in lead_ids
+  agree = old
+  for lead in model_leads or ():
+    try:
+      lx, ly, prob = float(lead[0]), float(lead[1]), float(lead[2])
+    except (TypeError, ValueError, IndexError):
+      continue
+    if not all(math.isfinite(v) for v in (lx, ly, prob)) or prob < LEAD_PROB:
+      continue
+    lead_id = None
+    if len(lead) > 3 and lead[3] is not None:
+      try:
+        lead_id = int(lead[3])
+      except (TypeError, ValueError):
+        lead_id = None
+    same = lead_id is not None and lead_id == tid
+    dx = abs(x - lx)
+    dy = abs(y - ly)
+    if same or (dx < LEAD_X_M and dy < LEAD_Y_M):
+      old = True
+    tol = max(DRIVE_OVER_LEAD_X_M, DRIVE_OVER_LEAD_X_FRAC * abs(x))
+    if prob >= DRIVE_OVER_LEAD_PROB and (same or (dx <= tol and dy <= DRIVE_OVER_LEAD_Y_M)):
+      agree = True
+  return old, agree
+
+
+def _lead_keep(ret, leads, model_leads) -> str | None:
+  """'exclVehicle', or None when the return stays in the scan.
+
+  A stationary in-lane lead is kept and flagged so a stalled car can
+  chime at night. Every other lead match is still excluded. A failure
+  excludes a known lead id and otherwise leaves the return alone.
+  """
+  try:
+    old, agree = _lead_flags(ret, leads, model_leads)
+  except Exception:
+    try:
+      if int(ret.get("id", -1)) in set(leads or ()):
+        return "exclVehicle"
+    except (TypeError, ValueError):
+      return None
+    return None
+  if agree and _still_in_lane(ret):
+    ret["model_lead"] = True
+    return None
+  if old or agree:
+    return "exclVehicle"
+  return None
+
+
+def _drive_over_case(sample: ObstacleSample, hit: _Hit) -> bool:
+  """Night, stationary, already in the lane, and not a person or animal."""
+  if not is_night_lighting(hit.lighting):
+    return False
+  if not sample.active or sample.zone != "inPath":
+    return False
+  if sample.object_class in LIVING_CLASSES:
+    return False
+  if abs(float(hit.along)) > SLOW_ALONG_MPS:
+    return False
+  if abs(float(hit.v_lat)) >= ENTER_TOWARD_MPS:
+    return False
+  if float(sample.lively_score) >= LIVELY_CHIME:
+    return False
+  return True
+
+
+def _night_lead_may_chime(sample: ObstacleSample, hit: _Hit) -> bool:
+  """Model-lead matches stay excluded except this night stalled-car case."""
+  try:
+    return bool(hit.model_lead) and _drive_over_case(sample, hit)
+  except Exception:
+    return False
+
+
+def _look_light(item) -> bool:
+  return len(item) > 3 and bool(item[3])
+
+
+def _look_confirms(item, cls: str) -> bool:
+  try:
+    conf, look_cls, score = float(item[0]), item[1], float(item[2])
+  except (TypeError, ValueError, IndexError):
+    return False
+  return look_cls == cls and conf >= VISION_LOOK_MIN and score >= VISION_CLASS_MIN
+
+
+def _drive_over_block(sample: ObstacleSample, vision: VisionScore | None, hist) -> str:
+  """Why this night in-lane return must not chime. Empty means it may."""
+  if float(sample.range_m) > DRIVE_OVER_SOLID_M:
+    return "beyond_60"
+  dominated = bool(vision is not None and getattr(vision, "light_dominated", False))
+  cls = sample.object_class
+  clean = [item for item in hist if _look_confirms(item, cls) and not _look_light(item)]
+  lit = dominated or any(_look_light(item) and _look_confirms(item, cls) for item in hist)
+  if dominated or (lit and len(clean) < VISION_LOOKS_NEED):
+    return "light"
+  conf = None if vision is None else _finite(getattr(vision, "conf", None))
+  evaluated = bool(vision is not None and getattr(vision, "evaluated", False))
+  if not evaluated or conf is None or conf < VISION_AGREE or len(clean) < VISION_LOOKS_NEED:
+    return "no_solid"
+  return ""
+
+
+def _as_vehicle(sample: ObstacleSample) -> ObstacleSample:
+  """Daytime (and any non-night) lead match: same quiet result as before."""
+  return replace(
+    sample,
+    active=False,
+    agree=False,
+    brake_gate=False,
+    in_path=False,
+    entering=False,
+    zone="none",
+    reject_reason="exclVehicle",
+    chimed=False,
+    chime_reason="exclVehicle",
+    drive_over_reason="",
+  )
+
+
 class PathObstacleDetector:
   """One candidate per radar frame. State is track age and the chime memory."""
 
   def __init__(self) -> None:
     self._tracks: dict[int, dict] = {}
     self._chime = ChimeGate()
+    self._vision_looks: dict[int, list] = {}
 
   def reset(self) -> None:
     self._tracks.clear()
     self._chime.reset()
+    self._vision_looks.clear()
 
   def begin(self, points, v_ego: float, path_x, path_y, dt: float, *,
             lead_ids=(), cone: ConeHint | None = None, model_leads=(),
-            lighting: float = 1.0, deadline: float | None = None) -> _Hit:
+            lighting: float = 1.0, deadline: float | None = None,
+            yaw_rate: float = 0.0) -> _Hit:
     dt = 0.0 if dt is None else float(dt)
     if not math.isfinite(dt) or dt < 0.0:
       dt = 0.0
@@ -929,6 +1464,12 @@ class PathObstacleDetector:
       v_ego_f = 0.0
     if not math.isfinite(v_ego_f):
       v_ego_f = 0.0
+    try:
+      yaw = float(yaw_rate)
+    except (TypeError, ValueError):
+      yaw = 0.0
+    if not math.isfinite(yaw):
+      yaw = 0.0
     light = lighting_score() if lighting is None else float(lighting)
     if not math.isfinite(light):
       light = 1.0
@@ -948,7 +1489,7 @@ class PathObstacleDetector:
       if len(parsed) > MAX_POINTS:
         parsed.sort(key=lambda item: item["x"])
         del parsed[MAX_POINTS:]
-      returns = self._advance(parsed, dt, v_ego_f, path_x, path_y, deadline)
+      returns = self._advance(parsed, dt, v_ego_f, path_x, path_y, deadline, yaw)
       leads = {int(i) for i in lead_ids if i is not None}
       near_reason = "no_candidate"
       near_ret = None
@@ -960,9 +1501,16 @@ class PathObstacleDetector:
         elif near_ret is None or ret["x"] < near_ret["x"]:
           near_ret = ret
           near_reason = reason
-      clusters = _cluster(kept)
+      # A stopped lead is its own candidate. Clustering it with a neighbor
+      # would hide that neighbor behind the lead, which daytime still ignores.
+      lead_pts = [ret for ret in kept if ret.get("model_lead")]
+      other_pts = [ret for ret in kept if not ret.get("model_lead")]
+      clusters = _cluster(other_pts)
+      clusters.extend([pt] for pt in lead_pts)
       best = None
       best_key = None
+      best_lead = None
+      best_lead_key = None
       rejected = near_reason
       rejected_members = [near_ret] if near_ret is not None else []
       for group in clusters:
@@ -970,12 +1518,14 @@ class PathObstacleDetector:
         why = _cluster_reject(group)
         if why is None and _popin(group):
           why = "road_surface"
+        if why is None:
+          why = _candidate_block(group, v_ego_f)
         if why is not None:
-          if best is None:
+          if best is None and best_lead is None:
             rejected = why
             rejected_members = group
           continue
-        hit = self._score_group(group, light)
+        hit = self._score_group(group, light, v_ego_f)
         if hit is None:
           continue
         key = (
@@ -984,11 +1534,20 @@ class PathObstacleDetector:
           hit.radar_conf,
           -hit.x,
         )
-        if best_key is None or key > best_key:
+        # Anything that is not a lead keeps the slot, as it did before a
+        # lead match was left in the scan. The lead is used only when it
+        # is the only thing here, so a daytime obstacle is not hidden.
+        if hit.model_lead:
+          if best_lead_key is None or key > best_lead_key:
+            best_lead = hit
+            best_lead_key = key
+        elif best_key is None or key > best_key:
           best = hit
           best_key = key
       if best is not None:
         return best
+      if best_lead is not None:
+        return best_lead
       return self._miss(rejected_members, rejected, light)
     except _OverBudget:
       return self._miss([], "over_budget", light)
@@ -1004,21 +1563,33 @@ class PathObstacleDetector:
       motion = 0.0
     lively = _clamp(max(float(hit.lively), _clamp(motion, 0.0, 1.0)), 0.0, 1.0)
     use_vision = bool(hit.active and vision is not None and vision.evaluated)
-    scored = scale_living_vision(vision, lively) if use_vision and vision is not None else None
-    final_class = _fuse_class(hit.radar_class, hit.span_m, hit.cluster_count, scored)
+    trust_vision = bool(use_vision and vision is not None and _vision_in_range(hit.x))
+    scored = scale_living_vision(vision, lively) if trust_vision and vision is not None else None
+    if trust_vision:
+      final_class = _fuse_class(hit.radar_class, hit.span_m, hit.cluster_count, scored, raw=vision)
+    else:
+      final_class = _fuse_class(hit.radar_class, hit.span_m, hit.cluster_count, None)
     if not hit.cluster_count:
       final_class = "unknown"
-    vision_conf = vision.conf if use_vision and vision is not None else None
+    if trust_vision and vision is not None:
+      self._note_vision_look(
+        hit.track_id, vision.conf, final_class, _vision_class_score(vision, final_class),
+        bool(getattr(vision, "light_dominated", False)),
+      )
+    vision_conf = vision.conf if trust_vision and vision is not None else None
     fused, w_r, w_v, agree = fuse_scores(hit.radar_conf, vision_conf, hit.lighting)
-    agree = bool(agree and hit.active)
+    agree = bool(agree and hit.active and trust_vision)
     zone = hit.zone if hit.reject_reason in ("none", "not_persistent") else "none"
     in_path = zone == "inPath"
     entering = zone == "entering"
     t_enter = 0.0 if in_path else hit.time_to_enter
     brake = bool(agree and zone in BRAKE_ZONES)
-    if scored is not None:
+    if trust_vision and scored is not None and vision is not None:
       vh, va, vo = scored.human, scored.animal, scored.obstacle
-      vconf = vision.conf if vision is not None else scored.conf
+      vconf = vision.conf
+    elif use_vision and vision is not None:
+      vh, va, vo = vision.human, vision.animal, vision.obstacle
+      vconf = vision.conf
     else:
       vh = va = vo = vconf = _nan()
     sample = ObstacleSample(
@@ -1052,21 +1623,90 @@ class PathObstacleDetector:
       lively_score=lively if hit.cluster_count else 0.0,
       member_ids=hit.member_ids,
     )
+    if hit.model_lead and not _night_lead_may_chime(sample, hit):
+      return _as_vehicle(sample)
+    if sample.active and _highway_still_unconfirmed(sample, hit.v_ego):
+      return sample.with_chime(False, "no_agree")
+    if sample.active:
+      blocked = _class_zone_block(sample)
+      if blocked is not None:
+        return sample.with_chime(False, blocked)
+      drive_over = self._drive_over_reason(sample, vision, hit)
+      if drive_over:
+        # Log only. brakeGate stays closed so a later consumer cannot
+        # treat a headlight or a rail as something to stop for.
+        return replace(
+          sample, chimed=False, chime_reason="drive_over", drive_over_reason=drive_over,
+          brake_gate=False, agree=False,
+        )
+      if sample.agree and not self._vision_confirmed(sample.track_id, sample.object_class):
+        return sample.with_chime(False, "no_agree")
     chimed, reason = self._chime.consider(sample, chime_enabled, now)
     return sample.with_chime(chimed, reason)
+
+  def _drive_over_reason(self, sample: ObstacleSample, vision: VisionScore | None, hit: _Hit) -> str:
+    """Suppression token, or "" to leave the chime on the existing rules.
+
+    Errors return "" so a broken crop or a bad field falls back to the
+    chime behavior from before this rule.
+    """
+    try:
+      if hit.model_lead or not _drive_over_case(sample, hit):
+        return ""
+      return _drive_over_block(sample, vision, self._vision_looks.get(int(hit.track_id)) or ())
+    except Exception:
+      return ""
+
+  def _note_vision_look(self, track_id: int, conf: float, cls: str, score: float,
+                        light: bool = False) -> None:
+    """Keep the last three trusted camera looks for this track."""
+    try:
+      tid = int(track_id)
+    except (TypeError, ValueError):
+      return
+    if tid == 0:
+      return
+    try:
+      conf_f = float(conf)
+    except (TypeError, ValueError):
+      conf_f = 0.0
+    if not math.isfinite(conf_f):
+      conf_f = 0.0
+    hist = self._vision_looks.pop(tid, [])
+    hist.append((conf_f, cls, float(score), bool(light)))
+    if len(hist) > VISION_LOOKS:
+      del hist[:-VISION_LOOKS]
+    self._vision_looks[tid] = hist
+    while len(self._vision_looks) > 32:
+      self._vision_looks.pop(next(iter(self._vision_looks)))
+
+  def _vision_confirmed(self, track_id: int, cls: str) -> bool:
+    """True when 2 of the last 3 looks clear 0.60 overall and 0.40 on cls."""
+    try:
+      tid = int(track_id)
+    except (TypeError, ValueError):
+      return False
+    hist = self._vision_looks.get(tid) or ()
+    good = 0
+    for item in hist:
+      conf, look_cls, score = item[0], item[1], item[2]
+      if look_cls == cls and conf >= VISION_LOOK_MIN and score >= VISION_CLASS_MIN:
+        good += 1
+    return good >= VISION_LOOKS_NEED
 
   def update(self, points, v_ego: float, path_x, path_y, dt: float, *,
              lead_ids=(), cone: ConeHint | None = None, model_leads=(),
              vision: VisionScore | None = None, lighting: float = 1.0,
              chime_enabled: bool = True, now: float = 0.0,
-             vision_motion: float = 0.0) -> ObstacleSample:
+             vision_motion: float = 0.0, yaw_rate: float = 0.0) -> ObstacleSample:
     hit = self.begin(
       points, v_ego, path_x, path_y, dt,
       lead_ids=lead_ids, cone=cone, model_leads=model_leads, lighting=lighting,
+      yaw_rate=yaw_rate,
     )
     return self.commit(hit, vision, chime_enabled=chime_enabled, now=now, vision_motion=vision_motion)
 
-  def _advance(self, parsed, dt, v_ego, path_x, path_y, deadline=None) -> list[dict]:
+  def _advance(self, parsed, dt, v_ego, path_x, path_y, deadline=None, yaw: float = 0.0) -> list[dict]:
     seen = set()
     out = []
     for item in parsed:
@@ -1074,22 +1714,36 @@ class PathObstacleDetector:
       seen.add(item["id"])
       prev = self._tracks.get(item["id"])
       if prev is None or prev["gap"] > 0.35:
-        state = {"age": dt, "first_x": item["x"], "gap": 0.0, "y": item["y"], "v_lat": 0.0, "hist": []}
+        state = {
+          "age": dt, "first_x": item["x"], "gap": 0.0, "y": item["y"],
+          "v_lat": 0.0, "hist": [], "yaw_int": 0.0,
+        }
       else:
         state = prev
         state["age"] = float(state["age"]) + dt
         state["gap"] = 0.0
-        if item["yv_rel"] is not None:
-          state["v_lat"] = -float(item["yv_rel"])
-        elif dt > 1e-4:
-          state["v_lat"] = (item["y"] - float(state["y"])) / dt
-        state["y"] = item["y"]
+      # A fixed target at range x slides sideways at about -yaw*x while the
+      # car turns. Take that out of v_lat and out of the wander history.
+      prev_y = float(state["y"])
+      measured = None
       if item["yv_rel"] is not None:
-        state["v_lat"] = -float(item["yv_rel"])
+        measured = -float(item["yv_rel"])
+      elif prev is not None and prev["gap"] <= 0.35 and dt > 1e-4:
+        measured = (item["y"] - prev_y) / dt
+      if measured is not None:
+        state["v_lat"] = measured + yaw * float(item["x"])
+      state["y"] = item["y"]
       state["x"] = item["x"]
+      dpsi = yaw * dt
+      if dpsi > 0.25:
+        dpsi = 0.25
+      elif dpsi < -0.25:
+        dpsi = -0.25
+      state["yaw_int"] = float(state.get("yaw_int", 0.0)) + dpsi
+      y_fix = _unrotate_y(float(item["x"]), float(item["y"]), float(state["yaw_int"]))
       hist = state.setdefault("hist", [])
       hist.append((
-        float(state["age"]), float(item["x"]), float(item["y"]),
+        float(state["age"]), float(item["x"]), y_fix,
         float(item["v_rel"]) + v_ego, float(state["v_lat"]),
       ))
       state["hist"] = [row for row in hist if float(state["age"]) - float(row[0]) <= LIVELY_WINDOW_S + 0.05][-24:]
@@ -1123,20 +1777,9 @@ class PathObstacleDetector:
       return "out_of_range"
     if not _fov_ok(x, ret["y"]):
       return "fov"
-    if ret["id"] in leads:
-      return "exclVehicle"
-    for lead in model_leads or ():
-      try:
-        lx, ly, prob = lead[0], lead[1], lead[2]
-      except (TypeError, ValueError, IndexError):
-        continue
-      if _finite(prob) is None or float(prob) < LEAD_PROB:
-        continue
-      lead_id = lead[3] if len(lead) > 3 else None
-      if lead_id is not None and int(lead_id) == ret["id"]:
-        return "exclVehicle"
-      if abs(x - float(lx)) < LEAD_X_M and abs(ret["y"] - float(ly)) < LEAD_Y_M:
-        return "exclVehicle"
+    lead_why = _lead_keep(ret, leads, model_leads)
+    if lead_why is not None:
+      return lead_why
     cone_why = _cone_reject(lat, x, cone)
     if cone_why is not None:
       return cone_why
@@ -1158,7 +1801,7 @@ class PathObstacleDetector:
       return "off_path"
     return None
 
-  def _score_group(self, members: list[dict], lighting: float) -> _Hit | None:
+  def _score_group(self, members: list[dict], lighting: float, v_ego: float = 0.0) -> _Hit | None:
     members = sorted(members, key=lambda m: m["x"])
     rep = members[0]
     lats = [m["lat"] for m in members]
@@ -1230,6 +1873,8 @@ class PathObstacleDetector:
       reject_reason="none" if active else "not_persistent",
       lighting=lighting,
       lively=max(float(m.get("lively", 0.0)) for m in members),
+      v_ego=float(v_ego),
+      model_lead=any(bool(m.get("model_lead")) for m in members),
     )
 
   def _miss(self, members, reason: str, lighting: float) -> _Hit:
@@ -1299,6 +1944,8 @@ def hit_to_msg(hit: _Hit, dest) -> None:
   dest.visionConfHuman = _nan()
   dest.visionConfAnimal = _nan()
   dest.visionConfObstacle = _nan()
+  dest.modelLeadAgree = bool(hit.model_lead)
+  dest.driveOverReason = ""
 
 
 def hit_from_msg(msg) -> _Hit:
@@ -1308,6 +1955,10 @@ def hit_from_msg(msg) -> _Hit:
     member_ids = tuple(int(i) for i in body.memberIds)
   except Exception:
     member_ids = ()
+  try:
+    model_lead = bool(body.modelLeadAgree)
+  except Exception:
+    model_lead = False
   return _Hit(
     active=bool(body.active),
     track_id=int(body.trackId),
@@ -1328,6 +1979,7 @@ def hit_from_msg(msg) -> _Hit:
     reject_reason=str(body.rejectReason or ""),
     lighting=float(body.lightingScore),
     lively=float(body.livelyScore),
+    model_lead=model_lead,
   )
 
 
@@ -1360,6 +2012,8 @@ class ObstacleStage:
     self._sig = None
     self._last_pub = -1e9
     self._reset_done = False
+    self._speed_on = False
+    self._speed_reset = False
 
   def note_failure(self) -> None:
     """Count a failure outside begin(), such as a publish error."""
@@ -1393,6 +2047,21 @@ class ObstacleStage:
       self._log_on = True
     return self._log_on
 
+  def _at_speed(self, v_ego) -> bool:
+    """Hysteresis: arm at 15 mph, drop below about 13 mph."""
+    try:
+      speed = float(v_ego)
+    except (TypeError, ValueError):
+      speed = 0.0
+    if not math.isfinite(speed):
+      speed = 0.0
+    if self._speed_on:
+      if speed < SPEED_DISABLE_MPS:
+        self._speed_on = False
+    elif speed >= SPEED_ENABLE_MPS:
+      self._speed_on = True
+    return self._speed_on
+
   def _idle(self, now: float, reason: str) -> _Hit | None:
     if now - self._last_pub < HEARTBEAT_S:
       return None
@@ -1400,7 +2069,8 @@ class ObstacleStage:
     self.heartbeat = True
     return self.det._miss([], reason, 1.0)
 
-  def step(self, points, v_ego, path_x, path_y, dt, lead_ids, cone, model_leads, now) -> _Hit | None:
+  def step(self, points, v_ego, path_x, path_y, dt, lead_ids, cone, model_leads, now,
+           yaw_rate: float = 0.0) -> _Hit | None:
     """Scan one radar frame. None means nothing to publish."""
     self.heartbeat = False
     try:
@@ -1418,6 +2088,14 @@ class ObstacleStage:
         self._sig = None
       return self._idle(now_f, "disabled")
     self._reset_done = False
+    if not self._at_speed(v_ego):
+      self._skip = 0
+      if not self._speed_reset:
+        self.det.reset()
+        self._sig = None
+        self._speed_reset = True
+      return self._idle(now_f, "lowSpeed")
+    self._speed_reset = False
     if self._skip > 0:
       self._skip -= 1
       return self._idle(now_f, "over_budget")
@@ -1426,7 +2104,7 @@ class ObstacleStage:
       hit = self.det.begin(
         points, v_ego, path_x, path_y, dt,
         lead_ids=lead_ids, cone=cone, model_leads=model_leads,
-        lighting=1.0, deadline=started + BUDGET_S,
+        lighting=1.0, deadline=started + BUDGET_S, yaw_rate=yaw_rate,
       )
     except Exception:
       self._note_exception()
@@ -1480,7 +2158,7 @@ def _cluster(members: list[dict]) -> list[list[dict]]:
 def save_ppm(path: str, rows) -> bool:
   """Write a grayscale P5 thumbnail. False on any I/O problem."""
   try:
-    data = [list(r) for r in rows if r]
+    data = _row_lists(rows)
     if not data:
       return False
     height = len(data)

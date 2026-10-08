@@ -75,6 +75,10 @@ def test_grace_covers_the_blend_and_gap_sits_below_the_shortest_yield():
   # detector must be shorter, or the grace never starts after a short yield.
   assert ly.GAP_S < dlh.HANDS_OFF_CONFIRM_S + 2 * dlh.DT_CTRL - 0.02, UPDATE_FIRST
   assert ly.PANDA_GAP_S <= ly.GAP_S
+  # Automatic give-back is RELEASE_HOLD_S, longer than the inference floor.
+  assert dlh.RELEASE_HOLD_S + 1e-12 >= 0.30
+  assert dlh.RELEASE_HOLD_S + 1e-12 >= dlh.HANDS_OFF_CONFIRM_S
+  assert ly.GAP_S < dlh.RELEASE_HOLD_S
 
 
 def test_panda_header_matches_python_windows():
@@ -223,7 +227,7 @@ def test_guard_catches_a_longer_blend(monkeypatch):
 
 
 def test_guard_catches_a_shorter_hands_off_confirm(monkeypatch):
-  # confirm + one frame <= GAP_S: the lapse is not seen as a yield, so no grace
-  monkeypatch.setattr(dlh, "HANDS_OFF_CONFIRM_S", 0.05)
+  # Release shorter than GAP_S: the lapse is not seen as a yield, so no grace.
+  monkeypatch.setattr(dlh, "RELEASE_HOLD_S", 0.05)
   rec = simulate(SCRIPTS["shortest yield"], DriverLateralHandoff(enabled=True))
-  assert violations(rec), "a 0.05 s confirm hides the yield from the inference and must be flagged"
+  assert violations(rec), "a 0.05 s release hides the yield from the inference and must be flagged"

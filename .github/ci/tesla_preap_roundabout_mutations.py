@@ -942,8 +942,8 @@ MUTATIONS += (
   HistoricalMutation(
     name="rb-hold-press-not-debounced",
     source_path=RH_PATH,
-    original=b'or drv_s >= PRESS_DEBOUNCE_S), drv_s',
-    replacement=b'or counts_as_press(pressed, torque, sense)), drv_s',
+    original=b'return bool(stalk_held or exit_pull), drv_s',
+    replacement=b'return bool(stalk_held or exit_pull or counts_as_press(pressed, torque, sense)), drv_s',
     test_nodes=(
       f"{RB_HOLD_TEST_PATH}::test_press_debounce_and_light_torque",
       f"{RB_HOLD_TEST_PATH}::test_press_flicker_keeps_the_correction_but_a_held_press_and_hard_torque_still_win",
@@ -952,7 +952,7 @@ MUTATIONS += (
   HistoricalMutation(
     name="rb-hold-light-torque-not-ignored",
     source_path=RH_PATH,
-    original=b'  return bool(pressed) and not (0.0 < sense * torque < LIGHT_TORQUE_NM)\n',
+    original=b'  return bool(pressed) and not (sense * torque > 0.0)\n',
     replacement=b'  return bool(pressed)\n',
     test_nodes=(
       f"{RB_HOLD_TEST_PATH}::test_press_debounce_and_light_torque",
@@ -961,8 +961,8 @@ MUTATIONS += (
   HistoricalMutation(
     name="rb-hold-light-torque-ignored-toward-exit",
     source_path=RH_PATH,
-    original=b'not (0.0 < sense * torque < LIGHT_TORQUE_NM)',
-    replacement=b'not (0.0 < -sense * torque < LIGHT_TORQUE_NM)',
+    original=b'not (sense * torque > 0.0)',
+    replacement=b'not (-sense * torque > 0.0)',
     test_nodes=(
       f"{RB_HOLD_TEST_PATH}::test_press_debounce_and_light_torque",
     ),
@@ -970,8 +970,8 @@ MUTATIONS += (
   HistoricalMutation(
     name="rb-hold-hard-override-removed",
     source_path=RH_PATH,
-    original=b'bool(stalk_held or abs(torque) >= LIGHT_TORQUE_NM or drv_s',
-    replacement=b'bool(stalk_held or drv_s',
+    original=b'bool(stalk_held or exit_pull)',
+    replacement=b'bool(stalk_held)',
     test_nodes=(
       f"{RB_HOLD_TEST_PATH}::test_press_debounce_and_light_torque",
       f"{RB_HOLD_TEST_PATH}::test_press_flicker_keeps_the_correction_but_a_held_press_and_hard_torque_still_win",

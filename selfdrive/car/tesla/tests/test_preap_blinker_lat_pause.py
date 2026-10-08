@@ -511,7 +511,7 @@ def _intent_then_brake(eng, *, a_ego, brake, frames=None, hands=1):
   for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES):
     update_card_lat_handoff(
       eng, engaged=True, lat_would_be_active=True,
-      steering_torque=0.85, steering_rate_deg=20.0, hands_on_level=hands,
+      steering_torque=1.5, steering_rate_deg=20.0, hands_on_level=hands,
       brake_applied=False, a_ego=0.0, v_ego=15.0, param_on=True)
   canceled = False
   for _ in range(frames):
@@ -566,7 +566,7 @@ def test_card_handoff_keeps_yield_during_driver_turn_blinker():
   for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES):
     update_card_lat_handoff(
       eng, engaged=True, lat_would_be_active=True,
-      steering_torque=0.85, steering_rate_deg=20.0, hands_on_level=1,
+      steering_torque=1.5, steering_rate_deg=20.0, hands_on_level=1,
       brake_applied=False, a_ego=0.0, v_ego=15.0, param_on=True)
   assert eng._nap_lat_handoff._yielded
   # Driver-turn blinker + lat still requested: stay yielded, no identity reset.
@@ -595,7 +595,7 @@ def test_card_handoff_keeps_yield_below_10_mph():
   for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES):
     update_card_lat_handoff(
       eng, engaged=True, lat_would_be_active=True,
-      steering_torque=0.85, steering_rate_deg=20.0, hands_on_level=1,
+      steering_torque=1.5, steering_rate_deg=20.0, hands_on_level=1,
       brake_applied=False, a_ego=0.0, v_ego=15.0, param_on=True)
   assert eng._nap_lat_handoff._yielded
   slow = LAT_REENABLE_MIN_V_EGO - 0.05
@@ -636,7 +636,7 @@ def test_reverse_while_engaged_hard_cancels_session():
   for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES):
     update_card_lat_handoff(
       eng, engaged=True, lat_would_be_active=True,
-      steering_torque=0.85, steering_rate_deg=20.0, hands_on_level=1,
+      steering_torque=1.5, steering_rate_deg=20.0, hands_on_level=1,
       brake_applied=False, a_ego=0.0, v_ego=15.0, param_on=True)
   assert eng._nap_lat_handoff._yielded
 

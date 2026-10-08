@@ -69,12 +69,13 @@ class Rig:
     self.itf.CS.enableJustCC = False
     self.hands(0)  # CS_prev for the hands-on edge
 
-  def _can(self, hands):
+  def _can(self, hands, angle=0.0, torque=0.0):
     self.counter += 1
     msgs = []
     for name, vals in (("DI_torque2", {"DI_gear": 4}),
                        ("EPAS_sysStatus", {"EPAS_handsOnLevel": hands, "EPAS_eacStatus": 1,
-                                           "EPAS_internalSAS": 0,
+                                           "EPAS_internalSAS": angle,
+                                           "EPAS_torsionBarTorque": torque,
                                            "EPAS_sysStatusCounter": self.counter % 16})):
       addr, dat, bus = self.packer.make_can_msg(name, 0, vals)
       msgs.append(CanData(addr, dat, bus))
@@ -96,9 +97,9 @@ class Rig:
           self.parser.update([(self.nanos, [(addr, dat, bus)])])
           self.steer_types.append(int(self.parser.vl["DAS_steeringControl"]["DAS_steeringControlType"]))
 
-  def hands(self, level):
-    """One CarState frame with EPAS_handsOnLevel=level; returns (CS, events)."""
-    ret = self.itf.update(self._can(level))
+  def hands(self, level, angle=0.0, torque=0.0):
+    """One CarState frame. angle/torque are CAN EPAS signals (CS negates both)."""
+    ret = self.itf.update(self._can(level, angle=angle, torque=torque))
     ev = self.events.update(ret, self.prev or ret, car.CarControl.new_message())
     self.prev = ret
     return ret, ev
@@ -194,10 +195,86 @@ def test_stash_decodes_hands_level_for_every_level_and_state():
       assert int(round(v)) == hands
 
 
+def test_same_direction_push_yields_without_disengage():
+  """One frame, hands 0→3, torque helping the command. No 80 ms counter."""
+  r = Rig()
+  r.drive(0.3, lat_active=True)
+  assert r.eng.lat_yield.full_control()
+  r.eng._nap_cmd_angle_deg = -40.0
+  ret, ev = r.hands(3, angle=30.0, torque=3.5)  # CS angle -30, CS torque -3.5
+  assert ret.steeringDisengage
+  assert r.eng.cruiseEnabled and r.eng.enableLongControl
+  assert not ly.stash_full_control(ret.steeringTorqueEps)
+  assert EventName.steerDisengage not in ev.names
+  assert EventName.pcmDisable not in ev.names
+  assert r.eng.lat_yield.blocked
+
+
+def test_opposite_yank_at_full_lateral_disengages():
+  r = Rig()
+  r.drive(0.3, lat_active=True)
+  r.eng._nap_cmd_angle_deg = -40.0
+  _ret, ev = r.hands(3, angle=30.0, torque=-3.5)  # CS torque +3.5, against a right command
+  assert not r.eng.cruiseEnabled and not r.eng.enableLongControl
+  assert EventName.steerDisengage in ev.names
+
+
+def test_roundabout_any_input_yields():
+  r = Rig()
+  r.drive(0.3, lat_active=True)
+  r.eng._nap_cmd_angle_deg = -40.0
+  r.eng._nap_roundabout_yield = True
+  _ret, ev = r.hands(2, angle=30.0, torque=-3.5)  # opposite yank, still a yield
+  assert r.eng.cruiseEnabled and r.eng.enableLongControl
+  assert EventName.steerDisengage not in ev.names
+  assert r.eng.lat_yield.blocked
+
+
+def test_undertrack_same_side_as_the_wheel_yields_when_the_command_lags():
+  r = Rig()
+  r.drive(0.3, lat_active=True)
+  r.eng._nap_cmd_angle_deg = -30.0  # lags the wheel
+  r.eng._nap_undertrack = True
+  _ret, ev = r.hands(3, angle=40.0, torque=3.5)  # CS wheel -40, CS torque -3.5
+  assert r.eng.cruiseEnabled
+  assert EventName.steerDisengage not in ev.names
+
+
+def test_farm_trace_ends_yielded_and_the_opposite_yank_does_not():
+  # 14:32:18-19 samples, one frame each. Hands 0 until the final yank.
+  torques = [0.70, -0.95, 0.47, -2.19, 0.86, -1.79, 0.15, -1.00, -3.29, -3.77]
+  r = Rig()
+  r.drive(0.3, lat_active=True)
+  r.eng._nap_undertrack = True
+  ev = None
+  for i, tq in enumerate(torques):
+    meas = -26.0 + (-44.0 + 26.0) * i / (len(torques) - 1)
+    r.eng._nap_cmd_angle_deg = meas + 8.0
+    hands = 3 if i == len(torques) - 1 else 0
+    _ret, ev = r.hands(hands, angle=-meas, torque=-tq)
+    assert r.eng.cruiseEnabled, tq
+  assert ev is not None and EventName.steerDisengage not in ev.names
+  assert r.eng.lat_yield.blocked
+
+  r2 = Rig()
+  r2.drive(0.3, lat_active=True)
+  r2.eng._nap_cmd_angle_deg = -50.0
+  r2.eng._nap_undertrack = True
+  _ret, ev = r2.hands(3, angle=40.0, torque=-3.77)  # positive CS torque, right command
+  assert not r2.eng.cruiseEnabled
+  assert EventName.steerDisengage in ev.names
+
+
 def test_card_handoff_forwards_steering_pressed_to_the_early_yield():
+  from pathlib import Path
+
   from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import _handoff_for, update_card_lat_handoff
   from openpilot.selfdrive.controls.lib.driver_lateral_handoff import EARLY_YIELD_FRAMES
 
+  # 1.4 Nm / 80 ms yields without steeringPressed, so a 3 Nm push still
+  # yields if this kwarg is dropped. The forward itself is the contract.
+  card = Path(__file__).resolve().parents[4] / "selfdrive/car/tesla/preap_blinker_lat_pause.py"
+  assert "    steering_pressed=steering_pressed,\n    dt=dt,\n" in card.read_text()
   eng = Rig().eng
   for _ in range(EARLY_YIELD_FRAMES):
     update_card_lat_handoff(
