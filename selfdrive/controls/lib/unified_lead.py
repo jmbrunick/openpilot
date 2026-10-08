@@ -68,6 +68,7 @@ from __future__ import annotations
 
 import math
 
+from openpilot.selfdrive.controls.lib.crossing_vehicle import X2_ROOM_FRAC, X2_V_LEAD_MS, CrossingFollow
 from openpilot.selfdrive.controls.lib.lead_leaving import CLEAR_MARGIN_M, EGO_HALF_WIDTH_M, LEAD_HALF_WIDTH_M
 
 # Same standstill gap long_mpc uses for the follow obstacle.
@@ -486,7 +487,14 @@ def kinematic_room_m(slack: float, v_close: float, t_follow: float, v_lead: floa
   ttg = e / max(v, ALLOW_FADE_V_MIN_MS)
   inside *= 1.0 - _smooth01(ttg / ALLOW_FADE_TTG_S)
   room = outside + inside - REACTION_S * v
-  return max(KIN_ROOM_MIN_M, room)
+  room = max(KIN_ROOM_MIN_M, room)
+  # Stopped or creeping lead: do not shorten the room below three quarters
+  # of the gap past the standstill keep. A fast close was matching far too
+  # early (118 m at 13 m/s asked for about −2 against a −0.8 need). Moving
+  # leads, including every #222 case, skip this.
+  if 0.0 <= float(v_lead) < X2_V_LEAD_MS and e > 0.0:
+    room = max(room, X2_ROOM_FRAC * e)
+  return room
 
 
 def kinematic_required_accel(slack: float, v_close: float, t_follow: float, v_lead: float) -> float:
@@ -960,6 +968,8 @@ class UnifiedLeadController:
     self._rapid_y: float | None = None
     self.last_rapid_path_credit = 1.0
     self._approach = ApproachInputs()
+    self._cross = CrossingFollow()
+    self.crossing_classified = False
     self._track_age = 0.0
     self._vrel_f: float | None = None  # v_lead - v_ego, positive opens
     self._pullaway = False
@@ -980,7 +990,8 @@ class UnifiedLeadController:
            path_lat: float | None = None, model_prob: float | None = None,
            radar: bool | None = None, leave_w: float = 0.0,
            gap_set_override_m: float | None = None,
-           v_curve_cap: float | None = None) -> float:
+           v_curve_cap: float | None = None,
+           v_lat: float = 0.0, long_on: bool = True) -> float:
     """One planner frame. Returns the slewed road-relative accel, or 0 with no lead."""
     frame_dt = 0.05 if dt is None or float(dt) <= 1e-6 else float(dt)
     if not present:
@@ -1055,6 +1066,11 @@ class UnifiedLeadController:
     self.last_v_lead = float(self._v_f)
     self.last_a_lead = float(self._a_f)
     self.last_a_lead_eff = float(a_eff)
+    self._cross.update(
+      dt=frame_dt, lead_id=lead_id, gap=float(gap), y_rel=float(y_rel),
+      v_lead=float(v_lead), v_lat=float(v_lat), model_prob=model_prob, long_on=bool(long_on),
+    )
+    self.crossing_classified = bool(self._cross.classified)
 
     law_kw = dict(
       v_ceiling=v_ceiling, a_map=a_map, y_rel=y_rel, curvature=curvature,
@@ -1079,6 +1095,21 @@ class UnifiedLeadController:
         pass
       else:
         desired = filtered
+    # Crossing lead: the law sees a smoothed fraction of the closing speed,
+    # so it eases off instead of stopping. A pulling-away cut-in is left
+    # on its own rule. When the exit sweep begins and the driver has not
+    # touched the gas, blend across to the speed-ceiling command.
+    scale = 1.0 if self._pullaway else self._cross.close_scale
+    resume_w = 0.0 if self._pullaway else self._cross.resume_w
+    if scale < 0.999:
+      v_close = max(0.0, float(v_ego) - float(self._v_f))
+      v_law = float(v_ego) - v_close * scale
+      cross_kw = dict(law_kw)
+      cross_kw["leave_w"] = 0.0
+      desired = unified_follow_desired(gap, v_ego, v_law, a_eff, t_follow, **cross_kw)
+    if resume_w > 0.0:
+      free = lead_free_accel(float(v_ego), v_ceiling, a_map, v_curve_cap)
+      desired = (1.0 - resume_w) * float(desired) + resume_w * free
     if a_max is not None:
       desired = min(desired, float(a_max))
     if self._pullaway:
