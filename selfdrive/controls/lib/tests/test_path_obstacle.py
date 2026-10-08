@@ -1,6 +1,7 @@
 """Radar obstacle trigger, projection, fusion, and the animal/person chime."""
 from __future__ import annotations
 
+import math
 import time
 import wave
 from pathlib import Path
@@ -25,6 +26,7 @@ from openpilot.selfdrive.controls.lib.path_obstacle import (
   fuse_scores,
   fusion_weights,
   future_brake_intent,
+  _fuse_class,
   lively_from_history,
   patch_change_score,
   project_road_point,
@@ -34,7 +36,12 @@ from openpilot.selfdrive.controls.lib.path_obstacle import (
   should_raise_chime,
   vehicle_exclusion_points,
 )
-from openpilot.selfdrive.ui.obstacle_chime import OBSTACLE_CHIME_ID, alert_sound_id
+from openpilot.selfdrive.ui.obstacle_chime import (
+  OBSTACLE_CHIME_ID,
+  OBSTACLE_CHIME_MIN_VOLUME,
+  alert_sound_id,
+  floor_volume,
+)
 
 ROOT = Path(__file__).resolve().parents[4]
 V_EGO = 12.0
@@ -53,7 +60,7 @@ def _pt(x, y_rel, v_rel, tid, yv_rel=0.0, rcs=5.0):
   )
 
 
-def _run(det, points, n=4, dt=0.1, vision=None, chime_enabled=True, now0=100.0, **kw):
+def _run(det, points, n=5, dt=0.1, vision=None, chime_enabled=True, now0=100.0, **kw):
   sample = None
   for i in range(n):
     sample = det.update(
@@ -264,7 +271,10 @@ def test_rejects_clutter_and_a_lane_spanning_tree():
     _pt(28.0, 0.0, -V_EGO, 22),
     _pt(28.0, -1.2, -V_EGO, 23),
   ]
-  fallen = _run(PathObstacleDetector(), tree, vision=ANIMAL)
+  # Span forces obstacle even when the camera's animal score is higher.
+  # The obstacle score still has to clear the class bar or the chime waits.
+  span_view = VisionScore(conf=0.80, human=0.08, animal=0.82, obstacle=0.55)
+  fallen = _run(PathObstacleDetector(), tree, vision=span_view)
   assert fallen.object_class == "obstacle"
   assert fallen.cluster_count == 3 and fallen.span_m >= 1.8
   assert fallen.agree and fallen.chimed and fallen.chime_reason == "chimed"
@@ -355,7 +365,7 @@ def test_wander_and_patch_change_raise_lively_without_zeroing_a_freeze():
 def test_chime_hold_cooldown_and_shared_classes():
   det = PathObstacleDetector()
   deer = [_pt(30.0, 0.0, -V_EGO, 3)]
-  first = _run(det, deer, n=4, vision=ANIMAL, now0=100.0)
+  first = _run(det, deer, n=5, vision=ANIMAL, now0=100.0)
   assert first.chimed
   held = _run(det, deer, n=1, vision=ANIMAL, now0=100.4)
   assert held.chimed and held.chime_reason == "chimed"
@@ -502,16 +512,25 @@ def test_alert_sound_id_and_unique_wav():
     frames = handle.getnframes()
     duration = frames / 48000.0
     pcm = np.frombuffer(handle.readframes(frames), dtype=np.int16)
-  assert 0.35 <= duration <= 0.70
+  assert 0.90 <= duration <= 1.15
+  peak_level = float(np.max(np.abs(pcm))) / 32767.0
+  assert peak_level >= 0.90
   spec = np.abs(np.fft.rfft(pcm.astype(np.float64)))
   freqs = np.fft.rfftfreq(len(pcm), 1.0 / 48000.0)
   peak = float(freqs[int(spec.argmax())])
-  assert 350.0 < peak < 650.0
-  high = spec[(freqs > 1500.0) & (freqs < 1800.0)].sum()
-  assert high < 0.05 * spec.sum()
-  low = spec[(freqs > 360.0) & (freqs < 430.0)].sum()
-  mid = spec[(freqs > 540.0) & (freqs < 640.0)].sum()
-  assert low > 0.02 * spec.sum() and mid > 0.02 * spec.sum()
+  # G6 then C7, twice. Not engage's falling 1661 Hz note, and not the old low boop.
+  assert peak > 1400.0
+  assert not 1620.0 < peak < 1720.0
+  g6 = spec[(freqs > 1500.0) & (freqs < 1640.0)].sum()
+  c7 = spec[(freqs > 2000.0) & (freqs < 2200.0)].sum()
+  low = spec[freqs < 800.0].sum()
+  assert g6 > 0.04 * spec.sum()
+  assert c7 > 0.02 * spec.sum()
+  assert low < 0.15 * spec.sum()
+  assert floor_volume(OBSTACLE_CHIME_ID, 0.355) == OBSTACLE_CHIME_MIN_VOLUME
+  assert floor_volume(OBSTACLE_CHIME_ID, 0.91) == 0.91
+  assert floor_volume(2, 0.355) == 0.355
+  assert OBSTACLE_CHIME_MIN_VOLUME == 0.7
 
 
 def test_thumbnail_prune_and_scan_cost():
@@ -596,6 +615,13 @@ def test_wiring_stays_off_the_control_core_and_off_longitudinal():
   assert "leadsV3" in radar and ".leads" in radar
   assert "leadOne" in radar and "leadTwo" in radar
   assert "run_obstacle" in radar
+  assert '"yaw_rate"' in radar
+  assert "model_yaw_rate_right(sm['modelV2'])" in radar
+  assert radar.count("SubMaster(") == 1
+  sound = text("selfdrive/ui/soundd.py")
+  thread = sound.split("def soundd_thread", 1)[1]
+  assert thread.find("warningImmediate") < thread.find("floor_volume")
+  assert "carState" not in thread
   assert "sub_sock('carState'" not in proc and 'sub_sock("carState"' not in proc
   assert "get_gps_location_service" in proc
   assert 'sub_sock("gpsLocationExternal"' not in proc and "sub_sock('gpsLocationExternal'" not in proc
@@ -617,3 +643,119 @@ def test_wiring_stays_off_the_control_core_and_off_longitudinal():
   assert '"card"' not in optional or "card" not in optional.split("OPTIONAL_PROCESS_NAMES", 1)[1][:200]
   onroad = text("selfdrive/test/test_onroad.py")
   assert '"selfdrive.pathobstacled.pathobstacled": 1.0' in onroad
+
+
+def test_oct7_yaw_curve_does_not_chime_and_stays_roadside():
+  """20:02:12 route 174. Radar vLat was the car's own right turn at 119 m."""
+  det = PathObstacleDetector()
+  # device y +right. yRel is +left, so a target 5.91 m right is yRel -5.91.
+  vision = VisionScore(conf=0.76, human=0.15, animal=0.06, obstacle=0.65)
+  v_ego = 26.7
+  yaw = 0.0126
+  sample = None
+  chimed = False
+  for i in range(8):
+    sample = det.update(
+      [_pt(118.6, -5.91, 0.05 - v_ego, 952, yv_rel=1.62)],
+      v_ego, PATH_X, PATH_Y, 0.1,
+      vision=vision, lighting=0.43, yaw_rate=yaw, now=200.0 + i * 0.1,
+    )
+    chimed = chimed or bool(sample.chimed)
+  assert sample is not None
+  assert chimed is False
+  assert sample.zone == "roadside"
+  assert sample.object_class not in ("animal", "human")
+  assert -0.40 < sample.v_lat < 0.20
+  assert sample.vision_evaluated and sample.vision_conf > 0.70
+  assert sample.agree is False
+  assert sample.range_m > 85.0
+
+  # The same turn must not look like the target wandered into the lane.
+  curve = PathObstacleDetector()
+  x = 80.0
+  y0 = 6.0
+  yaw_fast = 0.02
+  dt = 0.1
+  lively = None
+  for i in range(16):
+    psi = yaw_fast * dt * (i + 1)
+    device_y = -math.sin(psi) * x + math.cos(psi) * y0
+    lively = curve.update(
+      [_pt(x, -device_y, -20.0, 951, yv_rel=yaw_fast * x)],
+      20.0, PATH_X, PATH_Y, dt, yaw_rate=yaw_fast, now=300.0 + i * dt,
+    )
+  assert lively is not None
+  assert abs(lively.v_lat) < 0.35
+  assert lively.lively_score < 0.2
+  assert lively.chimed is False
+
+
+def test_oct7_yaw_animal_mislabel_does_not_chime():
+  """20:02:31. A left curve made a roadside return look like a 4 m/s animal."""
+  low = VisionScore(conf=0.58, human=0.10, animal=0.05, obstacle=0.20)
+  assert _fuse_class("animal", 0.0, 1, low, raw=low) == "obstacle"
+  assert _fuse_class("human", 0.0, 1, VisionScore(conf=0.70, human=0.22, animal=0.10, obstacle=0.15)) == "obstacle"
+  kept = VisionScore(conf=0.70, human=0.10, animal=0.55, obstacle=0.10)
+  assert _fuse_class("animal", 0.0, 1, kept, raw=kept) == "animal"
+
+  det = PathObstacleDetector()
+  v_ego = 26.0
+  yaw = -0.058
+  sample = None
+  chimed = False
+  for i in range(8):
+    sample = det.update(
+      [_pt(69.0, -7.7, -v_ego, 991, yv_rel=-4.4)],
+      v_ego, PATH_X, PATH_Y, 0.1,
+      vision=low, lighting=0.43, yaw_rate=yaw, now=400.0 + i * 0.1,
+    )
+    chimed = chimed or bool(sample.chimed)
+  assert sample is not None
+  assert chimed is False
+  assert sample.zone == "roadside"
+  assert sample.object_class != "animal"
+  assert abs(sample.v_lat) < 1.0
+  assert sample.chime_reason != "chimed"
+
+
+def test_oct7_single_look_does_not_chime_and_a_real_obstacle_does():
+  """20:09:02. One 0.70 look, then 0.44. A stopped in-path obstacle still chimes."""
+  det = PathObstacleDetector()
+  v_ego = 18.1
+  good = VisionScore(conf=0.70, human=0.10, animal=0.08, obstacle=0.59)
+  bad = VisionScore(conf=0.44, human=0.10, animal=0.08, obstacle=0.30)
+  good_frame = None
+  chimed = False
+  for i in range(8):
+    vision = good if i == 5 else bad if i == 6 else None
+    sample = det.update(
+      [_pt(46.4, -1.96, 0.25 - v_ego, 1520, yv_rel=0.62)],
+      v_ego, PATH_X, PATH_Y, 0.1,
+      vision=vision, lighting=0.40, yaw_rate=0.0003, now=500.0 + i * 0.1,
+    )
+    chimed = chimed or bool(sample.chimed)
+    if i == 5:
+      good_frame = sample
+  assert good_frame is not None
+  assert good_frame.agree is True
+  assert good_frame.object_class == "obstacle"
+  assert good_frame.chimed is False
+  assert good_frame.chime_reason == "no_agree"
+  assert chimed is False
+
+  real = PathObstacleDetector()
+  solid = VisionScore(conf=0.82, human=0.05, animal=0.06, obstacle=0.74)
+  chimed_at = None
+  last = None
+  for i in range(8):
+    vision = solid if i >= 4 else None
+    last = real.update(
+      [_pt(28.0, 0.0, -12.0, 77)], 12.0, PATH_X, PATH_Y, 0.1,
+      vision=vision, now=600.0 + i * 0.1,
+    )
+    if last.chimed and chimed_at is None:
+      chimed_at = i
+  assert last is not None
+  assert last.zone == "inPath" and last.object_class == "obstacle"
+  assert last.chimed and last.chime_reason == "chimed"
+  assert chimed_at == 5
