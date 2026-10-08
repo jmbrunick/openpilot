@@ -2,185 +2,504 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>NAP Dash</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>openpilot</title>
 <style>
-  :root { color-scheme: dark; }
-  body {
-    margin: 0; font: 18px/1.35 system-ui, sans-serif;
-    background: #111; color: #eee;
+  html, body { margin: 0; padding: 0; background: #000; color: #f2f2f2; }
+  body { font: 22px/1.35 Arial, Helvetica, sans-serif; }
+  #nav { background: #000; padding: 12px; }
+  #nav button, #software button, .choice button, .soft button, .overlay button, .sub button {
+    font: 22px/1.2 Arial, Helvetica, sans-serif;
+    min-height: 64px;
+    padding: 16px 18px;
+    margin: 0 8px 8px 0;
+    border: 0;
+    border-radius: 10px;
+    background: #2a2a2a;
+    color: #f2f2f2;
   }
-  main { max-width: 32rem; margin: 0 auto; padding: 1rem 1rem 3rem; }
-  h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
-  h2 { font-size: 1.05rem; margin: 1.4rem 0 .6rem; }
-  p.note { color: #aaa; margin: 0 0 1rem; font-size: .9rem; }
-  label, .row {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: .75rem; padding: .7rem 0; border-bottom: 1px solid #2a2a2a;
+  #nav button.sel, .choice button.sel, .sub button.sel { background: #f2f2f2; color: #111; }
+  #main { padding: 8px 16px 48px; }
+  h1 { font-size: 28px; margin: 8px 0; }
+  h2 { font-size: 20px; color: #9a9a9a; font-weight: normal; margin: 22px 0 8px; }
+  .note, .desc, #status { color: #bdbdbd; font-size: 18px; }
+  .row {
+    background: #1c1c1c;
+    border-radius: 12px;
+    padding: 14px 16px;
+    margin: 0 0 10px;
   }
-  input[type="number"], input[type="text"], select {
-    font: inherit; background: #1c1c1c; color: #fff;
-    border: 1px solid #444; border-radius: 8px; padding: .45rem .6rem;
-    min-width: 7rem;
+  .row h3 { margin: 0 0 6px; font-size: 24px; }
+  .row .desc { white-space: pre-wrap; margin: 0 0 10px; }
+  .row button.on { background: #1f7a3a; color: #fff; }
+  .row button.off { background: #3a3a3a; }
+  .row button:disabled, .row button.locked { background: #222; color: #777; }
+  .pill { display: inline-block; margin-left: 8px; color: #e0b050; font-size: 16px; }
+  .overlay {
+    position: fixed; left: 0; top: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.72);
+    padding: 40px 20px;
   }
-  button {
-    font: inherit; background: #2a4a7a; color: #fff; border: 0;
-    border-radius: 10px; padding: .7rem 1rem; margin: .35rem .35rem 0 0;
+  .card { background: #1c1c1c; border-radius: 16px; padding: 20px; max-width: 720px; margin: 0 auto; }
+  .hidden { display: none; }
+  @media (min-width: 900px) {
+    #nav { float: left; width: 280px; min-height: 100%; }
+    #nav button { display: block; width: 250px; text-align: left; }
+    #main { margin-left: 300px; }
   }
-  button.on { background: #1f7a3a; }
-  #status { min-height: 1.4rem; color: #9cf; font-size: .9rem; }
 </style>
 </head>
 <body>
-<main>
-  <h1>NAP Dash</h1>
-  <p class="note">Params and software only. Join the comma hotspot, then use this page.</p>
+<div id="nav"></div>
+<div id="main">
+  <h1>openpilot</h1>
+  <p class="note" id="intro">Loading settings from the comma.</p>
   <p id="status"></p>
-
-  <h2>Driving Mannerisms</h2>
-  <label>Acceleration <input id="accel" type="number" min="1" max="10" step="1"></label>
-  <label>Adaptive Accel <input id="adaptive_accel" type="checkbox"></label>
-  <label>Follow Distance <input id="follow_distance" type="number" min="1" max="7" step="1"></label>
-  <label>Soft Lateral Handoff <input id="driver_lat_handoff" type="checkbox"></label>
-  <label>One-Pedal Long <input id="one_pedal_long" type="checkbox"></label>
-  <label>Gap lock <input id="gap_lock" type="checkbox"></label>
-
-  <h2>Map Speed</h2>
-  <label>Map Speed (MAX)
-    <select id="map_speed_mode">
-      <option value="0">Off</option>
-      <option value="1">Display</option>
-      <option value="2">Cap</option>
-      <option value="3">Follow</option>
-    </select>
-  </label>
-  <label>Map Speed Offset
-    <select id="map_speed_offset_mph">
-      <option value="-5">-5 mph</option>
-      <option value="0">0</option>
-      <option value="5">+5 mph</option>
-    </select>
-  </label>
-  <label>Lookahead
-    <select id="map_speed_lookahead">
-      <option value="0">Off</option>
-      <option value="1">Late</option>
-      <option value="2">Normal</option>
-      <option value="3">Early</option>
-    </select>
-  </label>
-
-  <h2>Stock</h2>
-  <label>Driving Personality
-    <select id="personality">
-      <option value="0">Aggressive</option>
-      <option value="1">Standard</option>
-      <option value="2">Chill</option>
-    </select>
-  </label>
-  <label>Experimental Mode <input id="experimental" type="checkbox"></label>
-  <div class="row">
-    <span>Driver monitoring</span>
-    <span>
-      <button type="button" id="sl">SL</button>
-      <button type="button" id="fai">FAI</button>
-    </span>
+  <div id="content"></div>
+</div>
+<div id="confirm" class="overlay hidden">
+  <div class="card">
+    <h2 id="confirm-title">Confirm</h2>
+    <p id="confirm-body" class="desc"></p>
+    <button id="confirm-yes" type="button">Confirm</button>
+    <button id="confirm-no" type="button">Cancel</button>
   </div>
-
-  <h2>Software</h2>
-  <p id="sw" class="note">Loading…</p>
-  <label>Target branch <input id="branch" type="text" autocomplete="off" spellcheck="false"></label>
-  <div>
-    <button type="button" id="set-branch">Set branch</button>
-    <button type="button" id="fetch">Check</button>
-    <button type="button" id="download">Download</button>
-  </div>
-  <label>Go offline <input id="offline" type="checkbox"></label>
-</main>
+</div>
 <script>
-const BOOLS = ["adaptive_accel", "driver_lat_handoff", "one_pedal_long", "gap_lock", "experimental"];
-const INTS = ["accel", "follow_distance", "map_speed_mode", "map_speed_offset_mph", "map_speed_lookahead", "personality"];
-const statusEl = document.getElementById("status");
+var manifest = null;
+var snap = null;
+var current = "device";
+var pending = null;
+var lastStamp = "";
 
-function setStatus(text) { statusEl.textContent = text || ""; }
-
-async function postSet(name, value) {
-  const res = await fetch("/api/set", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({name, value}),
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || res.statusText);
-  applySettings(data.settings || {});
-  setStatus("Saved " + name);
+function plain(s) {
+  return String(s || "").replace(/<br\s*\/?>/gi, "\n").replace(/<\/?[^>]+>/g, "");
 }
 
-function applySettings(s) {
-  for (const name of INTS) {
-    const el = document.getElementById(name);
-    if (el && s[name] != null) el.value = String(s[name]);
+function getJSON(url, cb) {
+  var xhr = new XMLHttpRequest();
+  xhr.open("GET", url, true);
+  xhr.onreadystatechange = function () {
+    if (xhr.readyState !== 4) return;
+    if (xhr.status >= 200 && xhr.status < 300) {
+      try { cb(null, JSON.parse(xhr.responseText)); }
+      catch (err) { cb(err, null); }
+    } else {
+      cb(new Error("HTTP " + xhr.status), null);
+    }
+  };
+  xhr.send(null);
+}
+
+function postJSON(url, body, cb) {
+  var xhr = new XMLHttpRequest();
+  xhr.open("POST", url, true);
+  xhr.setRequestHeader("Content-Type", "application/json");
+  xhr.onreadystatechange = function () {
+    if (xhr.readyState !== 4) return;
+    var data = null;
+    try { data = JSON.parse(xhr.responseText); } catch (err) { data = null; }
+    if (xhr.status >= 200 && xhr.status < 300) cb(null, data);
+    else cb(new Error((data && data.error) || ("HTTP " + xhr.status)), data);
+  };
+  xhr.send(JSON.stringify(body));
+}
+
+function setStatus(text) {
+  document.getElementById("status").textContent = text || "";
+}
+
+function panels() {
+  return (manifest && manifest.panels) || [];
+}
+
+function controlsFor(panelId) {
+  var out = [];
+  var list = (manifest && manifest.controls) || [];
+  var i;
+  for (i = 0; i < list.length; i++) {
+    if (list[i].panel === panelId) out.push(list[i]);
   }
-  for (const name of BOOLS) {
-    const el = document.getElementById(name);
-    if (el) el.checked = !!s[name];
+  return out;
+}
+
+function findPanel(id) {
+  var list = panels();
+  var i;
+  for (i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
+  return null;
+}
+
+function childPanels(parentId) {
+  var out = [];
+  var list = panels();
+  var i;
+  for (i = 0; i < list.length; i++) if (list[i].parent === parentId) out.push(list[i]);
+  return out;
+}
+
+function isHidden(ctrl) {
+  return !!(ctrl.release_hidden && snap && snap.release);
+}
+
+function lockText(ctrl) {
+  if (!snap || !ctrl.param || !snap.locked) return "";
+  return snap.locked[ctrl.param] || "";
+}
+
+function valueOf(ctrl) {
+  if (!snap || !snap.values || !ctrl.param) return null;
+  return snap.values[ctrl.param];
+}
+
+function same(a, b) {
+  if (a === b) return true;
+  if (a === null || b === null || a === undefined || b === undefined) return false;
+  var sa = String(a).replace(/^\s+|\s+$/g, "");
+  var sb = String(b).replace(/^\s+|\s+$/g, "");
+  if (sa === "" || sb === "") return false;
+  var na = Number(sa);
+  var nb = Number(sb);
+  if (!isNaN(na) && !isNaN(nb)) return na === nb;
+  return sa === sb;
+}
+
+function showPanel(id) {
+  current = id;
+  renderNav();
+  renderMain();
+  if (id === "network") loadNetwork();
+  if (id === "software") loadSoftware();
+}
+
+function renderNav() {
+  var nav = document.getElementById("nav");
+  while (nav.firstChild) nav.removeChild(nav.firstChild);
+  var list = panels();
+  var i;
+  for (i = 0; i < list.length; i++) {
+    if (list[i].parent) continue;
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = list[i].title;
+    if (list[i].id === current || (findPanel(current) && findPanel(current).parent === list[i].id)) btn.className = "sel";
+    btn.onclick = (function (id) {
+      return function () { showPanel(id); };
+    })(list[i].id);
+    nav.appendChild(btn);
   }
-  document.getElementById("sl").classList.toggle("on", !!s.sl);
-  document.getElementById("fai").classList.toggle("on", !!s.fai);
 }
 
-function applySoftware(sw) {
-  const branch = sw.target_branch || sw.git_branch || "";
-  document.getElementById("branch").value = branch;
-  document.getElementById("offline").checked = !!(sw.offline || sw.disable_updates);
-  const bits = [
-    sw.git_branch ? ("on " + sw.git_branch) : "",
-    sw.updater_state || "",
-    sw.update_available ? "update ready" : "",
-    (sw.offline || sw.disable_updates) ? "offline" : "",
-  ].filter(Boolean);
-  document.getElementById("sw").textContent = bits.join(" · ") || "Software";
+function addSubnav(parentId) {
+  var kids = childPanels(parentId);
+  if (!kids.length) return;
+  var bar = document.createElement("div");
+  bar.className = "sub";
+  var parent = findPanel(parentId);
+  var all = document.createElement("button");
+  all.type = "button";
+  all.textContent = parent ? parent.title : "Main";
+  if (current === parentId) all.className = "sel";
+  all.onclick = function () { showPanel(parentId); };
+  bar.appendChild(all);
+  var i;
+  for (i = 0; i < kids.length; i++) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = kids[i].title;
+    if (kids[i].id === current) btn.className = "sel";
+    btn.onclick = (function (id) {
+      return function () { showPanel(id); };
+    })(kids[i].id);
+    bar.appendChild(btn);
+  }
+  document.getElementById("content").appendChild(bar);
 }
 
-async function load() {
-  const settings = await fetch("/api/settings").then(r => r.json());
-  applySettings(settings.settings || {});
-  const sw = await fetch("/api/software").then(r => r.json());
-  applySoftware(sw);
+function renderMain() {
+  var root = document.getElementById("content");
+  while (root.firstChild) root.removeChild(root.firstChild);
+  var panel = findPanel(current);
+  var intro = document.getElementById("intro");
+  if (manifest && manifest.hotspot) {
+    intro.textContent = "Open " + manifest.hotspot.url + " on the Tesla browser or a phone. The page follows the comma's own settings list.";
+  }
+  if (snap && snap.onroad) {
+    var banner = document.createElement("p");
+    banner.className = "note";
+    banner.textContent = snap.engaged
+      ? "Openpilot is engaged. Toggles the comma locks while engaged stay locked here."
+      : "The car is on. Toggles the comma locks onroad stay locked here.";
+    root.appendChild(banner);
+  }
+  var parentId = panel && panel.parent ? panel.parent : current;
+  if (panel && (panel.parent || childPanels(panel.id).length)) addSubnav(parentId);
+  if (panel && panel.layout === "software") {
+    var soft = document.createElement("div");
+    soft.id = "software";
+    soft.textContent = "Loading software…";
+    root.appendChild(soft);
+    return;
+  }
+  var ctrls = controlsFor(current);
+  var section = null;
+  var i;
+  for (i = 0; i < ctrls.length; i++) {
+    if (isHidden(ctrls[i])) continue;
+    if (ctrls[i].section && ctrls[i].section !== section) {
+      section = ctrls[i].section;
+      var h = document.createElement("h2");
+      h.textContent = section;
+      root.appendChild(h);
+    }
+    root.appendChild(renderControl(ctrls[i]));
+  }
 }
 
-for (const name of INTS.concat(BOOLS)) {
-  const el = document.getElementById(name);
-  el.addEventListener("change", () => {
-    const value = BOOLS.includes(name) ? el.checked : el.value;
-    postSet(name, value).catch(err => setStatus(err.message));
+function renderControl(ctrl) {
+  var row = document.createElement("div");
+  row.className = "row";
+  var title = document.createElement("h3");
+  title.textContent = ctrl.title;
+  var locked = lockText(ctrl);
+  if (locked) {
+    var pill = document.createElement("span");
+    pill.className = "pill";
+    pill.textContent = locked;
+    title.appendChild(pill);
+  }
+  row.appendChild(title);
+  if (ctrl.description) {
+    var desc = document.createElement("p");
+    desc.className = "desc";
+    desc.textContent = plain(ctrl.description);
+    row.appendChild(desc);
+  }
+  if (ctrl.kind === "info" || ctrl.kind === "device_only" || ctrl.kind === "text") {
+    if (ctrl.kind === "text") {
+      var shown = valueOf(ctrl);
+      var val = document.createElement("p");
+      val.textContent = shown === null || shown === undefined || shown === "" ? "—" : String(shown);
+      row.appendChild(val);
+    } else if (ctrl.kind === "device_only") {
+      var note = document.createElement("p");
+      note.className = "note";
+      note.textContent = "On the comma screen.";
+      row.appendChild(note);
+    }
+    return row;
+  }
+  if (ctrl.kind === "link") {
+    var link = document.createElement("button");
+    link.type = "button";
+    link.textContent = "Open";
+    link.onclick = function () { showPanel(ctrl.target_panel); };
+    row.appendChild(link);
+    return row;
+  }
+  if (ctrl.kind === "choice") {
+    var box = document.createElement("div");
+    box.className = "choice";
+    var cur = valueOf(ctrl);
+    var n;
+    for (n = 0; n < ctrl.choices.length; n++) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.textContent = ctrl.choices[n];
+      if (same(cur, ctrl.values[n])) b.className = "sel";
+      if (locked || ctrl.disabled) b.disabled = true;
+      b.onclick = (function (value) {
+        return function () { commit(ctrl, value, false); };
+      })(ctrl.values[n]);
+      box.appendChild(b);
+    }
+    row.appendChild(box);
+    if (ctrl.reboot_hint) row.appendChild(hint("Reboot the comma on the Device tab for this to apply."));
+    return row;
+  }
+  var on = !!valueOf(ctrl);
+  var toggle = document.createElement("button");
+  toggle.type = "button";
+  if (ctrl.kind === "action") {
+    toggle.textContent = ctrl.title;
+    toggle.className = locked ? "locked" : "";
+  } else {
+    toggle.textContent = on ? "On" : "Off";
+    toggle.className = on ? "on" : "off";
+    if (locked) toggle.className += " locked";
+  }
+  if (locked || ctrl.disabled) toggle.disabled = true;
+  toggle.onclick = function () {
+    if (ctrl.kind === "action") commit(ctrl, true, false);
+    else commit(ctrl, !on, false);
+  };
+  row.appendChild(toggle);
+  if (ctrl.needs_restart) row.appendChild(hint("Changing this restarts openpilot if the car is powered on."));
+  if (ctrl.reboot_hint) row.appendChild(hint("Reboot the comma on the Device tab for this to apply."));
+  return row;
+}
+
+function hint(text) {
+  var p = document.createElement("p");
+  p.className = "note";
+  p.textContent = text;
+  return p;
+}
+
+function commit(ctrl, value, confirmed) {
+  var turningOn = !(value === false || value === 0 || value === "0");
+  if (!confirmed && ctrl.confirm && (ctrl.kind === "action" || turningOn)) {
+    askConfirm(ctrl, value);
+    return;
+  }
+  setStatus("Saving…");
+  postJSON("/api/set", {param: ctrl.param, value: value, confirm: !!confirmed}, function (err, data) {
+    if (err) {
+      if (!confirmed && data && data.error && String(data.error).indexOf("confirmation") >= 0) {
+        askConfirm(ctrl, value);
+        return;
+      }
+      setStatus(err.message || "Save failed");
+      return;
+    }
+    snap = data;
+    setStatus("Saved");
+    renderMain();
   });
 }
-document.getElementById("sl").addEventListener("click", () => postSet("sl", true).catch(err => setStatus(err.message)));
-document.getElementById("fai").addEventListener("click", () => postSet("fai", true).catch(err => setStatus(err.message)));
 
-async function software(action, extra) {
-  const res = await fetch("/api/software", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify(Object.assign({action}, extra || {})),
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || res.statusText);
-  applySoftware(data);
-  setStatus(action);
+function askConfirm(ctrl, value) {
+  pending = {ctrl: ctrl, value: value};
+  document.getElementById("confirm-title").textContent = ctrl.title;
+  document.getElementById("confirm-body").textContent = plain(ctrl.description) || "Apply this change?";
+  document.getElementById("confirm").className = "overlay";
 }
 
-document.getElementById("set-branch").addEventListener("click", () => {
-  software("set_branch", {branch: document.getElementById("branch").value}).catch(err => setStatus(err.message));
-});
-document.getElementById("fetch").addEventListener("click", () => software("fetch").catch(err => setStatus(err.message)));
-document.getElementById("download").addEventListener("click", () => software("download").catch(err => setStatus(err.message)));
-document.getElementById("offline").addEventListener("change", (ev) => {
-  software("set_offline", {offline: ev.target.checked}).catch(err => setStatus(err.message));
-});
+function loadNetwork() {
+  getJSON("/api/network", function (err, data) {
+    if (err || current !== "network") return;
+    var root = document.getElementById("content");
+    var box = document.createElement("div");
+    box.className = "row";
+    var h = document.createElement("h3");
+    h.textContent = "Addresses on this comma";
+    box.appendChild(h);
+    var lines = (data.interfaces && data.interfaces.length) ? data.interfaces : [];
+    if (!lines.length) {
+      var empty = document.createElement("p");
+      empty.textContent = "No interface list from this machine. The hotspot address is still " + data.url;
+      box.appendChild(empty);
+    }
+    var i;
+    for (i = 0; i < lines.length; i++) {
+      var p = document.createElement("p");
+      p.textContent = lines[i].name + "  " + lines[i].addr;
+      box.appendChild(p);
+    }
+    root.appendChild(box);
+  });
+}
 
-load().catch(err => setStatus(err.message));
+function loadSoftware() {
+  getJSON("/api/software", function (err, data) {
+    var root = document.getElementById("software");
+    if (!root) return;
+    while (root.firstChild) root.removeChild(root.firstChild);
+    if (err) {
+      root.textContent = err.message || "Software unavailable";
+      return;
+    }
+    root.appendChild(softRow("Current branch", data.git_branch || ""));
+    root.appendChild(softRow("Target branch", data.target_branch || ""));
+    root.appendChild(softRow("Updater", data.updater_state || "idle"));
+    var branches = data.available_branches || [];
+    var i;
+    var box = document.createElement("div");
+    box.className = "soft";
+    for (i = 0; i < branches.length; i++) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.textContent = branches[i];
+      if (branches[i] === data.target_branch) b.className = "sel";
+      b.onclick = (function (name) {
+        return function () { software({action: "set_branch", branch: name}); };
+      })(branches[i]);
+      box.appendChild(b);
+    }
+    root.appendChild(box);
+    var check = document.createElement("button");
+    check.type = "button";
+    check.textContent = "Check for update";
+    check.onclick = function () { software({action: "fetch"}); };
+    var down = document.createElement("button");
+    down.type = "button";
+    down.textContent = "Download";
+    down.onclick = function () { software({action: "download"}); };
+    root.appendChild(check);
+    root.appendChild(down);
+    var offline = document.createElement("button");
+    offline.type = "button";
+    offline.textContent = data.offline ? "Updates paused — resume" : "Go offline";
+    offline.className = data.offline ? "on" : "off";
+    offline.onclick = function () { software({action: "set_offline", offline: !data.offline}); };
+    root.appendChild(offline);
+  });
+}
+
+function softRow(label, value) {
+  var p = document.createElement("p");
+  p.textContent = label + ": " + value;
+  return p;
+}
+
+function software(body) {
+  setStatus("Saving…");
+  postJSON("/api/software", body, function (err) {
+    if (err) { setStatus(err.message || "Software failed"); return; }
+    setStatus("Saved");
+    loadSoftware();
+  });
+}
+
+function refresh() {
+  getJSON("/api/settings", function (err, data) {
+    if (err) { setStatus("Settings unavailable"); return; }
+    if (document.getElementById("confirm").className.indexOf("hidden") < 0) return;
+    snap = data;
+    var stamp = JSON.stringify(data.values || {}) + JSON.stringify(data.locked || {}) + data.onroad + data.engaged + data.release;
+    if (stamp === lastStamp) return;
+    lastStamp = stamp;
+    if (!manifest) return;
+    var panel = findPanel(current);
+    if (panel && (panel.layout === "software" || panel.layout === "network")) {
+      renderNav();
+      return;
+    }
+    renderMain();
+  });
+}
+
+document.getElementById("confirm-yes").onclick = function () {
+  document.getElementById("confirm").className = "overlay hidden";
+  if (!pending) return;
+  var item = pending;
+  pending = null;
+  commit(item.ctrl, item.value, true);
+};
+document.getElementById("confirm-no").onclick = function () {
+  pending = null;
+  document.getElementById("confirm").className = "overlay hidden";
+  setStatus("");
+};
+
+getJSON("/api/manifest", function (err, data) {
+  if (err) { setStatus("Could not read the settings list"); return; }
+  manifest = data;
+  if (panels().length) current = panels()[0].id;
+  renderNav();
+  refresh();
+  setInterval(refresh, 4000);
+});
 </script>
 </body>
 </html>

@@ -9,8 +9,7 @@ from threading import Thread
 import pytest
 
 from openpilot.selfdrive.nap_dash.server import Handler, ThreadingHTTPServer
-from openpilot.selfdrive.nap_dash.settings import read_settings, write_setting
-from openpilot.selfdrive.nap_dash.tests.test_settings import FakeParams, PARAM_FOLLOW_DISTANCE
+from openpilot.selfdrive.nap_dash.tests.test_settings import FakeParams
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -31,24 +30,22 @@ def test_process_config_registers_optional_python_process():
 def test_docs_cover_hotspot_and_mannerisms():
   docs = (ROOT / "docs-nap" / "nap-dash.md").read_text(encoding="utf-8")
   readme = (ROOT / "docs-nap" / "README.md").read_text(encoding="utf-8")
-  assert "7070" in docs
-  assert "comma hotspot" in docs.lower() or "hotspot" in docs.lower()
+  assert "http://100.99.9.1/" in docs
+  assert "100.99.9.0/24" in docs
+  assert "hotspot" in docs.lower()
   assert "Driving Mannerisms" in docs
   assert "do not merge" in docs.lower()
   assert "nap-dash.md" in readme
   assert "panda" in docs.lower()
-  assert "NAPMapSpeedAccel" in docs
-  assert "apply_hypermile_toggle" not in docs
-  assert "NAPHypermile" not in docs
-  assert "http://<device-ip>:7070" in docs or "http://<device>:7070" in docs
   assert "optional" in docs.lower()
   assert "processNotRunning" in docs
   assert "NAPDashEnabled" in docs
-  assert "https://installer.comma.ai/jmbrunick/openpilot/cursor/nap-dash-lite-36e3" in docs
+  assert "https://installer.comma.ai/jmbrunick/openpilot/cursor/mcu-web-ui-c588" in docs
   assert "/api/software" in docs
   assert "no high-rate sockets" in docs.lower()
   assert "modelV2" in docs
   assert "`can`" in docs
+  assert "LTE" in docs
 
 
 def test_onroad_cpu_budget_lists_nap_dash():
@@ -59,10 +56,9 @@ def test_onroad_cpu_budget_lists_nap_dash():
 def test_http_set_round_trip(monkeypatch):
   from openpilot.selfdrive.nap_dash import server as srv
 
-  params = FakeParams(ints={PARAM_FOLLOW_DISTANCE: 4})
+  params = FakeParams()
   monkeypatch.setattr(srv, "PARAMS", params)
-  monkeypatch.setattr(srv, "locked_settings", lambda: read_settings(params))
-  monkeypatch.setattr(srv, "locked_write", lambda name, value: write_setting(params, name, value))
+  monkeypatch.setattr(srv, "_params", lambda: params)
 
   httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
   thread = Thread(target=httpd.serve_forever, daemon=True)
@@ -74,9 +70,10 @@ def test_http_set_round_trip(monkeypatch):
     home = conn.getresponse()
     body = home.read().decode("utf-8")
     assert home.status == 200
-    assert "Driving Mannerisms" in body
+    assert "openpilot" in body
+    assert "XMLHttpRequest" in body
+    assert "fetch(" not in body
     assert "speed_trim" not in body
-    assert 'id="hypermile"' not in body
     conn.close()
 
     conn = HTTPConnection(host, port, timeout=3)
@@ -90,13 +87,24 @@ def test_http_set_round_trip(monkeypatch):
     assert state["lead1"] == {}
     conn.close()
 
-    conn = HTTPConnection(host, port, timeout=3)
+    conn = HTTPConnection(host, port, timeout=5)
+    conn.request("GET", "/api/manifest")
+    manifest_resp = conn.getresponse()
+    manifest = json.loads(manifest_resp.read().decode("utf-8"))
+    assert manifest_resp.status == 200
+    assert manifest["hotspot"]["url"] == "http://100.99.9.1/"
+    titles = [item["title"] for item in manifest["controls"]]
+    assert "Driving Mannerisms" in titles or "Soft Lateral Handoff" in titles
+    assert any(item["param"] == "IsMetric" for item in manifest["controls"])
+    conn.close()
+
+    conn = HTTPConnection(host, port, timeout=5)
     conn.request("GET", "/api/settings")
     settings_resp = conn.getresponse()
     settings_body = json.loads(settings_resp.read().decode("utf-8"))
     assert settings_resp.status == 200
-    assert settings_body["settings"]["follow_distance"] == 4
-    assert any(item["name"] == "adaptive_accel" for item in settings_body["catalog"])
+    assert "IsMetric" in settings_body["values"]
+    assert any(item.get("param") == "IsMetric" for item in settings_body["catalog"])
     conn.close()
 
     conn = HTTPConnection(host, port, timeout=3)
@@ -106,14 +114,14 @@ def test_http_set_round_trip(monkeypatch):
     routes.read()
     conn.close()
 
-    conn = HTTPConnection(host, port, timeout=3)
-    payload = json.dumps({"name": "follow_distance", "value": 6}).encode()
+    conn = HTTPConnection(host, port, timeout=5)
+    payload = json.dumps({"param": "IsMetric", "value": True}).encode()
     conn.request("POST", "/api/set", body=payload, headers={"Content-Type": "application/json"})
     resp = conn.getresponse()
     data = json.loads(resp.read().decode("utf-8"))
     assert resp.status == 200
-    assert data["settings"]["follow_distance"] == 6
-    assert params.ints[PARAM_FOLLOW_DISTANCE] == 6
+    assert data["values"]["IsMetric"] is True
+    assert params.bools["IsMetric"] is True
     conn.close()
 
     conn = HTTPConnection(host, port, timeout=3)
@@ -122,7 +130,16 @@ def test_http_set_round_trip(monkeypatch):
     bad = conn.getresponse()
     err = json.loads(bad.read().decode("utf-8"))
     assert bad.status == 400
-    assert "rejected" in err["error"] or "unknown" in err["error"]
+    assert "rejected" in err["error"] or "unknown" in err["error"] or "not allowed" in err["error"]
+    conn.close()
+
+    conn = HTTPConnection(host, port, timeout=3)
+    conn.request("POST", "/api/set", body=json.dumps({"action": "engage"}).encode(),
+                 headers={"Content-Type": "application/json"})
+    engage = conn.getresponse()
+    engage_err = json.loads(engage.read().decode("utf-8"))
+    assert engage.status == 400
+    assert "not allowed" in engage_err["error"]
     conn.close()
 
     conn = HTTPConnection(host, port, timeout=3)
@@ -164,11 +181,19 @@ def test_server_has_no_high_rate_cereal():
   assert "/export/" not in src
   assert '"can"' not in src
   assert "'can'" not in src
-  for name in ("settings.py", "system_api.py"):
+  for name in ("settings.py", "system_api.py", "ui_api.py", "discover.py"):
     companion = (ROOT / "selfdrive" / "nap_dash" / name).read_text(encoding="utf-8")
     assert "SubMaster" not in companion
     assert "modelV2" not in companion
-    assert "cereal" not in companion
+    assert "import cereal" not in companion
+    assert "from cereal" not in companion
+  html = (ROOT / "selfdrive" / "nap_dash" / "dashboard.html").read_text(encoding="utf-8")
+  assert "=>" not in html
+  assert "let " not in html
+  assert "const " not in html
+  assert "fetch(" not in html
+  assert "Phone guidance" not in html
+  assert "Cruise speed trim" not in html
 
 
 def test_nap_dash_is_optional_and_ignored_by_process_not_running():
