@@ -13,7 +13,12 @@ from openpilot.common.swaglog import cloudlog
 
 from openpilot.system import micd
 from openpilot.system.hardware import HARDWARE
-from openpilot.selfdrive.ui.obstacle_chime import OBSTACLE_CHIME_FILE, OBSTACLE_CHIME_ID, alert_sound_id
+from openpilot.selfdrive.ui.obstacle_chime import (
+  OBSTACLE_CHIME_FILE,
+  OBSTACLE_CHIME_ID,
+  alert_sound_id,
+  floor_volume,
+)
 
 SAMPLE_RATE = 48000
 SAMPLE_BUFFER = 4096 # (approx 100ms)
@@ -191,6 +196,9 @@ class Soundd:
           elapsed = time.monotonic() - self.ramp_start_time
           ramp_vol = float(np.interp(elapsed, [0, ALERT_RAMP_TIME], [self.ramp_start_volume, MAX_VOLUME]))
           self.current_volume = max(self.current_volume, ramp_vol)
+
+        # Quiet cabin cannot drop the obstacle chime below 0.7. Other sounds stay scaled.
+        self.current_volume = floor_volume(self.current_alert, self.current_volume)
 
         rk.keep_time()
 

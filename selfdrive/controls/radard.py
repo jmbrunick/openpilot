@@ -670,6 +670,8 @@ class RadarD:
       "cone": _cone_hint(self._cone_sample),
       "lane_prob_min": lane,
       "path_y_std": path_std,
+      # Same model yaw the cone-line scan uses. No extra carState reader.
+      "yaw_rate": model_yaw_rate_right(sm['modelV2']),
     }
 
   def run_obstacle(self, pm) -> None:
@@ -685,6 +687,7 @@ class RadarD:
       hit = self._obstacle.step(
         inputs["points"], inputs["v_ego"], inputs["path_x"], inputs["path_y"], inputs["dt"],
         inputs["lead_ids"], inputs["cone"], inputs["model_leads"], time.monotonic(),
+        inputs.get("yaw_rate", 0.0),
       )
       if hit is None or pm is None:
         return

@@ -37,16 +37,24 @@ Thresholds (device frame, y +right, path-relative lateral):
   lateral motion                |v_lat| >= 0.45 m/s, or toward the path
   persist                       0.40 s before active; confidence
                                 saturates near 0.80 s
-  agree                         radar >= 0.55 and vision >= 0.45
+  agree                         radar >= 0.55 and vision >= 0.45,
+                                and only while the target is within 85 m
   lighting weights              good light wR = 0.50, poor wR = 0.78,
                                 linear in the lighting score
-  chime                         radar and vision agree. Humans only
-                                inside the human band. Animals out to
-                                the animal band. Solid debris only in
-                                the path or entering it. A stationary
-                                radar "human" outside the human band
-                                is dropped before the camera runs.
-                                Once per track, 9 s global cooldown
+  chime                         radar and vision agree, and 2 of the
+                                last 3 camera looks score >= 0.60
+                                overall with >= 0.40 on that same class.
+                                Humans only inside the human band.
+                                Animals out to the animal band. Solid
+                                debris only in the path or entering it.
+                                Radar alone cannot call animal or human:
+                                a camera score under 0.30 for that class
+                                becomes an obstacle. A stationary radar
+                                "human" outside the human band is dropped
+                                before the camera runs. Once per track,
+                                9 s global cooldown
+  yaw                           v_lat = -yvRel + yaw_right * x, the same
+                                model yaw the cone-line scan already uses
   lively                        0 still, 1 has moved in the last 2 s.
                                 Ground speed, lateral speed, or
                                 position wander past radar noise.
@@ -115,6 +123,16 @@ PERSIST_S = 0.40
 PERSIST_FULL_S = 0.80
 RADAR_AGREE = 0.55
 VISION_AGREE = 0.45
+# Radar animal/human needs the camera to score that class at least this high.
+VISION_LIVING_MIN = 0.30
+# Past this the night patch is ~20 px and the path lateral is loose.
+# Radar keeps the track; the camera verdict is not used.
+VISION_TRUST_M = 85.0
+# Two of the last three looks, same class. One lucky frame does not chime.
+VISION_LOOK_MIN = 0.60
+VISION_CLASS_MIN = 0.40
+VISION_LOOKS = 3
+VISION_LOOKS_NEED = 2
 WR_GOOD = 0.50
 WR_POOR = 0.78
 CHIME_COOLDOWN_S = 9.0
@@ -919,8 +937,49 @@ def patch_change_score(prev, rows) -> float:
   return _clamp((delta - 12.0) / 28.0, 0.0, 1.0)
 
 
-def _fuse_class(radar_class: str, span: float, count: int, vision: VisionScore | None) -> str:
+def _vision_in_range(x: float) -> bool:
+  """Camera verdicts count only out to VISION_TRUST_M. Beyond that, radar only."""
+  try:
+    dist = float(x)
+  except (TypeError, ValueError):
+    return False
+  return math.isfinite(dist) and dist <= VISION_TRUST_M
+
+
+def _vision_class_score(vision: VisionScore, cls: str) -> float:
+  if cls == "human":
+    value = vision.human
+  elif cls == "animal":
+    value = vision.animal
+  elif cls == "obstacle":
+    value = vision.obstacle
+  else:
+    return 0.0
+  try:
+    score = float(value)
+  except (TypeError, ValueError):
+    return 0.0
+  if not math.isfinite(score):
+    return 0.0
+  return score
+
+
+def _unrotate_y(x: float, y: float, psi: float) -> float:
+  """Lateral position with ego yaw removed. psi is +right radians since track start."""
+  return math.sin(psi) * x + math.cos(psi) * y
+
+
+def _fuse_class(radar_class: str, span: float, count: int, vision: VisionScore | None,
+                raw: VisionScore | None = None) -> str:
   if count >= 2 and span >= LANE_SPAN_M:
+    return "obstacle"
+  # Camera score for the radar's living class, before the lively scale.
+  # Below 0.30 the radar guess is not a person or an animal.
+  camera = raw if raw is not None else vision
+  if (
+    camera is not None and camera.evaluated and radar_class in LIVING_CLASSES
+    and _vision_class_score(camera, radar_class) < VISION_LIVING_MIN
+  ):
     return "obstacle"
   if vision is None or not vision.evaluated or vision.conf < VISION_AGREE:
     return radar_class
@@ -1066,14 +1125,17 @@ class PathObstacleDetector:
   def __init__(self) -> None:
     self._tracks: dict[int, dict] = {}
     self._chime = ChimeGate()
+    self._vision_looks: dict[int, list] = {}
 
   def reset(self) -> None:
     self._tracks.clear()
     self._chime.reset()
+    self._vision_looks.clear()
 
   def begin(self, points, v_ego: float, path_x, path_y, dt: float, *,
             lead_ids=(), cone: ConeHint | None = None, model_leads=(),
-            lighting: float = 1.0, deadline: float | None = None) -> _Hit:
+            lighting: float = 1.0, deadline: float | None = None,
+            yaw_rate: float = 0.0) -> _Hit:
     dt = 0.0 if dt is None else float(dt)
     if not math.isfinite(dt) or dt < 0.0:
       dt = 0.0
@@ -1084,6 +1146,12 @@ class PathObstacleDetector:
       v_ego_f = 0.0
     if not math.isfinite(v_ego_f):
       v_ego_f = 0.0
+    try:
+      yaw = float(yaw_rate)
+    except (TypeError, ValueError):
+      yaw = 0.0
+    if not math.isfinite(yaw):
+      yaw = 0.0
     light = lighting_score() if lighting is None else float(lighting)
     if not math.isfinite(light):
       light = 1.0
@@ -1103,7 +1171,7 @@ class PathObstacleDetector:
       if len(parsed) > MAX_POINTS:
         parsed.sort(key=lambda item: item["x"])
         del parsed[MAX_POINTS:]
-      returns = self._advance(parsed, dt, v_ego_f, path_x, path_y, deadline)
+      returns = self._advance(parsed, dt, v_ego_f, path_x, path_y, deadline, yaw)
       leads = {int(i) for i in lead_ids if i is not None}
       near_reason = "no_candidate"
       near_ret = None
@@ -1161,21 +1229,32 @@ class PathObstacleDetector:
       motion = 0.0
     lively = _clamp(max(float(hit.lively), _clamp(motion, 0.0, 1.0)), 0.0, 1.0)
     use_vision = bool(hit.active and vision is not None and vision.evaluated)
-    scored = scale_living_vision(vision, lively) if use_vision and vision is not None else None
-    final_class = _fuse_class(hit.radar_class, hit.span_m, hit.cluster_count, scored)
+    trust_vision = bool(use_vision and vision is not None and _vision_in_range(hit.x))
+    scored = scale_living_vision(vision, lively) if trust_vision and vision is not None else None
+    if trust_vision:
+      final_class = _fuse_class(hit.radar_class, hit.span_m, hit.cluster_count, scored, raw=vision)
+    else:
+      final_class = _fuse_class(hit.radar_class, hit.span_m, hit.cluster_count, None)
     if not hit.cluster_count:
       final_class = "unknown"
-    vision_conf = vision.conf if use_vision and vision is not None else None
+    if trust_vision and vision is not None:
+      self._note_vision_look(
+        hit.track_id, vision.conf, final_class, _vision_class_score(vision, final_class),
+      )
+    vision_conf = vision.conf if trust_vision and vision is not None else None
     fused, w_r, w_v, agree = fuse_scores(hit.radar_conf, vision_conf, hit.lighting)
-    agree = bool(agree and hit.active)
+    agree = bool(agree and hit.active and trust_vision)
     zone = hit.zone if hit.reject_reason in ("none", "not_persistent") else "none"
     in_path = zone == "inPath"
     entering = zone == "entering"
     t_enter = 0.0 if in_path else hit.time_to_enter
     brake = bool(agree and zone in BRAKE_ZONES)
-    if scored is not None:
+    if trust_vision and scored is not None and vision is not None:
       vh, va, vo = scored.human, scored.animal, scored.obstacle
-      vconf = vision.conf if vision is not None else scored.conf
+      vconf = vision.conf
+    elif use_vision and vision is not None:
+      vh, va, vo = vision.human, vision.animal, vision.obstacle
+      vconf = vision.conf
     else:
       vh = va = vo = vconf = _nan()
     sample = ObstacleSample(
@@ -1211,21 +1290,63 @@ class PathObstacleDetector:
     )
     if sample.active and _highway_still_unconfirmed(sample, hit.v_ego):
       return sample.with_chime(False, "no_agree")
+    if sample.active:
+      blocked = _class_zone_block(sample)
+      if blocked is not None:
+        return sample.with_chime(False, blocked)
+      if sample.agree and not self._vision_confirmed(sample.track_id, sample.object_class):
+        return sample.with_chime(False, "no_agree")
     chimed, reason = self._chime.consider(sample, chime_enabled, now)
     return sample.with_chime(chimed, reason)
+
+  def _note_vision_look(self, track_id: int, conf: float, cls: str, score: float) -> None:
+    """Keep the last three trusted camera looks for this track."""
+    try:
+      tid = int(track_id)
+    except (TypeError, ValueError):
+      return
+    if tid == 0:
+      return
+    try:
+      conf_f = float(conf)
+    except (TypeError, ValueError):
+      conf_f = 0.0
+    if not math.isfinite(conf_f):
+      conf_f = 0.0
+    hist = self._vision_looks.pop(tid, [])
+    hist.append((conf_f, cls, float(score)))
+    if len(hist) > VISION_LOOKS:
+      del hist[:-VISION_LOOKS]
+    self._vision_looks[tid] = hist
+    while len(self._vision_looks) > 32:
+      self._vision_looks.pop(next(iter(self._vision_looks)))
+
+  def _vision_confirmed(self, track_id: int, cls: str) -> bool:
+    """True when 2 of the last 3 looks clear 0.60 overall and 0.40 on cls."""
+    try:
+      tid = int(track_id)
+    except (TypeError, ValueError):
+      return False
+    hist = self._vision_looks.get(tid) or ()
+    good = 0
+    for conf, look_cls, score in hist:
+      if look_cls == cls and conf >= VISION_LOOK_MIN and score >= VISION_CLASS_MIN:
+        good += 1
+    return good >= VISION_LOOKS_NEED
 
   def update(self, points, v_ego: float, path_x, path_y, dt: float, *,
              lead_ids=(), cone: ConeHint | None = None, model_leads=(),
              vision: VisionScore | None = None, lighting: float = 1.0,
              chime_enabled: bool = True, now: float = 0.0,
-             vision_motion: float = 0.0) -> ObstacleSample:
+             vision_motion: float = 0.0, yaw_rate: float = 0.0) -> ObstacleSample:
     hit = self.begin(
       points, v_ego, path_x, path_y, dt,
       lead_ids=lead_ids, cone=cone, model_leads=model_leads, lighting=lighting,
+      yaw_rate=yaw_rate,
     )
     return self.commit(hit, vision, chime_enabled=chime_enabled, now=now, vision_motion=vision_motion)
 
-  def _advance(self, parsed, dt, v_ego, path_x, path_y, deadline=None) -> list[dict]:
+  def _advance(self, parsed, dt, v_ego, path_x, path_y, deadline=None, yaw: float = 0.0) -> list[dict]:
     seen = set()
     out = []
     for item in parsed:
@@ -1233,22 +1354,36 @@ class PathObstacleDetector:
       seen.add(item["id"])
       prev = self._tracks.get(item["id"])
       if prev is None or prev["gap"] > 0.35:
-        state = {"age": dt, "first_x": item["x"], "gap": 0.0, "y": item["y"], "v_lat": 0.0, "hist": []}
+        state = {
+          "age": dt, "first_x": item["x"], "gap": 0.0, "y": item["y"],
+          "v_lat": 0.0, "hist": [], "yaw_int": 0.0,
+        }
       else:
         state = prev
         state["age"] = float(state["age"]) + dt
         state["gap"] = 0.0
-        if item["yv_rel"] is not None:
-          state["v_lat"] = -float(item["yv_rel"])
-        elif dt > 1e-4:
-          state["v_lat"] = (item["y"] - float(state["y"])) / dt
-        state["y"] = item["y"]
+      # A fixed target at range x slides sideways at about -yaw*x while the
+      # car turns. Take that out of v_lat and out of the wander history.
+      prev_y = float(state["y"])
+      measured = None
       if item["yv_rel"] is not None:
-        state["v_lat"] = -float(item["yv_rel"])
+        measured = -float(item["yv_rel"])
+      elif prev is not None and prev["gap"] <= 0.35 and dt > 1e-4:
+        measured = (item["y"] - prev_y) / dt
+      if measured is not None:
+        state["v_lat"] = measured + yaw * float(item["x"])
+      state["y"] = item["y"]
       state["x"] = item["x"]
+      dpsi = yaw * dt
+      if dpsi > 0.25:
+        dpsi = 0.25
+      elif dpsi < -0.25:
+        dpsi = -0.25
+      state["yaw_int"] = float(state.get("yaw_int", 0.0)) + dpsi
+      y_fix = _unrotate_y(float(item["x"]), float(item["y"]), float(state["yaw_int"]))
       hist = state.setdefault("hist", [])
       hist.append((
-        float(state["age"]), float(item["x"]), float(item["y"]),
+        float(state["age"]), float(item["x"]), y_fix,
         float(item["v_rel"]) + v_ego, float(state["v_lat"]),
       ))
       state["hist"] = [row for row in hist if float(state["age"]) - float(row[0]) <= LIVELY_WINDOW_S + 0.05][-24:]
@@ -1577,7 +1712,8 @@ class ObstacleStage:
     self.heartbeat = True
     return self.det._miss([], reason, 1.0)
 
-  def step(self, points, v_ego, path_x, path_y, dt, lead_ids, cone, model_leads, now) -> _Hit | None:
+  def step(self, points, v_ego, path_x, path_y, dt, lead_ids, cone, model_leads, now,
+           yaw_rate: float = 0.0) -> _Hit | None:
     """Scan one radar frame. None means nothing to publish."""
     self.heartbeat = False
     try:
@@ -1611,7 +1747,7 @@ class ObstacleStage:
       hit = self.det.begin(
         points, v_ego, path_x, path_y, dt,
         lead_ids=lead_ids, cone=cone, model_leads=model_leads,
-        lighting=1.0, deadline=started + BUDGET_S,
+        lighting=1.0, deadline=started + BUDGET_S, yaw_rate=yaw_rate,
       )
     except Exception:
       self._note_exception()
