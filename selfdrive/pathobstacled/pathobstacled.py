@@ -18,6 +18,7 @@ from openpilot.selfdrive.controls.lib.path_obstacle import (
   PARAM_OBSTACLE_LOG,
   PathObstacleDetector,
   hit_from_msg,
+  is_night_lighting,
   lighting_score,
   patch_change_score,
   patch_signature,
@@ -176,6 +177,30 @@ def _calibration_from_params(params):
   return (rpy[0], rpy[1], rpy[2], height, wide[0], wide[1], wide[2])
 
 
+def _v_plane_from_nv12(buf):
+  """NV12 V plane at half resolution. None when chroma is missing.
+
+  High V is red. Used only to spot a taillight blob in the crop.
+  """
+  try:
+    import numpy as np
+    width = int(buf.width)
+    height = int(buf.height)
+    stride = int(buf.stride) if getattr(buf, "stride", 0) else width
+    if width < 4 or height < 4 or stride < width:
+      return None
+    data = buf.data
+    uv_off = stride * height
+    uv_rows = height // 2
+    need = uv_off + stride * uv_rows
+    if data is None or len(data) < need:
+      return None
+    uv = np.frombuffer(data, dtype=np.uint8, count=stride * uv_rows, offset=uv_off)
+    return uv.reshape(uv_rows, stride)[:, 1:width:2]
+  except Exception:
+    return None
+
+
 def _crop(plane, box):
   u0, v0, u1, v1 = box
   height, width = plane.shape[:2]
@@ -191,6 +216,24 @@ def _crop(plane, box):
   ry1 = min(height, ry0 + road_h)
   road = plane[ry0:ry1, x0:x1] if ry1 - ry0 >= 2 else patch[-road_h:, :]
   return _own(patch), _own(road)
+
+
+def _crop_v(v_plane, box):
+  """Half-resolution V crop for the same pixel box. None if it is too small."""
+  if v_plane is None:
+    return None
+  try:
+    height, width = v_plane.shape[:2]
+  except Exception:
+    return None
+  u0, v0, u1, v1 = box
+  x0 = max(0, int(u0) // 2)
+  x1 = min(width, int(math_ceil(u1)) // 2)
+  y0 = max(0, int(v0) // 2)
+  y1 = min(height, int(math_ceil(v1)) // 2)
+  if x1 - x0 < 2 or y1 - y0 < 2:
+    return None
+  return _own(v_plane[y0:y1, x0:x1])
 
 
 def math_ceil(value: float) -> int:
@@ -240,6 +283,7 @@ class _Cameras:
     self.last_thumb = 0.0
     self.last_reason = ""
     self.patch_sig: dict[int, tuple] = {}
+    self.chroma_v = None
 
   def _types(self):
     if self._vipc is None:
@@ -367,10 +411,15 @@ class _Cameras:
       return None, "model_error"
     if plane is None:
       return None, "no_frame"
+    try:
+      self.chroma_v = _v_plane_from_nv12(buf)
+    except Exception:
+      self.chroma_v = None
     return plane, ""
 
   def grab(self, wide: bool, now: float, deadline: float | None = None):
     """Return (Y plane or None, reason). Reason is empty when a frame is ready."""
+    self.chroma_v = None
     if deadline is not None and now >= deadline:
       self.last_reason = "budget"
       return None, "budget"
@@ -453,8 +502,13 @@ def _vision_for(hit, cam, calib, cams: _Cameras, now: float):
     return None, elapsed(), None, "model_error"
   if patch is None:
     return None, elapsed(), None, "roi_out_of_frame"
+  v_crop = None
   try:
-    score = score_row_patches(patch, road)
+    v_crop = _crop_v(cams.chroma_v, box)
+  except Exception:
+    v_crop = None
+  try:
+    score = score_row_patches(patch, road, v_crop)
   except Exception:
     return None, elapsed(), None, "model_error"
   if score is None or not getattr(score, "evaluated", False):
@@ -513,6 +567,7 @@ def _publish_vision(pm, messaging, sample, vision_us: float) -> None:
   if reason and reason not in VISION_FAIL_REASONS:
     reason = "model_error"
   body.visionFailReason = reason
+  body.driveOverReason = str(getattr(sample, "drive_over_reason", "") or "")
   pm.send("pathObstacleVisionNAP", msg)
 
 
@@ -566,6 +621,11 @@ class Helper:
     if not bool(getattr(body, "active", False)):
       return None
     hit = replace(hit_from_msg(body), lighting=_lighting_from(body, self.cam, self.gps))
+    # Daytime lead: same as the old vehicle exclusion. The camera stays
+    # asleep and nothing is published. At night this flag is what lets
+    # a stalled car chime, so the grab below still runs.
+    if hit.model_lead and not is_night_lighting(hit.lighting):
+      return None
     vision = None
     vision_us = 0.0
     motion = 0.0

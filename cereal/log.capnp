@@ -147,6 +147,7 @@ struct OnroadEvent @0xc4fa6047f024e718 {
     gapLock @111;
     lowVisibility @112;
     obstacleChime @113;
+    preapBrakeLongActive @114;  # Pre-AP: brake switch down while pedal long is still active. Log only.
 
     soundsUnavailableDEPRECATED @47;
   }
