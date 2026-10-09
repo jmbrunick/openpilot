@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Lean NAP companion Dash for the comma Phone Hub.
+"""Comma web UI. Params and software only.
 
-HTTP on :7070. Settings and software read and write Params only.
+HTTP on port 80 when the process can bind it, otherwise 7070.
 This process does not open cereal sockets and does not run a live
-telemetry loop. Dashcam export is not included.
+telemetry loop. It cannot engage openpilot.
 
 A crash, bind failure, or preimport error must not block engage
 (the manager process is optional).
@@ -28,27 +28,39 @@ except Exception:  # pragma: no cover - unit tests without zmq
 
     def warning(self, msg):
       print(msg)
+
+    def exception(self, msg):
+      print(msg)
   cloudlog = _PrintLog()
 
-from openpilot.selfdrive.nap_dash.settings import (
-  SettingError,
-  read_settings,
-  setting_catalog,
-  write_setting,
-)
+from openpilot.selfdrive.nap_dash.settings import SettingError
 from openpilot.selfdrive.nap_dash.system_api import (
   SoftwareError,
   handle_software,
   read_software,
 )
+from openpilot.selfdrive.nap_dash.ui_api import (
+  get_manifest,
+  network_status,
+  public_manifest,
+  read_settings,
+  write_setting,
+)
 
 HOST = os.environ.get("NAP_DASH_HOST", "0.0.0.0")
-PORT = int(os.environ.get("NAP_DASH_PORT", "7070"))
 DASHBOARD_PATH = Path(__file__).resolve().parent / "dashboard.html"
 
 PARAMS = None
 PM_LOCK = threading.Lock()
 STOP = threading.Event()
+
+
+def listen_ports():
+  """Port 80 is the MCU URL. 7070 is the fallback if 80 cannot be bound."""
+  raw = os.environ.get("NAP_DASH_PORT", "").strip()
+  if raw:
+    return [int(raw)]
+  return [80, 7070]
 
 
 def _params():
@@ -64,18 +76,13 @@ def locked_settings():
     return read_settings(_params())
 
 
-def locked_write(name, value):
+def locked_write(name, value, confirm=False):
   with PM_LOCK:
-    return write_setting(_params(), name, value)
+    return write_setting(_params(), name, value, confirm=confirm)
 
 
 def state_snapshot():
   """Minimal JSON so an old page does not 500. No live car data."""
-  settings = {}
-  try:
-    settings = locked_settings()
-  except Exception:
-    settings = {}
   return {
     "lite": True,
     "ts": 0,
@@ -83,7 +90,7 @@ def state_snapshot():
     "drive": {},
     "plan": {},
     "lead1": {},
-    "settings": settings,
+    "settings": {},
     "health": {},
     "engagement": {},
     "bms": {},
@@ -94,7 +101,7 @@ def dashboard_html() -> bytes:
   try:
     return DASHBOARD_PATH.read_bytes()
   except OSError:
-    return b"<h1>NAP Dash</h1><p>dashboard.html missing</p>"
+    return b"<h1>openpilot</h1><p>dashboard.html missing</p>"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -125,11 +132,23 @@ class Handler(BaseHTTPRequestHandler):
     path = urlparse(self.path).path
     if path in ("/", "/index.html", "/phone", "/phone/"):
       return self._send_html()
+    if path == "/api/manifest":
+      try:
+        return self.send_json(public_manifest())
+      except Exception as exc:
+        return self.send_json({"error": str(exc)}, 500)
     if path == "/api/state":
       return self.send_json(state_snapshot())
     if path == "/api/settings":
       try:
-        return self.send_json({"settings": locked_settings(), "catalog": setting_catalog()})
+        snap = locked_settings()
+        snap["catalog"] = public_manifest()["controls"]
+        return self.send_json(snap)
+      except Exception as exc:
+        return self.send_json({"error": str(exc)}, 500)
+    if path == "/api/network":
+      try:
+        return self.send_json(network_status())
       except Exception as exc:
         return self.send_json({"error": str(exc)}, 500)
     if path == "/api/software":
@@ -150,9 +169,11 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_json(handle_software(payload, _params()))
       if path != "/api/set":
         return self.send_json({"error": "not found"}, 404)
-      settings = locked_write(str(payload.get("name") or payload.get("param") or ""), payload.get("value"))
-      snap = state_snapshot()
-      snap["settings"] = settings
+      action = str(payload.get("action") or "").strip().lower()
+      if action in {"engage", "disengage"}:
+        return self.send_json({"error": "engaging openpilot from the web is not allowed"}, 400)
+      name = str(payload.get("param") or payload.get("name") or "")
+      snap = locked_write(name, payload.get("value"), bool(payload.get("confirm")))
       return self.send_json(snap)
     except SoftwareError as exc:
       return self.send_json({"error": str(exc)}, 400)
@@ -167,13 +188,20 @@ class DashHTTPServer(ThreadingHTTPServer):
   daemon_threads = True
 
 
-def bind_http_server(host=HOST, port=PORT):
-  """Bind :7070. Returns None on failure so the process can stay alive."""
-  try:
-    return DashHTTPServer((host, port), Handler)
-  except OSError as exc:
-    cloudlog.warning(f"nap_dash failed to bind {host}:{port}: {exc}")
-    return None
+def bind_http_server(host=HOST, port=None):
+  """Bind port 80, then 7070. Returns None if every port fails.
+
+  An explicit port (tests, NAP_DASH_PORT) tries only that port.
+  """
+  ports = [int(port)] if port is not None else listen_ports()
+  for one in ports:
+    try:
+      server = DashHTTPServer((host, one), Handler)
+      cloudlog.info(f"nap_dash listening on {host}:{one} (Params + software, no cereal)")
+      return server
+    except OSError as exc:
+      cloudlog.warning(f"nap_dash failed to bind {host}:{one}: {exc}")
+  return None
 
 
 def idle_until_stop(stop_event=None, sleeper=time.sleep):
@@ -184,8 +212,12 @@ def idle_until_stop(stop_event=None, sleeper=time.sleep):
 
 
 def main():
-  cloudlog.info(f"nap_dash lite listening on {HOST}:{PORT} (Params + software, no cereal)")
-  server = bind_http_server(HOST, PORT)
+  try:
+    hot = get_manifest().get("hotspot") or {}
+    cloudlog.info("nap_dash url " + str(hot.get("url") or "http://100.99.9.1/"))
+  except Exception:
+    cloudlog.warning("nap_dash manifest unavailable at start")
+  server = bind_http_server(HOST)
   if server is None:
     idle_until_stop()
     return
