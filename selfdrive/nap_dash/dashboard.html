@@ -123,6 +123,33 @@ body { font-family: Arial, Helvetica, sans-serif; font-size: 16px; -webkit-text-
   font-size: 15px;
   vertical-align: top;
 }
+/* Touch feedback on the MCU: every button visibly depresses while held. */
+button { -webkit-tap-highlight-color: rgba(147,197,253,0.35); -webkit-transition: background-color 60ms, transform 60ms; transition: background-color 60ms, transform 60ms; }
+button:active:not(:disabled) {
+  background: #60a5fa !important;
+  border-color: #dbeafe !important;
+  color: #fff !important;
+  -webkit-transform: scale(0.95);
+  transform: scale(0.95);
+}
+/* Check / Download / Install: own row, filled nav blue, larger targets. */
+.soft.swact { padding-top: 8px; border-top: 1px solid #2c3036; }
+.soft.swact button {
+  min-height: 58px;
+  min-width: 128px;
+  padding: 10px 18px;
+  font-size: 17px;
+  background: #2563eb;
+  color: #fff;
+  border-color: #3b82f6;
+}
+/* Selected branch: outlined so it reads as a selection, not an action. */
+.soft:not(.swact) button.on { background: #17181c; color: #bfdbfe; border-color: #2563eb; }
+.soft.swact button:disabled { background: #2a2e34; color: #777; border-color: #3a3f46; }
+.soft button.busy, .soft button.busy:disabled, .soft.swact button.busy:disabled { background: #1e3a8a; color: #dbeafe; border-color: #3b82f6; }
+.swline { display: block; margin-top: 3px; font-size: 14px; font-weight: normal; color: #e5e7eb; white-space: normal; }
+.swline.warn { color: #e0b050; }
+.swline.err { color: #f87171; }
 .pill { color: #e0b050; font-size: 13px; font-weight: normal; }
 .overlay {
   position: fixed;
@@ -505,64 +532,171 @@ function loadNetwork() {
   });
 }
 
+var swPending = null;   // {action, label, started, sawBusy}
+var swTimer = null;
+var swNote = "";
+var swSeq = 0;          // bumps on every tap so an older poll cannot repaint stale state
+var SW_FAST_MS = 1500;
+var SW_SLOW_MS = 6000;
+var SW_NO_RESPONSE_MS = 15000;
+
+function swSchedule(ms) {
+  if (swTimer) clearTimeout(swTimer);
+  swTimer = null;
+  if (current !== "software") return;
+  swTimer = setTimeout(function () { swTimer = null; loadSoftware(); }, ms);
+}
+
+function swLine(parent, text, cls) {
+  if (!text) return;
+  var el = document.createElement("span");
+  el.className = "swline" + (cls ? " " + cls : "");
+  el.textContent = text;
+  parent.appendChild(el);
+}
+
+function swButton(text, on, busy, disabled, onclick) {
+  var b = document.createElement("button");
+  b.type = "button";
+  b.textContent = text;
+  b.className = busy ? "busy" : (on ? "on" : "");
+  b.disabled = !!disabled;
+  b.onclick = function () {
+    if (b.disabled) return;
+    onclick(b);
+  };
+  return b;
+}
+
+function swTrack(data) {
+  if (!swPending) return;
+  if (data.busy) {
+    swPending.sawBusy = true;
+    return;
+  }
+  var waited = new Date().getTime() - swPending.started;
+  if (swPending.sawBusy) {
+    swNote = swPending.action === "download" ? "Download finished." : "Check finished.";
+    swPending = null;
+  } else if (data.blocked_reason) {
+    swNote = "";
+    swPending = null;
+  } else if (waited > SW_NO_RESPONSE_MS) {
+    swNote = "The updater did not respond. Try again in a minute.";
+    swPending = null;
+  }
+}
+
 function loadSoftware() {
+  var seq = swSeq;
   getJSON("/api/software", function (err, data) {
     var root = document.getElementById("software");
-    if (!root) return;
-    while (root.firstChild) root.removeChild(root.firstChild);
+    if (!root || current !== "software" || seq !== swSeq) return;
     if (err) {
+      while (root.firstChild) root.removeChild(root.firstChild);
       root.textContent = err.message || "Software unavailable";
+      swSchedule(SW_SLOW_MS);
       return;
     }
-    var label = document.createElement("div");
-    label.className = "rowlabel";
-    label.textContent = data.git_branch || "";
-    addSub(label, "Target " + (data.target_branch || "") + " · " + (data.updater_state || "idle"));
-    root.appendChild(label);
-    var branches = data.available_branches || [];
-    var i;
-    var box = document.createElement("div");
-    box.className = "soft";
-    for (i = 0; i < branches.length; i++) {
-      var b = document.createElement("button");
-      b.type = "button";
-      b.textContent = branches[i];
-      if (branches[i] === data.target_branch) b.className = "on";
-      b.onclick = (function (name) {
-        return function () { software({action: "set_branch", branch: name}); };
-      })(branches[i]);
-      box.appendChild(b);
-    }
-    root.appendChild(box);
-    var actions = document.createElement("div");
-    actions.className = "soft";
-    var check = document.createElement("button");
-    check.type = "button";
-    check.textContent = "Check";
-    check.onclick = function () { software({action: "fetch"}); };
-    var down = document.createElement("button");
-    down.type = "button";
-    down.textContent = "Download";
-    down.onclick = function () { software({action: "download"}); };
-    var offline = document.createElement("button");
-    offline.type = "button";
-    offline.textContent = data.offline ? "Resume" : "Go offline";
-    if (data.offline) offline.className = "on";
-    offline.onclick = function () { software({action: "set_offline", offline: !data.offline}); };
-    actions.appendChild(check);
-    actions.appendChild(down);
-    actions.appendChild(offline);
-    root.appendChild(actions);
-    fitPane();
+    swTrack(data);
+    renderSoftware(root, data);
+    swSchedule(swPending || data.busy ? SW_FAST_MS : SW_SLOW_MS);
   });
 }
 
-function software(body) {
-  setStatus("Saving…");
-  postJSON("/api/software", body, function (err) {
-    if (err) { setStatus(err.message || "Software failed"); return; }
-    setStatus("Saved");
-    loadSoftware();
+function renderSoftware(root, data) {
+  while (root.firstChild) root.removeChild(root.firstChild);
+  var label = document.createElement("div");
+  label.className = "rowlabel";
+  label.textContent = data.git_branch || "";
+  addSub(label, "Target " + (data.target_branch || "") + (data.current_description ? " · " + data.current_description : ""));
+  var status = data.status_text || data.updater_state || "idle";
+  if (swPending && !data.busy) status = (swPending.action === "download" ? "downloading… " : "checking… ") + "(waiting for the updater)";
+  swLine(label, "Status: " + status, data.update_failed_count > 0 && !data.busy ? "err" : "");
+  if (data.update_failed_count > 0 && !data.busy) {
+    swLine(label, "Failed " + data.update_failed_count + "×" + (data.last_update_exception ? ": " + plain(data.last_update_exception).split("\n")[0] : ""), "err");
+  }
+  if (data.blocked_reason) swLine(label, data.blocked_reason, "warn");
+  if (swNote && !swPending) swLine(label, swNote, "");
+  root.appendChild(label);
+
+  var branches = data.available_branches || [];
+  var i;
+  var box = document.createElement("div");
+  box.className = "soft";
+  for (i = 0; i < branches.length; i++) {
+    box.appendChild(swButton(branches[i], branches[i] === data.target_branch, false, false, (function (name) {
+      return function () { software({action: "set_branch", branch: name}, null); };
+    })(branches[i])));
+  }
+  root.appendChild(box);
+
+  var actions = document.createElement("div");
+  actions.className = "soft swact";
+  var checking = (swPending && swPending.action === "fetch") || data.updater_state === "checking...";
+  var downloading = (swPending && swPending.action === "download") ||
+    data.updater_state === "downloading..." || data.updater_state === "finalizing update...";
+  var locked = !!(swPending || data.busy || data.blocked_reason);
+  actions.appendChild(swButton(checking ? "Checking…" : "Check", false, checking, locked, function (b) {
+    software({action: "fetch"}, b);
+  }));
+  actions.appendChild(swButton(downloading ? "Downloading…" : "Download", false, downloading, locked, function (b) {
+    software({action: "download"}, b);
+  }));
+  if (data.update_available) {
+    actions.appendChild(swButton(data.install_label || "Install & reboot", false, false, !data.can_install || !!swPending, function () {
+      askSoftwareConfirm(data.install_label || "Install & reboot",
+        "The comma reboots now and boots into " + (data.new_description || "the downloaded update") + ".",
+        function () { software({action: "install", confirm: true}, null); });
+    }));
+    if (data.install_blocked_reason) swLine(label, data.install_blocked_reason, "warn");
+  }
+  root.appendChild(actions);
+  fitPane();
+}
+
+function askSoftwareConfirm(title, body, run) {
+  pending = {run: run};
+  document.getElementById("confirm-title").textContent = title;
+  document.getElementById("confirm-body").textContent = body;
+  document.getElementById("confirm").className = "overlay";
+}
+
+function software(body, btn) {
+  var action = body.action;
+  var label = action === "fetch" ? "Checking…" : (action === "download" ? "Downloading…" :
+    (action === "install" ? "Rebooting to install…" : "Saving…"));
+  if (btn) {
+    btn.disabled = true;
+    btn.className = "busy";
+    btn.textContent = label;
+  }
+  swNote = "";
+  swSeq++;
+  if (action === "fetch" || action === "download") {
+    swPending = {action: action, started: new Date().getTime(), sawBusy: false};
+  }
+  setStatus(label);
+  postJSON("/api/software", body, function (err, data) {
+    if (err) {
+      swPending = null;
+      swNote = "";
+      setStatus(err.message || "Software failed");
+      loadSoftware();
+      return;
+    }
+    if (action === "install") {
+      setStatus("Rebooting the comma to install. This page comes back in about a minute.");
+      swSchedule(20000);
+      return;
+    }
+    setStatus(action === "fetch" ? "Check sent to the updater" : (action === "download" ? "Download sent to the updater" : "Saved"));
+    var root = document.getElementById("software");
+    if (data && root && current === "software") {
+      swTrack(data);
+      renderSoftware(root, data);
+    }
+    swSchedule(swPending || (data && data.busy) ? SW_FAST_MS : SW_SLOW_MS);
   });
 }
 
@@ -590,6 +724,7 @@ document.getElementById("confirm-yes").onclick = function () {
   if (!pending) return;
   var item = pending;
   pending = null;
+  if (item.run) { item.run(); return; }
   commit(item.ctrl, item.value, true);
 };
 document.getElementById("confirm-no").onclick = function () {
@@ -599,6 +734,8 @@ document.getElementById("confirm-no").onclick = function () {
 };
 
 window.onresize = fitPane;
+// Lets :active paint on touch screens that otherwise skip it.
+document.addEventListener("touchstart", function () {}, true);
 
 getJSON("/api/manifest", function (err, data) {
   if (err) { setStatus("Could not read the settings list"); return; }
