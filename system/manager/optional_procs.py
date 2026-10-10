@@ -1,8 +1,8 @@
 """Optional manager processes that must not block engage.
 
 Companion Dash is not a driving process. If it crashes, fails to bind
-:7070, or fails to preimport, selfdrived must not raise processNotRunning
-(NO_ENTRY + SOFT_DISABLE).
+port 80 (or 7070), or fails to preimport, selfdrived must not raise
+processNotRunning (NO_ENTRY + SOFT_DISABLE).
 """
 from __future__ import annotations
 

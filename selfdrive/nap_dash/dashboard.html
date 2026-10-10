@@ -2,185 +2,749 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>NAP Dash</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>openpilot</title>
 <style>
-  :root { color-scheme: dark; }
-  body {
-    margin: 0; font: 18px/1.35 system-ui, sans-serif;
-    background: #111; color: #eee;
-  }
-  main { max-width: 32rem; margin: 0 auto; padding: 1rem 1rem 3rem; }
-  h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
-  h2 { font-size: 1.05rem; margin: 1.4rem 0 .6rem; }
-  p.note { color: #aaa; margin: 0 0 1rem; font-size: .9rem; }
-  label, .row {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: .75rem; padding: .7rem 0; border-bottom: 1px solid #2a2a2a;
-  }
-  input[type="number"], input[type="text"], select {
-    font: inherit; background: #1c1c1c; color: #fff;
-    border: 1px solid #444; border-radius: 8px; padding: .45rem .6rem;
-    min-width: 7rem;
-  }
-  button {
-    font: inherit; background: #2a4a7a; color: #fff; border: 0;
-    border-radius: 10px; padding: .7rem 1rem; margin: .35rem .35rem 0 0;
-  }
-  button.on { background: #1f7a3a; }
-  #status { min-height: 1.4rem; color: #9cf; font-size: .9rem; }
+* { -webkit-box-sizing: border-box; box-sizing: border-box; }
+html, body { margin: 0; padding: 0; height: 100%; background: #121417; color: #e5e7eb; overflow: hidden; }
+body { font-family: Arial, Helvetica, sans-serif; font-size: 16px; -webkit-text-size-adjust: 100%; }
+#shell { position: absolute; top: 0; right: 0; bottom: 0; left: 0; }
+#chrome { position: relative; background: #121417; padding: 4px 6px 2px; }
+.top { display: table; width: 100%; }
+.topcell { display: table-cell; vertical-align: middle; }
+#nav { font-size: 0; }
+#nav button, #sub button, .choice button, .soft button, .go, .sq, .overlay button {
+  font-family: Arial, Helvetica, sans-serif;
+  font-weight: bold;
+  color: #111;
+  background: #d1d5db;
+  border: 2px solid #9ca3af;
+  border-radius: 8px;
+  -webkit-appearance: none;
+}
+#nav button {
+  display: inline-block;
+  min-height: 44px;
+  margin: 2px 4px 2px 0;
+  padding: 8px 12px;
+  font-size: 15px;
+}
+#nav button.on, #sub button.on, .choice button.on, .soft button.on, .go.on, .sq.on, .overlay button.on {
+  background: #2563eb;
+  color: #fff;
+  border-color: #93c5fd;
+}
+.banner {
+  display: inline-block;
+  min-width: 108px;
+  min-height: 44px;
+  line-height: 44px;
+  padding: 0 10px;
+  border-radius: 8px;
+  background: #d1d5db;
+  color: #111;
+  font-size: 15px;
+  font-weight: bold;
+  text-align: center;
+}
+.banner.on { background: #2563eb; color: #fff; }
+#sub { font-size: 0; }
+#sub button {
+  display: inline-block;
+  min-height: 40px;
+  margin: 2px 4px 2px 0;
+  padding: 6px 10px;
+  font-size: 14px;
+}
+#status { margin: 0; font-size: 12px; line-height: 1.2; color: #8b9198; }
+#status:empty { display: none; }
+#main {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 4px 6px 8px;
+}
+#content { font-size: 0; }
+.sech {
+  display: block;
+  width: 100%;
+  clear: both;
+  margin: 8px 0 4px;
+  font-size: 13px;
+  font-weight: bold;
+  color: #9aa0a6;
+}
+.row {
+  display: inline-block;
+  width: 100%;
+  vertical-align: top;
+  margin: 0 0 6px;
+  background: #17181c;
+  border: 2px solid #2c3036;
+  border-radius: 10px;
+  font-size: 16px;
+}
+.rowtable { display: table; width: 100%; table-layout: fixed; }
+.rowlabel, .rowgo { display: table-cell; vertical-align: middle; }
+.rowlabel { padding: 8px 8px 8px 10px; font-weight: bold; font-size: 16px; }
+.rowgo { width: 84px; padding: 6px 8px 6px 0; text-align: right; }
+.rowsub {
+  display: block;
+  margin-top: 2px;
+  font-size: 13px;
+  font-weight: normal;
+  color: #8b9198;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rowsub.open { white-space: normal; }
+.sq, .go {
+  min-width: 64px;
+  min-height: 52px;
+  height: 52px;
+  padding: 0 8px;
+  font-size: 16px;
+}
+.sq:disabled, .go:disabled, .choice button:disabled, .soft button:disabled {
+  background: #2a2e34;
+  color: #777;
+  border-color: #3a3f46;
+}
+.choice, .soft { padding: 0 8px 6px; font-size: 0; }
+.choice button, .soft button {
+  display: inline-block;
+  min-height: 48px;
+  margin: 0 6px 6px 0;
+  padding: 8px 12px;
+  font-size: 15px;
+  vertical-align: top;
+}
+/* Touch feedback on the MCU: every button visibly depresses while held. */
+button { -webkit-tap-highlight-color: rgba(147,197,253,0.35); -webkit-transition: background-color 60ms, transform 60ms; transition: background-color 60ms, transform 60ms; }
+button:active:not(:disabled) {
+  background: #60a5fa !important;
+  border-color: #dbeafe !important;
+  color: #fff !important;
+  -webkit-transform: scale(0.95);
+  transform: scale(0.95);
+}
+/* Check / Download / Install: own row, filled nav blue, larger targets. */
+.soft.swact { padding-top: 8px; border-top: 1px solid #2c3036; }
+.soft.swact button {
+  min-height: 58px;
+  min-width: 128px;
+  padding: 10px 18px;
+  font-size: 17px;
+  background: #2563eb;
+  color: #fff;
+  border-color: #3b82f6;
+}
+/* Selected branch: outlined so it reads as a selection, not an action. */
+.soft:not(.swact) button.on { background: #17181c; color: #bfdbfe; border-color: #2563eb; }
+.soft.swact button:disabled { background: #2a2e34; color: #777; border-color: #3a3f46; }
+.soft button.busy, .soft button.busy:disabled, .soft.swact button.busy:disabled { background: #1e3a8a; color: #dbeafe; border-color: #3b82f6; }
+.swline { display: block; margin-top: 3px; font-size: 14px; font-weight: normal; color: #e5e7eb; white-space: normal; }
+.swline.warn { color: #e0b050; }
+.swline.err { color: #f87171; }
+.pill { color: #e0b050; font-size: 13px; font-weight: normal; }
+.overlay {
+  position: fixed;
+  left: 0; top: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.72);
+  padding: 24px 12px;
+  z-index: 20;
+}
+.card { background: #17181c; border: 2px solid #2c3036; border-radius: 10px; padding: 12px; max-width: 520px; margin: 0 auto; }
+.card h2 { margin: 0 0 8px; font-size: 18px; }
+.card p { margin: 0 0 10px; color: #8b9198; font-size: 14px; white-space: pre-wrap; }
+.card button { min-height: 52px; margin: 0 8px 0 0; padding: 8px 16px; font-size: 16px; }
+.hidden { display: none; }
+@media (min-width: 720px) {
+  #content .row { width: 49.5%; margin: 0 0.5% 6px 0; }
+  #content .row.span { width: 99.5%; }
+}
 </style>
 </head>
 <body>
-<main>
-  <h1>NAP Dash</h1>
-  <p class="note">Params and software only. Join the comma hotspot, then use this page.</p>
-  <p id="status"></p>
-
-  <h2>Driving Mannerisms</h2>
-  <label>Acceleration <input id="accel" type="number" min="1" max="10" step="1"></label>
-  <label>Adaptive Accel <input id="adaptive_accel" type="checkbox"></label>
-  <label>Follow Distance <input id="follow_distance" type="number" min="1" max="7" step="1"></label>
-  <label>Soft Lateral Handoff <input id="driver_lat_handoff" type="checkbox"></label>
-  <label>One-Pedal Long <input id="one_pedal_long" type="checkbox"></label>
-  <label>Gap lock <input id="gap_lock" type="checkbox"></label>
-
-  <h2>Map Speed</h2>
-  <label>Map Speed (MAX)
-    <select id="map_speed_mode">
-      <option value="0">Off</option>
-      <option value="1">Display</option>
-      <option value="2">Cap</option>
-      <option value="3">Follow</option>
-    </select>
-  </label>
-  <label>Map Speed Offset
-    <select id="map_speed_offset_mph">
-      <option value="-5">-5 mph</option>
-      <option value="0">0</option>
-      <option value="5">+5 mph</option>
-    </select>
-  </label>
-  <label>Lookahead
-    <select id="map_speed_lookahead">
-      <option value="0">Off</option>
-      <option value="1">Late</option>
-      <option value="2">Normal</option>
-      <option value="3">Early</option>
-    </select>
-  </label>
-
-  <h2>Stock</h2>
-  <label>Driving Personality
-    <select id="personality">
-      <option value="0">Aggressive</option>
-      <option value="1">Standard</option>
-      <option value="2">Chill</option>
-    </select>
-  </label>
-  <label>Experimental Mode <input id="experimental" type="checkbox"></label>
-  <div class="row">
-    <span>Driver monitoring</span>
-    <span>
-      <button type="button" id="sl">SL</button>
-      <button type="button" id="fai">FAI</button>
-    </span>
+<div id="shell">
+  <div id="chrome">
+    <div class="top">
+      <div class="topcell" id="nav"></div>
+      <div class="topcell" style="width:120px;text-align:right">
+        <div id="drive" class="banner">STANDBY</div>
+      </div>
+    </div>
+    <div id="sub" class="hidden"></div>
+    <p id="status"></p>
   </div>
-
-  <h2>Software</h2>
-  <p id="sw" class="note">Loading…</p>
-  <label>Target branch <input id="branch" type="text" autocomplete="off" spellcheck="false"></label>
-  <div>
-    <button type="button" id="set-branch">Set branch</button>
-    <button type="button" id="fetch">Check</button>
-    <button type="button" id="download">Download</button>
+  <div id="main">
+    <div id="content"></div>
   </div>
-  <label>Go offline <input id="offline" type="checkbox"></label>
-</main>
+</div>
+<div id="confirm" class="overlay hidden">
+  <div class="card">
+    <h2 id="confirm-title">Confirm</h2>
+    <p id="confirm-body"></p>
+    <button id="confirm-yes" type="button" class="on">Confirm</button>
+    <button id="confirm-no" type="button">Cancel</button>
+  </div>
+</div>
 <script>
-const BOOLS = ["adaptive_accel", "driver_lat_handoff", "one_pedal_long", "gap_lock", "experimental"];
-const INTS = ["accel", "follow_distance", "map_speed_mode", "map_speed_offset_mph", "map_speed_lookahead", "personality"];
-const statusEl = document.getElementById("status");
+var manifest = null;
+var snap = null;
+var current = "device";
+var pending = null;
+var lastStamp = "";
 
-function setStatus(text) { statusEl.textContent = text || ""; }
-
-async function postSet(name, value) {
-  const res = await fetch("/api/set", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({name, value}),
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || res.statusText);
-  applySettings(data.settings || {});
-  setStatus("Saved " + name);
+function plain(s) {
+  return String(s || "").replace(/<br\s*\/?>/gi, "\n").replace(/<\/?[^>]+>/g, "");
 }
 
-function applySettings(s) {
-  for (const name of INTS) {
-    const el = document.getElementById(name);
-    if (el && s[name] != null) el.value = String(s[name]);
+function getJSON(url, cb) {
+  var xhr = new XMLHttpRequest();
+  xhr.open("GET", url, true);
+  xhr.onreadystatechange = function () {
+    if (xhr.readyState !== 4) return;
+    if (xhr.status >= 200 && xhr.status < 300) {
+      try { cb(null, JSON.parse(xhr.responseText)); }
+      catch (err) { cb(err, null); }
+    } else {
+      cb(new Error("HTTP " + xhr.status), null);
+    }
+  };
+  xhr.send(null);
+}
+
+function postJSON(url, body, cb) {
+  var xhr = new XMLHttpRequest();
+  xhr.open("POST", url, true);
+  xhr.setRequestHeader("Content-Type", "application/json");
+  xhr.onreadystatechange = function () {
+    if (xhr.readyState !== 4) return;
+    var data = null;
+    try { data = JSON.parse(xhr.responseText); } catch (err) { data = null; }
+    if (xhr.status >= 200 && xhr.status < 300) cb(null, data);
+    else cb(new Error((data && data.error) || ("HTTP " + xhr.status)), data);
+  };
+  xhr.send(JSON.stringify(body));
+}
+
+function setStatus(text) {
+  document.getElementById("status").textContent = text || "";
+  fitPane();
+}
+
+function fitPane() {
+  var chrome = document.getElementById("chrome");
+  var main = document.getElementById("main");
+  if (!chrome || !main) return;
+  main.style.top = chrome.offsetHeight + "px";
+}
+
+function panels() {
+  return (manifest && manifest.panels) || [];
+}
+
+function controlsFor(panelId) {
+  var out = [];
+  var list = (manifest && manifest.controls) || [];
+  var i;
+  for (i = 0; i < list.length; i++) {
+    if (list[i].panel === panelId) out.push(list[i]);
   }
-  for (const name of BOOLS) {
-    const el = document.getElementById(name);
-    if (el) el.checked = !!s[name];
+  return out;
+}
+
+function findPanel(id) {
+  var list = panels();
+  var i;
+  for (i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
+  return null;
+}
+
+function childPanels(parentId) {
+  var out = [];
+  var list = panels();
+  var i;
+  for (i = 0; i < list.length; i++) if (list[i].parent === parentId) out.push(list[i]);
+  return out;
+}
+
+function isHidden(ctrl) {
+  return !!(ctrl.release_hidden && snap && snap.release);
+}
+
+function lockText(ctrl) {
+  if (!snap || !ctrl.param || !snap.locked) return "";
+  return snap.locked[ctrl.param] || "";
+}
+
+function valueOf(ctrl) {
+  if (!snap || !snap.values || !ctrl.param) return null;
+  return snap.values[ctrl.param];
+}
+
+function same(a, b) {
+  if (a === b) return true;
+  if (a === null || b === null || a === undefined || b === undefined) return false;
+  var sa = String(a).replace(/^\s+|\s+$/g, "");
+  var sb = String(b).replace(/^\s+|\s+$/g, "");
+  if (sa === "" || sb === "") return false;
+  var na = Number(sa);
+  var nb = Number(sb);
+  if (!isNaN(na) && !isNaN(nb)) return na === nb;
+  return sa === sb;
+}
+
+function showPanel(id) {
+  current = id;
+  renderNav();
+  renderMain();
+  if (id === "network") loadNetwork();
+  if (id === "software") loadSoftware();
+}
+
+function renderDrive() {
+  var el = document.getElementById("drive");
+  if (snap && snap.engaged) { el.className = "banner on"; el.textContent = "ENGAGED"; }
+  else if (snap && snap.onroad) { el.className = "banner"; el.textContent = "CAR ON"; }
+  else { el.className = "banner"; el.textContent = "STANDBY"; }
+}
+
+function renderNav() {
+  var nav = document.getElementById("nav");
+  while (nav.firstChild) nav.removeChild(nav.firstChild);
+  var list = panels();
+  var i;
+  for (i = 0; i < list.length; i++) {
+    if (list[i].parent) continue;
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = list[i].title;
+    if (list[i].id === current || (findPanel(current) && findPanel(current).parent === list[i].id)) btn.className = "on";
+    btn.onclick = (function (id) {
+      return function () { showPanel(id); };
+    })(list[i].id);
+    nav.appendChild(btn);
   }
-  document.getElementById("sl").classList.toggle("on", !!s.sl);
-  document.getElementById("fai").classList.toggle("on", !!s.fai);
+  renderDrive();
+  fitPane();
 }
 
-function applySoftware(sw) {
-  const branch = sw.target_branch || sw.git_branch || "";
-  document.getElementById("branch").value = branch;
-  document.getElementById("offline").checked = !!(sw.offline || sw.disable_updates);
-  const bits = [
-    sw.git_branch ? ("on " + sw.git_branch) : "",
-    sw.updater_state || "",
-    sw.update_available ? "update ready" : "",
-    (sw.offline || sw.disable_updates) ? "offline" : "",
-  ].filter(Boolean);
-  document.getElementById("sw").textContent = bits.join(" · ") || "Software";
+function renderSub() {
+  var bar = document.getElementById("sub");
+  while (bar.firstChild) bar.removeChild(bar.firstChild);
+  var panel = findPanel(current);
+  var parentId = panel && panel.parent ? panel.parent : current;
+  var kids = childPanels(parentId);
+  if (!kids.length) {
+    bar.className = "hidden";
+    return;
+  }
+  bar.className = "";
+  var parent = findPanel(parentId);
+  var all = document.createElement("button");
+  all.type = "button";
+  all.textContent = parent ? parent.title : "Main";
+  if (current === parentId) all.className = "on";
+  all.onclick = function () { showPanel(parentId); };
+  bar.appendChild(all);
+  var i;
+  for (i = 0; i < kids.length; i++) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = kids[i].title;
+    if (kids[i].id === current) btn.className = "on";
+    btn.onclick = (function (id) {
+      return function () { showPanel(id); };
+    })(kids[i].id);
+    bar.appendChild(btn);
+  }
 }
 
-async function load() {
-  const settings = await fetch("/api/settings").then(r => r.json());
-  applySettings(settings.settings || {});
-  const sw = await fetch("/api/software").then(r => r.json());
-  applySoftware(sw);
+function renderMain() {
+  var root = document.getElementById("content");
+  while (root.firstChild) root.removeChild(root.firstChild);
+  renderSub();
+  renderDrive();
+  var panel = findPanel(current);
+  if (panel && panel.layout === "software") {
+    var soft = document.createElement("div");
+    soft.id = "software";
+    soft.className = "row span";
+    soft.textContent = "Loading software…";
+    root.appendChild(soft);
+    fitPane();
+    return;
+  }
+  var ctrls = controlsFor(current);
+  var section = null;
+  var i;
+  for (i = 0; i < ctrls.length; i++) {
+    if (isHidden(ctrls[i])) continue;
+    if (ctrls[i].section && ctrls[i].section !== section) {
+      section = ctrls[i].section;
+      var h = document.createElement("div");
+      h.className = "sech";
+      h.textContent = section;
+      root.appendChild(h);
+    }
+    root.appendChild(renderControl(ctrls[i]));
+  }
+  fitPane();
 }
 
-for (const name of INTS.concat(BOOLS)) {
-  const el = document.getElementById(name);
-  el.addEventListener("change", () => {
-    const value = BOOLS.includes(name) ? el.checked : el.value;
-    postSet(name, value).catch(err => setStatus(err.message));
+function addSub(row, text) {
+  if (!text) return;
+  var sub = document.createElement("span");
+  sub.className = "rowsub";
+  sub.textContent = plain(text);
+  sub.onclick = function () {
+    sub.className = sub.className.indexOf(" open") >= 0 ? "rowsub" : "rowsub open";
+  };
+  row.appendChild(sub);
+}
+
+function renderControl(ctrl) {
+  var row = document.createElement("div");
+  var wide = ctrl.kind === "choice" || ctrl.kind === "info";
+  row.className = wide ? "row span" : "row";
+  var table = document.createElement("div");
+  table.className = "rowtable";
+  var label = document.createElement("div");
+  label.className = "rowlabel";
+  label.appendChild(document.createTextNode(ctrl.title));
+  var locked = lockText(ctrl);
+  if (locked) {
+    var pill = document.createElement("span");
+    pill.className = "pill";
+    pill.textContent = " " + locked;
+    label.appendChild(pill);
+  }
+  var desc = ctrl.description || "";
+  if (ctrl.kind === "device_only") desc = desc || "On the comma screen.";
+  if (ctrl.needs_restart && desc.indexOf("restart openpilot") < 0) {
+    desc = (desc ? desc + " " : "") + "Changing this restarts openpilot if the car is powered on.";
+  }
+  if (ctrl.reboot_hint) desc = (desc ? desc + " " : "") + "Reboot the comma on the Device tab for this to apply.";
+  addSub(label, desc);
+  if (ctrl.kind === "text") {
+    var shown = valueOf(ctrl);
+    addSub(label, shown === null || shown === undefined || shown === "" ? "—" : String(shown));
+  }
+  table.appendChild(label);
+  var go = document.createElement("div");
+  go.className = "rowgo";
+  if (ctrl.kind === "link" || ctrl.kind === "action" || ctrl.kind === "toggle") {
+    var toggle = document.createElement("button");
+    toggle.type = "button";
+    if (ctrl.kind === "action") {
+      toggle.className = "go";
+      toggle.textContent = "Run";
+    } else if (ctrl.kind === "link") {
+      toggle.className = "go";
+      toggle.textContent = "Open";
+    } else {
+      var on = !!valueOf(ctrl);
+      toggle.className = on ? "sq on" : "sq";
+      toggle.textContent = on ? "On" : "Off";
+    }
+    if (locked || ctrl.disabled) toggle.disabled = true;
+    toggle.onclick = function () {
+      if (ctrl.kind === "link") showPanel(ctrl.target_panel);
+      else if (ctrl.kind === "action") commit(ctrl, true, false);
+      else commit(ctrl, !valueOf(ctrl), false);
+    };
+    go.appendChild(toggle);
+  }
+  table.appendChild(go);
+  row.appendChild(table);
+  if (ctrl.kind === "choice") {
+    var box = document.createElement("div");
+    box.className = "choice";
+    var cur = valueOf(ctrl);
+    var n;
+    for (n = 0; n < ctrl.choices.length; n++) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.textContent = ctrl.choices[n];
+      if (same(cur, ctrl.values[n])) b.className = "on";
+      if (locked || ctrl.disabled) b.disabled = true;
+      b.onclick = (function (value) {
+        return function () { commit(ctrl, value, false); };
+      })(ctrl.values[n]);
+      box.appendChild(b);
+    }
+    row.appendChild(box);
+  }
+  return row;
+}
+
+function commit(ctrl, value, confirmed) {
+  var turningOn = !(value === false || value === 0 || value === "0");
+  if (!confirmed && ctrl.confirm && (ctrl.kind === "action" || turningOn)) {
+    askConfirm(ctrl, value);
+    return;
+  }
+  setStatus("Saving…");
+  postJSON("/api/set", {param: ctrl.param, value: value, confirm: !!confirmed}, function (err, data) {
+    if (err) {
+      if (!confirmed && data && data.error && String(data.error).indexOf("confirmation") >= 0) {
+        askConfirm(ctrl, value);
+        return;
+      }
+      setStatus(err.message || "Save failed");
+      return;
+    }
+    snap = data;
+    setStatus("Saved");
+    renderMain();
   });
 }
-document.getElementById("sl").addEventListener("click", () => postSet("sl", true).catch(err => setStatus(err.message)));
-document.getElementById("fai").addEventListener("click", () => postSet("fai", true).catch(err => setStatus(err.message)));
 
-async function software(action, extra) {
-  const res = await fetch("/api/software", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify(Object.assign({action}, extra || {})),
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || res.statusText);
-  applySoftware(data);
-  setStatus(action);
+function askConfirm(ctrl, value) {
+  pending = {ctrl: ctrl, value: value};
+  document.getElementById("confirm-title").textContent = ctrl.title;
+  document.getElementById("confirm-body").textContent = plain(ctrl.description) || "Apply this change?";
+  document.getElementById("confirm").className = "overlay";
 }
 
-document.getElementById("set-branch").addEventListener("click", () => {
-  software("set_branch", {branch: document.getElementById("branch").value}).catch(err => setStatus(err.message));
-});
-document.getElementById("fetch").addEventListener("click", () => software("fetch").catch(err => setStatus(err.message)));
-document.getElementById("download").addEventListener("click", () => software("download").catch(err => setStatus(err.message)));
-document.getElementById("offline").addEventListener("change", (ev) => {
-  software("set_offline", {offline: ev.target.checked}).catch(err => setStatus(err.message));
-});
+function loadNetwork() {
+  getJSON("/api/network", function (err, data) {
+    if (err || current !== "network") return;
+    var root = document.getElementById("content");
+    var box = document.createElement("div");
+    box.className = "row span";
+    var label = document.createElement("div");
+    label.className = "rowlabel";
+    label.textContent = "Addresses on this comma";
+    var lines = (data.interfaces && data.interfaces.length) ? data.interfaces : [];
+    if (!lines.length) addSub(label, "No interface list from this machine. Hotspot " + data.url);
+    var i;
+    for (i = 0; i < lines.length; i++) addSub(label, lines[i].name + "  " + lines[i].addr);
+    box.appendChild(label);
+    root.appendChild(box);
+    fitPane();
+  });
+}
 
-load().catch(err => setStatus(err.message));
+var swPending = null;   // {action, label, started, sawBusy}
+var swTimer = null;
+var swNote = "";
+var swSeq = 0;          // bumps on every tap so an older poll cannot repaint stale state
+var SW_FAST_MS = 1500;
+var SW_SLOW_MS = 6000;
+var SW_NO_RESPONSE_MS = 15000;
+
+function swSchedule(ms) {
+  if (swTimer) clearTimeout(swTimer);
+  swTimer = null;
+  if (current !== "software") return;
+  swTimer = setTimeout(function () { swTimer = null; loadSoftware(); }, ms);
+}
+
+function swLine(parent, text, cls) {
+  if (!text) return;
+  var el = document.createElement("span");
+  el.className = "swline" + (cls ? " " + cls : "");
+  el.textContent = text;
+  parent.appendChild(el);
+}
+
+function swButton(text, on, busy, disabled, onclick) {
+  var b = document.createElement("button");
+  b.type = "button";
+  b.textContent = text;
+  b.className = busy ? "busy" : (on ? "on" : "");
+  b.disabled = !!disabled;
+  b.onclick = function () {
+    if (b.disabled) return;
+    onclick(b);
+  };
+  return b;
+}
+
+function swTrack(data) {
+  if (!swPending) return;
+  if (data.busy) {
+    swPending.sawBusy = true;
+    return;
+  }
+  var waited = new Date().getTime() - swPending.started;
+  if (swPending.sawBusy) {
+    swNote = swPending.action === "download" ? "Download finished." : "Check finished.";
+    swPending = null;
+  } else if (data.blocked_reason) {
+    swNote = "";
+    swPending = null;
+  } else if (waited > SW_NO_RESPONSE_MS) {
+    swNote = "The updater did not respond. Try again in a minute.";
+    swPending = null;
+  }
+}
+
+function loadSoftware() {
+  var seq = swSeq;
+  getJSON("/api/software", function (err, data) {
+    var root = document.getElementById("software");
+    if (!root || current !== "software" || seq !== swSeq) return;
+    if (err) {
+      while (root.firstChild) root.removeChild(root.firstChild);
+      root.textContent = err.message || "Software unavailable";
+      swSchedule(SW_SLOW_MS);
+      return;
+    }
+    swTrack(data);
+    renderSoftware(root, data);
+    swSchedule(swPending || data.busy ? SW_FAST_MS : SW_SLOW_MS);
+  });
+}
+
+function renderSoftware(root, data) {
+  while (root.firstChild) root.removeChild(root.firstChild);
+  var label = document.createElement("div");
+  label.className = "rowlabel";
+  label.textContent = data.git_branch || "";
+  addSub(label, "Target " + (data.target_branch || "") + (data.current_description ? " · " + data.current_description : ""));
+  var status = data.status_text || data.updater_state || "idle";
+  if (swPending && !data.busy) status = (swPending.action === "download" ? "downloading… " : "checking… ") + "(waiting for the updater)";
+  swLine(label, "Status: " + status, data.update_failed_count > 0 && !data.busy ? "err" : "");
+  if (data.update_failed_count > 0 && !data.busy) {
+    swLine(label, "Failed " + data.update_failed_count + "×" + (data.last_update_exception ? ": " + plain(data.last_update_exception).split("\n")[0] : ""), "err");
+  }
+  if (data.blocked_reason) swLine(label, data.blocked_reason, "warn");
+  if (swNote && !swPending) swLine(label, swNote, "");
+  root.appendChild(label);
+
+  var branches = data.available_branches || [];
+  var i;
+  var box = document.createElement("div");
+  box.className = "soft";
+  for (i = 0; i < branches.length; i++) {
+    box.appendChild(swButton(branches[i], branches[i] === data.target_branch, false, false, (function (name) {
+      return function () { software({action: "set_branch", branch: name}, null); };
+    })(branches[i])));
+  }
+  root.appendChild(box);
+
+  var actions = document.createElement("div");
+  actions.className = "soft swact";
+  var checking = (swPending && swPending.action === "fetch") || data.updater_state === "checking...";
+  var downloading = (swPending && swPending.action === "download") ||
+    data.updater_state === "downloading..." || data.updater_state === "finalizing update...";
+  var locked = !!(swPending || data.busy || data.blocked_reason);
+  actions.appendChild(swButton(checking ? "Checking…" : "Check", false, checking, locked, function (b) {
+    software({action: "fetch"}, b);
+  }));
+  actions.appendChild(swButton(downloading ? "Downloading…" : "Download", false, downloading, locked, function (b) {
+    software({action: "download"}, b);
+  }));
+  if (data.update_available) {
+    actions.appendChild(swButton(data.install_label || "Install & reboot", false, false, !data.can_install || !!swPending, function () {
+      askSoftwareConfirm(data.install_label || "Install & reboot",
+        "The comma reboots now and boots into " + (data.new_description || "the downloaded update") + ".",
+        function () { software({action: "install", confirm: true}, null); });
+    }));
+    if (data.install_blocked_reason) swLine(label, data.install_blocked_reason, "warn");
+  }
+  root.appendChild(actions);
+  fitPane();
+}
+
+function askSoftwareConfirm(title, body, run) {
+  pending = {run: run};
+  document.getElementById("confirm-title").textContent = title;
+  document.getElementById("confirm-body").textContent = body;
+  document.getElementById("confirm").className = "overlay";
+}
+
+function software(body, btn) {
+  var action = body.action;
+  var label = action === "fetch" ? "Checking…" : (action === "download" ? "Downloading…" :
+    (action === "install" ? "Rebooting to install…" : "Saving…"));
+  if (btn) {
+    btn.disabled = true;
+    btn.className = "busy";
+    btn.textContent = label;
+  }
+  swNote = "";
+  swSeq++;
+  if (action === "fetch" || action === "download") {
+    swPending = {action: action, started: new Date().getTime(), sawBusy: false};
+  }
+  setStatus(label);
+  postJSON("/api/software", body, function (err, data) {
+    if (err) {
+      swPending = null;
+      swNote = "";
+      setStatus(err.message || "Software failed");
+      loadSoftware();
+      return;
+    }
+    if (action === "install") {
+      setStatus("Rebooting the comma to install. This page comes back in about a minute.");
+      swSchedule(20000);
+      return;
+    }
+    setStatus(action === "fetch" ? "Check sent to the updater" : (action === "download" ? "Download sent to the updater" : "Saved"));
+    var root = document.getElementById("software");
+    if (data && root && current === "software") {
+      swTrack(data);
+      renderSoftware(root, data);
+    }
+    swSchedule(swPending || (data && data.busy) ? SW_FAST_MS : SW_SLOW_MS);
+  });
+}
+
+function refresh() {
+  getJSON("/api/settings", function (err, data) {
+    if (err) { setStatus("Settings unavailable"); return; }
+    if (document.getElementById("confirm").className.indexOf("hidden") < 0) return;
+    snap = data;
+    renderDrive();
+    var stamp = JSON.stringify(data.values || {}) + JSON.stringify(data.locked || {}) + data.onroad + data.engaged + data.release;
+    if (stamp === lastStamp) return;
+    lastStamp = stamp;
+    if (!manifest) return;
+    var panel = findPanel(current);
+    if (panel && (panel.layout === "software" || panel.layout === "network")) {
+      renderNav();
+      return;
+    }
+    renderMain();
+  });
+}
+
+document.getElementById("confirm-yes").onclick = function () {
+  document.getElementById("confirm").className = "overlay hidden";
+  if (!pending) return;
+  var item = pending;
+  pending = null;
+  if (item.run) { item.run(); return; }
+  commit(item.ctrl, item.value, true);
+};
+document.getElementById("confirm-no").onclick = function () {
+  pending = null;
+  document.getElementById("confirm").className = "overlay hidden";
+  setStatus("");
+};
+
+window.onresize = fitPane;
+// Lets :active paint on touch screens that otherwise skip it.
+document.addEventListener("touchstart", function () {}, true);
+
+getJSON("/api/manifest", function (err, data) {
+  if (err) { setStatus("Could not read the settings list"); return; }
+  manifest = data;
+  if (panels().length) current = panels()[0].id;
+  renderNav();
+  refresh();
+  setInterval(refresh, 4000);
+});
 </script>
 </body>
 </html>

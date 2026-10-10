@@ -25,6 +25,7 @@ from openpilot.selfdrive.controls.lib.cone_line import (
   publish_cone_line,
   road_edges_xy,
 )
+from openpilot.selfdrive.controls.lib.crossing_vehicle import GroundLateral
 from openpilot.selfdrive.controls.lib.cone_line_hold import PARAM_CONE_LINE_LOG
 from openpilot.selfdrive.controls.lib.radar_path_gate import (
   PATH_INCUMBENT_HALF_WIDTH_M,
@@ -110,6 +111,8 @@ class Track:
     self.K_C = kalman_params.C
     self.K_K = kalman_params.K
     self.kf = KF1D([[v_lead], [0.0]], self.K_A, self.K_C, self.K_K)
+    # Ground-frame lateral speed, +left. 0 until the yaw-corrected fit has a window.
+    self.vLat = 0.0
 
   def update(self, d_rel: float, y_rel: float, v_rel: float, v_lead: float, measured: float,
              kalman_params: KalmanParams | None = None):
@@ -158,6 +161,7 @@ class Track:
       "modelProb": model_prob,
       "radar": True,
       "radarTrackId": self.identifier,
+      "vLat": float(self.vLat),
     }
 
   def potential_low_speed_lead(self, v_ego: float):
@@ -474,6 +478,9 @@ class RadarD:
     self._obstacle_pending = False
     self._obstacle_dt = RADAR_DT
     self._obstacle_inputs = None
+    # Yaw-corrected lateral speed for the lead. Same modelV2 radard already
+    # reads; no extra carState subscriber.
+    self._ground = GroundLateral()
 
   def set_sensor_dirty_ignore_override(self, ignore: bool | None) -> None:
     """Test hook. None reads NAPRadarIgnoreSensorDirty (default on)."""
@@ -525,11 +532,13 @@ class RadarD:
         if ids not in self.tracks:
           self.tracks[ids] = Track(ids, v_lead, self.kalman_params)
         self.tracks[ids].update(rpt[0], rpt[1], rpt[2], v_lead, rpt[3], self.kalman_params)
+      self._update_ground(radar_update_time, sm)
       self._update_cone_line(sm, rr.points, radar_dt)
       self._obstacle_dt = radar_dt
       self._obstacle_pending = True
     elif self.last_radar_update_time is None or self.current_time - self.last_radar_update_time > RADAR_MEASUREMENT_TIMEOUT:
       self.tracks.clear()
+      self._ground.reset()
       radar_timed_out = self.last_radar_update_time is not None
       self._live_measured = False
       self._update_cone_line(sm, (), RADAR_DT)
@@ -598,6 +607,21 @@ class RadarD:
       self.radar_state.radarPreferReason = reason_token(self.reliability.log_reason, sensor_dirty_mask)
     if self._obstacle_pending:
       self._stash_obstacle(sm, rr, path_x, path_y, leads_v3)
+
+  def _update_ground(self, t: float, sm) -> None:
+    """Publish each track's ground-frame lateral speed. Failures leave vLat at 0."""
+    try:
+      # model orientationRate.z is +right. yRel and vLat are +left.
+      yaw_left = -model_yaw_rate_right(sm['modelV2'])
+      points = [(int(tr.identifier), float(tr.dRel), float(tr.yRel)) for tr in self.tracks.values()]
+      speeds = self._ground.update(float(t), float(self.v_ego_hist[0]), yaw_left, points)
+    except Exception:
+      cloudlog.exception("ground lateral speed failed")
+      return
+    for tid, speed in speeds.items():
+      tr = self.tracks.get(tid)
+      if tr is not None:
+        tr.vLat = float(speed)
 
   def _cone_logging(self) -> bool:
     """NAPConeLineLog, cached ~1 s. Default On. Missing params stay On."""

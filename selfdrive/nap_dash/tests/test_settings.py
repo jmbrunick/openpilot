@@ -1,172 +1,132 @@
-"""Dash settings API writes Justin's Mannerisms Params only."""
+"""Web writes follow the discovered device controls. No engage, no cereal."""
 from __future__ import annotations
-
-from pathlib import Path
 
 import pytest
 
-from openpilot.selfdrive.monitoring.dm_toggles import (
-  PARAM_DM_FALSE_ALERT_IGNORE,
-  PARAM_DM_SIMULATE_LOOKING,
-)
-from openpilot.selfdrive.nap_dash.settings import (
-  PARAM_ACCEL,
-  PARAM_ADAPTIVE_ACCEL,
-  PARAM_EXPERIMENTAL,
-  PARAM_EXPERIMENTAL_CONFIRMED,
-  PARAM_FAI,
-  PARAM_FOLLOW_DISTANCE,
-  PARAM_MAP_LOOKAHEAD,
-  PARAM_MAP_MODE,
-  PARAM_MAP_OFFSET,
-  PARAM_PERSONALITY,
-  PARAM_SL,
-  REJECTED_SETTING_NAMES,
-  SettingError,
-  read_settings,
-  setting_catalog,
-  write_setting,
-)
-from openpilot.selfdrive.ui.layouts.settings.nap_content import (
-  NAP_DRIVER_LAT_HANDOFF,
-  NAP_GAP_LOCK,
-  NAP_ONE_PEDAL_LONG,
-)
-
-ROOT = Path(__file__).resolve().parents[3]
+from openpilot.selfdrive.nap_dash.ui_api import SettingError, read_settings, write_setting
 
 
 class FakeParams:
-  def __init__(self, ints=None, bools=None):
-    self.ints = dict(ints or {})
+  def __init__(self, values=None, bools=None):
+    self.values = dict(values or {})
     self.bools = dict(bools or {})
     self.writes: list[tuple[str, object]] = []
 
   def get(self, key, return_default=False):
-    return self.ints.get(key)
+    if key in self.values:
+      return self.values[key]
+    return None
 
   def get_bool(self, key):
     return bool(self.bools.get(key, False))
 
-  def put(self, key, value):
+  def put(self, key, value, block=False):
     self.writes.append((key, value))
-    self.ints[key] = value
+    self.values[key] = value
 
-  def put_bool(self, key, value):
+  def put_bool(self, key, value, block=False):
     self.writes.append((key, bool(value)))
     self.bools[key] = bool(value)
 
   def remove(self, key):
-    self.ints.pop(key, None)
+    self.values.pop(key, None)
+    self.bools.pop(key, None)
 
 
-def test_follow_distance_round_trip_same_param_as_mannerisms():
-  params = FakeParams(ints={PARAM_FOLLOW_DISTANCE: 4})
-  snap = write_setting(params, "follow_distance", 2)
-  assert snap["follow_distance"] == 2
-  assert params.ints[PARAM_FOLLOW_DISTANCE] == 2
-  snap = write_setting(params, PARAM_FOLLOW_DISTANCE, 7)
-  assert snap["follow_distance"] == 7
-
-
-def test_accel_and_adaptive_round_trip():
-  params = FakeParams(ints={PARAM_ACCEL: 5}, bools={PARAM_ADAPTIVE_ACCEL: True})
-  write_setting(params, "accel", 8)
-  write_setting(params, "adaptive_accel", False)
-  assert params.ints[PARAM_ACCEL] == 8
-  assert params.bools[PARAM_ADAPTIVE_ACCEL] is False
-  with pytest.raises(SettingError):
-    write_setting(params, "accel", 11)
-
-
-def test_sl_fai_are_mutually_exclusive():
-  params = FakeParams(bools={PARAM_SL: True, PARAM_FAI: False})
-  snap = write_setting(params, "fai", True)
-  assert snap["fai"] is True
-  assert snap["sl"] is False
-  assert params.bools[PARAM_DM_FALSE_ALERT_IGNORE] is True
-  assert params.bools[PARAM_DM_SIMULATE_LOOKING] is False
-  snap = write_setting(params, "sl", True)
-  assert snap["sl"] is True
-  assert snap["fai"] is False
-
-
-def test_rejects_philip_only_and_hypermile_names():
-  params = FakeParams()
-  for name in (
-    "speed_trim", "speed_offset", "city_turns", "tap_lc",
-    "corner_assist", "lane_centering", "hypermile",
-    "hypermile_step_down", "hypermile_hill_climb",
-  ):
-    with pytest.raises(SettingError, match="rejected|unknown"):
-      write_setting(params, name, 1)
-  assert REJECTED_SETTING_NAMES
-
-
-def test_map_speed_and_stock_params():
-  params = FakeParams()
-  write_setting(params, "map_speed_mode", 3)
-  write_setting(params, "map_speed_offset_mph", -5)
-  write_setting(params, "map_speed_lookahead", 3)
-  write_setting(params, "personality", 2)
-  write_setting(params, "experimental", True)
-  write_setting(params, "driver_lat_handoff", False)
-  write_setting(params, "one_pedal_long", True)
+def test_read_settings_does_not_write():
+  params = FakeParams(bools={"IsMetric": True})
   snap = read_settings(params)
-  assert snap["map_speed_mode"] == 3
-  assert snap["map_speed_offset_mph"] == -5
-  assert snap["map_speed_lookahead"] == 3
-  assert snap["personality"] == 2
-  assert snap["experimental"] is True
-  assert params.bools[PARAM_EXPERIMENTAL] is True
-  assert params.bools[PARAM_EXPERIMENTAL_CONFIRMED] is True
-  assert snap["driver_lat_handoff"] is False
-  assert snap["one_pedal_long"] is True
-  assert "hypermile" not in snap
-  with pytest.raises(SettingError):
-    write_setting(params, "map_speed_offset_mph", 3)
-
-
-def test_catalog_matches_release_mannerisms_order():
-  names = [item["name"] for item in setting_catalog()]
-  assert names[:5] == [
-    "accel", "adaptive_accel", "follow_distance",
-    "driver_lat_handoff", "one_pedal_long",
-  ]
-  assert "hypermile" not in names
-  params = {item["param"] for item in setting_catalog()}
-  for key in (
-    PARAM_ACCEL, PARAM_ADAPTIVE_ACCEL, PARAM_FOLLOW_DISTANCE, NAP_DRIVER_LAT_HANDOFF,
-    NAP_ONE_PEDAL_LONG, NAP_GAP_LOCK, PARAM_MAP_MODE, PARAM_MAP_OFFSET, PARAM_MAP_LOOKAHEAD,
-    PARAM_PERSONALITY, PARAM_EXPERIMENTAL, PARAM_SL, PARAM_FAI,
-  ):
-    assert key in params
-  assert "NAPHypermile" not in params
-
-
-def test_package_has_no_philip_settings_file_or_funnel():
-  pkg = ROOT / "selfdrive" / "nap_dash"
-  html = (pkg / "dashboard.html").read_text(encoding="utf-8")
-  server = (pkg / "server.py").read_text(encoding="utf-8")
-  settings = (pkg / "settings.py").read_text(encoding="utf-8")
-  assert "NAP_SETTINGS_FILE" not in server
-  assert "update_nap_settings_file" not in server
-  assert "/api/nav" not in server
-  assert "setv('speed_trim'" not in html
-  assert "toggle('speed_offset')" not in html
-  assert "Driving Mannerisms" in html
-  assert "Follow Distance" in html
-  assert "One-Pedal Long" in html
-  assert 'id="hypermile"' not in html
-  assert "toggle('hypermile')" not in html
-  assert "apply_hypermile_toggle" not in settings
-  assert ">SL<" in html and ">FAI<" in html
-  assert "Cruise speed trim" not in html
-  assert "Phone guidance" not in html
-
-
-def test_read_settings_does_not_write_engagement_params():
-  params = FakeParams(ints={PARAM_FOLLOW_DISTANCE: 4}, bools={PARAM_SL: False, PARAM_FAI: False})
-  snap = read_settings(params)
-  assert snap["follow_distance"] == 4
+  assert snap["values"]["IsMetric"] is True
   assert params.writes == []
+  assert snap["onroad"] is False
+  assert snap["engaged"] is False
+
+
+def test_metric_round_trip_and_unknown_name_rejected():
+  params = FakeParams()
+  snap = write_setting(params, "IsMetric", True)
+  assert snap["values"]["IsMetric"] is True
+  assert params.bools["IsMetric"] is True
+  for name in ("speed_trim", "city_turns", "tap_lc", "corner_assist", "lane_centering", "engage"):
+    with pytest.raises(SettingError):
+      write_setting(params, name, 1)
+
+
+def test_experimental_requires_confirmation_then_sets_confirmed():
+  params = FakeParams()
+  with pytest.raises(SettingError, match="confirmation"):
+    write_setting(params, "ExperimentalMode", True)
+  assert "ExperimentalMode" not in params.bools
+  snap = write_setting(params, "ExperimentalMode", True, confirm=True)
+  assert snap["values"]["ExperimentalMode"] is True
+  assert params.bools["ExperimentalModeConfirmed"] is True
+  write_setting(params, "ExperimentalMode", False)
+  assert params.bools["ExperimentalMode"] is False
+
+
+def test_onroad_and_engaged_locks():
+  params = FakeParams(bools={"IsOnroad": True})
+  with pytest.raises(SettingError, match="car is on"):
+    write_setting(params, "AdbEnabled", True)
+  assert "AdbEnabled" not in params.bools
+
+  parked = FakeParams(bools={"IsEngaged": True})
+  with pytest.raises(SettingError, match="engaged"):
+    write_setting(parked, "OpenpilotEnabledToggle", False)
+  write_setting(parked, "IsMetric", True)
+  assert parked.bools["IsMetric"] is True
+
+
+def test_simulate_look_and_false_alert_are_exclusive():
+  params = FakeParams(bools={"NAPDmSimulateLooking": True, "NAPDmFalseAlertIgnore": False})
+  snap = write_setting(params, "NAPDmFalseAlertIgnore", True)
+  assert snap["values"]["NAPDmFalseAlertIgnore"] is True
+  assert snap["values"]["NAPDmSimulateLooking"] is False
+  snap = write_setting(params, "NAPDmSimulateLooking", True)
+  assert snap["values"]["NAPDmSimulateLooking"] is True
+  assert snap["values"]["NAPDmFalseAlertIgnore"] is False
+
+
+def test_map_speed_choice_rejects_unknown_value():
+  params = FakeParams()
+  snap = write_setting(params, "NAPMapSpeedMode", 3)
+  assert snap["values"]["NAPMapSpeedMode"] == 3
+  with pytest.raises(SettingError):
+    write_setting(params, "NAPMapSpeedMode", 9)
+  snap = write_setting(params, "NAPMapSpeedOffsetMph", -5)
+  assert snap["values"]["NAPMapSpeedOffsetMph"] == -5
+
+
+def test_speed_sign_write_is_plain_param_put():
+  """Discovered from the device UI. The write is put_bool, not a new code path."""
+  params = FakeParams()
+  write_setting(params, "NAPSpeedSignLog", True)
+  assert params.bools["NAPSpeedSignLog"] is True
+  assert [item for item in params.writes if item[0] == "NAPSpeedSignLog"] == [("NAPSpeedSignLog", True)]
+  assert "OnroadCycleRequested" not in params.bools
+
+
+def test_hypermile_uses_device_helper():
+  params = FakeParams(bools={"NAPHypermile": False, "NAPAdaptiveAccel": True})
+  snap = write_setting(params, "NAPHypermile", True)
+  assert snap["values"]["NAPHypermile"] is True
+  assert params.bools["NAPHypermile"] is True
+
+
+def test_reboot_requires_confirmation_and_blocks_while_engaged():
+  params = FakeParams()
+  with pytest.raises(SettingError, match="confirmation"):
+    write_setting(params, "DoReboot", True)
+  assert "DoReboot" not in params.bools
+  write_setting(params, "DoReboot", True, confirm=True)
+  assert params.bools["DoReboot"] is True
+
+  engaged = FakeParams(bools={"IsEngaged": True})
+  with pytest.raises(SettingError, match="engaged"):
+    write_setting(engaged, "DoShutdown", True, confirm=True)
+
+
+def test_disabled_device_control_is_not_writable():
+  params = FakeParams()
+  with pytest.raises(SettingError):
+    write_setting(params, "NAPiBoosterEnabled", True)
