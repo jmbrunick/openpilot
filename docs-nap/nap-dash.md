@@ -34,7 +34,7 @@ Toggles, choices, titles, and descriptions are parsed from the device UI source 
 
 Writes go through Params the same way the device does: plain `put` / `put_bool`, and the same helpers for Experimental Mode, Simulate Look / False Alert Ignore, Force Offroad, and Hypermile. Toggles the device locks while the car is on stay locked while `IsOnroad` is set. Toggles it locks while engaged stay locked while `IsEngaged` is set. Those two Params are written by `hardwared`; this process does not subscribe to cereal to read them. Dangerous toggles (Experimental Mode, alpha longitudinal, reboot, power off) ask for confirmation.
 
-Software / branch switching stays: `GET/POST /api/software` (`set_branch`, `fetch`, `download`, `install`). The Software tab has one button that steps Check → Download → Install & reboot.
+Software / branch switching stays: `GET/POST /api/software` (`set_branch`, `fetch`, `download`, `install`). The Software tab has Check and Download buttons (Download lights up once a check finds an update); Install & reboot appears once a downloaded update is ready.
 
 ## What it is not
 

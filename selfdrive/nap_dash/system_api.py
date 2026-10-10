@@ -179,7 +179,7 @@ def install_blocked(snap: dict) -> str:
     return ""
 
 
-# One button walks the update flow: Check -> Download -> Install & reboot.
+# Where the update flow is: Check -> Download -> Install & reboot.
 STEP_LABEL = {
     "check": "Check",
     "checking": "Checking…",
@@ -189,7 +189,7 @@ STEP_LABEL = {
 
 
 def next_step(snap: dict) -> str:
-    """Which single action the Software tab button offers right now."""
+    """Which step of the update flow the Software tab is on."""
     state = snap["updater_state"]
     if state == "checking...":
         return "checking"
@@ -238,7 +238,8 @@ def software_status(snap: dict) -> dict:
         "blocked_reason": blocked,
         "next_action": action,
         "can_check": not busy and not blocked,
-        "can_download": not busy and not blocked,
+        # Download is offered only after a check found something new to fetch.
+        "can_download": not busy and not blocked and snap["fetch_available"] and not snap["update_available"],
         "can_install": bool(snap["update_available"]) and not busy and not install_blocked(snap),
         "install_blocked_reason": install_blocked(snap),
         "install_label": install_label(snap),
