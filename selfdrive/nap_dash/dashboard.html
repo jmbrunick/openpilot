@@ -132,7 +132,7 @@ button:active:not(:disabled) {
   -webkit-transform: scale(0.95);
   transform: scale(0.95);
 }
-/* Check / Download / Install: own row, filled nav blue, larger targets. */
+/* Check / Download / Install & reboot: one button in its own row, filled nav blue, larger target. */
 .soft.swact { padding-top: 8px; border-top: 1px solid #2c3036; }
 .soft.swact button {
   min-height: 58px;
@@ -633,24 +633,28 @@ function renderSoftware(root, data) {
 
   var actions = document.createElement("div");
   actions.className = "soft swact";
-  var checking = (swPending && swPending.action === "fetch") || data.updater_state === "checking...";
-  var downloading = (swPending && swPending.action === "download") ||
-    data.updater_state === "downloading..." || data.updater_state === "finalizing update...";
-  var locked = !!(swPending || data.busy || data.blocked_reason);
-  actions.appendChild(swButton(checking ? "Checking…" : "Check", false, checking, locked, function (b) {
-    software({action: "fetch"}, b);
-  }));
-  actions.appendChild(swButton(downloading ? "Downloading…" : "Download", false, downloading, locked, function (b) {
-    software({action: "download"}, b);
-  }));
-  if (data.update_available) {
-    actions.appendChild(swButton(data.install_label || "Install & reboot", false, false, !data.can_install || !!swPending, function () {
+  // One button steps through the flow: Check -> Download -> Install & reboot.
+  var step = data.step || "check";
+  if (swPending) step = swPending.action === "download" ? "downloading" : "checking";
+  var busy = step === "checking" || step === "downloading";
+  var text = step === "checking" ? "Checking…" : (step === "downloading" ? "Downloading…" :
+    (step === "install" ? (data.install_label || "Install & reboot") : (step === "download" ? "Download" : "Check")));
+  var off = busy || !!swPending;
+  if (step === "install") {
+    off = off || !data.can_install;
+    if (data.install_blocked_reason) swLine(label, data.install_blocked_reason, "warn");
+  } else {
+    off = off || !!data.blocked_reason;
+  }
+  actions.appendChild(swButton(text, false, busy, off, function (b) {
+    if (step === "install") {
       askSoftwareConfirm(data.install_label || "Install & reboot",
         "The comma reboots now and boots into " + (data.new_description || "the downloaded update") + ".",
         function () { software({action: "install", confirm: true}, null); });
-    }));
-    if (data.install_blocked_reason) swLine(label, data.install_blocked_reason, "warn");
-  }
+    } else {
+      software({action: step === "download" ? "download" : "fetch"}, b);
+    }
+  }));
   root.appendChild(actions);
   fitPane();
 }
