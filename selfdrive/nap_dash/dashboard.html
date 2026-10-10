@@ -132,7 +132,7 @@ button:active:not(:disabled) {
   -webkit-transform: scale(0.95);
   transform: scale(0.95);
 }
-/* Check / Download / Install: own row, filled nav blue, larger targets. */
+/* Check / Download / Install & reboot: own row, filled nav blue, larger targets. */
 .soft.swact { padding-top: 8px; border-top: 1px solid #2c3036; }
 .soft.swact button {
   min-height: 58px;
@@ -633,18 +633,20 @@ function renderSoftware(root, data) {
 
   var actions = document.createElement("div");
   actions.className = "soft swact";
-  var checking = (swPending && swPending.action === "fetch") || data.updater_state === "checking...";
-  var downloading = (swPending && swPending.action === "download") ||
-    data.updater_state === "downloading..." || data.updater_state === "finalizing update...";
+  // Check is always offered; Download lights up once a check finds an update;
+  // Install & reboot appears only when a downloaded update is ready.
+  var checking = (swPending && swPending.action === "fetch") || (!swPending && data.step === "checking");
+  var downloading = (swPending && swPending.action === "download") || (!swPending && data.step === "downloading");
   var locked = !!(swPending || data.busy || data.blocked_reason);
   actions.appendChild(swButton(checking ? "Checking…" : "Check", false, checking, locked, function (b) {
     software({action: "fetch"}, b);
   }));
-  actions.appendChild(swButton(downloading ? "Downloading…" : "Download", false, downloading, locked, function (b) {
-    software({action: "download"}, b);
-  }));
-  if (data.update_available) {
-    actions.appendChild(swButton(data.install_label || "Install & reboot", false, false, !data.can_install || !!swPending, function () {
+  actions.appendChild(swButton(downloading ? "Downloading…" : "Download", false, downloading,
+    locked || !data.can_download, function (b) {
+      software({action: "download"}, b);
+    }));
+  if (data.update_available && !swPending && !data.busy) {
+    actions.appendChild(swButton(data.install_label || "Install & reboot", false, false, !data.can_install, function () {
       askSoftwareConfirm(data.install_label || "Install & reboot",
         "The comma reboots now and boots into " + (data.new_description || "the downloaded update") + ".",
         function () { software({action: "install", confirm: true}, null); });
