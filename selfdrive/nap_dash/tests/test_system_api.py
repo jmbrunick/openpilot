@@ -90,7 +90,7 @@ def test_set_offline_action_is_gone():
   assert params.writes == []
 
 
-def test_single_button_steps_check_download_install():
+def test_update_flow_steps_check_download_install():
   base = {"UpdaterTargetBranch": "nap-dev"}
   snap = read_software(FakeParams(values=dict(base)), running=True)
   assert (snap["step"], snap["step_label"]) == ("check", "Check")
@@ -119,11 +119,25 @@ def test_single_button_steps_check_download_install():
   assert snap["step"] == "check"
 
 
-def test_page_has_one_action_button_and_no_go_offline():
+def test_page_has_check_and_download_buttons_and_no_go_offline():
   from pathlib import Path
   html = (Path(__file__).resolve().parents[1] / "dashboard.html").read_text()
   assert "Go offline" not in html and "set_offline" not in html and "Pause updates" not in html
-  assert html.count('actions.appendChild(swButton(') == 1
+  assert html.count('actions.appendChild(swButton(') == 3
+  assert '"Check"' in html and '"Download"' in html
+  # Install & reboot is only added when a downloaded update is ready
+  assert "if (data.update_available && !swPending && !data.busy)" in html
+
+
+def test_download_greyed_until_check_finds_update():
+  base = {"UpdaterTargetBranch": "nap-dev"}
+  snap = read_software(FakeParams(values=dict(base)), running=True)
+  assert snap["can_check"] is True and snap["can_download"] is False
+  snap = read_software(FakeParams(values=dict(base), bools={"UpdaterFetchAvailable": True}), running=True)
+  assert snap["can_check"] is True and snap["can_download"] is True
+  # once downloaded, Install takes over and Download greys out again
+  snap = read_software(FakeParams(values=dict(base), bools={"UpdaterFetchAvailable": True, "UpdateAvailable": True}), running=True)
+  assert snap["can_download"] is False and snap["can_install"] is True
 
 
 def test_download_sends_sighup_like_comma_software_panel():
