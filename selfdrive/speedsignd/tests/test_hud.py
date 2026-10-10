@@ -7,13 +7,11 @@ import pytest
 
 from openpilot.selfdrive.speedsignd.detect import SpeedSign, SpeedSignDetector, paint_mutcd_r2_1
 from openpilot.selfdrive.speedsignd.hud import (
+  AGREE_READS,
+  AGREE_WINDOW_S,
   HUD_DETECT_PAUSED_TEXT,
   HUD_HOLD_S,
   HUD_MISSING_WEIGHTS_TEXT,
-  HUD_OVERTURN_65_MARGIN,
-  HUD_OVERTURN_65_MIN_CONF,
-  HUD_OVERTURN_JUNK_MPH,
-  HUD_REFINE_REQUIRED_MPH,
   LiveSignHold,
   is_speed_limit_sighting,
   should_replace_held_mph,
@@ -42,6 +40,8 @@ from openpilot.selfdrive.speedsignd.tests.test_detect import _scene
 def test_hold_keeps_mph_then_clears():
   h = LiveSignHold(hold_s=3.0)
   signs = [SpeedSign(mph=45, conf=0.8, bbox=(0, 0, 10, 10))]
+  live, mph, _ = h.update(signs, 9.8)
+  assert not live
   live, mph, conf = h.update(signs, 10.0)
   assert live and mph == 45 and conf == 0.8
   live, mph, _ = h.update([], 11.0)
@@ -55,7 +55,10 @@ def test_hold_keeps_mph_then_clears():
 def test_new_detection_refreshes_hold():
   h = LiveSignHold(hold_s=3.0)
   h.update([SpeedSign(mph=30, conf=0.7, bbox=(0, 0, 1, 1))], 0.0)
-  live, mph, _ = h.update([SpeedSign(mph=55, conf=0.9, bbox=(0, 0, 1, 1))], 1.0)
+  live, mph, _ = h.update([SpeedSign(mph=30, conf=0.7, bbox=(0, 0, 1, 1))], 0.2)
+  assert live and mph == 30
+  h.update([SpeedSign(mph=55, conf=0.9, bbox=(0, 0, 1, 1))], 1.0)
+  live, mph, _ = h.update([SpeedSign(mph=55, conf=0.9, bbox=(0, 0, 1, 1))], 1.2)
   assert live and mph == 55
   live, mph, _ = h.update([], 3.9)
   assert live and mph == 55
@@ -158,6 +161,8 @@ def test_publish_fields_flag_missing_weights_without_mph():
   live, held, _ = h.update([], 10.1)
   assert not live and held == 0
 
+  msg_valid, mph, conf, missing, paused = live_sign_publish_fields(h, signs, 10.8, False)
+  assert mph == 0
   msg_valid, mph, conf, missing, paused = live_sign_publish_fields(h, signs, 11.0, False)
   assert msg_valid and not missing and mph == 45 and not paused
   live, held, _ = h.update([], 11.5)
@@ -177,6 +182,8 @@ def test_hold_shows_refined_50_not_stuck_65():
     mph=50, conf=0.71, bbox=(0, 0, 10, 10),
     class_mph=65, class_conf=0.81, refine_mph=50, refine_conf=0.71,
   )]
+  live, mph, _ = h.update(signs, 9.8)
+  assert not live
   live, mph, _ = h.update(signs, 10.0)
   assert live and mph == 50
   live, mph, _ = h.update([], 11.0)
@@ -223,9 +230,11 @@ def test_process_frame_hud_blank_when_yolo_65_refine_fails(tmp_path):
   signs, written = process_frame(
     y, 45.0, -95.0, 0.0, True, _Det(), log, now=1.0, debounce=debounce,
   )
-  assert signs == []
+  assert signs and signs[0].mph == 65
   assert written == []
   assert debounce.last_raw and debounce.last_raw[0].mph == 65
+  live, mph, _ = LiveSignHold().update(signs, 1.0)
+  assert not live and mph == 0
 
 
 def test_detect_without_gps_still_returns_signs(tmp_path):
@@ -243,11 +252,10 @@ def test_detect_without_gps_still_returns_signs(tmp_path):
 
 def test_hold_duration_constant():
   # Parked 50 went blank after 10 s of 3–5 s infers; 45 s covers miss gaps.
+  # Two agreeing reads replace the {40, 60, 65, 70} junk gate.
   assert HUD_HOLD_S == 45.0
-  assert HUD_REFINE_REQUIRED_MPH == frozenset({40, 60, 65, 70})
-  assert HUD_OVERTURN_JUNK_MPH == frozenset({40, 60, 65, 70})
-  assert HUD_OVERTURN_65_MIN_CONF == 0.60
-  assert HUD_OVERTURN_65_MARGIN == 0.10
+  assert AGREE_READS == 2
+  assert AGREE_WINDOW_S == 2.0
 
 
 def test_hold_last_good_across_infer_skips():
@@ -257,6 +265,8 @@ def test_hold_last_good_across_infer_skips():
     mph=50, conf=0.71, bbox=(0, 0, 10, 10),
     class_mph=65, class_conf=0.81, refine_mph=50, refine_conf=0.71,
   )]
+  live, mph, _ = h.update(signs, 9.5)
+  assert not live
   live, mph, _ = h.update(signs, 10.0)
   assert live and mph == 50
   for t in (11.0, 12.5, 14.0, 17.5, 19.9, 25.0, 35.0, 50.0):
@@ -269,7 +279,9 @@ def test_hold_last_good_across_infer_skips():
 def test_hold_lasts_across_more_than_10s_empty_ticks():
   """Justin: 10 s hold expired during miss gaps. Default 45 s must survive >10 s empty."""
   h = LiveSignHold()
-  live, mph, _ = h.update([_sign(50, 0.50, class_mph=65, refine_mph=50, refine_conf=0.50)], 0.0)
+  sign50 = [_sign(50, 0.50, class_mph=65, refine_mph=50, refine_conf=0.50)]
+  assert not h.update(sign50, 0.0)[0]
+  live, mph, _ = h.update(sign50, 0.0)
   assert live and mph == 50
   live, mph, _ = h.update([], 10.5)
   assert live and mph == 50
@@ -311,6 +323,8 @@ def test_yolo_65_refine_fail_holds_prior_50():
     mph=50, conf=0.71, bbox=(0, 0, 10, 10),
     class_mph=65, class_conf=0.81, refine_mph=50, refine_conf=0.71,
   )]
+  live, mph, _ = h.update(good, 0.8)
+  assert not live
   live, mph, _ = h.update(good, 1.0)
   assert live and mph == 50
   bad = [SpeedSign(
@@ -324,23 +338,25 @@ def test_yolo_65_refine_fail_holds_prior_50():
 
 
 def test_yolo_65_refine_50_lights_hud_50():
-  """YOLO 65 + refine 50 → HUD 50 (and hold)."""
+  """Class 65 and OCR 50 disagree: only the OCR vote counts, and two of them light 50.
+
+  One frame does not light, and the class-65 vote must not accumulate into a 65.
+  """
   sign = SpeedSign(
     mph=50, conf=0.71, bbox=(0, 0, 10, 10),
     class_mph=65, class_conf=0.82, refine_mph=50, refine_conf=0.71,
   )
-  accepted = accepted_hud_sign(sign)
-  assert accepted is not None and accepted.mph == 50
+  assert accepted_hud_sign(sign) is None
   h = LiveSignHold()
   live, mph, _ = h.update([sign], 5.0)
+  assert not live and mph == 0
+  live, mph, _ = h.update([sign], 5.4)
   assert live and mph == 50
-  # Override even when refine_mph was tagged but mph was left as class 65.
   leftover = SpeedSign(
     mph=65, conf=0.73, bbox=(0, 0, 10, 10),
     class_mph=65, class_conf=0.73, refine_mph=50, refine_conf=0.40,
   )
-  accepted = accepted_hud_sign(leftover)
-  assert accepted is not None and accepted.mph == 50
+  assert accepted_hud_sign(leftover) is None
   live, mph, _ = h.update([leftover], 6.0)
   assert live and mph == 50
 
@@ -367,40 +383,42 @@ def _sign(mph, conf, *, class_mph=None, refine_mph=None, refine_conf=0.0):
   )
 
 
-def test_held_50_not_overturned_by_neighbor_refine_65():
-  """refine=50 @0.5 then refine=65 @0.5 must keep HUD 50 while hold is live."""
-  assert not should_replace_held_mph(50, 0.50, 65, 0.50)
-  assert not should_replace_held_mph(50, 0.43, 65, 0.51)
-  assert not should_replace_held_mph(50, 0.53, 70, 0.55)
+def test_held_50_not_overturned_by_weaker_agreed_65():
+  """A different mph replaces only when it is at least as sure as the hold."""
+  assert should_replace_held_mph(50, 0.50, 65, 0.50)
+  assert not should_replace_held_mph(50, 0.53, 65, 0.47)
+  assert not should_replace_held_mph(50, 0.60, 70, 0.55)
   h = LiveSignHold()
-  live, mph, _ = h.update([_sign(50, 0.50, class_mph=65, refine_mph=50, refine_conf=0.50)], 1.0)
+  pair50 = [_sign(50, 0.50, class_mph=65, refine_mph=50, refine_conf=0.50)]
+  h.update(pair50, 1.0)
+  live, mph, _ = h.update(pair50, 1.2)
   assert live and mph == 50
-  weak65 = _sign(65, 0.51, class_mph=65, refine_mph=65, refine_conf=0.51)
-  assert accepted_hud_sign(weak65) is None
-  live, mph, _ = h.update([weak65], 2.0)
-  assert live and mph == 50
-  live, mph, _ = h.update([_sign(65, 0.47, class_mph=65, refine_mph=65, refine_conf=0.47)], 3.0)
+  weaker = _sign(65, 0.47, class_mph=65, refine_mph=65, refine_conf=0.47)
+  assert accepted_hud_sign(weaker) is not None
+  live, mph, _ = h.update([weaker], 1.4)
   assert live and mph == 50
 
 
-def test_held_50_not_overturned_by_weak_40_60_70():
-  """Justin: after 50, SIGN flashed 60 then 70 then 40 on the same plate."""
+def test_held_50_not_overturned_by_one_read_of_40_60_70():
+  """One class-only read never flashes 40/60/70. An agreed pair below the held conf stays 50."""
   h = LiveSignHold()
-  live, mph, _ = h.update([_sign(50, 0.50, class_mph=65, refine_mph=50, refine_conf=0.50)], 1.0)
+  pair50 = [_sign(50, 0.90, class_mph=65, refine_mph=50, refine_conf=0.90)]
+  h.update(pair50, 1.0)
+  live, mph, _ = h.update(pair50, 1.2)
   assert live and mph == 50
-  for mph_j, conf in ((60, 0.51), (70, 0.55), (40, 0.48)):
-    junk = _sign(mph_j, conf, class_mph=mph_j, refine_mph=mph_j, refine_conf=conf)
-    assert accepted_hud_sign(junk) is None
-    live, mph, _ = h.update([junk], 2.0)
+  for mph_j, conf in ((60, 0.51), (40, 0.48), (70, 0.73)):
+    lone = _sign(mph_j, conf, class_mph=mph_j, refine_mph=None)
+    assert accepted_hud_sign(lone) is None
+    live, mph, _ = h.update([lone], 1.4)
     assert live and mph == 50
-  yolo70 = _sign(70, 0.73, class_mph=70, refine_mph=None)
-  assert accepted_hud_sign(yolo70) is None
-  live, mph, _ = h.update([yolo70], 3.0)
+  weak70 = _sign(70, 0.55, class_mph=70, refine_mph=70, refine_conf=0.55)
+  assert accepted_hud_sign(weak70) is not None
+  live, mph, _ = h.update([weak70], 1.6)
   assert live and mph == 50
-  yolo40 = _sign(40, 0.80, class_mph=40, refine_mph=None)
-  assert accepted_hud_sign(yolo40) is None
-  live, mph, _ = h.update([yolo40], 4.0)
-  assert live and mph == 50
+  # A real 65 that class and OCR both name, at least as sure as the hold, does light.
+  real65 = _sign(65, 0.95, class_mph=65, refine_mph=65, refine_conf=0.95)
+  live, mph, _ = h.update([real65], 1.9)
+  assert live and mph == 65
 
 
 def test_refine_50_refreshes_held_50():
@@ -414,7 +432,9 @@ def test_refine_50_refreshes_held_50():
 
 def test_sl_sighting_extends_hold_without_changing_mph():
   h = LiveSignHold(hold_s=3.0)
-  h.update([_sign(50, 0.50, class_mph=65, refine_mph=50, refine_conf=0.50)], 1.0)
+  pair = [_sign(50, 0.50, class_mph=65, refine_mph=50, refine_conf=0.50)]
+  h.update(pair, 1.0)
+  h.update(pair, 1.2)
   miss = _sign(65, 0.73, class_mph=65, refine_mph=None)
   assert is_speed_limit_sighting(miss)
   live, mph, _ = h.update([miss], 3.5)
@@ -423,34 +443,48 @@ def test_sl_sighting_extends_hold_without_changing_mph():
   assert live and mph == 50
 
 
-def test_held_50_overturns_to_65_only_when_refine_clearly_stronger():
+def test_held_50_overturns_to_agreed_65():
   h = LiveSignHold()
-  h.update([_sign(50, 0.50, class_mph=65, refine_mph=50, refine_conf=0.50)], 1.0)
+  pair = [_sign(50, 0.50, class_mph=65, refine_mph=50, refine_conf=0.50)]
+  h.update(pair, 1.0)
+  h.update(pair, 1.2)
   strong = _sign(65, 0.80, class_mph=65, refine_mph=65, refine_conf=0.80)
   assert should_replace_held_mph(50, 0.50, 65, 0.80)
-  live, mph, _ = h.update([strong], 2.0)
+  live, mph, _ = h.update([strong], 1.4)
   assert live and mph == 65
 
 
-def test_held_65_yields_to_refine_50():
-  """Leaving a wrong 65 for a 50 must not wait for the 0.60 floor."""
-  assert should_replace_held_mph(65, 0.51, 50, 0.43)
+def test_held_65_yields_to_equally_sure_refine_50():
+  """A lower-conf 50 does not replace 65. Two OCR 50s at least as sure do."""
+  assert not should_replace_held_mph(65, 0.80, 50, 0.43)
+  assert should_replace_held_mph(65, 0.51, 50, 0.55)
   h = LiveSignHold()
   h.update([_sign(65, 0.80, class_mph=65, refine_mph=65, refine_conf=0.80)], 1.0)
-  live, mph, _ = h.update([_sign(50, 0.43, class_mph=65, refine_mph=50, refine_conf=0.43)], 2.0)
+  weak = [_sign(50, 0.43, class_mph=65, refine_mph=50, refine_conf=0.43)]
+  h.update(weak, 1.2)
+  live, mph, _ = h.update(weak, 1.4)
+  assert live and mph == 65
+  sure = [_sign(50, 0.85, class_mph=65, refine_mph=50, refine_conf=0.85)]
+  h.update(sure, 1.6)
+  live, mph, _ = h.update(sure, 1.8)
   assert live and mph == 50
 
 
-def test_expired_hold_rejects_weak_junk_refine():
-  """SIGN 70 path: after hold expires, refine=70@0.51 must not first-light."""
+def test_expired_hold_lights_agreed_70_and_ignores_one_class_read():
+  """The 0.60 junk floor is gone. One unrefined 70 stays blank; class==OCR 70 lights."""
   h = LiveSignHold(hold_s=1.0)
-  h.update([_sign(50, 0.50, class_mph=65, refine_mph=50, refine_conf=0.50)], 1.0)
-  live, mph, _ = h.update([], 2.01)
+  pair = [_sign(50, 0.50, class_mph=65, refine_mph=50, refine_conf=0.50)]
+  h.update(pair, 0.0)
+  h.update(pair, 0.2)
+  # Past both the 1 s hold and the 2 s agree window, so leftover votes cannot re-light.
+  live, mph, _ = h.update([], 3.0)
   assert not live
-  live, mph, _ = h.update([_sign(70, 0.51, class_mph=70, refine_mph=70, refine_conf=0.51)], 2.02)
+  lone = [_sign(70, 0.73, class_mph=70, refine_mph=None)]
+  live, mph, _ = h.update(lone, 3.1)
   assert not live and mph == 0
-  live, mph, _ = h.update([_sign(65, 0.80, class_mph=65, refine_mph=65, refine_conf=0.80)], 2.03)
-  assert live and mph == 65
+  agreed = [_sign(70, 0.51, class_mph=70, refine_mph=70, refine_conf=0.51)]
+  live, mph, _ = h.update(agreed, 3.2)
+  assert live and mph == 70
 
 
 def test_publish_fields_yolo_65_refine_fail_blank_or_hold():
@@ -460,7 +494,8 @@ def test_publish_fields_yolo_65_refine_fail_blank_or_hold():
     mph=65, conf=0.73, bbox=(0, 0, 10, 10),
     class_mph=65, class_conf=0.73, refine_mph=None,
   )]
-  msg_valid, mph, conf, missing, paused = live_sign_publish_fields(h, bad, 1.0, False)
+  blank = LiveSignHold()
+  msg_valid, mph, conf, missing, paused = live_sign_publish_fields(blank, bad, 1.0, False)
   # No accepted detect yet: cereal mph stays 0 (plate blank), same as no-hit.
   assert not missing and not paused and mph == 0 and conf == 0.0
   assert not msg_valid
@@ -470,6 +505,8 @@ def test_publish_fields_yolo_65_refine_fail_blank_or_hold():
     class_mph=65, class_conf=0.81, refine_mph=50, refine_conf=0.71,
   )]
   msg_valid, mph, _, missing, paused = live_sign_publish_fields(h, good, 2.0, False)
+  assert mph == 0
+  msg_valid, mph, _, missing, paused = live_sign_publish_fields(h, good, 2.4, False)
   assert msg_valid and mph == 50
   msg_valid, mph, _, missing, paused = live_sign_publish_fields(h, bad, 3.0, False)
   assert msg_valid and mph == 50

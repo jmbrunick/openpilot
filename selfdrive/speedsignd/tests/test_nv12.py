@@ -115,19 +115,33 @@ def test_detect_crop_rect_is_right_biased_square():
   assert (x, y, w, h) == (720, 0, 1208, 1208)
 
 
-def test_copy_nv12_detect_crop_skips_left_third_and_keeps_chroma():
+def test_native_window_covers_the_right_shoulder_arc():
+  """f = 8 mm / 3 µm ≈ 2667 px. A sign 10 ft right and 4 ft above projects to
+  (964 + 26670/D, 604 - 10668/D). 150 ft and 60 ft both sit in the 320² tile.
+  """
+  from openpilot.selfdrive.speedsignd.nv12 import native_detect_window
+  x, y, w, h = native_detect_window(1208, 1928)
+  assert (x, y, w, h) == (1100, 325, 320, 320)
+  for dist, px, py in ((150, 1141.8, 532.9), (90, 1260.3, 485.5), (60, 1408.5, 426.2)):
+    assert x <= px <= x + w, dist
+    assert y <= py <= y + h, dist
+  # The old 1208² letterbox is still available and is not the live window.
+  assert detect_crop_rect(1208, 1928) == (720, 0, 1208, 1208)
+
+
+def test_copy_nv12_detect_crop_is_native_320_and_keeps_chroma():
   buf = _nv12_buf(1928, 1208, y=128, u=128, v=128)
   crop = copy_nv12_detect_crop(buf)
   assert crop is not None
   assert crop.frame_w == 1928 and crop.frame_h == 1208
-  assert crop.crop == (720, 0, 1208, 1208)
-  assert crop.y.shape == (1208, 1208)
+  assert crop.crop == (1100, 325, 320, 320)
+  assert crop.y.shape == (320, 320)
   assert crop.uv is not None
-  assert crop.uv.shape == (604, 1208)
+  assert crop.uv.shape == (160, 320)
   boxed, scale, pad_x, pad_y = letterbox_rgb_from_nv12_crop(crop, 320)
   assert boxed.shape == (320, 320, 3)
   assert pad_x == pad_y == 0
-  assert scale == pytest.approx(320 / 1208)
+  assert scale == pytest.approx(1.0)
   # Neutral gray stays gray — Y-pad zeros were not read as U=V=0.
   assert 120 <= int(boxed[160, 160, 0]) <= 136
   assert 120 <= int(boxed[160, 160, 1]) <= 136

@@ -13,7 +13,7 @@ from typing import NamedTuple
 import numpy as np
 
 from openpilot.selfdrive.speedsignd.detect_types import MUTCD_MPH, SpeedSign
-from openpilot.selfdrive.speedsignd.nv12 import detect_crop_rect
+from openpilot.selfdrive.speedsignd.nv12 import native_detect_window
 from openpilot.selfdrive.speedsignd.weights_manifest import (
   YOLO_CLASS_NAMES,
   YOLO_IMGSZ,
@@ -35,6 +35,8 @@ _SPEED_RE = re.compile(r"^speedLimit(\d+)$")
 # Below this, a class name is argmax-of-noise (Justin's 0.00/speedLimit65 with
 # no 65 on the route). Do not treat it as a mph read.
 PEAK_NAME_MIN = 0.05
+# Below YOLO_MIN_CONF. Schedules a second look only — never lights the HUD alone.
+SIGN_LIKE_CONF = 0.15
 # Posted 30/50/60 plus the confident-wrong 65 head on a close 50.
 POSTED_LOG_MPH = (30, 50, 60, 65)
 
@@ -82,16 +84,15 @@ def letterbox_rgb(rgb: np.ndarray, size: int = YOLO_IMGSZ) -> tuple[np.ndarray, 
 
 
 def road_detect_crop_rect(h: int, w: int) -> tuple[int, int, int, int]:
-  """Right-biased square of the short side. Keeps optical center + right shoulder.
+  """Upper-right native 320² window. Same pixels the ONNX consumes.
 
-  A 1928×1208 ROAD frame letterboxed to 320 is scale 0.166 — a clear 24×30 in
-  R2-1 at ~60 ft is ~15 px, below YOLOv8s-320. Short-side square is 0.265.
-  US MUTCD plates live on the right; the left third is oncoming / unused.
-  Tighter 800/640 crops were measured on official R2-1 plates: ~15 px still
-  peaks at 0.06–0.17 (under 0.40). Do not shrink the crop — it clips center
-  and does not lift Justin's 60/50/30 near-zero.
+  A 1928×1208 frame letterboxed from the old 1208² crop is scale 0.265, so an
+  ~80 ft right-shoulder plate is ~20 px and the drive-by eval missed 29/29.
+  This window is 1:1 with YOLO_IMGSZ (no further downscale). Two 640 tiles
+  scored 24/29 but are four times the pixels each, times two — 8× — and do
+  not fit the 25% core budget. One 320 window does.
   """
-  return detect_crop_rect(h, w)
+  return native_detect_window(h, w)
 
 
 def road_detect_crop(rgb: np.ndarray) -> tuple[np.ndarray, tuple[int, int, int, int]]:

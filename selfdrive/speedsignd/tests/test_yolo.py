@@ -84,17 +84,16 @@ def test_resize_rgb_is_bilinear_not_nearest():
   assert 40 <= int(out[0, 0, 0]) <= 60
 
 
-def test_road_detect_crop_keeps_center_and_right():
+def test_road_detect_crop_is_the_native_right_window():
   rgb = np.zeros((1208, 1928, 3), np.uint8)
   crop, box = road_detect_crop(rgb)
   x, y, w, h = box
-  assert crop.shape == (1208, 1208, 3)
-  assert w == h == 1208
-  assert x == 720
-  assert x <= 964 < x + w  # 3X ROAD optical center stays in-frame
-  # Scale vs full-frame letterbox: 320/1208 vs 320/1928.
-  assert (YOLO_IMGSZ / float(h)) > (YOLO_IMGSZ / 1928.0) * 1.5
-  assert road_detect_crop_rect(1208, 1928) == (720, 0, 1208, 1208)
+  assert crop.shape == (320, 320, 3)
+  assert (x, y, w, h) == (1100, 325, 320, 320)
+  # 1:1 into the 320 ONNX. The optical center (964, 604) stays left of the tile.
+  assert YOLO_IMGSZ / float(h) == pytest.approx(1.0)
+  assert x > 964
+  assert road_detect_crop_rect(1208, 1928) == (1100, 325, 320, 320)
 
 
 def test_yolo_peak_reports_below_threshold_class():
@@ -253,10 +252,10 @@ def test_yolo_crop_offsets_bbox_to_full_road_frame():
   hits = det.detect(None, min_conf=0.4, rgb=rgb)
   assert hits and hits[0].mph == 60
   x, _y, _w, _h = hits[0].bbox
-  assert x >= 720
+  assert x >= 1100
   d = det.diag_dict()
   assert d["frame_w"] == 1928 and d["frame_h"] == 1208
-  assert d["crop"] == (720, 0, 1208, 1208)
+  assert d["crop"] == (1100, 325, 320, 320)
   assert d["backend"] == "tinygrad"
 
 
@@ -404,20 +403,20 @@ def test_yolo_min_conf_constant():
 def test_onnx_nv12_crop_path_offsets_and_chroma():
   """On-car detect uses the crop copy, not a full-frame RGB convert."""
   det = OnnxSpeedSignDetector("/tmp/fake.onnx", _YoloSess(), backend="tinygrad")
-  y = np.full((1208, 1208), 88, np.uint8)
-  u = np.full((604, 604), 128, np.uint8)
-  v = np.full((604, 604), 128, np.uint8)
-  uv = np.empty((604, 1208), np.uint8)
+  y = np.full((320, 320), 88, np.uint8)
+  u = np.full((160, 160), 128, np.uint8)
+  v = np.full((160, 160), 128, np.uint8)
+  uv = np.empty((160, 320), np.uint8)
   uv[:, 0::2] = u
   uv[:, 1::2] = v
-  nv12 = Nv12DetectCrop(y=y, uv=uv, frame_w=1928, frame_h=1208, crop=(720, 0, 1208, 1208))
+  nv12 = Nv12DetectCrop(y=y, uv=uv, frame_w=1928, frame_h=1208, crop=(1100, 325, 320, 320))
   hits = det.detect(None, min_conf=0.4, nv12=nv12)
   assert hits and hits[0].mph == 60
-  assert hits[0].bbox[0] >= 720
+  assert hits[0].bbox[0] >= 1100
   d = det.diag_dict()
   assert d["backend"] == "tinygrad"
   assert d["frame_w"] == 1928 and d["frame_h"] == 1208
-  assert d["crop"] == (720, 0, 1208, 1208)
+  assert d["crop"] == (1100, 325, 320, 320)
   assert d["letterbox"] == 320
   assert d["chroma"] == 1
   assert d["luma_mean"] == pytest.approx(88.0, abs=1.0)

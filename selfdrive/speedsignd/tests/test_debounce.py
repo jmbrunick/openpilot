@@ -1,4 +1,4 @@
-"""Two-frame debounce before JSONL; HUD lights on the first in-threshold hit."""
+"""JSONL confirms on two agreeing reads. One class-only read does not."""
 from __future__ import annotations
 
 from openpilot.selfdrive.speedsignd.debounce import SignDebounce
@@ -81,26 +81,28 @@ def test_update_split_hud_on_first_hit():
   assert split.confirmed[0].mph == 55
 
 
-def test_one_infer_spacing_keeps_two_hits_inside_jsonl_window():
-  """A 2.1 s infer used to pay back another 2.1 s (gap 4.2 s > 4 s window).
+def test_duty_cycle_gap_needs_the_second_look_to_confirm_jsonl():
+  """A 2.1 s infer now waits 8.4 s, outside the 4 s JSONL window.
 
-  Starts are one infer apart, so the second frame still confirms JSONL.
-  HUD still lights on the first hit.
+  The second look 0.1 s later is what confirms. The next YOLO cannot.
   """
   period, budget = 1.0 / SPEEDSIGND_HZ, 0.100
   infer_s = 2.1
   second_t = next_detect_mono(infer_s, infer_s, period, budget)
-  assert abs(second_t - infer_s) < 1e-9
-  assert second_t < DEBOUNCE_WINDOW_S
-  assert (2.0 * infer_s) > DEBOUNCE_WINDOW_S
+  assert abs(second_t - infer_s * 4.0) < 1e-9
+  assert second_t > DEBOUNCE_WINDOW_S
   d = SignDebounce()
-  s = SpeedSign(mph=55, conf=0.8, bbox=(0, 0, 8, 8))
-  first = d.update_split([s], 0.0)
-  assert first.hud and first.hud[0].mph == 55
-  assert first.confirmed == []
-  second = d.update_split([s], second_t)
-  assert second.hud and second.hud[0].mph == 55
+  first_sign = SpeedSign(mph=55, conf=0.8, bbox=(0, 0, 8, 8))
+  first = d.update_split([first_sign], 0.0)
+  assert first.hud and first.confirmed == []
+  look = SpeedSign(
+    mph=55, conf=0.62, bbox=(0, 0, 8, 8),
+    class_mph=65, class_conf=0.70, refine_mph=55, refine_conf=0.62,
+  )
+  second = d.update_split([look], 0.1)
   assert second.confirmed and second.confirmed[0].mph == 55
+  late = d.update_split([first_sign], second_t)
+  assert late.confirmed == []
 
 
 def test_debounce_constants_match_1hz():
@@ -111,25 +113,37 @@ def test_debounce_constants_match_1hz():
   assert DEBOUNCE_WINDOW_S >= 2.0 / SPEEDSIGND_HZ
 
 
-def test_update_split_drops_unrefined_junk_family():
+def test_update_split_one_unrefined_read_does_not_confirm():
   d = SignDebounce()
-  for mph in (40, 60, 65, 70):
+  for i, mph in enumerate((40, 60, 65, 70)):
     bad = SpeedSign(mph=mph, conf=0.73, bbox=(0, 0, 8, 8), class_mph=mph, class_conf=0.73)
-    split = d.update_split([bad], 0.0)
-    assert split.hud == []
+    split = d.update_split([bad], float(i) * 3.0)
+    assert split.hud and split.hud[0].mph == mph
     assert split.confirmed == []
 
 
-def test_update_split_drops_unrefined_65():
+def test_two_ocr_votes_confirm_50_not_the_class_65():
+  d = SignDebounce()
+  mixed = SpeedSign(
+    mph=50, conf=0.71, bbox=(0, 0, 8, 8),
+    class_mph=65, class_conf=0.82, refine_mph=50, refine_conf=0.71,
+  )
+  assert d.update_split([mixed], 0.0).confirmed == []
+  split = d.update_split([mixed], 0.2)
+  assert split.confirmed and split.confirmed[0].mph == 50
+
+
+def test_update_split_one_unrefined_65_is_not_confirmed():
   d = SignDebounce()
   bad = SpeedSign(
     mph=65, conf=0.73, bbox=(0, 0, 8, 8),
     class_mph=65, class_conf=0.73, refine_mph=None,
   )
   split = d.update_split([bad], 0.0)
-  assert split.hud == []
-  assert split.confirmed == []
+  assert split.hud and split.confirmed == []
   assert d.last_raw and d.last_raw[0].mph == 65
+  again = d.update_split([bad], 0.3)
+  assert again.confirmed and again.confirmed[0].mph == 65
 
 
 def test_update_split_hud_refined_50_from_class_65():

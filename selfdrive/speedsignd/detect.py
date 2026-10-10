@@ -13,10 +13,25 @@ import os
 import time
 from typing import Any
 
+# OpenBLAS / OpenMP / tinygrad read these at import. Force one thread before numpy.
+INFER_THREAD_ENV = (
+  "OMP_NUM_THREADS",
+  "OPENBLAS_NUM_THREADS",
+  "MKL_NUM_THREADS",
+  "NUMEXPR_NUM_THREADS",
+  "VECLIB_MAXIMUM_THREADS",
+  "BLIS_NUM_THREADS",
+  "OPENCV_FOR_THREADS_NUM",
+  "GOTO_NUM_THREADS",
+  "TINYGRAD_NUM_THREADS",
+)
+for _thread_key in INFER_THREAD_ENV:
+  os.environ[_thread_key] = "1"
+
 import numpy as np
 
 from openpilot.selfdrive.speedsignd.detect_types import MUTCD_MPH, SpeedSign, shift_sign
-from openpilot.selfdrive.speedsignd.nv12 import letterbox_rgb_from_nv12_crop, rgb_from_y
+from openpilot.selfdrive.speedsignd.nv12 import letterbox_rgb_from_nv12_crop, rgb_from_y, upscale_gray
 from openpilot.selfdrive.speedsignd.paths import default_onnx_path
 from openpilot.selfdrive.speedsignd.weights_manifest import (
   YOLO_CLASS_NAMES,
@@ -25,7 +40,14 @@ from openpilot.selfdrive.speedsignd.weights_manifest import (
   YOLO_MAX_DET,
   YOLO_MIN_CONF,
 )
-from openpilot.selfdrive.speedsignd.yolo import decode_yolov8, letterbox_rgb, refine_mph, road_detect_crop, yolo_peak
+from openpilot.selfdrive.speedsignd.yolo import (
+  SIGN_LIKE_CONF,
+  decode_yolov8,
+  letterbox_rgb,
+  refine_mph,
+  road_detect_crop,
+  yolo_peak,
+)
 
 MIN_CONF = 0.42
 MAX_DET = 3
@@ -35,7 +57,7 @@ MAX_DETECT_WIDTH = 320
 # tinygrad OnnxRunner / OpenBLAS will otherwise take every core.
 THREADS_ENV = "NAP_SPEED_SIGN_THREADS"
 THREADS_DEFAULT = 1
-THREADS_MAX = 2
+THREADS_MAX = 1
 # Soft cap: cannot kill an in-flight tinygrad kernel; skip/pay-back uses this
 # plus infer time so a 1.8 s session cannot immediately start another.
 CAP_MS_ENV = "NAP_SPEED_SIGN_INFER_CAP_MS"
@@ -164,7 +186,7 @@ DIGIT_TEMPLATES = _digit_templates()
 
 
 def parse_infer_threads(raw: str | None, default: int = THREADS_DEFAULT) -> int:
-  """1 thread on the 3X. 2 is the hard max — never all 8 cores."""
+  """One inference thread. Never a pool."""
   if raw is None or str(raw).strip() == "":
     return int(default)
   try:
@@ -190,19 +212,16 @@ def parse_infer_cap_ms(raw: str | None, default: float = CAP_MS_DEFAULT) -> floa
 
 
 def limit_infer_threads(n: int | None = None) -> int:
-  """Pin BLAS / OpenMP / OpenCV thread pools before the first ONNX run."""
+  """Pin BLAS / OpenMP / tinygrad / OpenCV pools. Always one thread on device."""
   threads = parse_infer_threads(os.environ.get(THREADS_ENV) if n is None else str(n))
   n_s = str(threads)
-  for key in (
-    "OMP_NUM_THREADS",
-    "OPENBLAS_NUM_THREADS",
-    "MKL_NUM_THREADS",
-    "NUMEXPR_NUM_THREADS",
-    "VECLIB_MAXIMUM_THREADS",
-    "BLIS_NUM_THREADS",
-    "OPENCV_FOR_THREADS_NUM",
-  ):
+  for key in INFER_THREAD_ENV:
     os.environ[key] = n_s
+  try:
+    import cv2
+    cv2.setNumThreads(threads)
+  except Exception:
+    pass
   return threads
 
 
@@ -452,6 +471,13 @@ def _read_mph(crop: np.ndarray) -> tuple[int | None, float]:
   return value, conf
 
 
+def ocr_tight_y(y: np.ndarray | None) -> tuple[int | None, float]:
+  """Digit OCR on a full-res plate crop. Upscale when the plate is tiny."""
+  if y is None or getattr(y, "ndim", 0) != 2 or y.size == 0:
+    return None, 0.0
+  return _read_mph(upscale_gray(y, 96))
+
+
 def _sign_candidates(y: np.ndarray) -> list[tuple[int, int, int, int]]:
   h, w = y.shape
   bright = y > 175
@@ -657,9 +683,9 @@ class OnnxSpeedSignDetector:
         diag["top3"] = peak.top3
         diag["posted"] = peak.posted
         thr = YOLO_MIN_CONF if min_conf is None else min_conf
-        hits = decode_yolov8(
+        like = decode_yolov8(
           raw, scale=scale, pad_x=pad_x, pad_y=pad_y, src_hw=(crop_h, crop_w),
-          names=YOLO_CLASS_NAMES, min_conf=thr, iou=YOLO_IOU, max_det=YOLO_MAX_DET,
+          names=YOLO_CLASS_NAMES, min_conf=SIGN_LIKE_CONF, iou=YOLO_IOU, max_det=YOLO_MAX_DET,
         )
         if luma_src is not None:
           luma = luma_src
@@ -669,9 +695,20 @@ class OnnxSpeedSignDetector:
             luma = work[:, :, 1]
         else:
           luma = work[:, :, 1]
-        refined = [refine_mph(s, luma, _read_mph) for s in hits]
+        refined_like = [refine_mph(s, luma, _read_mph) for s in like]
         if cx or cy:
-          refined = [shift_sign(s, cx, cy) for s in refined]
+          refined_like = [shift_sign(s, cx, cy) for s in refined_like]
+        refined = [
+          s for s in refined_like
+          if float(s.conf) >= thr or (
+            s.refine_mph is not None and float(s.refine_conf or 0.0) >= 0.28
+          )
+        ]
+        if refined_like:
+          best_like = max(refined_like, key=lambda s: float(s.conf))
+          diag["sign_like_bbox"] = tuple(int(v) for v in best_like.bbox)
+        else:
+          diag["sign_like_bbox"] = None
         diag["refine"] = tuple(
           (
             int(s.class_mph if s.class_mph is not None else s.mph),

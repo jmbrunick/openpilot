@@ -647,5 +647,7 @@ def test_detect_gate_is_not_parked_or_force_offroad():
   assert "crop_rgb=1" in text
   assert "detect_while_engaged=1" in text
   assert "format_read_timing" in text
+  assert "cpu_share=" in text
   assert "procs_running" in text
-  assert '["gpsLocationExternal", "gpsLocation", "selfdriveState"]' in text
+  assert "modelV2" in text
+  assert '["gpsLocationExternal", "gpsLocation", "selfdriveState", "modelV2"]' in text

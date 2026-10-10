@@ -12,9 +12,9 @@ Report `swaglog | grep "speedsignd timing"` (`read_interval_ms`, `infer_ms`, `en
 
 **Engaged and manual driving both collect** — including moving, no assist. This is **not** gated on park or Force Offroad. Logger On, and log speed-limit signs + GNSS to JSONL. OSM upload is future work.
 
-Unknown cereal is **not** a pause. After a ~2 s startup, unread `selfdriveState` allows the same throttled detect and logs a warning. SubMaster polls at **20 Hz** so 100 Hz `selfdriveState` alive/valid cannot flap the gate; YOLO stays ≤ **1 Hz** unless an infer is slower, in which case the next read starts when that infer finishes. Engaging does **not** abandon an in-flight ONNX.
+Unknown cereal is **not** a pause. After a ~2 s startup, unread `selfdriveState` allows the same throttled detect and logs a warning. SubMaster polls at **20 Hz** so 100 Hz `selfdriveState` alive/valid cannot flap the gate; YOLO stays ≤ **1 Hz**, and a long infer idles at least 3× that infer before the next one (about 25% of one core). Engaging does **not** abandon an in-flight ONNX.
 
-Detect is **1 Hz** or one inference apart, `SCHED_OTHER` + nice 19, little cores 0–3, one thread — engaged and manual. **If TAKE CONTROL or lag comes back, turn Speed Sign Logger Off.** Do not raise `modeld` priority. A back-off line in swaglog means speedsignd saw CPU pressure or a model/controls alert and rested.
+Detect is **1 Hz** or slower, `SCHED_IDLE` (else nice 19), little **core 2** only, one thread — engaged and manual. Core 0 is the UI, 1 is sensord, 3 is pandad/encoderd, 4 is controlsd, 7 is modeld. **If TAKE CONTROL or lag comes back, turn Speed Sign Logger Off.** Do not raise `modeld` priority. A back-off line in swaglog means speedsignd saw `modelV2` frame drops, a skipped frame id, its own CPU share over 25%, or a model/controls alert, and rested.
 
 ## Enable
 
@@ -29,14 +29,14 @@ Off (default): the process does not run. Logger On never changes that default.
 
 Reset to Defaults turns the logger back off. Weights on `/data` stay.
 
-Optional detect rate (default 1 Hz, clamped 0.2–4): `NAP_SPEED_SIGN_HZ=0.5` in the process environment. Do not raise this on a 3X. While engaged, detect stays at that rate or one inference apart if the inference is slower. It is not 0 Hz.
+Optional detect rate (default 1 Hz, clamped 0.2–4): `NAP_SPEED_SIGN_HZ=0.5` in the process environment. Do not raise this on a 3X. While engaged, a short infer still waits out that period. A long infer waits `4× infer` (the infer plus 3× idle). It is not 0 Hz.
 
-Manual detect is **cheap-path** so Logger On is less likely to starve `modeld` even when YOLO still takes ~1 s:
+Manual detect is **cheap-path** so Logger On is less likely to starve `modeld`:
 
-- ROAD **crop only** (right-biased 1208² on a 3X), downsample, then BT.601 — never a full-frame 1928×1208 RGB convert on the 20 Hz loop
-- **1 ONNX / BLAS thread** (`NAP_SPEED_SIGN_THREADS`, max 2)
-- pinned to **little cores 0–3** (modeld stays FIFO on core 7)
-- `NAP_SPEED_SIGN_INFER_CAP_MS` default **800** is logged only. It does **not** add another infer plus a 1 s gap. A slow infer starts the next read when it finishes (or at the period, if that is longer). Pressure (CPU run-queue, disk stall, or a model/controls alert on `selfdriveState`) adds one extra `max(infer, period)` rest.
+- one upper-right **320²** window of the 1928×1208 ROAD frame, fed 1:1 into the 320 ONNX — never a full-frame RGB convert, and not the old 1208² letterbox (that left an 80 ft sign at about 20 px)
+- **1 ONNX / BLAS thread** (`OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `TINYGRAD_NUM_THREADS`, and the rest, all forced to 1)
+- pinned to **little core 2** (modeld stays FIFO on core 7)
+- `NAP_SPEED_SIGN_INFER_CAP_MS` default **800** is logged only. It does **not** add a second wait. Pressure adds another 3× infer of rest. `modelV2.frameDropPerc` and a skipped `frameId` back off before the lag alert.
 - `os.sched_yield()` while an infer is busy
 
 YOLOv8s-320 on tinygrad CPU is ~8.7 GFLOP plus Python `OnnxRunner` overhead. Justin measured **mean infer 1819 ms** on `cursor/speedsignd-manual-mph-b6f2` with full-frame RGB on the main thread. The crop path cuts preprocess (look for `prep=` tens of ms, `sess=` still the YOLO run). **Mean well under 500 ms is not feasible on stock 3X tinygrad with this 43 MB 320² export** — that needs `onnxruntime`, a nano re-export, or a precompiled TinyJit. This branch does not change weights or Hz.
@@ -44,18 +44,18 @@ YOLOv8s-320 on tinygrad CPU is ~8.7 GFLOP plus Python `OnnxRunner` overhead. Jus
 Onroad, `swaglog` prints `speedsignd detect paused (controlling=True enabled=… active=… state=… alive=… valid=…)` when you SET, `speedsignd abandon in-flight ONNX` if a YOLO was still running, and every infer:
 
 ```
-speedsignd infer 420ms backend=tinygrad frame=1928x1208 letterbox=320 crop=720,0 1208x1208 … peak=0.72/speedLimit65 n_over=1 sl_peak=0.72/speedLimit65 … refine=50:0.71(class=65) luma=90/35 chroma=1 prep=18 sess=400 raw=[(50, 0.71)] hud=[(50, 0.71)] jsonl=[]
+speedsignd infer 4300ms backend=tinygrad frame=1928x1208 letterbox=320 crop=1100,325 320x320 … peak=0.72/speedLimit65 n_over=1 sl_peak=0.72/speedLimit65 … refine=50:0.71(class=65) luma=90/35 chroma=1 prep=18 sess=4000 raw=[(50, 0.71)] hud=[(50, 0.71)] jsonl=[]
 ```
 
-`refine=` is the crop digit read vs the YOLO class. A parked close **SPEED LIMIT 50** often peaks `speedLimit65:0.73` with `cls=50:0.00` (not a close race). HUD should still be **50** when `refine=50:… class=65`. Empty `refine=` means no in-threshold hit (digit OCR never ran). `refine=- class=65` means the crop read failed (not a 65). `refine=65:0.47` means OCR returned 65. SIGN never lights YOLO **40/60/65/70** without refine, and a weak refine of those values (<0.60) is dropped — that is the SIGN **70** / **40** leak on a real 50. A held 50 is not replaced by 40/60/65/70 unless refine is ≥0.60 and +0.10 over the held conf. Last accepted mph holds **~45 s**; any in-threshold speedLimit* box (even a failed refine) extends that hold so a parked real sign does not blank between multi-second infers.
+`refine=` is the crop digit read vs the YOLO class. A parked close **SPEED LIMIT 50** often peaks `speedLimit65:0.73`. HUD shows **50** when two reads agree on 50 (class and OCR on one frame, or the same mph on two frames). A single class-only 65 does not light. Class 65 plus OCR 50 counts as one OCR vote for 50, not a vote for 65. Last accepted mph holds **~45 s**.
 
 Every finished read logs a greppable line:
 
 ```
-speedsignd timing read_interval_ms=4200 infer_ms=3980 engaged=1 backoff=0 reason=pace
+speedsignd timing read_interval_ms=17200 infer_ms=4300 cpu_share=0.250 threads=1 engaged=1 backoff=0 reason=pace
 ```
 
-`read_interval_ms` is the gap between read starts. On a 3.8–5.4 s infer that used to be about 8600–11800 (another infer, plus about 1 s). It should now sit near `infer_ms`, or near `1000/detect_hz` if that is longer. `engaged=1` while openpilot is controlling. A back-off is:
+`read_interval_ms` is the gap between read starts. On a ~4.3 s infer it should sit near **4× `infer_ms`** (about 17200), and `cpu_share` near **0.250** or lower. `threads=1`. `engaged=1` while openpilot is controlling. `reason=pace` is the duty cycle. `reason=model-drop`, `model-skip`, or `cpu-budget` means it rested early. A back-off is:
 
 ```
 speedsignd timing backoff=1 reason=model-lag extra_ms=3980 infer_ms=3980 engaged=1
@@ -103,7 +103,7 @@ Source checkpoint (MIT): [cvtechniques/JC-Traffic-Sign-Detection](https://huggin
 After weights are installed and the logger is **On**, **drive manually** (do not engage openpilot). Pass a **clear, unobstructed MUTCD R2-1** (white SPEED LIMIT plate) in daylight — e.g. a roadside **55** or **60**. Moving is the intended path. Parked / Force Offroad is not required to detect.
 
 - SIGN shows the mph **while engaged**. It does not show **WAIT** just because openpilot is controlling. A blank plate on a clear sign is a miss, not a pause (report `swaglog | grep "speedsignd timing"`).
-- Within about one inference (often 4–6 s on device, not 9–12 s) a large opaque **SIGN** plate appears with that mph on the **left** (driver) side of the onroad UI.
+- After two reads agree (the OCR second look is the next frame or two, not the next YOLO), a large opaque **SIGN** plate appears with that mph on the **left** (driver) side of the onroad UI.
 - **Yes** / **No** (“is this accurate?”) sit under the plate on 3X (beside it on comma 4). They are **stubs** right now — they do not change cruise, HUD MAX, or map speed. Later, Yes may confirm the marker (JSONL + optional OSM); No may discard a wrong read.
 - It holds **~45 s** after the last accepted detection (the old **3.0 s** hold blanked between multi-second infers), then hides (Yes/No hide with it).
 - A JSONL row is appended only with a live GNSS fix (same mph near the last write is skipped ~8 s / ~40 m).
@@ -150,9 +150,9 @@ When the logger is **On**, a large opaque **SIGN** plate shows the mph the camer
 | Where (3X) | Left / driver side, below the MAX box. Large plate (200×248). |
 | Where (comma 4) | Left / driver side (top-left), same idea |
 | Yes / No | Shown only with a live mph. 3X: stacked under the plate (full-width, ~112 px tall). comma 4: beside the plate. **No-op stubs** (cloudlog debug only). |
-| Confirm | **2** detections of the same mph within **4.0 s**, conf ≥ **0.40** |
+| Confirm | **2** reads of the same mph. Class and OCR on one frame count as the pair. Otherwise the next frame (or the OCR second look) must agree. JSONL still wants conf ≥ **0.40** inside **4.0 s**. |
 | Hold | **~45 s** after the last accepted detection (old hold was **3.0 s**), then it hides |
-| Detect rate | Default **1 Hz** while engaged and while manual (env `NAP_SPEED_SIGN_HZ`, clamped 0.2–4), including while moving. A slower infer spaces reads one infer apart. SubMaster **20 Hz**. |
+| Detect rate | Default **1 Hz** while engaged and while manual (env `NAP_SPEED_SIGN_HZ`, clamped 0.2–4), including while moving. A long infer idles 3× that infer. SubMaster **20 Hz**. |
 | Engaged plate | The mph, not **WAIT**. YOLO keeps running. |
 | Source | cereal `liveSpeedSignNAP` (not the JSONL file) |
 
@@ -170,7 +170,7 @@ Speed Sign Logger On, onroad, but SIGN stays dark or never shows mph — almost 
 2. Park or turn on Force Offroad. Tap **Install weights** (Wi-Fi). Wait for the runner to finish — do not leave it spinning forever; an error prints on that screen. Or SSH: `python -m scripts.nap.install_speed_sign_weights`.
 3. File should be ~43 MB. `ls -l /data/media/0/nap/speed_sign.onnx`. Settings should flip to **Installed**.
 4. No full reboot required: speedsignd retries ONNX every ~15 s. `swaglog` should show `speedsignd starting … backend=yolo-onnx` or `ONNX loaded after retry backend=yolo-onnx` (also `hz=` / `nice=19`).
-5. Engage or stay manual. Pass a clear, unobstructed MUTCD R2-1. Confirmed mph lights SIGN while **controlling**. `swaglog | grep "speedsignd timing"` should show `engaged=1` and `read_interval_ms` near `infer_ms`. A blank plate with weights Installed means no detection yet (night, glare, tiny sign — see Accuracy limits).
+5. Engage or stay manual. Pass a clear, unobstructed MUTCD R2-1. Two agreeing reads light SIGN while **controlling**. `swaglog | grep "speedsignd timing"` should show `engaged=1`, `threads=1`, `cpu_share` at or under `0.250`, and `read_interval_ms` about 4× `infer_ms`. A blank plate with weights Installed means no detection yet (night, glare, tiny sign — see Accuracy limits).
 
 Do not treat a blank plate as “the detector is running.” Blank + Installed = no confirmed sign. **WAIT** is not the engaged state. Blank + Missing / **NO WT** = install weights.
 
@@ -178,7 +178,7 @@ If you see **TAKE CONTROL IMMEDIATELY** or “Communication Issue Between Proces
 
 ## Accuracy limits (honest)
 
-This is a small CPU detector at **1 Hz** (was 4 Hz) on a 320² letterbox of the **right-biased ROAD crop**, including while **controlling**. It is **not** a modeld head and is **not** used for control. It must not starve `modeld`: little cores 0–3, nice 19, 1 thread, one infer at a time, and a back-off when the CPU is loaded or model/controls report lag. modeld stays FIFO on core 7; controlsd stays on core 4. `swaglog` logs `speedsignd detect paused/running` with `enabled` / `active` / `state` / alive / valid on those edges and every infer `backend=` `peak=` `refine=` `luma=` `chroma=` `prep=` `sess=` `raw=` plus `speedsignd timing read_interval_ms=… infer_ms=… engaged=… backoff=…`. On-car ROAD frames often class a clear **50** as **65**; crop digit OCR (`refine=`) overrides that pair for the HUD.
+This is a small CPU detector at **1 Hz** (was 4 Hz) on one native **320²** upper-right window, including while **controlling**. It is **not** a modeld head and is **not** used for control. It must not starve `modeld`: little core 2, SCHED_IDLE or nice 19, 1 thread, idle at least 3× each infer, and a back-off when `modelV2` drops frames or this process's own CPU share goes over 25%. modeld stays FIFO on core 7; controlsd stays on core 4. `swaglog` logs `speedsignd detect paused/running` with `enabled` / `active` / `state` / alive / valid on those edges and every infer `backend=` `peak=` `refine=` `luma=` `chroma=` `prep=` `sess=` `raw=` plus `speedsignd timing read_interval_ms=… infer_ms=… cpu_share=… threads=… engaged=… backoff=…`. On-car frames often class a clear **50** as **65**; two OCR reads of 50 light 50, and one class-only 65 does not.
 
 **Usually works:** daylight, dry, a standard white R2-1 facing the car, large enough in the ROAD frame (near / mid roadside, not a speck on the horizon). 55 and 60 are in the trained class set.
 

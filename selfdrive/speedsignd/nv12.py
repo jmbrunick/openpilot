@@ -101,30 +101,92 @@ class Nv12DetectCrop:
 
 
 def detect_crop_rect(h: int, w: int) -> tuple[int, int, int, int]:
-  """Same right-biased short-side square as yolo.road_detect_crop_rect."""
+  """Legacy right-biased short-side square. The live path uses native_detect_window."""
   side = min(int(h), int(w))
   x = max(0, int(w) - side)
   y = max(0, (int(h) - side) // 2)
   return x, y, side, side
 
 
-def copy_nv12_detect_crop(buf) -> Nv12DetectCrop | None:
-  """Copy Y+UV for the detect crop only. No full-frame RGB.
+# 3X ROAD: 1928×1208, f = 8.0 mm / 3 µm ≈ 2667 px, principal point (964, 604).
+# A right-shoulder R2-1 ~10 ft right and ~4 ft above the camera projects to
+#   x = 964 + 26670/D, y = 604 - 10668/D.
+#   150 ft → (1142, 533); 60 ft → (1408, 426). That arc fits in one 320² tile
+# centered on ~90 ft (1260, 485): x=1100, y=325. Fed 1:1 into the 320 ONNX.
+# The old 1208² letterbox left the same ~80 ft plate at ~20 px (0/29 drive-bys).
+# Two 640 native tiles scored 24/29 but cost 8× one 320 infer, which does not
+# fit a 25% core budget at a useful rate.
+NATIVE_WINDOW_X = 1100
+NATIVE_WINDOW_Y = 325
+NATIVE_WINDOW_SIDE = 320
 
-  VisionBuf memory is recycled on the next recv — the infer thread needs its
-  own copy. A 1208×1208 crop is ~2.2 MB vs a 1928×1208 RGB888 frame (~7 MB)
-  plus the float32 BT.601 temporaries.
+
+def native_detect_window(h: int, w: int) -> tuple[int, int, int, int]:
+  """One upper-right 320² window. No downscale into the exported ONNX.
+
+  A frame that is already ≤320 on both sides (unit-test tiles, a tight
+  second-look crop) is used whole. Only the 1928×1208 ROAD frame, and
+  other large frames, get the right-shoulder window.
+  """
+  ih, iw = int(h), int(w)
+  if iw == 1928 and ih == 1208:
+    return (NATIVE_WINDOW_X, NATIVE_WINDOW_Y, NATIVE_WINDOW_SIDE, NATIVE_WINDOW_SIDE)
+  if iw <= NATIVE_WINDOW_SIDE and ih <= NATIVE_WINDOW_SIDE:
+    side = max(2, min(iw, ih))
+    return 0, 0, side, side
+  sx = iw / 1928.0
+  sy = ih / 1208.0
+  side = max(2, int(round(NATIVE_WINDOW_SIDE * min(sx, sy))))
+  x = int(round(NATIVE_WINDOW_X * sx))
+  y = int(round(NATIVE_WINDOW_Y * sy))
+  if x + side > iw:
+    x = max(0, iw - side)
+  if y + side > ih:
+    y = max(0, ih - side)
+  side = max(2, min(side, iw - x, ih - y))
+  return x, y, side, side
+
+
+def upscale_gray(img: np.ndarray, min_side: int = 96) -> np.ndarray:
+  """Upscale a tight plate crop so digit OCR has something to match."""
+  if img.ndim != 2 or img.shape[0] < 2 or img.shape[1] < 2:
+    return img
+  side = max(int(img.shape[0]), int(img.shape[1]))
+  if side >= min_side:
+    return img
+  scale = float(min_side) / float(side)
+  nh = max(1, int(round(img.shape[0] * scale)))
+  nw = max(1, int(round(img.shape[1] * scale)))
+  return _resize_gray(img, nh, nw)
+
+
+def copy_nv12_rect(buf, rect: tuple[int, int, int, int]) -> Nv12DetectCrop | None:
+  """Copy one Y+UV rectangle. VisionBuf memory is recycled on the next recv."""
+  y_full = y_plane_from_nv12(buf, copy=False)
+  if y_full is None:
+    return None
+  frame_h, frame_w = int(y_full.shape[0]), int(y_full.shape[1])
+  cx, cy, cw, ch = (int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3]))
+  cx = max(0, min(cx, frame_w - 2))
+  cy = max(0, min(cy, frame_h - 2))
+  cw = max(2, min(cw, frame_w - cx))
+  ch = max(2, min(ch, frame_h - cy))
+  y = np.ascontiguousarray(y_full[cy:cy + ch, cx:cx + cw]).copy()
+  uv = _copy_uv_crop(buf, frame_w, frame_h, cx, cy, cw, ch)
+  return Nv12DetectCrop(y=y, uv=uv, frame_w=frame_w, frame_h=frame_h, crop=(cx, cy, cw, ch))
+
+
+def copy_nv12_detect_crop(buf) -> Nv12DetectCrop | None:
+  """Copy the native upper-right window only. No full-frame RGB.
+
+  A 320² window is ~150 KB of Y versus a 1208² crop (~1.5 MB) or a full
+  1928×1208 RGB frame (~7 MB).
   """
   y_full = y_plane_from_nv12(buf, copy=False)
   if y_full is None:
     return None
   frame_h, frame_w = int(y_full.shape[0]), int(y_full.shape[1])
-  cx, cy, cw, ch = detect_crop_rect(frame_h, frame_w)
-  if cw < 2 or ch < 2:
-    return None
-  y = np.ascontiguousarray(y_full[cy:cy + ch, cx:cx + cw]).copy()
-  uv = _copy_uv_crop(buf, frame_w, frame_h, cx, cy, cw, ch)
-  return Nv12DetectCrop(y=y, uv=uv, frame_w=frame_w, frame_h=frame_h, crop=(cx, cy, cw, ch))
+  return copy_nv12_rect(buf, native_detect_window(frame_h, frame_w))
 
 
 def _copy_uv_crop(buf, frame_w: int, frame_h: int, cx: int, cy: int, cw: int, ch: int) -> np.ndarray | None:

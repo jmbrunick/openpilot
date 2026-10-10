@@ -4,10 +4,11 @@ Display-only. Does not write sqlite or change cruise.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 from openpilot.selfdrive.speedsignd.detect_types import MUTCD_MPH, SpeedSign
 from openpilot.selfdrive.speedsignd.weights_manifest import YOLO_MIN_CONF
+from openpilot.selfdrive.speedsignd.yolo import REFINE_OVERRIDE_CONF
 
 # Hold a recent *accepted* mph across 1 Hz skip-on-overrun. Justin's parked
 # 50 went blank after 10 s while tinygrad infer stayed 3–5 s / intermittent,
@@ -15,13 +16,9 @@ from openpilot.selfdrive.speedsignd.weights_manifest import YOLO_MIN_CONF
 # speedLimit* box (even refine fail / junk class) keeps SIGN lit without
 # inventing an mph.
 HUD_HOLD_S = 45.0
-# YOLO 40/60/65/70 is junk on a close 50 (SIGN 70 photo, then 40). Never
-# light those from YOLO alone — HUD mph must come from refine, and a weak
-# refine of those values is dropped (need ≥ 0.60 to first-light).
-HUD_REFINE_REQUIRED_MPH = frozenset({40, 60, 65, 70})
-HUD_OVERTURN_JUNK_MPH = HUD_REFINE_REQUIRED_MPH
-HUD_OVERTURN_65_MIN_CONF = 0.60
-HUD_OVERTURN_65_MARGIN = 0.10
+# Two reads of the same mph. Replaces the {40, 60, 65, 70} junk gate.
+AGREE_READS = 2
+AGREE_WINDOW_S = 2.0
 HUD_LABEL = "SIGN"
 # Logger On + ONNX missing: show this instead of a blank plate or a fake mph.
 HUD_MISSING_WEIGHTS_TEXT = "NO WT"
@@ -224,31 +221,13 @@ def should_replace_held_mph(
   held_mph: int, held_conf: float, new_mph: int, new_conf: float,
   refine_mph: int | None = None,
 ) -> bool:
-  """True if a new accepted mph may replace a still-valid hold.
-
-  Same mph refreshes. A different mph must be refine-backed. Junk
-  40/60/65/70 also needs refine ≥ 0.60 and ≥ held + 0.10. Refine-backed
-  50/55/… may leave a wrong junk hold immediately (Justin's 65→50).
-  YOLO-only swaps never replace a live hold.
-  """
+  """Same mph refreshes. A different agreed mph replaces when it is at least as sure."""
+  del refine_mph
   if int(held_mph) <= 0:
     return True
   if int(new_mph) == int(held_mph):
     return True
-  if refine_mph is None:
-    refine_mph = new_mph
-  try:
-    refine_i = int(refine_mph)
-  except (TypeError, ValueError):
-    return False
-  if refine_i != int(new_mph):
-    return False
-  if int(new_mph) in HUD_OVERTURN_JUNK_MPH:
-    return (
-      float(new_conf) >= HUD_OVERTURN_65_MIN_CONF
-      and float(new_conf) >= float(held_conf) + HUD_OVERTURN_65_MARGIN
-    )
-  return True
+  return float(new_conf) >= float(held_conf)
 
 
 def is_speed_limit_sighting(sign: SpeedSign | None) -> bool:
@@ -282,37 +261,57 @@ def is_speed_limit_sighting(sign: SpeedSign | None) -> bool:
     return False
 
 
-def accepted_hud_sign(sign: SpeedSign | None) -> SpeedSign | None:
-  """HUD-safe sign, or None (blank / hold last-good). Does not invent mph.
+def frame_reads(sign: SpeedSign | None) -> tuple[list[tuple[int, float]], tuple[int, float] | None]:
+  """Votes from one detect.
 
-  Classes 40/60/65/70 never light from YOLO alone — HUD mph is refine_mph.
-  A weak refine of those junk values (< 0.60) is dropped so SIGN 70 cannot
-  first-light on a parked 50. Other MUTCD classes may light from YOLO.
+  Class and OCR that name the same mph are an immediate pair. When they
+  disagree, only the OCR vote is kept — the class head calls a close 50 a
+  65, and must not accumulate across frames. OCR-only or class-only is one
+  pending read; a second frame of the same mph agrees.
   """
   if sign is None:
-    return None
-  try:
-    posted = int(sign.mph)
-  except (TypeError, ValueError):
-    return None
-  if posted <= 0:
-    return None
+    return [], None
+  class_mph = getattr(sign, "class_mph", None)
+  class_conf = float(getattr(sign, "class_conf", 0.0) or 0.0)
+  if class_mph is None:
+    try:
+      class_mph = int(sign.mph)
+      class_conf = float(sign.conf)
+    except (TypeError, ValueError):
+      class_mph = None
   refine = getattr(sign, "refine_mph", None)
   refine_conf = float(getattr(sign, "refine_conf", 0.0) or 0.0)
-  if refine is not None:
-    try:
-      refine_i = int(refine)
-    except (TypeError, ValueError):
-      refine_i = None
-    if refine_i is not None and refine_i in MUTCD_MPH:
-      if refine_i in HUD_REFINE_REQUIRED_MPH and refine_conf < HUD_OVERTURN_65_MIN_CONF:
-        return None
-      if refine_i != posted:
-        return replace(sign, mph=refine_i, conf=float(refine_conf or sign.conf))
-      return sign
-  if posted in HUD_REFINE_REQUIRED_MPH or _class_mph(sign) in HUD_REFINE_REQUIRED_MPH:
+  class_ok = False
+  try:
+    class_i = int(class_mph) if class_mph is not None else None
+    class_ok = class_i in MUTCD_MPH and class_conf >= YOLO_MIN_CONF
+  except (TypeError, ValueError):
+    class_i = None
+  refine_ok = False
+  try:
+    refine_i = int(refine) if refine is not None else None
+    refine_ok = refine_i in MUTCD_MPH and refine_conf >= REFINE_OVERRIDE_CONF
+  except (TypeError, ValueError):
+    refine_i = None
+  if class_ok and refine_ok and class_i == refine_i:
+    return [], (int(class_i), max(class_conf, refine_conf))
+  if refine_ok:
+    return [(int(refine_i), refine_conf)], None
+  if class_ok:
+    return [(int(class_i), class_conf)], None
+  return [], None
+
+
+def accepted_hud_sign(sign: SpeedSign | None) -> SpeedSign | None:
+  """Sign whose class and OCR already agree, else None.
+
+  One read never lights the HUD. 40/60/65/70 are not special-cased.
+  """
+  _pending, pair = frame_reads(sign)
+  if pair is None:
     return None
-  return sign
+  mph, conf = pair
+  return replace(sign, mph=int(mph), conf=float(conf))
 
 
 @dataclass
@@ -321,30 +320,36 @@ class LiveSignHold:
   mph: int = 0
   conf: float = 0.0
   until: float = 0.0
+  _obs: list = field(default_factory=list)
 
   def update(self, signs, now: float) -> tuple[bool, int, float]:
-    accepted: list[SpeedSign] = []
+    fresh = False
     for s in signs or []:
-      a = accepted_hud_sign(s)
-      if a is not None:
-        accepted.append(a)
+      pending, pair = frame_reads(s)
+      if pair is not None:
+        fresh = True
+        self._obs.append((now, int(pair[0]), float(pair[1])))
+        self._obs.append((now, int(pair[0]), float(pair[1])))
+      for mph, conf in pending:
+        fresh = True
+        self._obs.append((now, int(mph), float(conf)))
+    self._obs = [o for o in self._obs if now - o[0] <= AGREE_WINDOW_S]
+    buckets: dict[int, list[float]] = {}
+    for _t, mph, conf in self._obs:
+      buckets.setdefault(int(mph), []).append(float(conf))
+    winners = [(mph, max(cs)) for mph, cs in buckets.items() if len(cs) >= AGREE_READS]
     holding = now < self.until and self.mph > 0
-    if accepted:
-      best = max(accepted, key=lambda s: s.conf)
-      new_mph = int(best.mph)
-      new_conf = float(best.conf)
-      refine = getattr(best, "refine_mph", None)
-      if (not holding) or should_replace_held_mph(
-        self.mph, self.conf, new_mph, new_conf, refine_mph=refine,
-      ):
-        self.mph = new_mph
-        self.conf = new_conf
+    # Empty publishes must not re-arm the hold from votes still inside the
+    # 2 s agree window. Only a new read this call may set or refresh mph.
+    if winners and fresh:
+      new_mph, new_conf = max(winners, key=lambda item: item[1])
+      if (not holding) or should_replace_held_mph(self.mph, self.conf, new_mph, new_conf):
+        self.mph = int(new_mph)
+        self.conf = float(new_conf)
         self.until = now + self.hold_s
       else:
-        # Saw a plate but rejected a junk 60/65/70 — keep mph, extend hold.
         self.until = now + self.hold_s
     elif holding and any(is_speed_limit_sighting(s) for s in (signs or [])):
-      # Refine failed / class junk, but a speedLimit* box is still in view.
       self.until = now + self.hold_s
     live = now < self.until and self.mph > 0
     if not live:
