@@ -119,12 +119,12 @@ DRIVER_LAT_HANDOFF_DESCRIPTION = (
   + "Off = stock lat."
 )
 LOW_VIS_BACKOFF_DESCRIPTION = (
-  "Default On. When the camera is blinded or the model loses the lane "
-  + "(a side below about 0.3 and the path unsure at 3 seconds), lateral "
-  + "eases toward your steering and shows Low visibility. It comes back "
-  + "smoothly when the road is clear. Longitudinal stays on. A repeated "
-  + "one-sided fight also stays yielded until the model agrees with the "
-  + "wheel. Off = stock lateral, no Low visibility alert."
+  "Default On. Shows Low visibility when the model is unsure of the path, "
+  + "or on sun glare (sun low ahead, or a bright drop while the path is also "
+  + "unsure). Steering keeps following the path: a gentle limit, reduced only "
+  + "as far as the model is unsure, never off. Over 45 s it alerts louder. "
+  + "Longitudinal stays on. A repeated one-sided fight also stays yielded until "
+  + "the model agrees with the wheel. Off = stock lateral, no Low visibility alert."
 )
 OBSTACLE_CHIME_DESCRIPTION = (
   "Default On. A short chime when the radar and the camera agree "

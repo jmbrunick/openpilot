@@ -1238,6 +1238,18 @@ if _low_visibility is not None:
       Priority.MID, VisualAlert.steerRequired, AudibleAlert.none, 0.5),
   }
 
+# Low visibility latched past 45 s: never a silent degraded mode. Louder,
+# repeating prompt and a distinct text. Still a warning, not a disable.
+_low_visibility_prolonged = getattr(EventName, "lowVisibilityProlonged", None)
+if _low_visibility_prolonged is not None:
+  EVENTS[_low_visibility_prolonged] = {
+    ET.WARNING: Alert(
+      "Steering still reduced",
+      "Low visibility over 45 s - steer now",
+      AlertStatus.userPrompt, AlertSize.mid,
+      Priority.HIGH, VisualAlert.steerRequired, AudibleAlert.promptRepeat, 0.5),
+  }
+
 
 def obstacle_chime_alert(CP, CS, sm, metric, soft_disable_time, personality):
   """Small text only. The wav is selected in soundd from this alert type.

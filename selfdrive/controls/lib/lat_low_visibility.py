@@ -31,8 +31,21 @@ Lane lines are not required. A single frame cannot flip the latch.
 
 Enter (camera): integration lines fall below 0.45× a recent bright
 baseline (0.65× when the sun is within 12° of the horizon and 22° of
-the heading), held 0.30 s. Exit when lines are back above 0.70× for 1 s.
-The sun-glare check does not use the turn gate.
+the heading), held 0.30 s, and ONLY when the sun is low and ahead or
+the model path is also unsure (lateral std at ~3 s over 1.2 m). A plain
+shade-to-sun exposure change on a clear day never counts. Exit when
+lines are back above 0.70× for 1 s, or when no ratio can be computed
+(baseline under 280 lines, i.e. a normal bright daylight exposure) for
+1 s. The sun-glare check does not use the turn gate.
+
+Backstop: a latch held up only by the camera releases once the model
+path has been confident and stable for 3 s, and the camera cannot
+re-latch until the exposure has recovered once.
+
+Authority: never zero. A camera-only latch with a confident path keeps
+following the path with a gentle cap (0.85). Model uncertainty lowers
+authority in proportion to the path std (1.0 at 1.2 m down to a 0.30
+floor at 4 m). Lateral never holds a heading or a fixed direction.
 """
 
 from __future__ import annotations
@@ -84,6 +97,17 @@ SUN_AHEAD_DEG = 22.0
 # --- authority slew ---------------------------------------------------------
 AUTHORITY_DOWN_PER_S = 1.0     # full fade in about 1 s
 AUTHORITY_UP_PER_S = 0.80      # recovery a little slower than the drop
+AUTHORITY_FLOOR = 0.30         # never zero: lateral keeps following the path
+CAMERA_ONLY_AUTHORITY = 0.85   # gentle cap while only the camera is latched
+AUTHORITY_FLOOR_STD_M = 4.0    # path std where authority reaches the floor
+
+# Glare corroboration: the model path must be at least this unsure when the
+# sun is not low and ahead. Same number as the confident-path exit.
+CAMERA_MODEL_UNSURE_M = PATH_Y_STD_EXIT_M
+# Camera-only backstop: confident, stable path this long releases the latch.
+CAMERA_BACKSTOP_S = 3.0
+# Any lateral degrade latched this long raises the louder prolonged alert.
+PROLONGED_S = 45.0
 
 PARAM_LOW_VIS_BACKOFF = "NAPLowVisBackoff"
 
@@ -353,8 +377,21 @@ class _Exposure:
     self.blind = False
     self._enter_s = 0.0
     self._exit_s = 0.0
+    self.suppressed = False
+    self.recovered = True
 
-  def update(self, integ_lines, sun_ahead: bool, dt: float) -> bool:
+  def backstop_release(self):
+    """Drop the latch and refuse to re-latch until exposure recovers once."""
+    self.clear_latch()
+    self.suppressed = True
+    self.recovered = False
+
+  def update(self, integ_lines, sun_ahead: bool, dt: float, corroborated: bool | None = None) -> bool:
+    """``corroborated``: the sun is low and ahead or the model path is unsure.
+
+    None keeps the old meaning (sun_ahead only). A drop that is not
+    corroborated never enters. No computable ratio counts as clear.
+    """
     self._t += dt
     try:
       integ = float(integ_lines) if integ_lines is not None else None
@@ -372,8 +409,17 @@ class _Exposure:
     if baseline is not None and current is not None and baseline >= EXPOSURE_MIN_BASELINE:
       ratio = current / baseline
     enter_ratio = EXPOSURE_SUN_RATIO if sun_ahead else EXPOSURE_COLLAPSE_RATIO
-    raw = ratio is not None and ratio < enter_ratio
-    clear = ratio is not None and ratio > EXPOSURE_RECOVER_RATIO
+    if corroborated is None:
+      corroborated = bool(sun_ahead)
+    raw = ratio is not None and ratio < enter_ratio and bool(corroborated)
+    # Baseline under 280 (or no samples): a normal bright exposure, not blind.
+    clear = ratio is None or ratio > EXPOSURE_RECOVER_RATIO
+    if clear:
+      self.recovered = True
+    if self.suppressed and not self.recovered:
+      raw = False
+    if self.suppressed and self.recovered:
+      self.suppressed = False
     if raw:
       self._enter_s += dt
       self._exit_s = 0.0
@@ -405,6 +451,24 @@ class _Exposure:
     self.blind = False
     self._enter_s = 0.0
     self._exit_s = 0.0
+    self.suppressed = False
+    self.recovered = True
+
+
+def authority_target(active: bool, model_poor: bool, camera: bool, y_std) -> float:
+  """Never zero. Degrade only in proportion to genuine path uncertainty."""
+  if not active:
+    return 1.0
+  target = 1.0
+  if camera:
+    target = CAMERA_ONLY_AUTHORITY
+  if y_std is not None and math.isfinite(y_std) and y_std > PATH_Y_STD_EXIT_M:
+    span = AUTHORITY_FLOOR_STD_M - PATH_Y_STD_EXIT_M
+    frac = min(1.0, (y_std - PATH_Y_STD_EXIT_M) / span)
+    target = min(target, AUTHORITY_FLOOR + (1.0 - frac) * (1.0 - AUTHORITY_FLOOR))
+  elif model_poor:
+    target = min(target, CAMERA_ONLY_AUTHORITY)
+  return max(AUTHORITY_FLOOR, target)
 
 
 class LowVisibility:
@@ -422,6 +486,8 @@ class LowVisibility:
     self._k_t = 0.0
     self._k_hist: deque[tuple[float, float]] = deque()
     self._exposure = _Exposure()
+    self._cam_confident_s = 0.0
+    self._active_s = 0.0
 
   def reset_latch(self):
     self.active = False
@@ -433,6 +499,13 @@ class LowVisibility:
     self._k_hist.clear()
     self.authority = 1.0
     self._exposure.clear_latch()
+    self._cam_confident_s = 0.0
+    self._active_s = 0.0
+
+  @property
+  def prolonged(self) -> bool:
+    """Lateral degrade latched longer than PROLONGED_S."""
+    return self.active and self._active_s + 1e-9 >= PROLONGED_S
 
   def _curvature_unstable(self, model_k, dt: float) -> bool:
     """Desired curvature peak-to-peak inside the recent window is a jump."""
@@ -508,18 +581,33 @@ class LowVisibility:
       self._poor_s = 0.0
       self._clear_s = 0.0
 
-    camera = self._exposure.update(integ_lines, bool(sun_ahead), dt)
+    model_unsure = y_std is not None and math.isfinite(y_std) and y_std > CAMERA_MODEL_UNSURE_M
+    camera = self._exposure.update(integ_lines, bool(sun_ahead), dt,
+                                   corroborated=bool(sun_ahead) or model_unsure)
+    # Backstop: camera-only latch with a confident, stable path.
+    confident = model_is_clear(y_std, not unstable)
+    if camera and not self._model and confident:
+      self._cam_confident_s += dt
+      if self._cam_confident_s + 1e-12 >= CAMERA_BACKSTOP_S:
+        self._exposure.backstop_release()
+        camera = False
+        self._cam_confident_s = 0.0
+    else:
+      self._cam_confident_s = 0.0
     if not enabled:
       self._model = False
       self._poor_s = 0.0
       self._clear_s = 0.0
       self._exposure.clear_latch()
+      self._cam_confident_s = 0.0
+      self._active_s = 0.0
       self.active = False
       self.authority = 1.0
       return LowVisibilityOutput(1.0, False, False, False, False)
 
     self.active = bool(self._model or camera)
-    target = 0.0 if self.active else 1.0
+    self._active_s = self._active_s + dt if self.active else 0.0
+    target = authority_target(self.active, self._model, camera, y_std)
     if self.authority > target:
       self.authority = max(target, self.authority - AUTHORITY_DOWN_PER_S * dt)
     elif self.authority < target:
