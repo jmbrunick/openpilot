@@ -50,6 +50,18 @@ def test_sanitize_branch_matches_hub_rules():
     sanitize_branch("branch;reboot")
 
 
+def test_branch_names_containing_engage_are_accepted():
+  name = "cursor/speedsignd-engaged-read-spacing-3353"
+  assert sanitize_branch(name) == name
+  params = FakeParams()
+  snap = handle_software({"action": "set_branch", "branch": name}, params, pinger=lambda *_a: None, running=True)
+  assert snap["target_branch"] == name
+  # engaging is still refused as an action
+  for payload in ({"action": "engage"}, {"action": "disengage"}):
+    with pytest.raises(SoftwareError, match="not allowed"):
+      handle_software(payload, params, pinger=lambda *_a: None)
+
+
 def test_set_branch_writes_target_and_pings_updated():
   params = FakeParams(values={"GitBranch": "nap-dev", "UpdaterTargetBranch": "nap-dev"})
   pings = []
@@ -71,22 +83,61 @@ def test_fetch_pings_without_writing_branch():
   assert pings == ["USR1"]
 
 
-def test_set_offline_writes_disable_updates():
+def test_set_offline_action_is_gone():
   params = FakeParams()
-  snap = handle_software(
-    {"action": "set_offline", "offline": True},
-    params,
-    pinger=lambda *_a: None,
+  with pytest.raises(SoftwareError, match="not allowed"):
+    handle_software({"action": "set_offline", "offline": True}, params, pinger=lambda *_a: None)
+  assert params.writes == []
+
+
+def test_update_flow_steps_check_download_install():
+  base = {"UpdaterTargetBranch": "nap-dev"}
+  snap = read_software(FakeParams(values=dict(base)), running=True)
+  assert (snap["step"], snap["step_label"]) == ("check", "Check")
+  assert snap["status_text"].startswith("up to date")
+
+  snap = read_software(FakeParams(values=dict(base, UpdaterState="checking...")), running=True)
+  assert (snap["step"], snap["step_label"]) == ("checking", "Checking…")
+
+  snap = read_software(FakeParams(values=dict(base), bools={"UpdaterFetchAvailable": True}), running=True)
+  assert (snap["step"], snap["step_label"]) == ("download", "Download")
+
+  for state in ("downloading...", "finalizing update..."):
+    snap = read_software(FakeParams(values=dict(base, UpdaterState=state), bools={"UpdaterFetchAvailable": True}), running=True)
+    assert (snap["step"], snap["step_label"]) == ("downloading", "Downloading…")
+
+  snap = read_software(
+    FakeParams(values=dict(base, UpdaterNewDescription="0.10.1 / nap-dev / abc1234 / 2026-10-09"),
+               bools={"UpdateAvailable": True, "UpdaterFetchAvailable": False}),
+    running=True,
   )
-  assert ("DisableUpdates", True) in params.writes
-  assert snap["disable_updates"] is True
-  assert snap["offline"] is True
-  snap = handle_software(
-    {"action": "set_offline", "offline": False},
-    params,
-    pinger=lambda *_a: None,
-  )
-  assert snap["offline"] is False
+  assert snap["step"] == "install"
+  assert snap["step_label"] == "Install & reboot with 0.10.1 / nap-dev"
+
+  # a failed check offers Check again, not Download
+  snap = read_software(FakeParams(values=dict(base, UpdateFailedCount=1), bools={"UpdaterFetchAvailable": True}), running=True)
+  assert snap["step"] == "check"
+
+
+def test_page_has_check_and_download_buttons_and_no_go_offline():
+  from pathlib import Path
+  html = (Path(__file__).resolve().parents[1] / "dashboard.html").read_text()
+  assert "Go offline" not in html and "set_offline" not in html and "Pause updates" not in html
+  assert html.count('actions.appendChild(swButton(') == 3
+  assert '"Check"' in html and '"Download"' in html
+  # Install & reboot is only added when a downloaded update is ready
+  assert "if (data.update_available && !swPending && !data.busy)" in html
+
+
+def test_download_greyed_until_check_finds_update():
+  base = {"UpdaterTargetBranch": "nap-dev"}
+  snap = read_software(FakeParams(values=dict(base)), running=True)
+  assert snap["can_check"] is True and snap["can_download"] is False
+  snap = read_software(FakeParams(values=dict(base), bools={"UpdaterFetchAvailable": True}), running=True)
+  assert snap["can_check"] is True and snap["can_download"] is True
+  # once downloaded, Install takes over and Download greys out again
+  snap = read_software(FakeParams(values=dict(base), bools={"UpdaterFetchAvailable": True, "UpdateAvailable": True}), running=True)
+  assert snap["can_download"] is False and snap["can_install"] is True
 
 
 def test_download_sends_sighup_like_comma_software_panel():
@@ -213,7 +264,7 @@ def test_read_software_lists_available_branches():
     },
     bools={"UpdaterFetchAvailable": True, "DisableUpdates": True},
   )
-  snap = read_software(params)
+  snap = read_software(params, running=True)
   assert snap["git_branch"] == "nap-dev"
   assert snap["available_branches"] == ["nap-release", "nap-dev", "cursor/nap-dash-dev-e946"]
   assert snap["fetch_available"] is True

@@ -15,7 +15,7 @@ BLOCKED_ACTIONS = {
     "reset_longitudinal",
     "force_onroad",
 }
-SOFTWARE_ACTIONS = {"set_branch", "fetch", "download", "set_offline", "install"}
+SOFTWARE_ACTIONS = {"set_branch", "fetch", "download", "install"}
 UPDATED_PATTERNS = (
     "openpilot.system.updated.updated",
     "system.updated.updated",
@@ -54,8 +54,10 @@ def sanitize_branch(raw: str | None) -> str:
         raise SoftwareError("invalid branch")
     if ".." in branch or branch.startswith(("/", "-")):
         raise SoftwareError("invalid branch")
+    # Exact action names only: a branch name cannot engage anything, so
+    # names like cursor/speedsignd-engaged-read-spacing-3353 are fine.
     key = branch.lower().replace("-", "_")
-    if key in BLOCKED_ACTIONS or "engage" in key:
+    if key in BLOCKED_ACTIONS:
         raise SoftwareError("action not allowed")
     if not BRANCH_OK.match(branch):
         raise SoftwareError("invalid branch")
@@ -177,6 +179,31 @@ def install_blocked(snap: dict) -> str:
     return ""
 
 
+# Where the update flow is: Check -> Download -> Install & reboot.
+STEP_LABEL = {
+    "check": "Check",
+    "checking": "Checking…",
+    "download": "Download",
+    "downloading": "Downloading…",
+}
+
+
+def next_step(snap: dict) -> str:
+    """Which step of the update flow the Software tab is on."""
+    state = snap["updater_state"]
+    if state == "checking...":
+        return "checking"
+    if state != "idle":
+        return "downloading"
+    if snap["update_available"]:
+        return "install"
+    if snap["update_failed_count"] > 0:
+        return "check"
+    if snap["fetch_available"]:
+        return "download"
+    return "check"
+
+
 def software_status(snap: dict) -> dict:
     """Status line plus Check/Download availability, mirroring the comma Software panel."""
     state = snap["updater_state"]
@@ -204,16 +231,20 @@ def software_status(snap: dict) -> dict:
     if not busy:
         text += ", last checked " + snap["last_checked"]
     action = "download" if snap["fetch_available"] and not snap["update_available"] else "check"
+    step = next_step(snap)
     return {
         "status_text": text,
         "busy": busy,
         "blocked_reason": blocked,
         "next_action": action,
         "can_check": not busy and not blocked,
-        "can_download": not busy and not blocked,
+        # Download is offered only after a check found something new to fetch.
+        "can_download": not busy and not blocked and snap["fetch_available"] and not snap["update_available"],
         "can_install": bool(snap["update_available"]) and not busy and not install_blocked(snap),
         "install_blocked_reason": install_blocked(snap),
         "install_label": install_label(snap),
+        "step": step,
+        "step_label": STEP_LABEL.get(step) or install_label(snap),
     }
 
 
@@ -311,12 +342,6 @@ def handle_software(payload: dict, params, pinger=ping_updated, running=None) ->
         _put_bool(params, "DoReboot", True)
         snap["rebooting"] = True
         return snap
-    elif action == "set_offline":
-        raw = payload.get("offline")
-        if raw is None:
-            raw = payload.get("value")
-        offline = True if raw is None else _as_bool(raw)
-        _put_bool(params, "DisableUpdates", offline)
     else:
         # Same signals as the comma Software panel: SIGUSR1 checks, SIGHUP downloads.
         if _flag(params, "DisableUpdates"):
