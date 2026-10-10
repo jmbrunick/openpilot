@@ -15,7 +15,7 @@ BLOCKED_ACTIONS = {
     "reset_longitudinal",
     "force_onroad",
 }
-SOFTWARE_ACTIONS = {"set_branch", "fetch", "download", "set_offline", "install"}
+SOFTWARE_ACTIONS = {"set_branch", "fetch", "download", "install"}
 UPDATED_PATTERNS = (
     "openpilot.system.updated.updated",
     "system.updated.updated",
@@ -177,6 +177,31 @@ def install_blocked(snap: dict) -> str:
     return ""
 
 
+# One button walks the update flow: Check -> Download -> Install & reboot.
+STEP_LABEL = {
+    "check": "Check",
+    "checking": "Checking…",
+    "download": "Download",
+    "downloading": "Downloading…",
+}
+
+
+def next_step(snap: dict) -> str:
+    """Which single action the Software tab button offers right now."""
+    state = snap["updater_state"]
+    if state == "checking...":
+        return "checking"
+    if state != "idle":
+        return "downloading"
+    if snap["update_available"]:
+        return "install"
+    if snap["update_failed_count"] > 0:
+        return "check"
+    if snap["fetch_available"]:
+        return "download"
+    return "check"
+
+
 def software_status(snap: dict) -> dict:
     """Status line plus Check/Download availability, mirroring the comma Software panel."""
     state = snap["updater_state"]
@@ -204,6 +229,7 @@ def software_status(snap: dict) -> dict:
     if not busy:
         text += ", last checked " + snap["last_checked"]
     action = "download" if snap["fetch_available"] and not snap["update_available"] else "check"
+    step = next_step(snap)
     return {
         "status_text": text,
         "busy": busy,
@@ -214,6 +240,8 @@ def software_status(snap: dict) -> dict:
         "can_install": bool(snap["update_available"]) and not busy and not install_blocked(snap),
         "install_blocked_reason": install_blocked(snap),
         "install_label": install_label(snap),
+        "step": step,
+        "step_label": STEP_LABEL.get(step) or install_label(snap),
     }
 
 
@@ -311,12 +339,6 @@ def handle_software(payload: dict, params, pinger=ping_updated, running=None) ->
         _put_bool(params, "DoReboot", True)
         snap["rebooting"] = True
         return snap
-    elif action == "set_offline":
-        raw = payload.get("offline")
-        if raw is None:
-            raw = payload.get("value")
-        offline = True if raw is None else _as_bool(raw)
-        _put_bool(params, "DisableUpdates", offline)
     else:
         # Same signals as the comma Software panel: SIGUSR1 checks, SIGHUP downloads.
         if _flag(params, "DisableUpdates"):
