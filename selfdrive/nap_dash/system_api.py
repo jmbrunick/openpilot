@@ -54,8 +54,10 @@ def sanitize_branch(raw: str | None) -> str:
         raise SoftwareError("invalid branch")
     if ".." in branch or branch.startswith(("/", "-")):
         raise SoftwareError("invalid branch")
+    # Exact action names only: a branch name cannot engage anything, so
+    # names like cursor/speedsignd-engaged-read-spacing-3353 are fine.
     key = branch.lower().replace("-", "_")
-    if key in BLOCKED_ACTIONS or "engage" in key:
+    if key in BLOCKED_ACTIONS:
         raise SoftwareError("action not allowed")
     if not BRANCH_OK.match(branch):
         raise SoftwareError("invalid branch")
