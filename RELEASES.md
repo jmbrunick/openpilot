@@ -1,3 +1,13 @@
+NAP curve follow retune (2026-10-10)
+========================
+Longitudinal only. NAPCurveFollow stays **1 (shadow)** by default: nothing changes on the road unless it is set to 2. MAX stays a hard ceiling (curve follow never writes MAX), and CurveMaxHold is unchanged in shadow.
+* **Own cornering table**, a little under how Justin corners. It was fitted to 53 curves he drove Oct 4–10: 1.45 / 1.55 / 1.85 / 2.05 / 2.20 m/s² at 8 / 13 / 18 / 22 / 27 m/s. The old table (2.4 in town → 1.75 at highway speed) had the opposite shape. CurveMaxHold and the old preview keep the old table.
+* **Decel:** 1.2 m/s² @10 m/s → 0.55 @25 m/s. An urgent allowance reaches 1.5 when the path demands more than 0.8. It is jerk limited (≤ 2 m/s³ while braking), so it is never a wall.
+* **Finish:** slowing still finishes 1 s before the tightest point; Justin is still easing at the apex. The code comment is fixed.
+* **Re-accel:** after a bend that slowed the car, +a is held to 0.5 m/s² for 2 s, then opens over 1 s. Relief is 0.5 (was 0.6).
+* **Roundabouts:** unchanged. The map funnel (#290 yield, 18 mph ring) owns entry, and curve follow fades out while it is live. The model shows a ring only ~2–3 s ahead, too late for a gentle entry on its own.
+* **Replay tests** come from Justin's logged paths: sweepers, town bends, the Oct 10 5:40 PM late corner, lane changes, a straight and a roundabout.
+
 NAP gap lock (2026-10-05)
 ========================
 * Pre-AP, default Off (`NAPGapLock`). Hold the engage stalk toward you for 2 seconds to keep the current radar gap (8–80 m) instead of the time gap. Long can be on, paused, or not yet taken; a finished hold resumes it. Same follow law, a custom distance. The 3X shows the lock while it is on. A tip, cancel, brake, or One-Pedal pause returns to Follow Distance. Another 2 second hold stores a new distance. No panda flash.

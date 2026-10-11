@@ -4,7 +4,8 @@ A human does not pick a corner speed and hold it. He eases off a little as a
 bend comes into view, keeps adjusting while it holds or tightens, and comes
 back on the gas as the road opens. This module is that, in the same style as
 the lead-follow law: every cycle the road ahead is a speed envelope
-v_env(s) (the unchanged, conservative lateral-accel table), and the most
+v_env(s) (curve follow's own lateral-accel table, set a little under how
+Justin corners; see CF_LAT_TARGET_MS2), and the most
 limiting point is a virtual lead that is stationary in speed. The kinematic
 required accel to meet it is
 
@@ -40,15 +41,11 @@ from __future__ import annotations
 import json
 import math
 
-from openpilot.selfdrive.controls.lib.curve_max_hold import curve_speed_for_curvature
 from openpilot.selfdrive.controls.lib.curve_preview import (
-  PREVIEW_DECEL_BP_MS,
   PREVIEW_FREE_A_MS2,
-  PREVIEW_JERK_MS3,
   PREVIEW_MIN_ROOM_M,
   PREVIEW_MIN_ROOM_S,
   PREVIEW_MIN_V_MS,
-  preview_decel_limit_ms2,
 )
 from openpilot.selfdrive.controls.lib.unified_lead import _smooth01, _softplus, speed_ceiling_accel
 
@@ -61,11 +58,38 @@ DEFAULT_MODE = MODE_SHADOW
 FREE_A_MS2 = PREVIEW_FREE_A_MS2
 MIN_V_MS = PREVIEW_MIN_V_MS
 
+# Curve follow's own cornering table (lateral accel at the tightest point vs
+# speed). CurveMaxHold and the old preview keep curve_max_hold's table.
+# Fitted (model-path curvature) to 53 curves Justin drove himself, Oct 4-10
+# 2026: the median target is ~1.5 mph under his apex speed on curves where
+# the bend set his speed (apex lateral accel >= 1.3), a little slower than
+# him in town and on highway sweepers alike. His own cornering at one speed
+# spans ~2x (1.3 to 3.3 m/s²), so no single table sits 1-5 mph under him
+# on every curve; this one is the best balance found (see the PR). The old
+# table had the opposite shape (2.4 in town, 1.75 at highway speed).
+CF_LAT_TARGET_BP_MS = [8.0, 13.0, 18.0, 22.0, 27.0]
+CF_LAT_TARGET_MS2 = [1.45, 1.55, 1.85, 2.05, 2.20]
+CF_SPEED_FLOOR_MS = 6.0
+CF_SPEED_CEIL_MS = 45.0  # bends gentler than this speed's table are not bends
+
+# Decel the term may ask for, vs speed. Justin's own slowing into a bend
+# averages ~0.5 m/s² (lift / regen, peaks ~1.3); the old preview's 0.35 at
+# highway speed could not shed a sharp corner after a fast straight. When the
+# kinematic demand is beyond CF_URGENT_A0_MS2 the limit grows toward
+# CF_URGENT_DECEL_MS2 (still jerk limited: never a wall).
+CF_DECEL_BP_MS = [10.0, 25.0]
+CF_DECEL_MS2 = [1.2, 0.55]
+CF_JERK_MS3 = [1.0, 0.4]
+CF_URGENT_DECEL_MS2 = 1.5
+CF_URGENT_JERK_MS3 = 0.6
+CF_URGENT_A0_MS2 = 0.8
+CF_URGENT_BAND_MS2 = 0.5
+
 # Where the car finishes slowing for a bend, as seconds before its tightest
-# point. 1.0 s: slowing is done and the throttle may return about 1 s before
-# the tightest point. Justin's own median is about 2.4 s; raise this single
-# constant to move there. The speed AT the tightest point is the table speed
-# either way (cornering stays conservative).
+# point. 1.0 s: slowing is done about 1 s before the tightest point. Justin
+# himself is still easing at the apex (median: slowing ends ~0.8 s after it,
+# Oct 4-10), so 1.0 s early is the conservative side of him. The speed AT the
+# tightest point is the table speed either way.
 RELEASE_BEFORE_TIGHTEST_S = 1.0
 ROOM_SOFT_M = 2.0
 
@@ -114,7 +138,7 @@ PEAK_MIN_K = 0.004
 # car is above it. That is how a car accelerates out of one bend and eases
 # back for the next. Relief fades to nothing as the point gets close.
 RELIEF_DECEL_MS2 = 0.30
-RELIEF_MAX_MS2 = 0.60
+RELIEF_MAX_MS2 = 0.50
 RELIEF_ROOM0_M = 20.0
 RELIEF_ROOM_BAND_M = 40.0
 
@@ -128,6 +152,15 @@ RELEASE_OPEN_MS3 = 1.35
 RELEASE_PROP_1_S = 2.0
 RELEASE_MAX_MS3 = 2.5
 SNAP_EPS_MS2 = 0.01
+
+# After a bend that slowed the car has peaked: +a back gently, like Justin
+# (back on the gas ~1.4 s after the apex at ~0.2, p75 0.5 m/s²). The ceiling
+# holds POST_APEX_A_MS2 for POST_APEX_HOLD_S, then opens over POST_APEX_OPEN_S.
+POST_APEX_A_MS2 = 0.50
+POST_APEX_HOLD_S = 2.0
+POST_APEX_OPEN_S = 1.0
+POST_APEX_PASSED = 0.5
+POST_APEX_BOUND_S = 3.0  # the term must have been slowing within this long
 
 
 def read_curve_follow_mode(params) -> int:
@@ -147,6 +180,52 @@ def _interp(x: float, xp, fp) -> float:
       f = (x - xp[i - 1]) / (xp[i] - xp[i - 1])
       return float(fp[i - 1] + f * (fp[i] - fp[i - 1]))
   return float(fp[-1])
+
+
+def cf_lat_target_ms2(v_ms: float) -> float:
+  return _interp(float(v_ms), CF_LAT_TARGET_BP_MS, CF_LAT_TARGET_MS2)
+
+
+def curve_speed_for_curvature(kappa: float) -> float | None:
+  """Curve follow's corner speed for |kappa|: the LOWEST v with v²·|κ| >= A(v).
+
+  A(v) rises with speed here, so a fixed point is not safe; bisection on the
+  first crossing is (and picks the conservative root). None on a straight.
+  """
+  k = abs(float(kappa))
+  if not math.isfinite(k) or k <= 1e-6:
+    return None
+  lo, hi = 0.0, CF_SPEED_CEIL_MS
+  if hi * hi * k < cf_lat_target_ms2(hi):
+    return None  # gentler than any speed we drive: not a bend
+  # first crossing: scan coarse, then bisect
+  prev = lo
+  v = 0.5
+  while v <= hi:
+    if v * v * k >= cf_lat_target_ms2(v):
+      break
+    prev = v
+    v += 0.5
+  lo, hi = prev, min(v, hi)
+  for _ in range(20):
+    mid = 0.5 * (lo + hi)
+    if mid * mid * k >= cf_lat_target_ms2(mid):
+      hi = mid
+    else:
+      lo = mid
+  return max(CF_SPEED_FLOOR_MS, hi)
+
+
+def decel_limit_ms2(v_ego: float, demand_ms2: float = 0.0) -> float:
+  """Most decel the term may ask for: speed table, plus the urgent allowance."""
+  base = _interp(float(v_ego), CF_DECEL_BP_MS, CF_DECEL_MS2)
+  u = _smooth01((-float(demand_ms2) - CF_URGENT_A0_MS2) / CF_URGENT_BAND_MS2)
+  return base + max(0.0, CF_URGENT_DECEL_MS2 - base) * u
+
+
+def build_jerk_ms3(v_ego: float, urgent: float) -> float:
+  base = _interp(float(v_ego), CF_DECEL_BP_MS, CF_JERK_MS3)
+  return base + max(0.0, CF_URGENT_JERK_MS3 - base) * float(urgent)
 
 
 def interp_at(ts, vals, t: float) -> float | None:
@@ -230,6 +309,9 @@ class CurveFollow:
     self.passed = 0.0
     self.gate = 1.0
     self.trusted = False
+    self.urgent = 0.0
+    self._post_t = -1.0       # time since the post-apex hold began (<0: none)
+    self._since_bound = 1e9   # time since the term last slowed the car
 
   # ---- path preparation -------------------------------------------------
   def _filter_k(self, ks, dt: float) -> list[float]:
@@ -321,9 +403,30 @@ class CurveFollow:
     self.trusted = bool(path_ok and ctx_ok and self._conf >= 0.2 and v >= MIN_V_MS)
 
     a_c = FREE_A_MS2 + self._conf * (a_raw - FREE_A_MS2)
-    a_c = min(FREE_A_MS2, max(a_c, -preview_decel_limit_ms2(v)))
+    self.urgent = _smooth01((-a_c - CF_URGENT_A0_MS2) / CF_URGENT_BAND_MS2)
+    a_c = min(FREE_A_MS2, max(a_c, -decel_limit_ms2(v, a_c)))
+    a_c = min(a_c, self._post_apex_cap(dt))
     self.raw = a_c
-    return self._slew(v, a_c, dt)
+    out = self._slew(v, a_c, dt)
+    self._since_bound = 0.0 if out < 0.0 else self._since_bound + dt
+    return out
+
+  def _post_apex_cap(self, dt: float) -> float:
+    """+a ceiling right after a bend that slowed the car has peaked."""
+    if self._post_t < 0.0:
+      if self.passed >= POST_APEX_PASSED and self._since_bound <= POST_APEX_BOUND_S and self.trusted:
+        self._post_t = 0.0
+      else:
+        return FREE_A_MS2
+    else:
+      self._post_t += dt
+    if self._post_t <= POST_APEX_HOLD_S:
+      return POST_APEX_A_MS2
+    f = (self._post_t - POST_APEX_HOLD_S) / POST_APEX_OPEN_S
+    if f >= 1.0:
+      self._post_t = -1.0
+      return FREE_A_MS2
+    return POST_APEX_A_MS2 + (FREE_A_MS2 - POST_APEX_A_MS2) * _smooth01(f)
 
   def _slew(self, v: float, target: float, dt: float) -> float:
     target = min(FREE_A_MS2, float(target))
@@ -336,7 +439,7 @@ class CurveFollow:
     rel_base += max(0.0, RELEASE_OPEN_MS3 - rel_base) * self.passed
     release = min(RELEASE_MAX_MS3, rel_base + RELEASE_PROP_1_S * max(0.0, err)) * dt
     if err < 0.0:
-      base = _interp(v, PREVIEW_DECEL_BP_MS, PREVIEW_JERK_MS3)
+      base = build_jerk_ms3(v, self.urgent)
       build = min(BUILD_MAX_MS3, base + BUILD_PROP_1_S * (-err)) * dt
       delta = max(err, -build)
     else:
