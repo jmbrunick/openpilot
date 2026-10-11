@@ -10,8 +10,8 @@ from openpilot.selfdrive.speedsignd.detect import (
   SpeedSignDetector,
   detect_mutcd_speed_signs,
   paint_mutcd_r2_1,
-  y_plane_from_nv12,
 )
+from openpilot.selfdrive.speedsignd.nv12 import y_plane_from_nv12
 
 
 def _scene(h=240, w=320, seed=0) -> np.ndarray:
@@ -132,3 +132,105 @@ def test_y_plane_from_nv12():
 def test_mutcd_set_is_us_r2_1():
   assert 15 in MUTCD_MPH and 25 in MUTCD_MPH and 70 in MUTCD_MPH
   assert 47 not in MUTCD_MPH
+
+
+def test_cpu_backend_assertion_rejects_gpu_and_accepts_cpu():
+  import os
+
+  from openpilot.selfdrive.speedsignd.detect import (
+    _TinyOrtSession,
+    assert_cpu_backend,
+    compile_allowed,
+    describe_infer_runtimes,
+    pin_cpu_only_env,
+  )
+
+  pin_cpu_only_env()
+  assert os.environ["DEV"] == "CPU"
+  assert os.environ["CPU_COUNT"] == "1"
+  assert os.environ["CLANG"] == "1"
+  for key in ("GPU", "QCOM", "CUDA", "METAL", "AMD", "NV", "WEBGPU"):
+    assert os.environ[key] == "0"
+
+  class CpuOrt:
+    def get_providers(self):
+      return ["CPUExecutionProvider"]
+
+  assert assert_cpu_backend(CpuOrt()) == "onnxruntime-cpu"
+
+  class GpuOrt:
+    def get_providers(self):
+      return ["QNNExecutionProvider", "CPUExecutionProvider"]
+
+  with pytest.raises(AssertionError):
+    assert_cpu_backend(GpuOrt())
+
+  class Tiny:
+    _nap_backend = "tinygrad-cpu"
+    _nap_device = "CPU"
+
+  assert assert_cpu_backend(Tiny()) == "tinygrad-cpu"
+
+  class Qcom:
+    _nap_backend = "tinygrad"
+    _nap_device = "QCOM"
+
+  with pytest.raises(AssertionError):
+    assert_cpu_backend(Qcom())
+
+  assert not compile_allowed(controlling=True, ready=False)
+  assert compile_allowed(controlling=False, ready=False)
+  assert compile_allowed(controlling=True, ready=True)
+
+  class Runner:
+    def __call__(self, tensors):
+      class Out:
+        device = "CPU"
+
+        def numpy(self):
+          return np.zeros((1, 25, 4), np.float32)
+
+      return {"out": Out()}
+
+  sess = _TinyOrtSession(Runner(), lambda v: v, device="CPU", renderer="ClangJITRenderer")
+  assert sess._nap_backend == "tinygrad-clang"
+  with pytest.raises(RuntimeError, match="compile-blocked"):
+    sess.run(None, {"images": np.zeros((1, 3, 2, 2), np.float32)})
+  sess.allow_compile(True)
+  out = sess.run(None, {"images": np.zeros((1, 3, 2, 2), np.float32)})
+  assert sess.compiled
+  assert out[0].shape == (1, 25, 4)
+  sess.allow_compile(False)
+  sess.run(None, {"images": np.zeros((1, 3, 2, 2), np.float32)})
+
+  class GpuRunner:
+    def __call__(self, tensors):
+      class Out:
+        device = "QCOM"
+
+        def numpy(self):
+          return np.zeros((1,), np.float32)
+
+      return Out()
+
+  gpu = _TinyOrtSession(GpuRunner(), lambda v: v, device="CPU", renderer="ClangJITRenderer")
+  gpu.allow_compile(True)
+  with pytest.raises(AssertionError, match="QCOM"):
+    gpu.run(None, {"images": np.zeros((1, 3, 2, 2), np.float32)})
+  assert not gpu.compiled
+
+  text = describe_infer_runtimes()
+  assert "onnxruntime-" in text
+  assert "tinygrad-" in text
+
+
+def test_read_mph_washes_out_above_fixed_90():
+  """ROAD plates often have ink ≥ 90. Old threshold returned None → HUD kept 65."""
+  from openpilot.selfdrive.speedsignd.detect import _read_mph
+  y = _scene(seed=7)
+  paint_mutcd_r2_1(y, 50, x=200, y=30, w=90, h=112)
+  crop = y[30:142, 200:290].copy()
+  crop[crop < 90] = 100
+  mph, conf = _read_mph(crop)
+  assert mph == 50
+  assert conf >= 0.25

@@ -1,10 +1,10 @@
-"""Two-frame debounce before HUD / JSONL accept a mph."""
+"""JSONL confirms on two agreeing reads. One class-only read does not."""
 from __future__ import annotations
 
 from openpilot.selfdrive.speedsignd.debounce import SignDebounce
 from openpilot.selfdrive.speedsignd.detect import SpeedSign
 from openpilot.selfdrive.speedsignd.jsonl import JsonlLogger
-from openpilot.selfdrive.speedsignd.speedsignd import SPEEDSIGND_HZ, process_frame
+from openpilot.selfdrive.speedsignd.speedsignd import SPEEDSIGND_HZ, next_detect_mono, process_frame
 from openpilot.selfdrive.speedsignd.weights_manifest import DEBOUNCE_HITS, DEBOUNCE_WINDOW_S
 
 
@@ -16,11 +16,11 @@ def test_single_frame_is_not_enough():
 
 def test_two_agreeing_frames_confirm():
   d = SignDebounce()
-  s = SpeedSign(mph=60, conf=0.8, bbox=(2, 2, 12, 12))
+  s = SpeedSign(mph=55, conf=0.8, bbox=(2, 2, 12, 12))
   assert d.update([s], 0.0) == []
   # 1 Hz spacing (and a skipped cycle at ~2 s) must still confirm.
   out = d.update([s], 1.0)
-  assert len(out) == 1 and out[0].mph == 60
+  assert len(out) == 1 and out[0].mph == 55
 
 
 def test_two_hits_after_skip_still_confirm():
@@ -55,22 +55,105 @@ def test_process_frame_debounce_blocks_jsonl(tmp_path):
   class _Det:
     onnx = None
 
-    def detect(self, y, min_conf=None, rgb=None):
+    def detect(self, y, min_conf=None, rgb=None, nv12=None):
       return [SpeedSign(mph=55, conf=0.9, bbox=(0, 0, 8, 8))]
 
   log = JsonlLogger(str(tmp_path / "out.jsonl"))
   debounce = SignDebounce()
   y = __import__("numpy").zeros((32, 32), __import__("numpy").uint8)
   signs, written = process_frame(y, 45.0, -95.0, 0.0, True, _Det(), log, now=1.0, debounce=debounce)
-  assert signs == [] and written == []
+  # First in-threshold hit lights HUD; JSONL still waits for the second frame.
+  assert signs and signs[0].mph == 55
+  assert written == []
   signs, written = process_frame(y, 45.0, -95.0, 0.0, True, _Det(), log, now=2.0, debounce=debounce)
   assert signs and signs[0].mph == 55
   assert written and written[0]["mph"] == 55
+
+
+def test_update_split_hud_on_first_hit():
+  d = SignDebounce()
+  s = SpeedSign(mph=55, conf=0.72, bbox=(0, 0, 8, 8))
+  split = d.update_split([s], 0.0)
+  assert split.hud and split.hud[0].mph == 55
+  assert split.confirmed == []
+  split = d.update_split([s], 1.0)
+  assert split.hud and split.confirmed
+  assert split.confirmed[0].mph == 55
+
+
+def test_duty_cycle_gap_needs_the_second_look_to_confirm_jsonl():
+  """A 2.1 s infer now waits 8.4 s, outside the 4 s JSONL window.
+
+  The second look 0.1 s later is what confirms. The next YOLO cannot.
+  """
+  period, budget = 1.0 / SPEEDSIGND_HZ, 0.100
+  infer_s = 2.1
+  second_t = next_detect_mono(infer_s, infer_s, period, budget)
+  assert abs(second_t - infer_s * 4.0) < 1e-9
+  assert second_t > DEBOUNCE_WINDOW_S
+  d = SignDebounce()
+  first_sign = SpeedSign(mph=55, conf=0.8, bbox=(0, 0, 8, 8))
+  first = d.update_split([first_sign], 0.0)
+  assert first.hud and first.confirmed == []
+  look = SpeedSign(
+    mph=55, conf=0.62, bbox=(0, 0, 8, 8),
+    class_mph=65, class_conf=0.70, refine_mph=55, refine_conf=0.62,
+  )
+  second = d.update_split([look], 0.1)
+  assert second.confirmed and second.confirmed[0].mph == 55
+  late = d.update_split([first_sign], second_t)
+  assert late.confirmed == []
 
 
 def test_debounce_constants_match_1hz():
   assert SPEEDSIGND_HZ == 1.0
   assert DEBOUNCE_HITS == 2
   assert DEBOUNCE_WINDOW_S == 4.0
-  # Two 1 Hz hits (or 1 Hz + one skip) must fit in the window.
+  # Two 1 Hz hits (or 1 Hz + one skip) must fit in the JSONL window.
   assert DEBOUNCE_WINDOW_S >= 2.0 / SPEEDSIGND_HZ
+
+
+def test_update_split_one_unrefined_read_does_not_confirm():
+  d = SignDebounce()
+  for i, mph in enumerate((40, 60, 65, 70)):
+    bad = SpeedSign(mph=mph, conf=0.73, bbox=(0, 0, 8, 8), class_mph=mph, class_conf=0.73)
+    split = d.update_split([bad], float(i) * 3.0)
+    assert split.hud and split.hud[0].mph == mph
+    assert split.confirmed == []
+
+
+def test_two_ocr_votes_confirm_50_not_the_class_65():
+  d = SignDebounce()
+  mixed = SpeedSign(
+    mph=50, conf=0.71, bbox=(0, 0, 8, 8),
+    class_mph=65, class_conf=0.82, refine_mph=50, refine_conf=0.71,
+  )
+  assert d.update_split([mixed], 0.0).confirmed == []
+  split = d.update_split([mixed], 0.2)
+  assert split.confirmed and split.confirmed[0].mph == 50
+
+
+def test_update_split_one_unrefined_65_is_not_confirmed():
+  d = SignDebounce()
+  bad = SpeedSign(
+    mph=65, conf=0.73, bbox=(0, 0, 8, 8),
+    class_mph=65, class_conf=0.73, refine_mph=None,
+  )
+  split = d.update_split([bad], 0.0)
+  assert split.hud and split.confirmed == []
+  assert d.last_raw and d.last_raw[0].mph == 65
+  again = d.update_split([bad], 0.3)
+  assert again.confirmed and again.confirmed[0].mph == 65
+
+
+def test_update_split_hud_refined_50_from_class_65():
+  d = SignDebounce()
+  s = SpeedSign(
+    mph=50, conf=0.71, bbox=(0, 0, 8, 8),
+    class_mph=65, class_conf=0.82, refine_mph=50, refine_conf=0.71,
+  )
+  split = d.update_split([s], 0.0)
+  assert split.hud and split.hud[0].mph == 50
+  assert split.confirmed == []
+  assert split.hud[0].refine_mph == 50
+  assert split.hud[0].class_mph == 65

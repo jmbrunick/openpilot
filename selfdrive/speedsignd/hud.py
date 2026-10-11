@@ -4,15 +4,26 @@ Display-only. Does not write sqlite or change cruise.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 
-# Hold long enough that a skipped 1 Hz cycle does not flicker the plate.
-HUD_HOLD_S = 3.0
+from openpilot.selfdrive.speedsignd.detect_types import MUTCD_MPH, SpeedSign
+from openpilot.selfdrive.speedsignd.weights_manifest import YOLO_MIN_CONF
+from openpilot.selfdrive.speedsignd.yolo import REFINE_OVERRIDE_CONF
+
+# Hold a recent *accepted* mph across 1 Hz skip-on-overrun. Justin's parked
+# 50 went blank after 10 s while tinygrad infer stayed 3–5 s / intermittent,
+# then flashed 60 / 70 / 40. 45 s plus a soft refresh on any in-threshold
+# speedLimit* box (even refine fail / junk class) keeps SIGN lit without
+# inventing an mph.
+HUD_HOLD_S = 45.0
+# Two reads of the same mph. Replaces the {40, 60, 65, 70} junk gate.
+AGREE_READS = 2
+AGREE_WINDOW_S = 2.0
 HUD_LABEL = "SIGN"
 # Logger On + ONNX missing: show this instead of a blank plate or a fake mph.
 HUD_MISSING_WEIGHTS_TEXT = "NO WT"
-# Logger On + OP commanding actuators: YOLO is skipped so modeld is not starved.
-# WAIT is only this case — not cereal-unknown / alive flaps (those are a bug).
+# WAIT plate if detectPaused is set. Engaged driving does not set it —
+# the mph hold stays up. Cereal-unknown is not WAIT.
 HUD_DETECT_PAUSED_TEXT = "WAIT"
 HUD_CONFIRM_PROMPT = "accurate?"
 HUD_CONFIRM_YES = "Yes"
@@ -199,18 +210,146 @@ def apply_live_sign(
   dst.detectPaused = bool(detect_paused)
 
 
+def _class_mph(sign: SpeedSign) -> int:
+  class_mph = getattr(sign, "class_mph", None)
+  if class_mph is not None:
+    return int(class_mph)
+  return int(sign.mph)
+
+
+def should_replace_held_mph(
+  held_mph: int, held_conf: float, new_mph: int, new_conf: float,
+  refine_mph: int | None = None,
+) -> bool:
+  """Same mph refreshes. A different agreed mph replaces when it is at least as sure."""
+  del refine_mph
+  if int(held_mph) <= 0:
+    return True
+  if int(new_mph) == int(held_mph):
+    return True
+  return float(new_conf) >= float(held_conf)
+
+
+def is_speed_limit_sighting(sign: SpeedSign | None) -> bool:
+  """True if YOLO posted any in-threshold speedLimit* (refine may have failed).
+
+  Used only to extend a live hold — never to invent or change mph.
+  """
+  if sign is None:
+    return False
+  try:
+    conf = float(sign.conf)
+  except (TypeError, ValueError):
+    return False
+  if conf < YOLO_MIN_CONF:
+    return False
+  refine = getattr(sign, "refine_mph", None)
+  if refine is not None:
+    try:
+      if int(refine) in MUTCD_MPH:
+        return True
+    except (TypeError, ValueError):
+      pass
+  try:
+    if int(sign.mph) in MUTCD_MPH:
+      return True
+  except (TypeError, ValueError):
+    pass
+  try:
+    return _class_mph(sign) in MUTCD_MPH
+  except (TypeError, ValueError):
+    return False
+
+
+def frame_reads(sign: SpeedSign | None) -> tuple[list[tuple[int, float]], tuple[int, float] | None]:
+  """Votes from one detect.
+
+  Class and OCR that name the same mph are an immediate pair. When they
+  disagree, only the OCR vote is kept — the class head calls a close 50 a
+  65, and must not accumulate across frames. OCR-only or class-only is one
+  pending read; a second frame of the same mph agrees.
+  """
+  if sign is None:
+    return [], None
+  class_mph = getattr(sign, "class_mph", None)
+  class_conf = float(getattr(sign, "class_conf", 0.0) or 0.0)
+  if class_mph is None:
+    try:
+      class_mph = int(sign.mph)
+      class_conf = float(sign.conf)
+    except (TypeError, ValueError):
+      class_mph = None
+  refine = getattr(sign, "refine_mph", None)
+  refine_conf = float(getattr(sign, "refine_conf", 0.0) or 0.0)
+  class_ok = False
+  try:
+    class_i = int(class_mph) if class_mph is not None else None
+    class_ok = class_i in MUTCD_MPH and class_conf >= YOLO_MIN_CONF
+  except (TypeError, ValueError):
+    class_i = None
+  refine_ok = False
+  try:
+    refine_i = int(refine) if refine is not None else None
+    refine_ok = refine_i in MUTCD_MPH and refine_conf >= REFINE_OVERRIDE_CONF
+  except (TypeError, ValueError):
+    refine_i = None
+  if class_ok and refine_ok and class_i == refine_i:
+    return [], (int(class_i), max(class_conf, refine_conf))
+  if refine_ok:
+    return [(int(refine_i), refine_conf)], None
+  if class_ok:
+    return [(int(class_i), class_conf)], None
+  return [], None
+
+
+def accepted_hud_sign(sign: SpeedSign | None) -> SpeedSign | None:
+  """Sign whose class and OCR already agree, else None.
+
+  One read never lights the HUD. 40/60/65/70 are not special-cased.
+  """
+  _pending, pair = frame_reads(sign)
+  if pair is None:
+    return None
+  mph, conf = pair
+  return replace(sign, mph=int(mph), conf=float(conf))
+
+
 @dataclass
 class LiveSignHold:
   hold_s: float = HUD_HOLD_S
   mph: int = 0
   conf: float = 0.0
   until: float = 0.0
+  _obs: list = field(default_factory=list)
 
   def update(self, signs, now: float) -> tuple[bool, int, float]:
-    if signs:
-      best = max(signs, key=lambda s: s.conf)
-      self.mph = int(best.mph)
-      self.conf = float(best.conf)
+    fresh = False
+    for s in signs or []:
+      pending, pair = frame_reads(s)
+      if pair is not None:
+        fresh = True
+        self._obs.append((now, int(pair[0]), float(pair[1])))
+        self._obs.append((now, int(pair[0]), float(pair[1])))
+      for mph, conf in pending:
+        fresh = True
+        self._obs.append((now, int(mph), float(conf)))
+    self._obs = [o for o in self._obs if now - o[0] <= AGREE_WINDOW_S]
+    buckets: dict[int, list[float]] = {}
+    for _t, mph, conf in self._obs:
+      buckets.setdefault(int(mph), []).append(float(conf))
+    winners = [(mph, max(cs)) for mph, cs in buckets.items() if len(cs) >= AGREE_READS]
+    holding = now < self.until and self.mph > 0
+    # Empty publishes must not re-arm the hold from votes still inside the
+    # 2 s agree window. Only a new read this call may set or refresh mph.
+    if winners and fresh:
+      new_mph, new_conf = max(winners, key=lambda item: item[1])
+      if (not holding) or should_replace_held_mph(self.mph, self.conf, new_mph, new_conf):
+        self.mph = int(new_mph)
+        self.conf = float(new_conf)
+        self.until = now + self.hold_s
+      else:
+        self.until = now + self.hold_s
+    elif holding and any(is_speed_limit_sighting(s) for s in (signs or [])):
       self.until = now + self.hold_s
     live = now < self.until and self.mph > 0
     if not live:

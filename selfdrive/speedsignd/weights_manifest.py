@@ -28,12 +28,18 @@ ASSET_BYTES = 44651386
 
 USER_AGENT = "NotAutopilot-speedsignd/1.0 (https://github.com/jmbrunick/openpilot)"
 
-# Ultralytics YOLOv8 export at imgsz=320.
+# Ultralytics YOLOv8 export at imgsz=320. The JC checkpoint was trained at 640;
+# we do not raise on-device imgsz (CPU). road_detect_crop + bilinear letterbox
+# recover scale vs the old nearest-neighbor full-frame 1928→320 path.
 YOLO_IMGSZ = 320
 YOLO_INPUT_NAME = "images"
 YOLO_OUTPUT_LAYOUT = (1, 25, 2100)  # 4 + 21 classes, 2100 anchors
 
-# Class order from the JC YOLOv8 checkpoint (`model.names`).
+# Class order from speed_sign.onnx metadata `names` (same as JC best.pt).
+# 0 doNotEnter … 7 speedLimit30 … 11 speedLimit50 … 13 speedLimit60 …
+# 19 stop 20 yield. Isolated MUTCD SVG 30/50/60 at 320 peak ~0.93 on the
+# matching class — not an off-by-one. stop has ~18× the samples of
+# speedLimit55; the head was trained at imgsz=640.
 YOLO_CLASS_NAMES: tuple[str, ...] = (
   "doNotEnter",
   "noLeftTurn",
@@ -58,14 +64,15 @@ YOLO_CLASS_NAMES: tuple[str, ...] = (
   "yield",
 )
 
-# Tuned so empty road stays quiet (model max conf ~0 on asphalt/sky) while a
-# clear roadside R2-1 still lights the HUD after debounce.
+# Empty-road max is ~0. Do not lower: on-car clear R2-1s peak at 0.00–0.12, so a
+# HUD floor of 0.10 would false-trigger and 0.25 still would not fire. Model limit.
 YOLO_MIN_CONF = 0.40
 YOLO_IOU = 0.45
 YOLO_MAX_DET = 3
 
-# Two agreeing frames at ~1 Hz (or after a skip-on-overrun gap) before HUD /
-# JSONL accept a mph. The old 0.75 s window cannot confirm two 1 Hz hits.
+# JSONL still needs two agreeing frames. HUD lights on the first in-threshold
+# hit — a 1 Hz + skip-on-overrun pair often cannot land while a real R2-1 is
+# in view (highway dwell ~1–3 s; a 1.5 s infer spaces hits by ~3 s).
 DEBOUNCE_HITS = 2
 DEBOUNCE_WINDOW_S = 4.0
 
