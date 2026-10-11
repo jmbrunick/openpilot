@@ -1,6 +1,7 @@
 import os
 import subprocess
 import pyray as rl
+from openpilot.common.nap_release import SPEED_SIGN_ENABLED
 from openpilot.common.params import Params
 from openpilot.common.basedir import BASEDIR
 from openpilot.system.ui.widgets import Widget, DialogResult
@@ -281,6 +282,7 @@ class NAPLayout(Widget):
     # ── Section 6: Advanced ──
     self._main_items.append(section_header_item("Advanced"))
 
+    _speed_sign_start = len(self._main_items)
     self._add_toggle(
       NAP_SPEED_SIGN_LOG,
       "Speed Sign Logger",
@@ -304,6 +306,9 @@ class NAPLayout(Widget):
     )
     self._install_weights_btn.action_item.set_enabled(ui_state.is_offroad)
     self._main_items.append(self._install_weights_btn)
+    if not SPEED_SIGN_ENABLED:
+      # nap-release: the speed sign reader is not shipped; hide its rows.
+      del self._main_items[_speed_sign_start:]
 
     # Force Pre-AP is always on for now — grayed out in the ON position
     self._params.put_bool(NAPParamKeys.FORCE_PRE_AP, True)

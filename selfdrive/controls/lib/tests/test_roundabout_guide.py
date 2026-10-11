@@ -33,6 +33,14 @@ MPH = 0.44704
 DT = 0.01
 
 
+@pytest.fixture(autouse=True)
+def _assist_code_enabled(monkeypatch):
+  # nap-release forces the assist off (common/nap_release.py); these tests
+  # exercise the assist code itself. test_nap_release covers the release gate.
+  from openpilot.common import nap_release
+  monkeypatch.setattr(nap_release, "ROUNDABOUT_ASSIST_ENABLED", True)
+
+
 def _ring(p) -> RingGeometry:
   return RingGeometry.from_json(p["ring"])
 

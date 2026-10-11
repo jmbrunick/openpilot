@@ -744,7 +744,8 @@ def publish_cone_line(pm, sample: ConeLineSample | None) -> None:
   dest.latMid = float(sample.lat_mid)
   dest.latFar = float(sample.lat_far)
   dest.wouldLimit = float(sample.would_limit)
-  dest.wouldSteer = float(sample.would_steer)
+  from openpilot.common import nap_release
+  dest.wouldSteer = float(sample.would_steer) if nap_release.LOG_ONLY_EXTRAS else 0.0
   dest.barrier = bool(sample.barrier)
   dest.parked = bool(sample.parked)
   dest.spanM = float(sample.span_m)

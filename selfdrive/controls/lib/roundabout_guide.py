@@ -768,7 +768,8 @@ class RoundaboutAssist:
     if self._frame < 0 or self._frame >= PARAM_READ_FRAMES:
       self._frame = 0
       on = False
-      if self.params is not None:
+      from openpilot.common import nap_release
+      if self.params is not None and nap_release.ROUNDABOUT_ASSIST_ENABLED:
         try:
           on = bool(self.params.get_bool(PARAM_ROUNDABOUT_ASSIST))
         except Exception:

@@ -2,6 +2,7 @@ import pyray as rl
 import numpy as np
 import time
 import threading
+from openpilot.common.nap_release import SPEED_SIGN_ENABLED
 from collections.abc import Callable
 from enum import Enum
 from cereal import messaging, car, log
@@ -232,7 +233,8 @@ class UIState:
     except Exception:
       self.radar_hud = False
     try:
-      self.speed_sign_log = self.params.get_bool("NAPSpeedSignLog")
+      # nap-release: no speed sign reader, so never show the SIGN plate.
+      self.speed_sign_log = SPEED_SIGN_ENABLED and self.params.get_bool("NAPSpeedSignLog")
     except Exception:
       self.speed_sign_log = False
 

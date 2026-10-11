@@ -20,6 +20,7 @@ from openpilot.system.hardware.nap_force_offroad import (
   cancel_force_offroad,
   confirm_force_offroad,
   needs_driver_confirm,
+  prompt_needed,
 )
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.widgets import DialogResult
@@ -111,8 +112,31 @@ def show_force_offroad_confirm() -> bool:
   return True
 
 
-def maybe_show_force_offroad_confirm(params=None, started: bool | None = None) -> bool:
-  """MainLayout tick: show when onroad Force Offroad is waiting for Yes."""
+def _drive_and_moving(car_state=None) -> bool:
+  """Gear Drive and vEgo > 0 from the UI's existing carState (no new subscriber)."""
+  if car_state is None:
+    try:
+      from openpilot.selfdrive.ui.ui_state import ui_state
+      if ui_state.sm.recv_frame["carState"] == 0:
+        return True  # no carState yet: keep the prompt
+      car_state = ui_state.sm["carState"]
+    except Exception:
+      return True  # cannot tell: keep the prompt
+  try:
+    from cereal import car
+    drive = car_state.gearShifter == car.CarState.GearShifter.drive
+  except Exception:
+    drive = str(getattr(car_state, "gearShifter", "")) == "drive"
+  return prompt_needed(drive, getattr(car_state, "vEgo", float("nan")))
+
+
+def maybe_show_force_offroad_confirm(params=None, started: bool | None = None, car_state=None) -> bool:
+  """MainLayout tick: when onroad Force Offroad is waiting for Yes.
+
+  nap-release: the Yes/No only appears while the car is in Drive and moving
+  (vEgo > 0). Parked, in another gear, or stopped, it confirms at once and
+  goes offroad with no prompt.
+  """
   if params is None:
     params = Params()
   if started is None:
@@ -125,5 +149,8 @@ def maybe_show_force_offroad_confirm(params=None, started: bool | None = None) -
       apply_force_offroad_toggle(params, False, started=False)
     return False
   if not needs_driver_confirm(force, confirmed, started):
+    return False
+  if not _drive_and_moving(car_state):
+    confirm_force_offroad(params)
     return False
   return show_force_offroad_confirm()

@@ -1,3 +1,34 @@
+nap-release promotion from nap-dev 112907e9 (2026-10-10)
+========================
+nap-release is the drivable backup: this promotes nap-dev through #301 (the low-visibility glare fix driven Oct 10, route 0000017c). #302 (cone widen) and #303 (camera cone log) are not included. Neither has been driven.
+* **Longitudinal:** the unified lead-follow stack and gap lock, as already on nap-release, plus:
+  * farm close and cut-in hold (#286)
+  * far lead braking only when it is in our path (#279)
+  * short One-Pedal gas blips ignored, MAX restored on roundabout exit (#289)
+  * crossing or turning car slow-and-go (#299)
+  * no logged long command while the brake is down (#288)
+* **Steering:**
+  * one stalk pull engages lateral and longitudinal together (#280)
+  * push to take steering, release to give it back (#287)
+  * a helping push or a roundabout input yields steering instead of disengaging (#290)
+  * engage recovery and steering return after a turn (#284)
+  * low-visibility back-off that doesn't fade in turns and never zeroes steering (#281, #293, #301)
+  * turn geometry and turn-in delay
+  * lane-change lock
+  * wheel-resume gate
+* **Cones:** Hold my line, armed by a wheel push only (#282, #292).
+* **Obstacles:** the obstacle chime for animals, people and solid debris (#283, #285, #291, #294, #298).
+* **Comm fixes:** the obstacle scan folded into radard (#285) and a 10 s deviceState silence window (#295).
+* **Curve follow:** included with its own setting, default shadow.
+* **nap_dash:** the phone dashboard (:7070, Params and Software).
+* **Hotspot:** comma settings on the Tesla hotspot (#297) with the 100.99.9.x MCU subnet. Software tab Check / Download / Install & reboot (#300).
+* **Force Offroad:** the confirm screen asks Yes/No only while the car is in Drive and moving (vEgo > 0). Parked, in another gear, or stopped, it goes offroad at once with no prompt.
+* **Not on release** (code kept, switched off in `common/nap_release.py`):
+  * speed sign reader: speedsignd isn't started, its toggles are hidden and there's no SIGN plate
+  * Roundabout Steering Assist: forced off, toggle hidden
+  * cone-line wouldSteer: logged as 0
+* No panda flash.
+
 NAP gap lock (2026-10-05)
 ========================
 * Pre-AP, default Off (`NAPGapLock`). Hold the engage stalk toward you for 2 seconds to keep the current radar gap (8–80 m) instead of the time gap. Long can be on, paused, or not yet taken; a finished hold resumes it. Same follow law, a custom distance. The 3X shows the lock while it is on. A tip, cancel, brake, or One-Pedal pause returns to Follow Distance. Another 2 second hold stores a new distance. No panda flash.

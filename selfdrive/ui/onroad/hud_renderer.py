@@ -1,4 +1,5 @@
 import pyray as rl
+from openpilot.common.nap_release import SPEED_SIGN_ENABLED
 from dataclasses import dataclass
 from openpilot.common.constants import CV
 from openpilot.selfdrive.controls.lib.gap_lock import gap_lock_hud_chip
@@ -136,7 +137,8 @@ class HudRenderer(Widget):
       self._draw_gap_lock(rect)
 
     self._draw_current_speed(rect)
-    self._speed_sign_hud.render(rect)
+    if SPEED_SIGN_ENABLED:
+      self._speed_sign_hud.render(rect)
 
     button_x = rect.x + rect.width - UI_CONFIG.border_size - UI_CONFIG.button_size
     button_y = rect.y + UI_CONFIG.border_size

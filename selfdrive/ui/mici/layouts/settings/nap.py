@@ -5,6 +5,7 @@ vocabulary used on the comma 4. Phase 1 stub: three controls (pedal
 interceptor toggle, radar enabled toggle, flash EPAS button).
 Subsequent phases add the rest.
 """
+from openpilot.common.nap_release import SPEED_SIGN_ENABLED
 from openpilot.common.params import Params
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.widgets.scroller import NavScroller
@@ -327,13 +328,12 @@ class NAPLayoutMici(NavScroller):
       ))
     restore_epas_btn.set_enabled(ui_state.is_offroad)
 
+    speed_sign_rows = [speed_sign_log, self._weights_status, install_weights_btn] if SPEED_SIGN_ENABLED else []
     self._scroller.add_widgets([
       pedal_enabled,
       driving_mannerisms_btn,
       map_speed_btn,
-      speed_sign_log,
-      self._weights_status,
-      install_weights_btn,
+      *speed_sign_rows,
       pedal_can_bus,
       pedal_calib_status,
       calibrate_pedal_btn,

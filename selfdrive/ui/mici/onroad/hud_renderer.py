@@ -1,4 +1,5 @@
 import pyray as rl
+from openpilot.common.nap_release import SPEED_SIGN_ENABLED
 from dataclasses import dataclass
 from openpilot.common.constants import CV
 from openpilot.selfdrive.ui.mici.onroad.torque_bar import TorqueBar
@@ -186,7 +187,8 @@ class HudRenderer(Widget):
     if self.is_cruise_set:
       self._draw_set_speed(rect)
 
-    self._speed_sign_hud.render(rect)
+    if SPEED_SIGN_ENABLED:
+      self._speed_sign_hud.render(rect)
     self._draw_steering_wheel(rect)
 
   def user_interacting(self) -> bool:

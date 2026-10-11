@@ -61,7 +61,9 @@ def only_offroad(started: bool, params: Params, CP: car.CarParams) -> bool:
 
 def speed_sign_log(started: bool, params: Params, CP: car.CarParams) -> bool:
   # Default-off MUTCD JSONL logger. Does not start unless NAPSpeedSignLog is on.
-  return started and params.get_bool("NAPSpeedSignLog")
+  # nap-release: the speed sign reader is never started (common/nap_release.py).
+  from openpilot.common.nap_release import SPEED_SIGN_ENABLED
+  return SPEED_SIGN_ENABLED and started and params.get_bool("NAPSpeedSignLog")
 
 def or_(*fns):
   return lambda *args: operator.or_(*(fn(*args) for fn in fns))

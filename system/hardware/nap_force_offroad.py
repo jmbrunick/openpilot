@@ -41,6 +41,17 @@ def apply_force_offroad_toggle(params, on: bool, *, started: bool) -> None:
   params.put_bool(HANDOFF_READY_PARAM, False)
 
 
+def prompt_needed(gear_drive: bool, v_ego: float) -> bool:
+  """Yes/No only while rolling in Drive. Parked, in N/R, or stopped: go offroad at once."""
+  try:
+    v = float(v_ego)
+  except (TypeError, ValueError):
+    return True  # unknown speed: ask, the safe side
+  if v != v:
+    return True
+  return bool(gear_drive) and v > 0.0
+
+
 def confirm_force_offroad(params) -> None:
   params.put_bool(CONFIRMED_PARAM, True)
 

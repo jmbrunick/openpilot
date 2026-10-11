@@ -1,4 +1,5 @@
 """TICI NAP submenu: Driving Mannerisms controls."""
+from openpilot.common.nap_release import ROUNDABOUT_ASSIST_ENABLED
 from openpilot.common.params import Params
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.list_view import toggle_item, multiple_button_item, button_item
@@ -166,7 +167,9 @@ class DrivingMannerismsLayout(Widget):
       initial_state=self._params.get_bool(NAP_ROUNDABOUT_ASSIST),
       callback=self._on_rb_assist,
     )
-    self._all_items.append(self._rb_assist)
+    # nap-release: Roundabout Steering Assist is forced off and not offered.
+    if ROUNDABOUT_ASSIST_ENABLED:
+      self._all_items.append(self._rb_assist)
 
     self._one_pedal = toggle_item(
       "One-Pedal Long",
