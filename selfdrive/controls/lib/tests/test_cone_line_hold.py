@@ -191,11 +191,18 @@ def test_yield_machine_and_longitudinal_are_untouched():
   handoff = (root / "selfdrive/controls/lib/driver_lateral_handoff.py").read_text()
   assert "cone" not in handoff.lower()
   controls = (root / "selfdrive/controls/controlsd.py").read_text()
-  assert "actuators.accel = float(self.LoC.update(" in controls
+  # Longitudinal is written by published_long_accel(loc_accel=self.LoC.update(...)).
+  long_write = "actuators.accel = published_long_accel("
+  assert long_write in controls
+  assert "loc_accel=self.LoC.update(" in controls
   assert "_cone_curvature" in controls
   # The curvature adjust sits after the longitudinal command is already written.
-  assert controls.index("actuators.accel = float(self.LoC.update(") < controls.index(
+  assert controls.index(long_write) < controls.index(
     "model_or_plan_curvature = self._cone_curvature(")
+  # The cone hold reads only the wheel: no stalk / gap-lock input.
+  hold_src = (root / "selfdrive/controls/lib/cone_line_hold.py").read_text()
+  for word in ("napStalkSeq", "gapLock", "gap_lock", "CruiseButtons", "buttonEvents"):
+    assert word not in hold_src
   assert "steering_pressed=bool(CS.steeringPressed),\n      model_curvature=float(self._raw_model_curvature)," in controls
   cone = (root / "selfdrive/controls/lib/cone_line.py").read_text()
   hold = (root / "selfdrive/controls/lib/cone_line_hold.py").read_text()
