@@ -19,7 +19,7 @@ nap-release is the drivable backup: this promotes nap-dev through #301 (the low-
 * **Cones:** Hold my line, armed by a wheel push only (#282, #292).
 * **Obstacles:** the obstacle chime for animals, people and solid debris (#283, #285, #291, #294, #298).
 * **Comm fixes:** the obstacle scan folded into radard (#285) and a 10 s deviceState silence window (#295).
-* **Curve follow:** included with its own setting, default shadow.
+* **Curve follow:** forced off on release (`common/nap_release.py`, ignores NAPCurveFollow even if set; there is no toggle). Bends use CurveMaxHold exactly as before. Curve follow stays shadow on nap-dev while it is retuned.
 * **nap_dash:** the phone dashboard (:7070, Params and Software).
 * **Hotspot:** comma settings on the Tesla hotspot (#297) with the 100.99.9.x MCU subnet. Software tab Check / Download / Install & reboot (#300).
 * **Force Offroad:** the confirm screen asks Yes/No only while the car is in Drive and moving (vEgo > 0). Parked, in another gear, or stopped, it goes offroad at once with no prompt.

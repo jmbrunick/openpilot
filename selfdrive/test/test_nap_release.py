@@ -107,3 +107,14 @@ def test_force_offroad_parked_goes_offroad_without_prompt(monkeypatch):
   assert fc.maybe_show_force_offroad_confirm(params, started=True, car_state=_cs(drive, 8.0)) is True
   assert shown == [1]
   assert params.get_bool(CONFIRMED_PARAM) is False
+
+
+def test_curve_follow_forced_off_even_with_the_param_active():
+  from openpilot.common import nap_release
+  from openpilot.selfdrive.controls.lib import curve_follow as cf
+  assert nap_release.CURVE_FOLLOW_ENABLED is False
+
+  class _P:
+    def get(self, key, return_default=False):
+      return 2
+  assert cf.read_curve_follow_mode(_P()) == cf.MODE_OFF

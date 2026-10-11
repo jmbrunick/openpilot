@@ -19,3 +19,8 @@ ROUNDABOUT_ASSIST_ENABLED = not NAP_RELEASE
 # Log-only outputs that change nothing the driver sees: cone-line wouldSteer
 # (published as 0.0). The cone line itself stays because Hold my line uses it.
 LOG_ONLY_EXTRAS = not NAP_RELEASE
+
+# Curve follow (NAPCurveFollow): forced off on release, whatever the param says.
+# It is untuned for active use (see curve_follow_eval). CurveMaxHold in card
+# keeps handling bends exactly as before (it only steps aside in active mode).
+CURVE_FOLLOW_ENABLED = not NAP_RELEASE

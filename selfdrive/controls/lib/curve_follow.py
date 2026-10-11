@@ -131,7 +131,13 @@ SNAP_EPS_MS2 = 0.01
 
 
 def read_curve_follow_mode(params) -> int:
-  """NAPCurveFollow 0 off / 1 shadow / 2 active. Unknown or unreadable = shadow."""
+  """NAPCurveFollow 0 off / 1 shadow / 2 active. Unknown or unreadable = shadow.
+
+  nap-release forces 0 (off) regardless of the param.
+  """
+  from openpilot.common.nap_release import CURVE_FOLLOW_ENABLED
+  if not CURVE_FOLLOW_ENABLED:
+    return MODE_OFF
   try:
     mode = int(params.get(PARAM_KEY, return_default=True))
   except Exception:
