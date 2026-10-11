@@ -11,6 +11,15 @@ from openpilot.selfdrive.controls.lib.curve_preview import PREVIEW_FREE_A_MS2
 from openpilot.selfdrive.controls.tests.test_curve_preview import _set_model_path
 from openpilot.selfdrive.controls.tests.test_unified_lead_planner import _own_lead, _planner
 
+
+@pytest.fixture(autouse=True)
+def _curve_follow_code_enabled(monkeypatch):
+  """These tests exercise the curve follow code itself; nap-release forces it off
+  (common/nap_release.CURVE_FOLLOW_ENABLED, covered by test_nap_release)."""
+  from openpilot.common import nap_release
+  monkeypatch.setattr(nap_release, "CURVE_FOLLOW_ENABLED", True)
+
+
 DT = 0.05
 BEND = (120.0, 60.0, 1.0 / 45.0)
 STRAIGHT = (1e6, 1.0, 0.0)

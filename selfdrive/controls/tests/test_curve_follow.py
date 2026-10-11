@@ -30,6 +30,15 @@ from openpilot.selfdrive.controls.lib.curve_max_hold import curve_speed_for_curv
 from openpilot.selfdrive.controls.tests.test_curve_preview import _bend_kappa
 from openpilot.selfdrive.modeld.constants import ModelConstants
 
+
+@pytest.fixture(autouse=True)
+def _curve_follow_code_enabled(monkeypatch):
+  """These tests exercise the curve follow code itself; nap-release forces it off
+  (common/nap_release.CURVE_FOLLOW_ENABLED, covered by test_nap_release)."""
+  from openpilot.common import nap_release
+  monkeypatch.setattr(nap_release, "CURVE_FOLLOW_ENABLED", True)
+
+
 DT = 0.05
 T = np.array(ModelConstants.T_IDXS)
 TL = T.tolist()
