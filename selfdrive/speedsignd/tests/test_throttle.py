@@ -252,19 +252,21 @@ def test_pressure_backoff_adds_another_three_infers():
 def test_timing_lines_are_greppable():
   line = format_read_timing(
     read_interval_ms=17200, infer_ms=4300, engaged=True, backoff=False, reason="pace",
-    cpu_share=0.25, threads=1,
+    cpu_share=0.25, threads=1, backend="tinygrad-clang",
   )
   assert line.startswith("speedsignd timing ")
   assert "read_interval_ms=17200" in line
   assert "infer_ms=4300" in line
   assert "cpu_share=0.250" in line
   assert "threads=1" in line
+  assert "backend=tinygrad-clang" in line
   assert "engaged=1" in line
   assert "backoff=0" in line
   missing = format_read_timing(
     read_interval_ms=1000, infer_ms=50, engaged=False, backoff=False, reason="pace",
   )
   assert "cpu_share=na" in missing
+  assert "backend=unset" in missing
   event = format_backoff_timing(extra_ms=3980, infer_ms=3980, engaged=True, reason="model-lag")
   assert event.startswith("speedsignd timing ")
   assert "backoff=1" in event and "reason=model-lag" in event and "engaged=1" in event
@@ -324,6 +326,47 @@ def test_model_frame_drop_and_skip_are_backoff_reasons():
   assert skipped.consume() == "model-skip"
   assert skipped.reason() == ""
   assert join_reasons("model-drop", "cpu-budget", "model-drop") == "model-drop+cpu-budget"
+
+
+def test_model_skip_or_exec_over_50ms_pauses_at_least_10s():
+  """modelExecutionTime is seconds. 24 ms is healthy. Above 50 ms pauses 10 s."""
+  from openpilot.selfdrive.speedsignd.speedsignd import MODEL_GUARD_PAUSE_S, model_guard_rest_s
+  healthy = ModelWatch()
+  healthy.observe(1, 0.0, 0.024)
+  healthy.observe(2, 1.0, 0.026)
+  assert healthy.reason() == ""
+  assert not healthy.hard_guard()
+  assert model_guard_rest_s(4.0, 1.0, "", False) == 0.0
+
+  slow = ModelWatch()
+  slow.observe(1, 0.0, 0.024)
+  slow.observe(2, 0.0, 0.050)
+  assert slow.reason() == ""
+  slow.observe(3, 0.0, 0.051)
+  assert slow.reason() == "model-exec"
+  assert slow.hard_guard()
+  assert model_guard_rest_s(1.0, 1.0, slow.reason(), slow.hard_guard()) >= MODEL_GUARD_PAUSE_S
+  assert model_guard_rest_s(1.0, 1.0, slow.reason(), slow.hard_guard()) >= 10.0
+  assert slow.consume() == "model-exec"
+  assert slow.reason() == "model-exec"
+  slow.observe(4, 0.0, 0.022)
+  assert slow.consume() == "model-exec"
+  assert slow.reason() == ""
+
+  skipped = ModelWatch()
+  skipped.observe(1, 0.0, 0.022)
+  skipped.observe(4, 0.0, 0.022)
+  assert skipped.reason() == "model-skip"
+  assert skipped.hard_guard()
+  # A short infer's 3× backoff is under 10 s; the hard guard raises the floor.
+  assert model_guard_rest_s(0.2, 1.0, skipped.reason(), True) >= 10.0
+
+  drop = ModelWatch()
+  drop.observe(1, 0.0, 0.022)
+  drop.observe(2, 6.0, 0.022)
+  assert drop.reason() == "model-drop"
+  assert not drop.hard_guard()
+  assert model_guard_rest_s(4.0, 1.0, drop.reason(), False) == 12.0
 
 
 def test_cpu_share_meter_and_budget():

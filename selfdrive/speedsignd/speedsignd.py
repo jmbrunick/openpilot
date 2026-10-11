@@ -8,18 +8,21 @@ vCruise / HUD MAX, and does not talk to osm.org.
 Stock modelV2 has no speedSign head — this is a separate process, default off.
 
 Safety: Logger On starts the process + HUD. Detect keeps running while
-openpilot is engaged. One ONNX thread, SCHED_IDLE (else nice 19), pinned
-to little core 2 — not core 0 (UI), 1 (sensord), 3 (pandad/encoderd),
-4 (controlsd), 5 (plannerd/radard), 6 (camerad), or 7 (modeld). While
-engaged the average is at most 25% of that core: after each infer the
-process idles at least 3× the infer time. modelV2 frame drops, frame-id
-skips, and our own CPU share over that budget add more rest. HUD lights
-only when two reads agree on the same mph, then
-holds 45 s. JSONL stays a short line, skipped while engaged if disk stalls.
-SubMaster is polled at 20 Hz. Unknown cereal after a short startup allows
-throttled detect. Not gated on park / Force Offroad. Detect copies one
-upper-right 320² ROAD window and feeds it 1:1 — never a full-frame RGB
-convert. 4 Hz YOLO on a 3X starved modeld; the default stays 1 Hz.
+openpilot is engaged. Inference is CPU only (onnxruntime
+CPUExecutionProvider, or tinygrad DEV=CPU / CLANG). It must not open the
+QCOM GPU modeld uses. The first realize compiles and is refused while
+engaged. One ONNX thread, SCHED_IDLE (else nice 19), pinned to little
+core 2 — not core 0 (UI), 1 (sensord), 3 (pandad/encoderd), 4 (controlsd),
+5 (plannerd/radard), 6 (camerad), or 7 (modeld). While engaged the average
+is at most 25% of that core: after each infer the process idles at least
+3× the infer time. modelV2 frame drops add more rest. Any modelV2 frame
+skip, or modelExecutionTime above 50 ms, pauses at least 10 s. HUD lights
+only when two reads agree on the same mph, then holds 45 s. JSONL stays a
+short line, skipped while engaged if disk stalls. SubMaster is polled at
+20 Hz. Unknown cereal after a short startup allows throttled detect. Not
+gated on park / Force Offroad. Detect copies one right-side 628×320 ROAD
+window (x 1300–1928, y 520–840) and letterboxes it to YOLO_IMGSZ. 4 Hz
+YOLO on a 3X starved modeld; the default stays 1 Hz.
 """
 from __future__ import annotations
 
@@ -54,6 +57,9 @@ from openpilot.selfdrive.speedsignd.detect import (
   THREADS_DEFAULT,
   THREADS_ENV,
   SpeedSignDetector,
+  assert_cpu_backend,
+  compile_allowed,
+  describe_infer_runtimes,
   limit_infer_threads,
   ocr_tight_y,
   parse_infer_cap_ms,
@@ -112,6 +118,11 @@ CPU_BUDGET = 1.0 / (1.0 + IDLE_FACTOR)
 CPU_BUDGET_SLACK = 0.03
 # modelV2.frameDropPerc. The lag alert fires near 20; back off earlier.
 MODEL_DROP_PERC = 5.0
+# modelV2.modelExecutionTime is seconds (perf_counter in modeld). 22–26 ms
+# healthy is ~0.024. Above 50 ms means something else is on modeld's GPU
+# or the model itself stalled. Pause at least 10 s. Same for any frameId skip.
+MODEL_EXEC_LIMIT_S = 0.050
+MODEL_GUARD_PAUSE_S = 10.0
 SECOND_LOOK_FRAMES = 2
 SECOND_LOOK_DEADLINE_S = 0.30
 VISION_TIMEOUT_MS = 200
@@ -465,6 +476,14 @@ def backoff_extra_s(infer_s: float, period_s: float, reason: str) -> float:
   return max(float(period_s), IDLE_FACTOR * max(0.0, float(infer_s)))
 
 
+def model_guard_rest_s(infer_s: float, period_s: float, reason: str, hard: bool) -> float:
+  """Frame-drop backoff, with a 10 s floor on a frame skip or modeld > 50 ms."""
+  extra = backoff_extra_s(infer_s, period_s, reason)
+  if hard:
+    return max(extra, MODEL_GUARD_PAUSE_S)
+  return extra
+
+
 def collect_host_pressure(sm: Any, *, stat_path: str = "/proc/stat", ncpu: int | None = None) -> HostPressure:
   running, blocked = read_proc_stat_pressure(stat_path)
   if ncpu is None:
@@ -491,13 +510,15 @@ def reset_ratekeeper_if_behind(rk, now: float) -> bool:
 
 @dataclass
 class ModelWatch:
-  """modelV2 frame drops and frame-id gaps. No new socket beyond modelV2."""
+  """modelV2 frame drops, frame-id gaps, and modelExecutionTime. No new socket."""
   last_frame: int | None = None
   last_drop: float | None = None
+  last_exec: float | None = None
   drop_hot: bool = False
+  exec_hot: bool = False
   skipped: bool = False
 
-  def observe(self, frame_id: int | None, drop: float | None) -> None:
+  def observe(self, frame_id: int | None, drop: float | None, exec_s: float | None = None) -> None:
     if frame_id is not None and self.last_frame is not None and int(frame_id) > int(self.last_frame) + 1:
       self.skipped = True
     if drop is not None:
@@ -506,23 +527,40 @@ class ModelWatch:
       if value >= MODEL_DROP_PERC:
         self.drop_hot = True
       self.last_drop = value
+    if exec_s is not None:
+      try:
+        exec_value = float(exec_s)
+      except (TypeError, ValueError):
+        exec_value = None
+      if exec_value is not None and math.isfinite(exec_value):
+        self.last_exec = exec_value
+        if exec_value > MODEL_EXEC_LIMIT_S:
+          self.exec_hot = True
     if frame_id is not None:
       self.last_frame = int(frame_id)
+
+  def hard_guard(self) -> bool:
+    """Any skipped frame id, or modeld execution above 50 ms."""
+    return bool(self.skipped or self.exec_hot)
 
   def reason(self) -> str:
     parts: list[str] = []
     if self.drop_hot:
       parts.append("model-drop")
+    if self.exec_hot:
+      parts.append("model-exec")
     if self.skipped:
       parts.append("model-skip")
     return "+".join(parts)
 
   def consume(self) -> str:
-    """Return the reason and clear a one-shot skip. A hot drop stays hot."""
+    """Return the reason and clear a one-shot skip. A hot drop or exec stays hot."""
     reason = self.reason()
     self.skipped = False
     if self.last_drop is None or self.last_drop < MODEL_DROP_PERC:
       self.drop_hot = False
+    if self.last_exec is None or self.last_exec <= MODEL_EXEC_LIMIT_S:
+      self.exec_hot = False
     return reason
 
 
@@ -962,6 +1000,7 @@ def format_read_timing(
   reason: str,
   cpu_share: float | None = None,
   threads: int = 1,
+  backend: str = "",
 ) -> str:
   """One greppable line per finished read. `speedsignd timing`."""
   share = "na" if cpu_share is None else f"{float(cpu_share):.3f}"
@@ -971,6 +1010,7 @@ def format_read_timing(
     + f"infer_ms={infer_ms:.0f} "
     + f"cpu_share={share} "
     + f"threads={int(threads)} "
+    + f"backend={backend or 'unset'} "
     + f"engaged={int(bool(engaged))} "
     + f"backoff={int(bool(backoff))} "
     + f"reason={reason or 'pace'}"
@@ -983,6 +1023,7 @@ def format_backoff_timing(
   infer_ms: float,
   engaged: bool,
   reason: str,
+  backend: str = "",
 ) -> str:
   """Greppable back-off event. Still starts with `speedsignd timing`."""
   return (
@@ -990,7 +1031,8 @@ def format_backoff_timing(
     + f"backoff=1 reason={reason or 'pressure'} "
     + f"extra_ms={extra_ms:.0f} "
     + f"infer_ms={infer_ms:.0f} "
-    + f"engaged={int(bool(engaged))}"
+    + f"engaged={int(bool(engaged))} "
+    + f"backend={backend or 'unset'}"
   )
 
 
@@ -1068,7 +1110,11 @@ def observe_model(watch: ModelWatch, sm) -> None:
   except Exception:
     return
   try:
-    watch.observe(getattr(msg, "frameId", None), getattr(msg, "frameDropPerc", None))
+    watch.observe(
+      getattr(msg, "frameId", None),
+      getattr(msg, "frameDropPerc", None),
+      getattr(msg, "modelExecutionTime", None),
+    )
   except Exception:
     return
 
@@ -1096,6 +1142,14 @@ def main():
   debounce = SignDebounce()
   backend = detector.backend_name()
   weights_sha = detector.weights_sha_short()
+  if detector.onnx is not None and detector.onnx.session is not None:
+    backend = assert_cpu_backend(detector.onnx.session)
+  runtimes = describe_infer_runtimes()
+  cloudlog.info(
+    "speedsignd cpu-only asserted backend=%s runtimes=%s dev=%s qcom=%s gpu=%s cpu_count=%s",
+    backend, runtimes, os.environ.get("DEV", ""), os.environ.get("QCOM", ""),
+    os.environ.get("GPU", ""), os.environ.get("CPU_COUNT", ""),
+  )
   cloudlog.info(
     "speedsignd starting log=%s backend=%s onnx=%s sha=%s sm_hz=%.1f detect_hz=%.2f "
     + "budget_ms=%.0f cap_ms=%.0f threads=%d cores=%s nice=%d sched=%s "
@@ -1154,8 +1208,11 @@ def main():
     sample = engagement_from_sm(sm, now=now_mono, started_at=started_at)
     live_model = model_watch.reason()
     if live_model and not model_extended:
-      extra_now = backoff_extra_s(last_infer_s, period_s, live_model)
-      if next_detect > 0.0:
+      hard_now = model_watch.hard_guard()
+      extra_now = model_guard_rest_s(last_infer_s, period_s, live_model, hard_now)
+      # A frame skip or modeld > 50 ms pauses even before the first infer.
+      # A frameDropPerc backoff still only extends a schedule that already exists.
+      if next_detect > 0.0 or hard_now:
         next_detect = max(next_detect, now_mono + extra_now)
       model_extended = True
       cloudlog.warning(
@@ -1165,6 +1222,7 @@ def main():
           infer_ms=last_infer_s * 1000.0,
           engaged=sample.controlling,
           reason=live_model,
+          backend=detector.backend_name(),
         ),
       )
     elif not live_model:
@@ -1199,7 +1257,11 @@ def main():
       last_timing_log = now_mono
     # Retry the weights read at nice 19, including while engaged. Install
     # itself stays an offroad settings action and does not run here.
-    if sample.allow_detect and detector.onnx is None and now_mono - last_onnx_try >= ONNX_RETRY_S:
+    # Session create can compile. Do that only while not engaged.
+    if (
+      sample.allow_detect and not sample.controlling and detector.onnx is None
+      and now_mono - last_onnx_try >= ONNX_RETRY_S
+    ):
       last_onnx_try = now_mono
       if detector.try_reload():
         cloudlog.info(
@@ -1224,15 +1286,19 @@ def main():
             reason=pending_reason,
             cpu_share=share,
             threads=threads_now,
+            backend=detector.backend_name(),
           ),
         )
         pressure = collect_host_pressure(sm)
+        model_reason = model_watch.reason()
+        hard = model_watch.hard_guard()
+        model_watch.consume()
         reason = join_reasons(
           pressure_reason(pressure),
-          model_watch.consume(),
+          model_reason,
           "cpu-budget" if cpu_over_budget(share) else "",
         )
-        extra_s = backoff_extra_s(outcome.infer_s, period_s, reason)
+        extra_s = model_guard_rest_s(outcome.infer_s, period_s, reason, hard)
         scheduled_backoff = extra_s > 0.0
         scheduled_reason = reason or "pace"
         if scheduled_backoff:
@@ -1243,6 +1309,7 @@ def main():
               infer_ms=outcome.infer_s * 1000.0,
               engaged=sample.controlling,
               reason=reason,
+              backend=detector.backend_name(),
             ),
           )
         next_detect = max(
@@ -1373,6 +1440,11 @@ def main():
           stalled = bool(sample.controlling) and disk_stalled(pressure_now)
           engaged_now = bool(sample.controlling)
 
+          ready = detector.compile_ready()
+          # Compile only when this read started disengaged. An already-realized
+          # graph runs while engaged and stays on CPU.
+          detector.allow_compile(not engaged_now)
+
           def _run(nv12=nv12, lat=lat, lon=lon, bearing=bearing, gps_ok=gps_ok,
                    engaged_now=engaged_now, stalled=stalled):
             signs_w = detect_if_allowed(
@@ -1381,7 +1453,20 @@ def main():
               disk_stalled=stalled,
             )
             return signs_w[0], signs_w[1], detector.diag_dict()
-          if slot.start(_run):
+
+          if not compile_allowed(controlling=engaged_now, ready=ready):
+            last_skip_reason = "compile-wait"
+            next_detect = max(next_detect, time.monotonic() + 1.0)
+            if now_mono - last_gate_log >= INFER_LOG_PERIOD_S:
+              cloudlog.warning(
+                "%s",
+                format_backoff_timing(
+                  extra_ms=1000.0, infer_ms=0.0, engaged=True,
+                  reason="compile-wait", backend=detector.backend_name(),
+                ),
+              )
+              last_gate_log = now_mono
+          elif slot.start(_run):
             now_start = time.monotonic()
             pending_interval_ms = 0.0 if last_read_start <= 0.0 else (now_start - last_read_start) * 1000.0
             pending_backoff = scheduled_backoff

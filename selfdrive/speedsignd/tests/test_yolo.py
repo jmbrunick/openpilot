@@ -88,12 +88,12 @@ def test_road_detect_crop_is_the_native_right_window():
   rgb = np.zeros((1208, 1928, 3), np.uint8)
   crop, box = road_detect_crop(rgb)
   x, y, w, h = box
-  assert crop.shape == (320, 320, 3)
-  assert (x, y, w, h) == (1100, 325, 320, 320)
-  # 1:1 into the 320 ONNX. The optical center (964, 604) stays left of the tile.
-  assert YOLO_IMGSZ / float(h) == pytest.approx(1.0)
+  assert crop.shape == (320, 628, 3)
+  assert (x, y, w, h) == (1300, 520, 628, 320)
+  # Width limits the letterbox. A 60 px sign stays ≥ 30 px at imgsz 320.
+  assert 60 * (YOLO_IMGSZ / float(w)) >= 30.0
   assert x > 964
-  assert road_detect_crop_rect(1208, 1928) == (1100, 325, 320, 320)
+  assert road_detect_crop_rect(1208, 1928) == (1300, 520, 628, 320)
 
 
 def test_yolo_peak_reports_below_threshold_class():
@@ -255,7 +255,7 @@ def test_yolo_crop_offsets_bbox_to_full_road_frame():
   assert x >= 1100
   d = det.diag_dict()
   assert d["frame_w"] == 1928 and d["frame_h"] == 1208
-  assert d["crop"] == (1100, 325, 320, 320)
+  assert d["crop"] == (1300, 520, 628, 320)
   assert d["backend"] == "tinygrad"
 
 
@@ -416,7 +416,7 @@ def test_onnx_nv12_crop_path_offsets_and_chroma():
   d = det.diag_dict()
   assert d["backend"] == "tinygrad"
   assert d["frame_w"] == 1928 and d["frame_h"] == 1208
-  assert d["crop"] == (1100, 325, 320, 320)
+  assert d["crop"] == (1100, 325, 320, 320)  # caller-supplied crop, not the live window
   assert d["letterbox"] == 320
   assert d["chroma"] == 1
   assert d["luma_mean"] == pytest.approx(88.0, abs=1.0)

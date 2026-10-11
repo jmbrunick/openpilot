@@ -28,6 +28,25 @@ INFER_THREAD_ENV = (
 for _thread_key in INFER_THREAD_ENV:
   os.environ[_thread_key] = "1"
 
+# tinygrad's default device on a 3X is QCOM (the Adreno modeld already uses).
+# DEV is read once, at import. Pin CPU/CLANG and hide every GPU before that.
+_GPU_ENV = ("GPU", "QCOM", "CUDA", "METAL", "AMD", "NV", "CL", "WEBGPU", "DSP")
+
+
+def pin_cpu_only_env() -> None:
+  """Force a CPU backend. Never leaves a GPU or QCOM device enabled."""
+  os.environ["DEV"] = "CPU"
+  os.environ["CPU"] = "1"
+  os.environ["CLANG"] = "1"
+  os.environ["CPU_COUNT"] = "1"
+  for key in _GPU_ENV:
+    os.environ[key] = "0"
+  for key in INFER_THREAD_ENV:
+    os.environ[key] = "1"
+
+
+pin_cpu_only_env()
+
 import numpy as np
 
 from openpilot.selfdrive.speedsignd.detect_types import MUTCD_MPH, SpeedSign, shift_sign
@@ -761,53 +780,168 @@ def session_backend(session) -> str:
     return str(tagged)
   mod = getattr(type(session), "__module__", "")
   if "onnxruntime" in mod:
-    return "onnxruntime"
+    return "onnxruntime-cpu"
   name = type(session).__name__
   if name == "_TinyOrtSession":
-    return "tinygrad"
+    return "tinygrad-cpu"
   return name
+
+
+def compile_allowed(*, controlling: bool, ready: bool) -> bool:
+  """First realize compiles the graph. Never start that while engaged."""
+  return bool(ready) or not bool(controlling)
+
+
+def _device_is_cpu(name: str) -> bool:
+  base = (name or "").split(":")[0].strip().upper()
+  return base in ("CPU", "CLANG")
+
+
+def assert_cpu_backend(session) -> str:
+  """Startup check. Raise unless this session can only run on CPU.
+
+  onnxruntime must be exactly CPUExecutionProvider. tinygrad must be the
+  CPU/CLANG device, never QCOM, CUDA, METAL, or any other GPU.
+  """
+  if session is None:
+    raise AssertionError("speedsignd session is missing")
+  get_providers = getattr(session, "get_providers", None)
+  if get_providers is not None and not isinstance(session, _TinyOrtSession):
+    providers = list(get_providers())
+    if providers != ["CPUExecutionProvider"]:
+      raise AssertionError("onnxruntime providers " + str(providers) + " are not CPU-only")
+    try:
+      session._nap_backend = "onnxruntime-cpu"
+      session._nap_device = "CPU"
+    except Exception:
+      pass
+    return "onnxruntime-cpu"
+  device = str(getattr(session, "_nap_device", "") or "")
+  backend = str(getattr(session, "_nap_backend", "") or "")
+  blob = (backend + " " + device).upper()
+  for tok in ("QCOM", "CUDA", "METAL", "WEBGPU", "OPENCL", "GPU"):
+    if tok in blob:
+      raise AssertionError("speedsignd backend is not CPU: " + backend + " device=" + device)
+  if not (_device_is_cpu(device) or "CPU" in blob or "CLANG" in blob):
+    raise AssertionError("speedsignd backend is not CPU: " + backend + " device=" + device)
+  renderer = str(getattr(session, "_nap_renderer", "") or "")
+  if "CLANG" in device.upper() or "CLANG" in renderer.upper() or backend == "tinygrad-clang":
+    return "tinygrad-clang"
+  return "tinygrad-cpu"
+
+
+def describe_infer_runtimes() -> str:
+  """What this process can import. The 3X image has tinygrad, not onnxruntime."""
+  pin_cpu_only_env()
+  try:
+    import onnxruntime as ort
+    ort_s = "onnxruntime-" + str(getattr(ort, "__version__", "present"))
+  except Exception as e:
+    ort_s = "onnxruntime-absent(" + type(e).__name__ + ")"
+  try:
+    import tinygrad
+    tg_s = "tinygrad-" + str(getattr(tinygrad, "__version__", "present"))
+  except Exception as e:
+    tg_s = "tinygrad-absent(" + type(e).__name__ + ")"
+  return ort_s + " " + tg_s
+
+
+def _open_tinygrad_cpu() -> tuple[str, str]:
+  """Import tinygrad only after DEV=CPU. Do not probe QCOM or any GPU."""
+  pin_cpu_only_env()
+  from tinygrad.device import Device
+  from tinygrad.helpers import DEV
+  DEV.value = "CPU"
+  opened = Device["CPU"]
+  name = str(getattr(opened, "device", "CPU"))
+  if not _device_is_cpu(name):
+    raise AssertionError("tinygrad opened " + name + ", not CPU")
+  renderer = type(getattr(opened, "renderer", None)).__name__
+  renderer_u = renderer.upper()
+  for tok in ("QCOM", "CUDA", "METAL", "GPU", "WEBGPU"):
+    if tok in renderer_u:
+      raise AssertionError("tinygrad CPU renderer is " + renderer)
+  if "CLANG" not in renderer_u and "LLVM" not in renderer_u and "CPU" not in renderer_u:
+    raise AssertionError("tinygrad renderer " + renderer + " is not CPU/CLANG")
+  return name, renderer
 
 
 def _onnx_session(path: str) -> tuple[object | None, str]:
   threads = limit_infer_threads()
+  pin_cpu_only_env()
   try:
     import onnxruntime as ort
     opts = ort.SessionOptions()
     opts.intra_op_num_threads = threads
     opts.inter_op_num_threads = 1
     sess = ort.InferenceSession(path, opts, providers=["CPUExecutionProvider"])
-    return sess, "onnxruntime"
+    # Graph optimize already ran on CPU. Later realizes must not compile again.
+    sess.compiled = True
+    return sess, assert_cpu_backend(sess)
+  except ImportError:
+    pass
+  except AssertionError:
+    raise
   except Exception:
     pass
   try:
+    device, renderer = _open_tinygrad_cpu()
     from tinygrad import Tensor
     from tinygrad.nn.onnx import OnnxRunner
-    return _TinyOrtSession(OnnxRunner(path), Tensor), "tinygrad"
+    # Parse only. The first realize compiles; speedsignd refuses that while engaged.
+    runner = OnnxRunner(path)
+    sess = _TinyOrtSession(runner, Tensor, device=device, renderer=renderer)
+    return sess, assert_cpu_backend(sess)
+  except AssertionError:
+    raise
   except Exception:
     return None, ""
 
 
 class _TinyOrtSession:
-  """onnxruntime-shaped wrapper around tinygrad OnnxRunner (3X has tinygrad)."""
+  """onnxruntime-shaped wrapper around tinygrad OnnxRunner, CPU/CLANG only."""
 
-  def __init__(self, runner, tensor_cls):
+  def __init__(self, runner, tensor_cls, device: str = "CPU", renderer: str = ""):
     self.runner = runner
     self._tensor = tensor_cls
-    self._nap_backend = "tinygrad"
+    self._nap_device = device
+    self._nap_renderer = renderer
+    self._nap_backend = "tinygrad-clang" if "CLANG" in renderer.upper() else "tinygrad-cpu"
+    self.compiled = False
+    self._allow_compile = False
     names = list(getattr(runner, "graph_inputs", {}) or {"images": None})
     self._inputs = [type("I", (), {"name": names[0] if names else "images", "shape": [1, 3, YOLO_IMGSZ, YOLO_IMGSZ]})()]
+
+  def allow_compile(self, allow: bool) -> None:
+    self._allow_compile = bool(allow)
 
   def get_inputs(self):
     return self._inputs
 
   def run(self, _outs, feed: dict):
-    tensors = {k: self._tensor(v) for k, v in feed.items()}
+    if not self.compiled and not self._allow_compile:
+      raise RuntimeError("compile-blocked while driving")
+    tensors = {}
+    for k, v in feed.items():
+      tensor = self._tensor(v)
+      move = getattr(tensor, "to", None)
+      if move is not None:
+        try:
+          tensor = move("CPU")
+        except Exception:
+          pass
+      tensors[k] = tensor
     out = self.runner(tensors)
     if isinstance(out, dict):
       val = next(iter(out.values()))
     else:
       val = out
+    dev = str(getattr(val, "device", self._nap_device) or self._nap_device)
+    if not _device_is_cpu(dev):
+      raise AssertionError("speedsignd realized on " + dev + ", not CPU")
+    self._nap_device = dev.split(":")[0].upper()
     arr = val.numpy() if hasattr(val, "numpy") else np.asarray(val)
+    self.compiled = True
     return [arr]
 
 
@@ -921,6 +1055,18 @@ class SpeedSignDetector:
       return False
     self.onnx = loaded
     return True
+
+  def compile_ready(self) -> bool:
+    """False until the first realize. onnxruntime finishes that at session create."""
+    if self.onnx is None or self.onnx.session is None:
+      return True
+    return bool(getattr(self.onnx.session, "compiled", True))
+
+  def allow_compile(self, allow: bool) -> None:
+    sess = None if self.onnx is None else self.onnx.session
+    fn = getattr(sess, "allow_compile", None)
+    if fn is not None:
+      fn(bool(allow))
 
   def detect(self, y: np.ndarray, min_conf: float | None = None, rgb: np.ndarray | None = None,
              nv12=None) -> list[SpeedSign]:

@@ -108,43 +108,67 @@ def detect_crop_rect(h: int, w: int) -> tuple[int, int, int, int]:
   return x, y, side, side
 
 
-# 3X ROAD: 1928×1208, f = 8.0 mm / 3 µm ≈ 2667 px, principal point (964, 604).
-# A right-shoulder R2-1 ~10 ft right and ~4 ft above the camera projects to
-#   x = 964 + 26670/D, y = 604 - 10668/D.
-#   150 ft → (1142, 533); 60 ft → (1408, 426). That arc fits in one 320² tile
-# centered on ~90 ft (1260, 485): x=1100, y=325. Fed 1:1 into the 320 ONNX.
-# The old 1208² letterbox left the same ~80 ft plate at ~20 px (0/29 drive-bys).
-# Two 640 native tiles scored 24/29 but cost 8× one 320 infer, which does not
-# fit a 25% core budget at a useful rate.
-NATIVE_WINDOW_X = 1100
-NATIVE_WINDOW_Y = 325
-NATIVE_WINDOW_SIDE = 320
+# 3X ROAD is 1928×1208. Route 0000017a put the real signs at about
+# y=557–805, x=1110–1914 — lower and farther right than the old 320² tile
+# at (1100, 325). This rect is the right-hand cluster: x 1300–1928, y 520–840.
+# All four numbers are even so the NV12 chroma plane stays aligned.
+# Letterbox into YOLO_IMGSZ (weights_manifest, 320 today) uses
+# scale = min(imgsz/320, imgsz/628). At 320 that is 320/628 ≈ 0.510, so a
+# sign ≥ 60 px tall in the frame stays ≥ 30 px in the model
+# (60 * 320/628 ≈ 30.6). A 30-inch plate is ~67 px at 100 ft and ~83 px at
+# 80 ft; x=1300 is about 80 ft on f = 8 mm / 3 µm, so plates inside this
+# window are the closer ones. Farther signs (x<1300, ~44 px at 150 ft) stay
+# outside on purpose. The constants do not depend on YOLO_IMGSZ, so a
+# retrained YOLOv8n at 320 drops in through weights_manifest.
+NATIVE_WINDOW_X = 1300
+NATIVE_WINDOW_Y = 520
+NATIVE_WINDOW_W = 628
+NATIVE_WINDOW_H = 320
+# Unit-test tiles and a tight second-look crop are already small.
+_SMALL_FRAME = 320
+
+
+def native_window_model_scale(imgsz: int) -> float:
+  """How tall a native-frame sign stays after letterbox into imgsz."""
+  return min(float(imgsz) / float(NATIVE_WINDOW_H), float(imgsz) / float(NATIVE_WINDOW_W))
 
 
 def native_detect_window(h: int, w: int) -> tuple[int, int, int, int]:
-  """One upper-right 320² window. No downscale into the exported ONNX.
+  """Right-side ROAD window. Model input size stays YOLO_IMGSZ.
 
   A frame that is already ≤320 on both sides (unit-test tiles, a tight
-  second-look crop) is used whole. Only the 1928×1208 ROAD frame, and
-  other large frames, get the right-shoulder window.
+  second-look crop) is used whole. The 1928×1208 ROAD frame gets the
+  fixed rect above. Other large frames scale that rect.
   """
   ih, iw = int(h), int(w)
   if iw == 1928 and ih == 1208:
-    return (NATIVE_WINDOW_X, NATIVE_WINDOW_Y, NATIVE_WINDOW_SIDE, NATIVE_WINDOW_SIDE)
-  if iw <= NATIVE_WINDOW_SIDE and ih <= NATIVE_WINDOW_SIDE:
+    return (NATIVE_WINDOW_X, NATIVE_WINDOW_Y, NATIVE_WINDOW_W, NATIVE_WINDOW_H)
+  if iw <= _SMALL_FRAME and ih <= _SMALL_FRAME:
     side = max(2, min(iw, ih))
     return 0, 0, side, side
   sx = iw / 1928.0
   sy = ih / 1208.0
-  side = max(2, int(round(NATIVE_WINDOW_SIDE * min(sx, sy))))
+  ww = max(2, int(round(NATIVE_WINDOW_W * sx)))
+  hh = max(2, int(round(NATIVE_WINDOW_H * sy)))
   x = int(round(NATIVE_WINDOW_X * sx))
   y = int(round(NATIVE_WINDOW_Y * sy))
-  if x + side > iw:
-    x = max(0, iw - side)
-  if y + side > ih:
-    y = max(0, ih - side)
-  side = max(2, min(side, iw - x, ih - y))
-  return x, y, side, side
+  x -= x % 2
+  y -= y % 2
+  ww -= ww % 2
+  hh -= hh % 2
+  ww = max(2, ww)
+  hh = max(2, hh)
+  if x + ww > iw:
+    x = max(0, iw - ww)
+    x -= x % 2
+  if y + hh > ih:
+    y = max(0, ih - hh)
+    y -= y % 2
+  ww = max(2, min(ww, iw - x))
+  hh = max(2, min(hh, ih - y))
+  ww -= ww % 2
+  hh -= hh % 2
+  return x, y, max(2, ww), max(2, hh)
 
 
 def upscale_gray(img: np.ndarray, min_side: int = 96) -> np.ndarray:
@@ -179,8 +203,8 @@ def copy_nv12_rect(buf, rect: tuple[int, int, int, int]) -> Nv12DetectCrop | Non
 def copy_nv12_detect_crop(buf) -> Nv12DetectCrop | None:
   """Copy the native upper-right window only. No full-frame RGB.
 
-  A 320² window is ~150 KB of Y versus a 1208² crop (~1.5 MB) or a full
-  1928×1208 RGB frame (~7 MB).
+  The 628×320 window is ~200 KB of Y versus a 1208² crop (~1.5 MB) or a
+  full 1928×1208 RGB frame (~7 MB).
   """
   y_full = y_plane_from_nv12(buf, copy=False)
   if y_full is None:
@@ -254,10 +278,10 @@ def _bt601_yuv_to_rgb(y: np.ndarray, u: np.ndarray, v: np.ndarray) -> np.ndarray
 
 
 def letterbox_rgb_from_nv12_crop(crop: Nv12DetectCrop, size: int) -> tuple[np.ndarray, float, int, int]:
-  """Downsample the square NV12 crop to size² RGB. No full-frame convert.
+  """Letterbox the NV12 crop to size² RGB. No full-frame convert.
 
-  Square crop → letterbox scale is size/side with no pad. YOLO still sees
-  chroma (U/V resized with the luma), just not 2.3M RGB pixels.
+  A square crop has scale size/side and no pad. The road window is 628×320,
+  so scale is size/628 and the short side is padded. YOLO still sees chroma.
   """
   y = crop.y
   if y.ndim != 2 or y.shape[0] < 2 or y.shape[1] < 2:

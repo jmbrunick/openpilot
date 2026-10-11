@@ -115,18 +115,38 @@ def test_detect_crop_rect_is_right_biased_square():
   assert (x, y, w, h) == (720, 0, 1208, 1208)
 
 
-def test_native_window_covers_the_right_shoulder_arc():
-  """f = 8 mm / 3 µm ≈ 2667 px. A sign 10 ft right and 4 ft above projects to
-  (964 + 26670/D, 604 - 10668/D). 150 ft and 60 ft both sit in the 320² tile.
+def test_native_window_covers_the_road_test_signs():
+  """Route 0000017a signs sat at y=557–805, x=1110–1914. The window is
+  x 1300–1928, y 520–840. Letterbox into 320 keeps a ≥60 px sign at ≥30 px.
   """
-  from openpilot.selfdrive.speedsignd.nv12 import native_detect_window
+  from openpilot.selfdrive.speedsignd.nv12 import (
+    NATIVE_WINDOW_H,
+    NATIVE_WINDOW_W,
+    NATIVE_WINDOW_X,
+    NATIVE_WINDOW_Y,
+    native_detect_window,
+    native_window_model_scale,
+  )
+  from openpilot.selfdrive.speedsignd.weights_manifest import YOLO_IMGSZ
   x, y, w, h = native_detect_window(1208, 1928)
-  assert (x, y, w, h) == (1100, 325, 320, 320)
-  for dist, px, py in ((150, 1141.8, 532.9), (90, 1260.3, 485.5), (60, 1408.5, 426.2)):
-    assert x <= px <= x + w, dist
-    assert y <= py <= y + h, dist
+  assert (x, y, w, h) == (NATIVE_WINDOW_X, NATIVE_WINDOW_Y, NATIVE_WINDOW_W, NATIVE_WINDOW_H)
+  assert (x, y, w, h) == (1300, 520, 628, 320)
+  assert x <= 1300 and x + w >= 1928
+  assert y <= 520 and y + h >= 840
+  # Observed band sits inside. The left tail x=1110–1300 is the far signs.
+  assert y <= 557 and y + h >= 805
+  assert x + w >= 1914
+  assert x % 2 == y % 2 == w % 2 == h % 2 == 0
+  scale = native_window_model_scale(YOLO_IMGSZ)
+  assert scale == pytest.approx(320 / 628)
+  assert 60 * scale >= 30.0
+  # 30-inch plate ~67 px at 100 ft, ~83 px at 80 ft (x=1300 is about 80 ft).
+  assert 67 * scale >= 30.0
+  assert 83 * scale >= 30.0
   # The old 1208² letterbox is still available and is not the live window.
   assert detect_crop_rect(1208, 1928) == (720, 0, 1208, 1208)
+  # Window constants stay independent of the model input size.
+  assert YOLO_IMGSZ == 320
 
 
 def test_copy_nv12_detect_crop_is_native_320_and_keeps_chroma():
@@ -134,14 +154,16 @@ def test_copy_nv12_detect_crop_is_native_320_and_keeps_chroma():
   crop = copy_nv12_detect_crop(buf)
   assert crop is not None
   assert crop.frame_w == 1928 and crop.frame_h == 1208
-  assert crop.crop == (1100, 325, 320, 320)
-  assert crop.y.shape == (320, 320)
+  assert crop.crop == (1300, 520, 628, 320)
+  assert crop.y.shape == (320, 628)
   assert crop.uv is not None
-  assert crop.uv.shape == (160, 320)
+  assert crop.uv.shape == (160, 628)
   boxed, scale, pad_x, pad_y = letterbox_rgb_from_nv12_crop(crop, 320)
   assert boxed.shape == (320, 320, 3)
-  assert pad_x == pad_y == 0
-  assert scale == pytest.approx(1.0)
+  assert pad_x == 0
+  assert scale == pytest.approx(320 / 628)
+  nh = int(round(320 * (320 / 628)))
+  assert pad_y == (320 - nh) // 2
   # Neutral gray stays gray — Y-pad zeros were not read as U=V=0.
   assert 120 <= int(boxed[160, 160, 0]) <= 136
   assert 120 <= int(boxed[160, 160, 1]) <= 136

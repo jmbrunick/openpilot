@@ -184,6 +184,7 @@ SPEED_SIGN_LOG_DESCRIPTION = (
   "JSONL line under /data/media/0/nap/speed_signs.jsonl (t, lat, lon, bearing, mph, conf). "
   "Detect keeps running while openpilot is engaged, at 1 Hz or slower so one "
   "little core stays near 25 percent (idle at least 3× the inference). "
+  "Inference stays on CPU (never the GPU modeld uses). "
   "SCHED_IDLE, or nice 19 if that is unavailable, one thread on core 2. "
   "It backs off when the CPU is loaded or the driving model / controls report lag. "
   "The plate shows the mph while engaged, not WAIT (WAIT was the old pause). "

@@ -4,17 +4,17 @@ On-drive MUTCD numeric speed-sign logger for comma 3X. **Default off.** Log-only
 
 Stock `modelV2` has no `speedSign` head. This is a separate process (`speedsignd`) that reads the ROAD camera + GNSS and runs a compact **YOLOv8 ONNX** (US traffic-sign classes, including 55/60). The old numpy template matcher is tests/dev only — it does not see real roadside signs.
 
-**Driving model first.** Logger On + ONNX weights used to run YOLOv8s at 4 Hz via tinygrad `OnnxRunner` on CPU. That saturates a 3X core and can show “driving model is lagging”, ~35% `modeld` frame drops, **TAKE CONTROL IMMEDIATELY**, or “Communication Issue Between Processes.”
+**Driving model first.** Route 0000017a showed the failure was the GPU, not the CPU budget. modeld sat at 22–26 ms until speedsignd's tinygrad realize dispatched onto the same Adreno (QCOM) modeld uses, and modeld jumped to 300–710 ms. Inference is now CPU only: `onnxruntime` `CPUExecutionProvider` with `intra_op_num_threads=1` when that package is installed, otherwise tinygrad `DEV=CPU` (CLANG/LLVM renderer, `CPU_COUNT=1`, GPU and QCOM forced off). A startup assertion refuses any other device. The first realize compiles (~108 s on the road test) and is refused while engaged (`reason=compile-wait`). 4 Hz YOLO can still show “driving model is lagging”, ~35% `modeld` frame drops, **TAKE CONTROL IMMEDIATELY**, or “Communication Issue Between Processes.”
 
 **Logger On keeps running YOLO while openpilot is engaged** (`selfdriveState.active`, or state in enabled / softDisabling / overriding). The process and SIGN / NO WT HUD still start. The plate shows the held mph while engaged. It does **not** show **WAIT** for that — WAIT was the old pause, and it is why a drive that was engaged 95% of the time never read a sign.
 
-Report `swaglog | grep "speedsignd timing"` (`read_interval_ms`, `infer_ms`, `engaged`, `backoff`). Do not treat a blank plate as “drive parked” or “weights are bad.”
+Report `swaglog | grep "speedsignd timing"` (`read_interval_ms`, `infer_ms`, `cpu_share`, `threads`, `backend`, `engaged`, `backoff`, `reason`). `backend=` must be `onnxruntime-cpu`, `tinygrad-clang`, or `tinygrad-cpu`. Do not treat a blank plate as “drive parked” or “weights are bad.”
 
 **Engaged and manual driving both collect** — including moving, no assist. This is **not** gated on park or Force Offroad. Logger On, and log speed-limit signs + GNSS to JSONL. OSM upload is future work.
 
 Unknown cereal is **not** a pause. After a ~2 s startup, unread `selfdriveState` allows the same throttled detect and logs a warning. SubMaster polls at **20 Hz** so 100 Hz `selfdriveState` alive/valid cannot flap the gate; YOLO stays ≤ **1 Hz**, and a long infer idles at least 3× that infer before the next one (about 25% of one core). Engaging does **not** abandon an in-flight ONNX.
 
-Detect is **1 Hz** or slower, `SCHED_IDLE` (else nice 19), little **core 2** only, one thread — engaged and manual. Core 0 is the UI, 1 is sensord, 3 is pandad/encoderd, 4 is controlsd, 7 is modeld. **If TAKE CONTROL or lag comes back, turn Speed Sign Logger Off.** Do not raise `modeld` priority. A back-off line in swaglog means speedsignd saw `modelV2` frame drops, a skipped frame id, its own CPU share over 25%, or a model/controls alert, and rested.
+Detect is **1 Hz** or slower, `SCHED_IDLE` (else nice 19), little **core 2** only, one thread — engaged and manual. Core 0 is the UI, 1 is sensord, 3 is pandad/encoderd, 4 is controlsd, 7 is modeld. **If TAKE CONTROL or lag comes back, turn Speed Sign Logger Off.** Do not raise `modeld` priority. A back-off line in swaglog means speedsignd saw `modelV2` frame drops, a skipped frame id, `modelExecutionTime` above 50 ms, its own CPU share over 25%, or a model/controls alert, and rested. A frame skip or modeld over 50 ms pauses at least 10 s (`reason=model-skip` or `reason=model-exec`).
 
 ## Enable
 
@@ -33,18 +33,21 @@ Optional detect rate (default 1 Hz, clamped 0.2–4): `NAP_SPEED_SIGN_HZ=0.5` in
 
 Manual detect is **cheap-path** so Logger On is less likely to starve `modeld`:
 
-- one upper-right **320²** window of the 1928×1208 ROAD frame, fed 1:1 into the 320 ONNX — never a full-frame RGB convert, and not the old 1208² letterbox (that left an 80 ft sign at about 20 px)
-- **1 ONNX / BLAS thread** (`OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `TINYGRAD_NUM_THREADS`, and the rest, all forced to 1)
+- one right-side window of the 1928×1208 ROAD frame, **x=1300, y=520, 628×320** (through x=1928, y=840), letterboxed into the 320 ONNX — never a full-frame RGB convert, and not the old 1208² letterbox (that left an 80 ft sign at about 20 px). Route 0000017a signs sat at about y=557–805, x=1110–1914. Scale is 320/628 ≈ 0.51, so a sign ≥ 60 px tall stays ≥ 30 px in the model. The window constants are separate from `YOLO_IMGSZ`, so a retrained YOLOv8n at 320 drops in through `weights_manifest`.
+- **CPU only.** `onnxruntime` is not in the stock 3X image (openpilot ships tinygrad for modeld). The fallback is tinygrad on `DEV=CPU` with the CLANG renderer, `CPU_COUNT=1`, and `GPU`/`QCOM` set to 0. Startup logs `speedsignd cpu-only asserted backend=...` and raises if the device is not CPU.
+- **No compile while driving.** The first realize is the ~108 s on-device compile. It runs only while disengaged. Engaged reads wait (`reason=compile-wait`) until that realize has finished.
+- **1 ONNX / BLAS thread** (`OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `TINYGRAD_NUM_THREADS`, `CPU_COUNT`, and the rest, all forced to 1)
 - pinned to **little core 2** (modeld stays FIFO on core 7)
-- `NAP_SPEED_SIGN_INFER_CAP_MS` default **800** is logged only. It does **not** add a second wait. Pressure adds another 3× infer of rest. `modelV2.frameDropPerc` and a skipped `frameId` back off before the lag alert.
+- `NAP_SPEED_SIGN_INFER_CAP_MS` default **800** is logged only. It does **not** add a second wait. Pressure adds another 3× infer of rest. `modelV2.frameDropPerc` backs off before the lag alert. Any skipped `frameId`, or `modelExecutionTime` above 0.050 s, pauses at least 10 s.
 - `os.sched_yield()` while an infer is busy
 
-YOLOv8s-320 on tinygrad CPU is ~8.7 GFLOP plus Python `OnnxRunner` overhead. Justin measured **mean infer 1819 ms** on `cursor/speedsignd-manual-mph-b6f2` with full-frame RGB on the main thread. The crop path cuts preprocess (look for `prep=` tens of ms, `sess=` still the YOLO run). **Mean well under 500 ms is not feasible on stock 3X tinygrad with this 43 MB 320² export** — that needs `onnxruntime`, a nano re-export, or a precompiled TinyJit. This branch does not change weights or Hz.
+YOLOv8s-320 is ~8.7 GFLOP plus Python `OnnxRunner` overhead. The 3.8 s figure from route 0000017a was the **GPU** path after compile, not a CPU measurement. One A55 (core 2) running CLANG is expected to take several seconds per infer, on the order of that 3.8 s or slower (roughly 4–15 s if the kernel lands around 1–2 GFLOP/s). This environment cannot time a 3X. Justin measured **mean infer 1819 ms** on `cursor/speedsignd-manual-mph-b6f2` with full-frame RGB; that number is not the CPU-only path. **Mean well under 500 ms is not feasible on stock 3X tinygrad with this 43 MB 320² export** — that needs `onnxruntime`, a nano re-export, or a precompiled TinyJit. This branch does not change weights or Hz. A 8 s CPU infer still idles 24 s (25% of core 2).
 
 Onroad, `swaglog` prints `speedsignd detect paused (controlling=True enabled=… active=… state=… alive=… valid=…)` when you SET, `speedsignd abandon in-flight ONNX` if a YOLO was still running, and every infer:
 
 ```
-speedsignd infer 4300ms backend=tinygrad frame=1928x1208 letterbox=320 crop=1100,325 320x320 … peak=0.72/speedLimit65 n_over=1 sl_peak=0.72/speedLimit65 … refine=50:0.71(class=65) luma=90/35 chroma=1 prep=18 sess=4000 raw=[(50, 0.71)] hud=[(50, 0.71)] jsonl=[]
+speedsignd timing read_interval_ms=32000 infer_ms=8000 cpu_share=0.250 threads=1 backend=tinygrad-clang engaged=1 backoff=0 reason=pace
+speedsignd infer 8000ms backend=tinygrad-clang frame=1928x1208 letterbox=320 crop=1300,520 628x320 … peak=0.72/speedLimit65 n_over=1 sl_peak=0.72/speedLimit65 … refine=50:0.71 class=65 luma=90/35 chroma=1 prep=18 sess=7900 raw=[(50, 0.71)] hud=[(50, 0.71)] jsonl=[]
 ```
 
 `refine=` is the crop digit read vs the YOLO class. A parked close **SPEED LIMIT 50** often peaks `speedLimit65:0.73`. HUD shows **50** when two reads agree on 50 (class and OCR on one frame, or the same mph on two frames). A single class-only 65 does not light. Class 65 plus OCR 50 counts as one OCR vote for 50, not a vote for 65. Last accepted mph holds **~45 s**.
@@ -96,7 +99,7 @@ python -m scripts.nap.install_speed_sign_weights /tmp/speed_sign.onnx
 
 Or pass `--url` at a local `file://` / HTTP path. `--sha256 ''` skips the digest (local experiments only).
 
-Source checkpoint (MIT): [cvtechniques/JC-Traffic-Sign-Detection](https://huggingface.co/cvtechniques/JC-Traffic-Sign-Detection) YOLOv8s, trained on LISA + US Roboflow traffic-sign photos (classes `speedLimit15`…`speedLimit85`, plus stop/yield/etc. which we ignore). Export is 320×320 RGB, output `[1, 25, 2100]`. Runtime: `onnxruntime` if present, else tinygrad `OnnxRunner` (stock 3X).
+Source checkpoint (MIT): [cvtechniques/JC-Traffic-Sign-Detection](https://huggingface.co/cvtechniques/JC-Traffic-Sign-Detection) YOLOv8s, trained on LISA + US Roboflow traffic-sign photos (classes `speedLimit15`…`speedLimit85`, plus stop/yield/etc. which we ignore). Export is 320×320 RGB, output `[1, 25, 2100]`. Runtime: `onnxruntime` CPUExecutionProvider if that package is installed (it is not in the stock 3X image), else tinygrad `OnnxRunner` on `DEV=CPU` / CLANG with GPU and QCOM off. The startup log names which one loaded.
 
 ## What Justin should see
 

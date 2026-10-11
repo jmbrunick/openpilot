@@ -84,24 +84,21 @@ def letterbox_rgb(rgb: np.ndarray, size: int = YOLO_IMGSZ) -> tuple[np.ndarray, 
 
 
 def road_detect_crop_rect(h: int, w: int) -> tuple[int, int, int, int]:
-  """Upper-right native 320² window. Same pixels the ONNX consumes.
+  """Right-side native window. Same pixels the ONNX letterboxes.
 
-  A 1928×1208 frame letterboxed from the old 1208² crop is scale 0.265, so an
-  ~80 ft right-shoulder plate is ~20 px and the drive-by eval missed 29/29.
-  This window is 1:1 with YOLO_IMGSZ (no further downscale). Two 640 tiles
-  scored 24/29 but are four times the pixels each, times two — 8× — and do
-  not fit the 25% core budget. One 320 window does.
+  The rect is independent of YOLO_IMGSZ. A 320 model letterboxes 628×320
+  at scale 320/628, which keeps a ≥60 px sign at ≥30 px.
   """
   return native_detect_window(h, w)
 
 
 def road_detect_crop(rgb: np.ndarray) -> tuple[np.ndarray, tuple[int, int, int, int]]:
-  """Right-biased square of the short side. Keeps optical center + right shoulder."""
+  """Right-side window. Width and height follow native_detect_window."""
   if rgb.ndim != 3 or rgb.shape[2] != 3:
     raise ValueError("road_detect_crop expects HxWx3")
   h, w = rgb.shape[:2]
-  x, y, side, _ = road_detect_crop_rect(h, w)
-  return rgb[y:y + side, x:x + side], (x, y, side, side)
+  x, y, cw, ch = road_detect_crop_rect(h, w)
+  return rgb[y:y + ch, x:x + cw], (x, y, cw, ch)
 
 
 def _resize_rgb(img: np.ndarray, h: int, w: int) -> np.ndarray:
