@@ -73,7 +73,7 @@ def test_left_side_cone_line_confirms_with_hysteresis():
 def test_close_line_reports_the_would_limit_shift():
   det = ConeLineDetector()
   # 0.7 m left of the path (yRel +left). Keep ~1.0 m → shift the path right by 0.3 m.
-  sample = _run(det, _cones(0.7), CONFIRM_S + DT)
+  sample = _run(det, _cones(0.7), CONFIRM_S + 1.0)
   assert sample.active is True
   assert sample.side == 1
   assert sample.lat_near < 0.0
@@ -190,7 +190,7 @@ def test_posts_closer_than_half_a_meter_still_count():
 
 def test_would_steer_is_capped_and_points_away_from_left_posts():
   # 0.55 m left. Opening 1.0 m wants 0.45 m; the log caps the proposal at 0.4.
-  sample = _run(ConeLineDetector(), _cones(0.55), CONFIRM_S + DT)
+  sample = _run(ConeLineDetector(), _cones(0.55), CONFIRM_S + 1.0)
   assert sample.active is True
   assert sample.side == 1
   assert sample.would_limit == pytest.approx(CLEARANCE_M - 0.55, abs=0.03)

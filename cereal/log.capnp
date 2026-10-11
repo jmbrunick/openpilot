@@ -148,6 +148,7 @@ struct OnroadEvent @0xc4fa6047f024e718 {
     lowVisibility @112;
     obstacleChime @113;
     preapBrakeLongActive @114;  # Pre-AP: brake switch down while pedal long is still active. Log only.
+    lowVisibilityProlonged @115;  # NAP: low-visibility lateral degrade latched > 45 s. Louder alert.
 
     soundsUnavailableDEPRECATED @47;
   }

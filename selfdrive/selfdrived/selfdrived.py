@@ -20,6 +20,7 @@ from openpilot.selfdrive.controls.lib.blinker_lateral_pause import (
 )
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 from openpilot.selfdrive.selfdrived.events import Events, ET
+from openpilot.selfdrive.controls.lib.lat_low_visibility import PROLONGED_S as LOW_VIS_PROLONGED_S
 from openpilot.selfdrive.selfdrived.helpers import ExcessiveActuationCheck, preap_not_in_drive_clears_mismatch
 from openpilot.selfdrive.controls.lib.preap_driver_brake import (
   BrakeLongOverlap,
@@ -119,6 +120,7 @@ class SelfdriveD:
 
     # read params
     self.is_metric = self.params.get_bool("IsMetric")
+    self._low_vis_s = 0.0
     self.is_ldw_enabled = self.params.get_bool("IsLdwEnabled")
     self.disengage_on_accelerator = self.params.get_bool("DisengageOnAccelerator")
     self.one_pedal_long = self.params.get_bool("NAPOnePedalLong")
@@ -404,10 +406,18 @@ class SelfdriveD:
 
     # Model or camera cannot see the road. Lateral is easing toward the
     # driver in controlsd; this does not disengage and does not touch long.
+    # A degrade latched past LOW_VIS_PROLONGED_S is never silent: it swaps
+    # to a distinct, louder alert until it releases.
     if self.enabled and bool(getattr(self.sm['controlsState'], 'lowVisibility', False)):
+      self._low_vis_s += DT_CTRL
       low_vis = getattr(EventName, 'lowVisibility', None)
-      if low_vis is not None:
+      prolonged = getattr(EventName, 'lowVisibilityProlonged', None)
+      if prolonged is not None and self._low_vis_s + 1e-9 >= LOW_VIS_PROLONGED_S:
+        self.events.add(prolonged)
+      elif low_vis is not None:
         self.events.add(low_vis)
+    else:
+      self._low_vis_s = 0.0
 
     # Animal or person chime. Permanent, so it sounds engaged or not.
     # It does not enter the state machine as a disable or a no-entry.
