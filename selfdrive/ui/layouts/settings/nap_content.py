@@ -135,7 +135,7 @@ OBSTACLE_CHIME_DESCRIPTION = (
 )
 CONE_LINE_HOLD_DESCRIPTION = (
   "Default On. After you push the wheel away from a line of cones or "
-  + "drums for about 2 seconds, openpilot keeps your line when it takes "
+  + "drums for about 1 second, openpilot keeps your line when it takes "
   + "the wheel back, instead of steering toward the cones. That offset "
   + "eases off once the line has been gone for a few seconds, or if you "
   + "steer back. Longitudinal stays on. A hard yank still cancels. "

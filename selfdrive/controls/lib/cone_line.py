@@ -29,18 +29,25 @@ Frames (this is the bug the Oct 7 posts exposed):
 
 Thresholds:
   stationary ground speed     |vRel + vEgo| < 1.2 m/s
-  beside the path             0.30–2.5 m to start a line. Once the line
+  beside the path             0.30–2.5 m to start a line; 0.30–4.0 m at
+                              >= 20 m/s (drums in a closed adjacent lane,
+                              Oct 10 17:30). Town keeps 2.5 m: parked cars
+                              and poles sit ~3 m out. Once the line
                               is up, posts closer than that (the taper
                               inside the old 0.5 m band) stay on it.
   longitudinal window         6–70 m ahead of the camera
-  cone line                   >= 4 tracked posts, span >= 10 m,
-                              residual to a ground-frame quadratic <= 0.50 m,
-                              median gap 1.5–18 m (discrete, not a rail)
+  cone line                   >= 4 tracked posts with span >= 10 m, or
+                              >= 3 posts with span >= 25 m at >= 20 m/s
+                              (sparse highway returns); residual to a ground-frame quadratic
+                              <= 0.50 m; median gap 1.5 m to max(18 m,
+                              1.0 s of travel) capped at 35 m (discrete, not a rail)
   confirm / drop              1.0 s of fresh hits to become active.
-                              A gap over 0.25 s resets that count.
+                              A gap over 0.25 s resets that count (0.6 s at
+                              >= 20 m/s). Before a line is up, an unrefreshed
+                              post is remembered 1.2 s (2.5 s at >= 20 m/s).
                               An active line holds ~2 s after the hits stop,
                               and 1–3 posts on the fit are enough to refresh it.
-  wouldSteer cap              0.4 m
+  wouldSteer cap              0.4 m, rate-limited 0.8 m/s (log only)
   guardrail                   span >= 12 m, >= 8 posts, median gap < 1.25 m
   parked car                  short cluster (< 8 m) that is wide (>= 1.0 m)
 """
@@ -48,13 +55,14 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from openpilot.selfdrive.controls.lib.radar_path_gate import RADAR_TO_CAMERA_M, path_y_at_x
 
 STATIONARY_MPS = 1.2
 LAT_MIN_M = 0.30
 LAT_MAX_M = 2.50
+LAT_MAX_FAST_M = 4.00  # >= FAST_MPS: drums in a closed adjacent lane sit 2.5–4 m out
 X_MIN_M = 6.0
 X_MAX_M = 70.0
 X_KEEP_MIN_M = 4.0
@@ -63,11 +71,16 @@ MIN_SPAN_M = 10.0
 MAX_LAT_STD_M = 0.50
 MIN_GAP_M = 1.5
 MAX_GAP_M = 18.0
+MAX_GAP_S = 1.0  # at speed the allowed median gap grows to ~1 s of travel
+MAX_GAP_CAP_M = 35.0
+MIN_COUNT_LONG = 3
+MIN_SPAN_LONG_M = 25.0
 CONFIRM_S = 1.0
 DROP_S = 2.0
 CONFIRM_GAP_S = 0.25
 CLEARANCE_M = 1.0
 WOULD_STEER_CAP_M = 0.40
+WOULD_STEER_RATE_MPS = 0.80  # log-only ramp: 0 -> cap takes ~0.5 s
 LOOKAHEADS_M = (15.0, 30.0, 45.0)
 BARRIER_MIN_COUNT = 8
 BARRIER_MIN_SPAN_M = 12.0
@@ -77,6 +90,11 @@ PARKED_MIN_WIDTH_M = 1.0
 ROAD_EDGE_MARGIN_M = 0.40
 MIN_VEGO_CONFIRM_MPS = 3.0
 POST_TTL_PRE_S = 1.2
+# Highway: sparse returns. Remember a stationary post (carried by ego motion)
+# for up to this long, and tolerate this long between fresh hits while confirming.
+POST_TTL_PRE_FAST_S = 2.5
+CONFIRM_GAP_FAST_S = 0.6
+FAST_MPS = 20.0
 POST_TTL_ACTIVE_S = 2.2
 ASSOC_GATE_M = 2.2
 FIT_TOL_M = 1.05
@@ -348,7 +366,25 @@ def _dedupe(posts: list[_Post]) -> list[_Post]:
   return out
 
 
-def _classify(side: int, posts: list[_Post], path_x, path_y) -> _Group | None:
+def _speed(v_ego) -> float:
+  try:
+    v = abs(float(v_ego))
+  except (TypeError, ValueError):
+    return 0.0
+  return v if math.isfinite(v) else 0.0
+
+
+def lat_max_m(v_ego: float) -> float:
+  """Outer start band. Town keeps 2.5 m (parked cars, poles at 3 m); highway reaches 4 m."""
+  return LAT_MAX_FAST_M if _speed(v_ego) >= FAST_MPS else LAT_MAX_M
+
+
+def max_gap_m(v_ego: float) -> float:
+  """Allowed median post gap. 18 m in town, ~1 s of travel at speed, capped at 35 m."""
+  return min(MAX_GAP_CAP_M, max(MAX_GAP_M, _speed(v_ego) * MAX_GAP_S))
+
+
+def _classify(side: int, posts: list[_Post], path_x, path_y, v_ego: float = 0.0) -> _Group | None:
   if len(posts) < 2:
     return None
   posts = sorted(posts, key=lambda p: p.x)
@@ -373,12 +409,13 @@ def _classify(side: int, posts: list[_Post], path_x, path_y) -> _Group | None:
   if wide_short:
     group.kind = "parked"
     return group
+  enough = len(posts) >= MIN_COUNT and span >= MIN_SPAN_M
+  enough_long = _speed(v_ego) >= FAST_MPS and len(posts) >= MIN_COUNT_LONG and span >= MIN_SPAN_LONG_M
   if (
-    len(posts) >= MIN_COUNT
-    and span >= MIN_SPAN_M
+    (enough or enough_long)
     and resid <= MAX_LAT_STD_M
     and med_gap >= MIN_GAP_M
-    and med_gap <= MAX_GAP_M
+    and med_gap <= max_gap_m(v_ego)
   ):
     group.kind = "cones"
     return group
@@ -525,6 +562,7 @@ class ConeLineDetector:
 
   def __init__(self) -> None:
     self._last_out = ConeLineSample()
+    self._ws = 0.0
     self.reset()
 
   def reset(self) -> None:
@@ -542,11 +580,32 @@ class ConeLineDetector:
     t0 = time.monotonic()
     try:
       sample = self._step(points, v_ego, path_x, path_y, road_edges, dt, yaw_rate, t0)
+      sample = self._ramp(sample, dt)
     except Exception:
       self.reset()
+      self._ws = 0.0
       sample = ConeLineSample()
     self._last_out = sample
     return sample
+
+  def _ramp(self, sample: ConeLineSample, dt) -> ConeLineSample:
+    """Rate-limit the logged wouldSteer so it ramps in and out (log only)."""
+    if sample is self._last_out:
+      return sample
+    try:
+      step = WOULD_STEER_RATE_MPS * max(0.0, min(0.5, float(dt)))
+    except (TypeError, ValueError):
+      step = 0.0
+    if not math.isfinite(step):
+      step = 0.0
+    target = sample.would_steer if sample.active else 0.0
+    if self._ws * target < 0.0:
+      self._ws = 0.0
+    delta = target - self._ws
+    self._ws += max(-step, min(step, delta))
+    if abs(self._ws) < 1e-4:
+      self._ws = 0.0
+    return replace(sample, would_steer=self._ws)
 
   def _step(self, points, v_ego, path_x, path_y, road_edges, dt, yaw_rate, t0) -> ConeLineSample:
     dt = 0.0 if dt is None else float(dt)
@@ -572,7 +631,8 @@ class ConeLineDetector:
     meas = self._measurements(points, v_ego_f, path_x, path_y, road_edges or [], t0)
     self._posts = _choose_motion(self._posts, meas, v_ego_f, yaw, dt)
     self._posts = _associate(self._posts, meas)
-    ttl = POST_TTL_ACTIVE_S if self._active else POST_TTL_PRE_S
+    fast = v_ego_f >= FAST_MPS
+    ttl = POST_TTL_ACTIVE_S if self._active else (POST_TTL_PRE_FAST_S if fast else POST_TTL_PRE_S)
     self._posts = [
       p for p in self._posts
       if p.age <= ttl and X_KEEP_MIN_M <= p.x <= X_MAX_M + 2.0
@@ -584,9 +644,9 @@ class ConeLineDetector:
     if time.monotonic() - t0 > CONE_BUDGET_S:
       return self._last_out
 
-    left, right = self._split(path_x, path_y)
-    left_g = _classify(1, left, path_x, path_y)
-    right_g = _classify(-1, right, path_x, path_y)
+    left, right = self._split(path_x, path_y, v_ego_f)
+    left_g = _classify(1, left, path_x, path_y, v_ego_f)
+    right_g = _classify(-1, right, path_x, path_y, v_ego_f)
     parked = (left_g is not None and left_g.kind == "parked") or (right_g is not None and right_g.kind == "parked")
     barrier_group = None
     cones = None
@@ -625,7 +685,7 @@ class ConeLineDetector:
 
     if not supported:
       self._miss_s += dt
-      if not self._active and self._miss_s > CONFIRM_GAP_S:
+      if not self._active and self._miss_s > (CONFIRM_GAP_FAST_S if fast else CONFIRM_GAP_S):
         self._seen_s = 0.0
         self._side = 0
         self._fit = None
@@ -695,7 +755,7 @@ class ConeLineDetector:
       if _outside_road(edges, x, y):
         continue
       lat = _path_lat(y, x, path_x, path_y)
-      if abs(lat) > LAT_MAX_M:
+      if abs(lat) > lat_max_m(v_ego):
         continue
       if abs(lat) < LAT_MIN_M:
         if not (self._active and self._fit is not None and self._side in (-1, 1)
@@ -704,14 +764,14 @@ class ConeLineDetector:
       meas.append((x, y))
     return meas
 
-  def _split(self, path_x, path_y):
+  def _split(self, path_x, path_y, v_ego: float = 0.0):
     left: list[_Post] = []
     right: list[_Post] = []
     for p in self._posts:
       if p.x < X_MIN_M or p.x > X_MAX_M:
         continue
       lat = _path_lat(p.y, p.x, path_x, path_y)
-      if abs(lat) > LAT_MAX_M + 0.4:
+      if abs(lat) > lat_max_m(v_ego) + 0.4:
         continue
       side = self._side if (
         self._active and self._fit is not None and abs(lat) < LAT_MIN_M
