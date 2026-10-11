@@ -75,11 +75,9 @@ def test_hidden_toggles_removed_from_normal_lists():
   overlay = (ROOT / "selfdrive/ui/mici/layouts/settings/hidden_toggles.py").read_text()
   settings = (ROOT / "selfdrive/ui/layouts/settings/settings.py").read_text()
   settings_mici = (ROOT / "selfdrive/ui/mici/layouts/settings/settings.py").read_text()
-  keys = (ROOT / "common/params_keys.h").read_text()
 
   assert "Simulate Look" not in tici_dm
   assert "False Alert Ignore" not in tici_dm
-  assert "Simulate Look-at-Road" not in tici_dm
   assert "NAP_DM_SIMULATE_LOOKING" not in tici_dm
   assert "NAP_DM_FALSE_ALERT_IGNORE" not in tici_dm
   assert "simulate look" not in mici_dm
@@ -89,27 +87,24 @@ def test_hidden_toggles_removed_from_normal_lists():
 
   assert 'self._add_toggle(\n      NAP_FORCE_OFFROAD' not in nap
   assert "Go Offline" not in nap
-  assert 'self._add_toggle(\n      NAP_DM_SIMULATE_LOOKING' not in nap
-  assert 'toggle_item(\n      "Simulate Look"' not in nap
+  assert "simulate look" not in nap
+  assert "false alert ignore" not in nap
   assert 'put_bool(NAP_FORCE_OFFROAD, False)' in nap
-  # Reset-All on nap-release restores hidden DM toggles to Off (not nap-dev On).
-  assert 'put_bool(NAP_DM_SIMULATE_LOOKING, False)' in nap
-  assert 'put_bool(NAP_DM_SIMULATE_LOOKING, True)' not in nap
+  assert "NAPForceOffroadConfirmed" in nap
+  assert 'put_bool(NAP_DM_SIMULATE_LOOKING, True)' in nap
   assert 'put_bool(NAP_DM_FALSE_ALERT_IGNORE, False)' in nap
-  assert 'put_bool(NAP_DM_FALSE_ALERT_IGNORE, True)' not in nap
 
   assert 'BigParamControl("force offroad"' not in nap_mici
   assert "NAP_FORCE_OFFROAD" not in nap_mici
 
-  assert '"Simulate Look"' in popup
-  assert '"False Alert Ignore"' in popup
-  assert "Simulate Look-at-Road" not in popup
+  assert "Simulate Look" in popup
+  assert "False Alert Ignore" in popup
   assert "Force Offroad" in popup
-  assert "[self._offroad_item, self._dm_item, self._fai_item]" in popup
+  assert "[self._offroad_item, self._dm_item, self._fai_item, self._cone_log_item]" in popup
   assert "NAP_DM_SIMULATE_LOOKING" in popup
   assert "NAP_DM_FALSE_ALERT_IGNORE" in popup
   assert "NAP_FORCE_OFFROAD" in popup
-  assert "is_offroad" not in popup
+  assert "apply_force_offroad_toggle" in popup
   assert "apply_dm_simulate_looking" in popup
   assert "apply_dm_false_alert_ignore" in popup
   assert "read_exclusive_dm_toggles" in popup
@@ -126,12 +121,12 @@ def test_hidden_toggles_removed_from_normal_lists():
   assert "apply_dm_false_alert_ignore(self._params, bool(state))" in on_fai
   assert "set_state(sim)" in on_fai
   assert "get_bool(" not in on_fai
+  assert "set_enabled(ui_state.is_offroad)" not in popup
   assert popup.index('"Force Offroad"') < popup.index('"Simulate Look"')
   assert popup.index('"Simulate Look"') < popup.index('"False Alert Ignore"')
 
-  assert 'BigParamControl("simulate look"' in overlay
-  assert 'BigParamControl("false alert ignore"' in overlay
-  assert "simulate look-at-road" not in overlay
+  assert "simulate look" in overlay
+  assert "false alert ignore" in overlay
   assert "force offroad" in overlay
   assert overlay.index('BigParamControl("force offroad"') < overlay.index('BigParamControl("simulate look"')
   assert overlay.index('BigParamControl("simulate look"') < overlay.index('BigParamControl("false alert ignore"')
@@ -164,20 +159,13 @@ def test_hidden_toggles_removed_from_normal_lists():
   assert "_on_nap_clicked" in settings_mici
   assert "HiddenTogglesOverlayMici" in settings_mici
 
-  # Soft-lat / One-Pedal Long / Acceleration stay on the normal mannerisms list. Hypermile is nap-dev-only.
+  # Soft-lat / One-Pedal Long / Hypermile / Hill Climb / Acceleration stay on the normal mannerisms list.
   assert "Soft Lateral Handoff" in tici_dm
   assert "One-Pedal Long" in tici_dm
+  assert "Hill Climb" in tici_dm
+  assert "Hypermile" in tici_dm
   assert "Acceleration" in tici_dm
   assert "NAPMapSpeedAccel" in tici_dm
-  assert "Hypermile" not in tici_dm
-  assert "Hill Climb" not in tici_dm
-  assert "soft lateral handoff" in mici_dm
-  assert "one-pedal long" in mici_dm
+  assert "hill climb" in mici_dm
   assert '"acceleration"' in mici_dm
   assert "NAPMapSpeedAccel" in mici_dm
-  assert "hypermile" not in mici_dm
-
-  for name in ('"NAPDmSimulateLooking"', '"NAPDmFalseAlertIgnore"'):
-    line = next(ln for ln in keys.splitlines() if name in ln)
-    assert 'BOOL, "0"' in line
-    assert "PERSISTENT" in line

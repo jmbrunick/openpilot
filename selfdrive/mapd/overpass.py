@@ -12,6 +12,14 @@ import urllib.parse
 import urllib.request
 
 from openpilot.selfdrive.mapd.maps_manifest import USER_AGENT
+from openpilot.selfdrive.mapd.mn_statutory import (
+  FILL_SOURCE,
+  FILLABLE_HIGHWAY_REGEX,
+  PlaceIndex,
+  is_urban_way,
+  places_from_overpass,
+  statutory_maxspeed_ms,
+)
 from openpilot.selfdrive.mapd.speed_limit import parse_maxspeed
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
@@ -25,10 +33,49 @@ def bbox_from_center(lat: float, lon: float, radius_km: float) -> tuple[float, f
   return lat - dlat, lon - dlon, lat + dlat, lon + dlon
 
 
-def overpass_query(south: float, west: float, north: float, east: float, *, timeout_s: int = 180) -> str:
-  return f"""
+def overpass_query(
+  south: float, west: float, north: float, east: float,
+  *,
+  timeout_s: int = 180,
+  include_unmarked: bool = False,
+  include_roundabouts: bool = True,
+) -> str:
+  """Bbox query. Tagged maxspeed only, or all fillable highways + place polygons (MN fill).
+
+  include_roundabouts adds junction=roundabout|circular rings and the highway
+  ways that touch them, with or without maxspeed.
+  """
+  bbox = f"({south},{west},{north},{east})"
+  # Roundabout rings (any maxspeed) + every highway way sharing a ring node
+  # (approach roads). Stored in rb_ways, not in the speed-limit ways table.
+  rb_sets = "" if not include_roundabouts else f"""
+way["highway"]["junction"~"^(roundabout|circular)$"]{bbox}->.rb;
+node(w.rb)->.rbn;
+way(bn.rbn)["highway"]->.ap;"""
+  rb_union = "" if not include_roundabouts else "\n  .rb;\n  .ap;"
+  if include_unmarked:
+    return f"""
+[out:json][timeout:{int(timeout_s)}];{rb_sets}
+(
+  way["highway"~"{FILLABLE_HIGHWAY_REGEX}"]{bbox};
+  way["place"~"^(city|town|village)$"]{bbox};
+  rel["place"~"^(city|town|village)$"]{bbox};
+  way["boundary"="administrative"]["admin_level"="8"]{bbox};
+  rel["boundary"="administrative"]["admin_level"="8"]{bbox};{rb_union}
+);
+out geom;
+""".strip()
+  if not include_roundabouts:
+    return f"""
 [out:json][timeout:{int(timeout_s)}];
-way["highway"]["maxspeed"]({south},{west},{north},{east});
+way["highway"]["maxspeed"]{bbox};
+out geom;
+""".strip()
+  return f"""
+[out:json][timeout:{int(timeout_s)}];{rb_sets}
+(
+  way["highway"]["maxspeed"]{bbox};{rb_union}
+);
 out geom;
 """.strip()
 
@@ -39,9 +86,12 @@ def fetch_overpass(
   *,
   timeout_s: float = 240,
   query_timeout: int = 180,
+  include_unmarked: bool = False,
+  include_roundabouts: bool = True,
 ) -> dict:
-  """POST a bbox maxspeed query. Raises RuntimeError with a retryable message on timeout/HTTP failure."""
-  q = overpass_query(*bbox, timeout_s=query_timeout)
+  """POST a bbox highway query. Raises RuntimeError with a retryable message on timeout/HTTP failure."""
+  q = overpass_query(*bbox, timeout_s=query_timeout, include_unmarked=include_unmarked,
+                     include_roundabouts=include_roundabouts)
   data = urllib.parse.urlencode({"data": q}).encode()
   req = urllib.request.Request(url, data=data, headers={"User-Agent": USER_AGENT})
   try:
@@ -65,19 +115,49 @@ def fetch_overpass(
   return payload
 
 
-def ways_from_overpass(payload: dict) -> list[dict]:
+def tagged_maxspeed_ms(tags: dict) -> float | None:
+  """Numeric OSM maxspeed / maxspeed:forward. Non-numeric tags are not usable."""
+  ms = parse_maxspeed(tags.get("maxspeed"))
+  if ms is None:
+    ms = parse_maxspeed(tags.get("maxspeed:forward"))
+  return ms
+
+
+def resolve_way_speed(
+  tags: dict,
+  coords: list[tuple[float, float]],
+  *,
+  fill_unmarked: bool = False,
+  places: PlaceIndex | None = None,
+) -> tuple[float | None, str]:
+  """Return (maxspeed_ms, source). source is 'osm' or MN_169.14. Tagged numeric wins."""
+  ms = tagged_maxspeed_ms(tags)
+  if ms is not None:
+    return ms, "osm"
+  if not fill_unmarked:
+    return None, ""
+  highway = str(tags.get("highway") or "")
+  urban = is_urban_way(tags, coords, places)
+  filled = statutory_maxspeed_ms(highway, tags, urban=urban)
+  if filled is None:
+    return None, ""
+  return filled, FILL_SOURCE
+
+
+def ways_from_overpass(payload: dict, *, fill_unmarked: bool = False) -> list[dict]:
+  places = places_from_overpass(payload) if fill_unmarked else PlaceIndex()
   out = []
   for el in payload.get("elements", []):
     if el.get("type") != "way":
       continue
     tags = el.get("tags") or {}
+    if "highway" not in tags:
+      continue
     geom = el.get("geometry") or []
     coords = [(float(p["lat"]), float(p["lon"])) for p in geom if "lat" in p and "lon" in p]
     if len(coords) < 2:
       continue
-    ms = parse_maxspeed(tags.get("maxspeed"))
-    if ms is None:
-      ms = parse_maxspeed(tags.get("maxspeed:forward"))
+    ms, source = resolve_way_speed(tags, coords, fill_unmarked=fill_unmarked, places=places)
     if ms is None:
       continue
     out.append({
@@ -86,5 +166,7 @@ def ways_from_overpass(payload: dict) -> list[dict]:
       "highway": tags.get("highway") or "",
       "maxspeed_ms": ms,
       "coords": coords,
+      "source": source,
+      "junction": tags.get("junction") or "",
     })
   return out

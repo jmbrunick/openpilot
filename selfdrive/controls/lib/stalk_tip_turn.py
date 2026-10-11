@@ -18,6 +18,9 @@ Use the stalk enum (non-flashing), not the bulb flash bit, for hold time.
 SNA is treated as IDLE. Hazards are not classified here.
 """
 
+# controlsd -> modeld flag (roundabout ring assist latched): DesireHelper ignores stalk tips while it is set.
+PARAM_RING_LATCHED = "NAPRoundaboutLatched"
+
 # Held this long (or longer) is a latched turn, not a tip-blink.
 # 0.40s sits in the 0.3–0.5s tip-blink range: a real tap springs back sooner;
 # a detented hold is still LEFT/RIGHT well past this.

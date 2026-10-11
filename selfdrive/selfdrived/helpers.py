@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from opendbc.car import ACCELERATION_DUE_TO_GRAVITY, DT_CTRL
 from opendbc.car.lateral import ISO_LATERAL_ACCEL
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
+from openpilot.selfdrive.selfdrived.lane_change_alerts import install_lane_change_alerts
 
 if TYPE_CHECKING:
   from cereal import car, messaging
@@ -16,6 +17,10 @@ MIN_EXCESSIVE_ACTUATION_COUNT = int(0.25 / DT_CTRL)
 MIN_LATERAL_ENGAGE_BUFFER = int(1 / DT_CTRL)
 
 PREAP_FINGERPRINT = "TESLA_MODEL_S_PREAP"
+
+# selfdrived imports this module: swap in the armed lane change prompts that
+# can say "Lane lines unclear" (see lane_change_alerts).
+install_lane_change_alerts()
 
 # Stock comma: 2× ISO 11270 (6.0 m/s², ~0.61 g) and 2× planner accel clip
 # (4.0 / −7.0 m/s²). That is meant to catch a true emergency actuation, but

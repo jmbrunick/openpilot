@@ -995,7 +995,10 @@ def test_overpass_json_import(tmp_path):
   out = str(tmp_path / "out.sqlite")
   con = OsmSpeedLimitDB.create(out)
   for w in ways:
-    OsmSpeedLimitDB.insert_way(con, w["way_id"], w["name"], w["highway"], w["maxspeed_ms"], w["coords"])
+    OsmSpeedLimitDB.insert_way(
+      con, w["way_id"], w["name"], w["highway"], w["maxspeed_ms"], w["coords"],
+      junction=w.get("junction") or "",
+    )
   con.commit()
   con.close()
   db = OsmSpeedLimitDB(out)

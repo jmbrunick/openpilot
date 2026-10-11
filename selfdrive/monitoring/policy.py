@@ -12,6 +12,7 @@ from openpilot.common.stat_live import RunningStatFilter
 from openpilot.common.transformations.camera import DEVICE_CAMERAS
 from openpilot.selfdrive.monitoring.dm_toggles import (
   DEFAULT_FALSE_ALERT_IGNORE, DEFAULT_SIMULATE_LOOKING,
+  PARAM_DM_FALSE_ALERT_IGNORE, PARAM_DM_SIMULATE_LOOKING,
   exclusive_dm_toggle_states, read_exclusive_dm_toggles,
 )
 
@@ -41,10 +42,9 @@ def to_percent(v):
 # is the original "do not nag" recovery for no-face, uncertain, phone,
 # pose, and eye false nags. False Alert Ignore On (Sim Look Off) =
 # phone-only soft-clear; pose and eye still drain. Mutually exclusive
-# — only one may be On (both Off is allowed). Default Off on
-# nap-release (stock DM until Justin enables a toggle). Stale both-On
-# → Simulate Look On / FAI Off. Hands-on ≥ 2 / stalk / door / reverse
-# unchanged.
+# — only one may be On (both Off is allowed). nap-dev defaults:
+# Simulate Look On / FAI Off. Stale both-On → Simulate Look On /
+# FAI Off. Hands-on ≥ 2 / stalk / door / reverse unchanged.
 LOOK_SIM_COUNTDOWN_MIN_S = 1.0
 LOOK_SIM_RANDOM_WINDOW_S = 2.0
 LOOK_SIM_FIRE_MAX_S = LOOK_SIM_COUNTDOWN_MIN_S + LOOK_SIM_RANDOM_WINDOW_S  # 3.0
@@ -240,7 +240,7 @@ class DriverMonitoring:
     self.dcam_uncertain_cnt = 0
     self.dcam_reset_cnt = 0
     self.too_distracted = _param_bool("DriverTooDistracted", False)
-    # nap-release: both Off. Stale both-On resolves to Simulate Look On.
+    # nap-dev: Simulate Look On / FAI Off. Both-On resolves to Sim On.
     if Params is not None:
       try:
         sim, fai = read_exclusive_dm_toggles(Params())

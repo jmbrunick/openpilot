@@ -54,25 +54,47 @@ def test_focused_tests_and_mutations_are_pinned():
     "selfdrive/controls/tests/test_lead_approach.py",
     "selfdrive/controls/tests/test_firm_brake_latch.py",
     "selfdrive/selfdrived/tests/test_preap_regen_cmd_pin.py",
-    "selfdrive/car/tests/test_preap_engage_max_after_pause.py",
-    "selfdrive/controls/tests/test_unified_lead.py",
-    "selfdrive/controls/tests/test_unified_lead_planner.py",
     "selfdrive/controls/tests/test_unified_far_gap_gate.py",
     "selfdrive/controls/tests/test_unified_far_gap_catchup.py",
-    "selfdrive/controls/tests/test_lead_leaving.py",
-    "selfdrive/controls/tests/test_gap_lock_gesture.py",
-    "selfdrive/controls/tests/test_gap_lock_latch.py",
-    "selfdrive/controls/lib/tests/test_curve_max_hold.py",
     "selfdrive/mapd/tests/test_map_speed_policy.py",
+    "selfdrive/mapd/tests/test_map_speed_policy_2.py",
+    "selfdrive/mapd/tests/test_map_match_road_class.py",
     "selfdrive/controls/tests/test_radard.py",
+    "selfdrive/controls/tests/test_path_obstacle_radar.py",
+    "selfdrive/controls/lib/tests/test_path_obstacle.py",
     "selfdrive/controls/tests/test_radar_path_gate.py",
     "selfdrive/controls/tests/test_rain_radar_hold.py",
+    "selfdrive/controls/tests/test_radar_sensor_dirty.py",
     "selfdrive/controls/tests/test_tesla_preap_following.py",
+    "selfdrive/controls/tests/test_gap_lock_gesture.py",
+    "selfdrive/controls/tests/test_gap_lock_latch.py",
+    "selfdrive/controls/tests/test_curve_preview.py",
+    "selfdrive/controls/tests/test_curve_follow.py",
+    "selfdrive/controls/tests/test_curve_follow_planner.py",
+    "selfdrive/car/tests/test_curve_follow_card_max.py",
+    "selfdrive/controls/tests/test_lead_leaving.py",
+    "selfdrive/controls/lib/tests/test_curve_max_hold.py",
+    "selfdrive/controls/lib/tests/test_lat_turn_geometry.py",
+    "selfdrive/controls/lib/tests/test_lane_change_confirm_replay.py",
+    "selfdrive/controls/lib/tests/test_lane_change_nudge.py",
+    "selfdrive/controls/lib/tests/test_lane_change_target.py",
+    "selfdrive/controls/lib/tests/test_lane_change_lock.py",
+    "selfdrive/controls/lib/tests/test_lane_change_turn.py",
+    "selfdrive/mapd/tests/test_roundabout.py",
+    "selfdrive/mapd/tests/test_roundabout_map.py",
+    "selfdrive/controls/lib/tests/test_roundabout_guide.py",
+    "selfdrive/controls/lib/tests/test_roundabout_ring_hold.py",
+    "selfdrive/controls/lib/tests/test_driver_lateral_handoff_early_yield.py",
+    "selfdrive/controls/lib/tests/test_driver_lateral_handoff_wheel_resume.py",
+    "selfdrive/controls/lib/tests/test_lat_yield_inference_guard.py",
+    "selfdrive/car/tesla/tests/test_preap_lat_yield.py",
+    "selfdrive/controls/tests/test_roundabout_planner.py",
     "selfdrive/controls/tests/test_tesla_preap_longcontrol.py",
     "selfdrive/controls/tests/test_tesla_preap_gas_lift_handoff.py",
     "selfdrive/controls/tests/test_tesla_preap_brake_cancel_regen.py",
     "selfdrive/controls/tests/test_tesla_preap_one_pedal_long.py",
     "opendbc_repo/opendbc/car/tesla/preap/tests/test_preap_engagement.py",
+    "opendbc_repo/opendbc/car/tesla/preap/tests/test_lat_yield.py",
     "opendbc_repo/opendbc/car/tesla/preap/tests/test_longitudinal_tuning.py",
     "opendbc_repo/opendbc/car/tesla/preap/tests/test_virtual_das.py",
     "opendbc_repo/opendbc/car/tesla/preap/tests/test_vdas_grade_control.py",
@@ -81,6 +103,9 @@ def test_focused_tests_and_mutations_are_pinned():
   for command in required_commands:
     assert command in normalized_lines(focused_job)
   assert "run: python .github/ci/tesla_preap_longitudinal_mutations.py" in normalized_lines(focused_job)
+  assert "run: python .github/ci/tesla_preap_roundabout_mutations.py" in normalized_lines(focused_job)
+  assert "run: python .github/ci/tesla_preap_lane_change_mutations.py" in normalized_lines(focused_job)
+  assert "run: python .github/ci/tesla_preap_lat_yield_mutations.py" in normalized_lines(focused_job)
 
 
 def test_focused_job_builds_generated_mpc_dependencies():
@@ -105,9 +130,6 @@ def test_additive_follow_telemetry_is_ignored_by_process_replay():
 
   assert '"longitudinalPlan.napFollowDistance"' in plannerd_config.group("body")
   assert '"longitudinalPlan.tFollow"' in plannerd_config.group("body")
-  assert '"longitudinalPlan.unifiedATarget"' in plannerd_config.group("body")
-  assert '"longitudinalPlan.gapLockM"' in plannerd_config.group("body")
-  assert '"longitudinalPlan.gapLockEvent"' in plannerd_config.group("body")
 
 
 def main():

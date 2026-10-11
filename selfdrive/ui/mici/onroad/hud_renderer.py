@@ -1,7 +1,9 @@
 import pyray as rl
+from openpilot.common.nap_release import SPEED_SIGN_ENABLED
 from dataclasses import dataclass
 from openpilot.common.constants import CV
 from openpilot.selfdrive.ui.mici.onroad.torque_bar import TorqueBar
+from openpilot.selfdrive.ui.onroad.speed_sign_hud import SpeedSignHud
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.multilang import tr
@@ -118,6 +120,7 @@ class HudRenderer(Widget):
 
     self._turn_intent = TurnIntent()
     self._torque_bar = TorqueBar()
+    self._speed_sign_hud = SpeedSignHud(tici=False)
 
     self._txt_wheel: rl.Texture = gui_app.texture('icons_mici/wheel.png', 50, 50)
     self._txt_wheel_critical: rl.Texture = gui_app.texture('icons_mici/wheel_critical.png', 50, 50)
@@ -184,7 +187,12 @@ class HudRenderer(Widget):
     if self.is_cruise_set:
       self._draw_set_speed(rect)
 
+    if SPEED_SIGN_ENABLED:
+      self._speed_sign_hud.render(rect)
     self._draw_steering_wheel(rect)
+
+  def user_interacting(self) -> bool:
+    return self._speed_sign_hud.is_pressed
 
   def _draw_steering_wheel(self, rect: rl.Rectangle) -> None:
     wheel_txt = self._txt_wheel_critical if self._show_wheel_critical else self._txt_wheel

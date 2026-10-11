@@ -1,0 +1,32 @@
+"""On-device paths for the speed-sign logger.
+
+Weights and JSONL live under /data (or ~/.comma on PC). Nothing is written to
+the OSM sqlite, and weights are not stored in git.
+"""
+from __future__ import annotations
+
+import os
+
+PARAM_KEY = "NAPSpeedSignLog"
+LOG_FILENAME = "speed_signs.jsonl"
+ONNX_FILENAME = "speed_sign.onnx"
+
+
+def nap_data_dir() -> str:
+  if os.path.isdir("/data/media/0"):
+    return "/data/media/0/nap"
+  return os.path.join(os.path.expanduser("~"), ".comma", "media", "0", "nap")
+
+
+def default_log_path() -> str:
+  override = os.environ.get("NAP_SPEED_SIGN_LOG")
+  if override:
+    return override
+  return os.path.join(nap_data_dir(), LOG_FILENAME)
+
+
+def default_onnx_path() -> str:
+  override = os.environ.get("NAP_SPEED_SIGN_ONNX")
+  if override:
+    return override
+  return os.path.join(nap_data_dir(), ONNX_FILENAME)

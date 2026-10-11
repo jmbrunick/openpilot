@@ -34,8 +34,9 @@ from openpilot.selfdrive.mapd.local_refresh import (
   refresh_local_maps,
   resolve_refresh_location,
 )
+from openpilot.selfdrive.mapd.mn_statutory import BENSON_LAT, BENSON_LON, FILL_SOURCE
 from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB
-from openpilot.selfdrive.mapd.overpass import bbox_from_center, ways_from_overpass
+from openpilot.selfdrive.mapd.overpass import bbox_from_center, overpass_query, ways_from_overpass
 
 
 SF = (37.7749, -122.4194)
@@ -356,7 +357,7 @@ def test_empty_overpass_does_not_wipe_radius(tmp_path):
   os.makedirs(os.path.dirname(dest), exist_ok=True)
   _tiny_us(dest)
   prev = Path(dest).read_bytes()
-  with pytest.raises(RefreshMapsError, match="No maxspeed ways"):
+  with pytest.raises(RefreshMapsError, match="No usable highway speed limits"):
     refresh_local_maps(dest=dest, live_fix=SF, last_gps_raw=None, payload={"elements": []})
   assert Path(dest).read_bytes() == prev
 
@@ -489,3 +490,82 @@ def test_refresh_stages_merge_beside_dest_not_tmp(tmp_path):
   assert os.path.dirname(stage) == os.path.dirname(dest)
   assert os.path.basename(stage) == STAGING_DIRNAME
   assert not os.path.isfile(os.path.join(stage, "speed_limits.merge.sqlite"))
+
+
+def _unmarked_way(way_id: int, lat: float, lon: float, highway: str, name: str) -> dict:
+  return {
+    "type": "way",
+    "id": way_id,
+    "tags": {"highway": highway, "name": name},
+    "geometry": [
+      {"lat": lat, "lon": lon - 0.001},
+      {"lat": lat, "lon": lon + 0.001},
+    ],
+  }
+
+
+def test_mn_refresh_fills_unmarked_and_does_not_wipe(tmp_path):
+  dest = str(tmp_path / "osm" / "speed_limits.sqlite")
+  os.makedirs(os.path.dirname(dest), exist_ok=True)
+  _tiny_us(dest)
+  payload = {"elements": [
+    _overpass_way(100, BENSON_LAT, BENSON_LON, 60, "US 12"),
+    _unmarked_way(101, BENSON_LAT + 0.01, BENSON_LON, "residential", "14th St"),
+    _unmarked_way(102, BENSON_LAT + 0.02, BENSON_LON, "service", "Alley svc"),
+  ]}
+  refresh_local_maps(dest=dest, live_fix=(BENSON_LAT, BENSON_LON), last_gps_raw=None, payload=payload)
+  db = OsmSpeedLimitDB(dest)
+  assert db.open()
+  tagged = db.lookup(BENSON_LAT, BENSON_LON, bearing_deg=90.0)
+  assert tagged is not None and tagged.way_id == 100
+  assert abs(tagged.speed_limit_ms - 60 * CV.MPH_TO_MS) < 0.2
+  filled = db.lookup(BENSON_LAT + 0.01, BENSON_LON, bearing_deg=90.0)
+  assert filled is not None and filled.way_id == 101
+  assert abs(filled.speed_limit_ms - 30 * CV.MPH_TO_MS) < 0.2
+  skipped = db.lookup(BENSON_LAT + 0.02, BENSON_LON, bearing_deg=90.0)
+  assert skipped is None
+  nyc = db.lookup(NYC[0], NYC[1], bearing_deg=90.0)
+  assert nyc is not None and nyc.way_id == 2
+  db.close()
+  assert OsmSpeedLimitDB.meta_get(dest, "fill_source") == FILL_SOURCE
+
+
+def test_sf_refresh_does_not_fill_unmarked_residential(tmp_path):
+  dest = str(tmp_path / "osm" / "speed_limits.sqlite")
+  os.makedirs(os.path.dirname(dest), exist_ok=True)
+  _tiny_us(dest)
+  payload = {"elements": [
+    _overpass_way(1, SF[0], SF[1], 40, "Market"),
+    _unmarked_way(50, SF[0] + 0.01, SF[1], "residential", "Oak"),
+  ]}
+  refresh_local_maps(dest=dest, live_fix=SF, last_gps_raw=None, payload=payload)
+  db = OsmSpeedLimitDB(dest)
+  assert db.open()
+  oak = db.lookup(SF[0] + 0.01, SF[1], bearing_deg=90.0)
+  assert oak is None
+  market = db.lookup(SF[0], SF[1], bearing_deg=90.0)
+  assert market is not None and abs(market.speed_limit_ms - 40 * CV.MPH_TO_MS) < 0.2
+  db.close()
+
+
+def test_mn_refresh_overpass_query_includes_unmarked(monkeypatch):
+  seen: dict = {}
+
+  def fake_fetch(bbox, url="unused", **kwargs):
+    seen["include_unmarked"] = kwargs.get("include_unmarked")
+    seen["query"] = overpass_query(*bbox, include_unmarked=bool(kwargs.get("include_unmarked")))
+    return {"elements": [_overpass_way(1, BENSON_LAT, BENSON_LON, 55, "US 12")]}
+
+  import openpilot.selfdrive.mapd.local_refresh as lr
+  monkeypatch.setattr(lr, "fetch_overpass", fake_fetch)
+  dest = "/tmp/does-not-matter-mn-refresh"
+  # download_maps / merge would run; stub install after fetch
+  monkeypatch.setattr(lr, "_ensure_us_base", lambda dest: None)
+  monkeypatch.setattr(lr, "install_merged_overlay", lambda *a, **k: dest)
+  monkeypatch.setattr(lr, "installed_db_summary", lambda dest: "ok")
+  monkeypatch.setattr(lr, "sqlite_present", lambda dest: True)
+  refresh_local_maps(dest=dest, live_fix=(BENSON_LAT, BENSON_LON), last_gps_raw=None)
+  assert seen.get("include_unmarked") is True
+  assert '["maxspeed"]' not in seen["query"]
+  assert "residential" in seen["query"]
+

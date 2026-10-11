@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import os
 import time
 import threading
@@ -25,12 +26,19 @@ from openpilot.selfdrive.mapd.map_speed_policy import (
   MapCruiseHold, apply_map_speed_kph, decide_map_cruise, effective_map_limit_ms,
   map_slew_a_ms2, read_map_speed_params, should_write_preap_pedal, slew_map_speed_ms,
 )
+from openpilot.selfdrive.mapd.roundabout import live_map_roundabout_hint, roundabout_ease_v_ms
+from openpilot.selfdrive.controls.lib.curve_follow import MODE_ACTIVE, MODE_SHADOW, read_curve_follow_mode
 from openpilot.selfdrive.controls.lib.curve_max_hold import CurveMaxHold
+from openpilot.selfdrive.controls.lib.radar_status_log import RadarStatusLogger
 from openpilot.selfdrive.controls.lib.follow_distance import published_cruise_ms
 from openpilot.selfdrive.controls.lib.hypermile import (
   FollowStalkGesture, button_event_closer, button_event_released,
   map_target_offset_kph, persist_follow_distance, read_hypermile_params,
   read_hypermile_step_down,
+)
+from openpilot.selfdrive.car.tesla.preap_force_offroad_handoff import (
+  install_force_offroad_handoff,
+  update_force_offroad_handoff,
 )
 
 REPLAY = "REPLAY" in os.environ
@@ -43,8 +51,101 @@ def map_slew_from_displayed_kph(displayed_kph: float, offset_kph: float) -> floa
   return (float(displayed_kph) - float(offset_kph)) * CV.KPH_TO_MS
 
 
+def _kph_near(a, b, eps: float = 1.0) -> bool:
+  if a is None or b is None:
+    return False
+  try:
+    return abs(float(a) - float(b)) <= eps
+  except (TypeError, ValueError):
+    return False
+
+
+def _snapshot_cruise_hold(hold) -> dict:
+  return {
+    "sticky_set_kph": hold.sticky_set_kph,
+    "held_max_kph": hold.held_max_kph,
+    "policy_kph": hold.policy_kph,
+    "last_raw": hold.last_raw_kph,
+  }
+
+
+def _refresh_ring_snapshot(pre: dict, hold, ring_kph: float) -> None:
+  """Posted / stalk changes that are not the ring speed become the resume target."""
+  if pre is None or _kph_near(hold.held_max_kph, ring_kph):
+    return
+  pre["held_max_kph"] = hold.held_max_kph
+  pre["policy_kph"] = hold.policy_kph
+  pre["sticky_set_kph"] = hold.sticky_set_kph
+  pre["last_raw"] = hold.last_raw_kph
+
+
+def _unwind_ring_speed_set(hold, pre, ring_kph: float) -> bool:
+  """Drop a MAX that was stored as the ring speed. Keep a pre-ring set.
+
+  Returns True when a ring-speed latch was removed. Gap lock is a lead
+  setpoint and is not touched; MAX stays the cruise ceiling.
+  """
+  if pre is None:
+    return False
+  changed = False
+  for field in ("sticky_set_kph", "held_max_kph", "policy_kph"):
+    cur = getattr(hold, field)
+    old = pre.get(field)
+    if _kph_near(cur, ring_kph) and not _kph_near(old, ring_kph):
+      setattr(hold, field, old)
+      changed = True
+  if changed and _kph_near(hold.last_raw_kph, ring_kph):
+    old_raw = pre.get("last_raw")
+    if old_raw is not None:
+      hold.last_raw_kph = old_raw
+  return changed
+
+
+def _ring_exit_target_ms(hold, lim, posted_kph) -> float | None:
+  """Posted limit, else the pre-ring set. None when nothing is known."""
+  if hold.sticky_set_kph is None and lim is not None and float(lim) > 0.0:
+    return float(lim)
+  for val in (hold.sticky_set_kph, hold.held_max_kph, hold.policy_kph, posted_kph):
+    if val is not None and float(val) > 0.0:
+      return float(val) * CV.KPH_TO_MS
+  return None
+
+
+def _apply_ring_exit_max(target_ms, floor_ms, lookahead, accel_level):
+  """Start the ramp at least at current speed, then ease toward the target.
+
+  One map-rate step, so a ring exit does not publish the ring speed and
+  does not step MAX down in a single frame.
+  """
+  start = float(floor_ms)
+  if target_ms is None or float(target_ms) <= 0.0:
+    return start * CV.MS_TO_KPH, start
+  a = map_slew_a_ms2(start, float(target_ms), lookahead, accel_level)
+  nxt = slew_map_speed_ms(start, float(target_ms), DT_CTRL, a)
+  return nxt * CV.MS_TO_KPH, nxt
+
 # forward
 carlog.addHandler(ForwardingHandler(cloudlog))
+
+
+def log_curve_max(owner, curve_out, hud_in_kph, posted_kph, CS) -> None:
+  """2 Hz `curvemax` line (errorLogMessage -> qlog) while the MAX cap is in play. Never touches MAX."""
+  try:
+    owner._curve_log_n = getattr(owner, "_curve_log_n", 0) + 1
+    cap = getattr(owner._curve_max, "_cap_kph", None)
+    if owner._curve_log_n % 50 != 0 or not (curve_out.active or cap is not None):
+      return
+    rec = {
+      "m": int(getattr(owner, "_curve_follow_mode", MODE_SHADOW)), "act": int(bool(curve_out.active)),
+      "cap": None if cap is None else round(float(cap), 1), "hud_in": round(float(hud_in_kph), 1),
+      "hud": round(float(curve_out.hud_kph), 1),
+      "seed": None if curve_out.restore_seed_kph is None else round(float(curve_out.restore_seed_kph), 1),
+      "frz": int(bool(curve_out.freeze_posted)), "posted": None if posted_kph is None else round(float(posted_kph), 1),
+      "v": round(float(CS.vEgo), 2),
+    }
+    cloudlog.error("curvemax " + json.dumps(rec, separators=(",", ":")))
+  except Exception:
+    pass
 
 
 def obd_callback(params: Params) -> ObdCallback:
@@ -191,15 +292,20 @@ class Car:
     self.radar_donor_vin = None
     tesla_preap = any(cfg.safetyModel == car.CarParams.SafetyModel.teslaPreap for cfg in self.CP.safetyConfigs)
     self._tesla_preap = tesla_preap
+    self._nap_orphan_s = 0.0
+    # 2 Hz radarstat line (radar status bits + track summary) for Pre-AP Bosch digs.
+    self._radar_stat = RadarStatusLogger() if tesla_preap else None
     if tesla_preap:
       from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import install_blinker_lat_pause
-      from openpilot.selfdrive.car.tesla.preap_gap_lock_tx import install_gap_lock_tx
+      from openpilot.selfdrive.car.tesla.preap_body_controls import install_body_controls_test
       from opendbc.car.tesla.preap.nap_conf import nap_conf
       from opendbc.car.tesla.preap.radar_donor_vin import RadarDonorVinCommissioner
+
       from openpilot.selfdrive.controls.lib.lead_approach import install_preap_plant_regen_guard
 
       install_blinker_lat_pause()
-      install_gap_lock_tx()
+      install_body_controls_test()
+      install_force_offroad_handoff()
       install_preap_plant_regen_guard()
 
       def store_donor_vin(vin: str) -> None:
@@ -220,8 +326,20 @@ class Car:
     # Update carState from CAN
     CS = self.CI.update(can_list)
 
+    # Pre-AP Force Offroad stock-CC handoff (or immediate ready if not
+    # software-long). Must run while onroad so CANCEL/SET can still TX.
+    update_force_offroad_handoff(
+      getattr(self.CI, "CS", None) if getattr(self, "_tesla_preap", False) else None,
+      CS,
+    )
+
     # Update radar tracks from CAN
     RD: structs.RadarDataT | None = self.RI.update(can_list)
+    radar_stat = getattr(self, "_radar_stat", None)
+    if radar_stat is not None:
+      stat_line = radar_stat.update(self._can_packets, getattr(RD, "points", None), CS.vEgo)
+      if stat_line is not None:
+        cloudlog.error(stat_line)
 
     self.sm.update(0)
 
@@ -233,6 +351,19 @@ class Car:
 
     if can_rcv_valid and REPLAY:
       self.can_log_mono_time = messaging.log_from_bytes(can_strs[0]).logMonoTime
+
+    if getattr(self, "_tesla_preap", False):
+      # Cruise latched on the car side, openpilot not actually engaged
+      # (startup, noEntry, missed rising edge). Quiet reset after 0.75 s.
+      from openpilot.selfdrive.car.tesla.preap_blinker_lat_pause import reconcile_orphan_session
+      self._nap_orphan_s, _canceled = reconcile_orphan_session(
+        getattr(getattr(self.CI, "CS", None), "engagement", None),
+        op_enabled=bool(self.sm['carControl'].enabled),
+        orphan_s=float(getattr(self, "_nap_orphan_s", 0.0)),
+        dt=DT_CTRL,
+        cereal_cs=CS,
+        interface_cs=getattr(self.CI, "CS", None),
+      )
 
     try:
       preap_software_cruise = (
@@ -263,6 +394,7 @@ class Car:
     return CS, RD
 
   def _update_preap_map_cruise(self, CS) -> None:
+    """OSM overlay for pre-AP pedal MAX. Slew state stays in raw-limit units."""
     # Pre-AP pedal mode owns set-speed via pedal_speed_kph. Overlay OSM
     # onto vCruise/MAX for the OP session (cruiseEnabled), including a
     # brake long pause so sticky MAX can rebase. The first
@@ -314,6 +446,11 @@ class Car:
     last_hud_kph = float(self.v_cruise_helper.v_cruise_kph)
     steer_deg = float(getattr(CS, 'steeringAngleDeg', 0.0) or 0.0)
     curve_kappa, curve_yaw = self._curve_cornering()
+    # NAPCurveFollow = 2: the planner's continuous curve term owns bends and MAX
+    # is never touched. CurveMaxHold is fed engaged=False, which resets it and
+    # passes posted / HUD MAX straight through (no cap, snapshot, restore or
+    # posted freeze). 0 / 1 (shadow): CurveMaxHold runs exactly as before.
+    curve_follow_on = getattr(self, "_curve_follow_mode", MODE_SHADOW) == MODE_ACTIVE
     policy_posted_kph, _ = self._curve_max.begin_cycle(
       self._map_hold,
       last_hud_kph=last_hud_kph,
@@ -322,7 +459,7 @@ class Car:
       angle_steers_deg=steer_deg,
       steer_ratio=float(getattr(self.CP, 'steerRatio', 0.0) or 0.0),
       wheelbase=float(getattr(self.CP, 'wheelbase', 0.0) or 0.0),
-      engaged=session_engaged,
+      engaged=session_engaged and not curve_follow_on,
       take_speed_now=take_speed_now,
       dt=DT_CTRL,
       curvature=curve_kappa,
@@ -359,19 +496,54 @@ class Car:
       )
     else:
       lim = None
+    # RB funnel is geometry, not a posted rebase. Ease even on a sticky
+    # hold so aTarget cannot stay +a into the ring (Willmar 49→17).
+    # The ring hint does not need a speed-limit match: a ring often has no
+    # maxspeed. Read it whenever mapd publishes it, then use the ring speed.
+    rb_lim = None
+    rb_md = self.sm['liveMapDataNAP'] if self.sm.valid.get('liveMapDataNAP', False) else None
+    rb_hint = live_map_roundabout_hint(rb_md)
+    if rb_hint is not None:
+      posted_ms = float(md.speedLimit) if md is not None and md.speedLimit > 0 else float(CS.vEgo)
+      rb_lim = roundabout_ease_v_ms(rb_hint, float(CS.vEgo), posted_ms, self._map_speed_lookahead)
+      if rb_lim is not None and map_valid and md is not None:
+        lim = rb_lim if lim is None else min(float(lim), rb_lim)
+    was_on_ring = bool(getattr(self, "_rb_active", False))
+    exiting_ring = was_on_ring and rb_lim is None
+    if exiting_ring:
+      ring_kph = float(getattr(self, "_rb_target_ms", 0.0) or 0.0) * CV.MS_TO_KPH
+      if _unwind_ring_speed_set(self._map_hold, getattr(self, "_rb_pre", None), ring_kph):
+        dec.sticky = self._map_hold.sticky_set_kph is not None
+        dec.follow_override = bool(dec.sticky)
+        if not dec.sticky and map_valid and md is not None:
+          lim = effective_map_limit_ms(
+            float(md.speedLimit),
+            float(md.nextSpeedLimit),
+            float(md.nextSpeedLimitDistance),
+            float(CS.vEgo),
+            self._map_speed_lookahead,
+            self._map_speed_accel,
+            sticky=False,
+          )
     if map_valid and md is not None and lim is not None and lim > 0:
-      if self._map_slew_ms is None:
-        hud_kph = float(self.v_cruise_helper.v_cruise_kph)
-        prev_ms = map_slew_from_displayed_kph(hud_kph, map_offset_kph)
-        if 0.0 < hud_kph < V_CRUISE_UNSET and prev_ms > lim + 0.3:
-          self._map_slew_ms = prev_ms
-        else:
-          self._map_slew_ms = lim
-      a = map_slew_a_ms2(
-        self._map_slew_ms, lim, self._map_speed_lookahead, self._map_speed_accel,
-      )
-      self._map_slew_ms = slew_map_speed_ms(self._map_slew_ms, lim, DT_CTRL, a)
-      map_kph = self._map_slew_ms * CV.MS_TO_KPH
+      if rb_lim is not None:
+        # Instant RB latch: MAX is the ring target now. Do not Accel-5
+        # slew over another 100 m after long enables in the funnel.
+        self._map_slew_ms = float(lim)
+        map_kph = float(lim) * CV.MS_TO_KPH
+      else:
+        if self._map_slew_ms is None:
+          hud_kph = float(self.v_cruise_helper.v_cruise_kph)
+          prev_ms = map_slew_from_displayed_kph(hud_kph, map_offset_kph)
+          if 0.0 < hud_kph < V_CRUISE_UNSET and prev_ms > lim + 0.3:
+            self._map_slew_ms = prev_ms
+          else:
+            self._map_slew_ms = lim
+        a = map_slew_a_ms2(
+          self._map_slew_ms, lim, self._map_speed_lookahead, self._map_speed_accel,
+        )
+        self._map_slew_ms = slew_map_speed_ms(self._map_slew_ms, lim, DT_CTRL, a)
+        map_kph = self._map_slew_ms * CV.MS_TO_KPH
     elif map_valid and md is not None:
       self._map_slew_ms = None
     elif not map_valid:
@@ -392,6 +564,15 @@ class Car:
         op_long_software_cruise=True,
         driver_override=dec.follow_override,
       )
+    ring_capped = False
+    if rb_lim is not None:
+      rb_kph = float(rb_lim) * CV.MS_TO_KPH
+      # The ring ceiling is the HUD MAX only. A higher set stays the
+      # resume target so a SET in the ring cannot latch the ring speed.
+      if float(preap_v_cruise_kph) > rb_kph + MANUAL_SET_EPS_KPH:
+        ring_capped = True
+      preap_v_cruise_kph = min(float(preap_v_cruise_kph), rb_kph)
+      self._map_slew_ms = float(rb_lim)
     # Temporary curve cap may lower HUD MAX. Restore seed puts pre-curve
     # MAX back after the bend. Do not let that cap rebase sticky / held.
     curve_out = self._curve_max.finish(
@@ -402,7 +583,7 @@ class Car:
       angle_steers_deg=steer_deg,
       steer_ratio=float(getattr(self.CP, 'steerRatio', 0.0) or 0.0),
       wheelbase=float(getattr(self.CP, 'wheelbase', 0.0) or 0.0),
-      engaged=session_engaged,
+      engaged=session_engaged and not curve_follow_on,
       stalk_pressed=stalk_pressed,
       take_speed_now=take_speed_now,
       dt=DT_CTRL,
@@ -411,11 +592,21 @@ class Car:
       restore_a_ms2=map_accel_a_ms2(self._map_speed_lookahead, self._map_speed_accel),
       long_active=soft_long,
     )
+    log_curve_max(self, curve_out, preap_v_cruise_kph, posted_kph, CS)
     preap_v_cruise_kph = float(curve_out.hud_kph)
     restore_seed_kph = curve_out.restore_seed_kph
     seed_kph = dec.seed_kph if restore_seed_kph is None else float(restore_seed_kph)
     if restore_seed_kph is not None:
       self._map_slew_ms = map_slew_from_displayed_kph(float(restore_seed_kph), map_offset_kph)
+    if exiting_ring:
+      # Leave the ring at least at current speed and ramp toward the
+      # posted / pre-ring MAX. MAX stays a hard ceiling (the slew target).
+      # Gap lock still owns the lead gap; this does not raise it.
+      floor_ms = max(float(getattr(self, "_rb_target_ms", 0.0) or 0.0), float(CS.vEgo))
+      target_ms = _ring_exit_target_ms(self._map_hold, None if dec.sticky else lim, posted_kph)
+      preap_v_cruise_kph, self._map_slew_ms = _apply_ring_exit_max(
+        target_ms, floor_ms, self._map_speed_lookahead, self._map_speed_accel,
+      )
     # Write engage/posted/stalk seed, or when HUD MAX rose. Never write
     # the same sticky MAX every frame. Pause still writes a rebase /
     # resume seed onto pedal_speed so one SET keeps the held MAX.
@@ -423,13 +614,29 @@ class Car:
     write_max = long_active or soft_long or resume_held or take_speed_now or (
       session_engaged and seed_kph is not None
     )
-    if write_max and should_write_preap_pedal(seed_kph, preap_v_cruise_kph, self._last_pedal_kph):
+    if write_max and should_write_preap_pedal(seed_kph, preap_v_cruise_kph, self._last_pedal_kph) and not ring_capped:
       self._write_preap_pedal_speed(CS, preap_v_cruise_kph)
       self._last_pedal_kph = float(preap_v_cruise_kph)
       self._pedal_self_write_kph = float(preap_v_cruise_kph)
     elif not session_enabled:
       self._last_pedal_kph = None
       self._pedal_self_write_kph = None
+    if rb_lim is not None:
+      ring_kph = float(rb_lim) * CV.MS_TO_KPH
+      if not was_on_ring or getattr(self, "_rb_pre", None) is None:
+        self._rb_pre = _snapshot_cruise_hold(self._map_hold)
+      else:
+        _refresh_ring_snapshot(self._rb_pre, self._map_hold, ring_kph)
+      _unwind_ring_speed_set(self._map_hold, self._rb_pre, ring_kph)
+      eng = self._preap_engagement()
+      if eng is not None and _kph_near(getattr(eng, "_nap_held_max_kph", None), ring_kph):
+        restore = None if self._rb_pre is None else self._rb_pre.get("held_max_kph")
+        if restore is not None and not _kph_near(restore, ring_kph):
+          eng._nap_held_max_kph = restore
+      self._rb_target_ms = float(rb_lim)
+      self._rb_active = True
+    else:
+      self._rb_active = False
     self.v_cruise_helper.v_cruise_kph_last = self.v_cruise_helper.v_cruise_kph
     self.v_cruise_helper.v_cruise_kph = preap_v_cruise_kph
     self.v_cruise_helper.v_cruise_cluster_kph = preap_v_cruise_kph
@@ -618,12 +825,41 @@ class Car:
     cs_send.carState.canErrorCounter = self.can_rcv_cum_timeout_counter
     cs_send.carState.cumLagMs = -self.rk.remaining * 1000.
     self.pm.send('carState', cs_send)
+    if self._tesla_preap:
+      from openpilot.selfdrive.car.tesla.preap_body_controls import note_published_car_state
+      note_published_car_state(cs_send.carState)
 
     if RD is not None:
       tracks_msg = messaging.new_message('liveTracks')
       tracks_msg.valid = not any(RD.errors.to_dict().values())
       tracks_msg.liveTracks = RD
       self.pm.send('liveTracks', tracks_msg)
+
+  def _preap_lat_yield_flag(self, CC: car.CarControl):
+    """Host-only 0x561. Widens yield-not-disengage. Never an actuation bit.
+
+    Panda drops the frame (tx hook returns false). Stuck true means a
+    steering yank yields lateral instead of ending the session, which is
+    the existing yielded-lateral rule. Stuck false is today's disengage
+    plus the local angle-error help check. Doors, gear, stalk, brake,
+    and an EPAS reject with hands off still disengage.
+    """
+    from opendbc.car.tesla.preap.lat_yield import (
+      UNDERTRACK_CURVATURE, YIELD_FLAG_ADDR, encode_yield_flag, roundabout_yield_context)
+
+    md = self.sm['liveMapDataNAP'] if self.sm.alive.get('liveMapDataNAP', False) else None
+    hint = live_map_roundabout_hint(md)
+    on_rb = bool(hint is not None and roundabout_yield_context(
+      hint.on_roundabout, hint.approaching, hint.distance_m))
+    try:
+      under = abs(float(CC.actuators.curvature) - float(CC.currentCurvature)) > UNDERTRACK_CURVATURE
+    except (TypeError, ValueError):
+      under = False
+    eng = getattr(getattr(self.CI, "CS", None), "engagement", None)
+    if eng is not None:
+      eng._nap_roundabout_yield = on_rb
+      eng._nap_undertrack = bool(under)
+    return (YIELD_FLAG_ADDR, encode_yield_flag(on_rb, under), 0)
 
   def controls_update(self, CS: car.CarState, CC: car.CarControl):
     """control update loop, driven by carControl"""
@@ -640,6 +876,8 @@ class Car:
       now_nanos = self.can_log_mono_time if REPLAY else int(time.monotonic() * 1e9)
       self.last_actuators_output, can_sends = self.CI.apply(CC, now_nanos)
       can_sends = list(can_sends)
+      if getattr(self, "_tesla_preap", False):
+        can_sends.append(self._preap_lat_yield_flag(CC))
       if self.radar_donor_vin is not None:
         controls_allowed = False
         if self.sm.valid['pandaStates']:
@@ -683,6 +921,7 @@ class Car:
     self.CS_prev = CS
 
   def _refresh_map_speed_params(self):
+    self._curve_follow_mode = read_curve_follow_mode(self.params)
     mode, offset, lookahead, accel = read_map_speed_params(self.params)
     hm_on = read_hypermile_params(self.params)
     self._map_speed_mode = mode

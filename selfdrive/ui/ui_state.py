@@ -2,6 +2,7 @@ import pyray as rl
 import numpy as np
 import time
 import threading
+from openpilot.common.nap_release import SPEED_SIGN_ENABLED
 from collections.abc import Callable
 from enum import Enum
 from cereal import messaging, car, log
@@ -59,6 +60,7 @@ class UIState:
         "carControl",
         "liveParameters",
         "liveMapDataNAP",
+        "liveSpeedSignNAP",
         "testJoystick",
         "rawAudioData",
         "liveTracks",
@@ -94,6 +96,7 @@ class UIState:
     self.radar_monitor = BoschRadarMonitor()
     self.radar_status = BoschRadarStatus()
     self.radar_hud: bool = False
+    self.speed_sign_log: bool = False
 
     self._params_thread: threading.Thread | None = None
 
@@ -229,6 +232,11 @@ class UIState:
       self.radar_hud = self.params.get_bool("NAPRadarHud")
     except Exception:
       self.radar_hud = False
+    try:
+      # nap-release: no speed sign reader, so never show the SIGN plate.
+      self.speed_sign_log = SPEED_SIGN_ENABLED and self.params.get_bool("NAPSpeedSignLog")
+    except Exception:
+      self.speed_sign_log = False
 
   def _update_radar_monitor(self) -> None:
     can_messages = []

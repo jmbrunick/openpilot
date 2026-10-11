@@ -283,6 +283,10 @@ def collapse_blocks_new_lead(y_rel, collapsed, incumbent=False) -> bool:
   Right-side (negative yRel) is the construction blip; either side
   past the bar is the same new-association gate. An incumbent track
   stays so a real cut-in can walk off without a hard drop.
+
+  This does not decide whether a far lead's rapid decel may firm ego
+  braking. That lead is already followed. The rapid-brake path in
+  unified_lead gates that copy on predicted-path offset instead.
   """
   if not collapsed or incumbent or y_rel is None:
     return False

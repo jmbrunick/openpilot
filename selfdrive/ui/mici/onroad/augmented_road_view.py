@@ -176,7 +176,9 @@ class AugmentedRoadView(CameraView):
       self._offroad_label.set_text("start the car to\nuse openpilot")
 
   def _handle_mouse_release(self, mouse_pos: MousePos):
-    # Don't trigger click callback if bookmark was triggered
+    # Don't trigger click callback if bookmark was triggered or Yes/No was hit
+    if self._hud_renderer.user_interacting():
+      return
     if not self._bookmark_icon.interacting():
       super()._handle_mouse_release(mouse_pos)
 

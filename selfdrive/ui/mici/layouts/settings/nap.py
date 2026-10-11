@@ -5,6 +5,7 @@ vocabulary used on the comma 4. Phase 1 stub: three controls (pedal
 interceptor toggle, radar enabled toggle, flash EPAS button).
 Subsequent phases add the rest.
 """
+from openpilot.common.nap_release import SPEED_SIGN_ENABLED
 from openpilot.common.params import Params
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.widgets.scroller import NavScroller
@@ -16,16 +17,34 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   BACKUP_EPAS_INSTRUCTIONS,
   CALIBRATE_PEDAL_INSTRUCTIONS,
   FLASH_EPAS_INSTRUCTIONS,
+  HIGH_LOW_BEAM_LABELS,
+  HIGH_LOW_BEAM_VALUES,
   PEDAL_CAN_BUS_VALUES,
   RADAR_OFFSET_MAX,
   RADAR_OFFSET_MIN,
   RESTORE_EPAS_INSTRUCTIONS,
+  INSTALL_SPEED_SIGN_WEIGHTS_INSTRUCTIONS,
+  NAP_SPEED_SIGN_LOG,
+  WIPER_SPEED_LABELS,
+  WIPER_SPEED_VALUES,
+  WIPER_SENSITIVITY_DEFAULT,
+  WIPER_SENSITIVITY_LABELS,
+  WIPER_SENSITIVITY_VALUES,
 )
 from openpilot.selfdrive.ui.mici.layouts.settings.driving_mannerisms import DrivingMannerismsLayoutMici
 from openpilot.selfdrive.ui.mici.layouts.settings.map_speed import MapSpeedLimitLayoutMici
+from openpilot.selfdrive.speedsignd.install import weights_status_summary
+from openpilot.selfdrive.car.tesla.preap_body_controls import (
+  NAP_HIGH_LOW_BEAM,
+  NAP_WIPER_SENSITIVITY,
+  NAP_WIPER_SPEED,
+  register_nap_body_params,
+)
 from openpilot.selfdrive.ui.radar.radar_view import RadarMonitorDialog
 from openpilot.selfdrive.ui.ui_state import ui_state
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys
+
+register_nap_body_params()
 
 
 def _reboot_dialog() -> None:
@@ -207,6 +226,16 @@ class NAPLayoutMici(NavScroller):
     map_speed_btn = BigButton("map speed limit", "open")
     map_speed_btn.set_click_callback(lambda: gui_app.push_widget(self._map_speed_page))
 
+    speed_sign_log = BigParamControl("speed sign logger", NAP_SPEED_SIGN_LOG)
+
+    self._weights_status = BigButton("speed sign weights", weights_status_summary())
+    install_weights_btn = BigButton("install weights", "start")
+    install_weights_btn.set_click_callback(
+      lambda: launch_script("Install weights", INSTALL_SPEED_SIGN_WEIGHTS_INSTRUCTIONS,
+                            "scripts.nap.install_speed_sign_weights",
+                            ))
+    install_weights_btn.set_enabled(ui_state.is_offroad)
+
     # ── Pedal hardware ───────────────────────────────
     # default_value=2 matches NAPPedalCanBus declared default in params_keys.h
     # and the runtime fallback ("any nonzero is bus 2"). If the param is set
@@ -244,6 +273,30 @@ class NAPLayoutMici(NavScroller):
     radar_settings_btn.set_click_callback(lambda: gui_app.push_widget(RadarSettingsLayoutMici()))
 
     # ── iBooster (locked off) ────────────────────────
+    wiper_control = BigMultiValueParamToggle(
+      "wiper control",
+      NAP_WIPER_SPEED,
+      values=WIPER_SPEED_VALUES,
+      labels=WIPER_SPEED_LABELS,
+      default_value=0,
+    )
+
+    wiper_sensitivity = BigMultiValueParamToggle(
+      "wiper sensitivity",
+      NAP_WIPER_SENSITIVITY,
+      values=WIPER_SENSITIVITY_VALUES,
+      labels=WIPER_SENSITIVITY_LABELS,
+      default_value=WIPER_SENSITIVITY_DEFAULT,
+    )
+
+    high_low_beam = BigMultiValueParamToggle(
+      "high / low beam",
+      NAP_HIGH_LOW_BEAM,
+      values=HIGH_LOW_BEAM_VALUES,
+      labels=HIGH_LOW_BEAM_LABELS,
+      default_value=0,
+    )
+
     ibooster_enabled = BigParamControl("ibooster enabled", NAPParamKeys.IBOOSTER_ENABLED)
     ibooster_enabled.set_enabled(False)
 
@@ -275,18 +328,27 @@ class NAPLayoutMici(NavScroller):
       ))
     restore_epas_btn.set_enabled(ui_state.is_offroad)
 
+    speed_sign_rows = [speed_sign_log, self._weights_status, install_weights_btn] if SPEED_SIGN_ENABLED else []
     self._scroller.add_widgets([
       pedal_enabled,
       driving_mannerisms_btn,
       map_speed_btn,
+      *speed_sign_rows,
       pedal_can_bus,
       pedal_calib_status,
       calibrate_pedal_btn,
       radar_settings_btn,
+      wiper_control,
+      wiper_sensitivity,
+      high_low_beam,
       ibooster_enabled,
       force_pre_ap,
       backup_epas_btn,
       flash_epas_btn,
       restore_epas_btn,
     ])
+
+  def show_event(self):
+    super().show_event()
+    self._weights_status.set_value(weights_status_summary())
 

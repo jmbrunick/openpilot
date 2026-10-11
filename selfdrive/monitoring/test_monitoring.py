@@ -5,10 +5,10 @@ from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_DMON
 from openpilot.selfdrive.monitoring.dm_toggles import (
   DEFAULT_FALSE_ALERT_IGNORE, DEFAULT_SIMULATE_LOOKING,
-  PARAM_DM_FALSE_ALERT_IGNORE, PARAM_DM_SIMULATE_LOOKING,
 )
 from openpilot.selfdrive.monitoring.policy import (
-  DriverMonitoring, DRIVER_MONITOR_SETTINGS, LOOK_SIM_MODE_PHONE, LOOK_SIM_MODE_GLANCE,
+  DriverMonitoring, DRIVER_MONITOR_SETTINGS, PARAM_DM_SIMULATE_LOOKING,
+  PARAM_DM_FALSE_ALERT_IGNORE, LOOK_SIM_MODE_PHONE, LOOK_SIM_MODE_GLANCE,
   LOOK_SIM_COUNTDOWN_MIN_S, LOOK_SIM_RANDOM_WINDOW_S, LOOK_SIM_FIRE_MAX_S,
   LOOK_SIM_HOLD_MIN_S, LOOK_SIM_HOLD_MAX_S,
   VISION_LOOKING_FILTER_X, VISION_RECOVERY_FACTOR_MAX, VISION_RECOVERY_FACTOR_MIN,
@@ -364,7 +364,7 @@ class TestMonitoring:
     assert s._VISION_POLICY_ALERT_3_TIMEOUT == 11.
     assert PARAM_DM_SIMULATE_LOOKING == "NAPDmSimulateLooking"
     assert PARAM_DM_FALSE_ALERT_IGNORE == "NAPDmFalseAlertIgnore"
-    assert DEFAULT_SIMULATE_LOOKING is False
+    assert DEFAULT_SIMULATE_LOOKING is True
     assert DEFAULT_FALSE_ALERT_IGNORE is False
     assert LOOK_SIM_MODE_PHONE == "phone"
     assert LOOK_SIM_MODE_GLANCE == "glance"
@@ -378,19 +378,6 @@ class TestMonitoring:
     assert s._TIMEOUT_RECOVERY_FACTOR_MIN == VISION_RECOVERY_FACTOR_MIN == 1.25
     assert DM_LOOKAWAY_GATE_MPH == 2.0
     assert abs(DM_LOOKAWAY_GATE_MS - 2.0 * CV.MPH_TO_MS) < 1e-9
-
-  def test_simulate_looking_defaults_off_on_release(self):
-    """nap-release keeps stock DM until the hidden toggles are turned On."""
-    from pathlib import Path
-    keys = Path(__file__).resolve().parents[2].joinpath("common/params_keys.h").read_text()
-    for name in ('"NAPDmSimulateLooking"', '"NAPDmFalseAlertIgnore"'):
-      line = next(ln for ln in keys.splitlines() if name in ln)
-      assert 'BOOL, "0"' in line
-    policy = Path(__file__).resolve().parents[0].joinpath("policy.py").read_text()
-    assert "read_exclusive_dm_toggles" in policy
-    assert "DEFAULT_SIMULATE_LOOKING, DEFAULT_FALSE_ALERT_IGNORE" in policy
-    assert DEFAULT_SIMULATE_LOOKING is False
-    assert DEFAULT_FALSE_ALERT_IGNORE is False
 
   def test_vision_looking_path_is_stock_glance_predicates(self):
     """Green-prompt clear path: face + low std + filter.x < 0.37."""
@@ -799,13 +786,11 @@ class TestMonitoring:
         break
     assert holding
     self._step(DM, msg_POSE_ONLY)
-    # FAI would abort here and resume drain. Simulate Look keeps the wipe.
     assert DM._look_sim_holding
     assert DM._look_sim_mode == LOOK_SIM_MODE_GLANCE
     assert DM.distracted_types['pose'] is False
     assert not DM.driver_distracted
     assert DM.awareness >= a_at_hold - 1e-6
-    # Over a stock orange window, cadence must keep him below orange.
     for _ in range(int((dm_settings._VISION_POLICY_ALERT_2_TIMEOUT + 1.0) / DT_DMON)):
       self._step(DM, msg_POSE_ONLY)
     assert DM.alert_level < 2

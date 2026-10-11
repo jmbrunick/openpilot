@@ -10,6 +10,7 @@ from openpilot.selfdrive.ui.onroad.augmented_road_view import AugmentedRoadView
 from openpilot.selfdrive.ui.ui_state import device, ui_state
 from openpilot.selfdrive.ui.layouts.onboarding import OnboardingWindow
 from openpilot.selfdrive.ui.body.layouts.onroad import BodyLayout
+from openpilot.selfdrive.ui.onroad.force_offroad_confirm import maybe_show_force_offroad_confirm
 
 
 class MainState(IntEnum):
@@ -48,6 +49,7 @@ class MainLayout(Widget):
 
   def _render(self, _):
     self._handle_onroad_transition()
+    maybe_show_force_offroad_confirm()
     self._render_main_content()
 
   def _setup_callbacks(self):

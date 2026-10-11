@@ -13,10 +13,13 @@ from openpilot.selfdrive.monitoring.dm_toggles import (
   read_exclusive_dm_toggles,
 )
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
+  NAP_CONE_LINE_LOG,
   NAP_DM_FALSE_ALERT_IGNORE,
   NAP_DM_SIMULATE_LOOKING,
   NAP_FORCE_OFFROAD,
 )
+from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.system.hardware.nap_force_offroad import apply_force_offroad_toggle
 from openpilot.system.ui.lib.application import MousePos
 from openpilot.system.ui.widgets import Widget
 from openpilot.selfdrive.ui.mici.widgets.button import BigParamControl
@@ -35,16 +38,23 @@ class HiddenTogglesOverlayMici(Widget):
     self._card_rect = rl.Rectangle(0, 0, 0, 0)
 
     # Must stay enabled while onroad — that is the point of Force Offroad.
-    self._offroad = BigParamControl("force offroad", NAP_FORCE_OFFROAD)
+    self._offroad = BigParamControl("force offroad", NAP_FORCE_OFFROAD,
+                                    toggle_callback=self._on_force_offroad)
     self._offroad.set_value("WARNING: stops OP — drive manually")
 
     self._dm = BigParamControl("simulate look", NAP_DM_SIMULATE_LOOKING,
                                toggle_callback=self._on_simulate_look)
-    self._dm.set_value("Off default — full awareness wipe in 1–3 s")
+    self._dm.set_value("On — full awareness wipe in 1–3 s")
 
     self._fai = BigParamControl("false alert ignore", NAP_DM_FALSE_ALERT_IGNORE,
                                 toggle_callback=self._on_false_alert_ignore)
-    self._fai.set_value("Off default — ignore false phone alerts")
+    self._fai.set_value("On — ignore false phone alerts")
+
+    self._cone_log = BigParamControl("cone line log", NAP_CONE_LINE_LOG)
+    self._cone_log.set_value("On — log cones only, does not steer")
+
+  def _on_force_offroad(self, state):
+    apply_force_offroad_toggle(self._params, bool(state), started=bool(ui_state.started))
 
   def _on_simulate_look(self, state):
     # Use apply() return — refresh()/get_bool can still show the old
@@ -62,13 +72,15 @@ class HiddenTogglesOverlayMici(Widget):
     self._dm.refresh()
     self._fai.refresh()
     self._offroad.refresh()
+    self._cone_log.refresh()
 
   def _layout(self):
     w1, h1 = self._dm.rect.width, self._dm.rect.height
     w2, h2 = self._offroad.rect.width, self._offroad.rect.height
     w3, h3 = self._fai.rect.width, self._fai.rect.height
-    inner_w = max(w1, w2, w3)
-    inner_h = h1 + h2 + h3 + 2 * CARD_PAD
+    w4, h4 = self._cone_log.rect.width, self._cone_log.rect.height
+    inner_w = max(w1, w2, w3, w4)
+    inner_h = h1 + h2 + h3 + h4 + 3 * CARD_PAD
     card_w = inner_w + 2 * CARD_PAD
     card_h = inner_h + 2 * CARD_PAD
     # Left-biased card so it reads as a side panel, not a full page.
@@ -91,3 +103,6 @@ class HiddenTogglesOverlayMici(Widget):
     self._dm.render(rl.Rectangle(x, y, self._dm.rect.width, self._dm.rect.height))
     y += self._dm.rect.height + CARD_PAD
     self._fai.render(rl.Rectangle(x, y, self._fai.rect.width, self._fai.rect.height))
+    y += self._fai.rect.height + CARD_PAD
+    self._cone_log.render(rl.Rectangle(x, y, self._cone_log.rect.width, self._cone_log.rect.height))
+    self._offroad.refresh()

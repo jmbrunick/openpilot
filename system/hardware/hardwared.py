@@ -23,9 +23,13 @@ from openpilot.system.statsd import statlog
 from openpilot.common.swaglog import cloudlog
 from openpilot.system.hardware.power_monitoring import PowerMonitoring
 from openpilot.system.hardware.fan_controller import FanController
+from openpilot.system.hardware.loop_timing import HardwareLoopTimer, slow_loop_fields
 from openpilot.system.hardware.nap_force_offroad import (
   PARAM as NAP_FORCE_OFFROAD_PARAM,
+  HANDOFF_READY_PARAM as NAP_FORCE_OFFROAD_HANDOFF_READY_PARAM,
+  CONFIRMED_PARAM as NAP_FORCE_OFFROAD_CONFIRMED_PARAM,
   allows_onroad as nap_force_offroad_allows_onroad,
+  handoff_wait_timed_out as nap_force_offroad_handoff_timed_out,
   should_start_now,
 )
 from openpilot.system.version import terms_version, training_version
@@ -153,6 +157,21 @@ def hw_state_thread(end_event, hw_queue):
     time.sleep(DT_HW)
 
 
+def _report_slow_hardware_loop(timer: HardwareLoopTimer) -> None:
+  """Name the blocking step when one hardware_thread pass takes more than 1 s.
+
+  logmessaged only copies ERROR and above into errorLogMessage, which is the
+  channel qlog keeps. cloudlog.warning stays on logMessage (rlog only), so the
+  same step durations are also emitted as an error event. Nothing published
+  on deviceState changes.
+  """
+  fields = slow_loop_fields(timer)
+  if fields is None:
+    return
+  cloudlog.warning({"event": "hardwared slow loop", **fields})
+  cloudlog.event("hardwared slow loop", error=True, **fields)
+
+
 def hardware_thread(end_event, hw_queue) -> None:
   pm = messaging.PubMaster(['deviceState'])
   sm = messaging.SubMaster(["peripheralState", "gpsLocationExternal", "selfdriveState", "pandaStates"], poll="pandaStates")
@@ -197,6 +216,7 @@ def hardware_thread(end_event, hw_queue) -> None:
   uptime_offroad: float = params.get("UptimeOffroad", return_default=True)
   uptime_onroad: float = params.get("UptimeOnroad", return_default=True)
   last_uptime_ts: float = time.monotonic()
+  force_offroad_handoff_wait_ts: float | None = None
 
   HARDWARE.initialize_hardware()
   thermal_config = HARDWARE.get_thermal_config()
@@ -204,7 +224,9 @@ def hardware_thread(end_event, hw_queue) -> None:
   fan_controller = FanController(int(1./DT_HW))
 
   while not end_event.is_set():
+    timer = HardwareLoopTimer()
     sm.update(PANDA_STATES_TIMEOUT)
+    timer.mark("sm_update")
 
     pandaStates = sm['pandaStates']
     peripheralState = sm['peripheralState']
@@ -213,11 +235,35 @@ def hardware_thread(end_event, hw_queue) -> None:
     if params.get_bool("OnroadCycleRequested"):
       params.put_bool("OnroadCycleRequested", False, block=True)
       offroad_cycle_count = sm.frame
+    timer.mark("onroad_cycle_param")
     onroad_conditions["not_onroad_cycle"] = (sm.frame - offroad_cycle_count) >= ONROAD_CYCLE_TIME * SERVICE_LIST['pandaStates'].frequency
     # Read every loop so toggling Force Offroad trips ign_edge immediately
     # (same pattern as OnroadCycleRequested). Do not use CLEAR_ON_OFFROAD
     # on this param — going offroad is what the toggle does.
-    onroad_conditions["not_force_offroad"] = nap_force_offroad_allows_onroad(params.get_bool(NAP_FORCE_OFFROAD_PARAM))
+    # While already onroad, hold started until card finishes the Pre-AP
+    # stock-CC handoff (or HANDOFF_TIMEOUT_S) so pedal long does not drop
+    # into hard regen. Cancel/SET live in the onroad carcontroller.
+    force_offroad = params.get_bool(NAP_FORCE_OFFROAD_PARAM)
+    handoff_ready = params.get_bool(NAP_FORCE_OFFROAD_HANDOFF_READY_PARAM)
+    force_offroad_confirmed = params.get_bool(NAP_FORCE_OFFROAD_CONFIRMED_PARAM)
+    timer.mark("force_offroad_params")
+    already_started = started_ts is not None
+    # Do not start the handoff timeout until the driver taps Yes.
+    if force_offroad and already_started and force_offroad_confirmed and not handoff_ready:
+      if force_offroad_handoff_wait_ts is None:
+        force_offroad_handoff_wait_ts = time.monotonic()
+      handoff_timed_out = nap_force_offroad_handoff_timed_out(
+        force_offroad_handoff_wait_ts, time.monotonic())
+    else:
+      force_offroad_handoff_wait_ts = None
+      handoff_timed_out = False
+    onroad_conditions["not_force_offroad"] = nap_force_offroad_allows_onroad(
+      force_offroad,
+      handoff_ready=handoff_ready,
+      already_started=already_started,
+      timed_out=handoff_timed_out,
+      confirmed=force_offroad_confirmed,
+    )
 
     if sm.updated['pandaStates'] and len(pandaStates) > 0:
 
@@ -232,27 +278,35 @@ def hardware_thread(end_event, hw_queue) -> None:
       if onroad_conditions["ignition"]:
         onroad_conditions["ignition"] = False
         cloudlog.error("panda timed out onroad")
+    timer.mark("panda_state")
 
     # Run at 2Hz, plus either edge of ignition
     ign_edge = (started_ts is not None) != all(onroad_conditions.values())
     if (sm.frame % round(SERVICE_LIST['pandaStates'].frequency * DT_HW) != 0) and not ign_edge:
+      _report_slow_hardware_loop(timer)
       continue
 
     msg = messaging.new_message('deviceState', valid=True)
     msg.deviceState = thermal_config.get_msg()
     msg.deviceState.deviceType = HARDWARE.get_device_type()
+    timer.mark("thermal_config")
 
     try:
       last_hw_state = hw_queue.get_nowait()
     except queue.Empty:
       pass
+    timer.mark("hw_queue")
 
     msg.deviceState.freeSpacePercent = get_available_percent(default=100.0)
+    timer.mark("statvfs")
     msg.deviceState.memoryUsagePercent = int(round(psutil.virtual_memory().percent))
+    timer.mark("memory")
     msg.deviceState.gpuUsagePercent = int(round(HARDWARE.get_gpu_usage_percent()))
+    timer.mark("gpu")
     online_cpu_usage = [int(round(n)) for n in psutil.cpu_percent(percpu=True)]
     offline_cpu_usage = [0., ] * (len(msg.deviceState.cpuTempC) - len(online_cpu_usage))
     msg.deviceState.cpuUsagePercent = online_cpu_usage + offline_cpu_usage
+    timer.mark("cpu")
 
     msg.deviceState.networkType = last_hw_state.network_type
     msg.deviceState.networkMetered = last_hw_state.network_metered
@@ -262,8 +316,10 @@ def hardware_thread(end_event, hw_queue) -> None:
       msg.deviceState.networkInfo = last_hw_state.network_info
 
     msg.deviceState.modemTempC = last_hw_state.modem_temps
+    timer.mark("network")
 
     msg.deviceState.screenBrightnessPercent = HARDWARE.get_screen_brightness()
+    timer.mark("screen_brightness")
 
     # this subset is only used for offroad
     temp_sources = [
@@ -279,6 +335,7 @@ def hardware_thread(end_event, hw_queue) -> None:
     msg.deviceState.maxTempC = all_comp_temp
 
     msg.deviceState.fanSpeedPercentDesired = fan_controller.update(all_comp_temp, onroad_conditions["ignition"])
+    timer.mark("thermal_fan")
 
     is_offroad_for_5_min = (started_ts is None) and ((not started_seen) or (off_ts is None) or (time.monotonic() - off_ts > 60 * 5))
     if is_offroad_for_5_min and offroad_comp_temp > OFFROAD_DANGER_TEMP:
@@ -311,12 +368,14 @@ def hardware_thread(end_event, hw_queue) -> None:
 
     # ensure device is fully booted
     startup_conditions["device_booted"] = startup_conditions.get("device_booted", False) or HARDWARE.booted()
+    timer.mark("startup_params")
 
     # if the temperature enters the danger zone, go offroad to cool down
     onroad_conditions["device_temp_good"] = thermal_status < ThermalStatus.critical
     extra_text = f"{offroad_comp_temp:.1f}C"
     show_alert = (not onroad_conditions["device_temp_good"] or not startup_conditions["device_temp_engageable"]) and onroad_conditions["ignition"]
     set_offroad_alert_if_changed("Offroad_TemperatureTooHigh", show_alert, extra_text=extra_text)
+    timer.mark("thermal_alert")
 
     if show_alert:
       msg.deviceState.fanSpeedPercentDesired = 100
@@ -328,10 +387,12 @@ def hardware_thread(end_event, hw_queue) -> None:
 
     # Handle offroad/onroad transition
     should_start = should_start_now(onroad_conditions, startup_conditions, started_ts is not None)
+    timer.mark("should_start")
 
     if should_start != should_start_prev or (count == 0):
       params.put_bool("IsEngaged", False, block=True)
       engaged_prev = False
+    timer.mark("engaged_param")
 
     if sm.updated['selfdriveState']:
       engaged = sm['selfdriveState'].enabled
@@ -344,11 +405,13 @@ def hardware_thread(end_event, hw_queue) -> None:
           kmsg.write(f"<3>[hardware] engaged: {engaged}\n")
       except Exception:
         pass
+    timer.mark("selfdrive_engaged")
 
     should_pwrsave = not onroad_conditions["ignition"] and msg.deviceState.screenBrightnessPercent < 1e-3
     if should_pwrsave != pwrsave or (count == 0):
       HARDWARE.set_power_save(should_pwrsave)
     pwrsave = should_pwrsave
+    timer.mark("power_save")
 
     if should_start:
       off_ts = None
@@ -369,24 +432,29 @@ def hardware_thread(end_event, hw_queue) -> None:
       started_ts = None
       if off_ts is None:
         off_ts = time.monotonic()
+    timer.mark("onroad_transition")
 
     # Offroad power monitoring
     voltage = None if peripheralState.pandaType == log.PandaState.PandaType.unknown else peripheralState.voltage
     power_monitor.calculate(voltage, onroad_conditions["ignition"])
     msg.deviceState.offroadPowerUsageUwh = power_monitor.get_power_used()
     msg.deviceState.carBatteryCapacityUwh = max(0, power_monitor.get_car_battery_capacity())
+    timer.mark("power_monitor")
     current_power_draw = HARDWARE.get_current_power_draw()
     statlog.sample("power_draw", current_power_draw)
     msg.deviceState.powerDrawW = current_power_draw
+    timer.mark("power_draw")
 
     som_power_draw = HARDWARE.get_som_power_draw()
     statlog.sample("som_power_draw", som_power_draw)
     msg.deviceState.somPowerDrawW = som_power_draw
+    timer.mark("som_power_draw")
 
     # Check if we need to shut down
     if power_monitor.should_shutdown(onroad_conditions["ignition"], in_car, off_ts, started_seen):
       cloudlog.warning(f"shutting device down, offroad since {off_ts}")
       params.put_bool("DoShutdown", True, block=True)
+    timer.mark("shutdown_check")
 
     msg.deviceState.started = started_ts is not None
     msg.deviceState.startedMonoTime = int(1e9*(started_ts or 0))
@@ -394,9 +462,11 @@ def hardware_thread(end_event, hw_queue) -> None:
     last_ping = params.get("LastAthenaPingTime")
     if last_ping is not None:
       msg.deviceState.lastAthenaPingTime = last_ping
+    timer.mark("athena_ping")
 
     msg.deviceState.thermalStatus = thermal_status
     pm.send("deviceState", msg)
+    timer.mark("publish")
 
     # Log to statsd
     statlog.gauge("free_space_percent", msg.deviceState.freeSpacePercent)
@@ -415,6 +485,7 @@ def hardware_thread(end_event, hw_queue) -> None:
       statlog.gauge(f"modem_temperature{i}", temp)
     statlog.gauge("fan_speed_percent_desired", msg.deviceState.fanSpeedPercentDesired)
     statlog.gauge("screen_brightness_percent", msg.deviceState.screenBrightnessPercent)
+    timer.mark("statlog")
 
     # report to server once every 10 minutes, or every 1s when thermally blocked
     rising_edge_started = should_start and not should_start_prev
@@ -435,8 +506,10 @@ def hardware_thread(end_event, hw_queue) -> None:
           params.put("LastOffroadStatusPacket", dat, block=True)
         except Exception:
           cloudlog.exception("failed to save offroad status")
+    timer.mark("status_packet")
 
     params.put_bool("NetworkMetered", msg.deviceState.networkMetered)
+    timer.mark("network_metered_param")
 
     now_ts = time.monotonic()
     if off_ts:
@@ -448,9 +521,11 @@ def hardware_thread(end_event, hw_queue) -> None:
     if (count % int(60. / DT_HW)) == 0:
       params.put("UptimeOffroad", uptime_offroad, block=True)
       params.put("UptimeOnroad", uptime_onroad, block=True)
+    timer.mark("uptime_params")
 
     count += 1
     should_start_prev = should_start
+    _report_slow_hardware_loop(timer)
 
 
 def main():

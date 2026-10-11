@@ -16,6 +16,10 @@ from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   EMERGENCY_DECEL_MPS2,
   EMERGENCY_MIN_V_EGO,
   HANDS_OFF_CONFIRM_S,
+  RELEASE_HOLD_S,
+  YIELD_FIRM_FRAMES,
+  YIELD_SOFT_NM,
+  YIELD_SOFT_S,
   HANDS_ON_HOLD_LEVEL,
   LAT_REENABLE_MIN_V_EGO,
   LAT_REENABLE_MIN_V_EGO_MPH,
@@ -30,6 +34,7 @@ from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   SOFT_YIELD_RELEASE_NM,
   SOFT_YIELD_TRIGGER_NM,
   STEER_RATE_QUIET_DEG_S,
+  TAPER_RATE_MAX_PER_S,
   TESLA_MAX_ANGLE_RATE_DEG_PER_20MS,
   UI_LATERAL_RETURN_AUTHORITY,
   YIELD_AUTHORITY_TIME_S,
@@ -84,7 +89,7 @@ def _step(h, *, torque=0.0, rate=0.0, engaged=True, lat=True, alc=False,
   )
 
 
-def _yield(h, torque=0.85, rate=25.0, hands_on=1, blinker_paused=False, v_ego=15.0):
+def _yield(h, torque=1.0, rate=25.0, hands_on=1, blinker_paused=False, v_ego=15.0):
   out = None
   for _ in range(max(SOFT_YIELD_DEBOUNCE_FRAMES, required_press_frames(torque))):
     out = _step(h, torque=torque, rate=rate, hands_on=hands_on,
@@ -112,8 +117,8 @@ def _quiet(h, seconds):
 
 
 def _hands_off(h, *, torque=0.0, rate=0.0, blinker_paused=False, lat=True, v_ego=15.0):
-  """Confirm handsOnLevel==0 for HANDS_OFF_CONFIRM_S — starts the 1 s blend."""
-  return _step(h, torque=torque, rate=rate, hands_on=0, dt=HANDS_OFF_CONFIRM_S,
+  """Quiet torque for RELEASE_HOLD_S — starts the take-back taper."""
+  return _step(h, torque=torque, rate=rate, hands_on=0, dt=RELEASE_HOLD_S,
                blinker_paused=blinker_paused, lat=lat, v_ego=v_ego)
 
 
@@ -128,9 +133,10 @@ def test_thresholds_are_derived_from_real_steering_pressed():
   assert SOFT_YIELD_FAST_DEBOUNCE_FRAMES < SOFT_YIELD_DEBOUNCE_FRAMES
   assert SOFT_YIELD_FAST_DEBOUNCE_FRAMES > 5  # gravel spike bursts
   assert required_press_frames(SOFT_YIELD_TRIGGER_NM) == SOFT_YIELD_DEBOUNCE_FRAMES
-  assert required_press_frames(float(STEER_THRESHOLD)) == SOFT_YIELD_FAST_DEBOUNCE_FRAMES
-  assert required_press_frames(0.85) < SOFT_YIELD_DEBOUNCE_FRAMES
-  assert required_press_frames(0.85) > SOFT_YIELD_FAST_DEBOUNCE_FRAMES
+  assert required_press_frames(0.85) == SOFT_YIELD_DEBOUNCE_FRAMES
+  assert required_press_frames(YIELD_SOFT_NM) == int(round(YIELD_SOFT_S / DT))
+  assert required_press_frames(float(STEER_THRESHOLD)) == int(round(YIELD_SOFT_S / DT))
+  assert required_press_frames(1.4) == YIELD_FIRM_FRAMES
   assert 0.50 < SOFT_YIELD_TRIGGER_NM <= 0.55
   assert 8 <= SOFT_YIELD_DEBOUNCE_FRAMES <= 10
   assert PREAP_FINGERPRINT == "TESLA_MODEL_S_PREAP"
@@ -270,13 +276,17 @@ def test_rumble_at_half_nm_with_hands_resting_does_not_yield():
 
 
 def test_gentle_055_for_90ms_yields():
-  """0.55 Nm + hands for 90 ms yields; rate is not required."""
+  """0.55 Nm is resting-band noise now. 0.9 Nm for 150 ms yields, hands or not."""
   h = _new()
   out = None
-  for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES - 1):
+  for _ in range(int(1.0 / DT)):
     out = _step(h, torque=0.55, rate=0.0, hands_on=1)
+  assert not out.yielded
+  h = _new()
+  for _ in range(int(round(YIELD_SOFT_S / DT)) - 1):
+    out = _step(h, torque=YIELD_SOFT_NM, rate=0.0, hands_on=0)
     assert not out.yielded
-  out = _step(h, torque=0.55, rate=0.0, hands_on=1)
+  out = _step(h, torque=YIELD_SOFT_NM, rate=0.0, hands_on=0)
   assert out.yielded
   assert out.authority == 0.0
   assert not lat_active_after_handoff(True, out.yielded)
@@ -293,72 +303,48 @@ def test_sustained_driver_input_keeps_authority_at_zero():
 
 
 def test_yielded_hands_on_stays_yielded_through_torsion_dip():
-  """Mid-dodge: handsOnLevel>=1 keeps yield even if torsion drops below release.
-
-  QUIET_WAIT_S=0 used to start the 1 s blend on that dip and pull toward
-  the lane / pothole.
-  """
+  """Hands on the rim do not hold the yield. Torque above the release band does."""
   h = _new()
   _yield(h)
   out = None
-  for _ in range(int(1.0 / DT)):
-    out = _step(h, torque=0.15, rate=40.0, hands_on=1)
+  for _ in range(int(0.50 / DT)):
+    out = _step(h, torque=1.0, rate=40.0, hands_on=1)
     assert out.yielded
     assert not out.blending
     assert out.authority == 0.0
-  assert out is not None
+  # Resting torque gives lateral back even with a hand still on the rim.
+  out = _step(h, torque=0.15, rate=0.0, hands_on=1, dt=RELEASE_HOLD_S)
+  assert out.blending
+  assert not out.yielded
   assert hands_still_on(1)
   assert not hands_still_on(0)
 
 
 def test_hands_off_confirm_starts_blend_after_confirm():
-  """Hands 0 for ~0.15 s starts the blend — not the old 80 ms, not torsion-quiet."""
+  """Quiet torque for RELEASE_HOLD_S starts the taper. A shorter gap does not."""
   h = _new()
   _yield(h)
-  # Old 80 ms confirm must not start take-back (crossover snatch).
-  out = _step(h, torque=0.35, hands_on=0, dt=0.08)
+  out = _step(h, torque=0.35, hands_on=0, dt=0.20)
   assert out.yielded
   assert not out.blending
-  out = _step(h, torque=0.35, hands_on=0, dt=HANDS_OFF_CONFIRM_S - 0.08 - 0.01)
-  assert out.yielded
-  assert not out.blending
-  out = _step(h, torque=0.35, hands_on=0, dt=0.01)
+  out = _step(h, torque=0.35, hands_on=0, dt=RELEASE_HOLD_S - 0.20)
   assert out.blending
   assert not out.yielded
   assert out.authority == 0.0
 
 
 def test_hands_back_on_during_confirm_resets_delay():
-  """Renewed hands-on or firm push during the 0.15 s wait re-yields and resets."""
+  """A hand on the rim does not reset give-back. Torque above 0.40 Nm does."""
   h = _new()
   _yield(h)
-  partial = HANDS_OFF_CONFIRM_S - 0.05
-  out = _step(h, torque=0.20, hands_on=0, dt=partial)
-  assert out.yielded
-  assert not out.blending
-  out = _step(h, torque=0.20, hands_on=1)
-  assert out.yielded
-  assert not out.blending
-  assert out.authority == 0.0
-  # Delay reset: another partial hands-off is not enough.
-  out = _step(h, torque=0.20, hands_on=0, dt=partial)
-  assert out.yielded
-  assert not out.blending
-  out = _step(h, torque=0.20, hands_on=0, dt=HANDS_OFF_CONFIRM_S - partial)
-  assert out.blending
-  assert not out.yielded
-
-  h = _new()
-  _yield(h)
-  out = _step(h, torque=0.20, hands_on=0, dt=partial)
-  assert out.yielded
-  out = _step(h, torque=SOFT_YIELD_TRIGGER_NM, hands_on=0)
-  assert out.yielded
-  assert not out.blending
-  assert out.authority == 0.0
-  out = _step(h, torque=0.20, hands_on=0, dt=partial)
-  assert out.yielded
-  assert not out.blending
+  out = _step(h, torque=0.20, hands_on=1, dt=0.20)
+  assert out.yielded and not out.blending
+  out = _step(h, torque=1.0, hands_on=0)
+  assert out.yielded and not out.blending and out.authority == 0.0
+  out = _step(h, torque=0.20, hands_on=0, dt=0.20)
+  assert out.yielded and not out.blending
+  out = _step(h, torque=0.20, hands_on=0, dt=RELEASE_HOLD_S)
+  assert out.blending and not out.yielded
 
 
 def test_hands_back_on_mid_blend_reyields():
@@ -366,19 +352,19 @@ def test_hands_back_on_mid_blend_reyields():
   _yield(h)
   out = _hands_off(h)
   assert out.blending
-  for _ in range(40):  # 0.4 s into the 1 s blend
+  for _ in range(20):
     out = _quiet(h, DT)
   assert out.blending
   assert 0.0 < out.authority < 1.0
+  # A light hand does not cancel the taper.
   out = _step(h, torque=0.2, hands_on=1)
-  assert out.yielded
-  assert not out.blending
-  assert out.authority == 0.0
+  assert out.blending and not out.yielded
+  for _ in range(16):
+    out = _step(h, torque=1.5, hands_on=1)
+  assert out.yielded and not out.blending and out.authority == 0.0
   assert out.ui_paused
   out = _hands_off(h, torque=0.2)
-  assert out.blending
-  assert not out.yielded
-  assert out.authority == 0.0
+  assert out.blending and not out.yielded and out.authority == 0.0
 
 
 def test_yielded_rate_above_old_gate_does_not_block_resume():
@@ -408,24 +394,25 @@ def test_yield_then_hands_off_authority_blends_to_one():
 
 
 def test_blend_is_smoothstep_monotonic_one_second_bounded_slope():
+  """Take-back is monotonic and finishes inside BLEND_TIME_S.
+
+  The first GRACE_DELAY_S stays at 0 so the inference grace can arm.
+  After that the rise is the curvature taper, not the old smoothstep.
+  """
   h = _new()
   _yield(h)
   _hands_off(h)
   prev = 0.0
   max_delta = 0.0
-  authorities = []
-  for i in range(int(BLEND_TIME_S / DT)):
+  for _ in range(int(BLEND_TIME_S / DT) + 2):
     out = _quiet(h, DT)
     assert out.authority + 1e-9 >= prev
     max_delta = max(max_delta, out.authority - prev)
-    authorities.append(out.authority)
     prev = out.authority
-    t = (i + 1) * DT / BLEND_TIME_S
-    assert abs(out.authority - smoothstep(min(t, 1.0))) < 1e-9
-  assert authorities[-1] == 1.0
+  assert out.authority == 1.0
   assert not out.blending
   assert not out.yielded
-  assert max_delta <= SMOOTHSTEP_MAX_SLOPE * DT + 1e-9
+  assert max_delta <= (TAPER_RATE_MAX_PER_S / 0.9) * DT + 1e-6
 
 
 def test_renewed_input_during_blend_yields_and_retries_after_hands_off():
@@ -433,24 +420,23 @@ def test_renewed_input_during_blend_yields_and_retries_after_hands_off():
   _yield(h)
   out = _hands_off(h)
   assert out.blending
-  for _ in range(40):  # 0.4 s into the 1 s blend
+  for _ in range(20):
     out = _quiet(h, DT)
   assert out.blending
   assert 0.0 < out.authority < 1.0
+  # One frame at 1 Nm is not a deliberate push.
   out = _step(h, torque=1.0)
-  assert out.yielded
-  assert not out.blending
-  assert out.authority == 0.0
+  assert out.blending and not out.yielded
+  for _ in range(16):
+    out = _step(h, torque=1.5)
+  assert out.yielded and not out.blending and out.authority == 0.0
   assert out.ui_paused
-  # Hands off again: blend after the 0.15 s confirm
   out = _hands_off(h)
-  assert out.blending
-  assert not out.yielded
-  assert out.authority == 0.0
+  assert out.blending and not out.yielded and out.authority == 0.0
 
 
 def test_mid_band_during_blend_does_not_reyield():
-  """Torque between release and trigger during the return is OP/caster."""
+  """Torque in the old 0.4–0.55 band does not cancel the taper."""
   h = _new()
   _yield(h)
   out = _hands_off(h)
@@ -461,8 +447,8 @@ def test_mid_band_during_blend_does_not_reyield():
     assert out.blending
     assert not out.yielded
   out = _step(h, torque=SOFT_YIELD_TRIGGER_NM)
-  assert out.yielded
-  assert not out.blending
+  assert out.blending
+  assert not out.yielded
 
 
 def test_ui_paused_below_70_returns_at_70_without_chatter():
@@ -480,9 +466,9 @@ def test_ui_paused_below_70_returns_at_70_without_chatter():
       seen_unpaused = True
       break
   assert seen_unpaused
-  # Knock authority back down during the remaining blend. UI must go
-  # paused immediately and stay there — no green flicker.
-  out = _step(h, torque=1.0)
+  # A deliberate push during the remaining blend pauses the UI again.
+  for _ in range(16):
+    out = _step(h, torque=1.5)
   assert out.ui_paused
   assert out.authority == 0.0
   status = hud_engaged_status(
@@ -699,7 +685,7 @@ def test_soft_lat_below_10_mph_blocks_reenable_and_aborts_blend():
     assert out.authority == 0.0
   # At exactly 10 mph the gate is off (strictly below).
   out = _step(h, torque=0.0, lat=True, hands_on=0, v_ego=AT_REENABLE_MS,
-              dt=HANDS_OFF_CONFIRM_S)
+              dt=RELEASE_HOLD_S)
   assert out.blending
   assert not out.yielded
 
@@ -930,7 +916,7 @@ def test_yield_pins_planner_resume_tracks_model_not_measured():
   assert pin_desired_curvature_to_measured(False, lat_active=False)
   assert not pin_desired_curvature_to_measured(False, lat_active=True)
 
-  for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES):
+  for _ in range(required_press_frames(1.0)):
     out, desired, angle, curv = _step_actuators(
       h, torque=1.0, rate=25.0, hands_on=1, desired=desired,
       model_curv=model_curv, meas_curv=meas_curv, meas_angle=meas_angle)
@@ -939,18 +925,18 @@ def test_yield_pins_planner_resume_tracks_model_not_measured():
   assert angle == meas_angle
   assert curv == meas_curv
 
-  # Hands still on: pin stays even if torsion dipped.
+  # Above the release band: pin stays. Hands level is not what holds it.
   out, desired, angle, curv = _step_actuators(
-    h, torque=0.1, desired=desired, model_curv=model_curv,
+    h, torque=0.5, desired=desired, model_curv=model_curv,
     meas_curv=meas_curv, meas_angle=meas_angle, hands_on=1)
   assert out.yielded
   assert desired == meas_curv
   assert angle == meas_angle
 
-  # Hands off for the 0.15 s confirm: blend starts, pin lifts.
+  # Quiet torque for the release hold: blend starts, pin lifts.
   out, desired, angle, curv = _step_actuators(
     h, torque=0.0, desired=desired, model_curv=model_curv,
-    meas_curv=meas_curv, meas_angle=meas_angle, dt=HANDS_OFF_CONFIRM_S)
+    meas_curv=meas_curv, meas_angle=meas_angle, dt=RELEASE_HOLD_S)
   assert out.authority == 0.0
   assert out.blending
   assert not out.yielded
@@ -1081,7 +1067,7 @@ def test_yield_frees_eps_like_blinker_pause():
   is closed-loop hold — the wrestling Justin felt after #79 "yielded."
   """
   h = _new()
-  out = _yield(h, torque=0.60, rate=0.0, hands_on=1)
+  out = _yield(h, torque=1.0, rate=0.0, hands_on=1)
   assert out.yielded
   assert not lat_active_after_handoff(True, out.yielded)
   # Blinker pause is a separate lat-down path; do not steal it.
@@ -1141,7 +1127,7 @@ def test_hysteresis_band_does_not_retrigger_from_texture_after_release():
 
 def test_intentional_sustained_torsion_rate_hands_yields():
   h = _new()
-  out = _yield(h, torque=0.80, rate=18.0, hands_on=1)
+  out = _yield(h, torque=1.0, rate=18.0, hands_on=1)
   assert out.yielded
   assert out.authority == 0.0
   assert out.ui_paused
@@ -1170,7 +1156,7 @@ def test_fight_the_wheel_low_rate_high_error_yields():
   used to block yield until hands-on >= 2 / STEER_THRESHOLD.
   """
   h = _new()
-  torque = 0.80
+  torque = 0.95
   needed = required_press_frames(torque)
   out = None
   for i in range(needed):
@@ -1187,11 +1173,13 @@ def test_fight_the_wheel_low_rate_high_error_yields():
 
 
 def test_sustained_torsion_without_hands_does_not_yield():
+  """Hands level is not an entry gate. 0.9 Nm for 150 ms yields with hands off."""
   h = _new()
-  for _ in range(int(1.0 / DT)):
+  out = None
+  for _ in range(int(round(YIELD_SOFT_S / DT))):
     out = _step(h, torque=0.90, rate=20.0, hands_on=0)
-  assert not out.yielded
-  assert out.authority == 1.0
+  assert out.yielded
+  assert out.authority == 0.0
 
 
 def test_rate_does_not_block_firm_push():
@@ -1244,7 +1232,7 @@ def test_matching_intent_is_not_blocked_by_tracking_error():
   h = _new()
   assert not is_disturbance(
     torque_nm=0.80, rate_deg=20.0, tracking_error=0.02)
-  out = _yield(h, torque=0.80, rate=20.0, hands_on=1)
+  out = _yield(h, torque=1.0, rate=20.0, hands_on=1)
   assert out.yielded
   out = _step(h, torque=0.80, rate=20.0, hands_on=1, tracking_error=0.02)
   assert out.yielded
@@ -1253,21 +1241,21 @@ def test_matching_intent_is_not_blocked_by_tracking_error():
 def test_soft_yield_below_hands_on_2_hard_cancel():
   """Soft path must win at hands=1 and torsion below STEER_THRESHOLD."""
   h = _new()
-  out = _yield(h, torque=0.85, rate=0.0, hands_on=1)
+  out = _yield(h, torque=0.95, rate=0.0, hands_on=1)
   assert out.yielded
   assert out.authority == 0.0
-  assert 0.85 < float(STEER_THRESHOLD)
+  assert 0.95 < float(STEER_THRESHOLD)
   assert HANDS_ON_HOLD_LEVEL == 1
   assert HANDS_ON_DISENGAGE_LEVEL == 2
 
 
 def test_near_steer_threshold_yields_before_full_floor_debounce():
-  """As torsion approaches 1.0 Nm, require fewer frames than the floor."""
+  """0.98 Nm is the 150 ms band. 1.4 Nm is the 80 ms band."""
   h = _new()
   torque = 0.98
   needed = required_press_frames(torque)
-  assert needed < SOFT_YIELD_DEBOUNCE_FRAMES
-  assert needed >= SOFT_YIELD_FAST_DEBOUNCE_FRAMES
+  assert needed == int(round(YIELD_SOFT_S / DT))
+  assert needed > SOFT_YIELD_DEBOUNCE_FRAMES
   out = None
   for _ in range(needed - 1):
     out = _step(h, torque=torque, rate=0.0, hands_on=1)
@@ -1275,13 +1263,14 @@ def test_near_steer_threshold_yields_before_full_floor_debounce():
   out = _step(h, torque=torque, rate=0.0, hands_on=1)
   assert out.yielded
   assert out.authority == 0.0
+  assert required_press_frames(1.4) == YIELD_FIRM_FRAMES
 
 
 def test_hands_on_hold_and_hands_off_blend_still_work_after_intent_yield():
   h = _new()
   _yield(h)
   for _ in range(int(0.6 / DT)):
-    out = _step(h, torque=0.10, rate=30.0, hands_on=1)
+    out = _step(h, torque=1.0, rate=30.0, hands_on=1)
     assert out.yielded
     assert not out.blending
     assert out.authority == 0.0
@@ -1346,7 +1335,7 @@ def test_light_brake_while_yielded_does_not_force_full_cancel():
   _yield(h)
   out = None
   for _ in range(int(0.4 / DT)):
-    out = _step(h, torque=0.15, hands_on=1, brake=True, a_ego=-1.2, v_ego=15.0)
+    out = _step(h, torque=1.0, hands_on=1, brake=True, a_ego=-1.2, v_ego=15.0)
   assert out.yielded
   assert not out.emergency_cancel
 

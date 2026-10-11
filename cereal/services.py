@@ -93,6 +93,13 @@ _services: dict[str, tuple] = {
   "livestreamRoadEncodeData": (False, 20., None, QueueSize.MEDIUM),
   "livestreamDriverEncodeData": (False, 20., None, QueueSize.MEDIUM),
   "liveMapDataNAP": (True, 2., 2),
+  "liveSpeedSignNAP": (True, 4., 4),
+  # Radar-rate cone line. Decimation 2 keeps ~4 Hz in the qlog.
+  "coneLineNAP": (True, 8., 2),
+  # On-demand obstacle samples. Frequency 0 is not health-checked.
+  # Decimation 1 keeps every published message in the qlog.
+  "pathObstacleNAP": (True, 0., 1),
+  "pathObstacleVisionNAP": (True, 0., 1),
   "customReservedRawData0": (True, 0.),
 }
 SERVICE_LIST = {name: Service(*vals) for
