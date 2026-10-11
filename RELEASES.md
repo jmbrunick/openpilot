@@ -1,6 +1,6 @@
 NAP curve follow retune (2026-10-10)
 ========================
-Longitudinal only. NAPCurveFollow stays **1 (shadow)** by default: nothing changes on the road unless it is set to 2.
+Longitudinal only. NAPCurveFollow stays **1 (shadow)** by default: nothing changes on the road unless it is set to 2. MAX stays a hard ceiling (curve follow never writes MAX), and CurveMaxHold is unchanged in shadow.
 * **Own cornering table**, a little under how Justin corners. It was fitted to 53 curves he drove Oct 4–10: 1.45 / 1.55 / 1.85 / 2.05 / 2.20 m/s² at 8 / 13 / 18 / 22 / 27 m/s. The old table (2.4 in town → 1.75 at highway speed) had the opposite shape. CurveMaxHold and the old preview keep the old table.
 * **Decel:** 1.2 m/s² @10 m/s → 0.55 @25 m/s. An urgent allowance reaches 1.5 when the path demands more than 0.8. It is jerk limited (≤ 2 m/s³ while braking), so it is never a wall.
 * **Finish:** slowing still finishes 1 s before the tightest point; Justin is still easing at the apex. The code comment is fixed.
