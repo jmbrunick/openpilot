@@ -1,7 +1,9 @@
 """Pre-AP sticky MAX: brake long pause, one SET vs double SET.
 
-Pedal mode. Soft lateral handoff is not this path.
+Pedal mode. Soft lateral handoff (#71) and speedsignd are not this path.
 """
+
+from pathlib import Path
 
 from openpilot.common.constants import CV
 from opendbc.car.tesla.preap.engagement import PreAPEngagement
@@ -81,6 +83,7 @@ def test_one_set_at_standstill_then_gas_resumes_held_max():
   assert eng.cruiseEnabled
   assert eng.enableLongControl
   assert getattr(eng, "_nap_set_resume_long", False)
+  assert not getattr(eng, "_nap_set_take_speed_now", False)
   assert not getattr(eng, "_nap_resume_wait_gas", False)
   assert abs(eng.pedal_speed_kph - held) < 1e-6
   assert abs(eng._nap_held_max_kph - held) < 1e-6
@@ -215,13 +218,17 @@ def test_tip_alc_does_not_use_long_pause_path():
 
 
 def test_initial_double_pull_engage_is_take_speed_now():
+  """One rolling pull from off is lat+long take-speed-now. A quick second pull repeats it."""
   install_blinker_lat_pause()
   eng = PreAPEngagement(double_pull_enabled=True, double_pull_window_ms=750)
   _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=1000, v_ego=24.6)
   assert eng.cruiseEnabled
-  assert not eng.enableLongControl
-  assert not getattr(eng, "_nap_set_take_speed_now", False)
+  assert eng.enableLongControl
+  assert getattr(eng, "_nap_set_take_speed_now", False)
+  assert not getattr(eng, "_nap_set_resume_long", False)
+  assert eng.stalk_pull_time_ms == 1000
   _buttons(eng, t_ms=1050, v_ego=24.6)
+  assert eng.enableLongControl
   _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=1400, v_ego=24.6)
   assert eng.cruiseEnabled
   assert eng.enableLongControl
@@ -240,19 +247,178 @@ def test_set_while_di_gas_held_from_disengaged_arms_long():
   assert not getattr(eng, "_one_pedal_pause_latched", False)
   assert getattr(eng, "_nap_set_take_speed_now", False)
   assert not getattr(eng, "_nap_set_resume_long", False)
+  assert eng.stalk_pull_time_ms == 1000
   assert eng.enableDoublePull
 
 
-def test_set_without_di_gas_from_disengaged_stays_lat_only():
-  """Foot off: stock double-pull. Interceptor-only sticky must not skip it."""
+def test_set_without_di_gas_from_disengaged_engages_long():
+  """Foot off engages lat+long. Interceptor-only sticky is not a gas press."""
   install_blinker_lat_pause()
   eng = PreAPEngagement(double_pull_enabled=True, double_pull_window_ms=750)
   eng._nap_di_pedal_pos = 0.0
   eng._nap_gas_pressed = True
   _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=1000, v_ego=8.0)
   assert eng.cruiseEnabled
+  assert eng.enableLongControl
+  assert getattr(eng, "_nap_set_take_speed_now", False)
+  assert eng.stalk_pull_time_ms == 1000
+
+
+def test_single_pull_rolling_seeds_posted_or_traveled():
+  """Same MAX as the old double pull: posted + offset if known, else traveled."""
+  install_blinker_lat_pause()
+  eng = PreAPEngagement(double_pull_enabled=True, double_pull_window_ms=400)
+  v_ego = 24.6
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=1000, v_ego=v_ego)
+  assert eng.cruiseEnabled and eng.enableLongControl
+  assert eng.longCtrlEvent == "pccEnabled"
+  assert eng.enableJustCC is False
+  prev = PreAPChimeState()
+  chimes, prev = _chime_for(eng, prev)
+  assert chimes.lat_engage and chimes.long_engage
+  assert not prev.long_paused
+  posted = 65 * CV.MPH_TO_KPH
+  traveled = v_ego * CV.MS_TO_KPH
+  hold = MapCruiseHold()
+  dec = decide_map_cruise(
+    hold, engaged=True, mode=MODE_FOLLOW, raw_kph=eng.pedal_speed_kph,
+    posted_kph=posted, engage_rising=True, now=0.0, take_speed_now=True,
+    traveled_kph=traveled, long_active=True,
+  )
+  assert abs(dec.seed_kph - posted) < 1e-6
+  hold_off = MapCruiseHold()
+  dec_off = decide_map_cruise(
+    hold_off, engaged=True, mode=MODE_OFF, raw_kph=eng.pedal_speed_kph,
+    posted_kph=None, engage_rising=True, now=0.0, take_speed_now=True,
+    traveled_kph=traveled, long_active=True,
+  )
+  assert abs(dec_off.seed_kph - traveled) < 1e-6
+  # Release is silent: one engage, not a second chime.
+  _buttons(eng, prev=CruiseButtons.MAIN, t_ms=1100, v_ego=v_ego)
+  chimes, _ = _chime_for(eng, prev)
+  assert not chimes.lat_engage and not chimes.long_engage
+  cc = (Path(__file__).resolve().parents[4] /
+        "opendbc_repo/opendbc/car/tesla/preap/carcontroller.py").read_text()
+  assert "requested_long_rising or pedal_long_falling or pedal_button_press" in cc
+
+
+def test_quick_second_pull_reapplies_take_speed_now():
+  """Second pull inside the window stays lat+long and seeds the same MAX."""
+  install_blinker_lat_pause()
+  eng = PreAPEngagement(double_pull_enabled=True, double_pull_window_ms=400)
+  v_ego = 20.0
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=5000, v_ego=v_ego)
+  assert eng.enableLongControl
+  first_speed = eng.pedal_speed_kph
+  _buttons(eng, prev=CruiseButtons.MAIN, t_ms=5100, v_ego=v_ego)
+  assert eng.enableLongControl
+  assert eng.pedal_speed_kph == first_speed
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=5300, v_ego=v_ego)
+  assert eng.cruiseEnabled and eng.enableLongControl
+  assert not eng.pending_enable
+  assert eng._nap_set_take_speed_now
+  assert not eng._nap_set_resume_long
+  assert eng.pedal_speed_kph == first_speed
+  assert eng.stalk_pull_time_ms == 5300
+  posted = 55 * CV.MPH_TO_KPH
+  traveled = v_ego * CV.MS_TO_KPH
+  first = decide_map_cruise(
+    MapCruiseHold(), engaged=True, mode=MODE_FOLLOW, raw_kph=first_speed,
+    posted_kph=posted, engage_rising=True, now=0.0, take_speed_now=True,
+    traveled_kph=traveled, long_active=True,
+  )
+  second = decide_map_cruise(
+    MapCruiseHold(), engaged=True, mode=MODE_FOLLOW, raw_kph=eng.pedal_speed_kph,
+    posted_kph=posted, engage_rising=False, now=1.0, take_speed_now=True,
+    traveled_kph=traveled, long_active=True,
+  )
+  assert abs(first.seed_kph - posted) < 1e-6
+  assert abs(second.seed_kph - first.seed_kph) < 1e-6
+
+
+def test_standstill_single_pull_waits_for_di_gas_then_take_now():
+  install_blinker_lat_pause()
+  eng = PreAPEngagement(double_pull_enabled=True, double_pull_window_ms=400)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=1000, v_ego=0.0)
+  assert eng.cruiseEnabled
   assert not eng.enableLongControl
-  assert not getattr(eng, "_nap_set_take_speed_now", False)
+  assert eng._nap_resume_wait_gas
+  assert eng._nap_from_off_stop_take_now
+  assert not eng._nap_set_take_speed_now
+  # Interceptor rest noise is not a gas tap.
+  eng._nap_gas_pressed = True
+  eng._nap_di_pedal_pos = 0.5
+  _buttons(eng, t_ms=1100, v_ego=0.0)
+  assert not eng.enableLongControl
+  assert eng._nap_resume_wait_gas
+  # A quick second pull must not start rolling.
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=1300, v_ego=0.0)
+  assert eng.cruiseEnabled
+  assert not eng.enableLongControl
+  assert eng._nap_resume_wait_gas
+  assert eng._nap_from_off_stop_take_now
+  # DI > 2 starts long at take-speed-now MAX.
+  eng._nap_di_pedal_pos = 8.0
+  _buttons(eng, t_ms=1500, v_ego=0.0)
+  assert eng.enableLongControl
+  assert eng._nap_set_take_speed_now
+  assert not eng._nap_set_resume_long
+  assert not eng._nap_resume_wait_gas
+  posted = 35 * CV.MPH_TO_KPH
+  dec = decide_map_cruise(
+    MapCruiseHold(), engaged=True, mode=MODE_FOLLOW, raw_kph=0.0,
+    posted_kph=posted, engage_rising=True, now=0.0, take_speed_now=True,
+    traveled_kph=0.0, long_active=True,
+  )
+  assert abs(dec.seed_kph - posted) < 1e-6
+  dec_off = decide_map_cruise(
+    MapCruiseHold(), engaged=True, mode=MODE_OFF, raw_kph=0.0,
+    posted_kph=None, engage_rising=True, now=0.0, take_speed_now=True,
+    traveled_kph=0.0, long_active=True,
+  )
+  assert abs(dec_off.seed_kph - 0.0) < 1e-6
+
+
+def test_brake_held_single_pull_stays_lat_only():
+  install_blinker_lat_pause()
+  eng = PreAPEngagement(double_pull_enabled=True, double_pull_window_ms=400)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=1000, brake=True, v_ego=15.0)
+  assert eng.cruiseEnabled
+  assert not eng.enableLongControl
+  assert not eng._nap_set_take_speed_now
+  assert not eng._nap_resume_wait_gas
+  _buttons(eng, prev=CruiseButtons.MAIN, t_ms=1100, brake=True, v_ego=15.0)
+  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=1300, brake=True, v_ego=15.0)
+  assert eng.cruiseEnabled
+  assert not eng.enableLongControl
+  assert not eng._nap_set_take_speed_now
+
+
+def test_no_pedal_single_pull_stays_double_pull():
+  install_blinker_lat_pause()
+  eng = PreAPEngagement(double_pull_enabled=True, double_pull_window_ms=400)
+  eng.process_buttons(
+    cruise_buttons=CruiseButtons.MAIN, prev_cruise_buttons=0,
+    curr_time_ms=1000, v_ego=15.0, speed_units="MPH",
+    use_pedal=False, pedal_long_allowed=False,
+    long_control_allowed=True, real_brake_pressed=False)
+  assert eng.cruiseEnabled
+  assert not eng.enableLongControl
+  assert eng.preap_cc_cancel_needed
+  assert not eng._nap_set_take_speed_now
+  eng.process_buttons(
+    cruise_buttons=0, prev_cruise_buttons=CruiseButtons.MAIN,
+    curr_time_ms=1100, v_ego=15.0, speed_units="MPH",
+    use_pedal=False, pedal_long_allowed=False,
+    long_control_allowed=True, real_brake_pressed=False)
+  eng.process_buttons(
+    cruise_buttons=CruiseButtons.MAIN, prev_cruise_buttons=0,
+    curr_time_ms=1300, v_ego=15.0, speed_units="MPH",
+    use_pedal=False, pedal_long_allowed=False,
+    long_control_allowed=True, real_brake_pressed=False,
+    di_cruise_state="STANDBY")
+  assert eng.cruiseEnabled
+  assert eng.preap_cc_engage_needed
 
 
 def test_cancel_full_disengage_clears_held_max():
@@ -635,7 +801,6 @@ def test_one_pedal_standstill_set_clears_latch_then_gas_resumes():
   assert eng.enableLongControl
   assert getattr(eng, "_nap_set_resume_long", False)
   assert abs(eng.pedal_speed_kph - held) < 1e-6
-
 
 def test_one_pedal_does_not_steal_standstill_wait_gas():
   """Armed stop-SET + gas touch still resumes; kick must not fire."""

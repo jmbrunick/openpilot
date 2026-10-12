@@ -103,7 +103,13 @@ HYPERMILE_HILL_CLIMB_DESCRIPTION = (
   + "Accel 1 climbs. Never raises MAX. Lead / MPC brake still wins."
 )
 
+NAP_SPEED_SIGN_LOG = "NAPSpeedSignLog"
 NAP_DRIVER_LAT_HANDOFF = "NAPDriverLatHandoff"
+NAP_LOW_VIS_BACKOFF = "NAPLowVisBackoff"
+NAP_CONE_LINE_HOLD = "NAPConeLineHold"
+NAP_CONE_LINE_LOG = "NAPConeLineLog"
+NAP_OBSTACLE_CHIME = "NAPObstacleChime"
+NAP_OBSTACLE_LOG = "NAPObstacleLog"
 NAP_DM_SIMULATE_LOOKING = "NAPDmSimulateLooking"
 NAP_DM_FALSE_ALERT_IGNORE = "NAPDmFalseAlertIgnore"
 NAP_FORCE_OFFROAD = "NAPForceOffroad"
@@ -112,37 +118,161 @@ DRIVER_LAT_HANDOFF_DESCRIPTION = (
   + "~0.15 s, then it blends back. Turn Off if rumble false-yields. "
   + "Off = stock lat."
 )
+LOW_VIS_BACKOFF_DESCRIPTION = (
+  "Default On. Shows Low visibility when the model is unsure of the path, "
+  + "or on sun glare (sun low ahead, or a bright drop while the path is also "
+  + "unsure). Steering keeps following the path: a gentle limit, reduced only "
+  + "as far as the model is unsure, never off. Over 45 s it alerts louder. "
+  + "Longitudinal stays on. A repeated one-sided fight also stays yielded until "
+  + "the model agrees with the wheel. Off = stock lateral, no Low visibility alert."
+)
+OBSTACLE_CHIME_DESCRIPTION = (
+  "Default On. A short chime when the radar and the camera agree "
+  + "something solid is in your lane or stepping into it, and when an "
+  + "animal or a person is near the road. A still mailbox or post on "
+  + "the shoulder stays quiet. It does not brake, steer, or turn "
+  + "cruise off. Off stops the chime; the log still runs."
+)
+CONE_LINE_HOLD_DESCRIPTION = (
+  "Default On. After you push the wheel away from a line of cones or "
+  + "drums for about 2 seconds, openpilot keeps your line when it takes "
+  + "the wheel back, instead of steering toward the cones. That offset "
+  + "eases off once the line has been gone for a few seconds, or if you "
+  + "steer back. Longitudinal stays on. A hard yank still cancels. "
+  + "Off = the usual soft-handoff blend."
+)
+CONE_LINE_LOG_DESCRIPTION = (
+  "Default On. Log-only radar cone-line detector (coneLineNAP in the "
+  + "qlog). Does not steer by itself. Off stops the log; Hold my line "
+  + "near cones then sees no line."
+)
 DM_SIMULATE_LOOKING_DESCRIPTION = (
-  "Default Off on nap-release. Stock DM until you enable this via the "
-  + "hidden Settings → triple-tap NAP popup. While engaged, after the "
-  + "look-at-road timer has counted down about 1 s, restore awareness "
-  + "on the stock attentive path (full soft-reset: no-face, uncertain, "
-  + "phone, pose, and eye false nags) and hold until gradual recovery "
-  + "returns awareness to full (not a one-frame pulse). Fire time is "
-  + "random in the first 3 s of countdown (after 1 s, then within the "
-  + "next 2 s). Mutually exclusive with False Alert Ignore: turning "
-  + "this On turns that Off. Not a mute of hard cancels: hands-on ≥ 2, "
-  + "stalk cancel, door, and reverse still hard-cancel. Always-on DM "
-  + "when not engaged is unchanged. Leave Off for stock DM."
+  "Default On. nap-dev experiment. While engaged, after the look-at-road "
+  + "timer has counted down about 1 s, restore awareness on the stock "
+  + "attentive path (full soft-reset: no-face, uncertain, phone, pose, "
+  + "and eye false nags) and hold until gradual recovery returns "
+  + "awareness to full (not a one-frame pulse). Fire time is random in "
+  + "the first 3 s of countdown (after 1 s, then within the next 2 s). "
+  + "Mutually exclusive with False Alert Ignore: turning this On turns "
+  + "that Off. Not a mute of hard cancels: hands-on ≥ 2, stalk cancel, "
+  + "door, and reverse still hard-cancel. Always-on DM when not engaged "
+  + "is unchanged. Turn Off for stock DM."
 )
 DM_FALSE_ALERT_IGNORE_DESCRIPTION = (
-  "Default Off on nap-release. Use when Simulate Look is Off and you "
-  + "only want false phone/device distraction (phoneProb) ignored on "
-  + "the same random 1–3 s cadence. Soft-clears only the phone bit so "
-  + "a false device “Driver Distracted” can recover without a real "
-  + "glance. Head-pose looking-away and eye tracking still drain and "
-  + "alert — this does nothing while pose or eye are alarming. "
-  + "Mutually exclusive with Simulate Look: turning this On turns "
-  + "that Off (and aborts an in-flight wipe). Hands-on ≥ 2, stalk, "
-  + "door, and reverse still hard-cancel. Leave Off for stock phone "
-  + "detection."
+  "Default Off. Use when Simulate Look is Off and you only want false "
+  + "phone/device distraction (phoneProb) ignored on the same random "
+  + "1–3 s cadence. Soft-clears only the phone bit so a false device "
+  + "“Driver Distracted” can recover without a real glance. Head-pose "
+  + "looking-away and eye tracking still drain and alert — this does "
+  + "nothing while pose or eye are alarming. Mutually exclusive with "
+  + "Simulate Look: turning this On turns that Off (and aborts an "
+  + "in-flight wipe). Hands-on ≥ 2, stalk, door, and reverse still "
+  + "hard-cancel. Turn Off for stock phone detection."
 )
 FORCE_OFFROAD_DESCRIPTION = (
   "WARNING: Forces the device offroad and disengages openpilot even while "
-  + "moving. Drive manually — no steering or accel assist while this is on. "
-  + "Unlocks Download US Maps, Refresh maps, software install, and other "
-  + "offroad-only NAP actions. Default Off. Clears when you toggle Off, "
-  + "Reset to Defaults, reboot, or the next time ignition turns on."
+  "moving. On-road, a big Yes/No asks if you are ready to resume steering "
+  "control — No leaves assist as it was. Drive manually after Yes — no "
+  "steering or accel assist while this is on. Unlocks Download US Maps, "
+  "Refresh maps, software install, and other offroad-only NAP actions. "
+  "Default Off. Clears when you toggle Off, Reset to Defaults, reboot, or "
+  "the next time ignition turns on."
+)
+SPEED_SIGN_LOG_DESCRIPTION = (
+  "Log-only MUTCD speed-sign detector on the ROAD camera + GPS. Default Off. "
+  "When On, speedsignd shows a display-only SIGN plate and may append JSONL "
+  "under /data/media/0/nap/speed_signs.jsonl (t, lat, lon, bearing, mph, conf). "
+  "WARNING: onroad YOLO can lag the driving model and cause TAKE CONTROL / "
+  "process timeouts. Heavy detect never runs while openpilot is actively "
+  "controlling (plate shows WAIT) so modeld is not starved. WAIT only means "
+  "OP is commanding actuators and should drop as soon as you cancel — if "
+  "you see WAIT while the UI looks disengaged, that is a bug; report "
+  "swaglog lines matching speedsignd. "
+  "While you are driving manually — moving is OK — detect runs at 1 Hz "
+  "and nice 19 so you can log speed-limit signs. Not gated on park or "
+  "Force Offroad. OSM upload is future work; this is JSONL + HUD only. "
+  "If you see TAKE CONTROL or driving-model lag, turn Logger Off and use "
+  "nap-release. Does not write sqlite, does not change cruise / HUD MAX, "
+  "and does not query osm.org. Stock modelV2 has no speedSign head. Real "
+  "roadside detection needs the compact YOLO ONNX on "
+  "/data/media/0/nap/speed_sign.onnx. If that file is missing, onroad SIGN "
+  "shows NO WT — use Install weights (Wi-Fi, offroad / Force Offroad), or: "
+  "python -m scripts.nap.install_speed_sign_weights."
+)
+
+INSTALL_SPEED_SIGN_WEIGHTS_INSTRUCTIONS = """\
+Install speed-sign ONNX weights
+
+Downloads the published YOLO ONNX (~43 MB) from GitHub Release
+speed-sign-onnx-v1 / speed_sign.onnx and writes
+/data/media/0/nap/speed_sign.onnx (SHA-256 checked).
+
+Without this file, Speed Sign Logger On still starts speedsignd, but the
+onroad SIGN plate shows NO WT and will not read real roadside signs.
+
+PRECONDITIONS:
+  1. Device is offroad / parked (Force Offroad if you are in the car)
+  2. Wi-Fi that can reach GitHub Releases
+  3. ~50 MiB free on /data
+
+Takes less than a minute. speedsignd retries the ONNX onroad without a
+reboot. Then a clear MUTCD R2-1 should light SIGN mph.
+
+Does not write sqlite, does not change cruise / HUD MAX, and does not
+query osm.org.
+
+Press START to download."""
+
+# Forwarded 0x45 STW_ACTN_RQ wiper / high-beam. Persist 0=Off, 3=Auto
+# so flashed cars / logs stay compatible. Legacy Int(1)/On(2) coerce to Off.
+WIPER_SPEED_OFF = 0
+WIPER_SPEED_AUTO = 3
+WIPER_SPEED_VALUES = [WIPER_SPEED_OFF, WIPER_SPEED_AUTO]
+WIPER_SPEED_LABELS = ["Off", "Auto"]
+WIPER_HUD_OFF = "Wipers Off"
+WIPER_HUD_AUTO = "Wipers Auto"
+WIPER_HUD_DURATION_S = 2.5
+WIPER_SENSITIVITY_VALUES = [0, 1, 2, 3, 4]
+WIPER_SENSITIVITY_LABELS = ["Drier", "Dry", "Mid", "Wet", "Wetter"]
+WIPER_SENSITIVITY_DEFAULT = 2
+HIGH_LOW_BEAM_VALUES = [0, 1, 2]
+HIGH_LOW_BEAM_LABELS = ["Off", "Low", "High"]
+WIPER_SPEED_DESCRIPTION = (
+  "NAP wipers: Off or Auto. Off leaves the driver's real stalk collar "
+  "alone. Auto overlays WprSw6Posn INTERVAL1 (collar=1) and "
+  "WprWashSw_Psd=0 only when the car is on, gear is Drive or Reverse, "
+  "speed is above a small creep floor, and the 3X road camera sees a "
+  "rainy or icy/frosted windshield. Hold INTERVAL1 at ~100 Hz (same "
+  "last-win as high-beam) so live stalk Off (collar=0) cannot cancel. "
+  "While Auto is selected and dry (or Park/Neutral/standstill), still "
+  "extra-forward 0x45 rest with collar forced 0 so Pre-AP drops "
+  "intermittent; a wipe 1→0 sends rest immediately. Park, Neutral, and "
+  "standstill (v≈0) never Auto-wipe. Default Off — Auto is opt-in, not "
+  "every drive. Double-flick the wiper collar Off→Int1→Off within 1 s "
+  "to toggle Auto on or off; the stock stalk stays Off. Sensitivity "
+  "(Drier→Wetter) sets Auto aggressiveness. DAS wiper fields stay 0 "
+  "(they were ignored and caused a controls mismatch). Do not engage NAP "
+  "and do not pull the stalk. No spray. No auto headlights."
+)
+WIPER_SENSITIVITY_DESCRIPTION = (
+  "Auto only. More dry (Drier) ↔ more wet (Wetter). Mid is the baseline. "
+  "Lower wipes sooner / more often; higher tolerates more film before a "
+  "repeat wipe. Scales the first-wipe bar, the post-wipe repeat bar, and "
+  "the light-mist minimum rewipe gap (Drier ~5–8 s, Dry ~8–12 s, Mid "
+  "~20–25 s). Below acquire, Drier/Dry still fire an occasional thin-mist "
+  "INTERVAL1 (~18/22 s). Does not spray."
+)
+HIGH_LOW_BEAM_DESCRIPTION = (
+  "Pre-AP Model S only, for on-car testing. Default Off. Low is the same as "
+  "Off — the stalk's rest 0x45 (00ff00) is low/cancel, so there is no extra "
+  "nibble to hold. The real stalk continuously sends 00ff04 while high "
+  "beams are held, not a one-shot press. High matches that: keep sending "
+  "00ff04 (nibble 4 held) on the live 0x45, same counter, until you turn "
+  "the setting off, so bus 0 IDLE cannot last-win as a cancel. Off/Low "
+  "returns the real stalk. Off/Low then High is not a one-shot tap. The "
+  "extra-forward is the same 0x45, not a second 0x45. No spray. DAS "
+  "wiper/beam fields stay 0. Car on is enough. Do not send FLASH. No auto "
+  "headlights."
 )
 
 # Radar lateral offset bounds (meters). Added to radar yRel in
@@ -309,8 +439,8 @@ Not stored in git (too large). After flash, run this once over Wi-Fi.
 PRECONDITIONS:
   1. Device is offroad / parked
   2. Wi-Fi that can reach GitHub Releases
-  3. 800 MiB free on /data (same filesystem as /data/media/0/osm/)
-     ~204 MiB zst + ~516 MiB sqlite + 80 MiB margin. Stages in
+  3. 850 MiB free on /data (same filesystem as /data/media/0/osm/)
+     ~200 MiB zst + ~541 MiB sqlite + 80 MiB margin. Stages in
      /data/media/0/osm/.download/ — not /tmp.
 
 If a previous download died with ENOSPC / "No space left on device":
@@ -332,7 +462,9 @@ Query live OSM within 100 miles and merge into the US pack
 
 Queries live OpenStreetMap speed limits within 100 miles (~160.9 km) of
 this car and merges them into the installed US maps. Ways in that radius
-are replaced; the rest of the US pack is kept.
+are replaced; the rest of the US pack is kept. Tagged OSM maxspeed wins.
+In Minnesota, unmarked roads also get statutory estimates (not uploaded
+to OSM) so Refresh maps does not wipe those pack fills.
 
 Uses a GNSS fix if one arrives (waits up to 10s), otherwise last stored GPS.
 Will not guess a city. If maps are not installed yet, downloads the US pack
@@ -385,3 +517,38 @@ def find_preset_index(presets: list, value, default: int = 0) -> int:
     return presets.index(value)
   except ValueError:
     return min(range(len(presets)), key=lambda i: abs(presets[i] - value))
+
+
+def normalize_wiper_speed(setting) -> int:
+  """UI/runtime Off or Auto. Legacy Int(1)/On(2) and unknowns are Off."""
+  try:
+    if int(setting) == WIPER_SPEED_AUTO:
+      return WIPER_SPEED_AUTO
+  except (TypeError, ValueError):
+    pass
+  return WIPER_SPEED_OFF
+
+
+def wiper_speed_button_index(setting) -> int:
+  """Index into WIPER_SPEED_VALUES / LABELS (Off=0, Auto=1)."""
+  return 1 if normalize_wiper_speed(setting) == WIPER_SPEED_AUTO else 0
+
+
+def wiper_hud_text(setting) -> str:
+  return WIPER_HUD_AUTO if normalize_wiper_speed(setting) == WIPER_SPEED_AUTO else WIPER_HUD_OFF
+
+
+def coerce_wiper_speed_param(params) -> int:
+  """Read NAPWiperSpeed, treat Int/On as Off, and persist the coercion."""
+  try:
+    raw = params.get("NAPWiperSpeed", return_default=True)
+    setting = 0 if raw is None or raw == "" else int(raw)
+  except (TypeError, ValueError, AttributeError):
+    setting = 0
+  norm = normalize_wiper_speed(setting)
+  if norm != setting:
+    try:
+      params.put("NAPWiperSpeed", norm)
+    except Exception:
+      pass
+  return norm

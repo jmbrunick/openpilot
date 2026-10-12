@@ -25,6 +25,7 @@ from openpilot.selfdrive.controls.lib.lane_change_nudge import (
   EMERGENCY_HANDS_ON_LEVEL,
   EMERGENCY_RISE_NM,
   EMERGENCY_RISE_WINDOW_S,
+  EMERGENCY_SUSTAIN_S,
   EMERGENCY_TORQUE_NM,
   SOFT_YIELD_TRIGGER_NM,
   EmergencyYankTracker,
@@ -81,12 +82,17 @@ def test_thresholds_sit_above_a_firm_confirm():
   assert SOFT_YIELD_TRIGGER_NM == HANDOFF_SOFT_NM
   assert FIRM_NUDGE_NM == 1.1
   assert FIRM_NUDGE_NM < EMERGENCY_TORQUE_NM
-  assert EMERGENCY_TORQUE_NM == 2.0
-  assert EMERGENCY_RISE_NM == 3.0 * SOFT_YIELD_TRIGGER_NM
-  assert EMERGENCY_RISE_WINDOW_S == 0.150
+  assert EMERGENCY_TORQUE_NM == 2.5
+  assert EMERGENCY_RISE_NM == 4.0 * SOFT_YIELD_TRIGGER_NM == 2.2
+  assert EMERGENCY_RISE_WINDOW_S == 0.250
+  assert EMERGENCY_SUSTAIN_S == 0.10
   assert EMERGENCY_HANDS_ON_LEVEL == 3
   assert not is_emergency_yank(torque_nm=FIRM_NUDGE_NM, hands_on_level=2, fast_rise=False)
   assert is_emergency_yank(torque_nm=0.2, hands_on_level=3, fast_rise=False)
+  assert is_emergency_yank(torque_nm=1.0, hands_on_level=1, fast_rise=False, over_torque=True)
+  assert not is_emergency_yank(torque_nm=EMERGENCY_TORQUE_NM + 0.1, hands_on_level=1, fast_rise=False,
+                               over_torque=False)
+  # Legacy callers without a tracker keep the instantaneous line.
   assert is_emergency_yank(torque_nm=EMERGENCY_TORQUE_NM + 0.1, hands_on_level=1, fast_rise=False)
   assert not tipped_lane_change_driver_release(same_direction=True, emergency=False)
   assert tipped_lane_change_driver_release(same_direction=True, emergency=True)
@@ -227,8 +233,13 @@ def test_emergency_yank_same_direction_releases_and_cancels():
   dh = DesireHelper()
   _arm_left(dh, MPH_45)
   assert dh.lane_change_state == LaneChangeState.preLaneChange
-  dh.update(_CS(v_ego=MPH_45, left=True, steering_pressed=True,
-                steering_torque=EMERGENCY_TORQUE_NM + 0.25, hands_on=2), True, 0.0)
+  # Hard same-direction yank held past the sustain time.
+  yank = _CS(v_ego=MPH_45, left=True, steering_pressed=True,
+             steering_torque=EMERGENCY_TORQUE_NM + 0.25, hands_on=2)
+  for _ in range(int(round(EMERGENCY_SUSTAIN_S / DT_MDL)) + 1):
+    if dh.lane_change_state == LaneChangeState.off:
+      break
+    dh.update(yank, True, 0.0)
   assert dh.lane_change_state == LaneChangeState.off
   assert dh.queued_changes == 0
 
@@ -252,18 +263,23 @@ def test_emergency_yank_same_direction_releases_and_cancels():
 def test_fast_torque_rise_is_an_emergency_yank():
   tracker = EmergencyYankTracker()
   assert not tracker.update(0.0, 0.01)
-  assert tracker.update(EMERGENCY_RISE_NM, 0.05)
+  # One frame above the line is not enough; it must be held 0.10 s.
+  assert not tracker.update(EMERGENCY_RISE_NM, 0.05)
+  assert not tracker.update(EMERGENCY_RISE_NM, EMERGENCY_SUSTAIN_S - 0.001)
+  assert tracker.update(EMERGENCY_RISE_NM, 0.001)
   assert is_emergency_yank(torque_nm=EMERGENCY_RISE_NM, hands_on_level=1, fast_rise=True)
 
-  # A slow climb through 3× soft-lat is not the fast-rise case.
+  # A slow climb through 4x soft-lat is not the fast-rise case.
   slow = EmergencyYankTracker()
   slow.update(0.0, 0.01)
-  assert not slow.update(SOFT_YIELD_TRIGGER_NM, 0.20)
-  assert not slow.update(EMERGENCY_RISE_NM, 0.20)
+  assert not slow.update(SOFT_YIELD_TRIGGER_NM, 0.30)
+  for _ in range(5):
+    assert not slow.update(EMERGENCY_RISE_NM, 0.10)
 
   dh = DesireHelper()
   _arm_left(dh, MPH_45)
   dh.update(_CS(v_ego=MPH_45, left=True, steering_torque=0.0), True, 1.0)
-  dh.update(_CS(v_ego=MPH_45, left=True, steering_pressed=True,
-                steering_torque=EMERGENCY_RISE_NM, hands_on=1), True, 1.0)
+  for _ in range(int(round(EMERGENCY_SUSTAIN_S / DT_MDL)) + 1):
+    dh.update(_CS(v_ego=MPH_45, left=True, steering_pressed=True,
+                  steering_torque=EMERGENCY_RISE_NM, hands_on=1), True, 1.0)
   assert dh.lane_change_state == LaneChangeState.off

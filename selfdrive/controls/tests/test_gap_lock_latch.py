@@ -299,6 +299,10 @@ def test_guard_slack_uses_locked_meters_and_keeps_mild_floor():
   assert slack_for_guard(30.0, 20.0, 1.3, 0) == time_gap
   assert slack_for_guard(30.0, 20.0, 1.3, 0.0) == time_gap
   assert slack_for_guard(30.0, 20.0, 1.3, 28.0) == pytest.approx(2.0)
+  # A locked gap that is already matched is steady. It does not take the
+  # mild settle. A command that is on that settle still cannot reach the rail.
   clipped = guard_follow_actuator_regen(-1.23, 0.0, slack=0.0)
-  assert clipped == pytest.approx(LEAD_FOLLOW_ACT_REGEN_FLOOR_MS2)
+  assert clipped == pytest.approx(0.0)
+  mild = guard_follow_actuator_regen(-1.23, -0.22, slack=0.0)
+  assert mild == pytest.approx(LEAD_FOLLOW_ACT_REGEN_FLOOR_MS2)
   assert LEAD_FOLLOW_ACT_REGEN_FLOOR_MS2 == pytest.approx(-0.22)

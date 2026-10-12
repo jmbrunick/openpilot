@@ -6,6 +6,7 @@ from cereal import car
 from openpilot.common.params import Params
 from openpilot.system.hardware import PC, TICI
 from openpilot.system.manager.process import PythonProcess, NativeProcess, DaemonProcess
+from openpilot.system.manager.optional_procs import nap_dash_enabled
 
 WEBCAM = os.getenv("USE_WEBCAM") is not None
 
@@ -58,6 +59,12 @@ def only_onroad(started: bool, params: Params, CP: car.CarParams) -> bool:
 def only_offroad(started: bool, params: Params, CP: car.CarParams) -> bool:
   return not started
 
+def speed_sign_log(started: bool, params: Params, CP: car.CarParams) -> bool:
+  # Default-off MUTCD JSONL logger. Does not start unless NAPSpeedSignLog is on.
+  # nap-release: the speed sign reader is never started (common/nap_release.py).
+  from openpilot.common.nap_release import SPEED_SIGN_ENABLED
+  return SPEED_SIGN_ENABLED and started and params.get_bool("NAPSpeedSignLog")
+
 def or_(*fns):
   return lambda *args: operator.or_(*(fn(*args) for fn in fns))
 
@@ -84,6 +91,7 @@ procs = [
 
   PythonProcess("sensord", "system.sensord.sensord", only_onroad, enabled=not PC),
   PythonProcess("ui", "selfdrive.ui.ui", always_run, restart_if_crash=True),
+  PythonProcess("nap_dash", "selfdrive.nap_dash.server", nap_dash_enabled, restart_if_crash=True, optional=True),
   PythonProcess("soundd", "selfdrive.ui.soundd", only_onroad),
   PythonProcess("locationd", "selfdrive.locationd.locationd", only_onroad),
   NativeProcess("_pandad", "selfdrive/pandad", ["./pandad"], always_run, enabled=False),
@@ -103,9 +111,11 @@ procs = [
   PythonProcess("pigeond", "system.ubloxd.pigeond", ublox, enabled=TICI),
   PythonProcess("plannerd", "selfdrive.controls.plannerd", not_long_maneuver),
   PythonProcess("mapd", "selfdrive.mapd.mapd", only_onroad),
+  PythonProcess("speedsignd", "selfdrive.speedsignd.speedsignd", speed_sign_log),
   PythonProcess("maneuversd", "tools.longitudinal_maneuvers.maneuversd", long_maneuver),
   PythonProcess("lateral_maneuversd", "tools.lateral_maneuvers.lateral_maneuversd", lat_maneuver),
   PythonProcess("radard", "selfdrive.controls.radard", only_onroad),
+  PythonProcess("pathobstacled", "selfdrive.pathobstacled.pathobstacled", and_(only_onroad, lambda s, p, cp: p.get_bool("NAPObstacleLog")), optional=True),
   PythonProcess("hardwared", "system.hardware.hardwared", always_run),
   PythonProcess("modem", "system.hardware.tici.modem", always_run, enabled=TICI),
   PythonProcess("tombstoned", "system.tombstoned", always_run, enabled=not PC),

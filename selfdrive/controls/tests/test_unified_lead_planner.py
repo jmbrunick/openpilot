@@ -22,6 +22,15 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import SEED_BRAKE_STE
 from openpilot.selfdrive.modeld.constants import ModelConstants
 
 
+@pytest.fixture(autouse=True)
+def _curve_follow_code_enabled(monkeypatch):
+  """These tests exercise the curve follow code itself; nap-release forces it off
+  (common/nap_release.CURVE_FOLLOW_ENABLED, covered by test_nap_release)."""
+  from openpilot.common import nap_release
+  monkeypatch.setattr(nap_release, "CURVE_FOLLOW_ENABLED", True)
+
+
+
 class _PlannerInputs(dict):
   logMonoTime = {"modelV2": 0}
 

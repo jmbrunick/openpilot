@@ -1234,3 +1234,51 @@ def test_far_slack_lead_brake_is_not_copied_near_gap_still_is():
   assert fast < -0.8
   panic = unified_follow_desired(gap, v_ego, v_lead, -3.5, tf, v_ceiling=40.0, radar=True)
   assert panic < -1.0
+  # Same rapid decel off the predicted path does not firm ego. In a bend,
+  # path lateral is what counts, not raw yRel. A close lead is not this gate.
+  off = unified_follow_desired(
+    gap, v_ego, v_lead, -3.5, tf, v_ceiling=40.0, radar=True, y_rel=2.6,
+  )
+  ghost = unified_follow_desired(
+    gap, v_ego, v_lead, -3.5, tf, v_ceiling=40.0, radar=True, y_rel=0.0, path_lat=2.5,
+  )
+  in_bend = unified_follow_desired(
+    gap, v_ego, v_lead, -3.5, tf, v_ceiling=40.0, radar=True, y_rel=3.2, path_lat=0.3,
+  )
+  assert off > -0.45
+  assert ghost > -0.45
+  assert in_bend < -1.0
+  close = unified_follow_desired(
+    22.0, 20.0, 16.0, -2.5, 0.9, v_ceiling=30.0, radar=True, y_rel=1.9,
+  )
+  assert close < -1.0
+
+
+def test_far_off_path_rapid_lead_does_not_firm_and_a_one_frame_spike_does_not_drop():
+  """A lateral ghost at a far gap never firms. One bad yRel frame does not
+  release a lead that has been on the path."""
+  ctrl = UnifiedLeadController()
+  ghost = []
+  for _ in range(40):
+    ghost.append(ctrl.step(
+      dt=DT, present=True, gap=108.1, v_ego=30.1, v_lead=27.9, a_lead=-3.5,
+      t_follow=0.7, lead_id=9, seed_a=0.0, v_ceiling=40.0, radar=True,
+      y_rel=2.8, path_lat=2.8,
+    ))
+  assert min(ghost) > -0.5
+
+  held = UnifiedLeadController()
+  kw = dict(
+    dt=DT, present=True, gap=108.1, v_ego=30.1, v_lead=27.9, a_lead=-3.5,
+    t_follow=0.7, lead_id=4, seed_a=0.0, v_ceiling=40.0, radar=True, y_rel=0.2,
+  )
+  last = 0.0
+  for _ in range(40):
+    last = held.step(**kw)
+  assert last < -0.8
+  spiked = held.step(**{**kw, "y_rel": 3.4})
+  assert spiked < last + 0.4
+  released = spiked
+  for _ in range(40):
+    released = held.step(**{**kw, "y_rel": 2.8, "path_lat": 2.8})
+  assert released > -0.5

@@ -10,6 +10,7 @@ from openpilot.selfdrive.ui.body.layouts.onroad import BodyLayout
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.scroller import Scroller
 from openpilot.system.ui.lib.application import gui_app
+from openpilot.selfdrive.ui.onroad.force_offroad_confirm import maybe_show_force_offroad_confirm
 
 
 ONROAD_DELAY = 2.5  # seconds
@@ -96,6 +97,7 @@ class MiciMainLayout(Scroller):
         self._scroller.scroll_to(self._rect.width)
       self._setup = True
 
+    maybe_show_force_offroad_confirm()
     # Render
     super()._render(self._rect)
 

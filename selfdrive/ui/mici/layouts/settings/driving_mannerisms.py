@@ -10,7 +10,10 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   FOLLOW_DISTANCE_LABELS,
   FOLLOW_DISTANCE_VALUES,
   MAP_SPEED_ACCEL, MAP_SPEED_ACCEL_DEFAULT, MAP_SPEED_ACCEL_LABELS,
+  NAP_CONE_LINE_HOLD,
+  NAP_OBSTACLE_CHIME,
   NAP_DRIVER_LAT_HANDOFF,
+  NAP_LOW_VIS_BACKOFF,
   NAP_FOLLOW_DISTANCE_CITY,
   NAP_FOLLOW_DISTANCE_HWY,
   NAP_HYPERMILE,
@@ -18,6 +21,9 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   NAP_HYPERMILE_STEP_DOWN,
   NAP_GAP_LOCK,
   NAP_ONE_PEDAL_LONG,
+)
+from openpilot.selfdrive.ui.layouts.settings.nap_lateral import (
+  NAP_TURN_IN_DELAY, TURN_IN_DELAY_LABELS, TURN_IN_DELAY_STEPS,
 )
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys
 
@@ -58,8 +64,25 @@ class DrivingMannerismsLayoutMici(NavScroller):
       default_value=FOLLOW_DISTANCE_DEFAULT,
     )
 
+    self._turn_in_delay = BigMultiValueParamToggle(
+      "turn-in timing",
+      NAP_TURN_IN_DELAY,
+      values=list(TURN_IN_DELAY_STEPS),
+      labels=TURN_IN_DELAY_LABELS,
+      default_value=0,
+    )
+
     lat_handoff = BigParamControl("soft lateral handoff", NAP_DRIVER_LAT_HANDOFF)
     lat_handoff.set_value("On — free-wheel yield; Off if false-yield")
+
+    low_vis = BigParamControl("low visibility back-off", NAP_LOW_VIS_BACKOFF)
+    low_vis.set_value("On — ease lateral and show Low visibility")
+
+    cone_hold = BigParamControl("hold my line near cones", NAP_CONE_LINE_HOLD)
+    cone_hold.set_value("On — keep your line after a push past cones")
+
+    obstacle_chime = BigParamControl("live object detection chime", NAP_OBSTACLE_CHIME)
+    obstacle_chime.set_value("On — solid objects in the lane; animals or people near the road")
 
     one_pedal = BigParamControl("one-pedal long", NAP_ONE_PEDAL_LONG)
     one_pedal.set_value("Off default — gas pause stays until SET")
@@ -83,7 +106,11 @@ class DrivingMannerismsLayoutMici(NavScroller):
       adaptive_accel,
       self._follow_distance_city,
       self._follow_distance_hwy,
+      self._turn_in_delay,
       lat_handoff,
+      low_vis,
+      cone_hold,
+      obstacle_chime,
       one_pedal,
       gap_lock,
       hypermile,
@@ -98,6 +125,7 @@ class DrivingMannerismsLayoutMici(NavScroller):
     self._accel.refresh()
     self._follow_distance_city._load_value()
     self._follow_distance_hwy._load_value()
+    self._turn_in_delay._load_value()
 
 
 def open_driving_mannerisms_menu(page: DrivingMannerismsLayoutMici | None = None) -> DrivingMannerismsLayoutMici:

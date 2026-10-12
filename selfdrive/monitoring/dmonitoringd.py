@@ -39,7 +39,7 @@ def dmonitoringd_thread():
       try:
         sim, fai = read_exclusive_dm_toggles(params)
       except Exception:
-        sim, fai = False, False
+        sim, fai = True, False
       DM.set_nap_dm_toggles(simulate_looking=sim, false_alert_ignore=fai)
       demo_mode = params.get_bool("IsDriverViewEnabled")
 

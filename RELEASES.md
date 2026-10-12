@@ -1,26 +1,62 @@
-NAP longitudinal match to nap-dev (2026-10-07)
+nap-release promotion from nap-dev 112907e9 (2026-10-10)
 ========================
-* Pre-AP long now uses the same follow law as nap-dev. One lead controller replaces the old stacked follow path. A far gap closes softly instead of rushing up. **Gap Lock** (Settings → NAP → Driving Mannerisms, default **Off**): hold the engage stalk toward you for 2 seconds to keep the current radar gap in meters, even if long is paused. That locked distance beats MAX. A **LOCK** chip stays under MAX; “Gap lock engaged” shows for about 2 seconds. A stalk tip, cancel, brake, or One-Pedal pause returns to Follow Distance. Firm lead braking and regen-at-the-rail match nap-dev. Roundabout steering, dash, the speed-sign reader, lateral-only changes, and the map offset / frontage behavior already on this branch are unchanged. No panda flash.
+nap-release is the drivable backup: this promotes nap-dev through #301 (the low-visibility glare fix driven Oct 10, route 0000017c). #302 (cone widen) and #303 (camera cone log) are not included. Neither has been driven.
+* **Longitudinal:** the unified lead-follow stack and gap lock, as already on nap-release, plus:
+  * farm close and cut-in hold (#286)
+  * far lead braking only when it is in our path (#279)
+  * short One-Pedal gas blips ignored, MAX restored on roundabout exit (#289)
+  * crossing or turning car slow-and-go (#299)
+  * no logged long command while the brake is down (#288)
+* **Steering:**
+  * one stalk pull engages lateral and longitudinal together (#280)
+  * push to take steering, release to give it back (#287)
+  * a helping push or a roundabout input yields steering instead of disengaging (#290)
+  * engage recovery and steering return after a turn (#284)
+  * low-visibility back-off that doesn't fade in turns and never zeroes steering (#281, #293, #301)
+  * turn geometry and turn-in delay
+  * lane-change lock
+  * wheel-resume gate
+* **Cones:** Hold my line, armed by a wheel push only (#282, #292).
+* **Obstacles:** the obstacle chime for animals, people and solid debris (#283, #285, #291, #294, #298).
+* **Comm fixes:** the obstacle scan folded into radard (#285) and a 10 s deviceState silence window (#295).
+* **Curve follow:** forced off on release (`common/nap_release.py`, ignores NAPCurveFollow even if set; there is no toggle). Bends use CurveMaxHold exactly as before. Curve follow stays shadow on nap-dev while it is retuned.
+* **nap_dash:** the phone dashboard (:7070, Params and Software).
+* **Hotspot:** comma settings on the Tesla hotspot (#297) with the 100.99.9.x MCU subnet. Software tab Check / Download / Install & reboot (#300).
+* **Force Offroad:** the confirm screen asks Yes/No only while the car is in Drive and moving (vEgo > 0). Parked, in another gear, or stopped, it goes offroad at once with no prompt.
+* **Not on release** (code kept, switched off in `common/nap_release.py`):
+  * speed sign reader: speedsignd isn't started, its toggles are hidden and there's no SIGN plate
+  * Roundabout Steering Assist: forced off, toggle hidden
+  * cone-line wouldSteer: logged as 0
+* No panda flash.
 
-NAP Hypermile (2026-09-12)
+NAP gap lock (2026-10-05)
 ========================
-* Hypermile On + Step Down Off no longer snaps Map Speed Offset to a flat **−5** (that dropped town posted **30 → 25**). Eco offset is live from the posted/OSM limit: **0** at/under 50 mph so 30 stays 30 and 50 stays 50; linear 0 → −8 from 50 to 80 (65 → 61); **−8** at 80 (→72) and capped −8 above (90 → 82). **Step Down On** uses the same 50→80 scale, just larger: **0** at/under 50 (town 30 stays 30), **−15** at 80 (→65), cap −15 above (90 → 75). Replaces eco, no stack, no flat −15 on town limits. **Maps-only:** eco / Step Down apply only with a known OSM/posted limit; maps off, no match, or unknown posted → no invented drop (same as sticky MAX). Off still restores the saved offset slider. Early lookahead / Accel 1 / stalk 1–5 / 50 mph follow split / curve hold / lead-close / soft-lat unchanged. Not a nap-release change.
+* Pre-AP, default Off (`NAPGapLock`). Hold the engage stalk toward you for 2 seconds to keep the current radar gap (8–80 m) instead of the time gap. Long can be on, paused, or not yet taken; a finished hold resumes it. Same follow law, a custom distance. The 3X shows the lock while it is on. A tip, cancel, brake, or One-Pedal pause returns to Follow Distance. Another 2 second hold stores a new distance. No panda flash.
 
-NAP Hypermile Hill Climb (2026-09-13)
+NAP release firm lead brake when the gap opens or the lead leaves the lane (2026-09-23)
 ========================
-* Settings → NAP → Driving Mannerisms → **Hill Climb** (default **On**, hidden/inert unless Hypermile is On). IMU pitch (`orientationNED[1]`) raises Accel 1 climb authority on a real uphill so Hypermile does not sag under HUD MAX, and eases lightly on a flattening crest / downhill. **Maps-elevation lookahead is NOT included.** Never raises MAX. Lead / MPC hard brake still win. Soft-lat, blinker, sticky MAX, Step Down, lead-close, DM unchanged. Not a nap-release change.
+* Pre-AP: a slightly negative lead acceleration no longer holds a full brake when the car ahead is pulling away with gap left (Scallywag 09:57 and 10:05). That firm brake now needs a real close — still coming together, a closing residual, or already inside the follow gap. After a short run of the gap opening, the command publishes the mild ease (−0.22), not a zero coast and not the full brake. A lead that slides out of the lane (about 2.5 m off the path) with gap still left does the same (08:57:50–52). An on-path close, including a hard brake for a slowing lead, stays firm. A broken construction path is pickier about starting a new lead that is already a couple of meters to the side. No panda flash.
 
-NAP curve MAX (2026-09-12)
+NAP City/Hwy follow follows MAX, near-FD coast cliffs floor (2026-09-23)
 ========================
-* Sharp curve: still slow for a comfortable corner (`limit_accel_in_turns` + a temporary lat-accel MAX cap). Snapshot HUD MAX / sticky at entry; after the bend (lat accel / steer straight-ish) restore that pre-curve set. Do not permanently bounce MAX down through a turn — Hypermile eco −5 (posted 60 → steady 55) must not replace a pre-curve MAX of 60. Step Down, lead-close, soft-lat, and blinker-keep-long unchanged.
+* City vs highway Follow Distance now follows **MAX**, for both the stalk bump and the live gap. **City** when MAX is under 50 mph. **Highway** when MAX is 50 or higher (exactly 50 is highway), including while the car is still coming up to that set speed and while it slows under a highway MAX. Traveled speed is used only when MAX is unset. A first-detent bump steps that band. A full press still nudges MAX. Slowing from highway speed under MAX 75 no longer opens the larger city gap.
+* Near Follow Distance, a one-frame hard brake while the plan is still coasting (gap only a few meters long of the set follow, closing under about 1 m/s, lead not braking) is held to the mild ease instead of a full dump. A real brake for a slowing lead ahead — closing up, lead braking, or the firm-match path — stays firm. Near-bumper, forward collision warning, and a stop request stay firm. No panda flash.
 
-NAP follow-smooth mid-gap rematch (2026-09-22)
+NAP stalk tip writes the matching City or Highway Follow Distance (2026-09-23)
 ========================
-* Pre-AP comfort on a held radar lead: mid-gap Accel rematch no longer pulses while still slowly closing (~0.8–2.0 m/s, slack 12–50 m) unless a same-speed / opening catch-up is already latched (100 m start / too-close recovery still Accel through that band; latch also clears settle so a matched 0–25 m hold cannot freeze rematch while the gap is wrong). A *settled* follow that opens or hunts is not catch-up. Ceiling is a trickle (~0.10), not Accel 1–10. Slack > 50 still Accel. After acquire, small ±a chatter slews both ways so +0.25 ↔ −0.02 cannot flip gas↔regen — catch-up / too-close recovery skips that slew. When planner aTarget is ~0, VirtualDAS cannot dump firm regen (ef 10:18:42: plant −1.23 then rematch +0.40) — effort floor is MILD −0.22. Grade / pitch hold, rapid / near-bumper / FCW / #222 residual-close / planner ≤ −0.5 stay full −a/+a. Port of nap-dev #224. No panda flash.
+* Pre-AP stalk **bump** (first detent, 1 mph) steps Follow Distance 1–7 on the matching band. **Highway** when ego is above 50 mph, or whenever MAX is above 50 (a bump while still accelerating up to a highway set speed stays on Highway, even under 50). **City** only when ego is at or under 50 mph and MAX is also at or under 50. HUD **Follow Distance: N** shows that band. Full press (2nd detent / 5 mph) still nudges MAX. Live follow blend (hysteresis around 50, highway follow from about 30 mph with a lead and MAX above 50) is unchanged. No panda flash.
+
+NAP follow-smooth mid-gap rematch (2026-09-20)
+========================
+* Pre-AP comfort on a held radar lead: mid-gap Accel rematch no longer pulses while still slowly closing (~0.8–2.0 m/s, slack 12–50 m) unless a same-speed / opening catch-up is already latched (100 m start / too-close recovery still Accel through that band; latch also clears settle so a matched 0–25 m hold cannot freeze rematch while the gap is wrong). A *settled* follow that opens or hunts is not catch-up. Ceiling is a trickle (~0.10), not Accel 1–10. Slack > 50 still Accel. After acquire, small ±a chatter slews both ways so +0.25 ↔ −0.02 cannot flip gas↔regen — catch-up / too-close recovery skips that slew. When planner aTarget is ~0, VirtualDAS cannot dump firm regen (ef 10:18:42: plant −1.23 then rematch +0.40) — effort floor is MILD −0.22. Grade / pitch hold, rapid / near-bumper / FCW / #222 residual-close / planner ≤ −0.5 stay full −a/+a. No panda flash.
 
 NAP skip mild floor on closing / near-gap braking lead (2026-09-20)
 ========================
 * Pre-AP: `#216` kept the MILD −0.22 floor until confirmed rapid ≥ 6 / near-bumper / FCW, so a held lead that hard-braked (closing 1.8→4.4, aLead ~−1, dRel 38→25) never escaped slight-lift. Soft-limit now skips when residual close (worsened beyond ego a, including a planner-frame Δv that is smaller than the 0.15 rise gate) or measured aLead shows brake on an owned / path-synced lead. That also unlocks match-aLead (not `k·v_rel` dump). Closing ≥ 1.5 still reacts, including a cut-in. Matched / slow-close and large-slack e4 stay MILD / #218 glide. Map decel above MAX still mins in on a same-speed lead. Firm 0.55 / full hard-brake still wait on the rapid confirm. Rapid gate stays 6. No panda flash.
+
+NAP roundabout detect + speed ease + outer bias (2026-09-20)
+========================
+* Map `junction=roundabout` (or a compact closed circulating way already in the OSM pack) ~200 m out — not a big steer, and not every sharp town corner / signalized cross. Kinematic decel toward **15–20 mph** (OSM ring maxspeed when present, often 20) so 40–45 mph plans **a ≤ −1.0** until near ring speed; `aTarget` stays ≤ 0 in the funnel (no +a after a lead clears). Long enable inside the funnel applies full ease immediately. ~3.2 m outer path bias on entry + circulating (right in RHT / US) to counter a ~3 m inside cut. Yield-before-merge / continue-circulate / UI chip are later. No panda flash.
 
 NAP matched-speed glide + earlier settle (2026-09-19)
 ========================
@@ -40,11 +76,11 @@ NAP lead acquire slew + small MPC bite soften (2026-09-19)
 
 NAP town look-ahead for reverse-digitized / short first-way 30s (2026-09-19)
 ========================
-* Map Lookahead Early: `nextSpeedLimit` now arms for along-route town drops when OSM digitized the street opposite travel, and when the first 30 piece is only ~250 ft but the contiguous same-limit run is the real town. Side-road / stub blips under ~250 ft still ignored. Port of nap-dev #199. No panda flash.
+* Map Lookahead Early: `nextSpeedLimit` now arms for along-route town drops when OSM digitized the street opposite travel, and when the first 30 piece is only ~250 ft but the contiguous same-limit run is the real town. Side-road / stub blips under ~250 ft still ignored. No panda flash.
 
-NAP ship #192 flash tip to nap-release (2026-09-18)
+NAP port of #192 flash tip onto nap-dev (2026-09-18)
 ========================
-* Tonight ship to **nap-release** of the stacked flash tip through **#192** (`c3570c957`). Twin of nap-dev #193. **No panda flash.**
+* Tonight ship to **nap-dev** of the stacked flash tip through **#192** (`c3570c957`). Same Pre-AP longitudinal behavior as `cursor/alead-opening-gate-bc6e`. No panda flash. Hypermile / Hill Climb / map-climb-owns-follow kept.
 * **#187** Accel-owns-catch-up + MPC mild floor + city/hwy Follow Distance.
 * **#188** skip MPC −MILD floor when closing / lead braking; far mild close must not steal cruise +a.
 * **#189** analog `DI_pedalPos` as `gasDEPRECATED`; SET-while-gas arms long.
@@ -54,28 +90,16 @@ NAP ship #192 flash tip to nap-release (2026-09-18)
 
 NAP One-Pedal SET-while-gas lift keeps long (2026-09-18)
 ========================
-* **One-Pedal Long On:** double-SET (or one SET) **while the foot is already on gas**, then lift, must **keep `enableLongControl`**, hold MAX, and **ACQUIRE** the interceptor on that falling edge — not dive into stock Tesla one-pedal regen. #185's pause-gate DI **> 1** extra kick treated lift-through DI 1–2 as a from-rest tip-in (phantom rising edge after stock `gasPressed` fell), dropped long, zeroed cruise speed, and left `aTarget` climbing while `aEgo` was stock regen (~−1.5). Log: `1c95345a3286a5db|000000dc--9b28358130` 13:16:14 (SET→lift **197 ms**), 13:15:30 (7.5 s regen hole), 13:17:19 success when DI dropped through 1 in one sample. **Now:** orig kick takes `interceptor_di`; `_one_pedal_armed_with_gas` holds lift-to-start until DI is fully off; overlay skips extra kick on falling edge / armed. Light tip-in after a real rest still pauses. Toggle default **Off**. Port of nap-dev #196. No panda flash.
+* **One-Pedal Long On:** double-SET (or one SET) **while the foot is already on gas**, then lift, must **keep `enableLongControl`**, hold MAX, and **ACQUIRE** the interceptor on that falling edge — not dive into stock Tesla one-pedal regen. #185's pause-gate DI **> 1** extra kick treated lift-through DI 1–2 as a from-rest tip-in (phantom rising edge after stock `gasPressed` fell), dropped long, zeroed cruise speed, and left `aTarget` climbing while `aEgo` was stock regen (~−1.5). Log: `1c95345a3286a5db|000000dc--9b28358130` 13:16:14 (SET→lift **197 ms**), 13:15:30 (7.5 s regen hole), 13:17:19 success when DI dropped through 1 in one sample. **Now:** orig kick takes `interceptor_di`; `_one_pedal_armed_with_gas` holds lift-to-start until DI is fully off; overlay skips extra kick on falling edge / armed. Light tip-in after a real rest still pauses. Toggle default **Off**.
 
 NAP Accel-owns-catch-up + city/hwy Follow Distance (2026-09-17)
 ========================
 * **Accel 1–10 owns all +a**, including lead gap-close: same Mannerisms gradient as open-road / MAX climb (Accel 1 baby-steps the last ~5 mph; Accel 7–10 stay brisk). No separate 0.20/0.30/0.50 catch-up curve. Close-cap covers the Bosch window (**~200 m**) so a 160–180 m lead does not punch cruise 1.6. Brief hold on `leadOne` flicker. **Hard/rapid regen** (0.55) waits for **4 consecutive** in-window samples (~0.20 s); mild ease is immediate. **Non-rapid MPC −a is floored at mild (~0.22)** so min(MPC, overlay) cannot dump ~−2.5; FCW / rapid / a real stop still own danger.
-* **City vs highway Follow Distance** on Driving Mannerisms (TICI + mici): City (<~50 mph) and Highway (>~50 mph), 1–7. Fluid blend with hysteresis around 50 — not a step. Dropping below 50 while following, ego is slightly slower than the lead so the gap opens to city FD, then holds. Rising above 50, t_follow creeps toward hwy FD. Only with a valid lead + long engaged. Migrates from single `NAPFollowDistance`. **Not Hypermile** — available whenever Mannerisms FD is used. Stalk tip steps the active band. No panda flash.
+* **City vs highway Follow Distance** on Driving Mannerisms (TICI + mici): City (<~50 mph) and Highway (>~50 mph), 1–7. Fluid blend with hysteresis around 50 — not a step. Dropping below 50 while following, ego is slightly slower than the lead so the gap opens to city FD, then holds. Rising above 50, t_follow creeps toward hwy FD. Only with a valid lead + long engaged. Migrates from single `NAPFollowDistance`. **Not Hypermile** — available whenever Mannerisms FD is used. Stalk tip steps the active band. Hypermile / Hill Climb / map-climb-owns-follow kept. No panda flash.
 
-NAP One-Pedal pause light tip-in (2026-09-17)
+NAP follow soften + One-Pedal pause DI>1 (2026-09-17)
 ========================
-* **One-Pedal Long On:** pause gate is interceptor DI **> 1** (stock `gasPressed` stays DI **> 2**). A light tip-in now pauses long; foot at coast (0–1) still does not. SET-while-gas, lift-does-not-resume, and one-SET resume unchanged. Ships with the #181 follow stack (lead-close **0.20 / 0.30 / 0.50**, mild ease 0.22, rematch trickle). No panda flash.
-
-NAP follow ease/rematch soften (2026-09-17)
-========================
-* Pre-AP follow on the #180 stack: **mild / normal closes stay light** (ease off throttle, then ~0.22 m/s² regen) instead of ramping every close to the **0.55** let-off near Follow Distance. **Rapid / dumping** only (`v_rel` ≥ ~13 mph) still uses the firmer 0.55 path. Overlay **slew both ways** so backing off is not a regen→Accel slam; when the gap is **opening** near Follow Distance, rematch **+a trickles** (0.08 opening / 0.12 slow rematch). Large-gap lead-close cap **0.20 / 0.30 / 0.50** (Accel 1/5/10) and One-Pedal SET resume are unchanged. MPC / FCW danger still wins. No panda flash.
-
-NAP lead-close accel cap (2026-09-17)
-========================
-* Pre-AP: closing on / coming up behind a radar lead no longer uses the cruise **1.6–0.6 m/s²** punch (Adaptive Accel used the full profile on a large gap; map Accel 1–10 only gated MAX-rise climb). Catch-up **+a** is now `lead_close_accel_ms2`: **0.20** at Accel 1, **0.30** at 5, **0.50** at 10, inside ~140 m. Still closes onto the selected Follow Distance. MPC danger / hard brake, sticky MAX, soft-lat, One-Pedal Long, and DM unchanged. **Not ported:** Hypermile, NAP Dash. Settings → NAP → Driving Mannerisms → Acceleration. Same close-cap as nap-dev (#106).
-
-NAP One-Pedal SET after gas pause (2026-09-17)
-========================
-* **One-Pedal Long On** (default still **Off**): after a from-rest gas pause, **one stalk SET** restores long at held MAX again. SET with the foot still on the accelerator clears the pause latch and arms lift-to-start (A+B / A3) — the long controller no longer re-latches from `_saw_long_without_gas`. Lift alone still stays paused. At a stop, SET arms wait-for-gas (clears the One-Pedal latch) like brake pause. Brake one-SET resume and in-session double-SET take-speed-now unchanged. No panda flash.
+* Port of the nap-release **#181 stack** plus pause sensitivity: **mild / normal closes stay light** (~0.22 m/s²) instead of the TTC-floor 0.26 / short-TTC 0.55 path. **Rapid / dumping** only (`v_rel` ≥ ~13 mph) still uses 0.55. Overlay **slew both ways**; near-gap opening rematch **+a trickles** (0.08 / 0.12). Large-gap lead-close cap stays **0.20 / 0.30 / 0.50**. **One-Pedal SET resume** (pause latch is one SET, including SET-while-gas; opendbc skip_resume). Pause gate interceptor DI **> 1** (stock gasPressed stays **> 2**). Hypermile / Hill Climb / map-climb-owns-follow unchanged. No panda flash.
 
 NAP revert tip-brake soft-glide (2026-09-15)
 ========================
@@ -83,47 +107,66 @@ NAP revert tip-brake soft-glide (2026-09-15)
 
 NAP One-Pedal Long pause holds through lift (2026-09-15)
 ========================
-* Follow-up to #171 after on-car: **One-Pedal Long On + long already holding + gas takeover** still **pauses** long (lat stays). **Lift / coast / regen must not resume** — Justin took over at ~60, decelerated to ~50, then long climbed back (A+B / A3). #171 only latched on a single interceptor `gasPressed` rising edge; stock `gasPressedOverride` ending still makes `CC.longActive` true, and a missed/soft edge left `enableLongControl` true so lift ACQUIREd. **Now:** sticky `_one_pedal_had_long_at_rest` + controller `_saw_long_without_gas` latch any gas after long was holding with the foot off (not only that one edge). Latch holds `enableLongControl` false and blocks interceptor ACQUIRE until a **single SET**. **Keep:** foot already on the throttle + SET still arms long; lift starts A+B/A3. Brake pause resume stays as today (firm/stock RELEASE). Toggle default **Off**.
+* Follow-up to #171 after on-car: **One-Pedal Long On + long already holding + gas takeover** still **pauses** long (lat stays). **Lift / coast / regen must not resume** — Justin took over at ~60, decelerated to ~50, then long climbed back (A+B / A3). #171 only latched on a single interceptor `gasPressed` rising edge; stock `gasPressedOverride` ending still makes `CC.longActive` true, and a missed/soft edge left `enableLongControl` true so lift ACQUIREd. **Now:** sticky `_one_pedal_had_long_at_rest` + controller `_saw_long_without_gas` latch any gas after long was holding with the foot off (not only that one edge). Latch holds `enableLongControl` false and blocks interceptor ACQUIRE until a **single SET**. **Keep:** foot already on the throttle + SET still arms long; lift starts A+B/A3. Brake pause resume stays as today (firm/stock RELEASE). Toggle default **Off**. **nap-dev only — no nap-release twin until Justin signs off.**
 
 NAP One-Pedal Long SET-to-resume latch (2026-09-15)
 ========================
-* Follow-up to #170 after on-car: **One-Pedal Long On + long already active + gas from rest** still **pauses** long (lat stays, not `USER_DISABLE`). That pause is now a **held latch** (`_one_pedal_pause_latched`) until a **single SET**. **Lift alone must not resume** long / re-ACQUIRE — stock `gasPressedOverride` ending makes `CC.longActive` true again; the latch blocks interceptor ACQUIRE and re-drops long if it comes back without SET. **Keep:** foot already on the throttle + one SET (or two) still arms long; lift starts A+B/A3. Brake pause resume stays as today (this latch is gas-pause only). Toggle default **Off**.
+* Follow-up to #170 after on-car: **One-Pedal Long On + long already active + gas from rest** still **pauses** long (lat stays, not `USER_DISABLE`). That pause is now a **held latch** (`_one_pedal_pause_latched`) until a **single SET**. **Lift alone must not resume** long / re-ACQUIRE — stock `gasPressedOverride` ending makes `CC.longActive` true again; the latch blocks interceptor ACQUIRE and re-drops long if it comes back without SET. **Keep:** foot already on the throttle + one SET (or two) still arms long; lift starts A+B/A3. Brake pause resume stays as today (this latch is gas-pause only). Toggle default **Off**. **nap-dev only — no nap-release twin until Justin signs off.**
 
 NAP One-Pedal Long (2026-09-15)
 ========================
-* Settings → NAP → **Driving Mannerisms** → **One-Pedal Long** (`NAPOnePedalLong`, default **Off**). Pedal-interceptor Pre-AP only. **On + OP long already active + accelerator rising from rest** (interceptor `gasPressed`, not `DI_pedalPos`): **pauses longitudinal the same way brake does today** — long lets go, lateral stays, sticky MAX, one SET resumes, no `pedalCruiseDisabled` chime. Not `USER_DISABLE` / full session cancel / take-control (`EventName.pedalPressed` is suppressed while this toggle is On, even if DisengageOnAccelerator is On). **SET while the foot is already on the accelerator** (one-stalk or two-stalk) still **arms long**; lift starts the stock A+B grace expire + aEgo seed / A3 climb — One-Pedal Long does not pause or block that handoff. After a from-rest pause the interceptor **RELEASEs** (`ENABLE=0`, command=0) and **stays RELEASED on lift** so Tesla physical pedal / stock lift-regen is the one-pedal path (same envelope as `REGEN_MAX` ≈ −1.5 m/s²). Resume-long after pause matches brake pause (sticky MAX + one SET). Limits: do **not** re-ACQUIRE on lift after a from-rest pause (that is the ENABLE 0↔1 chatter from earlier `GAS_COMMAND` overlays), do **not** rewrite driver pedal DI while ENABLE=1, cannot invent friction beyond interceptor regen. **Off** = stock: gas overrides then A+B/A3 resume climb. Standstill wait-for-gas resume, A+B/A3 engage-while-gas, firm brake cancel, FCW/AEB / #163–#167 unchanged.
+* Settings → NAP → **Driving Mannerisms** → **One-Pedal Long** (`NAPOnePedalLong`, default **Off**). Pedal-interceptor Pre-AP only. **On + OP long already active + accelerator rising from rest** (interceptor `gasPressed`, not `DI_pedalPos`): **pauses longitudinal the same way brake does today** — long lets go, lateral stays, sticky MAX, one SET resumes, no `pedalCruiseDisabled` chime. Not `USER_DISABLE` / full session cancel / take-control (`EventName.pedalPressed` is suppressed while this toggle is On, even if DisengageOnAccelerator is On). **SET while the foot is already on the accelerator** (one-stalk or two-stalk) still **arms long**; lift starts the stock A+B grace expire + aEgo seed / A3 climb — One-Pedal Long does not pause or block that handoff. After a from-rest pause the interceptor **RELEASEs** (`ENABLE=0`, command=0) and **stays RELEASED on lift** so Tesla physical pedal / stock lift-regen is the one-pedal path (same envelope as `REGEN_MAX` ≈ −1.5 m/s²). Resume-long after pause matches brake pause (sticky MAX + one SET). Limits: do **not** re-ACQUIRE on lift after a from-rest pause (that is the ENABLE 0↔1 chatter from earlier `GAS_COMMAND` overlays), do **not** rewrite driver pedal DI while ENABLE=1, cannot invent friction beyond interceptor regen. **Off** = stock: gas overrides then A+B/A3 resume climb. Standstill wait-for-gas resume, A+B/A3 engage-while-gas, firm brake cancel, FCW/AEB / #163–#167 / #169 unchanged. **nap-dev only — no nap-release twin until Justin signs off.**
 
-NAP 2026-09-15 test group (2026-09-15)
+NAP lead-approach earlier normal-close ease (2026-09-15)
 ========================
-* **#163 Safety / knockoff:** Pre-AP `ExcessiveActuationCheck` 2× → **3× ISO** (lateral 6.0 → **9.0 m/s²** ~0.92 g, long accel 4.0 → **6.0**, decel −7.0 → **−10.5**). Faster-but-legal ramps stay in; a real panic swerve / panic stop still trips. Other fingerprints stay at 2×. Locationd / camera / panda ISO steer-command limits unchanged.
-* **#163 Leave-Drive mismatch:** While not in Drive, panda `pcm_cruise_check(false)` on every non-Drive 0x118 and selfdrived holds `mismatch_counter` / `cruise_mismatch_counter` at 0 for the whole R/P period. In-Drive mismatch checks unchanged. Drive SET while `!controls_allowed` is last-resort only. **Flash the panda** after this lands (rebuild + reboot so pandad flashes; Python-only pull is not enough).
-* **#165 Quiet reverse:** Pre-AP `reverseGear` stays `USER_DISABLE` + `NO_ENTRY` (OP off, cannot re-engage in Reverse) but **silent** — no ImmediateDisableAlert / take-control-immediately. Quiet Reverse overlay OK. Other cars keep the stock alarm.
-* **#164 Driver monitoring:** Looking-away / distraction / eyes-off-road DM alerts do **not** fire below **2 mph** (`DM_LOOKAWAY_GATE_MPH`), including creeping at a light. Sim Look / FAI mutex and above-gate 3 / 5 / 11 s are unchanged. nap-release toggles still default **Off**.
-* **#167 Lateral mannerisms:** Soft-lat On `lat_reenable_inhibited` is blinker_paused **OR** `v_ego < 10 mph`. Keep control if lat is still on; already yielded / blending stay yielded. Soft-lat Off / ALC / long unchanged.
-* **Not ported:** Force Offroad CC handoff (#129/#130), auto-wipers, Hypermile, #169 lead-approach ease.
+* Pre-AP lead-approach **normal closes** ease **earlier and a bit stronger**, so Justin does not ride up then take a late 0.55 / MPC bite. Comfort peak stays **0.55** (Early map). FCW / AEB / MPC hard brake untouched. Follow Distance stalk **1–7** still owns the settle gap (maneuver Follow 1 stays **23.5 m ± 0.5**). Tip-brake glide (#157) and #163/#164/#165/#167 are not this path.
+* **Why it was soft:** `a = −v_rel² / (2 · slack)` at far slack is a nibble (|a| ~0.06–0.13). Catch-up +a ignored that nibble, so ego kept pulling in until the 0.55 peak. **Tune (normal close):** when time-to-follow-gap (`slack / v_rel`) is **≤ 20 s** *and* kinematic |a| is already past **0.15**, command at least **0.26** m/s² (or `v_rel / 12` if smaller) so regen is felt. Do **not** boost a far/catch-up nibble — that parked Follow 1 ~0.6 m long of the selected gap. Bleed tapers as `v_rel` drops. Far slack (TTC **> 20 s**, or |a_kin| still a nibble) stays the light kinematic, not a hard early brake.
+* **Rapid / dumping:** `v_rel ≥ 6.0` m/s (~13 mph) or TTC **≤ 8 s** keeps kinematics up to the **0.55** peak (already above the light floor). Clear-close skip is **2.0** m/s (~4.5 mph, was 2.5) so a 5 mph close starts at first reliable radar. Need-path head-start **28 s** (was 24). A nibble must not steal Accel-1 rematch / Follow 1–7 catch-up. Enter/exit **0.55 / 0.20**, slew **0.05**/frame, Bosch **200 m** ceiling unchanged. **nap-dev only — no nap-release twin until Justin signs off.**
 
-NAP gas-lift handoff + tip-brake comfort ramp (2026-09-14)
+NAP no lat re-engage below 10 mph (2026-09-15)
 ========================
-* **#152 A+B:** After engage-on-gas then lift (or a gas override while software long is already on), Pre-AP no longer restarts the 0.5 s `ENGAGE_GRACE` a=0 floor, and VDAS is seeded from the last non-negative `aEgo` (MAX-capped) instead of `commanded_accel=0`. Lead hard decel / FCW / should-stop and brake still win. First engage without gas is unchanged (grace still ramps from 0).
-* **#153 A3 only:** After gas→long handoff, open-road VDAS seed is `max(aEgo, planner climb)` so Mannerisms **Acceleration** 1–10 (`NAPMapSpeedAccel`) drives climb toward HUD MAX — not only the post-lift `aEgo`. Personality / MAX still caps. Lead / FCW / should-stop (`actuators.accel < 0`) still seed 0.
-* **#157 tip-brake comfort ramp (reverted):** Silent long pause classified digital Applied like the stalk and ran a ~2.5 s −0.30 comfort-shaped regen ramp after a short tip. **Reverted** — Justin asked for firm/stock brake cancel again (#156-era immediate RELEASE). A+B / A3 gas-lift climb stays.
-* **Not ported:** soft R1 0.75 s regen fade / coast-then-bite (#153 R1, #154; reverted by #156). No `GAS_COMMAND` rewrite, no PostEngageCoast / climb latch / pedal-hold, no locationd or safety change, no Force Offroad CC handoff.
+* Soft-lat **On**: the driver-turn blinker **no re-enable** gate (`lat_reenable_inhibited`) also applies whenever **v_ego < 10 mph** (`LAT_REENABLE_MIN_V_EGO_MPH`, strictly below, mph→m/s). Keep control if we still have it. Already yielded / blending / lat-down stay yielded — do not finish a take-back blend. After speed crosses 10 mph, resume is yield + the normal **0.15 s** hands-off confirm + **1 s** blend. Blinker-on still blocks take-back at any speed. Above 10 mph with the blinker off, prior resume is unchanged. Soft-lat **Off**, ALC tip/hold, long / follow, FCW / AEB, and #163/#164/#165 are not this path. **nap-dev only — no nap-release twin until Justin signs off (batching a release group).**
+
+NAP DM look-away pause below 2 mph (2026-09-15)
+========================
+* Looking-away / distraction / eyes-off-road DM alerts do **not** fire below **2 mph** (`DM_LOOKAWAY_GATE_MPH`), even if **Simulate Look** and/or **False Alert Ignore** are On. Same stock standstill pause (hold before the green prompt; recover if already orange), plus creeping at a light — Tesla `CS.standstill` is only true when fully stopped, so 1 mph still nagged. Toggles stay as set; this is a speed gate, not Sim Look / FAI Off. Above 2 mph, Sim Look / FAI / stock 3 / 5 / 11 s are unchanged. FCW / AEB / hard cancels (hands-on ≥ 2 / stalk / door / reverse) unchanged. **nap-dev only — no nap-release twin until Justin signs off after a road test.**
+
+NAP tip-brake soft-glide (2026-09-14)
+========================
+* **Tip-brake comfort ramp (reverted):** Pre-AP silent long pause classified digital Applied like the stalk. A **short tip** (Applied < **0.30 s**, then lift, not firm `aEgo`) that knocked software long off kept interceptor ENABLE and ran a **comfort-shaped regen ramp** over **~2.5 s**: gentle first (`a ≈ −0.30`), then quadratic ease-in to `REGEN_MAX`. **Reverted — Justin asked for firm/stock brake cancel again** (same as #156). One-Pedal Long (#170–#172) is the accelerator path and stays.
+
+NAP revert soft brake-cancel regen (2026-09-14)
+========================
+* **R1 reverted:** Pre-AP silent long pause brake cancel is firm/stock again. When `real_brake_pressed` drops software long, interceptor **RELEASEs immediately** to Tesla regen — no tip/hold classifier, no 0.50 s coast, no 0.75 s 0→stock ramp. On-car feedback: engage/accel (A+B + A3) felt better; the soft cancel made braking worse. **Kept:** #152 A+B (expire engage grace on gas→long + seed last non-negative `aEgo`) and #153 A3 (`max(aEgo, planner climb)` so Mannerisms Acceleration 1–10 drives open-road climb). Full cancel / FCW / AEB / hard lead unchanged. No `GAS_COMMAND` rewrite, no PostEngageCoast / climb latch / pedal-hold, no locationd or safety change. **Current again** after #157 soft-glide was also reverted.
+
+NAP regen ramp on light brake-cancel (2026-09-14)
+========================
+* **R1 follow-up (reverted):** Pre-AP silent long pause: a **short/light** brake tap that knocks software long off now **ramps interceptor regen** from coast (`accel_request=0`) to stock (`REGEN_MAX` −1.5 m/s²) over **0.75 s** (tunable 0.5–1.0), then RELEASEs. ENABLE stays on; VDAS interpolates commanded accel so pedal DI walks into regen. **Not** a 0.50 s coast plateau then sudden stock bite, and **not** full regen on the first frame. Distinguishes tip vs hold like the stalk: Applied shorter than **0.30 s** without firm `aEgo` is a tip; a **held** pedal or **deeper** decel (`aEgo <= −1.5`) RELEASEs immediately so friction + stock regen stay firm. A3 Accel 1–10 gas-lift climb from #153 is unchanged. Full session cancel / FCW / AEB / hard lead braking unchanged. No `GAS_COMMAND` DI rewrite, no PostEngageCoast / climb latch, no locationd change. **Reverted — Justin asked for firm/stock brake cancel.**
+
+NAP soft regen + gas-lift Accel climb (2026-09-14)
+========================
+* **R1 (reverted):** Pre-AP silent long pause: a **short/light** brake tap that knocks software long off now eases toward **coast** for **0.50 s** (tunable 0.3–0.8) before the interceptor RELEASEs to stock Tesla regen. Distinguishes tip vs hold like the stalk: Applied shorter than **0.30 s** without firm `aEgo` is a tip; a **held** pedal or **deeper** decel (`aEgo <= −1.5`) RELEASEs immediately so friction + stock regen stay firm. Full session cancel / FCW / AEB / hard lead braking unchanged. **Superseded, then fully reverted** (coast/ramp both felt worse than stock regen).
+* **A3 (kept):** After gas→long handoff, open-road VDAS seed is `max(aEgo, planner climb)` so takeover uses Mannerisms **Acceleration** 1–10 (`NAPMapSpeedAccel`) toward MAX — not only the post-lift `aEgo`. Personality / MAX still caps. Lead hard decel / FCW / should-stop (`actuators.accel < 0`) still seed 0. No `GAS_COMMAND` DI rewrite, no PostEngageCoast / climb latch. **nap-dev only — no nap-release twin until Justin signs off.**
+
+NAP gas-lift long handoff (2026-09-13)
+========================
+* After engage-on-gas then lift (or a gas override while software long is already on), Pre-AP no longer restarts the 0.5 s `ENGAGE_GRACE` a=0 floor, and VDAS is seeded from the last non-negative `aEgo` (MAX-capped) instead of `commanded_accel=0`. Lead hard decel / FCW / should-stop and brake still win. First engage without gas is unchanged (grace still ramps from 0). No `GAS_COMMAND` rewrite, no PostEngageCoast / climb-to-MAX / pedal-hold overlay, no panda or locationd change. **nap-dev only — no nap-release twin until Justin signs off.**
 
 NAP Acceleration settings placement (2026-09-13)
 ========================
-* Settings → NAP → **Driving Mannerisms** now has **Acceleration** 1–10 (`NAPMapSpeedAccel`, default 5). Same temperament as before: scales MAX climb / open-road accel feel (1 lazy → 10 quicker); map brake to a lower MAX stays Accel 5; lead still owns follow. Removed from Map Speed Limit so it sits with Adaptive Accel. Mannerisms order is accel feel → follow → soft lat; Map Speed is mode/offset/lookahead → refresh/download → status. Shorter settings copy. No longitudinal math change. Same as nap-dev.
+* Settings → NAP → **Driving Mannerisms** now has **Acceleration** 1–10 (`NAPMapSpeedAccel`, default 5). Same temperament as before: scales MAX climb / open-road accel feel (1 lazy → 10 quicker); map brake to a lower MAX stays Accel 5; lead still owns follow. Removed from Map Speed Limit so it sits with Adaptive Accel. Mannerisms order is accel feel → follow → soft lat → Hypermile; Map Speed is mode/offset/lookahead → refresh/download → status. Shorter settings copy. Hypermile still snaps/restores Accel 1. No longitudinal math change.
 
 NAP post-engage overlay stack revert (2026-09-13)
 ========================
-* Removed the whole post-engage overlay stack for driveability: climb-to-MAX / climb-sustain (#145, #147), last-pressed pedal hold (#143), and the 1 s speed-coast (#137). Those paths added delay and an intrusive climb/pedal/`ENABLE` rewrite that surged / pulsed. Handoff is stock OP long again (no `post_engage_coast.py` / `preap_post_engage_hold.py`). Will revisit later with a lighter approach. Locationd safety unchanged. Same as nap-dev.
+* Removed the whole post-engage overlay stack for driveability: climb-to-MAX / climb-sustain (#144, #146), last-pressed pedal hold (#142), and the 1 s speed-coast (#136). Those paths added delay and an intrusive climb/pedal/`ENABLE` rewrite that surged / pulsed. Handoff is stock OP long again (no `post_engage_coast.py` / `preap_post_engage_hold.py`). Will revisit later with a lighter approach. Locationd safety unchanged.
 
 NAP Follow Distance HUD hold (2026-09-13)
 ========================
-* Stalk Follow Distance toast is now **WARNING + PERMANENT**, held **1.5 s**, and a tip already at **1 or 7** still shows **Follow Distance: N** (`NAPFollowHudPending`). Fixes intermittent missing HUD when the one-frame WARNING poll lost to another alert (including DM nags) or a no-op write. Same idea as nap-dev.
+* Stalk Follow Distance toast is held **1.5 s** (WARNING + PERMANENT) and a tip already at **1 or 7** still shows **Follow Distance: N** (`NAPFollowHudPending`). Fixes intermittent missing HUD when the one-frame param poll lost to another alert or a no-op write.
 
 NAP Simulate Look full wipe restore (2026-09-13)
 ========================
-* **Simulate Look On** is again the pre–False Alert Ignore full looking-path wipe on the existing **1–3 s** cadence (no-face / uncertain / phone / pose / eye). The FAI split had narrowed it to a no-face glance that still let phone/pose/eye nag. **False Alert Ignore On** (Sim Look Off) stays phone-only soft-clear; pose/eye still drain. Mutex unchanged. Hard cancels (hands-on ≥ 2 / stalk / door / reverse) unchanged. nap-release defaults stay both **Off**. Same behavior as nap-dev (defaults differ).
+* **Simulate Look On** is again the pre–False Alert Ignore full looking-path wipe on the existing **1–3 s** cadence (no-face / uncertain / phone / pose / eye). The FAI split had narrowed it to a no-face glance that still let phone/pose/eye nag. **False Alert Ignore On** (Sim Look Off) stays phone-only soft-clear; pose/eye still drain. Mutex unchanged. Hard cancels (hands-on ≥ 2 / stalk / door / reverse) unchanged. nap-dev defaults stay Simulate Look **On** / FAI **Off**. Same behavior as nap-release (defaults differ).
 
 NAP Simulate Look / False Alert Ignore exclusive (2026-09-13)
 ========================
@@ -131,90 +174,164 @@ NAP Simulate Look / False Alert Ignore exclusive (2026-09-13)
 
 NAP False Alert Ignore (2026-09-13)
 ========================
-* Triple-tap NAP popup is now **Force Offroad**, **Simulate Look**, **False Alert Ignore** (third item). New `NAPDmFalseAlertIgnore` (default **Off** on nap-release; persistent like Simulate Look). While engaged and the toggle is On, false **phone/device** distraction (`phoneProb` / phone bit) soft-clears on the same random **(1.0 s, 3.0 s]** cadence. **Pose** and **eye** still drain and alert. Simulate Look no longer full-wipes `driver_distracted` (that was masking pose/eye); it only injects a no-face / uncertain glance. Both toggles stay Off until Justin enables them. Hands-on ≥ 2 / stalk / door / reverse unchanged.
+* Triple-tap NAP popup is now **Force Offroad**, **Simulate Look**, **False Alert Ignore** (third item). New `NAPDmFalseAlertIgnore` (default **Off** on nap-dev so it is not On with Simulate Look; persistent like Simulate Look). While engaged, false **phone/device** distraction (`phoneProb` / phone bit) soft-clears on the same random **(1.0 s, 3.0 s]** cadence so a false “Driver Distracted” can recover without a real glance. **Pose** and **eye** still drain and alert — no hold / no awareness reset while those are alarming. Simulate Look no longer full-wipes `driver_distracted` (that was masking pose/eye); it only injects a no-face / uncertain glance. Simulate Look On + False Alert Ignore Off = stock phone detection. Hands-on ≥ 2 / stalk / door / reverse unchanged. Not a nap-release default-On change.
+
+NAP Force Offroad stock-CC handoff (2026-09-13)
+========================
+* Pre-AP pedal / software long (`enableLongControl`): Force Offroad first shows a big on-road **Yes / No** (**Ready to resume steering control?**). No cancels the toggle and leaves assist as-is. Yes then holds `started` until stock Tesla CC is **ENABLED** at current speed (CANCEL toward STANDBY, drop OP long, SET_ACCEL). Avoids the hard regen bite when OP long dropped with nothing holding speed. Lat-only / stock-CC / not engaged: Yes still required on-road, then today's immediate offroad. Parked: no popup. On OP long engage, stock CC is canceled off if it was ENABLED or STANDBY so it does not fight the pedal. 2.5 s card / 3.0 s hardwared fallback if DI never takes SET (timeout starts only after Yes).
 
 NAP lead-follow comfort (2026-09-13)
 ========================
-* Pre-AP lead-approach enter is a bit higher so occasional **bump-pull** (regen bite → rematch → bite) at the follow gap is less chatty. Enter `v_rel` **0.55** m/s (~1.2 mph); exit stays **0.20** (a 0.12 exit parked far back of Follow Distance). Clear-close skip is **1.05** m/s so Accel-1 catch-up at 1.0 m/s / large slack stays +a. Comfort peak **0.55**, onset slew **0.05**/frame, slack gates, and immediate release stay. Still closes onto Follow Distance 1–7. MPC / FCW / danger braking unchanged. Same tune as nap-dev; Hypermile is not ported.
+* Pre-AP lead-approach enter is a bit higher so occasional **bump-pull** (regen bite → Accel rematch → bite) at the follow gap is less chatty. Enter `v_rel` **0.55** m/s (~1.2 mph); exit stays **0.20**. A far/gentle overlay nibble (|a| < **0.15**) must not steal Accel-1 catch-up / Follow Distance close; real ease and MPC 0/−a still use `min()`. Clear-close skip is **2.5** m/s (~5.6 mph). Comfort peak **0.55**, onset slew **0.05**/frame, slack gates, and immediate release stay. Still closes onto Follow Distance 1–7. MPC / FCW / danger braking unchanged.
 
 NAP Follow stalk tip vs full press (2026-09-13)
 ========================
-* Behind a radar lead, a Pre-AP full stalk press (through 1st detent to 2nd / **5 mph**) no longer also steps Follow Distance. Follow commits only when the lever returns to **IDLE** after a first-detent **tip** (1 mph) that never hit 2nd detent; that tip frame’s MAX is still undone. Raw `SpdCtrlLvr_Stat` / CruiseButtons distinguish UP_1ST vs UP_2ND (and DN). `buttonEvents` alone are not a tip. No lead: stalk is still MAX only. Same tip/hold Follow rule as nap-dev. Not Hypermile. HUD still **Follow Distance: N**.
+* Behind a radar lead, a Pre-AP full stalk press (through 1st detent to 2nd / **5 mph**) no longer also steps Follow Distance. Follow commits only when the lever returns to **IDLE** after a first-detent **tip** (1 mph) that never hit 2nd detent; that tip frame’s MAX is still undone. Raw `SpdCtrlLvr_Stat` / CruiseButtons distinguish UP_1ST vs UP_2ND (and DN). `buttonEvents` alone are not a tip — Pre-AP maps both detents to the same accel/decelCruise. No lead: stalk is still MAX only. Same tip/hold Follow rule as nap-release; Hypermile eco / Hill Climb / Step Down unchanged.
 
 NAP lead-approach earlier ease (2026-09-13)
 ========================
-* Pre-AP comfort ease now starts as soon as radar has **reasonable feedback** on a closing lead (`leadOne` valid and closing), not only near Follow Distance. Start ceiling **200 m** (usable Bosch; far tracks need `radar` + `modelProb` ≥ 0.5 — LeadData has no track age). Head-start **24 s**. Clearly closing (`v_rel` ≥ 1.0 m/s) eases even with large slack, still capped at **0.55** and slewed. Hysteresis from #122 stays. MPC / FCW unchanged. Same product as nap-dev; **Hypermile is not ported.**
+* Pre-AP comfort ease now starts as soon as radar has **reasonable feedback** on a closing lead (`leadOne` valid and closing), not only near Follow Distance. Start ceiling **200 m** (usable Bosch; far tracks need `radar` + `modelProb` ≥ 0.5 — LeadData has no track age). Head-start **24 s**. Clearly closing (`v_rel` ≥ 1.0 m/s) eases even with large slack, still capped at **0.55** and slewed. Hysteresis from #121 stays. Catch-up +a cap stays at 140 m. MPC / FCW / map climb vs lead (#118) unchanged. No brake-light feature.
 
 NAP lead-follow comfort (2026-09-13)
 ========================
-* Pre-AP lead-approach overlay is smoother on a slight grade: enter/exit **hysteresis** on radar `v_rel` / slack so regen does not chatter on/off around the follow gap, comfort peak |a| is **0.55** (Early map, was Normal 0.80), and more-negative overlay `a` slews at **0.05**/frame. Off / milder `a` is immediate. MPC danger / hard brake / FCW unchanged. Same smoothing as nap-dev; Hypermile is not ported.
+* Pre-AP lead-approach overlay is smoother on a slight grade: enter/exit **hysteresis** on radar `v_rel` / slack so regen does not chatter on/off around the follow gap, comfort peak |a| is **0.55** (Early map, was Normal 0.80), and more-negative overlay `a` slews at **0.05**/frame. Off / milder `a` is immediate. MPC danger / hard brake / FCW unchanged. Map climb still does not replace MPC when a lead is present (#118). Grade-hold for no-lead uphills is unchanged. Not a nap-release change.
 
 NAP Follow Distance stalk tip vs hold (2026-09-13)
 ========================
-* Behind a radar lead, a Tesla stalk **tip / bump** (1 mph / 1 kph cruise step) adjusts stock Follow Distance 1–7 only and undoes that frame’s MAX / `pedal_speed` step (HUD **Follow Distance: N**). A **full press** (5 mph / 5 kph) keeps MAX +5/−5 and does not remap Follow Distance. No lead: tip and hold both still step MAX as stock. Pedal delta magnitude is the source of truth; a button-only edge without a clear 5 mph delta still counts as a tip. Not Hypermile.
+* Behind a radar lead, a Tesla stalk **tip / bump** (1 mph / 1 kph cruise step) adjusts stock Follow Distance 1–7 only and undoes that frame’s MAX / `pedal_speed` step (HUD **Follow Distance: N**). A **full press** (5 mph / 5 kph) keeps MAX +5/−5 and does not remap Follow Distance. No lead: tip and hold both still step MAX as stock. Pedal delta magnitude is the source of truth; a button-only edge without a clear 5 mph delta still counts as a tip. Hypermile does not own follow.
 
-NAP Follow Distance stalk (2026-09-13)
+NAP map climb vs lead + Follow HUD (2026-09-13)
 ========================
-* With a radar lead, stalk up/down steps stock Follow Distance **1–7** (`NAPFollowDistance`) — the same control as Settings → NAP → Driving Mannerisms. HUD shows **Follow Distance: N**. That frame's MAX / `pedal_speed` step is undone so sticky MAX does not arm. No lead: stalk still adjusts MAX / RES+/−. Full stock 1–7 including closest. Not Hypermile (no 1–5, Step Down, Hill Climb, eco offsets, or ≤50 far-gap).
+* Under HUD MAX, map climb (`a_up` Accel 1–10) no longer **replaces** a non-negative MPC `aTarget` when a radar lead is valid. That overwrite pulled ego toward MAX through a slower/matched lead (hard punch while closing, then drop to ~48 and refuse to rematch 53–55). `map_track_decel` above MAX still mins in. Grade-hold `+g·sin` extras are also skipped while a lead constrains. Follow Distance HUD toast restored: stalk/settings 1–7 change shows **Follow Distance: N** for 1.5 s (`hypermileFollowChanged`, same WARNING+permanent affordance as personality). Grade-hold itself stays. Not a nap-release change.
+
+NAP Follow Distance (2026-09-13)
+========================
+* Unified stock **Follow Distance 1–7** (`NAPFollowDistance`) for stalk adjustments — same whether Hypermile is On or Off. Behind a radar lead, stalk up/down writes that param so the Driving Mannerisms slider updates live, and that frame’s MAX / `pedal_speed` step is undone. No lead: stalk still steps MAX. Full stock seven including closest **1**. Removed the Hypermile-only 1–5 band, the “never stock 1” floor, the ≤50 mph forced far-gap (stock 7) override, and `NAPHypermileFollowLevel`. Follow Distance stays visible while Hypermile is On. HUD shows **Follow Distance: N**. Eco / Step Down / Adaptive Accel / Early / Accel 1 snaps stay; they no longer force follow. Grade-hold behavior is unchanged. Intentional product change: Hypermile no longer owns follow levels. Not a nap-release change.
+
+NAP Hypermile Hill Climb gate (2026-09-13)
+========================
+* Hill Climb no longer treats `TRACK_TAPER` (~4.5 mph under MAX) as “near MAX”. Crest / downhill ease only when ego is **at or above MAX** (cruise − deadband). Grade hold (`+g·sin`) only when clearly under MAX — deadband / at-MAX leave the map hold (0) so we do not punch past MAX and hunt with Accel-5. Fixes Hypermile hunting ~4 mph under MAX (47–51 under a 54 MAX) with regen pulses instead of settling. **Maps-elevation lookahead is NOT included.** Never raises MAX. Lead / MPC still win. Not a nap-release change.
+
+NAP Simulate Look label (2026-09-13)
+========================
+* Triple-tap NAP popup title is **Simulate Look** (was **Simulate Look-at-Road**). Same `NAPDmSimulateLooking` param and behavior. Force Offroad label unchanged. Not a nap-release change.
 
 NAP hidden settings (2026-09-13)
 ========================
-* **Force Offroad / Go Offline** is no longer on the normal NAP list (3X + mici). Triple-tap **NAP** in Settings (3 taps in a 1.0 s sliding window) opens a side popup with **Force Offroad** then **Simulate Look**. Tap outside the card to dismiss (X / Escape / tap NAP again also work). Same `NAPForceOffroad` behavior.
-* **Simulate Look** (`NAPDmSimulateLooking`) is new on nap-release and **defaults Off** (stock DM until Justin enables it via the hidden toggle — unlike nap-dev default On). Label is **Simulate Look**, not "Simulate Look-at-Road". While engaged, after drain past **1.0 s**, fire a held glance at a random time in the next **2.0 s** (**(1.0 s, 3.0 s]** of that countdown) on the stock vision looking-path until awareness recovers to 1.0. Orange / red stay stock **5 / 11 s** if the toggle is Off. Hands-on ≥ 2 / stalk / door / reverse hard cancels unchanged. Soft-lat / Driving Mannerisms unchanged. Hypermile is not ported.
+* **Simulate Look** and **Force Offroad / Go Offline** are no longer on the normal NAP or Driving Mannerisms lists. Triple-tap **NAP** in Settings (3 taps in a 1.0 s sliding window) opens a side popup with those two toggles only. Tap outside the card to dismiss (X / tap NAP again also work). Same params and Reset-All defaults. Soft-lat, Hypermile, Hill Climb, Step Down unchanged. mici: triple-tap the **nap** button. Not a nap-release change.
+
+NAP Hypermile Hill Climb (2026-09-12)
+========================
+* Settings → NAP → Driving Mannerisms → **Hill Climb** (default **On**, hidden/inert unless Hypermile is On). IMU pitch (`orientationNED[1]`) raises Accel 1 climb authority on a real uphill so Hypermile does not sag under HUD MAX, and eases lightly on a flattening crest / downhill. **Maps-elevation lookahead is NOT included.** Never raises MAX. Lead / MPC hard brake still win. Soft-lat, blinker, sticky MAX, Step Down, lead-close, DM unchanged. Not a nap-release change.
+
+NAP curve MAX (2026-09-12)
+========================
+* Sharp curve: still slow for a comfortable corner (`limit_accel_in_turns` + a temporary lat-accel MAX cap). Snapshot HUD MAX / sticky at entry; after the bend (lat accel / steer straight-ish) restore that pre-curve set. Do not permanently bounce MAX down through a turn — Hypermile eco −5 (posted 60 → steady 55) must not replace a pre-curve MAX of 60. Step Down, lead-close, soft-lat, and blinker-keep-long unchanged.
+
+NAP Hypermile (2026-09-12)
+========================
+* Hypermile On + Step Down Off no longer snaps Map Speed Offset to a flat **−5** (that dropped town posted **30 → 25**). Eco offset is live from the posted/OSM limit: **0** at/under 50 mph so 30 stays 30 and 50 stays 50; linear 0 → −8 from 50 to 80 (65 → 61); **−8** at 80 (→72) and capped −8 above (90 → 82). **Step Down On** uses the same 50→80 scale, just larger: **0** at/under 50 (town 30 stays 30), **−15** at 80 (→65), cap −15 above (90 → 75). Replaces eco, no stack, no flat −15 on town limits. **Maps-only:** eco / Step Down apply only with a known OSM/posted limit; maps off, no match, or unknown posted → no invented drop (same as sticky MAX). Off still restores the saved offset slider. Early lookahead / Accel 1 / stalk 1–5 / 50 mph follow split / curve hold / lead-close / soft-lat unchanged. Not a nap-release change.
 
 NAP blinker (2026-09-12)
 ========================
-* A latched driver-turn blinker no longer drops / pauses longitudinal. `enableLongControl` stays true through a held stalk / flash-latched turn; lead/map braking and accel still apply. Soft-lat On/Off lat behavior, brake silent long pause + sticky MAX + one SET / double SET, ALC tip/keep-alive, reverse hard-cancel, and standstill one-SET gas gate unchanged. Port of the nap-dev blinker long-keep.
+* A latched driver-turn blinker no longer drops / pauses longitudinal. `enableLongControl` stays true through a held stalk / flash-latched turn; lead/map braking and accel still apply. Soft-lat On/Off lat behavior, brake silent long pause + sticky MAX + one SET / double SET, ALC tip/keep-alive, reverse hard-cancel, standstill one-SET gas gate, Hypermile, and lead-close accel unchanged.
+
+NAP lead follow (2026-09-12)
+========================
+* Pre-AP: closing on / coming up behind a radar lead no longer uses the cruise **1.6–0.6 m/s²** punch (Adaptive Accel used the full profile on a large gap; map Accel 1–10 only gated MAX-rise climb). Catch-up **+a** is now `lead_close_accel_ms2`: **0.20** at Accel 1, **0.30** at 5, **0.50** at 10, inside ~140 m. Still closes onto the selected Follow Distance. MPC danger / hard brake, Hypermile, sticky MAX, soft-lat, and DM unchanged. Settings → NAP → Map Speed Limit → Acceleration.
+
+NAP Hypermile (2026-09-12)
+========================
+* Settings → NAP → Driving Mannerisms → **Hypermile** (default Off, nap-dev only). Comfort-biased efficiency: On snaps Adaptive Accel + Cap/Follow / −5 mph / **Early** lookahead / **Accel 1** lazy climb (early light ease, not max regen bite), then restores those knobs when Off. Soft-lat / DM / blinker unchanged. Below ~50 mph follow sits far back (stock 7 / 1.9 s); above 50 mph uses a stalk 1–5 draft band (1=closest safe 0.9 s, 5=1.7 s). With a lead, stalk up=closer and down=farther (MAX unchanged). No lead: stalk still adjusts MAX. HUD shows **Hypermile: Follow N** when the level changes. Opt-in **Step Down Speed** (default Off, inert unless Hypermile is On): Cap/Follow targets **15 mph under posted** (75→60, 55→40; no stack with eco −5). Follow stalk SET can still hold above the step-down until posted changes. Not a nap-release change.
+
+NAP driver monitoring (2026-09-12)
+========================
+* Pre-AP engaged: **Simulate Look** (default On) injects a simulated glance on the **stock vision looking-path** (`face_detected` + low pose std + `driver_distraction_filter.x < 0.37`) and **holds** that attentive state until stock gradual recovery returns awareness to **1.0** (not a one-frame pulse / mute). After drain starts, wait **past 1.0 s**, then fire at a **random time in the next 2.0 s** — fire is uniform in **(1.0 s, 3.0 s]** of that countdown. After a full reset the same rule applies to the next countdown. Orange / red stay stock **5 / 11 s** if the toggle is Off. Hands-on ≥ 2 / stalk / door / reverse hard cancels unchanged. Replaces the #103 hands-on-only first-band reset. Settings → triple-tap **NAP** (not Driving Mannerisms). Not a nap-release change.
+
+NAP settings (2026-09-12)
+========================
+* Settings → NAP: Adaptive Accel Limits, Follow Distance, and Soft Lateral Handoff move into **Driving Mannerisms**. Same params and behavior. Back returns to NAP (not the side Settings list). Map Speed Limit, Radar, pedal, beams, speed-sign, and EPAS stay on the main NAP list.
 
 NAP Pre-AP reverse / gear / standstill SET (2026-09-12)
 ========================
-* Reverse (and any gear out of Drive / door) is a **full hard cancel**: session down, sticky MAX forgotten, soft-lat reset, CANCEL spoof so panda can re-arm `controls_allowed`. After Drive returns, a normal double SET engages without Controls Mismatch or a prior disable dance. Soft-lat Off blinker pause and sticky-MAX brake/turn pause unchanged. Port of the nap-dev reverse teardown.
+* Reverse (and any gear out of Drive / door) is a **full hard cancel**: session down, sticky MAX forgotten, soft-lat reset, CANCEL spoof so panda can re-arm `controls_allowed`. After Drive returns, a normal double SET engages without Controls Mismatch or a prior disable dance. Soft-lat Off blinker pause and sticky-MAX brake/turn pause unchanged.
 * One SET after a silent long pause **at a stop** does not take long / creep from 0. SET still keeps held MAX (“I want resume”); a light throttle touch then resumes at that MAX. Rolling one-SET resume and double SET / forget-sticky unchanged.
 
 NAP driver lat handoff (2026-09-12)
 ========================
-* Soft-lat **On**: a driver-turn blinker no longer strips lateral. Lamp latch does not clear `latActive` / force EPS free — keep control if we still have it. Soft-lat may still yield if the driver pushes. While the driver-turn blinker is latched, do not re-enable (stay yielded / do not finish a take-back blend). After it clears, resume goes through soft yield + the normal **0.15 s** hands-off confirm + **1 s** blend — no dedicated blinker rising-edge blend. Soft-lat **Off** keeps today’s blinker lat-pause so a held turn still frees the wheel. ALC tip/keep-alive, long sticky-MAX turn pause, yield thresholds, emergency hard-brake cancel, and hazards unchanged. Port of nap-dev #94.
-
-NAP settings (2026-09-12)
-========================
-* Settings → NAP: Adaptive Accel Limits, Follow Distance, and Soft Lateral Handoff move into **Driving Mannerisms**. Same params and behavior. Back returns to NAP (not the side Settings list). Map Speed Limit, Radar, pedal, and EPAS stay on the main NAP list. Port of the nap-dev Driving Mannerisms submenu.
+* Soft-lat **On**: a driver-turn blinker no longer strips lateral. Lamp latch does not clear `latActive` / force EPS free — keep control if we still have it. Soft-lat may still yield if the driver pushes. While the driver-turn blinker is latched, do not re-enable (stay yielded / do not finish a take-back blend). After it clears, resume goes through soft yield + the normal **0.15 s** hands-off confirm + **1 s** blend — no dedicated blinker rising-edge blend. Soft-lat **Off** keeps today’s blinker lat-pause so a held turn still frees the wheel. ALC tip/keep-alive, long sticky-MAX turn pause, yield thresholds, emergency hard-brake cancel, and hazards unchanged.
 
 NAP driver lat handoff (2026-09-11)
 ========================
-* Soft-lat hands-off confirm before take-back shortened from **0.25 s → 0.15 s** (`HANDS_OFF_CONFIRM_S`). Free-wheel yield, 1 s blend, blinker re-entry, and emergency cancel unchanged. Renewed hands-on or a firm push during the 0.15 s wait still re-yields and resets. Port of the nap-dev 0.15 s confirm.
+* Soft-lat hands-off confirm before take-back shortened from **0.25 s → 0.15 s** (`HANDS_OFF_CONFIRM_S`). Free-wheel yield, 1 s blend, blinker re-entry, and emergency cancel unchanged. Renewed hands-on or a firm push during the 0.15 s wait still re-yields and resets.
 
 NAP map speed (2026-09-11)
 ========================
-* Map MAX short-zone ignore raised from ~50 ft (15 m) to **~250 ft (76 m)** along heading. Cross-street / bleed flashes that lasted past 50 ft are now ignored. Real on-route drops that continue for hundreds of meters (US 12 tagged 50 ~760 m, DeGraff 30) still ease. Off-route bearing/class filter unchanged. Port of the nap-dev 250 ft min-zone raise.
+* Map MAX short-zone ignore raised from ~50 ft (15 m) to **~250 ft (76 m)** along heading. Cross-street / bleed flashes that lasted past 50 ft are now ignored. Real on-route drops that continue for hundreds of meters (US 12 tagged 50 ~760 m, DeGraff 30) still ease. Off-route bearing/class filter unchanged.
 
 NAP driver lat handoff (2026-09-11)
 ========================
-* Soft lateral handoff is **default On**. After a free-wheel yield, stay free while `handsOnLevel >= 1` or a renewed firm push. When hands go to **0**, require **~0.25 s** hands-off confirm (`HANDS_OFF_CONFIRM_S`) before the **1 s** smoothstep blend — not the old 80 ms confirm. A brief hands-off or right-then-left crossover during the dodge must not snatch. Renewed hands-on or ≥ 0.55 Nm during that wait or the blend re-yields (EPS free) and resets the delay. `QUIET_WAIT_S` stays 0 (torsion-quiet used to blend on mid-dodge dips). Entry ~0.55 Nm / 90 ms + hands, blinker 1 s soft re-entry, emergency hard-brake cancel, sticky MAX / light brake, gravel spike rejection unchanged. Settings → NAP → Soft Lateral Handoff default **On**. Panda / hands-on ≥ 2 unchanged. Port of the nap-dev 0.25 s hands-off confirm.
+* Soft lateral handoff is **default On**. After a free-wheel yield, stay free while `handsOnLevel >= 1` or a renewed firm push. When hands go to **0**, require **~0.25 s** hands-off confirm (`HANDS_OFF_CONFIRM_S`) before the **1 s** smoothstep blend — not the old 80 ms confirm. A brief hands-off or right-then-left crossover during the dodge must not snatch. Renewed hands-on or ≥ 0.55 Nm during that wait or the blend re-yields (EPS free) and resets the delay. `QUIET_WAIT_S` stays 0 (torsion-quiet used to blend on mid-dodge dips). Entry ~0.55 Nm / 90 ms + hands, blinker 1 s soft re-entry, emergency hard-brake cancel, sticky MAX / light brake, gravel spike rejection unchanged. Settings → NAP → Soft Lateral Handoff default **On**. Panda / hands-on ≥ 2 unchanged.
 
 NAP map speed (2026-09-11)
 ========================
-* Map MAX ignores a lower OSM limit that only lasts ~50 ft (15 m) along heading — cross-street bleed / intersection stubs. Real on-route drops that continue past that still ease. Off-route bearing/class filter unchanged. Port of the nap-dev min-zone gate.
+* Map MAX ignores a lower OSM limit that only lasts ~50 ft (15 m) along heading — cross-street bleed / intersection stubs. Real on-route drops that continue past that still ease. Off-route bearing/class filter unchanged.
 
 NAP driver lat handoff (2026-09-11)
 ========================
-* Soft lateral handoff is **default On**. **Yield = free the EPS**, not follow-measured angle control. A light purposeful push + hands (`|torsion| >= 0.55 Nm` for ~90 ms consecutive, `handsOnLevel >= 1`) drops `latActive` so Pre-AP sends `DAS_steeringControlType=0` — same release as blinker lat-pause. Near 1.0 Nm the consecutive bar drops toward 60 ms so the soft path still beats hands-on ≥ 2. Hands-on hold + pin-to-wheel + **1 s blend** on return (parking-lot blinker soft re-entry kept: pin while lat down; 1 s blend on blinker rising edge; yield / stay free if hands still on). Gravel spike trains still gap-reset; rumble at ~0.50 Nm or hands-off must not free-yield. **Emergency / hard brake** while yielded or within 2 s of yield entry (digital Applied + `aEgo <= −3.5 m/s²` for 80 ms) fully cancels OP. Light brake is still sticky-MAX silent pause + one SET. Settings → NAP → Soft Lateral Handoff can turn **Off**. Panda / hands-on ≥ 2 unchanged.
+* Soft lateral handoff is **default On**. **Yield = free the EPS**, not follow-measured angle control. A light purposeful push + hands (`|torsion| >= 0.55 Nm` for ~90 ms consecutive, `handsOnLevel >= 1`) drops `latActive` so Pre-AP sends `DAS_steeringControlType=0` — same release as blinker lat-pause. #79 still wrestled because OP kept full authority until the 0.70 Nm / 140 ms debounce finished, then kept `latActive` and commanded measured angle (closed-loop hold). Near 1.0 Nm the consecutive bar drops toward 60 ms so the soft path still beats hands-on ≥ 2. Hands-on hold + pin-to-wheel + **1 s blend** on return unchanged (parking-lot blinker soft re-entry kept: pin while lat down; 1 s blend on blinker rising edge; yield / stay free if hands still on). Gravel spike trains still gap-reset; rumble at ~0.50 Nm or hands-off must not free-yield. **Emergency / hard brake** while yielded or within 2 s of yield entry (digital Applied + `aEgo <= −3.5 m/s²` for 80 ms) fully cancels OP. Light brake is still sticky-MAX silent pause + one SET. Settings → NAP → Soft Lateral Handoff can turn **Off**. Panda / hands-on ≥ 2 unchanged.
+
+NAP driver lat handoff (2026-09-11)
+========================
+* Soft lateral handoff is **default On**. Yield on a **sustained driver push + hands** (`|torsion| >= 0.70 Nm` for ~140 ms consecutive, `handsOnLevel >= 1`). Steer rate is **not** required — an isometric fight (low rate, high tracking error) soft-yields instead of holding until hands-on ≥ 2 / `STEER_THRESHOLD` hard cancel. Near 1.0 Nm the consecutive bar drops toward 80 ms so the soft path wins first. Disturbance veto only when torsion is **below** 0.70 Nm (wind / crown). Gravel spike trains still gap-reset. Hands-on hold + 1 s hands-off blend + curvature pin unchanged. **Emergency / hard brake** while yielded or within 2 s of yield entry (digital Applied + `aEgo <= −3.5 m/s²` for 80 ms) fully cancels OP. Light brake is still sticky-MAX silent pause + one SET. Settings → NAP → Soft Lateral Handoff can turn **Off**. Panda / hands-on ≥ 2 unchanged.
+
+NAP driver lat handoff (2026-09-11)
+========================
+* Soft lateral handoff is **default On** and now yields only on **driver intent** to turn the wheel: sustained torsion (≥ 0.70 Nm / 140 ms) **and** matching steer rate **and** hands on the rim. Gravel spikes, opposite-rate pressure, and high tracking error without matching torsion (wind / crown) do not yield. Hands-on hold + 1 s hands-off blend unchanged. **Emergency / hard brake** while yielded or within 2 s of yield entry (digital Applied + `aEgo <= −3.5 m/s²` for 80 ms) fully cancels OP with the normal disengage chime — not the silent long pause. Light brake is still sticky-MAX silent pause + one SET. Settings → NAP → Soft Lateral Handoff can turn **Off**. Panda / hands-on ≥ 2 unchanged.
+
+NAP driver lat handoff (2026-09-11)
+========================
+* Soft lateral handoff is **default On**. Yield stays ~0.70 Nm held 0.14 s consecutive (gap reset; not 0.5 Nm / 80 ms rumble). Stay yielded while `EPAS_handsOnLevel >= 1` so a mid-dodge torsion dip does not start hand-back. 1 s blend starts only after hands are truly off the rim for ~80 ms. Hands back on or a firm push cancels the blend and re-yields. Planner still pins to the wheel while yielded / lat down so resume tracks the path. Blinker-turn re-entry is still the same 1 s blend from the wheel. Settings → NAP → Soft Lateral Handoff: turn **Off** if gravel or wind still gray the chrome. Brake silent long-pause + one SET is unchanged. Panda / hands-on ≥ 2 hard cancel unchanged.
+
+NAP driver lat handoff (2026-09-11)
+========================
+* Soft lateral handoff is **default On**. Firmer yield: ~0.85 Nm held 0.25 s consecutive (not 0.5 Nm rumble). After a yield, planner curvature stays on the wheel so resume actually tracks the path (green HUD + on-screen path was not enough). Settings → NAP → Soft Lateral Handoff: turn **Off** if gravel or wind still gray the chrome. Brake silent long-pause + one SET is unchanged.
+
+NAP driver lat handoff (2026-09-11)
+========================
+* Light wheel input (about half the usual override effort) now yields steering without canceling openpilot. Speed control stays on. After 0.25 s of quiet the wheel blends back over 1 s. Gray HUD until ~70% lateral is back; no disengage chime. A hard yank / cancel still fully disengages. No panda flash.
 
 NAP sticky MAX (2026-09-11)
 ========================
-* Pedal mode: brake or a held/latched driver-turn blinker pauses longitudinal only. Held MAX is remembered. That pause is **silent** — no “Pedal Cruise Disengaged” / disengage chime. One SET resumes long at that MAX (already rebased if posted changed) without a full-stack engage fanfare. With Map Speed off / no OSM, one SET still restores the held MAX — not current traveled speed (do not latch pause ego; delayed `pedalLongActive` rising must not take-current when a held MAX exists). Stalk +/- while long is on updates that held MAX. Double SET forgets sticky: maps on + posted known → current posted; maps off / unknown → current traveled speed. Same double SET is initial engage. Maps never overwrite sticky every frame; GPS drop does not invent or wipe posted. Tip ALC does not use this pause. Hard cancel (stalk / door / gear / steer fault / hands-on ≥ 2) still fully disengages and still plays the disengage prompt. No-pedal stock CC is unchanged. Lateral (blinker/ALC) is unchanged.
+* Pedal mode: brake or a held/latched driver-turn blinker pauses longitudinal only. Held MAX is remembered. That pause is **silent** — no “Pedal Cruise Disengaged” / disengage chime. One SET resumes long at that MAX (already rebased if posted changed) without a full-stack engage fanfare. Double SET forgets sticky: maps on + posted known → current posted; maps off / unknown → current traveled speed. Same double SET is initial engage. Maps never overwrite sticky every frame; GPS drop does not invent or wipe posted. Tip ALC does not use this pause. Hard cancel (stalk / door / gear / steer fault / hands-on ≥ 2) still fully disengages and still plays the disengage prompt. No-pedal stock CC is unchanged. Soft lat handoff unchanged.
+
+NAP speed-sign log (2026-09-11)
+========================
+* SIGN WAIT is only when openpilot is actively controlling. A 1 Hz SubMaster used to treat unknown / stale `selfdriveState` as engaged for ~10 s after cancel (`recv_frame <= 0` + 100 ms alive window). Poll at 20 Hz; gate on `active`; abandon in-flight ONNX on re-engage so the loop never blocks. If TAKE CONTROL / Communication Issue comes back, turn Logger Off.
+
+NAP speed-sign log (2026-09-10)
+========================
+* Speed Sign Logger On no longer runs YOLO while openpilot is engaged (SIGN shows WAIT). Manual driving — moving OK — still logs signs at 1 Hz. If TAKE CONTROL comes back, turn Logger Off.
 
 NAP blinker (2026-09-10)
 ========================
 * A held/latched driver turn blinker now drops longitudinal as well as pausing lat. After the lamps/latch end, one stalk SET restores long (lat still paused or already active). ALC tip/keep-alive does not drop long. Stalk cancel still fully disengages; brake can still drop long. No panda flash required.
 
-NAP Force Offroad (2026-09-10)
-========================
-* Settings → triple-tap NAP → Force Offroad / Go Offline. Temporarily drops the device into offroad (started=false) while the car is still moving so Download US Maps, Refresh maps, and software install unlock. Stops openpilot — drive manually. Default Off. Clears on toggle Off, Reset to Defaults, reboot, or the next ignition ON. Optional / reversible: revert this PR, or delete the Force Offroad files + `NAPForceOffroad` param + hardwared hook + hidden NAP UI toggle.
-
 NAP blinker (2026-09-09)
 ========================
 * Panda tesla_preap now keeps controls_allowed on a driver blinker-held turn (one lamp or LEFT/RIGHT, flash-latched ~1s) so hands-on ≥ 2 does not controlsMismatch after the turn. **Flash the panda after this update** (reboot so pandad reflashes; Python-only pull is not enough). Stalk cancel / doors / gear still drop.
 * Held-blinker turns no longer full-cancel mid-corner. Higher steering torque / EPAS hands-on ≥ 2 while lat is paused stays engaged (lat pause only). The 3X "Steering Disengaged" HUD is EventName.pcmDisable (cruiseEnabled fell) — keep cruise up on lamp or held stalk, and do not treat that torque as controlsMismatch / steerDisengage. Stalk cancel / doors / gear / permanent steer fault still fully disengage.
+
+NAP Force Offroad (2026-09-09)
+========================
+* Settings → NAP → Force Offroad / Go Offline. Temporarily drops the device into offroad (started=false) while the car is still moving so Download US Maps, Refresh maps, and software install unlock. Stops openpilot — drive manually. Default Off. Clears on toggle Off, Reset to Defaults, reboot, or the next ignition ON.
+
+NAP speed-sign log (2026-09-09)
+========================
+* Optional on-drive MUTCD speed-sign logger (default off). ROAD camera + GPS, JSONL under /data. On-road SIGN plate shows the live mph for 1.5s. Does not change cruise or maps.
+
+NAP blinker (2026-09-09)
+========================
 * During ALC (or leftover keep-alive), holding the physical stalk the same direction for more than 1.0s cancels the lane change and pauses steering as a driver turn. A shorter same-direction press does not force a turn. Tip-to-ALC from idle is still LEFT/RIGHT then IDLE within 0.40s.
 * Tip vs turn no longer depends on speed. A partial stalk push (LEFT/RIGHT then IDLE within 0.40s) is automatic lane change at any speed; a full held stalk is a driver turn and releases steering. Lane change still will not *start* below 20 mph until a wheel nudge at speed.
 

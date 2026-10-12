@@ -1,0 +1,860 @@
+import os
+import subprocess
+import pyray as rl
+from openpilot.common.params import Params
+from openpilot.common.basedir import BASEDIR
+from openpilot.system.ui.widgets import Widget, DialogResult
+from openpilot.system.ui.widgets.keyboard import Keyboard
+from openpilot.system.ui.widgets.list_view import (
+  toggle_item, multiple_button_item, button_item, text_item,
+  ITEM_PADDING,
+)
+from openpilot.system.ui.widgets.scroller_tici import Scroller
+from openpilot.system.ui.widgets.button import Button
+from openpilot.system.ui.widgets.confirm_dialog import ConfirmDialog
+from openpilot.system.ui.widgets.script_runner import ScriptRunner
+from openpilot.system.ui.lib.application import gui_app, FontWeight
+from openpilot.system.ui.lib.text_measure import measure_text_cached
+from openpilot.system.ui.widgets.html_render import HtmlRenderer, ElementType
+from openpilot.selfdrive.ui.layouts.settings.nap_content import (
+  BACKUP_EPAS_INSTRUCTIONS, BRAKE_FACTOR_PRESETS,
+  CALIBRATE_PEDAL_INSTRUCTIONS,
+  DOWNLOAD_US_MAPS_INSTRUCTIONS,
+  FLASH_EPAS_INSTRUCTIONS,
+  INSTALL_SPEED_SIGN_WEIGHTS_INSTRUCTIONS, PEDAL_CAN_BUS_VALUES,
+  HIGH_LOW_BEAM_DESCRIPTION, HIGH_LOW_BEAM_LABELS, HIGH_LOW_BEAM_VALUES,
+  MAP_SPEED_ACCEL_DEFAULT,
+  NAP_DM_FALSE_ALERT_IGNORE,
+  NAP_DM_SIMULATE_LOOKING,
+  NAP_CONE_LINE_HOLD,
+  NAP_CONE_LINE_LOG,
+  NAP_OBSTACLE_CHIME,
+  NAP_OBSTACLE_LOG,
+  NAP_DRIVER_LAT_HANDOFF,
+  NAP_LOW_VIS_BACKOFF,
+  NAP_FORCE_OFFROAD,
+  NAP_HYPERMILE,
+  NAP_HYPERMILE_HILL_CLIMB,
+  NAP_HYPERMILE_STEP_DOWN,
+  NAP_ONE_PEDAL_LONG,
+  NAP_SPEED_SIGN_LOG,
+  RADAR_OFFSET_MAX, RADAR_OFFSET_MIN,
+  REFRESH_MAPS_INSTRUCTIONS,
+  RESTORE_EPAS_INSTRUCTIONS,
+  SPEED_SIGN_LOG_DESCRIPTION,
+  WIPER_SPEED_DESCRIPTION, WIPER_SPEED_LABELS, WIPER_SPEED_VALUES,
+  WIPER_SENSITIVITY_DEFAULT, WIPER_SENSITIVITY_DESCRIPTION,
+  WIPER_SENSITIVITY_LABELS, WIPER_SENSITIVITY_VALUES,
+  acknowledgments_html, coerce_wiper_speed_param, find_preset_index,
+  wiper_speed_button_index,
+)
+from openpilot.selfdrive.ui.layouts.settings.driving_mannerisms import DrivingMannerismsLayout
+from openpilot.selfdrive.ui.layouts.settings.map_speed import MapSpeedLimitLayout
+from openpilot.selfdrive.speedsignd.install import weights_status_summary
+from openpilot.selfdrive.car.tesla.preap_body_controls import register_nap_body_params
+from opendbc.car.tesla.preap.nap_params import NAPParamKeys, DEFAULTS
+
+register_nap_body_params()
+from openpilot.selfdrive.ui.radar.radar_view import RadarMonitorDialog
+from openpilot.selfdrive.ui.ui_state import ui_state
+from scripts.nap.script_lifecycle import script_reboots_on_exit
+
+
+
+class SectionHeader(Widget):
+  """Lightweight section label to visually separate groups of settings."""
+
+  HEADER_HEIGHT = 70
+
+  def __init__(self, title: str):
+    super().__init__()
+    self._title = title
+    self._font = gui_app.font(FontWeight.BOLD)
+    self.set_rect(rl.Rectangle(0, 0, 0, self.HEADER_HEIGHT))
+
+  def set_parent_rect(self, parent_rect: rl.Rectangle):
+    super().set_parent_rect(parent_rect)
+    self._rect.width = parent_rect.width
+
+  def _render(self, rect):
+    text_size = measure_text_cached(self._font, self._title, 40)
+    text_y = self._rect.y + (self._rect.height - text_size.y) / 2
+    rl.draw_text_ex(
+      self._font, self._title,
+      rl.Vector2(self._rect.x + ITEM_PADDING, text_y),
+      40, 0, rl.Color(180, 180, 180, 255),
+    )
+
+
+class CreditsBlock(Widget):
+  """Static block of HTML-rendered credits text with auto-sized height."""
+
+  def __init__(self, html: str):
+    super().__init__()
+    self._html = HtmlRenderer(
+      text=html,
+      text_size={ElementType.P: 40},
+      text_color=rl.Color(140, 140, 140, 255),
+    )
+    self.set_rect(rl.Rectangle(0, 0, 0, 200))  # placeholder height
+
+  def set_parent_rect(self, parent_rect: rl.Rectangle):
+    super().set_parent_rect(parent_rect)
+    self._rect.width = parent_rect.width
+    content_w = int(self._rect.width - ITEM_PADDING * 2)
+    self._rect.height = self._html.get_total_height(content_w) + ITEM_PADDING
+
+  def _render(self, rect):
+    content_w = int(self._rect.width - ITEM_PADDING * 2)
+    h = self._html.get_total_height(content_w)
+    html_rect = rl.Rectangle(
+      self._rect.x + ITEM_PADDING, self._rect.y,
+      content_w, h,
+    )
+    self._html.set_rect(html_rect)
+    self._html.render(html_rect)
+
+
+def section_header_item(title: str) -> SectionHeader:
+  return SectionHeader(title)
+
+
+class NAPLayout(Widget):
+  def __init__(self):
+    super().__init__()
+    self._params = Params()
+    self._page = "main"
+    self._build_items()
+    self._scroller = Scroller(self._main_items, line_separator=True, spacing=0)
+    self._radar_scroller = Scroller(self._radar_items, line_separator=True, spacing=0)
+    self._radar_back_btn = Button("Back", click_callback=self._close_radar)
+    self._radar_back_btn.set_rect(rl.Rectangle(0, 0, 220, 90))
+
+  def _build_items(self):
+    """Build all list items organized into sections."""
+    self._main_items = []
+    self._radar_items = []
+    self._toggle_map = {}  # param_key -> ListItem (for refresh)
+
+    # ── Section 0: Speed Sign (top — flip Logger while testing) ──
+    self._main_items.append(section_header_item("Speed Sign"))
+
+    self._add_toggle(
+      NAP_SPEED_SIGN_LOG,
+      "Speed Sign Logger",
+      SPEED_SIGN_LOG_DESCRIPTION,
+    )
+
+    self._weights_status = text_item(
+      "Speed Sign Weights",
+      weights_status_summary,
+      description="YOLO ONNX at /data/media/0/nap/speed_sign.onnx. "
+      "Missing → onroad SIGN shows NO WT and will not read roadside signs. "
+      "Installed → blank plate until a confirmed mph.",
+    )
+    self._main_items.append(self._weights_status)
+
+    self._install_weights_btn = button_item(
+      "Install weights",
+      "Start",
+      description=INSTALL_SPEED_SIGN_WEIGHTS_INSTRUCTIONS.split("\n", 1)[0],
+      callback=self._on_install_speed_sign_weights,
+    )
+    self._install_weights_btn.action_item.set_enabled(ui_state.is_offroad)
+    self._main_items.append(self._install_weights_btn)
+
+    # ── Section 1: Longitudinal Control ──
+    # Force Offroad / Simulate Look / False Alert Ignore live in the NAP triple-tap popup.
+    self._main_items.append(section_header_item("Longitudinal Control"))
+
+    self._add_toggle(
+      NAPParamKeys.PEDAL_ENABLED,
+      "Pedal Interceptor",
+      "Enable Comma Pedal hardware for direct throttle control. Requires reboot.",
+      enabled=ui_state.is_offroad,
+      needs_reboot=True,
+    )
+
+    self._driving_mannerisms_page = DrivingMannerismsLayout(
+      on_back=self._close_driving_mannerisms,
+    )
+    self._driving_mannerisms_btn = button_item(
+      "Driving Mannerisms",
+      "Open",
+      description="Accel feel, follow, soft lat, one-pedal, and Hypermile.",
+      callback=self._open_driving_mannerisms,
+    )
+    self._main_items.append(self._driving_mannerisms_btn)
+
+    self._map_speed_page = MapSpeedLimitLayout(
+      on_back=self._close_map_speed,
+      on_download=self._on_download_us_maps,
+      on_refresh=self._on_refresh_maps,
+    )
+    self._page = "main"
+    self._map_speed_btn = button_item(
+      "Map Speed Limit",
+      "Open",
+      description="OSM posted limits — mode, offset, lookahead, and maps.",
+      callback=self._open_map_speed,
+    )
+    self._main_items.append(self._map_speed_btn)
+
+    # ── Section 2: Pedal Hardware ──
+    self._main_items.append(section_header_item("Pedal Hardware"))
+
+
+    pedal_bus = self._params.get(NAPParamKeys.PEDAL_CAN_BUS, return_default=True)
+    self._pedal_bus_buttons = multiple_button_item(
+      "Pedal CAN Bus",
+      "Select which CAN bus the Comma Pedal is connected to. Requires reboot.",
+      buttons=["Bus 0", "Bus 2"],
+      button_width=150,
+      selected_index=0 if pedal_bus == 0 else 1,
+      callback=self._on_pedal_can_bus,
+    )
+    self._pedal_bus_buttons.action_item.set_enabled(ui_state.is_offroad)
+    self._main_items.append(self._pedal_bus_buttons)
+
+    self._pedal_calib_status = text_item(
+      "Pedal Calibration",
+      lambda: "Calibrated" if self._params.get_bool(NAPParamKeys.PEDAL_CALIB_DONE) else "Not Calibrated",
+      description="Shows whether the pedal interceptor has been calibrated.",
+    )
+    self._main_items.append(self._pedal_calib_status)
+
+    self._calibrate_pedal_btn = button_item(
+      "Calibrate Pedal",
+      "Start",
+      description="Run the pedal calibration routine. Vehicle must be stationary with ignition on.",
+      callback=self._on_calibrate_pedal,
+    )
+    self._calibrate_pedal_btn.action_item.set_enabled(ui_state.is_offroad)
+    self._main_items.append(self._calibrate_pedal_btn)
+
+    # ── Section 3: Radar (submenu) ──
+    self._main_items.append(section_header_item("Radar"))
+    self._radar_settings_btn = button_item(
+      "Radar Settings",
+      "Open",
+      description="Donor VIN, position, offset, test, and calibration.",
+      callback=self._open_radar,
+    )
+    self._main_items.append(self._radar_settings_btn)
+    self._build_radar_items()
+
+    # ── Section 4: iBooster / Braking (not yet implemented — grayed out) ──
+    self._main_items.append(section_header_item("iBooster / Braking"))
+
+    self._add_toggle(
+      NAPParamKeys.IBOOSTER_ENABLED,
+      "iBooster Enabled",
+      "Enable the iBooster brake-by-wire system for electronic braking. (Not yet implemented)",
+      enabled=False,
+    )
+
+    brake_factor = self._params.get(NAPParamKeys.BRAKE_FACTOR, return_default=True)
+    self._brake_factor_buttons = multiple_button_item(
+      "Brake Factor",
+      "Multiplier for brake force. Higher values brake more aggressively. (Not yet implemented)",
+      buttons=["0.5x", "1.0x", "1.5x", "2.0x"],
+      button_width=130,
+      selected_index=find_preset_index(BRAKE_FACTOR_PRESETS, brake_factor),
+      callback=self._on_brake_factor,
+    )
+    self._brake_factor_buttons.action_item.set_enabled(False)
+    self._main_items.append(self._brake_factor_buttons)
+
+    # ── Section 5: Wipers & lights (car test) ──
+    self._main_items.append(section_header_item("Wipers & Lights (test)"))
+
+    wiper_setting = coerce_wiper_speed_param(self._params)
+    self._wiper_buttons = multiple_button_item(
+      "Wiper Control",
+      WIPER_SPEED_DESCRIPTION,
+      buttons=WIPER_SPEED_LABELS,
+      button_width=160,
+      selected_index=wiper_speed_button_index(wiper_setting),
+      callback=self._on_wiper_speed,
+    )
+    self._main_items.append(self._wiper_buttons)
+
+    raw_sens = self._params.get(NAPParamKeys.WIPER_SENSITIVITY, return_default=True)
+    try:
+      sens_setting = WIPER_SENSITIVITY_DEFAULT if raw_sens is None else int(raw_sens)
+    except (TypeError, ValueError):
+      sens_setting = WIPER_SENSITIVITY_DEFAULT
+    self._wiper_sens_buttons = multiple_button_item(
+      "Wiper Sensitivity",
+      WIPER_SENSITIVITY_DESCRIPTION,
+      buttons=WIPER_SENSITIVITY_LABELS,
+      button_width=110,
+      selected_index=max(0, min(len(WIPER_SENSITIVITY_VALUES) - 1, sens_setting)),
+      callback=self._on_wiper_sensitivity,
+    )
+    self._main_items.append(self._wiper_sens_buttons)
+
+    beam_setting = int(self._params.get(NAPParamKeys.HIGH_LOW_BEAM, return_default=True) or 0)
+    self._beam_buttons = multiple_button_item(
+      "High / Low Beam",
+      HIGH_LOW_BEAM_DESCRIPTION,
+      buttons=HIGH_LOW_BEAM_LABELS,
+      button_width=130,
+      selected_index=max(0, min(len(HIGH_LOW_BEAM_VALUES) - 1, beam_setting)),
+      callback=self._on_high_low_beam,
+    )
+    self._main_items.append(self._beam_buttons)
+
+    # ── Section 6: Advanced ──
+    self._main_items.append(section_header_item("Advanced"))
+
+    # Force Pre-AP is always on for now — grayed out in the ON position
+    self._params.put_bool(NAPParamKeys.FORCE_PRE_AP, True)
+    self._add_toggle(
+      NAPParamKeys.FORCE_PRE_AP,
+      "Force Pre-AP Mode",
+      "Force the system to treat this vehicle as a Pre-Autopilot Tesla.",
+      enabled=False,
+    )
+
+    # ── Section 7: Actions ──
+    self._main_items.append(section_header_item("Actions"))
+
+    self._backup_epas_btn = button_item(
+      "Backup EPAS",
+      "Extract",
+      description="Extract and save stock EPAS firmware image without flashing.",
+      callback=self._on_backup_epas,
+    )
+    self._backup_epas_btn.action_item.set_enabled(ui_state.is_offroad)
+    self._main_items.append(self._backup_epas_btn)
+
+    self._flash_epas_btn = button_item(
+      "Flash EPAS",
+      "Flash",
+      description="Flash the EPAS (Electric Power Assisted Steering) firmware.",
+      callback=self._on_flash_epas,
+    )
+    self._flash_epas_btn.action_item.set_enabled(ui_state.is_offroad)
+    self._main_items.append(self._flash_epas_btn)
+
+    self._restore_epas_btn = button_item(
+      "Restore EPAS",
+      "Restore",
+      description="Restore stock EPAS firmware image.",
+      callback=self._on_restore_epas,
+    )
+    self._restore_epas_btn.action_item.set_enabled(ui_state.is_offroad)
+    self._main_items.append(self._restore_epas_btn)
+
+    self._emergency_disable_btn = button_item(
+      "Emergency Disable",
+      "Disable",
+      description="Immediately disable pedal interceptor and clear calibration. Restart required.",
+      callback=self._on_emergency_disable,
+    )
+    self._main_items.append(self._emergency_disable_btn)
+
+    self._reset_defaults_btn = button_item(
+      "Reset to Defaults",
+      "Reset",
+      description="Reset all NAP settings to factory defaults. This cannot be undone.",
+      callback=self._on_reset_defaults,
+    )
+    self._reset_defaults_btn.action_item.set_enabled(ui_state.is_offroad)
+    self._main_items.append(self._reset_defaults_btn)
+
+    # ── Acknowledgments ──
+    self._main_items.append(section_header_item("Acknowledgments"))
+    self._main_items.append(CreditsBlock(acknowledgments_html()))
+
+  def _build_radar_items(self):
+    self._radar_items.append(section_header_item("Radar"))
+
+    self._add_toggle(
+      NAPParamKeys.RADAR_ENABLED,
+      "Radar Enabled",
+      "Enable the stock Bosch radar for lead car detection. When on, "
+      "path-synced radar is preferred for long lead if the track is on "
+      "the model path and radar is healthy. Off or unhealthy falls back "
+      "to stock fusion. Requires reboot.",
+      enabled=ui_state.is_offroad,
+      needs_reboot=True,
+      dest=self._radar_items,
+    )
+
+    self._add_toggle(
+      NAPParamKeys.RADAR_IGNORE_HW_FAIL,
+      "Ignore radar hardware fail",
+      "Lets you engage when Bosch raises HWFail even though tracks are still live.",
+      dest=self._radar_items,
+    )
+
+    def on_radar_hud(state):
+      self._params.put_bool(NAPParamKeys.RADAR_HUD, state)
+      ui_state.radar_hud = state
+
+    hud_item = toggle_item(
+      "Radar HUD",
+      description="Show live tracks, lamps, and alert bits over the driving view. Works while driving.",
+      initial_state=self._params.get_bool(NAPParamKeys.RADAR_HUD),
+      callback=on_radar_hud,
+    )
+    self._toggle_map[NAPParamKeys.RADAR_HUD] = hud_item
+    self._radar_items.append(hud_item)
+
+    self._radar_offset_keyboard = Keyboard(max_text_size=10)
+    self._radar_offset_btn = button_item(
+      "Radar Lateral Offset",
+      self._get_radar_offset_text,
+      description=(
+        "Lateral offset in meters added to radar yRel. Negative shifts leads toward the left of current radar "
+        + "reading; positive shifts right. Example: -0.27 for the 3D-printed factory-location mount."
+      ),
+      callback=self._on_radar_offset_click,
+    )
+    self._radar_items.append(self._radar_offset_btn)
+
+    self._radar_vin_keyboard = Keyboard(max_text_size=17)
+    self._radar_vin_btn = button_item(
+      "Donor Radar VIN",
+      self._get_radar_vin_text,
+      description=(
+        "VIN already programmed in a salvage radar. Leave empty to send this car. "
+        + "A 17-character VIN makes panda impersonate the donor (Tinkla 0.6.6)."
+      ),
+      callback=self._on_radar_vin_click,
+    )
+    self._radar_items.append(self._radar_vin_btn)
+
+    self._read_vin_btn = button_item(
+      "Read VIN",
+      self._get_read_vin_text,
+      description=(
+        "Read the VIN stored in the radar (F190). Does not write or flash. "
+        + "Car must be on and not engaged. Power-cycle after it fills."
+      ),
+      callback=self._on_read_vin,
+    )
+    self._radar_items.append(self._read_vin_btn)
+
+    radar_position = int(self._params.get(NAPParamKeys.RADAR_POSITION, return_default=True) or 0)
+    self._radar_position_buttons = multiple_button_item(
+      "Donor Radar Position",
+      "Always sent when radar is on, including empty VIN. 0 pre-facelift S, 1 post-facelift S, 2 Model X.",
+      buttons=["0", "1", "2"],
+      button_width=130,
+      selected_index=max(0, min(2, radar_position)),
+      callback=self._on_radar_position,
+    )
+    self._radar_items.append(self._radar_position_buttons)
+
+    radar_epas = int(self._params.get(NAPParamKeys.RADAR_EPAS_TYPE, return_default=True) or 0)
+    self._radar_epas_buttons = multiple_button_item(
+      "Donor EPAS Type",
+      "Must match the donor car rack: 0 Bosch L538, 1 L405, 2 Mando FGR64, 3 VGR66, 4 VGR66 Gen3.",
+      buttons=["0", "1", "2", "3", "4"],
+      button_width=100,
+      selected_index=max(0, min(4, radar_epas)),
+      callback=self._on_radar_epas,
+    )
+    self._radar_items.append(self._radar_epas_buttons)
+
+    self._live_radar_btn = button_item(
+      "Live Radar",
+      "Open",
+      description="Live tracks, ECU lamps, and alert bits. Stays in this session; works while driving.",
+      callback=self._on_live_radar,
+    )
+    self._radar_items.append(self._live_radar_btn)
+
+  def _add_toggle(self, param_key: str, title: str, description: str,
+                   enabled: bool | None = None, needs_reboot: bool = False,
+                   dest: list | None = None):
+    """Helper to add a toggle item and register it for state refresh."""
+    kwargs = {}
+    if enabled is not None:
+      kwargs['enabled'] = enabled
+
+    def on_toggle(state, k=param_key):
+      self._params.put_bool(k, state)
+      if needs_reboot:
+        self._show_reboot_modal()
+
+    item = toggle_item(
+      title,
+      description=description,
+      initial_state=self._params.get_bool(param_key),
+      callback=on_toggle,
+      **kwargs,
+    )
+    self._toggle_map[param_key] = item
+    (dest if dest is not None else self._main_items).append(item)
+
+  # ── Multiple-button callbacks ──
+
+  def _open_driving_mannerisms(self):
+    self._page = "driving_mannerisms"
+    self._driving_mannerisms_page.show_event()
+
+  def _close_driving_mannerisms(self):
+    self._page = "main"
+
+  def _open_map_speed(self):
+    self._page = "map_speed"
+    self._map_speed_page.show_event()
+
+  def _close_map_speed(self):
+    self._page = "main"
+
+  def _on_pedal_can_bus(self, index: int):
+    self._params.put(NAPParamKeys.PEDAL_CAN_BUS, PEDAL_CAN_BUS_VALUES[index])
+    self._show_reboot_modal()
+
+  def _on_brake_factor(self, index: int):
+    self._params.put(NAPParamKeys.BRAKE_FACTOR, BRAKE_FACTOR_PRESETS[index])
+
+  def _on_wiper_speed(self, index: int):
+    self._params.put(NAPParamKeys.WIPER_SPEED, WIPER_SPEED_VALUES[index])
+
+  def _on_wiper_sensitivity(self, index: int):
+    self._params.put(NAPParamKeys.WIPER_SENSITIVITY, WIPER_SENSITIVITY_VALUES[index])
+
+  def _on_high_low_beam(self, index: int):
+    self._params.put(NAPParamKeys.HIGH_LOW_BEAM, HIGH_LOW_BEAM_VALUES[index])
+
+  def _get_radar_offset(self) -> float:
+    raw = self._params.get(NAPParamKeys.RADAR_OFFSET, return_default=True)
+    try:
+      return float(raw) if raw is not None else 0.0
+    except (TypeError, ValueError):
+      return 0.0
+
+  def _get_radar_offset_text(self) -> str:
+    return f"{self._get_radar_offset():+.2f}m"
+
+  def _get_radar_vin_text(self) -> str:
+    raw = self._params.get(NAPParamKeys.RADAR_DONOR_VIN, return_default=True) or ""
+    if isinstance(raw, bytes):
+      raw = raw.decode("ascii", errors="ignore")
+    vin = "".join(ch for ch in str(raw).upper() if ch.isalnum())
+    return vin if len(vin) == 17 else "Not set"
+
+  def _get_read_vin_text(self) -> str:
+    if self._params.get_bool(NAPParamKeys.RADAR_READ_VIN):
+      return "Reading..."
+    raw = self._params.get(NAPParamKeys.RADAR_VIN_READ_STATUS, return_default=True) or ""
+    if isinstance(raw, bytes):
+      raw = raw.decode("ascii", errors="ignore")
+    status = str(raw).strip()
+    if status.startswith("saved "):
+      return "Cycle car"
+    if status:
+      return status[:18]
+    return "Read"
+
+  def _open_radar(self):
+    self._page = "radar"
+    self._radar_scroller.show_event()
+
+  def _close_radar(self):
+    self._page = "main"
+    self._scroller.show_event()
+
+  def _on_read_vin(self):
+    if ui_state.engaged:
+      dlg = ConfirmDialog(
+        "<h1>Disengage first</h1><br><p>VIN read is blocked while openpilot is engaged.</p>",
+        "OK", cancel_text="Close", rich=True,
+      )
+      gui_app.push_widget(dlg)
+      return
+
+    if not self._params.get_bool(NAPParamKeys.RADAR_ENABLED):
+      dlg = ConfirmDialog(
+        "<h1>Enable radar first</h1><br><p>Read VIN needs radar on. Toggle it and reboot, then try again.</p>",
+        "OK", cancel_text="Close", rich=True,
+      )
+      gui_app.push_widget(dlg)
+      return
+
+    def confirm_callback(result: int):
+      if result == DialogResult.CONFIRM:
+        self._params.put_bool(NAPParamKeys.RADAR_READ_VIN, True)
+
+    content = (
+      "<h1>Read VIN</h1><br>"
+      + "<p>Reads the VIN stored in the radar. Does not write or flash. "
+      + "Leave the car on and do not engage. Power-cycle after it fills.</p>"
+    )
+    dlg = ConfirmDialog(content, "Read", rich=True, callback=confirm_callback)
+    gui_app.push_widget(dlg)
+
+  def _on_radar_vin_click(self):
+    current = self._get_radar_vin_text()
+    self._radar_vin_keyboard.reset(min_text_size=0)
+    self._radar_vin_keyboard.set_title("Donor Radar VIN")
+    self._radar_vin_keyboard.set_text("" if current == "Not set" else current)
+    self._radar_vin_keyboard.set_callback(self._on_radar_vin_submit)
+    gui_app.push_widget(self._radar_vin_keyboard)
+
+  def _on_radar_vin_submit(self, result: DialogResult):
+    if result != DialogResult.CONFIRM:
+      return
+    text = "".join(ch for ch in (self._radar_vin_keyboard.text or "").upper() if ch.isalnum())
+    try:
+      self._params.put(NAPParamKeys.RADAR_DONOR_VIN, text if len(text) == 17 else "")
+    except Exception:
+      pass
+
+  def _on_radar_position(self, index: int):
+    try:
+      self._params.put(NAPParamKeys.RADAR_POSITION, int(index))
+    except Exception:
+      pass
+
+  def _on_radar_epas(self, index: int):
+    try:
+      self._params.put(NAPParamKeys.RADAR_EPAS_TYPE, int(index))
+    except Exception:
+      pass
+
+  def _on_radar_offset_click(self):
+    self._radar_offset_keyboard.reset(min_text_size=1)
+    self._radar_offset_keyboard.set_title("Radar Lateral Offset (m)")
+    self._radar_offset_keyboard.set_text(f"{self._get_radar_offset():.2f}")
+    self._radar_offset_keyboard.set_callback(self._on_radar_offset_submit)
+    gui_app.push_widget(self._radar_offset_keyboard)
+
+  def _on_radar_offset_submit(self, result: DialogResult):
+    if result != DialogResult.CONFIRM:
+      return
+    try:
+      text = (self._radar_offset_keyboard.text or "").strip()
+      value = float(text)
+    except (TypeError, ValueError, AttributeError):
+      return  # silently reject blank/non-numeric input; label stays at prior value
+    value = max(RADAR_OFFSET_MIN, min(RADAR_OFFSET_MAX, value))
+    # Pass raw float (matches the BRAKE_FACTOR put pattern). Params
+    # previously got str(value) which threw inside Params for FLOAT-typed
+    # keys; exception propagated out of the Keyboard Enter callback,
+    # crashing the UI and leaving the Params value unset (label stuck at
+    # the 0.0 default). Keep the try/except so no future value ever kills
+    # the UI.
+    try:
+      self._params.put(NAPParamKeys.RADAR_OFFSET, value)
+    except Exception:
+      pass
+
+  # ── Script runner ──
+
+  def _show_script_runner(self, title: str, instructions: str, script_module: str):
+    """Map sqlite jobs overlay in-process (one screen). Hardware scripts spawn run_script.py."""
+    if not script_reboots_on_exit(script_module):
+      gui_app.push_widget(ScriptRunner(
+        title=title,
+        instructions=instructions,
+        script_module=script_module,
+        on_close=lambda: gui_app.pop_widget(),
+        cwd=BASEDIR,
+      ))
+      return
+
+    script_path = os.path.join(BASEDIR, "scripts", "nap", "run_script.py")
+    log_path = "/tmp/nap_script_runner.log"
+
+    with open(log_path, "w") as log_file:
+      subprocess.Popen(
+        ["python", script_path, title, script_module, instructions],
+        cwd=BASEDIR,
+        start_new_session=True,
+        stdout=log_file,
+        stderr=log_file,
+      )
+
+  # ── Action button callbacks ──
+
+  def _on_install_speed_sign_weights(self):
+    self._show_script_runner(
+      title="Install weights",
+      instructions=INSTALL_SPEED_SIGN_WEIGHTS_INSTRUCTIONS,
+      script_module="scripts.nap.install_speed_sign_weights",
+    )
+
+  def _on_download_us_maps(self):
+    self._show_script_runner(
+      title="Download US Maps",
+      instructions=DOWNLOAD_US_MAPS_INSTRUCTIONS,
+      script_module="scripts.nap.fetch_osm_maps",
+    )
+
+  def _on_refresh_maps(self):
+    self._show_script_runner(
+      title="Refresh maps",
+      instructions=REFRESH_MAPS_INSTRUCTIONS,
+      script_module="scripts.nap.refresh_osm_maps",
+    )
+
+  def _on_calibrate_pedal(self):
+    self._show_script_runner(
+      title="Pedal Calibration",
+      instructions=CALIBRATE_PEDAL_INSTRUCTIONS,
+      script_module="scripts.nap.calibrate_pedal",
+    )
+
+  def _on_live_radar(self):
+    gui_app.push_widget(RadarMonitorDialog())
+
+  def _on_flash_epas(self):
+    self._show_script_runner(
+      title="Flash EPAS Firmware",
+      instructions=FLASH_EPAS_INSTRUCTIONS,
+      script_module="scripts.nap.flash_epas",
+    )
+
+  def _on_backup_epas(self):
+    self._show_script_runner(
+      title="Backup EPAS Firmware",
+      instructions=BACKUP_EPAS_INSTRUCTIONS,
+      script_module="scripts.nap.extract_epas",
+    )
+
+  def _on_restore_epas(self):
+    self._show_script_runner(
+      title="Restore EPAS Firmware",
+      instructions=RESTORE_EPAS_INSTRUCTIONS,
+      script_module="scripts.nap.restore_epas",
+    )
+
+  def _show_reboot_modal(self):
+    """Show a modal prompting the user to reboot for the change to take effect."""
+    def confirm_callback(result: int):
+      if result == DialogResult.CONFIRM:
+        self._params.put_bool("DoReboot", True)
+
+    content = "<h1>Reboot Required</h1><br><p>This change requires a reboot to take effect.</p>"
+    dlg = ConfirmDialog(content, "Reboot", cancel_text="Ignore", rich=True, callback=confirm_callback)
+    gui_app.push_widget(dlg)
+
+  def _on_emergency_disable(self):
+    def confirm_callback(result: int):
+      if result == DialogResult.CONFIRM:
+        self._params.put_bool(NAPParamKeys.PEDAL_ENABLED, False)
+        self._params.put_bool(NAPParamKeys.PEDAL_CALIB_DONE, False)
+        self._refresh_toggles()
+
+    content = (
+      "<h1>Emergency Disable</h1><br>"
+      + "<p>This will disable the pedal interceptor and clear calibration. "
+      + "You will need to restart the device for changes to take effect.</p>"
+    )
+    dlg = ConfirmDialog(content, "Disable", rich=True, callback=confirm_callback)
+    gui_app.push_widget(dlg)
+
+  def _on_reset_defaults(self):
+    def confirm_callback(result: int):
+      if result == DialogResult.CONFIRM:
+        self._reset_all_to_defaults()
+        self._refresh_toggles()
+
+    content = (
+      "<h1>Reset to Defaults</h1><br>"
+      + "<p>This will reset all NAP settings to their factory default values. "
+      + "This action cannot be undone.</p>"
+    )
+    dlg = ConfirmDialog(content, "Reset All", rich=True, callback=confirm_callback)
+    gui_app.push_widget(dlg)
+
+  def _reset_all_to_defaults(self):
+    """Write default value for each NAP param."""
+    for key, default in DEFAULTS.items():
+      if isinstance(default, bool):
+        self._params.put_bool(key, default)
+      elif isinstance(default, (int, float)):
+        self._params.put(key, default)
+    self._params.put("NAPMapSpeedMode", 0)
+    self._params.put("NAPMapSpeedOffsetMph", 0)
+    self._params.put("NAPMapSpeedLookahead", 2)
+    self._params.put("NAPMapSpeedAccel", MAP_SPEED_ACCEL_DEFAULT)
+    self._params.remove("NAPMapSpeedDbPath")
+    self._params.put_bool(NAP_SPEED_SIGN_LOG, False)
+    self._params.put_bool(NAP_DRIVER_LAT_HANDOFF, True)
+    self._params.put_bool(NAP_LOW_VIS_BACKOFF, True)
+    self._params.put_bool(NAP_CONE_LINE_HOLD, True)
+    self._params.put_bool(NAP_CONE_LINE_LOG, True)
+    self._params.put_bool(NAP_OBSTACLE_CHIME, True)
+    self._params.put_bool(NAP_OBSTACLE_LOG, True)
+    self._params.put_bool(NAP_DM_SIMULATE_LOOKING, True)
+    self._params.put_bool(NAP_DM_FALSE_ALERT_IGNORE, False)
+    self._params.put_bool(NAP_HYPERMILE, False)
+    self._params.put_bool(NAP_HYPERMILE_STEP_DOWN, False)
+    self._params.put_bool(NAP_HYPERMILE_HILL_CLIMB, True)
+    self._params.put_bool(NAP_ONE_PEDAL_LONG, False)
+    self._params.remove("NAPHypermileSaved")
+    self._params.put_bool(NAP_FORCE_OFFROAD, False)
+    self._params.put_bool("NAPForceOffroadConfirmed", False)
+    self._params.put_bool("NAPForceOffroadHandoffReady", False)
+    self._page = "main"
+    # Force Pre-AP is locked on in the panel but DEFAULTS keeps it off
+    # for non-UI consumers. Re-apply the lock after the wholesale loop
+    # so reset doesn't silently flip the invariant.
+    self._params.put_bool(NAPParamKeys.FORCE_PRE_AP, True)
+
+  # ── Render / lifecycle ──
+
+  def _render(self, rect):
+    if self._page == "map_speed":
+      self._map_speed_page.render(rect)
+    elif self._page == "driving_mannerisms":
+      self._driving_mannerisms_page.render(rect)
+    elif self._page == "radar":
+      self._radar_back_btn.set_position(rect.x, rect.y + 10)
+      self._radar_back_btn.render()
+      content = rl.Rectangle(
+        rect.x, rect.y + self._radar_back_btn.rect.height + 20,
+        rect.width, rect.height - self._radar_back_btn.rect.height - 20,
+      )
+      self._radar_scroller.render(content)
+    else:
+      self._scroller.render(rect)
+
+  def show_event(self):
+    self._page = "main"
+    self._scroller.show_event()
+    self._refresh_toggles()
+
+  def _refresh_toggles(self):
+    """Sync all toggle states from params (handles external changes)."""
+    for key, item in self._toggle_map.items():
+      item.action_item.set_state(self._params.get_bool(key))
+
+    # Refresh multiple-button selections
+    pedal_bus = self._params.get(NAPParamKeys.PEDAL_CAN_BUS, return_default=True)
+    self._pedal_bus_buttons.action_item.set_selected_button(
+      0 if pedal_bus == 0 else 1)
+
+    brake_factor = self._params.get(NAPParamKeys.BRAKE_FACTOR, return_default=True)
+    self._brake_factor_buttons.action_item.set_selected_button(
+      find_preset_index(BRAKE_FACTOR_PRESETS, brake_factor))
+
+    wiper_setting = coerce_wiper_speed_param(self._params)
+    self._wiper_buttons.action_item.set_selected_button(
+      wiper_speed_button_index(wiper_setting))
+    raw_sens = self._params.get(NAPParamKeys.WIPER_SENSITIVITY, return_default=True)
+    try:
+      sens_setting = WIPER_SENSITIVITY_DEFAULT if raw_sens is None else int(raw_sens)
+    except (TypeError, ValueError):
+      sens_setting = WIPER_SENSITIVITY_DEFAULT
+    self._wiper_sens_buttons.action_item.set_selected_button(
+      max(0, min(len(WIPER_SENSITIVITY_VALUES) - 1, sens_setting)))
+    beam_setting = int(self._params.get(NAPParamKeys.HIGH_LOW_BEAM, return_default=True) or 0)
+    self._beam_buttons.action_item.set_selected_button(
+      max(0, min(len(HIGH_LOW_BEAM_VALUES) - 1, beam_setting)))
+
+    self._driving_mannerisms_page.refresh()
+    self._map_speed_page.refresh()
+    self._install_weights_btn.action_item.set_enabled(ui_state.is_offroad)
+    radar_position = int(self._params.get(NAPParamKeys.RADAR_POSITION, return_default=True) or 0)
+    self._radar_position_buttons.action_item.set_selected_button(max(0, min(2, radar_position)))
+    radar_epas = int(self._params.get(NAPParamKeys.RADAR_EPAS_TYPE, return_default=True) or 0)
+    self._radar_epas_buttons.action_item.set_selected_button(max(0, min(4, radar_epas)))

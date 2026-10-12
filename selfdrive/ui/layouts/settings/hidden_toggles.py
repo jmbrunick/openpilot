@@ -16,13 +16,17 @@ from openpilot.selfdrive.monitoring.dm_toggles import (
   read_exclusive_dm_toggles,
 )
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
+  CONE_LINE_LOG_DESCRIPTION,
   DM_FALSE_ALERT_IGNORE_DESCRIPTION,
   DM_SIMULATE_LOOKING_DESCRIPTION,
   FORCE_OFFROAD_DESCRIPTION,
+  NAP_CONE_LINE_LOG,
   NAP_DM_FALSE_ALERT_IGNORE,
   NAP_DM_SIMULATE_LOOKING,
   NAP_FORCE_OFFROAD,
 )
+from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.system.hardware.nap_force_offroad import apply_force_offroad_toggle
 from openpilot.system.ui.lib.application import gui_app, FontWeight, MousePos
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.button import Button, ButtonStyle
@@ -30,7 +34,7 @@ from openpilot.system.ui.widgets.list_view import ITEM_BASE_HEIGHT, toggle_item
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 
 CARD_WIDTH = 980
-CARD_HEIGHT = 630
+CARD_HEIGHT = 780
 CARD_MARGIN = 24
 HEADER_H = 72
 CLOSE_SIZE = 64
@@ -67,8 +71,14 @@ class HiddenTogglesPopup(Widget):
       initial_state=self._params.get_bool(NAP_DM_FALSE_ALERT_IGNORE),
       callback=self._on_false_alert_ignore,
     )
+    self._cone_log_item = toggle_item(
+      "Cone line log",
+      description=CONE_LINE_LOG_DESCRIPTION,
+      initial_state=self._params.get_bool(NAP_CONE_LINE_LOG),
+      callback=self._on_cone_log,
+    )
     self._scroller = Scroller(
-      [self._offroad_item, self._dm_item, self._fai_item],
+      [self._offroad_item, self._dm_item, self._fai_item, self._cone_log_item],
       line_separator=True,
       spacing=0,
     )
@@ -92,13 +102,17 @@ class HiddenTogglesPopup(Widget):
     self._dm_item.action_item.set_state(sim)
 
   def _on_force_offroad(self, state):
-    self._params.put_bool(NAP_FORCE_OFFROAD, state)
+    apply_force_offroad_toggle(self._params, bool(state), started=bool(ui_state.started))
+
+  def _on_cone_log(self, state):
+    self._params.put_bool(NAP_CONE_LINE_LOG, bool(state))
 
   def refresh(self):
     read_exclusive_dm_toggles(self._params)
     self._dm_item.action_item.set_state(self._params.get_bool(NAP_DM_SIMULATE_LOOKING))
     self._fai_item.action_item.set_state(self._params.get_bool(NAP_DM_FALSE_ALERT_IGNORE))
     self._offroad_item.action_item.set_state(self._params.get_bool(NAP_FORCE_OFFROAD))
+    self._cone_log_item.action_item.set_state(self._params.get_bool(NAP_CONE_LINE_LOG))
 
   def show_event(self):
     super().show_event()
@@ -157,6 +171,8 @@ class HiddenTogglesPopup(Widget):
     if content.height < ITEM_BASE_HEIGHT * 3:
       content.height = ITEM_BASE_HEIGHT * 3
     self._scroller.render(content)
+    # No on the confirm dialog clears the param; keep the switch in sync.
+    self._offroad_item.action_item.set_state(self._params.get_bool(NAP_FORCE_OFFROAD))
 
     if rl.is_key_pressed(rl.KeyboardKey.KEY_ESCAPE):
       self._dismiss()

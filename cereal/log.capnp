@@ -141,11 +141,14 @@ struct OnroadEvent @0xc4fa6047f024e718 {
     teslaCCNotArmed @105;
     pedalNotCalibrated @106;
     pedalUnavailable @107;
-    followDistanceChanged @108;
+    hypermileFollowChanged @108;
     radarPreferFallback @109;
-    # Slot only, so gapLock stays @111 like nap-dev. Not emitted. nap-dev uses this ordinal for the wiper HUD.
-    gapLockOrdinalPadDEPRECATED @110;
+    napWiperChanged @110;
     gapLock @111;
+    lowVisibility @112;
+    obstacleChime @113;
+    preapBrakeLongActive @114;  # Pre-AP: brake switch down while pedal long is still active. Log only.
+    lowVisibilityProlonged @115;  # NAP: low-visibility lateral degrade latched > 45 s. Louder alert.
 
     soundsUnavailableDEPRECATED @47;
   }
@@ -831,6 +834,9 @@ struct ControlsState @0x97ff69c53601abf1 {
   forceDecel @51 :Bool;
   latAuthority @67 :Float32;  # 0-1 NAP lateral actuator authority (Pre-AP driver wheel handoff)
   latHandoffPaused @68 :Bool;  # HUD: yielded or blending below 70% authority
+  lowVisibility @69 :Bool;  # NAP: model/camera blind, lateral eased toward the driver
+  coneLineHold @70 :Bool;   # NAP: re-take is holding the driver's offset near cones
+  coneLineOffset @71 :Float32;  # m, +left, path shift applied (0 when not holding)
 
   lateralControlState :union {
     pidState @53 :LateralPIDState;
@@ -1181,9 +1187,10 @@ struct LongitudinalPlan @0xe00b5b3eba12876c {
   allowBrake @39: Bool;
   napFollowDistance @40 :UInt8;
   tFollow @41 :Float32;
-  # Continuous lead-follow command, logged every frame.
+  # Shadow of the continuous lead-follow controller. Logged every frame,
+  # including while NAPLongUnified is off.
   unifiedATarget @42 :Float32;
-  # Gap lock meters. 0 = time-gap follow. Event: 0 none, 1 engaged, 2 unavailable, 3 lead lost.
+  # Gap lock meters. 0 = time-gap follow. Event: 0 none, 2 unavailable, 3 lead lost.
   gapLockM @43 :Float32;
   gapLockEvent @44 :UInt8;
 
@@ -2578,10 +2585,10 @@ struct Event {
     # DON'T change the ID (e.g. @107)
     # DON'T change which struct it points to
     liveMapDataNAP @107 :Custom.LiveMapDataNAP;
-    customReserved1 @108 :Custom.CustomReserved1;
-    customReserved2 @109 :Custom.CustomReserved2;
-    customReserved3 @110 :Custom.CustomReserved3;
-    customReserved4 @111 :Custom.CustomReserved4;
+    liveSpeedSignNAP @108 :Custom.LiveSpeedSignNAP;
+    coneLineNAP @109 :Custom.ConeLineNAP;
+    pathObstacleNAP @110 :Custom.PathObstacleNAP;
+    pathObstacleVisionNAP @111 :Custom.PathObstacleVisionNAP;
     customReserved5 @112 :Custom.CustomReserved5;
     customReserved6 @113 :Custom.CustomReserved6;
     customReserved7 @114 :Custom.CustomReserved7;

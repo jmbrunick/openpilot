@@ -10,10 +10,12 @@ import cereal.messaging as messaging
 from openpilot.common.constants import CV
 from openpilot.common.git import get_short_branch
 from openpilot.common.realtime import DT_CTRL
+from openpilot.selfdrive.controls.lib.radar_sensor_dirty import sensor_dirty_degraded
 from openpilot.selfdrive.locationd.calibrationd import MIN_SPEED_FILTER
 from openpilot.system.micd import SAMPLE_RATE, SAMPLE_BUFFER
 from openpilot.selfdrive.ui.feedback.feedbackd import FEEDBACK_MAX_DURATION
 from openpilot.system.hardware import HARDWARE
+from openpilot.system.manager.optional_procs import missing_required_processes
 
 AlertSize = log.SelfdriveState.AlertSize
 AlertStatus = log.SelfdriveState.AlertStatus
@@ -329,7 +331,7 @@ def posenet_invalid_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.Sub
 
 
 def process_not_running_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
-  not_running = [p.name for p in sm['managerState'].processes if not p.running and p.shouldBeRunning]
+  not_running = missing_required_processes(sm['managerState'].processes)
   msg = ', '.join(not_running)
   return NoEntryAlert(msg, alert_text_1="Process Not Running")
 
@@ -392,6 +394,34 @@ def modeld_lagging_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubM
   return NormalPermanentAlert("Driving Model Lagging", f"{sm['modelV2'].frameDropPerc:.1f}% frames dropped")
 
 
+def _radar_sensor_dirty_active(sm: messaging.SubMaster) -> bool:
+  """radard tagged radarPreferReason with sensorDirty (radar lead still live)."""
+  try:
+    return sensor_dirty_degraded(getattr(sm['radarState'], 'radarPreferReason', ''))
+  except Exception:
+    return False
+
+
+def radar_prefer_fallback_permanent_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool,
+                                          soft_disable_time: int, personality) -> Alert:
+  if _radar_sensor_dirty_active(sm):
+    return NormalPermanentAlert("Radar Sensor Dirty", "Radar lead still active")
+  return NormalPermanentAlert("Radar Unreliable", "Using camera lead")
+
+
+def radar_prefer_fallback_warning_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool,
+                                        soft_disable_time: int, personality) -> Alert:
+  if _radar_sensor_dirty_active(sm):
+    title, sub = "Radar Sensor Dirty", "Radar lead still active"
+  else:
+    title, sub = "Radar Unreliable", "Using camera lead"
+  return Alert(
+    title,
+    sub,
+    AlertStatus.userPrompt, AlertSize.mid,
+    Priority.MID, VisualAlert.none, AudibleAlert.none, 0.2)
+
+
 def wrong_car_mode_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
   text = "Enable Adaptive Cruise to Engage"
   if CP.brand == "honda":
@@ -425,6 +455,11 @@ def hypermile_follow_changed_alert(CP: car.CarParams, CS: car.CarState, sm: mess
   from openpilot.selfdrive.controls.lib.hypermile import follow_distance_hud_text, read_follow_distance
   from openpilot.common.params import Params
   return NormalPermanentAlert(follow_distance_hud_text(read_follow_distance(Params())), duration=1.5)
+
+
+def nap_wiper_changed_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
+  from openpilot.selfdrive.car.tesla.preap_body_controls import WIPER_HUD_DURATION_S, wiper_hud_text
+  return NormalPermanentAlert(wiper_hud_text(), duration=WIPER_HUD_DURATION_S)
 
 
 def gap_lock_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
@@ -469,6 +504,9 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
 
   EventName.stockFcw: {},
   EventName.actuatorsApiUnavailable: {},
+  # Log only. No HUD text, no chime. A stalk pull resumes long; do not
+  # add a paused note.
+  EventName.preapBrakeLongActive: {},
 
   # ********** events only containing alerts displayed in all states **********
 
@@ -1152,13 +1190,10 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
   },
 
   EventName.radarPreferFallback: {
-    ET.PERMANENT: NormalPermanentAlert("Radar Unreliable", "Using camera lead"),
-    ET.WARNING: Alert(
-      "Radar Unreliable",
-      "Using camera lead",
-      AlertStatus.userPrompt, AlertSize.mid,
-      Priority.MID, VisualAlert.none, AudibleAlert.none, 0.2),
+    ET.PERMANENT: radar_prefer_fallback_permanent_alert,
+    ET.WARNING: radar_prefer_fallback_warning_alert,
   },
+
 
   EventName.userBookmark: {
     ET.PERMANENT: NormalPermanentAlert("Bookmark Saved", duration=1.5),
@@ -1169,7 +1204,6 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
   },
 }
 
-
 # Keep generated EventName.hypermileFollowChanged (@108). nap-release uses
 # followDistanceChanged at the same ordinal — accept either name.
 _hypermile_follow_changed = getattr(EventName, "hypermileFollowChanged", None) or getattr(EventName, "followDistanceChanged", None)
@@ -1179,11 +1213,69 @@ if _hypermile_follow_changed is not None:
     ET.PERMANENT: hypermile_follow_changed_alert,
   }
 
+_nap_wiper_changed = getattr(EventName, "napWiperChanged", None)
+if _nap_wiper_changed is not None:
+  EVENTS[_nap_wiper_changed] = {
+    ET.WARNING: nap_wiper_changed_alert,
+    ET.PERMANENT: nap_wiper_changed_alert,
+  }
+
 _gap_lock = getattr(EventName, "gapLock", None)
 if _gap_lock is not None:
   EVENTS[_gap_lock] = {
     ET.WARNING: gap_lock_alert,
     ET.PERMANENT: gap_lock_alert,
+  }
+
+# One text for model-blind and camera-blind. Warning only: no disable.
+_low_visibility = getattr(EventName, "lowVisibility", None)
+if _low_visibility is not None:
+  EVENTS[_low_visibility] = {
+    ET.WARNING: Alert(
+      "Low visibility",
+      "Take over if needed",
+      AlertStatus.userPrompt, AlertSize.mid,
+      Priority.MID, VisualAlert.steerRequired, AudibleAlert.none, 0.5),
+  }
+
+# Low visibility latched past 45 s: never a silent degraded mode. Louder,
+# repeating prompt and a distinct text. Still a warning, not a disable.
+_low_visibility_prolonged = getattr(EventName, "lowVisibilityProlonged", None)
+if _low_visibility_prolonged is not None:
+  EVENTS[_low_visibility_prolonged] = {
+    ET.WARNING: Alert(
+      "Steering still reduced",
+      "Low visibility over 45 s - steer now",
+      AlertStatus.userPrompt, AlertSize.mid,
+      Priority.HIGH, VisualAlert.steerRequired, AudibleAlert.promptRepeat, 0.5),
+  }
+
+
+def obstacle_chime_alert(CP, CS, sm, metric, soft_disable_time, personality):
+  """Small text only. The wav is selected in soundd from this alert type.
+
+  AudibleAlert stays none so we do not need a new car.capnp ordinal.
+  Permanent: the chime plays whether or not openpilot is engaged.
+  """
+  title = "Object ahead"
+  try:
+    from openpilot.selfdrive.controls.lib.path_obstacle import chime_banner
+    obs = sm['pathObstacleVisionNAP']
+    title = chime_banner(obs.objectClass, obs.zone)
+  except Exception:
+    pass
+  return Alert(
+    title, "",
+    AlertStatus.normal, AlertSize.small,
+    Priority.LOW, VisualAlert.none, AudibleAlert.none, 1.2,
+  )
+
+
+# Permanent only. No enable, no entry block, no disengage.
+_obstacle_chime = getattr(EventName, "obstacleChime", None)
+if _obstacle_chime is not None:
+  EVENTS[_obstacle_chime] = {
+    ET.PERMANENT: obstacle_chime_alert,
   }
 
 

@@ -9,8 +9,10 @@ Documentation for contributors working on NotAutopilot. These are NAP-specific �
 - **[safety-model.md](safety-model.md)** — panda safety invariants for the Pre-AP target
 - **[map-speed.md](map-speed.md)** — OSM map speed → HUD MAX / cruise set speed (comma 3X)
 - **[force-offroad.md](force-offroad.md)** — Settings → triple-tap NAP → Force Offroad / Go Offline (started=false while moving)
-- **[engagement.md](engagement.md)** — stalk FSM, pedal-vs-no-pedal engagement paths, brake behavior, driver-wheel lateral handoff (default On; free-wheel yield; emergency hard-brake full cancel; Settings can disable)
-- **[hypermile.md](hypermile.md)** — Hypermile eco snap + Hill Climb (default Off). Stock Follow Distance 1–7 is shared; Hypermile does not own follow.
+- **[speed-sign-log.md](speed-sign-log.md)** — on-drive MUTCD speed-sign JSONL logger (log-only, default off)
+- **[engagement.md](engagement.md)** — stalk FSM, pedal-vs-no-pedal engagement paths, brake behavior, driver-wheel lateral handoff (default On; intent-to-steer yield; emergency hard-brake full cancel; Settings can disable)
+- **[hypermile.md](hypermile.md)** — Hypermile eco snap + Hill Climb (nap-dev experimental, default Off). Stock Follow Distance 1–7 is shared; Hypermile does not own follow.
+- **[nap-dash.md](nap-dash.md)** — comma web UI at `http://100.99.9.1/` (Params + `/api/software`, no cereal). Hotspot `100.99.9.0/24`. Optional process. Flash `cursor/mcu-web-ui-c588`. Do not merge until Justin confirms.
 
 ## Layout
 

@@ -20,15 +20,31 @@ from openpilot.selfdrive.controls.lib.blinker_lateral_pause import (
 )
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 from openpilot.selfdrive.selfdrived.events import Events, ET
+from openpilot.selfdrive.controls.lib.lat_low_visibility import PROLONGED_S as LOW_VIS_PROLONGED_S
 from openpilot.selfdrive.selfdrived.helpers import ExcessiveActuationCheck, preap_not_in_drive_clears_mismatch
+from openpilot.selfdrive.controls.lib.preap_driver_brake import (
+  BrakeLongOverlap,
+  brake_signal_disables,
+  driver_brake_applied,
+  preap_pedal_long,
+)
+from openpilot.selfdrive.selfdrived.housekeeping_comm import (
+  HOUSEKEEPING_SERVICES,
+  classify_comm_issue,
+  device_health_events,
+  device_state_seen,
+  housekeeping_silent_services,
+)
 from openpilot.selfdrive.selfdrived.preap_regen import (
-  PreAPChimeState, RegenDemandCheck, gas_should_user_disable, update_preap_chimes,
+  PreAPChimeState, RegenDemandCheck, gas_should_user_disable, orphan_pull_requests_enable,
+  update_preap_chimes,
 )
 from openpilot.selfdrive.selfdrived.state import StateMachine
 from openpilot.selfdrive.selfdrived.alertmanager import AlertManager, set_offroad_alert
 
 from openpilot.system.version import get_build_metadata
 from openpilot.system.hardware import HARDWARE
+from openpilot.system.manager.optional_procs import missing_required_processes
 
 REPLAY = "REPLAY" in os.environ
 SIMULATION = "SIMULATION" in os.environ
@@ -82,27 +98,37 @@ class SelfdriveD:
     # TODO: de-couple selfdrived with card/conflate on carState without introducing controls mismatches
     self.car_state_sock = messaging.sub_sock('carState', timeout=20)
 
-    ignore = self.sensor_packets + self.gps_packets + ['alertDebug', 'lateralManeuverPlan']
+    ignore = self.sensor_packets + self.gps_packets + ['alertDebug', 'lateralManeuverPlan', 'pathObstacleNAP', 'pathObstacleVisionNAP']
     if SIMULATION:
       ignore += ['driverCameraState', 'managerState']
     if REPLAY:
       # no vipc in replay will make them ignored anyways
       # sanitized fixtures omit driverCameraState/managerState; ignore them in replay
       ignore += ['roadCameraState', 'wideRoadCameraState', 'driverCameraState', 'managerState']
+    # deviceState and managerState are housekeeping. A few seconds of silence
+    # there must not fail the strict alive/freq/valid checks (commIssue).
+    # A real death is handled below with a 10 s receive-timestamp window.
+    ignore += list(HOUSEKEEPING_SERVICES)
     self.sm = messaging.SubMaster(['deviceState', 'pandaStates', 'peripheralState', 'modelV2', 'liveCalibration',
                                    'carOutput', 'driverMonitoringState', 'longitudinalPlan', 'livePose', 'liveDelay',
                                    'managerState', 'liveParameters', 'radarState', 'liveTorqueParameters',
                                    'controlsState', 'carControl', 'driverAssistance', 'alertDebug', 'userBookmark', 'audioFeedback',
-                                   'lateralManeuverPlan'] + \
+                                   'lateralManeuverPlan', 'pathObstacleVisionNAP'] + \
                                    self.camera_packets + self.sensor_packets + self.gps_packets,
                                   ignore_alive=ignore, ignore_avg_freq=ignore,
                                   ignore_valid=ignore, frequency=int(1/DT_CTRL))
 
     # read params
     self.is_metric = self.params.get_bool("IsMetric")
+    self._low_vis_s = 0.0
     self.is_ldw_enabled = self.params.get_bool("IsLdwEnabled")
     self.disengage_on_accelerator = self.params.get_bool("DisengageOnAccelerator")
     self.one_pedal_long = self.params.get_bool("NAPOnePedalLong")
+    self.obstacle_chime = True
+    try:
+      self.obstacle_chime = bool(self.params.get_bool("NAPObstacleChime"))
+    except Exception:
+      self.obstacle_chime = True
 
     car_recognized = self.CP.brand != 'mock'
 
@@ -129,6 +155,9 @@ class SelfdriveD:
     self.not_running_prev = None
     self.experimental_mode = False
     self.personality = self.params.get("LongitudinalPersonality", return_default=True)
+    self._follow_hud_dist = None
+    self._follow_hud_until = 0.0
+    self._wiper_hud_until = 0.0
     self.recalibrating_seen = False
     self.dm_lockout_set = False
     self.dm_uncertain_alerted = False
@@ -136,8 +165,7 @@ class SelfdriveD:
     self.rk = Ratekeeper(100, print_delay_threshold=None)
     self.prev_preap_chimes = PreAPChimeState()
     self.preap_regen_demand = RegenDemandCheck()
-    self._follow_hud_dist = None
-    self._follow_hud_until = 0.0
+    self.preap_brake_long = BrakeLongOverlap()
 
     # Determine startup event
     self.startup_event = EventName.startup if build_metadata.openpilot.comma_remote and build_metadata.tested_channel else EventName.startupMaster
@@ -243,25 +271,55 @@ class SelfdriveD:
         )
         if chimes.long_engage:
           self.events.add(EventName.pedalCruiseEnabled)
-        elif chimes.long_disengage:
+        elif chimes.long_disengage and self.enabled:
+          # A session openpilot never took (startup / noEntry) must reset
+          # quietly. A real cancel still chimes: self.enabled is still true
+          # until the state machine runs after this.
           self.events.add(EventName.pedalCruiseDisabled)
+        set_press = any(be.type == ButtonType.setCruise and be.pressed for be in CS.buttonEvents)
+        use_pedal = True
+        if set_press:
+          try:
+            use_pedal = bool(self.params.get_bool("NAPPedalEnabled"))
+          except Exception:
+            use_pedal = True
+        if orphan_pull_requests_enable(
+            cruise_enabled=bool(CS.cruiseState.enabled),
+            op_enabled=bool(self.enabled),
+            set_pressed=set_press,
+            use_pedal=use_pedal,
+            long_on=bool(getattr(CS, "enableLongControl", False)),
+        ):
+          self.events.add(EventName.pcmEnable)
 
         # Two shapes of "regen is not enough, add friction brake": the carstate
         # flag covers weak regen under-delivering an in-envelope request; the
         # demand check covers a planned deceleration the envelope cannot cover,
-        # which the clamped actuator request hides from the car entirely.
-        # Only prompt when the post-guard command is also pinned at the rail.
+        # which the clamped actuator request hides from the car entirely. It
+        # only triggers while the post-guard command is also at the rail.
         regen_demand_overflow = self.preap_regen_demand.update(
           pedal_long_active=pedal_long_active,
-          brake_pressed=CS.brakePressed,
+          brake_pressed=driver_brake_applied(CS),
           a_target=float(self.sm['longitudinalPlan'].aTarget),
           v_ego=CS.vEgo,
           a_cmd=float(self.sm['carControl'].actuators.accel),
         )
         if getattr(CS, 'pedalMaxRegen', False) or regen_demand_overflow:
           self.events.add(EventName.pedalMaxRegen)
+        # Pedal RELEASE is the next 50 Hz command. Longer overlap is a
+        # regression. Log it; do not alert or chime.
+        fault, rising = self.preap_brake_long.update(
+          driver_brake=driver_brake_applied(CS),
+          pedal_long_active=bool(getattr(CS, "pedalLongActive", False)),
+          dt=DT_CTRL,
+        )
+        if fault:
+          self.events.add(EventName.preapBrakeLongActive)
+          if rising:
+            cloudlog.error("preapBrakeLongActive: driver brake down while pedal long still active")
       else:
         self.prev_preap_chimes = PreAPChimeState()
+        self.preap_brake_long.reset()
 
       if self.CP.notCar:
         # wait for everything to init first
@@ -276,15 +334,20 @@ class SelfdriveD:
       # This mirrors expected "steering-only on brake" behavior for pedal-long cars.
       # One-Pedal Long On: rising gas is that same silent long pause, never
       # EventName.pedalPressed USER_DISABLE / full session cancel.
-      brake_or_regen_disable = (
-        (CS.brakePressed and (not self.CS_prev.brakePressed or not CS.standstill)) or
-        (CS.regenBraking and (not self.CS_prev.regenBraking or not CS.standstill))
-      )
-      preap_steering_only_brake = (
-        self.CP.brand == "tesla"
-        and self.CP.carFingerprint == "TESLA_MODEL_S_PREAP"
-        and self.CP.openpilotLongitudinalControl
-        and not self.CP.pcmCruise
+      # Pre-AP reads driverBrakeApplied. brakePressed stays false so this
+      # path cannot see the pedal, and a true brakePressed must not be
+      # treated as the switch. The Pre-AP branch below is long-only
+      # (gasPressedOverride): lateral stays, a stalk pull resumes long.
+      preap_steering_only_brake = preap_pedal_long(self.CP)
+      brake_or_regen_disable = brake_signal_disables(
+        preap_pedal=preap_steering_only_brake,
+        driver_brake=driver_brake_applied(CS),
+        prev_driver_brake=driver_brake_applied(self.CS_prev),
+        brake_pressed=bool(CS.brakePressed),
+        prev_brake_pressed=bool(self.CS_prev.brakePressed),
+        regen_braking=bool(CS.regenBraking),
+        prev_regen_braking=bool(self.CS_prev.regenBraking),
+        standstill=bool(CS.standstill),
       )
       gas_disable = (
         CS.gasPressed and not self.CS_prev.gasPressed
@@ -301,17 +364,22 @@ class SelfdriveD:
         else:
           self.events.add(EventName.pedalPressed)
 
-    # Create events for temperature, disk space, and memory
-    if self.sm['deviceState'].thermalStatus >= ThermalStatus.overheated:
-      self.events.add(EventName.overheat)
-    if self.sm['deviceState'].freeSpacePercent < 7 and not SIMULATION:
-      self.events.add(EventName.outOfSpace)
-    if self.sm['deviceState'].memoryUsagePercent > 90 and not SIMULATION:
-      self.events.add(EventName.lowMemory)
+    # Temperature, disk space, and memory come from the last deviceState.
+    # SubMaster keeps that sample while hardwared's publish loop stalls;
+    # alive/freq going false must not zero these or hide a real overheat.
+    ds = self.sm['deviceState']
+    ds_seen = device_state_seen(self.sm.recv_time['deviceState'], self.sm.logMonoTime['deviceState'])
+    if ds_seen:
+      for health_name in device_health_events(
+        ds.thermalStatus, ds.freeSpacePercent, ds.memoryUsagePercent,
+        simulation=SIMULATION, overheated=ThermalStatus.overheated,
+      ):
+        self.events.add(getattr(EventName, health_name))
 
     # Alert if fan isn't spinning for 5 seconds
     if self.sm['peripheralState'].pandaType != log.PandaState.PandaType.unknown:
-      if self.sm['peripheralState'].fanSpeedRpm < 500 and self.sm['deviceState'].fanSpeedPercentDesired > 50:
+      fan_desired = ds.fanSpeedPercentDesired if ds_seen else 0
+      if self.sm['peripheralState'].fanSpeedRpm < 500 and fan_desired > 50:
         # allow enough time for the fan controller in the panda to recover from stalls
         if (self.sm.frame - self.last_functional_fan_frame) * DT_CTRL > 15.0:
           self.events.add(EventName.fanMalfunction)
@@ -335,6 +403,35 @@ class SelfdriveD:
     if self.is_ldw_enabled and self.sm.valid['driverAssistance']:
       if self.sm['driverAssistance'].leftLaneDeparture or self.sm['driverAssistance'].rightLaneDeparture:
         self.events.add(EventName.ldw)
+
+    # Model or camera cannot see the road. Lateral is easing toward the
+    # driver in controlsd; this does not disengage and does not touch long.
+    # A degrade latched past LOW_VIS_PROLONGED_S is never silent: it swaps
+    # to a distinct, louder alert until it releases.
+    if self.enabled and bool(getattr(self.sm['controlsState'], 'lowVisibility', False)):
+      self._low_vis_s += DT_CTRL
+      low_vis = getattr(EventName, 'lowVisibility', None)
+      prolonged = getattr(EventName, 'lowVisibilityProlonged', None)
+      if prolonged is not None and self._low_vis_s + 1e-9 >= LOW_VIS_PROLONGED_S:
+        self.events.add(prolonged)
+      elif low_vis is not None:
+        self.events.add(low_vis)
+    else:
+      self._low_vis_s = 0.0
+
+    # Animal or person chime. Permanent, so it sounds engaged or not.
+    # It does not enter the state machine as a disable or a no-entry.
+    if self.obstacle_chime:
+      try:
+        from openpilot.selfdrive.controls.lib.path_obstacle import should_raise_chime
+        if self.sm.updated['pathObstacleVisionNAP']:
+          obs = self.sm['pathObstacleVisionNAP']
+          if should_raise_chime(obs.chimed, obs.objectClass):
+            chime = getattr(EventName, 'obstacleChime', None)
+            if chime is not None:
+              self.events.add(chime)
+      except Exception:
+        pass
 
     # ******************************************************************************************
     #  NOTE: To fork maintainers.
@@ -407,7 +504,7 @@ class SelfdriveD:
     # All events here should at least have NO_ENTRY and SOFT_DISABLE.
     num_events = len(self.events)
 
-    not_running = {p.name for p in self.sm['managerState'].processes if not p.running and p.shouldBeRunning}
+    not_running = set(missing_required_processes(self.sm['managerState'].processes))
     if self.sm.recv_frame['managerState'] and len(not_running):
       if not_running != self.not_running_prev:
         cloudlog.event("process_not_running", not_running=not_running, error=True)
@@ -442,18 +539,34 @@ class SelfdriveD:
     # generic catch-all. ideally, a more specific event should be added above instead
     has_disable_events = self.events.contains(ET.NO_ENTRY) and (self.events.contains(ET.SOFT_DISABLE) or self.events.contains(ET.IMMEDIATE_DISABLE))
     no_system_errors = (not has_disable_events) or (len(self.events) == num_events)
-    if not self.sm.all_checks() and no_system_errors:
-      if not self.sm.all_alive():
-        self.events.add(EventName.commIssue)
-      elif not self.sm.all_freq_ok():
-        self.events.add(EventName.commIssueAvgFreq)
-      else:
-        self.events.add(EventName.commIssue)
+    # SIMULATION and REPLAY already omit managerState from the strict checks
+    # because it is not published there. Don't newly require it.
+    housekeeping_skip = ("managerState",) if (SIMULATION or REPLAY) else ()
+    housekeeping_silent = housekeeping_silent_services(
+      self.sm.recv_time, self.sm.logMonoTime, time.monotonic(),
+      frame=self.sm.frame, dt=DT_CTRL, skip=housekeeping_skip,
+    )
+    # all_checks ignores deviceState and managerState. Driving services
+    # still use the strict alive / freq / valid results below.
+    comm_kind = None
+    if no_system_errors:
+      comm_kind = classify_comm_issue(
+        all_alive=self.sm.all_alive(),
+        all_freq_ok=self.sm.all_freq_ok(),
+        all_valid=self.sm.all_valid(),
+        housekeeping_silent=housekeeping_silent,
+      )
+    if comm_kind == "commIssue":
+      self.events.add(EventName.commIssue)
+    elif comm_kind == "commIssueAvgFreq":
+      self.events.add(EventName.commIssueAvgFreq)
 
+    if comm_kind is not None:
       logs = {
         'invalid': [s for s, valid in self.sm.valid.items() if not valid],
         'not_alive': [s for s, alive in self.sm.alive.items() if not alive],
         'not_freq_ok': [s for s, freq_ok in self.sm.freq_ok.items() if not freq_ok],
+        'housekeeping_silent': housekeeping_silent,
       }
       if logs != self.logged_comm_issue:
         cloudlog.event("commIssue", error=True, **logs)
@@ -569,9 +682,24 @@ class SelfdriveD:
       if follow_evt is not None:
         self.events.add(follow_evt)
 
+    # NAP wiper Off↔Auto HUD. card/body sets NAPWiperHudPending on the
+    # collar 0→1→0 flick; hold the toast ~2.5 s (same affordance as Follow).
+    try:
+      if self.params.get_bool("NAPWiperHudPending"):
+        from openpilot.selfdrive.car.tesla.preap_body_controls import WIPER_HUD_DURATION_S
+        self._wiper_hud_until = time.monotonic() + float(WIPER_HUD_DURATION_S)
+        self.params.put_bool("NAPWiperHudPending", False)
+    except Exception:
+      pass
+    if time.monotonic() < self._wiper_hud_until:
+      wiper_evt = getattr(EventName, "napWiperChanged", None)
+      if wiper_evt is not None:
+        self.events.add(wiper_evt)
+
     # Gap lock bottom banner only while the planner is pulsing it.
-    # Engaged is about 2 seconds. The under-MAX chip reads gapLockM for
-    # the whole latch and does not use this event.
+    # Engaged is ~2 s (GAP_LOCK_ENGAGED_BANNER_S). Unavailable / lost stay
+    # their short pulse. Soft clears publish no code. The under-MAX chip
+    # reads gapLockM for the whole latch and does not use this event.
     gap_evt = getattr(EventName, "gapLock", None)
     if gap_evt is not None:
       gap_ev = 0
@@ -697,6 +825,10 @@ class SelfdriveD:
       self.is_ldw_enabled = self.params.get_bool("IsLdwEnabled")
       self.disengage_on_accelerator = self.params.get_bool("DisengageOnAccelerator")
       self.one_pedal_long = self.params.get_bool("NAPOnePedalLong")
+      try:
+        self.obstacle_chime = bool(self.params.get_bool("NAPObstacleChime"))
+      except Exception:
+        self.obstacle_chime = True
       self.experimental_mode = self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl
       self.personality = self.params.get("LongitudinalPersonality", return_default=True)
       time.sleep(0.1)

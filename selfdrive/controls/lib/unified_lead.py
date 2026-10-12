@@ -68,6 +68,7 @@ from __future__ import annotations
 
 import math
 
+from openpilot.selfdrive.controls.lib.crossing_vehicle import X2_ROOM_FRAC, X2_V_LEAD_MS, CrossingFollow
 from openpilot.selfdrive.controls.lib.lead_leaving import CLEAR_MARGIN_M, EGO_HALF_WIDTH_M, LEAD_HALF_WIDTH_M
 
 # Same standstill gap long_mpc uses for the follow obstacle.
@@ -206,6 +207,42 @@ OVERSPEED_MAX_MS2 = 1.20  # soft saturation
 TAU_V_S = 0.20
 TAU_A_S = 0.15
 
+# Slow-close comfort lives on the follow inputs, not a post-planner clamp.
+# Closing speed and gap are low-passed. The old 6 m/s "rapid" line is a
+# regime with enter/exit hysteresis and a dwell, so a noisy sample cannot
+# flip the input source. The published command is never softer than the
+# unfiltered law when physics still needs more than the EV mild settle.
+APPROACH_TAU_CLOSE_S = 0.25
+APPROACH_TAU_GAP_S = 0.20
+APPROACH_RAPID_ENTER_MS = 6.0
+APPROACH_RAPID_EXIT_MS = 5.4
+APPROACH_RAPID_DWELL_S = 0.30
+APPROACH_COMFORT_CLOSE_MS = 3.0
+APPROACH_NEED_MARGIN_M = 2.0
+APPROACH_NEED_ROOM_MIN_M = 3.0
+APPROACH_MILD_MS2 = 0.22
+# A lead already braking this hard is not the slow-close comfort path
+# (#222 stays on the unfiltered law).
+APPROACH_BRAKE_A_MS2 = -0.35
+
+# Faster cut-in that is still pulling away. Enter on a new lead id only.
+# While latched the lead cannot cause decel (hold / coast; the existing
+# trickle still caps a chase inside the follow window). MAX, curve, and
+# map limits still apply. Handover is one-way.
+CUTIN_PULL_ENTER_MS = 2.0          # v_lead - v_ego at acquire
+CUTIN_CLOSE_MS = 0.3               # confirmed closing (ego faster than lead)
+CUTIN_CLOSE_HOLD_S = 0.50
+CUTIN_PRED_T_S = 1.5               # lead will be slower than ego within this
+CUTIN_PRED_HOLD_S = 0.30
+CUTIN_VREL_TAU_S = 0.30
+CUTIN_ALEAD_IGNORE_S = 0.75
+CUTIN_HARD_A_MS2 = -1.5
+CUTIN_HARD_FRAMES = 2
+CUTIN_PROJ_T_S = 3.0
+CUTIN_KEEP_M = 6.0
+CUTIN_KEEP_HW_S = 0.3              # keep = 6 m + 0.3 s * v_ego
+CUTIN_HEADWAY_S = 0.4
+
 # Lead-decel anticipation: a_eff = a_lead - min(MAX, T·max(0, -da_lead/dt)·w).
 # w grows continuously with the lead's decel (A0/BAND), short headway
 # (HW/HW_BAND) and the decel onset rate (J0/JBAND). A steady lead adds nothing.
@@ -252,6 +289,12 @@ DEPART_Y1_M = DEPART_Y0_M + 0.7
 # when it is both far and a long time-to-collision away; a remote lead's
 # trust tops out at TRUST_REMOTE and shrinks with lateral offset and a weak
 # read. Decel past the physical need (with margin) is scaled by trust.
+# The path-collapse gate does not cover this. It only blocks a *new*
+# association while lane lines are down and the near path is absurd, and
+# it leaves an already-followed lead alone. A far lead's rapid decel is
+# a different path: the emergency a_lead restore below. That restore, and
+# the lead-brake share of the kinematic floor, require the lead to sit on
+# the predicted path. Close and short-TTC leads (#222) do not.
 TRUST_RANGE_LO_M = 60.0
 TRUST_RANGE_HI_M = 110.0
 TRUST_TTC_LO_S = 4.0
@@ -262,6 +305,14 @@ TRUST_LAT_MIN = 0.35   # at the static depart line
 NEED_KEEP_TF_FRAC = 0.5  # keep distance: standstill + half the follow time
 NEED_MARGIN = 1.25
 NEED_MILD_MS2 = 0.22  # an untrusted lead may always ease at the EV's mild settle
+
+# Far rapid-brake path. Full credit inside our own half-width. None once
+# the lead is past a lane line (drifting out, adjacent lane, or a lateral
+# ghost). Smooth between, so a noisy yRel does not step the command.
+# The controller filters this offset; one frame cannot flip it.
+RAPID_PATH_Y_IN_M = 0.9
+RAPID_PATH_Y_OUT_M = 1.8
+TAU_RAPID_PATH_S = 0.25
 
 
 def _smooth01(x: float) -> float:
@@ -311,12 +362,46 @@ def _k_a_brake_scale(a_lead: float) -> float:
   return K_A_MILD + (K_A_FIRM - K_A_MILD) * t
 
 
-def _braking_alead_weight(slack: float, v_close: float, a_lead: float) -> float:
+def rapid_path_offset_m(y_rel: float, curvature: float, gap: float,
+                        path_lat: float | None = None) -> float:
+  """Lateral distance from the predicted path, in meters.
+
+  `path_lat` wins: a lead in a bend stays on-path even when raw yRel is
+  large, and an adjacent-lane car at yRel ≈ 0 does not. Without a path,
+  curve geometry is taken back out of yRel. A missing reading is 0, which
+  is on-path — do not invent an off-path block.
+  """
+  if path_lat is not None and math.isfinite(float(path_lat)):
+    return abs(float(path_lat))
+  try:
+    y = abs(float(y_rel))
+  except (TypeError, ValueError):
+    return 0.0
+  if not math.isfinite(y):
+    return 0.0
+  lane = abs(0.5 * float(curvature) * float(gap) * float(gap))
+  return max(0.0, y - lane)
+
+
+def rapid_path_credit(y_abs: float) -> float:
+  """1 on the predicted path, 0 once the lead has left it."""
+  if not math.isfinite(float(y_abs)):
+    return 1.0
+  span = max(1e-3, RAPID_PATH_Y_OUT_M - RAPID_PATH_Y_IN_M)
+  return 1.0 - _smooth01((float(y_abs) - RAPID_PATH_Y_IN_M) / span)
+
+
+def _braking_alead_weight(slack: float, v_close: float, a_lead: float,
+                          path_credit: float = 1.0) -> float:
   """How much of a braking lead to copy, in [0, 1].
 
   0 when there is a lot of slack and a long time to the gap, and the lead
   is not braking hard. 1 near the gap, on a short time-to-gap, or when the
-  lead decel is emergency-sized. Positive a_lead is not scaled here.
+  lead decel is emergency-sized. The emergency restore is the far
+  rapid-brake path: it is scaled by path credit, so a far lead that is
+  drifting out, off the predicted path, or a lateral ghost does not firm
+  ego braking. A close or short-TTC lead ignores that credit. Positive
+  a_lead is not scaled here.
   """
   if float(a_lead) >= 0.0:
     return 1.0
@@ -329,9 +414,31 @@ def _braking_alead_weight(slack: float, v_close: float, a_lead: float) -> float:
     ttg = slack_f / max(float(v_close), 0.3)
     short = 1.0 - _smooth01(
       (ttg - ALEAD_FADE_TTG_LO_S) / (ALEAD_FADE_TTG_HI_S - ALEAD_FADE_TTG_LO_S))
+  credit = 1.0 if path_credit is None or not math.isfinite(float(path_credit)) else min(
+    1.0, max(0.0, float(path_credit)))
   emerg = _smooth01(
     (-float(a_lead) - ALEAD_FADE_EMERG_LO_MS2) / (ALEAD_FADE_EMERG_HI_MS2 - ALEAD_FADE_EMERG_LO_MS2))
+  emerg *= credit
   return 1.0 - (1.0 - near) * (1.0 - short) * (1.0 - emerg)
+
+
+def credited_rapid_lead(a_lead: float, slack: float, v_close: float,
+                        path_credit: float) -> float:
+  """Lead accel the kinematic floor may treat as a real in-path stop.
+
+  Near the gap or on a short time-to-gap the whole decel counts (#222).
+  A far rapid decel counts only in proportion to path credit. Off-path,
+  that decel does not deepen the floor, so an inherited firm command is
+  not justified by a lead that is leaving or a radar ghost.
+  """
+  a = float(a_lead)
+  if a >= 0.0:
+    return a
+  base = _braking_alead_weight(slack, v_close, a, path_credit=0.0)
+  credit = 0.0 if path_credit is None or not math.isfinite(float(path_credit)) else min(
+    1.0, max(0.0, float(path_credit)))
+  keep = base + (1.0 - base) * credit
+  return a * keep
 
 
 def lead_decel_anticipation(a_lead: float, lead_jerk: float, gap: float, v_ego: float) -> float:
@@ -380,7 +487,14 @@ def kinematic_room_m(slack: float, v_close: float, t_follow: float, v_lead: floa
   ttg = e / max(v, ALLOW_FADE_V_MIN_MS)
   inside *= 1.0 - _smooth01(ttg / ALLOW_FADE_TTG_S)
   room = outside + inside - REACTION_S * v
-  return max(KIN_ROOM_MIN_M, room)
+  room = max(KIN_ROOM_MIN_M, room)
+  # Stopped or creeping lead: do not shorten the room below three quarters
+  # of the gap past the standstill keep. A fast close was matching far too
+  # early (118 m at 13 m/s asked for about −2 against a −0.8 need). Moving
+  # leads, including every #222 case, skip this.
+  if 0.0 <= float(v_lead) < X2_V_LEAD_MS and e > 0.0:
+    room = max(room, X2_ROOM_FRAC * e)
+  return room
 
 
 def kinematic_required_accel(slack: float, v_close: float, t_follow: float, v_lead: float) -> float:
@@ -559,7 +673,8 @@ def unified_follow_desired(gap: float, v_ego: float, v_lead: float, a_lead: floa
                            model_prob: float | None = None,
                            radar: bool | None = None,
                            gap_set_override_m: float | None = None,
-                           v_curve_cap: float | None = None) -> float:
+                           v_curve_cap: float | None = None,
+                           rapid_path_w: float | None = None) -> float:
   """Unslewed follow accel from filtered lead signals. Continuous in its inputs.
 
   `gap_set_override_m` replaces only the meter setpoint used for slack
@@ -624,7 +739,15 @@ def unified_follow_desired(gap: float, v_ego: float, v_lead: float, a_lead: floa
   # still see a real lead brake, so they do not open just because the
   # command stopped copying it. Near the gap, a short time-to-gap, or an
   # emergency lead decel keeps the full term on the command too.
-  brake_w = _braking_alead_weight(slack, v_close, a_l)
+  if rapid_path_w is None:
+    path_credit = rapid_path_credit(rapid_path_offset_m(y_rel, curvature, gap_f, path_lat))
+  elif not math.isfinite(float(rapid_path_w)):
+    path_credit = 1.0
+  else:
+    path_credit = min(1.0, max(0.0, float(rapid_path_w)))
+  # Far rapid decel is copied only while the lead is on the predicted path.
+  # Near / short-TTC weight does not read path_credit.
+  brake_w = _braking_alead_weight(slack, v_close, a_l, path_credit)
   if a_l < 0.0 and brake_w < 1.0:
     a_pd_cmd = a_gv + k_a * a_l * brake_w
     a_bound_cmd = a_kin + a_l * k_a * brake_w
@@ -661,6 +784,9 @@ def unified_follow_desired(gap: float, v_ego: float, v_lead: float, a_lead: floa
   # Achievable hard decel follows trust: a remote, off-path, or weak lead
   # cannot brake us past what its kinematics need (Sep 28 11:07:22).
   trust = lead_trust(gap_f, v_e, v_l, y_rel, curvature, path_lat, model_prob, radar)
+  # Floor only. The command above already used the unscaled lead accel.
+  # Off-path far rapid decel must not keep a deep floor that re-firms the blend.
+  a_l = credited_rapid_lead(a_l, slack, v_close, path_credit)
   a_cmd = trust_bound(a_cmd, hard_decel_floor(gap_f, v_e, v_l, a_l, t_follow), trust)
 
   # A locked gap is the driver's setpoint. MAX does not hold it back.
@@ -701,6 +827,123 @@ def _limit_jerk(prev: float, target: float, dt: float, *, down: float, up: float
   return float(target)
 
 
+def approach_physics_need(gap: float, v_ego: float, v_lead: float, t_follow: float) -> float:
+  """Decel (<= 0) that stops the close before eating the margin.
+
+  v_close² / (2 · max(slack − margin, room floor)). 0 when not closing.
+  Comfort may not publish a softer command than this when it is firmer
+  than the EV mild settle.
+  """
+  slack = float(gap) - gap_set_m(v_lead, t_follow)
+  v_close = max(0.0, float(v_ego) - float(v_lead))
+  if v_close <= 0.0:
+    return 0.0
+  room = max(slack - APPROACH_NEED_MARGIN_M, APPROACH_NEED_ROOM_MIN_M)
+  return max(A_MIN_MS2, -(v_close * v_close) / (2.0 * room))
+
+
+def lead_free_accel(v_ego: float, v_ceiling: float | None, a_map: float | None,
+                    v_curve_cap: float | None) -> float:
+  """Accel with no lead: hold speed, unless MAX, curve, or map brakes.
+
+  Under a speed cap the ceiling term is positive (accel is allowed). The
+  cut-in hold mins this with the trickled follow command, so a lead that
+  is pulling away is not chased inside the follow window.
+  """
+  a = A_MAX_MS2
+  limited = False
+  if v_ceiling is not None and float(v_ceiling) > 0.5:
+    a = min(a, speed_ceiling_accel(float(v_ego), float(v_ceiling)))
+    limited = True
+  if v_curve_cap is not None and float(v_curve_cap) > 0.5:
+    a = min(a, speed_ceiling_accel(float(v_ego), float(v_curve_cap)))
+    limited = True
+  if a_map is not None:
+    a = min(a, float(a_map))
+    limited = True
+  if not limited:
+    return 0.0
+  return float(a)
+
+
+def projected_gap_m(gap: float, v_ego: float, v_lead: float, a_lead: float,
+                    horizon: float = CUTIN_PROJ_T_S) -> float:
+  """Minimum gap over the next `horizon` seconds at the lead's decel.
+
+  A positive lead accel is not credited: the lead is not assumed to pull
+  away harder than it is pulling away now. With non-positive lead accel
+  the gap parabola opens downward, so the minimum on the window is at an
+  endpoint.
+  """
+  a = min(0.0, float(a_lead))
+  v = float(v_lead) - float(v_ego)
+  g0 = max(0.0, float(gap))
+  g1 = g0 + v * float(horizon) + 0.5 * a * float(horizon) * float(horizon)
+  return min(g0, g1)
+
+
+class ApproachInputs:
+  """Low-pass and hysteresis on the slow-close follow inputs.
+
+  Closing speed and gap are filtered. Crossing the old 6 m/s rapid line
+  takes a dwell, and the exit is lower than the enter, so one noisy
+  sample cannot flip the regime. `use_comfort` is the slow, non-braking
+  close: that is where the filtered gap and closing speed replace the
+  raw sample. A braking lead and a confirmed rapid close stay on the
+  unfiltered law (#222, fast dump).
+  """
+
+  def __init__(self) -> None:
+    self.reset()
+
+  def reset(self) -> None:
+    self.gap_f: float | None = None
+    self.v_close_f: float | None = None
+    self.rapid = False
+    self._enter_s = 0.0
+    self._exit_s = 0.0
+
+  def update(self, gap: float, v_ego: float, v_lead: float, dt: float) -> None:
+    frame = 0.05 if dt is None or float(dt) <= 1e-6 else float(dt)
+    v_close = float(v_ego) - float(v_lead)
+    first = self.v_close_f is None
+    self.gap_f = _filt(self.gap_f, float(gap), frame, APPROACH_TAU_GAP_S)
+    self.v_close_f = _filt(self.v_close_f, v_close, frame, APPROACH_TAU_CLOSE_S)
+    if first:
+      # An obvious rapid close is rapid on the first sample. The dwell
+      # is for the boundary, not for a 13 m/s acquire.
+      self.rapid = v_close >= APPROACH_RAPID_ENTER_MS
+      self._enter_s = 0.0
+      self._exit_s = 0.0
+      return
+    if not self.rapid:
+      if v_close >= APPROACH_RAPID_ENTER_MS:
+        self._enter_s += frame
+        if self._enter_s + 1e-9 >= APPROACH_RAPID_DWELL_S:
+          self.rapid = True
+          self._enter_s = 0.0
+      else:
+        self._enter_s = 0.0
+      self._exit_s = 0.0
+    else:
+      if v_close <= APPROACH_RAPID_EXIT_MS:
+        self._exit_s += frame
+        if self._exit_s + 1e-9 >= APPROACH_RAPID_DWELL_S:
+          self.rapid = False
+          self._exit_s = 0.0
+      else:
+        self._exit_s = 0.0
+      self._enter_s = 0.0
+
+  def use_comfort(self, a_lead: float) -> bool:
+    """True when the filtered inputs should feed the follow law."""
+    if float(a_lead) <= APPROACH_BRAKE_A_MS2:
+      return False
+    if self.rapid or self.v_close_f is None:
+      return False
+    return float(self.v_close_f) >= APPROACH_COMFORT_CLOSE_MS
+
+
 class UnifiedLeadController:
   """Stateful filters, lead confidence, and jerk limit around unified_follow_desired."""
 
@@ -722,6 +965,18 @@ class UnifiedLeadController:
     self.last_confidence = 0.0
     self.last_trust = 1.0
     self.last_floor = A_MIN_MS2
+    self._rapid_y: float | None = None
+    self.last_rapid_path_credit = 1.0
+    self._approach = ApproachInputs()
+    self._cross = CrossingFollow()
+    self.crossing_classified = False
+    self._track_age = 0.0
+    self._vrel_f: float | None = None  # v_lead - v_ego, positive opens
+    self._pullaway = False
+    self._close_s = 0.0
+    self._pred_s = 0.0
+    self._hard_n = 0
+    self.pulling_away = False
 
   @property
   def _cutin_w(self) -> float:
@@ -735,7 +990,8 @@ class UnifiedLeadController:
            path_lat: float | None = None, model_prob: float | None = None,
            radar: bool | None = None, leave_w: float = 0.0,
            gap_set_override_m: float | None = None,
-           v_curve_cap: float | None = None) -> float:
+           v_curve_cap: float | None = None,
+           v_lat: float = 0.0, long_on: bool = True) -> float:
     """One planner frame. Returns the slewed road-relative accel, or 0 with no lead."""
     frame_dt = 0.05 if dt is None or float(dt) <= 1e-6 else float(dt)
     if not present:
@@ -750,30 +1006,130 @@ class UnifiedLeadController:
       self._conf = 0.0
       self._lead_id = lead_id
       # Do not inherit the previous lead's accel. Speed starts at this sample.
+      # A pulling-away cut-in is seeded from the first radar accel so the
+      # 0 → aLeadK step is not read as brake onset. Every other new lead
+      # still ramps from 0: copying a closing lead's decel on the first
+      # frame is the Sep 28 far-lead flash, and a mild opening lead
+      # (about +0.5 m/s, aLeadK near −0.3) keeps the onset the plant
+      # already follows down to the −0.22 settle.
       self._v_f = float(v_lead)
-      self._a_f = 0.0
+      opening0 = float(v_lead) - float(v_ego)
+      if opening0 >= CUTIN_PULL_ENTER_MS:
+        self._a_f = float(a_lead)
+      else:
+        self._a_f = 0.0
       self._lead_jerk = 0.0
+      self._rapid_y = None
+      self._approach.reset()
+      self._track_age = 0.0
+      opening = float(v_lead) - float(v_ego)
+      self._vrel_f = opening
+      # A new lead that is already pulling away does not get lead braking.
+      # An existing lead that later becomes faster does not enter here.
+      self._pullaway = opening >= CUTIN_PULL_ENTER_MS
+      self._close_s = 0.0
+      self._pred_s = 0.0
+      self._hard_n = 0
       if self._prev is None:
         self._prev = float(seed_a)
+
+    # Path consistency for the far rapid-brake path. A one-frame yRel
+    # spike moves this about a fifth of the way, so a ghost flicker does
+    # not firm ego braking and a true in-path lead does not drop out.
+    y_abs = rapid_path_offset_m(y_rel, curvature, gap, path_lat)
+    self._rapid_y = _filt(self._rapid_y, y_abs, frame_dt, TAU_RAPID_PATH_S)
+    path_credit = rapid_path_credit(self._rapid_y)
+    self.last_rapid_path_credit = float(path_credit)
+
+    self._track_age += frame_dt
+    self._approach.update(gap, v_ego, v_lead, frame_dt)
+    opening = float(v_lead) - float(v_ego)
+    self._vrel_f = _filt(self._vrel_f, opening, frame_dt, CUTIN_VREL_TAU_S)
+    self._update_pullaway(frame_dt, float(gap), float(v_ego), float(v_lead), float(a_lead))
 
     self._v_f = _filt(self._v_f, float(v_lead), frame_dt, TAU_V_S)
     a_prev = self._a_f
     self._a_f = _filt(self._a_f, float(a_lead), frame_dt, TAU_A_S)
     jerk_raw = (self._a_f - a_prev) / frame_dt if a_prev is not None else 0.0
     self._lead_jerk = _filt(self._lead_jerk, jerk_raw, frame_dt, LEAD_JERK_TAU_S)
-    a_eff = self._a_f - lead_decel_anticipation(self._a_f, self._lead_jerk, gap, v_ego)
+    # While a pulling-away cut-in is still new, a mild aLeadK is not a
+    # brake we should copy. A hard brake (<= −1.5) is used immediately.
+    ignore_alead = (
+      self._pullaway
+      and self._track_age < CUTIN_ALEAD_IGNORE_S
+      and float(a_lead) > CUTIN_HARD_A_MS2
+    )
+    if ignore_alead:
+      a_eff = 0.0
+    else:
+      a_eff = self._a_f - lead_decel_anticipation(self._a_f, self._lead_jerk, gap, v_ego)
     self.last_v_lead = float(self._v_f)
     self.last_a_lead = float(self._a_f)
     self.last_a_lead_eff = float(a_eff)
+    self._cross.update(
+      dt=frame_dt, lead_id=lead_id, gap=float(gap), y_rel=float(y_rel),
+      v_lead=float(v_lead), v_lat=float(v_lat), model_prob=model_prob, long_on=bool(long_on),
+    )
+    self.crossing_classified = bool(self._cross.classified)
 
-    desired = unified_follow_desired(
-      gap, v_ego, self._v_f, a_eff, t_follow,
+    law_kw = dict(
       v_ceiling=v_ceiling, a_map=a_map, y_rel=y_rel, curvature=curvature,
       path_lat=path_lat, leave_w=leave_w, model_prob=model_prob, radar=radar,
       gap_set_override_m=gap_set_override_m, v_curve_cap=v_curve_cap,
+      rapid_path_w=path_credit,
     )
+    desired = unified_follow_desired(gap, v_ego, self._v_f, a_eff, t_follow, **law_kw)
+    # Slow non-braking close: feed the low-passed gap and closing speed.
+    # If that removes braking physics still needs, keep the unfiltered law.
+    if self._approach.use_comfort(float(a_lead)) and self._approach.v_close_f is not None:
+      v_lead_f = float(v_ego) - float(self._approach.v_close_f)
+      gap_f = float(self._approach.gap_f if self._approach.gap_f is not None else gap)
+      filtered = unified_follow_desired(gap_f, v_ego, v_lead_f, a_eff, t_follow, **law_kw)
+      need = approach_physics_need(gap, v_ego, v_lead, t_follow)
+      # Filtered inputs may ease a command only when physics does not need
+      # it. They must not add braking the unfiltered law did not ask for,
+      # and they must not drop a brake that is still required.
+      if filtered > desired and need < -APPROACH_MILD_MS2:
+        pass
+      elif filtered <= desired:
+        pass
+      else:
+        desired = filtered
+    # Crossing lead: the law sees a smoothed fraction of the closing speed,
+    # so it eases off instead of stopping. A pulling-away cut-in is left
+    # on its own rule. When the exit sweep begins and the driver has not
+    # touched the gas, blend across to the speed-ceiling command.
+    scale = 1.0 if self._pullaway else self._cross.close_scale
+    resume_w = 0.0 if self._pullaway else self._cross.resume_w
+    if scale < 0.999:
+      v_close = max(0.0, float(v_ego) - float(self._v_f))
+      v_law = float(v_ego) - v_close * scale
+      cross_kw = dict(law_kw)
+      cross_kw["leave_w"] = 0.0
+      desired = unified_follow_desired(gap, v_ego, v_law, a_eff, t_follow, **cross_kw)
+    if resume_w > 0.0:
+      free = lead_free_accel(float(v_ego), v_ceiling, a_map, v_curve_cap)
+      desired = (1.0 - resume_w) * float(desired) + resume_w * free
     if a_max is not None:
       desired = min(desired, float(a_max))
+    if self._pullaway:
+      # Zero lead-induced decel. Positive follow stays, already trickled
+      # inside the window, and is capped by the lead-free limit. MAX,
+      # curve, and map braking still apply through that limit. Pin the
+      # blend source so a rising confidence cannot fade the brake back in.
+      free = lead_free_accel(float(v_ego), v_ceiling, a_map, v_curve_cap)
+      desired = min(free, max(float(desired), 0.0))
+      # Inside the follow window a pulling-away lead is not chased.
+      # The existing trickle is the positive cap; a limit brake stays.
+      gap_set = gap_set_m(float(v_lead), t_follow)
+      if gap_set_override_m is not None:
+        gap_set = float(gap_set_override_m)
+      if desired > TRICKLE_A and float(gap) <= gap_set:
+        desired = TRICKLE_A
+      if a_max is not None:
+        desired = min(desired, float(a_max))
+      self._cutin_from = float(desired)
+    self.pulling_away = bool(self._pullaway)
     self.last_desired = desired
 
     v_err = float(self._v_f) - float(v_ego)
@@ -812,7 +1168,9 @@ class UnifiedLeadController:
     # in proportion to trust × confidence. A new or remote lead cannot carry
     # it (Sep 28 11:07:22). MAX / map terms keep their own depth.
     trust = lead_trust(gap, v_ego, self._v_f, y_rel, curvature, path_lat, model_prob, radar)
-    floor = hard_decel_floor(gap, v_ego, self._v_f, self._a_f, t_follow)
+    a_floor_lead = credited_rapid_lead(
+      float(self._a_f), slack, max(0.0, -v_err), path_credit)
+    floor = hard_decel_floor(gap, v_ego, self._v_f, a_floor_lead, t_follow)
     if gap_set_override_m is None and v_ceiling is not None and float(v_ceiling) > 0.5:
       floor = min(floor, speed_ceiling_accel(float(v_ego), float(v_ceiling)))
     if v_curve_cap is not None and float(v_curve_cap) > 0.5:
@@ -825,6 +1183,10 @@ class UnifiedLeadController:
     self.last_floor = float(floor)
     self._cutin_from = trust_bound(self._cutin_from, carry, carry_trust)
     target = ((1.0 - w) * self._cutin_from) + (w * desired)
+    if self._pullaway:
+      # The held command is the blend. Confidence must not fade a lead
+      # brake back in, and the handover later slews from this command.
+      target = float(desired)
     prev = float(self._prev if self._prev is not None else seed_a)
     if fresh:
       prev = trust_bound(prev, carry, carry_trust)
@@ -847,4 +1209,40 @@ class UnifiedLeadController:
     # Once a lead is trusted, the blend-from value follows the published
     # command so a later confidence dip fades toward current behavior.
     self._cutin_from += (nxt - self._cutin_from) * self._conf * min(1.0, frame_dt / MODE_BLEND_S)
+    if self._pullaway:
+      # Pin to the published command so leaving the hold cannot step.
+      self._cutin_from = float(nxt)
     return nxt
+
+  def _update_pullaway(self, dt: float, gap: float, v_ego: float, v_lead: float,
+                       a_lead: float) -> None:
+    """Hold or release the pulling-away cut-in. Release is one-way."""
+    if not self._pullaway:
+      return
+    if float(a_lead) <= CUTIN_HARD_A_MS2:
+      self._hard_n += 1
+    else:
+      self._hard_n = 0
+    v_open = 0.0 if self._vrel_f is None else float(self._vrel_f)
+    if -v_open >= CUTIN_CLOSE_MS:
+      self._close_s += float(dt)
+    else:
+      self._close_s = 0.0
+    pred = v_open + min(float(a_lead), 0.0) * CUTIN_PRED_T_S
+    if pred <= -CUTIN_CLOSE_MS:
+      self._pred_s += float(dt)
+    else:
+      self._pred_s = 0.0
+    keep = CUTIN_KEEP_M + CUTIN_KEEP_HW_S * max(0.0, float(v_ego))
+    headway = float(gap) / max(float(v_ego), 1.0)
+    release = (
+      self._hard_n >= CUTIN_HARD_FRAMES
+      or self._close_s + 1e-9 >= CUTIN_CLOSE_HOLD_S
+      or self._pred_s + 1e-9 >= CUTIN_PRED_HOLD_S
+      or projected_gap_m(gap, v_ego, v_lead, a_lead) < keep
+      or headway < CUTIN_HEADWAY_S
+    )
+    if release:
+      self._pullaway = False
+      self._close_s = 0.0
+      self._pred_s = 0.0

@@ -1,4 +1,5 @@
 """TICI NAP submenu: Driving Mannerisms controls."""
+from openpilot.common.nap_release import ROUNDABOUT_ASSIST_ENABLED
 from openpilot.common.params import Params
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.list_view import toggle_item, multiple_button_item, button_item
@@ -6,7 +7,10 @@ from openpilot.system.ui.widgets.scroller_tici import Scroller
 from openpilot.selfdrive.controls.lib.hypermile import apply_hypermile_toggle
 from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   ADAPTIVE_ACCEL_DESCRIPTION,
+  CONE_LINE_HOLD_DESCRIPTION,
+  OBSTACLE_CHIME_DESCRIPTION,
   DRIVER_LAT_HANDOFF_DESCRIPTION,
+  LOW_VIS_BACKOFF_DESCRIPTION,
   FOLLOW_DISTANCE_CITY_DESCRIPTION,
   FOLLOW_DISTANCE_HWY_DESCRIPTION,
   HYPERMILE_DESCRIPTION,
@@ -14,7 +18,10 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   HYPERMILE_STEP_DOWN_DESCRIPTION,
   MAP_SPEED_ACCEL, MAP_SPEED_ACCEL_DEFAULT, MAP_SPEED_ACCEL_DESCRIPTION,
   MAP_SPEED_ACCEL_LABELS,
+  NAP_CONE_LINE_HOLD,
+  NAP_OBSTACLE_CHIME,
   NAP_DRIVER_LAT_HANDOFF,
+  NAP_LOW_VIS_BACKOFF,
   NAP_HYPERMILE,
   NAP_HYPERMILE_HILL_CLIMB,
   NAP_HYPERMILE_STEP_DOWN,
@@ -23,11 +30,17 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   GAP_LOCK_DESCRIPTION,
   ONE_PEDAL_LONG_DESCRIPTION,
 )
+from openpilot.selfdrive.ui.layouts.settings.nap_lateral import (
+  LAT_REF_OFFSET_DESCRIPTION, LAT_REF_OFFSET_LABELS, LAT_REF_OFFSET_PRESETS,
+  LAT_TURN_GEOM_DESCRIPTION, NAP_LAT_REF_OFFSET, NAP_LAT_TURN_GEOM, lat_ref_offset_index,
+  NAP_TURN_IN_DELAY, TURN_IN_DELAY_DESCRIPTION, TURN_IN_DELAY_LABELS, TURN_IN_DELAY_STEPS, turn_in_delay_index,
+  NAP_ROUNDABOUT_ASSIST, ROUNDABOUT_ASSIST_DESCRIPTION,
+)
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys
 
 
 class DrivingMannerismsLayout(Widget):
-  """Nested NAP page for Hypermile, accel feel, follow distance, and soft-lat."""
+  """Nested NAP page for Hypermile, accel feel, follow distance, soft-lat, turn geometry, roundabout assist."""
 
   def __init__(self, on_back):
     super().__init__()
@@ -95,6 +108,68 @@ class DrivingMannerismsLayout(Widget):
       callback=self._on_lat_handoff,
     )
     self._all_items.append(self._lat_handoff)
+
+    self._low_vis = toggle_item(
+      "Low Visibility Back-off",
+      description=LOW_VIS_BACKOFF_DESCRIPTION,
+      initial_state=self._params.get_bool(NAP_LOW_VIS_BACKOFF),
+      callback=self._on_low_vis,
+    )
+    self._all_items.append(self._low_vis)
+
+    self._cone_hold = toggle_item(
+      "Hold my line near cones",
+      description=CONE_LINE_HOLD_DESCRIPTION,
+      initial_state=self._params.get_bool(NAP_CONE_LINE_HOLD),
+      callback=self._on_cone_hold,
+    )
+    self._all_items.append(self._cone_hold)
+
+    self._obstacle_chime = toggle_item(
+      "Live object detection chime",
+      description=OBSTACLE_CHIME_DESCRIPTION,
+      initial_state=self._params.get_bool(NAP_OBSTACLE_CHIME),
+      callback=self._on_obstacle_chime,
+    )
+    self._all_items.append(self._obstacle_chime)
+
+    self._turn_geom = toggle_item(
+      "Turn Geometry Correction",
+      description=LAT_TURN_GEOM_DESCRIPTION,
+      initial_state=self._params.get_bool(NAP_LAT_TURN_GEOM),
+      callback=self._on_turn_geom,
+    )
+    self._all_items.append(self._turn_geom)
+
+    self._ref_offset_buttons = multiple_button_item(
+      "Rear Reference Offset (m)",
+      LAT_REF_OFFSET_DESCRIPTION,
+      buttons=LAT_REF_OFFSET_LABELS,
+      button_width=110,
+      selected_index=lat_ref_offset_index(self._params),
+      callback=self._on_ref_offset,
+    )
+    self._all_items.append(self._ref_offset_buttons)
+
+    self._turn_in_buttons = multiple_button_item(
+      "Turn-In Timing (low speed)",
+      TURN_IN_DELAY_DESCRIPTION,
+      buttons=TURN_IN_DELAY_LABELS,
+      button_width=72,
+      selected_index=turn_in_delay_index(self._params),
+      callback=self._on_turn_in_delay,
+    )
+    self._all_items.append(self._turn_in_buttons)
+
+    self._rb_assist = toggle_item(
+      "Roundabout Steering Assist",
+      description=ROUNDABOUT_ASSIST_DESCRIPTION,
+      initial_state=self._params.get_bool(NAP_ROUNDABOUT_ASSIST),
+      callback=self._on_rb_assist,
+    )
+    # nap-release: Roundabout Steering Assist is forced off and not offered.
+    if ROUNDABOUT_ASSIST_ENABLED:
+      self._all_items.append(self._rb_assist)
 
     self._one_pedal = toggle_item(
       "One-Pedal Long",
@@ -166,6 +241,27 @@ class DrivingMannerismsLayout(Widget):
   def _on_lat_handoff(self, state):
     self._params.put_bool(NAP_DRIVER_LAT_HANDOFF, state)
 
+  def _on_low_vis(self, state):
+    self._params.put_bool(NAP_LOW_VIS_BACKOFF, state)
+
+  def _on_cone_hold(self, state):
+    self._params.put_bool(NAP_CONE_LINE_HOLD, state)
+
+  def _on_obstacle_chime(self, state):
+    self._params.put_bool(NAP_OBSTACLE_CHIME, state)
+
+  def _on_turn_geom(self, state):
+    self._params.put_bool(NAP_LAT_TURN_GEOM, state)
+
+  def _on_rb_assist(self, state):
+    self._params.put_bool(NAP_ROUNDABOUT_ASSIST, state)
+
+  def _on_ref_offset(self, index: int):
+    self._params.put(NAP_LAT_REF_OFFSET, float(LAT_REF_OFFSET_PRESETS[index]))
+
+  def _on_turn_in_delay(self, index: int):
+    self._params.put(NAP_TURN_IN_DELAY, int(TURN_IN_DELAY_STEPS[index]))
+
   def _gap_lock_on(self) -> bool:
     try:
       return self._params.get_bool(NAP_GAP_LOCK) is True
@@ -196,6 +292,13 @@ class DrivingMannerismsLayout(Widget):
     self._follow_city_buttons.action_item.set_selected_button(max(0, min(6, city - 1)))
     self._follow_hwy_buttons.action_item.set_selected_button(max(0, min(6, hwy - 1)))
     self._lat_handoff.action_item.set_state(self._params.get_bool(NAP_DRIVER_LAT_HANDOFF))
+    self._low_vis.action_item.set_state(self._params.get_bool(NAP_LOW_VIS_BACKOFF))
+    self._cone_hold.action_item.set_state(self._params.get_bool(NAP_CONE_LINE_HOLD))
+    self._obstacle_chime.action_item.set_state(self._params.get_bool(NAP_OBSTACLE_CHIME))
+    self._turn_geom.action_item.set_state(self._params.get_bool(NAP_LAT_TURN_GEOM))
+    self._ref_offset_buttons.action_item.set_selected_button(lat_ref_offset_index(self._params))
+    self._turn_in_buttons.action_item.set_selected_button(turn_in_delay_index(self._params))
+    self._rb_assist.action_item.set_state(self._params.get_bool(NAP_ROUNDABOUT_ASSIST))
     self._one_pedal.action_item.set_state(self._params.get_bool(NAP_ONE_PEDAL_LONG))
     self._gap_lock.action_item.set_state(self._gap_lock_on())
 

@@ -8,9 +8,9 @@ on first read — matches nap-dev default intent.
 PARAM_DM_SIMULATE_LOOKING = "NAPDmSimulateLooking"
 PARAM_DM_FALSE_ALERT_IGNORE = "NAPDmFalseAlertIgnore"
 
-# nap-release Reset-All / missing-param defaults are both Off.
-# Both-On migration (old nap-dev install) still prefers Simulate Look.
-DEFAULT_SIMULATE_LOOKING = False
+# nap-dev Reset-All / missing-param defaults. nap-release keeps both Off
+# in params_keys.h; both-On migration still prefers Simulate Look.
+DEFAULT_SIMULATE_LOOKING = True
 DEFAULT_FALSE_ALERT_IGNORE = False
 
 

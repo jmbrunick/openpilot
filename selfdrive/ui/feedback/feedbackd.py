@@ -12,7 +12,9 @@ ButtonType = car.CarState.ButtonEvent.Type
 def main():
   params = Params()
   pm = messaging.PubMaster(['userBookmark', 'audioFeedback'])
-  sm = messaging.SubMaster(['rawAudioData', 'bookmarkButton', 'carState'])
+  # carState dropped: the steering-button path below is disabled (`if False`),
+  # and carState is at the msgq 15-reader limit.
+  sm = messaging.SubMaster(['rawAudioData', 'bookmarkButton'])
   should_record_audio = False
   block_num = 0
   waiting_for_release = False

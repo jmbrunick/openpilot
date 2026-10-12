@@ -89,15 +89,15 @@ def test_lead_close_hold_covers_status_flicker_and_far_bosch():
 
 
 def test_guard_follow_actuator_regen_when_planner_near_zero():
-  """ef 10:18:42: aTarget ≈ 0 must not dump plant regen to −1.2."""
-  # Planner coasting / rematch chatter: clip firm regen.
-  assert guard_follow_actuator_regen(-1.23, 0.0) == pytest.approx(
-    LEAD_FOLLOW_ACT_REGEN_FLOOR_MS2
-  )
-  assert guard_follow_actuator_regen(-1.50, 0.02) == pytest.approx(
-    -LEAD_APPROACH_MILD_A_MS2
-  )
-  assert guard_follow_actuator_regen(-0.10, 0.0) == pytest.approx(-0.10)
+  """ef 10:18:42: aTarget ≈ 0 must not dump plant regen to −1.2.
+
+  A steady command also must not open the mild settle. That settle is
+  for a command that is already there.
+  """
+  # Planner coasting: clip firm regen to the command, not to −0.22.
+  assert guard_follow_actuator_regen(-1.23, 0.0) == pytest.approx(0.0)
+  assert guard_follow_actuator_regen(-1.50, 0.02) == pytest.approx(0.0)
+  assert guard_follow_actuator_regen(-0.10, 0.0) == pytest.approx(0.0)
   assert guard_follow_actuator_regen(0.0, 0.0) == pytest.approx(0.0)
   # Planner asked for firm / rapid / FCW −a: full authority.
   assert guard_follow_actuator_regen(-1.23, -0.50) == pytest.approx(-1.23)
@@ -228,6 +228,51 @@ def test_lead_follow_slack_is_gap_minus_follow_distance():
   d_follow = t4 * v_lead + STOP_DISTANCE
   assert lead_follow_slack_m(d_follow + 40.0, v_lead, t4) == pytest.approx(40.0)
   assert lead_follow_slack_m(d_follow + 5.0, v_lead, t4) == pytest.approx(5.0)
+
+
+def test_steady_plant_does_not_leak_into_mild_without_a_dwell():
+  """23:16 / 23:22: a steady command must not settle at −0.22.
+
+  The mild settle still applies once the command has dwelled there, and a
+  brief return to coast does not drop it. A firm brake is not mild.
+  """
+  from openpilot.selfdrive.controls.lib.lead_approach import (
+    LEAD_FOLLOW_STEADY_ONLY_MS2,
+    PlantDecelClassifier,
+    plant_follow_floor,
+    plant_regen_effort_limits,
+  )
+
+  clf = PlantDecelClassifier()
+  for _ in range(30):
+    mode = clf.update(0.0, 0.02)
+  assert mode == "steady"
+  assert plant_regen_effort_limits(0.0, (-1.5, 2.0), decel_mode=mode)[0] == pytest.approx(0.0)
+  for _ in range(10):
+    mode = clf.update(-0.22, 0.02)
+  assert mode == "steady"
+  assert plant_follow_floor(-0.22, mode) == pytest.approx(-LEAD_FOLLOW_STEADY_ONLY_MS2)
+  for _ in range(20):
+    mode = clf.update(-0.22, 0.02)
+  assert mode == "mild"
+  assert plant_follow_floor(-0.22, mode) == pytest.approx(-LEAD_APPROACH_MILD_A_MS2)
+  held = plant_regen_effort_limits(-0.22, (-1.5, 2.0), decel_mode=mode)
+  assert held[0] == pytest.approx(-0.22)
+  for _ in range(10):
+    mode = clf.update(0.0, 0.02)
+  assert mode == "mild"
+  assert plant_follow_floor(0.0, mode) == pytest.approx(-0.22)
+  for _ in range(25):
+    mode = clf.update(0.01, 0.02)
+  assert mode == "steady"
+
+  firm = PlantDecelClassifier()
+  for _ in range(40):
+    mode = firm.update(-1.4, 0.02)
+  assert mode == "steady"
+  # A sustained mild sample, with no classifier, is still the settle.
+  assert plant_regen_effort_limits(-0.22, (-1.5, 2.0))[0] == pytest.approx(-0.22)
+  assert plant_regen_effort_limits(0.008, (-1.5, 2.0))[0] == pytest.approx(0.0)
 
 
 def test_residual_window_ignores_one_radar_lsb_and_arms_on_sustained_close():

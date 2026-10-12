@@ -31,13 +31,68 @@ try:
 except Exception:
   Params = None
 
-TETHERING_IP_ADDRESS = "192.168.43.1"
+# Pre-AP Tesla MCU browsers load local pages on 100.99.9.x and not on
+# the usual 192.168.43.0/24 or 10.42.0.0/24 hotspot ranges. NetworkManager
+# persists this profile under system-connections, and UI startup rewrites
+# a stale profile so the subnet survives reboot.
+TETHERING_IP_ADDRESS = "100.99.9.1"
+TETHERING_PREFIX = 24
 DEFAULT_TETHERING_PASSWORD = "swagswagcomma"
+_DBUS_SIG_CHARS = set("ybnqiuxtdhsogva{}()")
 SIGNAL_QUEUE_SIZE = 10
 SCAN_PERIOD_SECONDS = 5
 
 DEBUG = False
 _dbus_call_idx = 0
+
+
+def _dbus_variant(value: Any) -> Any:
+  """Unwrap a jeepney (signature, value) pair. Leave real tuples alone."""
+  if isinstance(value, tuple) and len(value) == 2 and isinstance(value[0], str) and value[0] \
+      and all(ch in _DBUS_SIG_CHARS for ch in value[0]):
+    return value[1]
+  return value
+
+
+def tethering_ipv4_setting(address: str = TETHERING_IP_ADDRESS, prefix: int = TETHERING_PREFIX) -> dict:
+  """IPv4 block for the comma hotspot.
+
+  method=shared NATs clients out through whatever default route the comma
+  already has (LTE or a Wi-Fi uplink). never-default keeps the AP from
+  replacing that route, so normal Wi-Fi client mode and the modem are unchanged.
+  """
+  return {
+    'method': ('s', 'shared'),
+    'address-data': ('aa{sv}', [[
+      ('address', ('s', address)),
+      ('prefix', ('u', prefix)),
+    ]]),
+    'gateway': ('s', address),
+    'never-default': ('b', True),
+  }
+
+
+def ipv4_shared_address(ipv4: dict | None) -> str:
+  """Read the shared hotspot address out of a NetworkManager ipv4 setting."""
+  if not isinstance(ipv4, dict):
+    return ""
+  data = _dbus_variant(ipv4.get("address-data"))
+  if isinstance(data, (list, tuple)):
+    for entry in data:
+      if isinstance(entry, dict):
+        addr = _dbus_variant(entry.get("address"))
+        if isinstance(addr, str) and addr:
+          return addr
+      if isinstance(entry, (list, tuple)):
+        for item in entry:
+          if isinstance(item, (list, tuple)) and len(item) >= 2 and item[0] == "address":
+            addr = _dbus_variant(item[1])
+            if isinstance(addr, str) and addr:
+              return addr
+  gateway = _dbus_variant(ipv4.get("gateway"))
+  if isinstance(gateway, str):
+    return gateway
+  return ""
 
 
 def normalize_ssid(ssid: str) -> str:
@@ -214,6 +269,10 @@ class WifiManager:
       self._init_connections()
       if Params is not None and self._tethering_ssid not in self._connections:
         self._add_tethering_connection()
+        self._init_connections()
+      # Correct an already-saved hotspot (old 192.168.43.1 / 10.42.0.1)
+      # without touching infrastructure or modem profiles.
+      self._ensure_tethering_subnet()
 
       self._init_wifi_state()
 
@@ -609,20 +668,44 @@ class WifiManager:
         'proto': ('as', ['rsn']),
         'psk': ('s', DEFAULT_TETHERING_PASSWORD),
       },
-      'ipv4': {
-        'method': ('s', 'shared'),
-        'address-data': ('aa{sv}', [[
-          ('address', ('s', TETHERING_IP_ADDRESS)),
-          ('prefix', ('u', 24)),
-        ]]),
-        'gateway': ('s', TETHERING_IP_ADDRESS),
-        'never-default': ('b', True),
-      },
+      'ipv4': tethering_ipv4_setting(),
       'ipv6': {'method': ('s', 'ignore')},
     }
 
     settings_addr = DBusAddress(NM_SETTINGS_PATH, bus_name=NM, interface=NM_SETTINGS_IFACE)
     self._router_main.send_and_get_reply(new_method_call(settings_addr, 'AddConnection', 'a{sa{sv}}', (connection,)))
+
+  def _ensure_tethering_subnet(self):
+    """Point a saved hotspot profile at TETHERING_IP_ADDRESS.
+
+    AddConnection only runs when the profile is missing, so a comma that
+    already has the old subnet keeps it until this update. NetworkManager
+    writes the profile to disk. Client-mode and LTE connections are not
+    opened here. If the hotspot is up, reactivate so DHCP follows.
+    """
+    if self._router_main is None:
+      return
+    conn_path = self._connections.get(self._tethering_ssid)
+    if conn_path is None:
+      return
+    try:
+      settings = self._get_connection_settings(conn_path)
+      if len(settings) == 0:
+        return
+      current = ipv4_shared_address(settings.get('ipv4') or {})
+      if current == TETHERING_IP_ADDRESS:
+        return
+      settings['ipv4'] = tethering_ipv4_setting()
+      conn_addr = DBusAddress(conn_path, bus_name=NM, interface=NM_CONNECTION_IFACE)
+      reply = self._router_main.send_and_get_reply(new_method_call(conn_addr, 'Update', 'a{sa{sv}}', (settings,)))
+      if reply.header.message_type == MessageType.error:
+        cloudlog.warning(f'Failed to update hotspot subnet: {reply}')
+        return
+      cloudlog.warning(f'hotspot subnet set to {TETHERING_IP_ADDRESS}/{TETHERING_PREFIX}')
+      if self.is_tethering_active():
+        self.activate_connection(self._tethering_ssid, block=True)
+    except Exception:
+      cloudlog.exception('hotspot subnet update failed')
 
   def connect_to_network(self, ssid: str, password: str, hidden: bool = False):
     self._set_connecting(ssid)

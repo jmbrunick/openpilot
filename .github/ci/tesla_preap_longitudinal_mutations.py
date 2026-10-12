@@ -3,239 +3,27 @@ import subprocess
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
 from pathlib import Path
 
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-LONGCONTROL_TEST_PATH = "selfdrive/controls/tests/test_tesla_preap_longcontrol.py"
-FOLLOWING_TEST_PATH = "selfdrive/controls/tests/test_tesla_preap_following.py"
-GAS_LIFT_TEST_PATH = "selfdrive/controls/tests/test_tesla_preap_gas_lift_handoff.py"
-BRAKE_CANCEL_TEST_PATH = (
-  "selfdrive/controls/tests/test_tesla_preap_brake_cancel_regen.py"
+from tesla_preap_mutation_common import (
+  FOLLOWING_TEST_PATH,
+  HistoricalMutation,
+  LONGCONTROL_TEST_PATH,
+  NOISE_GATE_TEST_NODE,
+  REPO_ROOT,
 )
-NOISE_GATE_TEST_NODE = (
-  "opendbc_repo/opendbc/car/tesla/preap/tests/test_virtual_das.py::TestInnerPID::" +
-  "test_sub_deadband_sign_changing_noise_does_not_accumulate_residual_authority"
-)
-INNER_DEADBAND_TEST_NODE = (
-  "opendbc_repo/opendbc/car/tesla/preap/tests/test_virtual_das.py::TestInnerPID::" +
-  "test_persistent_sub_deadband_error_earns_residual_authority"
-)
-OFFSET_TEST_PATH = "selfdrive/mapd/tests/test_map_speed_offset_slew.py"
-FRONTAGE_TEST_PATH = "selfdrive/mapd/tests/test_map_match_frontage.py"
+from tesla_preap_mutation_defs_a import MUTATIONS_A
+from tesla_preap_mutation_defs_b import MUTATIONS_B
+from tesla_preap_mutation_defs_c import MUTATIONS_C
+from tesla_preap_mutation_defs_d import MUTATIONS_D
+from tesla_preap_mutation_defs_e import MUTATIONS_E
+from tesla_preap_mutation_defs_f import MUTATIONS_F
+from tesla_preap_mutation_defs_g import MUTATIONS_G
+from tesla_preap_mutation_defs_h import MUTATIONS_H
+from tesla_preap_mutation_defs_i import MUTATIONS_I
+from tesla_preap_mutation_defs_j import MUTATIONS_J
 
-
-@dataclass(frozen=True)
-class HistoricalMutation:
-  name: str
-  source_path: str
-  original: bytes
-  replacement: bytes
-  test_nodes: tuple[str, ...]
-
-
-MUTATIONS = (
-  HistoricalMutation(
-    name="gas-lift-keeps-full-engage-grace",
-    source_path="opendbc_repo/opendbc/car/tesla/preap/carcontroller.py",
-    original=b"        if gas_handoff:\n",
-    replacement=b"        if False:\n",
-    test_nodes=(
-      f"{GAS_LIFT_TEST_PATH}::test_gas_lift_after_long_engage_does_not_floor_a_for_half_second",
-    ),
-  ),
-  HistoricalMutation(
-    name="brake-cancel-keeps-interceptor-after-long-drop",
-    source_path="opendbc_repo/opendbc/car/tesla/preap/carcontroller.py",
-    original=b"      authority_requested = pedal_long_allowed and long_active and not brake_pressed and not gas_pressed\n",
-    replacement=b"      authority_requested = pedal_long_allowed and not gas_pressed\n",
-    test_nodes=(
-      f"{BRAKE_CANCEL_TEST_PATH}::test_short_tip_releases_interceptor_immediately",
-    ),
-  ),
-  HistoricalMutation(
-    name="gas-lift-seed-ignores-planner-climb",
-    source_path="opendbc_repo/opendbc/car/tesla/preap/carcontroller.py",
-    original=b"  for candidate in (last_nonneg_a_ego, measured_accel, planner_accel):\n",
-    replacement=b"  for candidate in (last_nonneg_a_ego, measured_accel):\n",
-    test_nodes=(
-      f"{GAS_LIFT_TEST_PATH}::test_gas_lift_open_road_seed_uses_mannerisms_accel_not_only_aego",
-    ),
-  ),
-  HistoricalMutation(
-    name="gas-lift-zero-command-seed",
-    source_path="opendbc_repo/opendbc/car/tesla/preap/carcontroller.py",
-    original=(
-      b"          commanded_accel = gas_lift_handoff_seed_accel(\n" +
-      b"            self.last_nonneg_a_ego,\n" +
-      b"            CS.out.aEgo,\n" +
-      b"            self.engage_a_max,\n" +
-      b"            float(actuators.accel),\n" +
-      b"          )\n"
-    ),
-    replacement=b"          commanded_accel = 0.0\n",
-    test_nodes=(
-      f"{GAS_LIFT_TEST_PATH}::test_gas_lift_after_long_engage_does_not_floor_a_for_half_second",
-    ),
-  ),
-  HistoricalMutation(
-    name="historical-outer-ki",
-    source_path="opendbc_repo/opendbc/car/tesla/preap/constants.py",
-    original=b"PEDAL_LONG_KI_V = [0.0, 0.0, 0.0, 0.0]\n",
-    replacement=b"PEDAL_LONG_KI_V = [0.05, 0.08, 0.10, 0.15]\n",
-    test_nodes=(
-      f"{LONGCONTROL_TEST_PATH}::test_vdas_receives_route_shaped_planner_target_trace_unchanged",
-      f"{LONGCONTROL_TEST_PATH}::test_road_load_history_cannot_reverse_finite_jerk_negative_planner_target",
-      f"{LONGCONTROL_TEST_PATH}::test_negative_planner_target_reaches_regen_side_of_coast_anchor",
-    ),
-  ),
-  HistoricalMutation(
-    name="adaptive-follow-cap-bypassed",
-    source_path="selfdrive/controls/lib/longitudinal_planner.py",
-    original=(
-      b"        cap_strength = get_preap_follow_cap_strength(" +
-      b"v_ego, lead.dRel, lead.vLead, self.t_follow)\n"
-    ),
-    replacement=b"        cap_strength = 0.0\n",
-    test_nodes=(
-      f"{FOLLOWING_TEST_PATH}::" +
-      "test_planner_adaptive_cap_changes_the_delivered_acceleration_for_unequal_speed_lead",
-    ),
-  ),
-  HistoricalMutation(
-    name="longcontrol-feedforward-coupling-bypassed",
-    source_path="selfdrive/controls/lib/longcontrol.py",
-    original=b"                                     feedforward=a_target)\n",
-    replacement=b"                                     feedforward=0.0)\n",
-    test_nodes=(
-      f"{FOLLOWING_TEST_PATH}::test_max_follow_full_closed_loop_recovers_gap_with_production_fallback",
-    ),
-  ),
-  HistoricalMutation(
-    name="hard-inner-error-deadband-restored",
-    source_path="opendbc_repo/opendbc/car/tesla/preap/virtual_das.py",
-    original=b"    error = self._gate_pid_error_noise(error, freeze_integrator)\n",
-    replacement=(
-      b"    if abs(error) < PID_ERROR_DEADBAND:\n" +
-      b"      error = 0.0\n"
-    ),
-    test_nodes=(INNER_DEADBAND_TEST_NODE,),
-  ),
-  HistoricalMutation(
-    name="inner-error-noise-gate-call-bypassed",
-    source_path="opendbc_repo/opendbc/car/tesla/preap/virtual_das.py",
-    original=b"    error = self._gate_pid_error_noise(error, freeze_integrator)\n",
-    replacement=b"    error = error\n",
-    test_nodes=(NOISE_GATE_TEST_NODE,),
-  ),
-  HistoricalMutation(
-    name="negative-handoff-integral-slew-regressed",
-    source_path="opendbc_repo/opendbc/car/tesla/preap/virtual_das.py",
-    original=b"NEGATIVE_HANDOFF_INTEGRAL_SLEW = 0.25  # m/s\xc2\xb3\n",
-    replacement=b"NEGATIVE_HANDOFF_INTEGRAL_SLEW = 0.20  # m/s\xc2\xb3\n",
-    test_nodes=(
-      f"{LONGCONTROL_TEST_PATH}::test_negative_planner_target_reaches_regen_side_of_coast_anchor",
-    ),
-  ),
-  HistoricalMutation(
-    name="grade-effort-compensation-removed",
-    source_path="opendbc_repo/opendbc/car/tesla/preap/virtual_das.py",
-    original=b"      a_limited + steady_grade_compensation + transient_pitch_compensation,\n",
-    replacement=b"      a_limited,\n",
-    test_nodes=(
-      f"{FOLLOWING_TEST_PATH}::test_plant_aligned_full_closed_loop_grade_compensation_holds_speed",
-    ),
-  ),
-  HistoricalMutation(
-    name="grade-effort-compensation-sign-flipped",
-    source_path="opendbc_repo/opendbc/car/tesla/preap/virtual_das.py",
-    original=b"      a_limited + steady_grade_compensation + transient_pitch_compensation,\n",
-    replacement=b"      a_limited - steady_grade_compensation - transient_pitch_compensation,\n",
-    test_nodes=(
-      f"{FOLLOWING_TEST_PATH}::test_plant_aligned_full_closed_loop_grade_compensation_holds_speed",
-    ),
-  ),
-  HistoricalMutation(
-    name="grade-effort-compensation-doubled",
-    source_path="opendbc_repo/opendbc/car/tesla/preap/virtual_das.py",
-    original=b"      a_limited + steady_grade_compensation + transient_pitch_compensation,\n",
-    replacement=(
-      b"      a_limited + 2.0 * steady_grade_compensation " +
-      b"+ 2.0 * transient_pitch_compensation,\n"
-    ),
-    test_nodes=(
-      f"{FOLLOWING_TEST_PATH}::test_plant_aligned_full_closed_loop_grade_compensation_holds_speed",
-    ),
-  ),
-  HistoricalMutation(
-    name="same-direction nudge during ALC treated as takeover",
-    source_path="selfdrive/controls/lib/lane_change_nudge.py",
-    original=(
-      b"  # Same-direction nudge during tipped ALC is the lane-change confirm, not a takeover.\n"
-      b"  if same_direction:\n"
-      b"    return False\n"
-    ),
-    replacement=(
-      b"  # Same-direction nudge during tipped ALC is the lane-change confirm, not a takeover.\n"
-      b"  if same_direction:\n"
-      b"    return True\n"
-    ),
-    test_nodes=(
-      "selfdrive/controls/lib/tests/test_lane_change_nudge.py::"
-      "test_tip_at_45_same_direction_nudge_confirms_through_flash_gap",
-    ),
-  ),
-  HistoricalMutation(
-    name="emergency yank suppressed during ALC",
-    source_path="selfdrive/controls/lib/lane_change_nudge.py",
-    original=(
-      b"  # Emergency yank always releases, including a same-direction yank during ALC.\n"
-      b"  if emergency:\n"
-      b"    return True\n"
-    ),
-    replacement=(
-      b"  # Emergency yank always releases, including a same-direction yank during ALC.\n"
-      b"  if emergency:\n"
-      b"    return False\n"
-    ),
-    test_nodes=(
-      "selfdrive/controls/lib/tests/test_lane_change_nudge.py::"
-      "test_emergency_yank_same_direction_releases_and_cancels",
-    ),
-  ),
-  HistoricalMutation(
-    name="map-offset-double-add-restored",
-    source_path="selfdrive/car/card.py",
-    original=b"  return (float(displayed_kph) - float(offset_kph)) * CV.KPH_TO_MS\n",
-    replacement=b"  return float(displayed_kph) * CV.KPH_TO_MS\n",
-    test_nodes=(
-      f"{OFFSET_TEST_PATH}::test_engage_mph_offset_is_limit_plus_offset_after_1s",
-      f"{OFFSET_TEST_PATH}::test_engage_kph_offset_is_limit_plus_offset_after_1s",
-      f"{OFFSET_TEST_PATH}::test_posted_raise_keeps_single_offset",
-    ),
-  ),
-  HistoricalMutation(
-    name="current-way-stickiness-removed",
-    source_path="selfdrive/mapd/osm_db.py",
-    original=(
-      b"    \"\"\"Keep the previous way unless a candidate is clearly closer for several lookups.\"\"\"\n"
-      b"    if prev_dist_m > STICK_KEEP_M or not heading_aligned:\n"
-      b"      return False\n"
-      b"    if closer_m >= STICK_SWITCH_CLOSER_M and pending_lookups >= STICK_SWITCH_LOOKUPS:\n"
-      b"      return False\n"
-      b"    return True\n"
-    ),
-    replacement=(
-      b"    \"\"\"Keep the previous way unless a candidate is clearly closer for several lookups.\"\"\"\n"
-      b"    _ = prev_dist_m, heading_aligned, closer_m, pending_lookups\n"
-      b"    return False\n"
-    ),
-    test_nodes=(
-      f"{FRONTAGE_TEST_PATH}::test_nearer_parallel_road_does_not_steal_without_clear_advantage",
-    ),
-  ),
-)
+MUTATIONS = MUTATIONS_A + MUTATIONS_B + MUTATIONS_C + MUTATIONS_D + MUTATIONS_E + MUTATIONS_F + MUTATIONS_G + MUTATIONS_H + MUTATIONS_I + MUTATIONS_J
 
 
 class JUnitReportError(RuntimeError):

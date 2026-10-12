@@ -160,7 +160,9 @@ class BlinkerLateralHold:
 
   def update(self, left_blinker, right_blinker, steering_pressed, *,
              engaged=True, dt=None, alc_active=False, v_ego=0.0,
-             stalk_state=0, steering_disengage=False) -> bool:
+             stalk_state=0, steering_disengage=False, driver_turn=False) -> bool:
+    """``driver_turn``: controlsd's lane-change turn mode (lane_change_turn).
+    Treated like a latched stalk: a driver turn, not ALC keep-alive."""
     if dt is None:
       dt = DT_CTRL
 
@@ -187,7 +189,7 @@ class BlinkerLateralHold:
     # Physical stalk held long enough: driver turn. Pause even if
     # DesireHelper still has ALC armed for a frame. While the stalk is
     # still LEFT/RIGHT, do not count flash-gap dark toward turn-end.
-    if stalk_is_turn:
+    if stalk_is_turn or driver_turn:
       self._alc_keep = False
       self._alc_dark_s = 0.0
       self._alc_direction = 0
@@ -212,6 +214,11 @@ class BlinkerLateralHold:
           self._alc_keep = False
           self._alc_dark_s = 0.0
           self._alc_direction = 0
+          # Lane change ended with the driver still steering (e.g. turned
+          # at the intersection mid-change): same post-turn hand-on hold,
+          # so a hands-on edge does not USER_DISABLE until they let go.
+          if steering_pressed:
+            self.holding = True
       else:
         # Still the ALC keep-alive (or its leftover flashes), including gaps.
         self._alc_dark_s = 0.0
@@ -257,7 +264,7 @@ def lat_active_with_blinker_pause(*, active, steer_fault_temporary, steer_fault_
                                   steering_pressed=False, hold=None, dt=None,
                                   alc_active=False, v_ego=0.0, stalk_state=0,
                                   steering_disengage=False, engaged=None,
-                                  soft_lat_on=False) -> bool:
+                                  soft_lat_on=False, driver_turn=False) -> bool:
   """Blinker lamp latch vs latActive.
 
   Always updates *hold* so a driver-turn (not ALC tip/keep-alive) is
@@ -274,7 +281,8 @@ def lat_active_with_blinker_pause(*, active, steer_fault_temporary, steer_fault_
     paused = hold.update(left_blinker, right_blinker, steering_pressed,
                          engaged=bool(engaged), dt=dt, alc_active=alc_active,
                          v_ego=v_ego, stalk_state=stalk_state,
-                         steering_disengage=steering_disengage)
+                         steering_disengage=steering_disengage,
+                         driver_turn=driver_turn)
   else:
     gated = pause_gated_by_alc(alc_active=alc_active)
     paused = blinker_pauses_lateral(left_blinker, right_blinker) and not gated

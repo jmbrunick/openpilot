@@ -241,6 +241,23 @@ LEAD_FOLLOW_STEADY_A_MS2 = LEAD_APPROACH_MILD_A_MS2 + LEAD_FOLLOW_STEADY_EPS_MS2
 LEAD_FOLLOW_ACT_REGEN_FLOOR_MS2 = -LEAD_APPROACH_MILD_A_MS2
 
 
+# #232 widened one band to MILD+ε, so a steady command (aTarget ≈ 0)
+# opened the mild settle. The old steady band is the plant cap until the
+# command has actually dwelled at the settle. 23:16:45 / 23:22:48 CT.
+LEAD_FOLLOW_STEADY_ONLY_MS2 = 0.08
+
+
+# At or below this, and still above a firm brake, the command is asking
+# for the EV mild settle rather than steady following.
+LEAD_PLANT_MILD_ENTER_MS2 = 0.16
+
+
+LEAD_PLANT_MILD_DWELL_S = 0.40
+
+
+LEAD_PLANT_STEADY_DWELL_S = 0.40
+
+
 LEAD_FOLLOW_ACT_REGEN_CMD_MS2 = -0.50
 
 
@@ -348,11 +365,15 @@ def guard_follow_actuator_regen(actuator_a, planner_a, v_rel=None, d_rel=None,
 
   ef 10:18:42: aTarget ≈ 0 while actuators.accel hit −1.23. 18:09 /
   18:10: a coasting or MILD aTarget still reached the Pre-AP regen rail.
-  When |aTarget| is inside the steady band (through MILD + ε), clip
-  the actuator to the MILD slight-lift floor. Mid-gap slow close /
-  settle hard-caps to that floor even if the planner command is
-  already a cliff — PID / feedforward windup must not full-lift.
-  Near-gap match-aLead is a real brake and is not that hard cap.
+  A steady command is held in the steady band. It does not open the
+  mild settle. A command already on that settle is clipped to it, and
+  the plant dwells before a flicker can leak steady following into mild.
+  A non-braking mid-gap close follows the planner command. The old
+  −0.22 / −0.45 comfort cap on that case is retired: it stepped off
+  at 6 m/s of closing speed and then released into a late slam.
+  Firm-lead and #222 residual closes still hard-cap, and the latch
+  keeps a firm plan from falling back to MILD. Near-gap match-aLead
+  is a real brake and is not that hard cap.
   Planner ≤ −0.5 outside that settle, FCW, confirmed rapid, and
   near-bumper pass through.
   """
@@ -389,25 +410,128 @@ def guard_follow_actuator_regen(actuator_a, planner_a, v_rel=None, d_rel=None,
       kin = lead_kinematic_approach_a(v_rel, slack, a_lead)
       if kin is not None:
         floor = min(floor, kin)
+      # Non-braking slow close: do not hold the actuator at the mild
+      # settle or the −0.45 kinematic cap after the follow law has
+      # already chosen the brake. That post-planner clamp is what let a
+      # 25 mph lead close to ~7 m (closing just under 6 m/s, slack still
+      # 8–50 m). Comfort for this case is the follow law's own filtered
+      # inputs. The floor may not be softer than the planner command.
+      # A coast or a command already on the mild settle is not below the
+      # floor, so plant windup protection is unchanged. Firm leads and
+      # #222 residuals keep the cap; the latch owns that cliff.
+      if (p < floor
+          and not lead_firm_alead(a_lead)
+          and not lead_rising_or_residual_brake(
+            v_rel, prev_v_rel, a_ego, dt)):
+        floor = p
     return a if a >= floor else floor
   if p <= LEAD_FOLLOW_ACT_REGEN_CMD_MS2:
     return a
   if abs(p) > LEAD_FOLLOW_STEADY_A_MS2:
     return a
-  # Coast allows a slight lift. A command already at or below that
-  # floor is tracked, but the plant may not go past it to the rail.
-  allowed = p if p < floor else floor
+  # Steady following does not open the mild settle. A command that is
+  # already at that settle still cannot reach the regen rail.
+  allowed = plant_follow_floor(p, instant_plant_decel_mode(p))
   return a if a >= allowed else allowed
 
 
+def instant_plant_decel_mode(planner_a) -> str:
+  """STEADY or MILD from one command, for a sustained sample.
+
+  A coast or a small ease is steady. A command sitting on the EV settle
+  is mild. A firm brake is not classified here; callers leave the rail
+  open before asking.
+  """
+  try:
+    p = float(planner_a)
+  except (TypeError, ValueError):
+    return "steady"
+  if not math.isfinite(p):
+    return "steady"
+  if LEAD_FOLLOW_ACT_REGEN_CMD_MS2 < p <= -LEAD_PLANT_MILD_ENTER_MS2:
+    return "mild"
+  return "steady"
+
+
+def plant_follow_floor(planner_a, mode: str) -> float:
+  """Deepest plant accel a steady or mild command may use.
+
+  MILD holds the EV settle (−0.22) and tracks a command that is already
+  below it, still inside the band that reaches this helper. STEADY tracks
+  a small negative command and never opens that settle: a zero command
+  stays at 0, and a not-yet-confirmed dip toward −0.22 is held at the
+  old steady band.
+  """
+  try:
+    p = float(planner_a)
+  except (TypeError, ValueError):
+    p = 0.0
+  if not math.isfinite(p):
+    p = 0.0
+  mild = LEAD_FOLLOW_ACT_REGEN_FLOOR_MS2
+  if mode == "mild":
+    return p if p < mild else mild
+  if p >= -LEAD_FOLLOW_STEADY_ONLY_MS2:
+    return min(p, 0.0)
+  if p > mild:
+    return p
+  return -LEAD_FOLLOW_STEADY_ONLY_MS2
+
+
+class PlantDecelClassifier:
+  """Dwell between STEADY and MILD so following does not leak the settle.
+
+  Enter MILD only after the command has sat on the EV settle. Leave only
+  after it has sat back in the steady band. The band between the two
+  holds the current mode, and a firm brake freezes it: that command is
+  neither a mild settle nor a return to steady.
+  """
+
+  def __init__(self) -> None:
+    self.mode = "steady"
+    self._dwell_s = 0.0
+
+  def reset(self) -> None:
+    self.mode = "steady"
+    self._dwell_s = 0.0
+
+  def update(self, planner_a, dt) -> str:
+    try:
+      p = 0.0 if planner_a is None else float(planner_a)
+    except (TypeError, ValueError):
+      p = 0.0
+    if not math.isfinite(p):
+      p = 0.0
+    frame = 0.02 if dt is None or float(dt) <= 1e-6 else float(dt)
+    if p <= LEAD_FOLLOW_ACT_REGEN_CMD_MS2:
+      self._dwell_s = 0.0
+      return self.mode
+    want_mild = p <= -LEAD_PLANT_MILD_ENTER_MS2
+    want_steady = p >= -LEAD_FOLLOW_STEADY_ONLY_MS2
+    if self.mode != "mild" and want_mild:
+      self._dwell_s += frame
+      if self._dwell_s + 1e-9 >= LEAD_PLANT_MILD_DWELL_S:
+        self.mode = "mild"
+        self._dwell_s = 0.0
+    elif self.mode != "steady" and want_steady:
+      self._dwell_s += frame
+      if self._dwell_s + 1e-9 >= LEAD_PLANT_STEADY_DWELL_S:
+        self.mode = "steady"
+        self._dwell_s = 0.0
+    else:
+      self._dwell_s = 0.0
+    return self.mode
+
+
 def plant_regen_effort_limits(a_cmd, limits, *, steady_grade=0.0, transient=0.0,
-                              descent=False, pid_room=0.0):
+                              descent=False, pid_room=0.0, decel_mode=None):
   """VirtualDAS effort bounds while the command is coast or mild.
 
-  Returns `limits` unchanged when the command is a firm brake. A
-  coasting / MILD command cannot use the regen rail: the lower bound
-  rises to the slight-lift floor. An existing tighter bound (engage
-  grace) is kept.
+  Returns `limits` unchanged when the command is a firm brake. A steady
+  command cannot use the mild settle. A mild command cannot use the regen
+  rail: the lower bound is the EV settle. An existing tighter bound
+  (engage grace) is kept. `decel_mode` is the dwelt class from
+  PlantDecelClassifier; omitted, the command is classified on this sample.
 
   On a descent the floor applies to the net command, so the downhill
   grade term is not clipped off, and a sustained positive aEgo error
@@ -420,13 +544,14 @@ def plant_regen_effort_limits(a_cmd, limits, *, steady_grade=0.0, transient=0.0,
   # Deeper than map comfort is a real brake: leave the regen rail open.
   if p < -LEAD_MAP_MIDGAP_FLOOR_MS2 - 0.05:
     return limits
-  mild = LEAD_FOLLOW_ACT_REGEN_FLOOR_MS2
-  if p >= 0.0 or abs(p) <= LEAD_FOLLOW_STEADY_A_MS2:
-    # Coast / throttle: slight lift only. A mild negative command is
-    # tracked if it is already under that floor.
-    floor = p if p < mild else mild
+  if decel_mode in ("steady", "mild"):
+    mode = decel_mode
   else:
-    # Between MILD and map comfort: track the command, do not open the rail.
+    mode = instant_plant_decel_mode(p)
+  if mode == "mild" or abs(p) <= LEAD_FOLLOW_STEADY_A_MS2:
+    floor = plant_follow_floor(p, mode)
+  else:
+    # Between the mild settle and map comfort: track the command.
     floor = p
   if descent:
     grade_sum = float(steady_grade) + float(transient)
@@ -559,6 +684,10 @@ def install_preap_plant_regen_guard():
     descent, pid_room = _plant_descent_allowance(
       self, a_cmd, a_ego, orientation_ned, self.dt,
     )
+    classifier = getattr(self, "_nap_plant_decel", None)
+    if classifier is None:
+      classifier = PlantDecelClassifier()
+      self._nap_plant_decel = classifier
     return current(
       self, a_cmd, v_ego, prev_pedal_di, a_ego=a_ego,
       freeze_integrator=freeze_integrator, orientation_ned=orientation_ned,
@@ -566,6 +695,7 @@ def install_preap_plant_regen_guard():
         a_cmd, accel_effort_limits,
         steady_grade=steady, transient=transient,
         descent=descent, pid_room=pid_room,
+        decel_mode=classifier.update(a_cmd, self.dt),
       ),
       pedal_ramp_rate_up=pedal_ramp_rate_up,
     )

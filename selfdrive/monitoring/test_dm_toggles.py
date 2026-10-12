@@ -34,15 +34,15 @@ class FakeParams:
     self.d[name] = bool(value)
 
 
-def test_param_names_and_nap_release_defaults():
+def test_param_names_and_nap_dev_defaults():
   keys = (ROOT / "common" / "params_keys.h").read_text(encoding="utf-8")
   assert PARAM_DM_SIMULATE_LOOKING == "NAPDmSimulateLooking"
   assert PARAM_DM_FALSE_ALERT_IGNORE == "NAPDmFalseAlertIgnore"
-  assert DEFAULT_SIMULATE_LOOKING is False
+  assert DEFAULT_SIMULATE_LOOKING is True
   assert DEFAULT_FALSE_ALERT_IGNORE is False
   sim_line = next(ln for ln in keys.splitlines() if f'"{PARAM_DM_SIMULATE_LOOKING}"' in ln)
   fai_line = next(ln for ln in keys.splitlines() if f'"{PARAM_DM_FALSE_ALERT_IGNORE}"' in ln)
-  assert 'BOOL, "0"' in sim_line
+  assert 'BOOL, "1"' in sim_line
   assert 'BOOL, "0"' in fai_line
   assert "PERSISTENT" in sim_line and "PERSISTENT" in fai_line
 

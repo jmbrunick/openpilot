@@ -1,6 +1,7 @@
 import os
 import subprocess
 import pyray as rl
+from openpilot.common.nap_release import SPEED_SIGN_ENABLED
 from openpilot.common.params import Params
 from openpilot.common.basedir import BASEDIR
 from openpilot.system.ui.widgets import Widget, DialogResult
@@ -20,24 +21,41 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   BACKUP_EPAS_INSTRUCTIONS, BRAKE_FACTOR_PRESETS,
   CALIBRATE_PEDAL_INSTRUCTIONS,
   DOWNLOAD_US_MAPS_INSTRUCTIONS,
-  FLASH_EPAS_INSTRUCTIONS, PEDAL_CAN_BUS_VALUES,
+  FLASH_EPAS_INSTRUCTIONS,
+  INSTALL_SPEED_SIGN_WEIGHTS_INSTRUCTIONS, PEDAL_CAN_BUS_VALUES,
+  HIGH_LOW_BEAM_DESCRIPTION, HIGH_LOW_BEAM_LABELS, HIGH_LOW_BEAM_VALUES,
   MAP_SPEED_ACCEL_DEFAULT,
   NAP_DM_FALSE_ALERT_IGNORE,
   NAP_DM_SIMULATE_LOOKING,
+  NAP_CONE_LINE_HOLD,
+  NAP_CONE_LINE_LOG,
+  NAP_OBSTACLE_CHIME,
+  NAP_OBSTACLE_LOG,
   NAP_DRIVER_LAT_HANDOFF,
+  NAP_LOW_VIS_BACKOFF,
   NAP_FORCE_OFFROAD,
   NAP_HYPERMILE,
   NAP_HYPERMILE_HILL_CLIMB,
   NAP_HYPERMILE_STEP_DOWN,
   NAP_ONE_PEDAL_LONG,
+  NAP_SPEED_SIGN_LOG,
   RADAR_OFFSET_MAX, RADAR_OFFSET_MIN,
   REFRESH_MAPS_INSTRUCTIONS,
   RESTORE_EPAS_INSTRUCTIONS,
-  acknowledgments_html, find_preset_index,
+  SPEED_SIGN_LOG_DESCRIPTION,
+  WIPER_SPEED_DESCRIPTION, WIPER_SPEED_LABELS, WIPER_SPEED_VALUES,
+  WIPER_SENSITIVITY_DEFAULT, WIPER_SENSITIVITY_DESCRIPTION,
+  WIPER_SENSITIVITY_LABELS, WIPER_SENSITIVITY_VALUES,
+  acknowledgments_html, coerce_wiper_speed_param, find_preset_index,
+  wiper_speed_button_index,
 )
 from openpilot.selfdrive.ui.layouts.settings.driving_mannerisms import DrivingMannerismsLayout
 from openpilot.selfdrive.ui.layouts.settings.map_speed import MapSpeedLimitLayout
+from openpilot.selfdrive.speedsignd.install import weights_status_summary
+from openpilot.selfdrive.car.tesla.preap_body_controls import register_nap_body_params
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys, DEFAULTS
+
+register_nap_body_params()
 from openpilot.selfdrive.ui.radar.radar_view import RadarMonitorDialog
 from openpilot.selfdrive.ui.ui_state import ui_state
 from scripts.nap.script_lifecycle import script_reboots_on_exit
@@ -119,9 +137,8 @@ class NAPLayout(Widget):
     self._radar_items = []
     self._toggle_map = {}  # param_key -> ListItem (for refresh)
 
-    # Force Offroad / Simulate Look / False Alert Ignore live in the NAP triple-tap popup.
-
     # ── Section 1: Longitudinal Control ──
+    # Force Offroad / Simulate Look / False Alert Ignore live in the NAP triple-tap popup.
     self._main_items.append(section_header_item("Longitudinal Control"))
 
     self._add_toggle(
@@ -222,8 +239,76 @@ class NAPLayout(Widget):
     self._brake_factor_buttons.action_item.set_enabled(False)
     self._main_items.append(self._brake_factor_buttons)
 
-    # ── Section 5: Advanced ──
+    # ── Section 5: Wipers & lights (car test) ──
+    self._main_items.append(section_header_item("Wipers & Lights (test)"))
+
+    wiper_setting = coerce_wiper_speed_param(self._params)
+    self._wiper_buttons = multiple_button_item(
+      "Wiper Control",
+      WIPER_SPEED_DESCRIPTION,
+      buttons=WIPER_SPEED_LABELS,
+      button_width=160,
+      selected_index=wiper_speed_button_index(wiper_setting),
+      callback=self._on_wiper_speed,
+    )
+    self._main_items.append(self._wiper_buttons)
+
+    raw_sens = self._params.get(NAPParamKeys.WIPER_SENSITIVITY, return_default=True)
+    try:
+      sens_setting = WIPER_SENSITIVITY_DEFAULT if raw_sens is None else int(raw_sens)
+    except (TypeError, ValueError):
+      sens_setting = WIPER_SENSITIVITY_DEFAULT
+    self._wiper_sens_buttons = multiple_button_item(
+      "Wiper Sensitivity",
+      WIPER_SENSITIVITY_DESCRIPTION,
+      buttons=WIPER_SENSITIVITY_LABELS,
+      button_width=110,
+      selected_index=max(0, min(len(WIPER_SENSITIVITY_VALUES) - 1, sens_setting)),
+      callback=self._on_wiper_sensitivity,
+    )
+    self._main_items.append(self._wiper_sens_buttons)
+
+    beam_setting = int(self._params.get(NAPParamKeys.HIGH_LOW_BEAM, return_default=True) or 0)
+    self._beam_buttons = multiple_button_item(
+      "High / Low Beam",
+      HIGH_LOW_BEAM_DESCRIPTION,
+      buttons=HIGH_LOW_BEAM_LABELS,
+      button_width=130,
+      selected_index=max(0, min(len(HIGH_LOW_BEAM_VALUES) - 1, beam_setting)),
+      callback=self._on_high_low_beam,
+    )
+    self._main_items.append(self._beam_buttons)
+
+    # ── Section 6: Advanced ──
     self._main_items.append(section_header_item("Advanced"))
+
+    _speed_sign_start = len(self._main_items)
+    self._add_toggle(
+      NAP_SPEED_SIGN_LOG,
+      "Speed Sign Logger",
+      SPEED_SIGN_LOG_DESCRIPTION,
+    )
+
+    self._weights_status = text_item(
+      "Speed Sign Weights",
+      weights_status_summary,
+      description="YOLO ONNX at /data/media/0/nap/speed_sign.onnx. "
+      "Missing → onroad SIGN shows NO WT and will not read roadside signs. "
+      "Installed → blank plate until a confirmed mph.",
+    )
+    self._main_items.append(self._weights_status)
+
+    self._install_weights_btn = button_item(
+      "Install weights",
+      "Start",
+      description=INSTALL_SPEED_SIGN_WEIGHTS_INSTRUCTIONS.split("\n", 1)[0],
+      callback=self._on_install_speed_sign_weights,
+    )
+    self._install_weights_btn.action_item.set_enabled(ui_state.is_offroad)
+    self._main_items.append(self._install_weights_btn)
+    if not SPEED_SIGN_ENABLED:
+      # nap-release: the speed sign reader is not shipped; hide its rows.
+      del self._main_items[_speed_sign_start:]
 
     # Force Pre-AP is always on for now — grayed out in the ON position
     self._params.put_bool(NAPParamKeys.FORCE_PRE_AP, True)
@@ -234,7 +319,7 @@ class NAPLayout(Widget):
       enabled=False,
     )
 
-    # ── Section 6: Actions ──
+    # ── Section 7: Actions ──
     self._main_items.append(section_header_item("Actions"))
 
     self._backup_epas_btn = button_item(
@@ -431,6 +516,15 @@ class NAPLayout(Widget):
   def _on_brake_factor(self, index: int):
     self._params.put(NAPParamKeys.BRAKE_FACTOR, BRAKE_FACTOR_PRESETS[index])
 
+  def _on_wiper_speed(self, index: int):
+    self._params.put(NAPParamKeys.WIPER_SPEED, WIPER_SPEED_VALUES[index])
+
+  def _on_wiper_sensitivity(self, index: int):
+    self._params.put(NAPParamKeys.WIPER_SENSITIVITY, WIPER_SENSITIVITY_VALUES[index])
+
+  def _on_high_low_beam(self, index: int):
+    self._params.put(NAPParamKeys.HIGH_LOW_BEAM, HIGH_LOW_BEAM_VALUES[index])
+
   def _get_radar_offset(self) -> float:
     raw = self._params.get(NAPParamKeys.RADAR_OFFSET, return_default=True)
     try:
@@ -582,6 +676,13 @@ class NAPLayout(Widget):
 
   # ── Action button callbacks ──
 
+  def _on_install_speed_sign_weights(self):
+    self._show_script_runner(
+      title="Install weights",
+      instructions=INSTALL_SPEED_SIGN_WEIGHTS_INSTRUCTIONS,
+      script_module="scripts.nap.install_speed_sign_weights",
+    )
+
   def _on_download_us_maps(self):
     self._show_script_runner(
       title="Download US Maps",
@@ -678,8 +779,14 @@ class NAPLayout(Widget):
     self._params.put("NAPMapSpeedLookahead", 2)
     self._params.put("NAPMapSpeedAccel", MAP_SPEED_ACCEL_DEFAULT)
     self._params.remove("NAPMapSpeedDbPath")
+    self._params.put_bool(NAP_SPEED_SIGN_LOG, False)
     self._params.put_bool(NAP_DRIVER_LAT_HANDOFF, True)
-    self._params.put_bool(NAP_DM_SIMULATE_LOOKING, False)
+    self._params.put_bool(NAP_LOW_VIS_BACKOFF, True)
+    self._params.put_bool(NAP_CONE_LINE_HOLD, True)
+    self._params.put_bool(NAP_CONE_LINE_LOG, True)
+    self._params.put_bool(NAP_OBSTACLE_CHIME, True)
+    self._params.put_bool(NAP_OBSTACLE_LOG, True)
+    self._params.put_bool(NAP_DM_SIMULATE_LOOKING, True)
     self._params.put_bool(NAP_DM_FALSE_ALERT_IGNORE, False)
     self._params.put_bool(NAP_HYPERMILE, False)
     self._params.put_bool(NAP_HYPERMILE_STEP_DOWN, False)
@@ -687,6 +794,8 @@ class NAPLayout(Widget):
     self._params.put_bool(NAP_ONE_PEDAL_LONG, False)
     self._params.remove("NAPHypermileSaved")
     self._params.put_bool(NAP_FORCE_OFFROAD, False)
+    self._params.put_bool("NAPForceOffroadConfirmed", False)
+    self._params.put_bool("NAPForceOffroadHandoffReady", False)
     self._page = "main"
     # Force Pre-AP is locked on in the panel but DEFAULTS keeps it off
     # for non-UI consumers. Re-apply the lock after the wholesale loop
@@ -730,8 +839,23 @@ class NAPLayout(Widget):
     self._brake_factor_buttons.action_item.set_selected_button(
       find_preset_index(BRAKE_FACTOR_PRESETS, brake_factor))
 
+    wiper_setting = coerce_wiper_speed_param(self._params)
+    self._wiper_buttons.action_item.set_selected_button(
+      wiper_speed_button_index(wiper_setting))
+    raw_sens = self._params.get(NAPParamKeys.WIPER_SENSITIVITY, return_default=True)
+    try:
+      sens_setting = WIPER_SENSITIVITY_DEFAULT if raw_sens is None else int(raw_sens)
+    except (TypeError, ValueError):
+      sens_setting = WIPER_SENSITIVITY_DEFAULT
+    self._wiper_sens_buttons.action_item.set_selected_button(
+      max(0, min(len(WIPER_SENSITIVITY_VALUES) - 1, sens_setting)))
+    beam_setting = int(self._params.get(NAPParamKeys.HIGH_LOW_BEAM, return_default=True) or 0)
+    self._beam_buttons.action_item.set_selected_button(
+      max(0, min(len(HIGH_LOW_BEAM_VALUES) - 1, beam_setting)))
+
     self._driving_mannerisms_page.refresh()
     self._map_speed_page.refresh()
+    self._install_weights_btn.action_item.set_enabled(ui_state.is_offroad)
     radar_position = int(self._params.get(NAPParamKeys.RADAR_POSITION, return_default=True) or 0)
     self._radar_position_buttons.action_item.set_selected_button(max(0, min(2, radar_position)))
     radar_epas = int(self._params.get(NAPParamKeys.RADAR_EPAS_TYPE, return_default=True) or 0)

@@ -2,6 +2,7 @@ from cereal import car, log
 from opendbc.car import DT_CTRL, structs
 from opendbc.car.car_helpers import interfaces
 from opendbc.car.interfaces import MAX_CTRL_SPEED
+from opendbc.car.tesla.preap.lat_yield import stash_full_control
 from opendbc.car.toyota.values import ToyotaFlags
 
 from openpilot.selfdrive.controls.lib.blinker_lateral_pause import (
@@ -197,8 +198,6 @@ class CarSpecificEvents:
     torque_nm = float(getattr(CS, 'steeringTorque', 0.0) or 0.0)
     hands = cs_hands_on_level(CS)
     fast_rise = self._yank.update(torque_nm, DT_CTRL)
-    emergency = is_emergency_yank(
-      torque_nm=torque_nm, hands_on_level=hands, fast_rise=fast_rise)
     cc_left = bool(getattr(CC, 'leftBlinker', False))
     cc_right = bool(getattr(CC, 'rightBlinker', False))
     # Tipped ALC, including the lamp flash-dark gap (_alc_keep ~1 s, or
@@ -208,6 +207,9 @@ class CarSpecificEvents:
     direction = int(self.blinker_lat_hold._alc_direction or 0)
     if direction not in (1, 2):
       direction = 1 if cc_left and not cc_right else (2 if cc_right and not cc_left else 0)
+    emergency = is_emergency_yank(
+      torque_nm=torque_nm, hands_on_level=hands, fast_rise=fast_rise,
+      over_torque=self._yank.over_torque, alc_direction=direction if alc_confirm else 0)
     same_direction = torque_is_same_direction(torque_nm, direction)
     # Confirm: do not steering-disengage, even if the lamp is in a
     # flash-dark gap and the hold has not latched blocks yet.
@@ -219,9 +221,16 @@ class CarSpecificEvents:
       getattr(CS, 'turnSignalStalkState', 0), self.blinker_lat_hold,
       emergency=emergency, alc_confirm=alc_confirm)
     disengage_edge = bool(CS.steeringDisengage and not CS_prev.steeringDisengage)
+    # Pre-AP: a wheel yank cancels only while OP is in full lateral control
+    # (A). With lateral yielded (B) it is a driver maneuver. The card
+    # stashes that on steeringTorqueEps; see opendbc preap/lat_yield.py.
+    lat_full_control = True
+    if self.CP.carFingerprint == "TESLA_MODEL_S_PREAP":
+      lat_full_control = stash_full_control(getattr(CS, 'steeringTorqueEps', 0.0))
     if steer_disengage_this_frame(
         confirm=confirm, release=release, release_prev=self._yank_release_prev,
-        disengage_edge=disengage_edge, blocks=blocks):
+        disengage_edge=disengage_edge, blocks=blocks,
+        lat_full_control=lat_full_control):
       events.add(EventName.steerDisengage)
     self._yank_release_prev = release
     if CS.brakePressed and CS.standstill:

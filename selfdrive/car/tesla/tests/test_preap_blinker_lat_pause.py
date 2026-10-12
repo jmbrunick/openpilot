@@ -476,13 +476,15 @@ def test_stalk_tip_pending_does_not_drop_long():
   assert not eng._nap_lat_hold.turn_active
 
 
-def test_double_pull_from_disengaged_still_needs_two_sets():
-  """Resume-long one-pull must not skip initial double-pull engage."""
+def test_single_pull_from_disengaged_engages_long():
+  """A fresh rolling engage is lat+long, not a sticky-MAX resume."""
   install_blinker_lat_pause()
   eng = PreAPEngagement(double_pull_enabled=True, double_pull_window_ms=750)
   _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=1000)
   assert eng.cruiseEnabled
-  assert not eng.enableLongControl
+  assert eng.enableLongControl
+  assert not getattr(eng, "_nap_set_resume_long", False)
+  assert getattr(eng, "_nap_set_take_speed_now", False)
 
   _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=1400)
   assert eng.cruiseEnabled
@@ -509,7 +511,7 @@ def _intent_then_brake(eng, *, a_ego, brake, frames=None, hands=1):
   for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES):
     update_card_lat_handoff(
       eng, engaged=True, lat_would_be_active=True,
-      steering_torque=0.85, steering_rate_deg=20.0, hands_on_level=hands,
+      steering_torque=1.5, steering_rate_deg=20.0, hands_on_level=hands,
       brake_applied=False, a_ego=0.0, v_ego=15.0, param_on=True)
   canceled = False
   for _ in range(frames):
@@ -564,7 +566,7 @@ def test_card_handoff_keeps_yield_during_driver_turn_blinker():
   for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES):
     update_card_lat_handoff(
       eng, engaged=True, lat_would_be_active=True,
-      steering_torque=0.85, steering_rate_deg=20.0, hands_on_level=1,
+      steering_torque=1.5, steering_rate_deg=20.0, hands_on_level=1,
       brake_applied=False, a_ego=0.0, v_ego=15.0, param_on=True)
   assert eng._nap_lat_handoff._yielded
   # Driver-turn blinker + lat still requested: stay yielded, no identity reset.
@@ -593,7 +595,7 @@ def test_card_handoff_keeps_yield_below_10_mph():
   for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES):
     update_card_lat_handoff(
       eng, engaged=True, lat_would_be_active=True,
-      steering_torque=0.85, steering_rate_deg=20.0, hands_on_level=1,
+      steering_torque=1.5, steering_rate_deg=20.0, hands_on_level=1,
       brake_applied=False, a_ego=0.0, v_ego=15.0, param_on=True)
   assert eng._nap_lat_handoff._yielded
   slow = LAT_REENABLE_MIN_V_EGO - 0.05
@@ -634,7 +636,7 @@ def test_reverse_while_engaged_hard_cancels_session():
   for _ in range(SOFT_YIELD_DEBOUNCE_FRAMES):
     update_card_lat_handoff(
       eng, engaged=True, lat_would_be_active=True,
-      steering_torque=0.85, steering_rate_deg=20.0, hands_on_level=1,
+      steering_torque=1.5, steering_rate_deg=20.0, hands_on_level=1,
       brake_applied=False, a_ego=0.0, v_ego=15.0, param_on=True)
   assert eng._nap_lat_handoff._yielded
 
@@ -674,15 +676,12 @@ def test_reverse_then_drive_allows_fresh_engage_not_sticky_resume():
   assert not eng.cruiseEnabled
   assert not getattr(eng, "_nap_long_resume_pending", False)
 
-  # First SET is lat-only (double-pull), not a silent long resume at held MAX.
+  # First SET is a fresh lat+long engage, not a silent long resume at held MAX.
   _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=5000)
   assert eng.cruiseEnabled
-  assert not eng.enableLongControl
-  assert getattr(eng, "_nap_held_max_kph", None) is None
-  _buttons(eng, t_ms=5050)
-  _buttons(eng, cruise_buttons=CruiseButtons.MAIN, t_ms=5400)
-  assert eng.cruiseEnabled
   assert eng.enableLongControl
+  assert getattr(eng, "_nap_held_max_kph", None) is None
+  assert not getattr(eng, "_nap_set_resume_long", False)
   assert not getattr(eng, "_nap_long_resume_pending", False)
 
 
