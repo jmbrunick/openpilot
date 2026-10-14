@@ -247,7 +247,6 @@ class Controls:
         cone_shift = 0.0
     self._cone_out = self.cone_hold.update(
       enabled=enabled,
-      shift_enabled=True,  # automatic cone corridor shift, independent of Hold my line
       engaged=bool(self.sm["selfdriveState"].enabled),
       cone=cone,
       torque_nm=float(CS.steeringTorque),
@@ -262,7 +261,6 @@ class Controls:
       lane_offset=lane_offset,
       lane_center_la=lane_centre,
       cone_shift=cone_shift,
-      steering_pressed=bool(CS.steeringPressed),
     )
     return float(self._cone_out.curvature)
 
