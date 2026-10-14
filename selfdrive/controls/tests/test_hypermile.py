@@ -46,6 +46,7 @@ from openpilot.selfdrive.controls.lib.hypermile import (
   step_follow_distance,
 )
 from openpilot.selfdrive.controls.lib.lead_approach import NAP_T_FOLLOW
+from openpilot.common.nap_params import params_keys_text
 
 
 class FakeParams:
@@ -621,7 +622,7 @@ def test_settings_and_docs_wire_hypermile():
   mici = (root / "selfdrive/ui/mici/layouts/settings/driving_mannerisms.py").read_text()
   nap = (root / "selfdrive/ui/layouts/settings/nap.py").read_text()
   content = (root / "selfdrive/ui/layouts/settings/nap_content.py").read_text()
-  keys = (root / "common/params_keys.h").read_text()
+  keys = params_keys_text(root)
   planner = (root / "selfdrive/controls/lib/longitudinal_planner.py").read_text()
   card = (root / "selfdrive/car/card.py").read_text()
   events = (root / "selfdrive/selfdrived/events.py").read_text()

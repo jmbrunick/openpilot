@@ -7,6 +7,7 @@ from openpilot.selfdrive.mapd.map_speed_policy import (
   is_cruise_stalk_step, is_cruise_stalk_tip_step,
   should_write_preap_pedal, slew_map_speed_ms,
 )
+from openpilot.common.nap_params import params_keys_text
 
 
 def _follow_hud(dec, map_kph: float) -> float:
@@ -529,9 +530,9 @@ def test_map_speed_submenu_wires_params():
   assert tici.index("_all_items.append(self._refresh_btn)") < tici.index("_all_items.append(self._download_btn)")
   mici_widgets = mici.split("self._scroller.add_widgets", 1)[1]
   assert mici_widgets.index("refresh_maps_btn") < mici_widgets.index("download_maps_btn")
-  assert "NAPMapSpeedAccel" in (root / "common/params_keys.h").read_text()
-  assert "NAPMapSpeedDbRevision" in (root / "common/params_keys.h").read_text()
-  assert "NAPMapSpeedDbSha256" in (root / "common/params_keys.h").read_text()
+  assert "NAPMapSpeedAccel" in params_keys_text(root)
+  assert "NAPMapSpeedDbRevision" in params_keys_text(root)
+  assert "NAPMapSpeedDbSha256" in params_keys_text(root)
 
 
 def test_driving_mannerisms_submenu_wires_params():
@@ -605,7 +606,7 @@ def test_driving_mannerisms_submenu_wires_params():
   assert "put_bool(NAP_DM_SIMULATE_LOOKING, True)" in nap
   assert "NAP_DM_FALSE_ALERT_IGNORE" in nap
   assert "put_bool(NAP_DM_FALSE_ALERT_IGNORE, False)" in nap
-  keys = (root / "common/params_keys.h").read_text()
+  keys = params_keys_text(root)
   assert "NAPDmSimulateLooking" in keys
   assert "NAPDmFalseAlertIgnore" in keys
   assert "DrivingMannerismsLayoutMici" in nap_mici

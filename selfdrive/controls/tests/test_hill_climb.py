@@ -32,6 +32,7 @@ from openpilot.selfdrive.mapd.constants import (
   map_accel_a_ms2,
 )
 from openpilot.selfdrive.mapd.map_speed_policy import map_track_accel_ms2
+from openpilot.common.nap_params import params_keys_text
 
 
 UPHILL_RAD = math.radians(4.0)  # existing full-loop fixture; clearly above 2°
@@ -515,7 +516,7 @@ def test_settings_and_docs_wire_hill_climb():
   mici = (root / "selfdrive/ui/mici/layouts/settings/driving_mannerisms.py").read_text()
   nap = (root / "selfdrive/ui/layouts/settings/nap.py").read_text()
   content = (root / "selfdrive/ui/layouts/settings/nap_content.py").read_text()
-  keys = (root / "common/params_keys.h").read_text()
+  keys = params_keys_text(root)
   planner = (root / "selfdrive/controls/lib/longitudinal_planner.py").read_text()
   docs = (root / "docs-nap/hypermile.md").read_text()
   readme = (root / "docs-nap/README.md").read_text()

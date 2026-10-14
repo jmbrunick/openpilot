@@ -23,6 +23,7 @@ from openpilot.selfdrive.controls.lib import roundabout_guide as RG
 from openpilot.selfdrive.controls.lib import roundabout_ring_hold as RH
 from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature
 from openpilot.selfdrive.mapd.roundabout_map import RingGeometry, latlon_from_xy
+from openpilot.common.nap_params import params_keys_text
 
 ROOT = Path(__file__).resolve().parents[4]
 FIXTURE = Path(__file__).parent / "data" / "roundabout_passes_sep28.json"
@@ -433,7 +434,7 @@ def test_circle_follow_sign_convention():
 
 
 def test_params_and_menu_wiring():
-  keys = (ROOT / "common" / "params_keys.h").read_text()
+  keys = params_keys_text(ROOT)
   assert '{"NAPRoundaboutAssist", {PERSISTENT, BOOL, "0"}}' in keys
   assert '{"NAPRoundaboutRing", {CLEAR_ON_MANAGER_START, JSON}}' in keys
   from openpilot.selfdrive.ui.layouts.settings import nap_lateral
@@ -940,7 +941,7 @@ def test_tips_are_suppressed_while_latched_and_modeld_controlsd_are_wired():
   cd = (ROOT / "selfdrive" / "controls" / "controlsd.py").read_text()
   assert "stalk_state=int(getattr(CS, 'turnSignalStalkState', 0) or 0)" in cd
   assert "steering_pressed=bool(CS.steeringPressed), steering_torque=float(CS.steeringTorque)" in cd
-  assert '{"NAPRoundaboutLatched", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}}' in (ROOT / "common" / "params_keys.h").read_text()
+  assert '{"NAPRoundaboutLatched", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}}' in params_keys_text(ROOT)
 
 
 def test_ring_speed_constant_is_18_mph_and_planner_uses_it():

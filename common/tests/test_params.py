@@ -146,9 +146,8 @@ def test_nap_wiper_rain_status_key_survives_onroad_for_qlog():
   # fail put silently; CLEAR_ON_ONROAD would wipe this before that snapshot.
   import re
   from openpilot.common.basedir import BASEDIR
-  keys_h = os.path.join(BASEDIR, "common/params_keys.h")
-  with open(keys_h) as f:
-    src = f.read()
+  from openpilot.common.nap_params import params_keys_text
+  src = params_keys_text(BASEDIR)
   m = re.search(r'\{\s*"NAPWiperRainStatus"\s*,\s*\{([^}]+)\}', src)
   assert m, "NAPWiperRainStatus missing from params_keys.h"
   attrs = m.group(1)

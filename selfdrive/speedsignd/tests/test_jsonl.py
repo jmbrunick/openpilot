@@ -11,6 +11,7 @@ from openpilot.selfdrive.speedsignd.jsonl import RECORD_KEYS, JsonlLogger, appen
 from openpilot.selfdrive.speedsignd.paths import PARAM_KEY, default_log_path, default_onnx_path, nap_data_dir
 from openpilot.selfdrive.speedsignd.speedsignd import process_observations, should_run_speed_sign_log
 from openpilot.selfdrive.speedsignd.tests.test_detect import _scene
+from openpilot.common.nap_params import params_keys_text
 
 
 class _FakeParams:
@@ -188,8 +189,7 @@ def test_settings_and_docs_cover_enable_and_log_path():
 
 
 def test_params_key_default_is_off():
-  keys = Path(__file__).resolve().parents[3] / "common" / "params_keys.h"
-  text = keys.read_text(encoding="utf-8")
+  text = params_keys_text(Path(__file__).resolve().parents[3])
   assert "NAPSpeedSignLog" in text
   # Explicit 0, or BOOL with no default (get_bool → false). Either is default-off.
   assert '{"NAPSpeedSignLog", {PERSISTENT, BOOL, "0"}}' in text or \

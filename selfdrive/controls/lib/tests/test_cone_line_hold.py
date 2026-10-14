@@ -25,6 +25,7 @@ from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   apply_lat_authority,
 )
 from openpilot.selfdrive.controls.lib.radar_path_gate import path_y_at_x
+from openpilot.common.nap_params import params_keys_text
 
 DT = 0.01
 V = 15.0
@@ -229,7 +230,7 @@ def test_yield_machine_and_longitudinal_are_untouched():
   assert "actuators" not in cone
   assert "LoC" not in hold
   assert "leadOne" not in cone
-  keys = (root / "common/params_keys.h").read_text()
+  keys = params_keys_text(root)
   hold_line = next(ln for ln in keys.splitlines() if f'"{PARAM_CONE_LINE_HOLD}"' in ln)
   log_line = next(ln for ln in keys.splitlines() if f'"{PARAM_CONE_LINE_LOG}"' in ln)
   assert 'BOOL' in hold_line and '"1"' in hold_line

@@ -40,6 +40,7 @@ from openpilot.selfdrive.controls.lib.lat_low_visibility import (
   sun_ahead_from_fix,
   sun_low_and_ahead,
 )
+from openpilot.common.nap_params import params_keys_text
 
 DT = 0.05  # one model frame
 
@@ -282,7 +283,7 @@ def test_alert_text_and_toggle_are_wired():
   assert "ET.SOFT_DISABLE" not in block
   assert "ET.IMMEDIATE_DISABLE" not in block
   assert "ET.USER_DISABLE" not in block
-  keys = (root / "common/params_keys.h").read_text()
+  keys = params_keys_text(root)
   line = next(ln for ln in keys.splitlines() if f'"{PARAM_LOW_VIS_BACKOFF}"' in ln)
   assert "BOOL" in line and '"1"' in line
   content = (root / "selfdrive/ui/layouts/settings/nap_content.py").read_text()

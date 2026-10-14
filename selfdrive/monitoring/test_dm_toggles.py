@@ -1,6 +1,7 @@
 """Simulate Look / False Alert Ignore mutual exclusion (no GUI / no cereal)."""
 import importlib.util
 from pathlib import Path
+from openpilot.common.nap_params import params_keys_text
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -35,7 +36,7 @@ class FakeParams:
 
 
 def test_param_names_and_nap_dev_defaults():
-  keys = (ROOT / "common" / "params_keys.h").read_text(encoding="utf-8")
+  keys = params_keys_text(ROOT)
   assert PARAM_DM_SIMULATE_LOOKING == "NAPDmSimulateLooking"
   assert PARAM_DM_FALSE_ALERT_IGNORE == "NAPDmFalseAlertIgnore"
   assert DEFAULT_SIMULATE_LOOKING is True
