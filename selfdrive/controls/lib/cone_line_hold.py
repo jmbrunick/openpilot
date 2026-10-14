@@ -133,9 +133,6 @@ class ConeLineHold:
     measured = _finite(measured_k)
     side = int(getattr(cone, "side", 0) or 0) if cone is not None else 0
     cone_active = bool(getattr(cone, "active", False)) and side in (-1, 1)
-    # Oct 14: after the corridor ends radard eases wouldSteer to 0 (releasing).
-    # Keep applying it so the car re-centres smoothly instead of snapping.
-    cone_releasing = bool(getattr(cone, "releasing", False)) and side in (-1, 1) and not cone_active
     offset = None if lane_offset is None else _finite(lane_offset, float("nan"))
     if offset is not None and not math.isfinite(offset):
       offset = None
@@ -198,9 +195,8 @@ class ConeLineHold:
       return ConeHoldOutput(False, 0.0, model_k)
 
     shift = _finite(cone_shift)
-    if (cone_active or cone_releasing) and can_steer and abs(shift) > 1e-3:
-      # Never toward the nearer line: side +1 (left) only shifts right (+).
-      # radard already keeps CORRIDOR_MARGIN_M to both tracked lines.
+    if cone_active and can_steer and abs(shift) > 1e-3:
+      # Never toward the line: side +1 (left) only shifts right (+).
       if shift * side > 0.0:
         self._x_la = x_now
         return self._out(max(-MAX_OFFSET_M, min(MAX_OFFSET_M, shift)), model_k, "shift")
