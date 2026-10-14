@@ -157,7 +157,7 @@ MUTATIONS = (
   ),
   HistoricalMutation(
     name="rb-assist-default-on",
-    source_path="common/params_keys.h",
+    source_path="common/nap_params_keys.h",
     original=b'{"NAPRoundaboutAssist", {PERSISTENT, BOOL, "0"}}',
     replacement=b'{"NAPRoundaboutAssist", {PERSISTENT, BOOL, "1"}}',
     test_nodes=(
@@ -793,7 +793,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-latched-param-persists-across-drives",
-    source_path='common/params_keys.h',
+    source_path='common/nap_params_keys.h',
     original=b'{"NAPRoundaboutLatched", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}}',
     replacement=b'{"NAPRoundaboutLatched", {PERSISTENT, BOOL}}',
     test_nodes=(

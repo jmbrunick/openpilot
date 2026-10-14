@@ -33,6 +33,7 @@ from openpilot.selfdrive.controls.lib.radar_sensor_dirty import (
 )
 from openpilot.selfdrive.controls.radard import RADAR_TO_CAMERA, RadarD
 from openpilot.selfdrive.selfdrived.events import EVENTS, ET, EventName
+from openpilot.common.nap_params import params_keys_text
 
 DT = 0.05
 REPO = Path(__file__).resolve().parents[3]
@@ -350,7 +351,7 @@ def test_selfdrived_wiring_is_unchanged_and_degrade_rides_the_fallback_event():
 
 
 def test_param_key_defaults_on():
-  keys = (REPO / "common/params_keys.h").read_text()
+  keys = params_keys_text(REPO)
   assert '{"NAPRadarIgnoreSensorDirty", {PERSISTENT, BOOL, "1"}}' in keys
   assert '{"NAPRadarIgnoreHwFail", {PERSISTENT, BOOL}}' in keys
 

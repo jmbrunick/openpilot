@@ -57,6 +57,7 @@ from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   smoothstep,
   torque_rate_aligned,
 )
+from openpilot.common.nap_params import params_keys_text
 
 
 State = log.SelfdriveState.OpenpilotState
@@ -190,7 +191,7 @@ def test_param_defaults_on_and_toggle_off_disables():
   assert not handoff_enabled(fingerprint=PREAP_FINGERPRINT, param_on=False)
   assert not handoff_enabled(fingerprint="TESLA_MODEL_3", param_on=True)
   root = Path(__file__).resolve().parents[4]
-  keys = (root / "common/params_keys.h").read_text()
+  keys = params_keys_text(root)
   line = next(ln for ln in keys.splitlines() if '"NAPDriverLatHandoff"' in ln)
   assert "BOOL" in line and '"1"' in line
   cs = (root / "selfdrive/controls/controlsd.py").read_text()

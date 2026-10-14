@@ -10,6 +10,7 @@ import pytest
 
 from openpilot.selfdrive.nap_dash.server import Handler, ThreadingHTTPServer
 from openpilot.selfdrive.nap_dash.tests.test_settings import FakeParams
+from openpilot.common.nap_params import params_keys_text
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -24,7 +25,7 @@ def test_process_config_registers_optional_python_process():
   assert "optional=True" in snippet
   optional_src = (ROOT / "system" / "manager" / "optional_procs.py").read_text(encoding="utf-8")
   assert "NAPDashEnabled" in optional_src
-  assert "NAPDashEnabled" in (ROOT / "common" / "params_keys.h").read_text(encoding="utf-8")
+  assert "NAPDashEnabled" in params_keys_text(ROOT)
 
 
 def test_docs_cover_hotspot_and_mannerisms():

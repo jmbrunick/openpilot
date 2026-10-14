@@ -3,6 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from openpilot.common.nap_params import params_keys_text
 
 ROOT = Path(__file__).resolve().parents[4]
 
@@ -57,7 +58,7 @@ def test_gates():
 
 
 def test_toggle_defaults_log_only_and_is_reported():
-  keys = (ROOT / "common/params_keys.h").read_text()
+  keys = params_keys_text(ROOT)
   assert '{"NAPObstacleBrake", {PERSISTENT, BOOL, "0"}}' in keys
   assert _log(_SM(_obs()), on=True)[2] == 1
 

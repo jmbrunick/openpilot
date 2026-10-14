@@ -24,6 +24,7 @@ from opendbc.car.tesla.preap.tests.test_pedal_authority import (
   _activate_longitudinal,
   _decode_pedal_command,
 )
+from openpilot.common.nap_params import params_keys_text
 
 
 def _pedal_conf(one_pedal_long=False):
@@ -190,7 +191,7 @@ def test_one_pedal_wires_carstate_after_interceptor_gas():
   assert "latch_one_pedal_gas_takeover" in body
   assert "hard_cancel_session(" not in body
   assert "cruiseEnabled = False" not in body
-  keys = (root / "common/params_keys.h").read_text()
+  keys = params_keys_text(root)
   assert "NAPOnePedalLong" in keys
   assert 'BOOL, "0"' in next(ln for ln in keys.splitlines() if '"NAPOnePedalLong"' in ln)
   overlay = (root / "selfdrive/car/tesla/preap_blinker_lat_pause.py").read_text()

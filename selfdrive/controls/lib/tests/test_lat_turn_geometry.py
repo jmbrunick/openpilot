@@ -24,6 +24,7 @@ from openpilot.selfdrive.mapd.roundabout import (
   RoundaboutHint, roundabout_lateral_curvature_bias, roundabout_outer_curvature_bias,
   roundabout_outer_path_offset_m,
 )
+from openpilot.common.nap_params import params_keys_text
 
 ROOT = Path(__file__).resolve().parents[4]
 DT_MDL = 0.05
@@ -39,7 +40,7 @@ class _CP:
 # ---------- params / toggle ----------
 
 def test_params_default_on_and_offset_035():
-  keys = (ROOT / "common/params_keys.h").read_text()
+  keys = params_keys_text(ROOT)
   assert '{"NAPLatTurnGeom", {PERSISTENT, BOOL, "1"}}' in keys
   assert '{"NAPLatRefOffset", {PERSISTENT, FLOAT, "0.35"}}' in keys
   assert tg.REF_OFFSET_DEFAULT_M == 0.35
@@ -485,7 +486,7 @@ def _la(step, v, stock=STOCK, n=80, enabled=True):
 
 
 def test_turn_in_param_defaults_to_zero_int():
-  keys = (ROOT / "common/params_keys.h").read_text()
+  keys = params_keys_text(ROOT)
   assert '{"NAPTurnInDelay", {PERSISTENT, INT, "0"}}' in keys
   assert tg.PARAM_TURN_IN_DELAY == "NAPTurnInDelay"
   assert (tg.TURN_IN_STEP_MIN, tg.TURN_IN_STEP_MAX) == (-2, 3)

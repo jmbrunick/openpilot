@@ -10,6 +10,7 @@ import ast
 import re
 from pathlib import Path
 from typing import Any
+from openpilot.common.nap_params import params_keys_text
 
 MISSING = object()
 
@@ -1028,11 +1029,10 @@ def _hotspot(root: Path) -> dict[str, Any]:
 
 
 def _param_types(root: Path) -> dict[str, str]:
-  path = root / "common" / "params_keys.h"
-  if not path.is_file():
+  if not (root / "common" / "params_keys.h").is_file():
     return {}
   types = {}
-  for name, body in re.findall(r'\{\s*"([A-Za-z0-9_]+)"\s*,\s*\{([^}]*)\}\s*\}', path.read_text(encoding="utf-8")):
+  for name, body in re.findall(r'\{\s*"([A-Za-z0-9_]+)"\s*,\s*\{([^}]*)\}\s*\}', params_keys_text(root)):
     if re.search(r"\bFLOAT\b", body):
       types[name] = "float"
     elif re.search(r"\bBOOL\b", body):

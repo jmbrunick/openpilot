@@ -48,6 +48,7 @@ from openpilot.selfdrive.ui.obstacle_chime import (
   alert_sound_id,
   floor_volume,
 )
+from openpilot.common.nap_params import params_keys_text
 
 ROOT = Path(__file__).resolve().parents[4]
 V_EGO = 12.0
@@ -627,7 +628,7 @@ def test_wiring_stays_off_the_control_core_and_off_longitudinal():
   assert "path_obstacle" not in selfd.split("class SelfdriveD", 1)[0]
   assert "a_cmd=float(self.sm['carControl'].actuators.accel),\n" in selfd
 
-  keys = text("common/params_keys.h")
+  keys = params_keys_text()
   assert '{"NAPObstacleChime", {PERSISTENT, BOOL, "1"}}' in keys
   assert '{"NAPObstacleLog", {PERSISTENT, BOOL, "1"}}' in keys
   services = text("cereal/services.py")

@@ -23,6 +23,7 @@ from openpilot.selfdrive.controls.lib.follow_distance import (
   published_cruise_ms,
 )
 from openpilot.selfdrive.controls.lib.lead_approach import nap_t_follow
+from openpilot.common.nap_params import params_keys_text
 
 
 class FakeParams:
@@ -403,7 +404,7 @@ def test_planner_and_ui_wire_city_hwy_follow():
   planner = (root / "selfdrive/controls/lib/longitudinal_planner.py").read_text()
   tici = (root / "selfdrive/ui/layouts/settings/driving_mannerisms.py").read_text()
   mici = (root / "selfdrive/ui/mici/layouts/settings/driving_mannerisms.py").read_text()
-  keys = (root / "common/params_keys.h").read_text()
+  keys = params_keys_text(root)
   content = (root / "selfdrive/ui/layouts/settings/nap_content.py").read_text()
   nap_params = (root / "opendbc_repo/opendbc/car/tesla/preap/nap_params.py").read_text()
   assert "FollowDistanceBlend" in planner

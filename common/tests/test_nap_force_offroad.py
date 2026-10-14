@@ -1,6 +1,7 @@
 """NAP Force Offroad: param, hardwared started gate, settings, docs."""
 import importlib.util
 from pathlib import Path
+from openpilot.common.nap_params import params_keys_text
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -35,7 +36,7 @@ def _assert_force_offroad_param_line(keys: str, name: str):
 
 
 def test_param_default_off_and_clears_on_ignition_and_manager():
-  keys = (ROOT / "common" / "params_keys.h").read_text(encoding="utf-8")
+  keys = params_keys_text(ROOT)
   assert PARAM == "NAPForceOffroad"
   assert HANDOFF_READY_PARAM == "NAPForceOffroadHandoffReady"
   assert CONFIRMED_PARAM == "NAPForceOffroadConfirmed"

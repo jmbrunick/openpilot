@@ -144,7 +144,7 @@ MUTATIONS_F = (
      b"    elif self.sm['radarState'].radarErrors.radarUnavailableTemporary:\n      self.events.add(EventName.radarTempUnavailable)\n",
      b"    elif self.sm['radarState'].radarErrors.radarUnavailableTemporary:\n      self.events.add(EventName.radarFault)\n",
      "test_selfdrived_wiring_is_unchanged_and_degrade_rides_the_fallback_event"),
-  _m("dirty-param-key-default-off", "common/params_keys.h",
+  _m("dirty-param-key-default-off", "common/nap_params_keys.h",
      b'{"NAPRadarIgnoreSensorDirty", {PERSISTENT, BOOL, "1"}}', b'{"NAPRadarIgnoreSensorDirty", {PERSISTENT, BOOL}}',
      "test_param_key_defaults_on"),
   # --- radarstat line -------------------------------------------------------------------

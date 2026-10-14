@@ -26,6 +26,7 @@ from openpilot.selfdrive.controls.lib.unified_lead import (
   speed_ceiling_accel,
   unified_follow_desired,
 )
+from openpilot.common.nap_params import params_keys_text
 
 DT = 0.05
 MPH = 0.44704
@@ -395,7 +396,7 @@ def test_arrives_at_the_setpoint_already_speed_matched():
 
 
 def test_unified_is_the_sole_path_and_the_toggle_is_gone():
-  keys = (ROOT / "common" / "params_keys.h").read_text()
+  keys = params_keys_text(ROOT)
   nap = (ROOT / "selfdrive/ui/layouts/settings/nap.py").read_text()
   mici = (ROOT / "selfdrive/ui/mici/layouts/settings/nap.py").read_text()
   content = (ROOT / "selfdrive/ui/layouts/settings/nap_content.py").read_text()
