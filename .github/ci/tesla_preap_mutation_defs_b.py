@@ -87,7 +87,7 @@ MUTATIONS_B = (
   ),
   HistoricalMutation(
     name="turn-geom-default-off",
-    source_path="common/params_keys.h",
+    source_path="common/nap_params_keys.h",
     original=b'{"NAPLatTurnGeom", {PERSISTENT, BOOL, "1"}}',
     replacement=b'{"NAPLatTurnGeom", {PERSISTENT, BOOL, "0"}}',
     test_nodes=(
