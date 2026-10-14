@@ -1006,7 +1006,10 @@ class Car:
 
 
 def main():
-  config_realtime_process(4, Priority.CTRL_HIGH)
+  # Core 4 (controlsd + selfdrived + card) ran at 100% with no headroom (Oct 14
+  # route 0000019a: controlsState 563->456/min as the SoC heated, selfdrivedLagging).
+  # Core 6 only hosts camerad (~11%, non-RT, isolcpus).
+  config_realtime_process(6, Priority.CTRL_HIGH)
   car = Car()
   car.card_thread()
 
