@@ -13,7 +13,7 @@ from openpilot.common.realtime import DT_CTRL
 from openpilot.selfdrive.controls.lib.radar_sensor_dirty import sensor_dirty_degraded
 from openpilot.selfdrive.locationd.calibrationd import MIN_SPEED_FILTER
 from openpilot.system.micd import SAMPLE_RATE, SAMPLE_BUFFER
-from openpilot.selfdrive.ui.feedback.feedbackd import FEEDBACK_MAX_DURATION
+from openpilot.selfdrive.nap.bookmark.bookmarkd import FEEDBACK_MAX_DURATION
 from openpilot.system.hardware import HARDWARE
 from openpilot.system.manager.optional_procs import missing_required_processes
 

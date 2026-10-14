@@ -1,7 +1,7 @@
 import os
 import wave
 
-from openpilot.selfdrive.ui.feedback.feedbackd import VoiceNote, active_segment_dir, VOICE_NOTE_MAX_DURATION
+from openpilot.selfdrive.nap.bookmark.bookmarkd import VoiceNote, active_segment_dir, VOICE_NOTE_MAX_DURATION
 from openpilot.system.micd import SAMPLE_RATE, SAMPLE_BUFFER
 
 
