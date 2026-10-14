@@ -588,10 +588,6 @@ def _publish_vision(pm, messaging, sample, vision_us: float) -> None:
     reason = "model_error"
   body.visionFailReason = reason
   body.driveOverReason = str(getattr(sample, "drive_over_reason", "") or "")
-  body.rangeM = _finite_or_nan(getattr(sample, "range_m", float("nan")))
-  body.lateral = _finite_or_nan(getattr(sample, "lateral", float("nan")))
-  body.spanM = _finite_or_nan(getattr(sample, "span_m", 0.0))
-  body.vRel = _finite_or_nan(getattr(sample, "v_rel", float("nan")))
   pm.send("pathObstacleVisionNAP", msg)
 
 

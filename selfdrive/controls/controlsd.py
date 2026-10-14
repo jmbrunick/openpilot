@@ -18,8 +18,6 @@ from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   handoff_new_desired_curvature, lat_active_after_handoff,
   pin_desired_curvature_to_measured)
 from opendbc.car.tesla.preap.lat_yield import UNDERTRACK_CURVATURE, roundabout_yield_context
-from openpilot.selfdrive.controls.lib.cone_line import lane_room_m
-from openpilot.selfdrive.controls.lib.path_object_response import AvoidShift, confirmed_from_msg
 from openpilot.selfdrive.controls.lib.cone_line_hold import PARAM_CONE_LINE_HOLD, ConeLineHold, lane_offset_from_model, lookahead_m
 from openpilot.selfdrive.controls.lib.lat_low_visibility import (
   PARAM_LOW_VIS_BACKOFF, LowVisibility, fade_curvature, sun_ahead_from_fix)
@@ -68,10 +66,10 @@ class Controls:
     self.sm = messaging.SubMaster(['liveDelay', 'liveParameters', 'liveTorqueParameters', 'modelV2', 'selfdriveState',
                                    'liveCalibration', 'livePose', 'longitudinalPlan', 'lateralManeuverPlan', 'carState', 'carOutput',
                                    'driverMonitoringState', 'onroadEvents', 'driverAssistance', 'liveMapDataNAP', 'radarState',
-                                   'gpsLocation', 'gpsLocationExternal', 'roadCameraState', 'coneLineNAP', 'pathObstacleVisionNAP'], poll='selfdriveState',
-                                  ignore_alive=['roadCameraState', 'coneLineNAP', 'pathObstacleVisionNAP'],
-                                  ignore_avg_freq=['roadCameraState', 'coneLineNAP', 'pathObstacleVisionNAP'],
-                                  ignore_valid=['roadCameraState', 'coneLineNAP', 'pathObstacleVisionNAP'])
+                                   'gpsLocation', 'gpsLocationExternal', 'roadCameraState', 'coneLineNAP'], poll='selfdriveState',
+                                  ignore_alive=['roadCameraState', 'coneLineNAP'],
+                                  ignore_avg_freq=['roadCameraState', 'coneLineNAP'],
+                                  ignore_valid=['roadCameraState', 'coneLineNAP'])
     self.pm = messaging.PubMaster(['carControl', 'controlsState'])
 
     self.steer_limited_by_safety = False
@@ -110,8 +108,6 @@ class Controls:
     self._rb_yield_prev = False
     # Cone-line offset hold. Default On. Identity until a real push.
     self.cone_hold = ConeLineHold()
-    self.obstacle_avoid = AvoidShift()
-    self._avoid_offset = 0.0
     self._cone_zone = False
     self._cone_out = self.cone_hold.update(
       enabled=False, engaged=False, cone=None, torque_nm=0.0, measured_k=0.0,
@@ -269,38 +265,6 @@ class Controls:
       steering_pressed=bool(CS.steeringPressed),
     )
     return float(self._cone_out.curvature)
-
-  def _obstacle_avoid_curvature(self, model_k: float, CS, lat_active: bool) -> float:
-    """Gentle in-lane shift away from a radar+vision confirmed roadside object.
-
-    Steer zone only (beyond ~1 ft of our path edge, inside the chime zones).
-    Not while a cone shift / hold is steering. Wheel push or gas override.
-    """
-    obj = None
-    try:
-      if self.sm.seen.get("pathObstacleVisionNAP", False):
-        age = (self.sm.logMonoTime["carState"] - self.sm.logMonoTime["pathObstacleVisionNAP"]) * 1e-9
-        obj = confirmed_from_msg(self.sm["pathObstacleVisionNAP"], float(age))
-    except Exception:
-      obj = None
-    cone_busy = bool(self._cone_out.active)
-    room = None
-    if obj is not None:
-      try:
-        # Object right (lateral > 0) -> move left: room toward the left lane line (side -1 helper).
-        room = lane_room_m(self.sm["modelV2"], -1 if obj.lateral > 0 else 1)
-      except Exception:
-        room = None
-    shift = self.obstacle_avoid.update(
-      None if cone_busy else obj, v_ego=float(CS.vEgo), gas_pressed=bool(CS.gasPressed),
-      steering_pressed=bool(CS.steeringPressed) or bool(self._lat_handoff.yielded),
-      lat_active=lat_active, dt=DT_CTRL, lane_room=room)
-    self._avoid_offset = 0.0 if cone_busy else float(shift)
-    if self._avoid_offset == 0.0:
-      return model_k
-    x = max(lookahead_m(float(CS.vEgo)), 1.0)
-    delta_k = max(-0.02, min(0.02, 2.0 * self._avoid_offset / (x * x)))
-    return model_k + delta_k
 
   def state_control(self):
     CS = self.sm['carState']
@@ -526,7 +490,6 @@ class Controls:
     # Cone-line hold, after a real push, aims the re-take at the driver's
     # line. Identity otherwise. Longitudinal accel above is unchanged.
     model_or_plan_curvature = self._cone_curvature(float(model_or_plan_curvature), CS)
-    model_or_plan_curvature = self._obstacle_avoid_curvature(float(model_or_plan_curvature), CS, bool(CC.latActive))
     # Low visibility eases the lateral target toward the wheel. Longitudinal
     # accel above is unchanged, and latActive / enabled are unchanged.
     # Not inside a cone corridor (Oct 14 seg 25: the alert was on while the cones closed in).
@@ -646,7 +609,6 @@ class Controls:
     cs.lowVisibility = bool(self._low_vis.alert)
     cs.coneLineHold = bool(self._cone_out.active)
     cs.coneLineOffset = float(self._cone_out.offset_m)
-    cs.obstacleAvoidOffset = float(self._avoid_offset)
     cs.longControlState = self.LoC.long_control_state
     cs.upAccelCmd = float(self.LoC.pid.p)
     cs.uiAccelCmd = float(self.LoC.pid.i)

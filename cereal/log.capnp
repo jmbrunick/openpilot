@@ -837,7 +837,6 @@ struct ControlsState @0x97ff69c53601abf1 {
   lowVisibility @69 :Bool;  # NAP: model/camera blind, lateral eased toward the driver
   coneLineHold @70 :Bool;   # NAP: holding the driver's offset or applying the cone shift near cones
   coneLineOffset @71 :Float32;  # m, +right, path shift applied (0 when not holding/shifting)
-  obstacleAvoidOffset @72 :Float32;  # m, +right, in-lane shift away from a radar+vision confirmed object (Oct 14)
 
   lateralControlState :union {
     pidState @53 :LateralPIDState;

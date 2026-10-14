@@ -167,12 +167,6 @@ struct PathObstacleVisionNAP @0x80ae746ee2596b11 {
   # light: crop is headlights or taillights. no_solid: nothing solid in
   # the crop and no model lead. beyond_60: farther than low-beam range.
   driveOverReason @19 :Text;
-  # Oct 14 path-object response: geometry of the same track, so consumers
-  # (controlsd avoid, planner brake log) need only this vision-confirmed message.
-  rangeM @20 :Float32;       # m, camera frame
-  lateral @21 :Float32;      # m, path-relative centre, +right
-  spanM @22 :Float32;        # m, lateral span of the cluster
-  vRel @23 :Float32;         # m/s, radar longitudinal relative
 }
 
 struct CustomReserved5 @0xa5cd762cd951a455 {
