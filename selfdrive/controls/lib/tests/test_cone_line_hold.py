@@ -246,8 +246,9 @@ def test_yield_machine_and_longitudinal_are_untouched():
   radard = (root / "selfdrive/controls/radard.py").read_text()
   assert "_update_cone_line" in radard
   assert "self.radar_state.leadOne" in radard
-  # The logged proposal is not a curvature command.
-  assert "wouldSteer" not in controls
+  # wouldSteer (the cone corridor shift) only reaches lateral through ConeLineHold.
+  assert controls.count("wouldSteer") == 1
+  assert "cone_shift=cone_shift," in controls
   assert "would_steer" not in controls
   # radard already reads carState. The cone line must not add another subscriber.
   assert radard.count("SubMaster(") == 1
