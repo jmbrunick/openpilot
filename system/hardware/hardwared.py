@@ -230,6 +230,19 @@ def hardware_thread(end_event, hw_queue, thermal_queue=None, sys_cache=None) -> 
     thermal_reader.start()
   thermal_cache = ThermalCache(thermal_queue)
 
+  def _booted_latched():
+    # HARDWARE.booted() is a sudo read of /sys/kernel/debug/msm_vidc (video
+    # codec debugfs). Polling it at 2 Hz forever contends with the encoders.
+    # Oct 14 route 196 seg 0: one read blocked 19.8 s at startup and panda
+    # stayed in ELM327 until it returned (controlsMismatch on engage).
+    # Stock only needs it until it first reads True, so latch it.
+    state = {"booted": False}
+    def read():
+      if not state["booted"]:
+        state["booted"] = bool(HARDWARE.booted())
+      return state["booted"]
+    return read
+
   # All other system-file reads are off the publish loop too; see sysfs_reader.py.
   if sys_cache is None:
     sys_cache = SysReadCache({
@@ -242,7 +255,7 @@ def hardware_thread(end_event, hw_queue, thermal_queue=None, sys_cache=None) -> 
       "gpu": lambda: int(round(HARDWARE.get_gpu_usage_percent())),
       "cpu": lambda: [int(round(n)) for n in psutil.cpu_percent(percpu=True)],
       "screen_brightness": HARDWARE.get_screen_brightness,
-      "booted": HARDWARE.booted,
+      "booted": _booted_latched(),
       "power_draw": HARDWARE.get_current_power_draw,
       "som_power_draw": HARDWARE.get_som_power_draw,
     }
