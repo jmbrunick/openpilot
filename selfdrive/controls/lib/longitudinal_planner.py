@@ -1061,32 +1061,6 @@ class LongitudinalPlanner:
       command = min(command, existing)
     self.output_a_target = float(command)
 
-  def _obstacle_brake_log(self, sm) -> tuple[bool, float, int]:
-    """Oct 14 path-object brake, LOG-ONLY. Never touches the plan or accel.
-
-    Radar AND vision confirmed object within ~1 ft of our path edge (or in
-    it), >= 15 mph, gas not pressed -> strong decel up to ACCEL_MIN, logged.
-    """
-    from openpilot.selfdrive.controls.lib.path_object_response import brake_decel, confirmed_from_msg, gates_ok
-    if self._frame % 20 == 0 or not hasattr(self, "_obstacle_brake_mode"):
-      try:
-        self._obstacle_brake_mode = 1 if self._params.get_bool("NAPObstacleBrake") else 0
-      except Exception:
-        self._obstacle_brake_mode = 0
-    try:
-      if not sm.seen.get('pathObstacleVisionNAP', False):
-        return False, 0.0, self._obstacle_brake_mode
-      cs = sm['carState']
-      age = (sm.logMonoTime['carState'] - sm.logMonoTime['pathObstacleVisionNAP']) * 1e-9
-      obj = confirmed_from_msg(sm['pathObstacleVisionNAP'], float(age))
-      v = float(cs.vEgo)
-      if obj is None or not gates_ok(v, bool(cs.gasPressed)):
-        return False, 0.0, self._obstacle_brake_mode
-      decel = brake_decel(obj, v, ACCEL_MIN)
-      return decel < 0.0, float(decel), self._obstacle_brake_mode
-    except Exception:
-      return False, 0.0, getattr(self, "_obstacle_brake_mode", 0)
-
   def publish(self, sm, pm):
     plan_send = messaging.new_message('longitudinalPlan')
 
@@ -1126,9 +1100,5 @@ class LongitudinalPlanner:
     longitudinalPlan.tFollow = self.t_follow
     longitudinalPlan.gapLockM = float(self._gap_lock.gap_m or 0.0)
     longitudinalPlan.gapLockEvent = int(self._gap_lock.hud) & 0xFF
-    would, decel, mode = self._obstacle_brake_log(sm)
-    longitudinalPlan.obstacleWouldBrake = bool(would)
-    longitudinalPlan.obstacleBrakeDecel = float(decel)
-    longitudinalPlan.obstacleBrakeMode = int(mode)
 
     pm.send('longitudinalPlan', plan_send)
