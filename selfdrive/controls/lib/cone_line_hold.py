@@ -63,11 +63,6 @@ X_LA_S = 1.6
 X_LA_MIN_M = 12.0
 X_LA_MAX_M = 40.0
 K_FILTER_S = 0.30
-# Oct 14: the cone corridor shift is automatic (no Hold my line arm needed)
-# whenever lateral is engaged and a confident line is tracked. A wheel
-# override drops it at once; after release it fades back in over RESUME_S.
-SHIFT_MIN_CONFIDENCE = 0.6
-SHIFT_RESUME_S = 1.5
 
 
 def lookahead_m(v_ego: float) -> float:
@@ -118,36 +113,26 @@ class ConeLineHold:
     self._release_s = 0.0
     self._releasing = False
     self._x_la = X_LA_MIN_M
-    self._shift_gain = 1.0
     self.busy = False
 
   def reset(self) -> None:
     self._reset()
 
-  def update(self, *, enabled: bool, engaged: bool, cone, shift_enabled: bool = True, torque_nm: float,
+  def update(self, *, enabled: bool, engaged: bool, cone, torque_nm: float,
              measured_k: float, model_k: float, path_x, path_y, v_ego: float,
              yielded: bool, lat_active: bool, dt: float,
              lane_offset: float | None = None, lane_center_la: float | None = None,
-             cone_shift: float = 0.0, steering_pressed: bool = False) -> ConeHoldOutput:
+             cone_shift: float = 0.0) -> ConeHoldOutput:
     model_k = _finite(model_k)
-    # enabled = Hold my line toggle (push-armed offset hold). shift_enabled =
-    # automatic cone corridor shift. They are separate features.
-    if not engaged or not (enabled or shift_enabled):
+    if not enabled or not engaged:
       self._reset()
       return ConeHoldOutput(False, 0.0, model_k)
-    if not enabled and self._armed:
-      gain = self._shift_gain
-      self._reset()
-      self._shift_gain = gain
 
     dt = min(max(_finite(dt), 0.0), 0.2)
     torque = _finite(torque_nm)
     measured = _finite(measured_k)
     side = int(getattr(cone, "side", 0) or 0) if cone is not None else 0
     cone_active = bool(getattr(cone, "active", False)) and side in (-1, 1)
-    # Oct 14: after the corridor ends radard eases wouldSteer to 0 (releasing).
-    # Keep applying it so the car re-centres smoothly instead of snapping.
-    cone_releasing = bool(getattr(cone, "releasing", False)) and side in (-1, 1) and not cone_active
     offset = None if lane_offset is None else _finite(lane_offset, float("nan"))
     if offset is not None and not math.isfinite(offset):
       offset = None
@@ -177,9 +162,9 @@ class ConeLineHold:
 
     # (Re-)capture his actual offset while a qualifying push is on. The last
     # value read before he lets go is the one held.
-    if enabled and pushing and self._armed and self._push_s + 1e-12 >= STEER_BACK_S:
+    if pushing and self._armed and self._push_s + 1e-12 >= STEER_BACK_S:
       self._capture(offset, measured, y_model, self._side)
-    elif enabled and pushing and not self._armed and cone_active and direction == -side \
+    elif pushing and not self._armed and cone_active and direction == -side \
          and self._push_s + 1e-12 >= PUSH_ARM_S:
       # First capture: a push away from the cones (side +1 left: rightward, torque < 0).
       self._capture(offset, measured, y_model, side)
@@ -209,22 +194,12 @@ class ConeLineHold:
     if self._armed:
       return ConeHoldOutput(False, 0.0, model_k)
 
-    # Automatic corridor shift. Any wheel override (or a yield / lat off)
-    # drops it immediately; after release it fades back in over SHIFT_RESUME_S.
-    if not can_steer or steering_pressed:
-      self._shift_gain = 0.0
-    else:
-      self._shift_gain = min(1.0, self._shift_gain + dt / SHIFT_RESUME_S)
     shift = _finite(cone_shift)
-    confident = _finite(getattr(cone, "confidence", 1.0), 0.0) >= SHIFT_MIN_CONFIDENCE if cone is not None else False
-    live = cone_active and confident
-    if shift_enabled and (live or cone_releasing) and can_steer and not steering_pressed and abs(shift) > 1e-3:
-      # Never toward the nearer line: side +1 (left) only shifts right (+).
-      # radard already keeps CORRIDOR_MARGIN_M to both tracked lines.
+    if cone_active and can_steer and abs(shift) > 1e-3:
+      # Never toward the line: side +1 (left) only shifts right (+).
       if shift * side > 0.0:
         self._x_la = x_now
-        applied = max(-MAX_OFFSET_M, min(MAX_OFFSET_M, shift)) * _smoothstep(self._shift_gain)
-        return self._out(applied, model_k, "shift")
+        return self._out(max(-MAX_OFFSET_M, min(MAX_OFFSET_M, shift)), model_k, "shift")
     return ConeHoldOutput(False, 0.0, model_k)
 
   def _capture(self, offset, measured: float, y_model, side: int) -> None:

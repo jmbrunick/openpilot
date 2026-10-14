@@ -582,26 +582,12 @@ def test_wiring_stays_off_the_control_core_and_off_longitudinal():
   def text(rel):
     return (ROOT / rel).read_text(encoding="utf-8")
 
-  # Oct 14 path-object response (approved): controlsd reads the confirmed
-  # object only for the steer-zone avoid shift, and the planner only for the
-  # log-only brake. Everything else stays off the control core.
-  allowed = {
-    "selfdrive/controls/controlsd.py": "def _obstacle_avoid_curvature",
-    "selfdrive/controls/lib/longitudinal_planner.py": "def _obstacle_brake_log",
-  }
   for rel in (
     "selfdrive/controls/controlsd.py",
     "selfdrive/controls/lib/longcontrol.py",
     "selfdrive/controls/lib/longitudinal_planner.py",
   ):
     src = text(rel)
-    if rel in allowed and allowed[rel] in src:
-      start = src.index(allowed[rel])
-      end = src.find("\n  def ", start + 1)
-      src = src[:start] + (src[end:] if end > 0 else "")
-    for line in src.splitlines():
-      if "pathObstacleVisionNAP" in line and ("ignore_" in line or "SubMaster" in line or "'gpsLocation'" in line):
-        src = src.replace(line, "")
     assert "pathObstacle" not in src
     assert "obstacleChime" not in src
     assert "future_brake_intent" not in src

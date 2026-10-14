@@ -60,15 +60,7 @@ struct ConeLineNAP @0xf35cc4560bbf6ec2 {
   barrier @8 :Bool;          # continuous guardrail / barrier, not a cone line
   parked @9 :Bool;           # short wide cluster rejected as a parked car
   spanM @10 :Float32;
-  wouldSteer @11 :Float32;   # m, +right; in-lane cone shift (corridor midpoint / away from one line), |v| <= 1.0
-  # Oct 14 corridor: both sides tracked at once.
-  leftActive @12 :Bool;
-  leftClear @13 :Float32;    # m from path centre to the nearest left post, 0 when none
-  rightActive @14 :Bool;
-  rightClear @15 :Float32;   # m from path centre to the nearest right post, 0 when none
-  corridor @16 :Bool;        # both sides active; wouldSteer aims at the midpoint
-  marginM @17 :Float32;      # smallest clearance to a tracked line after wouldSteer
-  releasing @18 :Bool;       # corridor ended; wouldSteer easing to 0 (applied while easing)
+  wouldSteer @11 :Float32;   # m, +right; proposed offset away from the line, |v| <= 0.4. Not applied.
 }
 
 # NAP in-path / roadside obstacle sample. Log only, plus an animal/person
@@ -167,12 +159,6 @@ struct PathObstacleVisionNAP @0x80ae746ee2596b11 {
   # light: crop is headlights or taillights. no_solid: nothing solid in
   # the crop and no model lead. beyond_60: farther than low-beam range.
   driveOverReason @19 :Text;
-  # Oct 14 path-object response: geometry of the same track, so consumers
-  # (controlsd avoid, planner brake log) need only this vision-confirmed message.
-  rangeM @20 :Float32;       # m, camera frame
-  lateral @21 :Float32;      # m, path-relative centre, +right
-  spanM @22 :Float32;        # m, lateral span of the cluster
-  vRel @23 :Float32;         # m/s, radar longitudinal relative
 }
 
 struct CustomReserved5 @0xa5cd762cd951a455 {
