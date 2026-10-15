@@ -422,8 +422,10 @@ class CurveFollow:
     # normal cap cannot keep a late, sharp bend's apex under the steering limit.
     room = None if self.limit_d is None else self.limit_d - RELEASE_BEFORE_TIGHTEST_S * v
     self.emergency = bool(a_raw < -NAP_NORMAL_DECEL_MS2 and self._conf > 0.5 and needs_emergency(v, room, self.limit_k))
-    lim = max(decel_limit_ms2(v, a_c), NAP_EMERGENCY_DECEL_MS2 if self.emergency else 0.0)
-    a_c = min(FREE_A_MS2, max(a_c, -lim))
+    a_demand = a_c
+    a_c = min(FREE_A_MS2, max(a_c, -decel_limit_ms2(v, a_c)))
+    if self.emergency:
+      a_c = min(a_c, max(a_demand, -NAP_EMERGENCY_DECEL_MS2))
     a_c = min(a_c, self._post_apex_cap(dt))
     self.raw = a_c
     out = self._slew(v, a_c, dt)
@@ -459,8 +461,9 @@ class CurveFollow:
     release = min(RELEASE_MAX_MS3, rel_base + RELEASE_PROP_1_S * max(0.0, err)) * dt
     if err < 0.0:
       base = build_jerk_ms3(v, self.urgent)
-      cap = max(BUILD_MAX_MS3, NAP_EMERGENCY_JERK_MS3) if self.emergency else BUILD_MAX_MS3
-      build = min(cap, base + BUILD_PROP_1_S * (-err)) * dt
+      build = min(BUILD_MAX_MS3, base + BUILD_PROP_1_S * (-err)) * dt
+      if self.emergency:  # emergency tier: firmer build, still jerk-limited
+        build = min(NAP_EMERGENCY_JERK_MS3, base + BUILD_PROP_1_S * (-err)) * dt
       delta = max(err, -build)
     else:
       delta = min(err, release)
