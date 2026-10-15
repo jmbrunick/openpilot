@@ -430,8 +430,9 @@ def test_zero_mean_curvature_noise_does_not_accumulate_into_a_bend():
   for _ in range(200):
     ks = rng.normal(0.0, 0.0015, len(TL)).tolist()
     lo = min(lo, cf.step(dt=DT, v_ego=20.0, ts=TL, ds=(20.0 * T).tolist(), ks=ks, y_std=(0.3 + 0.2 * T).tolist()))
-  # Never brakes. (The median table's 42 mph plateau may trim the +a ceiling a little.)
-  assert lo >= 0.0
+  # Never brakes; the median table's 42 mph plateau may trim the +a ceiling a
+  # little (1.6 here), unsigned accumulation would build a bend (1.2).
+  assert lo >= 1.4
 
 
 def test_curvature_filter_clips_a_spike_and_opens_slowly():

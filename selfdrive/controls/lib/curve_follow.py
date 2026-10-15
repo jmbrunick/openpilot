@@ -403,7 +403,7 @@ class CurveFollow:
     self.conf = self._conf
     self.trusted = bool(path_ok and ctx_ok and self._conf >= 0.2 and v >= MIN_V_MS)
 
-    if rb_active:
+    if rb_active and not ctx_ok:
       # The map roundabout funnel owns the entry (it brakes for the ring
       # itself, and the planner takes the lower of the two): hand over at once.
       self._conf = self.conf = 0.0
