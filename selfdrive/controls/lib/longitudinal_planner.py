@@ -218,6 +218,7 @@ class LongitudinalPlanner:
     self._cf_trusted = False
     self._cf_faulted = False
     self._cf_cycle = 0
+    self._cmap = None  # NAP map curve preview (selfdrive/nap/curve_map), made on first use
     # Sight-distance cap (NAPSightCap 0 off / 1 shadow). LOG ONLY: nothing reads it.
     self._sc_mode = read_sight_cap_mode(self._params) if self._is_preap else SIGHT_MODE_OFF
     self._sight_cap = SightCap()
@@ -633,9 +634,14 @@ class LongitudinalPlanner:
       blinker = bool(car_state.leftBlinker or car_state.rightBlinker)
       lane_change = str(meta.laneChangeState) != "off"
       frame_drop = float(model.frameDropPerc)
+      if self._cmap is None:
+        from openpilot.selfdrive.nap.curve_map.planner_hook import CurveMapSource
+        self._cmap = CurveMapSource()
+      feed, mapd_way, mapd_match_m = self._cmap.update(sm, v_ego)
       a_cf = float(self._curve_follow.step(
         dt=self.dt, v_ego=v_ego, ts=ts, ds=ds, ks=ks, y_std=y_std, lane_change=lane_change,
         blinker=blinker, frame_drop_pct=frame_drop, rb_active=rb_active, valid=curve_path is not None,
+        map_feed=feed, mapd_way=mapd_way, mapd_match_m=mapd_match_m,
       ))
       self.curve_follow_a = a_cf
       self._cf_trusted = bool(self._curve_follow.trusted)

@@ -1,6 +1,7 @@
 """Curve-follow: the continuous curve term in the longitudinal planner (Pre-AP).
 
-The road ahead is a speed envelope (the unchanged conservative lateral table)
+The road ahead is a speed envelope (curve follow's own lateral table, a little
+under how Justin corners)
 and its most limiting point is a virtual lead. The term is a ceiling on
 acceleration: exactly FREE on a straight, lower only when the path ahead
 asks, released in proportion as the path opens, with no set speed and no latch.
@@ -23,10 +24,11 @@ from openpilot.selfdrive.controls.lib.curve_follow import (
   RELEASE_BEFORE_TIGHTEST_S,
   CurveFollow,
   curve_follow_raw,
+  curve_speed_for_curvature,
+  decel_limit_ms2,
   format_log_line,
   read_curve_follow_mode,
 )
-from openpilot.selfdrive.controls.lib.curve_max_hold import curve_speed_for_curvature
 from openpilot.selfdrive.controls.tests.test_curve_preview import _bend_kappa
 from openpilot.selfdrive.modeld.constants import ModelConstants
 
@@ -484,12 +486,30 @@ def test_apex_detection_reads_the_path_peaking():
 
 
 def test_braking_never_exceeds_the_speed_dependent_decel_limit():
-  from openpilot.selfdrive.controls.lib.curve_preview import preview_decel_limit_ms2
+  """Speed table 1.2 @10 / 0.55 @25 m/s; an urgent demand may grow it to 1.5, never more."""
+  assert decel_limit_ms2(10.0) == pytest.approx(1.2)
+  assert decel_limit_ms2(25.0) == pytest.approx(0.55)
+  assert decel_limit_ms2(25.0, -0.7) == pytest.approx(0.55)   # not urgent
+  assert decel_limit_ms2(25.0, -5.0) == pytest.approx(1.5)    # urgent, capped
   v = 30.0
   cf = CurveFollow()
   ds = (v * T).tolist()
-  for _ in range(60):
+  a_prev = FREE_A_MS2
+  worst_jerk = 0.0
+  for _ in range(80):
     a = cf.step(dt=DT, v_ego=v, ts=TL, ds=ds, ks=[0.0] * 3 + [0.06] * (len(TL) - 3))
-    assert cf.raw >= -preview_decel_limit_ms2(v) - 1e-9
-    assert a >= -preview_decel_limit_ms2(v) - 1e-9
-  assert cf.raw == pytest.approx(-preview_decel_limit_ms2(v))  # the road asks for more; the limit binds
+    assert cf.raw >= -1.5 - 1e-9 and a >= -1.5 - 1e-9
+    if a < 0.0 and a_prev < 0.0:
+      worst_jerk = max(worst_jerk, (a_prev - a) / DT)
+    a_prev = a
+  assert cf.raw == pytest.approx(-1.5)  # the road asks for far more; the urgent cap binds
+  assert worst_jerk <= 2.0 + 1e-6       # jerk limited: not a wall
+
+
+def test_mild_demand_at_speed_stays_within_the_lift_limit():
+  """A sweeper a little under speed at 25 m/s: ~Justin's lift, never past 0.55."""
+  v = 25.0
+  v_env = curve_speed_for_curvature(1.0 / 250.0)
+  assert v_env is not None and v_env < v
+  rows = _drive([(250.0, 300.0, 1.0 / 250.0)], v, 20.0, v_max=v)
+  assert min(r[4] for r in rows) >= -0.55 - 1e-6
