@@ -36,10 +36,10 @@ from openpilot.selfdrive.mapd.roundabout import (
   RB_SEARCH_PAD_DEG,
   RoundaboutHint,
   junction_is_roundabout,
-  roundabout_suppressed_for_highway,
   way_is_roundabout,
 )
 from openpilot.selfdrive.mapd.roundabout_map import ROLE_RING, RingGeometry
+from openpilot.selfdrive.nap.roundabout.trunk_ring import GATE_BLOCK, GATE_TOUCH, trunk_ring_gate, trunk_ring_ok
 from openpilot.selfdrive.mapd.roundabout_map import ring_geometry as fit_ring_geometry
 
 # Ring geometry search box around the ego / hinted ring (~165 m).
@@ -959,6 +959,7 @@ class OsmSpeedLimitDB:
     self, lat: float, lon: float, bearing_deg: float | None = None,
     current_highway: str | None = None,
     v_ego_ms: float | None = None,
+    current_coords=None,
   ) -> RoundaboutHint:
     """Upcoming / current OSM circulating ring within the speed-based funnel.
 
@@ -978,7 +979,10 @@ class OsmSpeedLimitDB:
     if current_highway is None:
       matched = self._best_match(float(lat), float(lon), bearing_deg)
       current_highway = matched.highway if matched is not None else ""
-    if roundabout_suppressed_for_highway(current_highway):
+      current_coords = matched.coords if matched is not None else None
+    # NAP: trunk rings count when they touch the road we are on (motorway still blocked).
+    gate = trunk_ring_gate(current_highway)
+    if gate == GATE_BLOCK:
       return RoundaboutHint()
     # Default SEARCH_PAD is ~110 m; 200 m westbound at 45°N needs more.
     rows = list(self._candidates(float(lat), float(lon), pad_deg=RB_SEARCH_PAD_DEG))
@@ -992,6 +996,8 @@ class OsmSpeedLimitDB:
     for row in rows:
       coords = _unpack_coords(row["coords"])
       if not way_is_roundabout(coords, _row_junction(row), row["highway"] or ""):
+        continue
+      if gate == GATE_TOUCH and not trunk_ring_ok(row["highway"], coords, current_coords):
         continue
       east_m, north_m, dist = _closest_xy_on_polyline(float(lat), float(lon), coords)
       way_id = int(row["way_id"])
