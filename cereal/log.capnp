@@ -837,6 +837,7 @@ struct ControlsState @0x97ff69c53601abf1 {
   lowVisibility @69 :Bool;  # NAP: model/camera blind, lateral eased toward the driver
   coneLineHold @70 :Bool;   # NAP: holding the driver's offset or applying the cone shift near cones
   coneLineOffset @71 :Float32;  # m, +right, path shift applied (0 when not holding/shifting)
+  obstacleAvoidOffset @72 :Float32;  # m, +right, in-lane shift away from a radar+vision confirmed object (Oct 14)
 
   lateralControlState :union {
     pidState @53 :LateralPIDState;
@@ -1193,6 +1194,11 @@ struct LongitudinalPlan @0xe00b5b3eba12876c {
   # Gap lock meters. 0 = time-gap follow. Event: 0 none, 2 unavailable, 3 lead lost.
   gapLockM @43 :Float32;
   gapLockEvent @44 :UInt8;
+  # Oct 14 path-object brake, LOG-ONLY: radar+vision confirmed object within
+  # ~1 ft of our swept path edge (or in it), >= 15 mph, gas not pressed.
+  obstacleWouldBrake @45 :Bool;
+  obstacleBrakeDecel @46 :Float32;   # m/s^2, <= 0, clipped to the stack floor (ACCEL_MIN); never commanded
+  obstacleBrakeMode @47 :UInt8;      # 0 log-only (default), 1 NAPObstacleBrake on (still not commanded in this build)
 
 
   solverExecutionTime @35 :Float32;
