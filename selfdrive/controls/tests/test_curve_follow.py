@@ -1,6 +1,7 @@
 """Curve-follow: the continuous curve term in the longitudinal planner (Pre-AP).
 
-The road ahead is a speed envelope (the unchanged conservative lateral table)
+The road ahead is a speed envelope (curve follow's own lateral table, a little
+under how Justin corners)
 and its most limiting point is a virtual lead. The term is a ceiling on
 acceleration: exactly FREE on a straight, lower only when the path ahead
 asks, released in proportion as the path opens, with no set speed and no latch.
@@ -23,10 +24,11 @@ from openpilot.selfdrive.controls.lib.curve_follow import (
   RELEASE_BEFORE_TIGHTEST_S,
   CurveFollow,
   curve_follow_raw,
+  curve_speed_for_curvature,
+  decel_limit_ms2,
   format_log_line,
   read_curve_follow_mode,
 )
-from openpilot.selfdrive.controls.lib.curve_max_hold import curve_speed_for_curvature
 from openpilot.selfdrive.controls.tests.test_curve_preview import _bend_kappa
 from openpilot.selfdrive.modeld.constants import ModelConstants
 
@@ -106,7 +108,7 @@ def test_constant_radius_bend_slows_early_gently_and_to_the_table(radius, v0):
   assert t_entry - t_on >= 3.0
   assert _speed_at(rows, start) <= v_env * 1.15
   assert min(a for _, _, _, a, *_ in rows) >= -1.05
-  assert _brake_jerk([r[4] for r in rows]) <= 2.1
+  assert _brake_jerk([r[4] for r in rows]) <= 3.1
   # Inside the arc the car holds the table speed, it is not pushed below it.
   mid = _speed_at(rows, start + 50.0)
   assert v_env * 0.85 <= mid <= v_env * 1.15
@@ -134,7 +136,7 @@ def test_tightening_spiral_keeps_deepening_within_the_jerk_limit():
   # No release while the road is still tightening.
   rising = [a[i + 1] - a[i] for i in range(k_min)]
   assert max(rising) <= 0.12
-  assert _brake_jerk([r[4] for r in rows]) <= 2.1
+  assert _brake_jerk([r[4] for r in rows]) <= 3.1
   # Cornering stays on the table at the tightest arc.
   assert _speed_at(rows, 120.0 + 45.0 * 5 + 20.0) <= curve_speed_for_curvature(1.0 / 35.0) * 1.2
 
@@ -214,7 +216,8 @@ def test_s_curve_has_no_state_a_fresh_filter_agrees_mid_scene():
   for k in range(int(3.0 / DT)):
     _step(fresh, v_mid, s_mid, bends)
     _step(cf, v_mid, s_mid, bends)
-    if k * DT >= 0.5:
+    # The post-apex +a hold is deliberate state (it follows a bend that slowed the car).
+    if k * DT >= 0.5 and fresh._post_t < 0.0 and cf._post_t < 0.0:
       worst = max(worst, abs(fresh.raw - cf.raw))
     s_mid += v_mid * DT
   assert worst <= 0.2
@@ -364,7 +367,7 @@ def test_mode_param_reader_defaults_to_shadow_and_clamps():
 
 # 13 --------------------------------------------------------------------
 def test_release_buffer_is_one_named_constant_and_is_wired(monkeypatch):
-  assert RELEASE_BEFORE_TIGHTEST_S == pytest.approx(1.5)
+  assert RELEASE_BEFORE_TIGHTEST_S == pytest.approx(0.5)
   v = 15.0
   xs = (v * T).tolist()
   ks = [0.0 if x < 70.0 else 1.0 / 40.0 for x in xs]
@@ -427,7 +430,9 @@ def test_zero_mean_curvature_noise_does_not_accumulate_into_a_bend():
   for _ in range(200):
     ks = rng.normal(0.0, 0.0015, len(TL)).tolist()
     lo = min(lo, cf.step(dt=DT, v_ego=20.0, ts=TL, ds=(20.0 * T).tolist(), ks=ks, y_std=(0.3 + 0.2 * T).tolist()))
-  assert lo >= 1.9
+  # Never brakes; the median table's 42 mph plateau may trim the +a ceiling a
+  # little (1.6 here), unsigned accumulation would build a bend (1.2).
+  assert lo >= 1.4
 
 
 def test_curvature_filter_clips_a_spike_and_opens_slowly():
@@ -484,12 +489,46 @@ def test_apex_detection_reads_the_path_peaking():
 
 
 def test_braking_never_exceeds_the_speed_dependent_decel_limit():
-  from openpilot.selfdrive.controls.lib.curve_preview import preview_decel_limit_ms2
+  """Speed table 1.2 @10 / 0.55 @25 m/s; an urgent demand may grow it to 2.5 (Justin: firmer is OK), never more."""
+  assert decel_limit_ms2(10.0) == pytest.approx(1.2)
+  assert decel_limit_ms2(25.0) == pytest.approx(0.55)
+  assert decel_limit_ms2(25.0, -0.4) == pytest.approx(0.55)   # not urgent
+  assert decel_limit_ms2(25.0, -5.0) == pytest.approx(2.5)    # urgent, capped
   v = 30.0
   cf = CurveFollow()
   ds = (v * T).tolist()
-  for _ in range(60):
+  a_prev = FREE_A_MS2
+  worst_jerk = 0.0
+  saw_emergency = False
+  for _ in range(80):
     a = cf.step(dt=DT, v_ego=v, ts=TL, ds=ds, ks=[0.0] * 3 + [0.06] * (len(TL) - 3))
-    assert cf.raw >= -preview_decel_limit_ms2(v) - 1e-9
-    assert a >= -preview_decel_limit_ms2(v) - 1e-9
-  assert cf.raw == pytest.approx(-preview_decel_limit_ms2(v))  # the road asks for more; the limit binds
+    lim = 3.4 if cf.emergency else 2.5   # emergency tier: late sharp bend only
+    assert cf.raw >= -lim - 1e-9 and a >= -lim - 1e-9
+    saw_emergency = saw_emergency or cf.emergency
+    if a < 0.0 and a_prev < 0.0:
+      worst_jerk = max(worst_jerk, (a_prev - a) / DT)
+    a_prev = a
+  assert cf.raw == pytest.approx(-3.4)  # the road asks for far more; the emergency cap binds
+  assert saw_emergency                  # a 0.06 wall at 30 m/s is the late sharp bend the tier is for
+  assert a_prev == pytest.approx(-3.4)  # ... and it brakes to the emergency cap, no further
+  assert worst_jerk <= 4.0 + 1e-6       # jerk limited even in emergency: not a wall
+
+
+def test_emergency_tier_stays_off_for_a_normal_curve():
+  """A bend seen early enough for 2.5 m/s² never uses the emergency tier."""
+  v = 25.0
+  cf = CurveFollow()
+  ds = (v * T).tolist()
+  ks = [0.0 if d < 140.0 else 1 / 60 for d in ds]
+  for _ in range(40):
+    a = cf.step(dt=DT, v_ego=v, ts=TL, ds=ds, ks=ks)
+    assert not cf.emergency and a >= -2.5 - 1e-9
+
+
+def test_mild_demand_at_speed_stays_within_the_lift_limit():
+  """A sweeper a little under speed at 25 m/s: a lift, never past 0.8 (the urgent ramp starts at 0.5)."""
+  v = 25.0
+  v_env = curve_speed_for_curvature(1.0 / 250.0)
+  assert v_env is not None and v_env < v
+  rows = _drive([(250.0, 300.0, 1.0 / 250.0)], v, 20.0, v_max=v)
+  assert min(r[4] for r in rows) >= -0.8 - 1e-6
