@@ -175,7 +175,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // 0 = off, 1 = shadow (compute + log only; old preview and CurveMaxHold
     // stay in force), 2 = active (replaces the preview, retires the
     // CurveMaxHold MAX cap). Default 1.
-    {"NAPCurveFollow", {PERSISTENT, INT, "1"}},
+    {"NAPCurveFollow", {PERSISTENT, INT, "2"}},  // test branch: active
     {"NAPSightCap", {PERSISTENT, INT, "1"}},
     // Settings → NAP → Lateral Control. Default On (Pre-AP only). Turn
     // geometry correction: low-speed lag + rear reference offset (m) in
