@@ -264,7 +264,7 @@ MUTATIONS_D = (
     name="decel-limit-removed",
     source_path="selfdrive/controls/lib/curve_follow.py",
     original=(
-      b'a_c = min(FREE_A_MS2, max(a_c, -preview_decel_limit_ms2(v)))'
+      b'a_c = min(FREE_A_MS2, max(a_c, -decel_limit_ms2(v, a_c)))'
     ),
     replacement=(
       b'a_c = min(FREE_A_MS2, a_c)'
