@@ -67,6 +67,10 @@ MIN_V_MS = PREVIEW_MIN_V_MS
 # spans ~2x (1.3 to 3.3 m/s²), so no single table sits 1-5 mph under him
 # on every curve; this one is the best balance found (see the PR). The old
 # table had the opposite shape (2.4 in town, 1.75 at highway speed).
+from openpilot.selfdrive.nap.curve_speed.emergency import (
+  EMERGENCY_DECEL_MS2 as NAP_EMERGENCY_DECEL_MS2, EMERGENCY_JERK_MS3 as NAP_EMERGENCY_JERK_MS3,
+  NORMAL_DECEL_MS2 as NAP_NORMAL_DECEL_MS2, needs_emergency,
+)
 from openpilot.selfdrive.nap.curve_speed.median_table import (
   URGENT_DECEL_MS2 as NAP_URGENT_DECEL_MS2, URGENT_JERK_MS3 as NAP_URGENT_JERK_MS3, corner_speed,
 )
@@ -294,6 +298,8 @@ class CurveFollow:
     self.limit_t = None
     self.limit_d = None
     self.limit_v = None
+    self.limit_k = None
+    self.emergency = False
     self.near_a = None
     self.passed = 0.0
     self.gate = 1.0
@@ -369,6 +375,7 @@ class CurveFollow:
 
     a_raw = FREE_A_MS2
     self.limit_idx, self.limit_t, self.limit_d, self.limit_v, self.near_a = -1, None, None, None, None
+    self.limit_k = None
     self.passed = 0.0
     slow = 1.0 - _smooth01((v - LOW_V0_MS) / (LOW_V1_MS - LOW_V0_MS))
     gate = 1.0 - (slow if not blinker else 0.0)
@@ -388,6 +395,7 @@ class CurveFollow:
       if idx >= 0:
         self.limit_idx, self.limit_v = idx, v_lim
         self.limit_t, self.limit_d = float(ts[idx]), float(ds[idx])
+        self.limit_k = float(kf[idx])
     else:
       self._kf = None
 
@@ -410,7 +418,12 @@ class CurveFollow:
       self._brake, self._f, self.a = 0.0, FREE_A_MS2, FREE_A_MS2
     a_c = FREE_A_MS2 + self._conf * (a_raw - FREE_A_MS2)
     self.urgent = _smooth01((-a_c - CF_URGENT_A0_MS2) / CF_URGENT_BAND_MS2)
-    a_c = min(FREE_A_MS2, max(a_c, -decel_limit_ms2(v, a_c)))
+    # NAP emergency tier (selfdrive/nap/curve_speed/emergency.py): only when the
+    # normal cap cannot keep a late, sharp bend's apex under the steering limit.
+    room = None if self.limit_d is None else self.limit_d - RELEASE_BEFORE_TIGHTEST_S * v
+    self.emergency = bool(a_raw < -NAP_NORMAL_DECEL_MS2 and self._conf > 0.5 and needs_emergency(v, room, self.limit_k))
+    lim = max(decel_limit_ms2(v, a_c), NAP_EMERGENCY_DECEL_MS2 if self.emergency else 0.0)
+    a_c = min(FREE_A_MS2, max(a_c, -lim))
     a_c = min(a_c, self._post_apex_cap(dt))
     self.raw = a_c
     out = self._slew(v, a_c, dt)
@@ -446,7 +459,8 @@ class CurveFollow:
     release = min(RELEASE_MAX_MS3, rel_base + RELEASE_PROP_1_S * max(0.0, err)) * dt
     if err < 0.0:
       base = build_jerk_ms3(v, self.urgent)
-      build = min(BUILD_MAX_MS3, base + BUILD_PROP_1_S * (-err)) * dt
+      cap = max(BUILD_MAX_MS3, NAP_EMERGENCY_JERK_MS3) if self.emergency else BUILD_MAX_MS3
+      build = min(cap, base + BUILD_PROP_1_S * (-err)) * dt
       delta = max(err, -build)
     else:
       delta = min(err, release)

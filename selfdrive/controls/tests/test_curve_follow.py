@@ -499,14 +499,30 @@ def test_braking_never_exceeds_the_speed_dependent_decel_limit():
   ds = (v * T).tolist()
   a_prev = FREE_A_MS2
   worst_jerk = 0.0
+  saw_emergency = False
   for _ in range(80):
     a = cf.step(dt=DT, v_ego=v, ts=TL, ds=ds, ks=[0.0] * 3 + [0.06] * (len(TL) - 3))
-    assert cf.raw >= -2.5 - 1e-9 and a >= -2.5 - 1e-9
+    lim = 3.4 if cf.emergency else 2.5   # emergency tier: late sharp bend only
+    assert cf.raw >= -lim - 1e-9 and a >= -lim - 1e-9
+    saw_emergency = saw_emergency or cf.emergency
     if a < 0.0 and a_prev < 0.0:
       worst_jerk = max(worst_jerk, (a_prev - a) / DT)
     a_prev = a
-  assert cf.raw == pytest.approx(-2.5)  # the road asks for far more; the urgent cap binds
-  assert worst_jerk <= 3.0 + 1e-6       # jerk limited: not a wall
+  assert cf.raw == pytest.approx(-3.4)  # the road asks for far more; the emergency cap binds
+  assert saw_emergency                  # a 0.06 wall at 30 m/s is the late sharp bend the tier is for
+  assert a_prev == pytest.approx(-3.4)  # ... and it brakes to the emergency cap, no further
+  assert worst_jerk <= 4.0 + 1e-6       # jerk limited even in emergency: not a wall
+
+
+def test_emergency_tier_stays_off_for_a_normal_curve():
+  """A bend seen early enough for 2.5 m/s² never uses the emergency tier."""
+  v = 25.0
+  cf = CurveFollow()
+  ds = (v * T).tolist()
+  ks = [0.0 if d < 140.0 else 1 / 60 for d in ds]
+  for _ in range(40):
+    a = cf.step(dt=DT, v_ego=v, ts=TL, ds=ds, ks=ks)
+    assert not cf.emergency and a >= -2.5 - 1e-9
 
 
 def test_mild_demand_at_speed_stays_within_the_lift_limit():
