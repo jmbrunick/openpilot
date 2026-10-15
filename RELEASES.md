@@ -1,10 +1,20 @@
-NAP sight-distance cap, LOG ONLY (2026-10-11)
-========================
 * Pre-AP shadow (`NAPSightCap`, default 1 = shadow; 0 off). Nothing reads it: speed, MAX, curve follow, CurveMaxHold, the #222 cases and the -0.22 EV settle are unchanged.
 * Sight distance = where the model path's lateral std reaches 2 m (`model_sight`, shared with low-visibility steering, whose path std read now lives there unchanged).
 * Would fire when sight drops below half its 2-12 s median for 0.5 s at 25-55 mph, with rising path curvature or a map roundabout ahead, unless the model was already red with a short path. Vehicles never count as sight loss: any lead (moving or stopped), adjacent car or parked car within 150 m suppresses it and the reason is logged. Steps aside while the roundabout funnel is live. Glare-only low-vis never feeds it.
 * Logs `sightcap {json}` (errorLogMessage, no new capnp fields): sight, baseline, cap speed (slow to a 30 m bend at 15 mph inside the sight at 1.5 m/s², 2 m/s³ jerk), would-be accel, min with curve follow, leads, pitch, crest, night/sun, lane-line probs, blinker, confidence, low-vis.
+=======
+NAP curve follow retune (2026-10-10)
+========================
+Longitudinal only. NAPCurveFollow stays **1 (shadow)** by default: nothing changes on the road unless it is set to 2. MAX stays a hard ceiling (curve follow never writes MAX), and CurveMaxHold is unchanged in shadow.
+* **Own cornering table**, a little under how Justin corners. It was fitted to 53 curves he drove Oct 4–10: 1.45 / 1.55 / 1.85 / 2.05 / 2.20 m/s² at 8 / 13 / 18 / 22 / 27 m/s. The old table (2.4 in town → 1.75 at highway speed) had the opposite shape. CurveMaxHold and the old preview keep the old table.
+* **Decel:** 1.2 m/s² @10 m/s → 0.55 @25 m/s. An urgent allowance reaches 1.5 when the path demands more than 0.8. It is jerk limited (≤ 2 m/s³ while braking), so it is never a wall.
+* **Finish:** slowing still finishes 1 s before the tightest point; Justin is still easing at the apex. The code comment is fixed.
+* **Re-accel:** after a bend that slowed the car, +a is held to 0.5 m/s² for 2 s, then opens over 1 s. Relief is 0.5 (was 0.6).
+* **Roundabouts:** unchanged. The map funnel (#290 yield, 18 mph ring) owns entry, and curve follow fades out while it is live. The model shows a ring only ~2–3 s ahead, too late for a gentle entry on its own.
+* **Replay tests** come from Justin's logged paths: sweepers, town bends, the Oct 10 5:40 PM late corner, lane changes, a straight and a roundabout.
 
+NAP sight-distance cap, LOG ONLY (2026-10-11)
+=================
 NAP gap lock (2026-10-05)
 ========================
 * Pre-AP, default Off (`NAPGapLock`). Hold the engage stalk toward you for 2 seconds to keep the current radar gap (8–80 m) instead of the time gap. Long can be on, paused, or not yet taken; a finished hold resumes it. Same follow law, a custom distance. The 3X shows the lock while it is on. A tip, cancel, brake, or One-Pedal pause returns to Follow Distance. Another 2 second hold stores a new distance. No panda flash.
