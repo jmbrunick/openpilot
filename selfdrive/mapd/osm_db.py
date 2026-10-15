@@ -40,6 +40,7 @@ from openpilot.selfdrive.mapd.roundabout import (
 )
 from openpilot.selfdrive.mapd.roundabout_map import ROLE_RING, RingGeometry
 from openpilot.selfdrive.nap.roundabout.trunk_ring import GATE_BLOCK, GATE_TOUCH, trunk_ring_gate, trunk_ring_ok
+from openpilot.selfdrive.nap.roundabout.ring_exit import leaving_ring
 from openpilot.selfdrive.mapd.roundabout_map import ring_geometry as fit_ring_geometry
 
 # Ring geometry search box around the ego / hinted ring (~165 m).
@@ -1012,6 +1013,8 @@ class OsmSpeedLimitDB:
         if dist > RB_FUNNEL_MIN_M and along < (0.5 * dist):
           continue
       on_rb = dist <= RB_ON_WAY_M
+      if on_rb and leaving_ring(float(lat), float(lon), bearing_deg, coords):
+        continue  # NAP: driving out of the ring, no ring cap on the exit road
       hint = RoundaboutHint(
         on_roundabout=on_rb,
         approaching=(not on_rb),

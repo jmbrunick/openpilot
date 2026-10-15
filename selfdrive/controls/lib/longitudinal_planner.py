@@ -67,6 +67,7 @@ from openpilot.selfdrive.mapd.map_speed_policy import (
   map_track_decel_ms2, read_map_speed_params,
 )
 from openpilot.selfdrive.mapd.roundabout import RB_DECEL_JERK_MS3, RingExitGate, apply_roundabout_plan, live_map_roundabout_hint
+from openpilot.selfdrive.nap.roundabout.ring_exit import RingExitHold
 from openpilot.selfdrive.controls.lib.hill_climb import (
   apply_hill_climb, read_hypermile_hill_climb,
 )
@@ -430,6 +431,16 @@ class LongitudinalPlanner:
       )
     else:
       rb_v = None
+    if self._is_preap:
+      # NAP: once the car is driving out of the ring the ring never brakes (ring_exit.py).
+      if not hasattr(self, "_rb_exit_hold"):
+        self._rb_exit_hold = RingExitHold()
+      try:
+        rb_steer = float(getattr(sm['carState'], "steeringAngleDeg", 0.0))
+      except Exception:
+        rb_steer = 0.0
+      if self._rb_exit_hold.update(rb_hint is not None and rb_hint.on_roundabout, rb_hint is not None, rb_steer, self.dt):
+        v_cruise, v_hud_ms, a_rb_plan = max(v_cruise, v_ego), max(v_hud_ms, v_ego), max(a_rb_plan, 0.0)
     self._unified_v_cap_ms = float(v_hud_ms)
 
     self.active_nap_follow_dist = effective_nap_follow_dist(self._is_preap, self.nap_follow_dist)
