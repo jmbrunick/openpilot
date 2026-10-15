@@ -462,3 +462,31 @@ def test_card_wires_the_status_log_for_preap_only():
   assert "self._radar_stat = RadarStatusLogger() if tesla_preap else None" in text
   assert 'radar_stat.update(self._can_packets, getattr(RD, "points", None), CS.vEgo)' in text
   assert "cloudlog.error(stat_line)" in text
+
+
+def test_empty_road_does_not_escalate_oct15():
+  """Route 000001a3 15:10:59 CT: lead left in spray, empty road; must stay degraded."""
+  from openpilot.selfdrive.controls.lib.radar_sensor_dirty import SensorDirtyPolicy, SENSOR_DIRTY_PERSIST_S
+  p = SensorDirtyPolicy()
+  for _ in range(100):
+    assert p.update(True, True, 0.05, vision_lead=True)
+  for _ in range(int(3 * SENSOR_DIRTY_PERSIST_S / 0.05)):
+    assert p.update(True, False, 0.05, vision_lead=False)
+  assert not p.escalated
+
+
+def test_unconfirmed_vision_lead_still_escalates():
+  from openpilot.selfdrive.controls.lib.radar_sensor_dirty import SensorDirtyPolicy, SENSOR_DIRTY_PERSIST_S
+  p = SensorDirtyPolicy()
+  n = int(SENSOR_DIRTY_PERSIST_S / 0.05) + 2
+  for _ in range(n):
+    p.update(True, False, 0.05, vision_lead=True)
+  assert p.escalated
+
+
+def test_vision_none_keeps_old_behavior():
+  from openpilot.selfdrive.controls.lib.radar_sensor_dirty import SensorDirtyPolicy, SENSOR_DIRTY_PERSIST_S
+  p = SensorDirtyPolicy()
+  for _ in range(int(SENSOR_DIRTY_PERSIST_S / 0.05) + 2):
+    p.update(True, False, 0.05)
+  assert p.escalated
