@@ -116,28 +116,33 @@ SWEEPERS = ["sweeper_1004_152424", "sweeper_1004_115709", "sweeper_1005_165317",
 
 
 @pytest.mark.parametrize("name", SWEEPERS)
-def test_curves_a_little_slower_than_justin_never_far_under(name):
+def test_curves_at_the_median_never_faster_than_justin(name):
+  """Target is Justin's MEDIAN speed for the curve's radius (selfdrive/nap/curve_speed).
+
+  These fixtures include his fastest sweepers, so the car may be well under
+  him here; it is never more than 2 mph over him.
+  """
   rows = _replay(_load(name))
   v_apex, v_justin = _apex(rows)
-  under = v_justin - v_apex
-  assert 0.5 <= under <= 8.0, (name, round(v_apex, 1), round(v_justin, 1))
-  assert min(r[2] for r in rows) >= -1.5 - 1e-6
-  assert _brake_jerk(rows) <= 2.0 + 1e-6
+  assert v_justin - 9.0 <= v_apex <= v_justin + 2.0, (name, round(v_apex, 1), round(v_justin, 1))
+  assert min(r[2] for r in rows) >= -2.5 - 1e-6
+  assert _brake_jerk(rows) <= 3.0 + 1e-6
 
 
 def test_late_seen_corner_brakes_firm_but_never_a_wall():
-  """Oct 10 5:40:45 PM: 50 mph into an R~40 m turn the model shows only ~3.5 s out.
+  """Oct 10 5:40:45 PM: 50 mph into an R~40 m turn the model shows only ~4 s out.
 
-  Justin braked at up to 2.6 m/s² from 5.6 s out. Curve follow cannot reach the
-  table speed by the apex from a 3.5 s view at <= 1.5 m/s² (that would need ~2.8);
-  it must still use the urgent allowance, jerk-limited, and never pass -1.5.
+  Brake as soon as it shows, firm (urgent allowance up to 2.5 m/s²), jerk
+  limited, and shed most of the speed before the apex.
   """
   rows = _replay(_load("late_corner_1010_174045"))
   a_min = min(r[2] for r in rows)
-  assert -1.5 - 1e-6 <= a_min <= -1.4
-  assert _brake_jerk(rows) <= 2.0 + 1e-6
-  v_apex, _ = _apex(rows)
-  assert v_apex <= rows[0][1] * MPH - 3.0
+  assert -2.5 - 1e-6 <= a_min <= -2.0
+  assert _brake_jerk(rows) <= 3.0 + 1e-6
+  v_apex, v_justin = _apex(rows)
+  assert v_apex <= rows[0][1] * MPH - 20.0
+  assert v_apex <= v_justin + 6.0  # 2.5 m/s² from a ~4 s view cannot reach his 21 mph
+
 
 
 @pytest.mark.parametrize("name", ["lane_change_1010_164908", "lane_change_2"])
@@ -169,7 +174,8 @@ def test_roundabout_funnel_owns_entry_and_curve_follow_adds_no_braking():
 
 def test_post_apex_accel_is_capped_like_justin():
   """After a bend that slowed the car peaks, +a is held to 0.5 m/s² for ~2 s."""
-  rows = _replay(_load("sweeper_1004_152424"), post=8.0)
+  # (The sweepers now settle at the median plateau, ~42 mph, after the bend.)
+  rows = _replay(_load("town_1010_164157"), post=8.0)
   after = [r for r in rows if 0.0 <= r[0] <= 6.0]
   capped = [r for r in after if 0.0 < r[3] <= 0.5 + 1e-6]
   assert capped, "the post-apex cap should bind after this bend"

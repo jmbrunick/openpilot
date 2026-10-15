@@ -67,6 +67,9 @@ MIN_V_MS = PREVIEW_MIN_V_MS
 # spans ~2x (1.3 to 3.3 m/s²), so no single table sits 1-5 mph under him
 # on every curve; this one is the best balance found (see the PR). The old
 # table had the opposite shape (2.4 in town, 1.75 at highway speed).
+from openpilot.selfdrive.nap.curve_speed.median_table import (
+  URGENT_DECEL_MS2 as NAP_URGENT_DECEL_MS2, URGENT_JERK_MS3 as NAP_URGENT_JERK_MS3, corner_speed,
+)
 CF_LAT_TARGET_BP_MS = [8.0, 13.0, 18.0, 22.0, 27.0]
 CF_LAT_TARGET_MS2 = [1.45, 1.55, 1.85, 2.05, 2.20]
 CF_SPEED_FLOOR_MS = 6.0
@@ -80,9 +83,9 @@ CF_SPEED_CEIL_MS = 45.0  # bends gentler than this speed's table are not bends
 CF_DECEL_BP_MS = [10.0, 25.0]
 CF_DECEL_MS2 = [1.2, 0.55]
 CF_JERK_MS3 = [1.0, 0.4]
-CF_URGENT_DECEL_MS2 = 1.5
-CF_URGENT_JERK_MS3 = 0.6
-CF_URGENT_A0_MS2 = 0.8
+CF_URGENT_DECEL_MS2 = NAP_URGENT_DECEL_MS2
+CF_URGENT_JERK_MS3 = NAP_URGENT_JERK_MS3
+CF_URGENT_A0_MS2 = 0.5
 CF_URGENT_BAND_MS2 = 0.5
 
 # Where the car finishes slowing for a bend, as seconds before its tightest
@@ -91,7 +94,7 @@ CF_URGENT_BAND_MS2 = 0.5
 # constant to move there. The speed AT the tightest point is the table speed
 # either way (cornering stays conservative).
 # Oct 13: 1.5 s, the actuator lag, so the car itself is done slowing by the apex.
-RELEASE_BEFORE_TIGHTEST_S = 1.5
+RELEASE_BEFORE_TIGHTEST_S = 0.5
 ROOM_SOFT_M = 2.0
 
 # Curvature filter per path index (|k|): tighten fast (faster when strong),
@@ -104,9 +107,13 @@ SPIKE_MIN_K = 0.01
 SPIKE_RATIO = 2.0
 
 # Signal to noise of a bend's lateral displacement against the path's std.
-SNR_S0 = 2.0
-SNR_S1 = 6.0
+SNR_S0 = 1.0
+SNR_S1 = 4.0
 STD_FLOOR_M = 0.2
+SNR_LOOK_AHEAD = True
+SHARP_K0 = 0.010
+SHARP_K_BAND = 0.006
+SHARP_T_S = 6.0
 STD_FALLBACK_BASE_M = 0.3   # no yStd in the message
 STD_FALLBACK_PER_S_M = 0.15
 
@@ -118,7 +125,7 @@ LOW_HORIZON_BAND_S = 0.5
 
 # Overall confidence (lead-law style ramp).
 CONF_RATE_BASE_1_S = 2.0
-CONF_RATE_URGENT_1_S = 14.0
+CONF_RATE_URGENT_1_S = 30.0
 CONF_FALL_1_S = 1.5
 CONF_FALL_GATE_1_S = 2.0
 CONF_URGENT_LO_MS2 = 0.5
@@ -139,14 +146,14 @@ PEAK_MIN_K = 0.004
 # car is above it. That is how a car accelerates out of one bend and eases
 # back for the next. Relief fades to nothing as the point gets close.
 RELIEF_DECEL_MS2 = 0.30
-RELIEF_MAX_MS2 = 0.50
+RELIEF_MAX_MS2 = 0.5
 RELIEF_ROOM0_M = 20.0
 RELIEF_ROOM_BAND_M = 40.0
 
 # Output slew.
 OUT_TAU_S = 0.20
 BUILD_PROP_1_S = 2.0
-BUILD_MAX_MS3 = 2.0
+BUILD_MAX_MS3 = 3.0
 RELEASE_BP_MS = [10.0, 20.0]
 RELEASE_BASE_MS3 = [1.0, 0.45]
 RELEASE_OPEN_MS3 = 1.35
@@ -191,33 +198,11 @@ def cf_lat_target_ms2(v_ms: float) -> float:
 
 
 def curve_speed_for_curvature(kappa: float) -> float | None:
-  """Curve follow's corner speed for |kappa|: the LOWEST v with v²·|κ| >= A(v).
-
-  A(v) rises with speed here, so a fixed point is not safe; bisection on the
-  first crossing is (and picks the conservative root). None on a straight.
-  """
-  k = abs(float(kappa))
-  if not math.isfinite(k) or k <= 1e-6:
-    return None
-  lo, hi = 0.0, CF_SPEED_CEIL_MS
-  if hi * hi * k < cf_lat_target_ms2(hi):
+  """Curve follow's corner speed: Justin's median for this radius, capped by steering (selfdrive/nap/curve_speed)."""
+  v = corner_speed(kappa)
+  if v is None or v >= CF_SPEED_CEIL_MS:
     return None  # gentler than any speed we drive: not a bend
-  # first crossing: scan coarse, then bisect
-  prev = lo
-  v = 0.5
-  while v <= hi:
-    if v * v * k >= cf_lat_target_ms2(v):
-      break
-    prev = v
-    v += 0.5
-  lo, hi = prev, min(v, hi)
-  for _ in range(20):
-    mid = 0.5 * (lo + hi)
-    if mid * mid * k >= cf_lat_target_ms2(mid):
-      hi = mid
-    else:
-      lo = mid
-  return max(CF_SPEED_FLOOR_MS, hi)
+  return max(CF_SPEED_FLOOR_MS, v)
 
 
 def decel_limit_ms2(v_ego: float, demand_ms2: float = 0.0) -> float:
@@ -359,6 +344,18 @@ class CurveFollow:
       else:
         std = STD_FALLBACK_BASE_M + STD_FALLBACK_PER_S_M * max(0.0, float(ts[i]))
       w[i] = _smooth01((abs(y) / std - SNR_S0) / (SNR_S1 - SNR_S0))
+    # A sharp bend within SHARP_T_S is credible on its own curvature: its
+    # displacement only builds after it, too late for the std test.
+    # Signed 3-point mean: a real bend spans several points, noise flips sign.
+    for i in range(1, n - 1):
+      if float(ts[i]) <= SHARP_T_S:
+        k3 = abs(float(ks[i - 1]) + float(ks[i]) + float(ks[i + 1])) / 3.0
+        w[i] = max(w[i], _smooth01((k3 - SHARP_K0) / SHARP_K_BAND))
+    if SNR_LOOK_AHEAD:
+      # A bend at point i only shows as displacement after it: credit point i
+      # with the best SNR at or beyond it (the path really does bend away).
+      for i in range(n - 2, -1, -1):
+        w[i] = max(w[i], w[i + 1])
     return w
 
   # ---- one cycle --------------------------------------------------------
@@ -406,6 +403,11 @@ class CurveFollow:
     self.conf = self._conf
     self.trusted = bool(path_ok and ctx_ok and self._conf >= 0.2 and v >= MIN_V_MS)
 
+    if rb_active:
+      # The map roundabout funnel owns the entry (it brakes for the ring
+      # itself, and the planner takes the lower of the two): hand over at once.
+      self._conf = self.conf = 0.0
+      self._brake, self._f, self.a = 0.0, FREE_A_MS2, FREE_A_MS2
     a_c = FREE_A_MS2 + self._conf * (a_raw - FREE_A_MS2)
     self.urgent = _smooth01((-a_c - CF_URGENT_A0_MS2) / CF_URGENT_BAND_MS2)
     a_c = min(FREE_A_MS2, max(a_c, -decel_limit_ms2(v, a_c)))
