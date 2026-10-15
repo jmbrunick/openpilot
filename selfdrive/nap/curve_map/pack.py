@@ -1,17 +1,13 @@
-"""NAP curve pack: road curvature precomputed from the OSM map (longitudinal only).
+"""NAP curve pack: mapped road geometry for the map curve preview (longitudinal only).
 
-A separate, versioned sqlite per 0.25 deg tile, built from the speed-limit
-map that is already on the device (`ways` table, Douglas-Peucker coords).
-Nothing here touches the speed-limit DB: it is opened read-only.
+A separate, versioned sqlite per 0.25 deg tile. v2 is built from raw OSM
+(every node, no Douglas-Peucker), resampled every STEP_M along each drivable
+way. Only positions and headings are stored: curvature is computed at run
+time over the walked road (geometry.py), so turns where two ways join come
+out the same as turns inside a way.
 
-Per drivable way: the polyline is resampled every STEP_M, curvature comes
-from the turn angle at each vertex over its share of the two adjacent
-segments, smoothed over SMOOTH_M. Every resampled point is stored (the
-runtime walks the road, straights included) with its heading and signed
-curvature.
-
-Rebuild (any region, e.g. on a PC):
-  python -m openpilot.selfdrive.nap.curve_map.pack --src speed_limits.sqlite --out DIR --bbox S W N E
+Rebuild (any region, on a PC; needs `pip install osmium`):
+  python -m openpilot.selfdrive.nap.curve_map.pack --pbf state-latest.osm.pbf --out DIR --bbox S W N E
 """
 from __future__ import annotations
 
@@ -19,21 +15,16 @@ import argparse
 import math
 import os
 import sqlite3
-import struct
 
-PACK_VERSION = 1
+PACK_VERSION = 2
 TILE_DEG = 0.25
-STEP_M = 10.0
-SMOOTH_M = 30.0
+STEP_M = 5.0
 MARGIN_DEG = 0.02
 EARTH_R = 6371000.0
 DRIVABLE = frozenset({
   "motorway", "motorway_link", "trunk", "trunk_link", "primary", "primary_link", "secondary",
   "secondary_link", "tertiary", "tertiary_link", "unclassified", "residential", "road",
 })
-_HDR = struct.Struct("<I")
-_F32 = struct.Struct("<ff")
-_F64 = struct.Struct("<dd")
 
 
 def tile_key(lat: float, lon: float) -> tuple[int, int]:
@@ -44,121 +35,116 @@ def tile_path(out_dir: str, key: tuple[int, int]) -> str:
   return os.path.join(out_dir, f"nap_curves_v{PACK_VERSION}_{key[0]}_{key[1]}.sqlite")
 
 
-def unpack_coords(blob: bytes) -> list[tuple[float, float]]:
-  n = _HDR.unpack_from(blob)[0]
-  rest = len(blob) - _HDR.size
-  fmt = _F32 if rest == n * _F32.size else (_F64 if rest == n * _F64.size else None)
-  if fmt is None:
-    return []
-  return [fmt.unpack_from(blob, _HDR.size + i * fmt.size) for i in range(n)]
+def tile_bbox(key: tuple[int, int]) -> tuple[float, float, float, float]:
+  s, w = key[0] * TILE_DEG - MARGIN_DEG, key[1] * TILE_DEG - MARGIN_DEG
+  return s, w, s + TILE_DEG + 2 * MARGIN_DEG, w + TILE_DEG + 2 * MARGIN_DEG
 
 
-def _xy(lat, lon, lat0, lon0):
-  return (math.radians(lon - lon0) * EARTH_R * math.cos(math.radians(lat0)), math.radians(lat - lat0) * EARTH_R)
-
-
-def way_profile(coords) -> list[tuple[float, float, float, float]]:
-  """[(lat, lon, heading_deg, kappa)] every STEP_M along the way. kappa > 0 = left."""
+def resample(coords, step: float = STEP_M) -> list[tuple[float, float, float]]:
+  """[(lat, lon, heading_deg)] every `step` m along the polyline; the last point is the true end."""
   if len(coords) < 2:
     return []
   lat0, lon0 = coords[0]
-  P = [_xy(a, b, lat0, lon0) for a, b in coords]
+  c = math.cos(math.radians(lat0))
+  P = [(math.radians(lo - lon0) * EARTH_R * c, math.radians(la - lat0) * EARTH_R) for la, lo in coords]
   seg = []
   for (x0, y0), (x1, y1) in zip(P[:-1], P[1:], strict=True):
-    seg.append((math.hypot(x1 - x0, y1 - y0), math.atan2(x1 - x0, y1 - y0)))
-  # vertex curvature over half of each adjacent segment
-  s_v = [0.0]
-  for L, _ in seg:
-    s_v.append(s_v[-1] + L)
-  k_v = [0.0] * len(P)
-  for i in range(1, len(P) - 1):
-    L0, h0 = seg[i - 1]
-    L1, h1 = seg[i]
-    if L0 < 0.5 or L1 < 0.5:
-      continue
-    turn = (h0 - h1 + math.pi) % (2 * math.pi) - math.pi  # left positive (heading is cw from north)
-    k_v[i] = turn / (0.5 * (L0 + L1))
-  total = s_v[-1]
-  n = max(1, int(math.ceil(total / STEP_M)))
+    L = math.hypot(x1 - x0, y1 - y0)
+    if L > 1e-3:
+      seg.append((x0, y0, x1, y1, L, math.atan2(x1 - x0, y1 - y0)))
+  if not seg:
+    return []
+  total = sum(s[4] for s in seg)
+  n = max(1, int(math.ceil(total / step)))
   out = []
-  half = SMOOTH_M / 2.0
+  i, s0 = 0, 0.0
   for j in range(n + 1):
-    s = min(total, j * STEP_M)  # the last point is the true way end (joins the next way)
-    # position / heading
-    i = max(0, min(len(seg) - 1, next((q for q in range(len(seg)) if s_v[q + 1] >= s), len(seg) - 1)))
-    f = 0.0 if seg[i][0] <= 0 else (s - s_v[i]) / seg[i][0]
-    x = P[i][0] + f * (P[i + 1][0] - P[i][0])
-    y = P[i][1] + f * (P[i + 1][1] - P[i][1])
-    # each vertex's turn spread over its own share, then a SMOOTH_M box
-    acc = 0.0
-    for v in range(1, len(P) - 1):
-      if k_v[v] == 0.0:
-        continue
-      a = s_v[v] - 0.5 * seg[v - 1][0]
-      b = s_v[v] + 0.5 * seg[v][0]
-      ov = min(b, s + half) - max(a, s - half)
-      if ov > 0:
-        acc += k_v[v] * ov
-    k = acc / SMOOTH_M
-    lat = lat0 + math.degrees(y / EARTH_R)
-    lon = lon0 + math.degrees(x / (EARTH_R * math.cos(math.radians(lat0))))
-    out.append((lat, lon, math.degrees(seg[i][1]) % 360.0, k))
+    s = min(total, j * step)
+    while i < len(seg) - 1 and s0 + seg[i][4] < s:
+      s0 += seg[i][4]
+      i += 1
+    x0, y0, x1, y1, L, h = seg[i]
+    f = min(1.0, max(0.0, (s - s0) / L))
+    x, y = x0 + f * (x1 - x0), y0 + f * (y1 - y0)
+    out.append((lat0 + math.degrees(y / EARTH_R), lon0 + math.degrees(x / (EARTH_R * c)), math.degrees(h) % 360.0))
   return out
 
 
-def build(src: str, out_path: str, s: float, w: float, n: float, e: float) -> int:
-  con = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
-  tmp = out_path + ".partial"
+def _new_db(tmp: str) -> sqlite3.Connection:
   if os.path.exists(tmp):
     os.remove(tmp)
-  os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+  os.makedirs(os.path.dirname(tmp) or ".", exist_ok=True)
   o = sqlite3.connect(tmp)
   o.executescript("""
     CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     CREATE TABLE pts (id INTEGER PRIMARY KEY, way_id INTEGER NOT NULL, seq INTEGER NOT NULL,
-                      lat REAL NOT NULL, lon REAL NOT NULL, hdg REAL NOT NULL, k REAL NOT NULL);
+                      lat REAL NOT NULL, lon REAL NOT NULL, hdg REAL NOT NULL);
     CREATE INDEX pts_way ON pts(way_id, seq);
     CREATE VIRTUAL TABLE pts_rtree USING rtree(id, min_lat, max_lat, min_lon, max_lon);
   """)
-  rows = con.execute(
-    "SELECT ways.way_id, ways.highway, ways.coords FROM ways_rtree JOIN ways ON ways.way_id = ways_rtree.way_id " +
-    "WHERE ways_rtree.max_lat >= ? AND ways_rtree.min_lat <= ? AND ways_rtree.max_lon >= ? AND ways_rtree.min_lon <= ?",
-    (s, n, w, e))
+  return o
+
+
+def write_tile(ways, out_path: str, bbox, source: str) -> int:
+  """ways: iterable of (way_id, [(lat, lon), ...]) already filtered to drivable."""
+  s, w, n, e = bbox
+  tmp = out_path + ".partial"
+  o = _new_db(tmp)
   pid = 0
-  for way_id, hw, blob in rows:
-    if (hw or "").strip().lower() not in DRIVABLE:
+  for way_id, coords in ways:
+    if not any(s <= la <= n and w <= lo <= e for la, lo in coords):
       continue
-    for seq, (la, lo, hd, k) in enumerate(way_profile(unpack_coords(blob))):
+    for seq, (la, lo, hd) in enumerate(resample(coords)):
       pid += 1
-      o.execute("INSERT INTO pts VALUES (?,?,?,?,?,?,?)", (pid, int(way_id), seq, la, lo, round(hd, 1), round(k, 5)))
+      o.execute("INSERT INTO pts VALUES (?,?,?,?,?,?)", (pid, int(way_id), seq, la, lo, round(hd, 1)))
       o.execute("INSERT INTO pts_rtree VALUES (?,?,?,?,?)", (pid, la, la, lo, lo))
   o.executemany("INSERT INTO meta VALUES (?,?)", [("version", str(PACK_VERSION)), ("bbox", f"{s},{w},{n},{e}"),
-                                                  ("step_m", str(STEP_M)), ("smooth_m", str(SMOOTH_M))])
+                                                  ("step_m", str(STEP_M)), ("source", source)])
   o.commit()
   o.close()
-  con.close()
   os.replace(tmp, out_path)
   return pid
 
 
-def build_tile(src: str, out_dir: str, key: tuple[int, int]) -> str:
-  s, w = key[0] * TILE_DEG - MARGIN_DEG, key[1] * TILE_DEG - MARGIN_DEG
-  p = tile_path(out_dir, key)
-  build(src, p, s, w, s + TILE_DEG + 2 * MARGIN_DEG, w + TILE_DEG + 2 * MARGIN_DEG)
-  return p
+def read_pbf_ways(pbf: str, bbox):
+  """Drivable ways touching bbox from a raw OSM extract (full node geometry)."""
+  import osmium  # PC-side tool only; the device never builds packs
+
+  s, w, n, e = bbox
+  ways = []
+  fp = (osmium.FileProcessor(pbf, osmium.osm.NODE | osmium.osm.WAY).with_locations()
+        .with_filter(osmium.filter.EntityFilter(osmium.osm.WAY)).with_filter(osmium.filter.KeyFilter("highway")))
+  for obj in fp:
+    if obj.tags.get("highway", "") not in DRIVABLE:
+      continue
+    try:
+      coords = [(nd.lat, nd.lon) for nd in obj.nodes]
+    except osmium.InvalidLocationError:
+      continue
+    if any(s <= la <= n and w <= lo <= e for la, lo in coords):
+      ways.append((obj.id, coords))
+  return ways
 
 
 def main() -> None:
   ap = argparse.ArgumentParser()
-  ap.add_argument("--src", required=True)
+  ap.add_argument("--pbf", required=True, nargs="+", help="raw OSM extract(s)")
   ap.add_argument("--out", required=True, help="output directory (tiles)")
   ap.add_argument("--bbox", nargs=4, type=float, metavar=("S", "W", "N", "E"), required=True)
   a = ap.parse_args()
   s, w, n, e = a.bbox
   k0, k1 = tile_key(s, w), tile_key(n, e)
-  for i in range(k0[0], k1[0] + 1):
-    for j in range(k0[1], k1[1] + 1):
-      print(build_tile(a.src, a.out, (i, j)))
+  keys = [(i, j) for i in range(k0[0], k1[0] + 1) for j in range(k0[1], k1[1] + 1)]
+  outer = (k0[0] * TILE_DEG - MARGIN_DEG, k0[1] * TILE_DEG - MARGIN_DEG,
+           (k1[0] + 1) * TILE_DEG + MARGIN_DEG, (k1[1] + 1) * TILE_DEG + MARGIN_DEG)
+  ways = {}
+  for p in a.pbf:
+    for wid, coords in read_pbf_ways(p, outer):
+      ways[wid] = coords
+  for key in keys:
+    path = tile_path(a.out, key)
+    write_tile(ways.items(), path, tile_bbox(key), ",".join(os.path.basename(p) for p in a.pbf))
+    print(path)
 
 
 if __name__ == "__main__":

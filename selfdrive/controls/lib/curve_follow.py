@@ -364,7 +364,7 @@ class CurveFollow:
   # ---- one cycle --------------------------------------------------------
   def step(self, *, dt: float, v_ego: float, ts, ds, ks, y_std=None, lane_change: bool = False,
            blinker: bool = False, frame_drop_pct: float = 0.0, rb_active: bool = False,
-           valid: bool = True, map_pts=None) -> float:
+           valid: bool = True, map_feed=None, mapd_way: int = 0, mapd_match_m: float = 0.0) -> float:
     dt = max(1e-3, float(dt))
     v = float(v_ego)
     path_ok = bool(valid) and ts is not None and len(ts) >= 2 and len(ts) == len(ds) == len(ks)
@@ -388,11 +388,10 @@ class CurveFollow:
       if k_ahead is not None and k_now >= PEAK_MIN_K:
         self.passed = _smooth01((PEAK_RATIO0 - k_ahead / k_now) / PEAK_BAND)
       ts_all, ds_all, ks_all = ts, ds, kf
-      if map_pts:
+      if map_feed is not None:
         # NAP map curve preview (selfdrive/nap/curve_map): the same virtual-lead
         # calculation over the mapped road beyond what the camera can judge.
-        from openpilot.selfdrive.nap.curve_map.blend import merge_map_points
-        ts_all, ds_all, ks_all, weights = merge_map_points(v, ts, ds, kf, weights, map_pts)
+        ts_all, ds_all, ks_all, weights = map_feed.merge(dt, v, ts, ds, kf, weights, mapd_way, mapd_match_m)
       a_raw, idx, v_lim, self.near_a = curve_follow_raw(v, ts_all, ds_all, ks_all, weights, self.passed)
       if idx >= 0:
         self.limit_idx, self.limit_v = idx, v_lim
