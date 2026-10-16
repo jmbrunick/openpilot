@@ -173,6 +173,12 @@ struct PathObstacleVisionNAP @0x80ae746ee2596b11 {
   lateral @21 :Float32;      # m, path-relative centre, +right
   spanM @22 :Float32;        # m, lateral span of the cluster
   vRel @23 :Float32;         # m/s, radar longitudinal relative
+  # NAP overhead clearance gate (selfdrive/nap/path_object/clearance.py).
+  # Camera-estimated height of the object's bottom above the road, m, NaN
+  # when not measured. overheadIgnore: daylight, multi-frame, bottom above
+  # 6 ft + error(d); consumers drop the object (bridge, sign, signal arm).
+  bottomClearanceM @24 :Float32;
+  overheadIgnore @25 :Bool;
 }
 
 struct CustomReserved5 @0xa5cd762cd951a455 {
