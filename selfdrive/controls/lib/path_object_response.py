@@ -60,6 +60,8 @@ def confirmed_from_msg(obs, age_s: float) -> Confirmed | None:
     return None
   if not bool(getattr(obs, "agree", False)) or not bool(getattr(obs, "visionEvaluated", False)):
     return None
+  if bool(getattr(obs, "overheadIgnore", False)):
+    return None  # NAP clearance gate: bottom above 6 ft (bridge, sign, signal arm)
   rng, lat = _f(getattr(obs, "rangeM", None)), _f(getattr(obs, "lateral", None))
   if not (math.isfinite(rng) and math.isfinite(lat)) or rng <= 0.0 or rng > MAX_RANGE_M:
     return None

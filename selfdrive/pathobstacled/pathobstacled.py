@@ -13,6 +13,7 @@ import os
 import time
 from dataclasses import replace
 
+from openpilot.selfdrive.nap.path_object import clearance as nap_clearance
 from openpilot.selfdrive.pathobstacled.cone_cam import (
   BUDGET_S as CONE_BUDGET_S,
   CamGeom,
@@ -517,6 +518,10 @@ def _vision_for(hit, cam, calib, cams: _Cameras, now: float):
     return None, elapsed(), None, reason or "no_frame"
   box = projection_box(ground[0], top[1], ground[1], focal, hit.x)
   try:
+    cams.clearance_profile = nap_clearance.edge_profile(plane, ground[0], ground[1], ground[1] - top[1], focal * 1.0 / max(hit.x, 1.0))
+  except Exception:
+    cams.clearance_profile = None
+  try:
     patch, road = _crop(plane, box)
   except Exception:
     return None, elapsed(), None, "model_error"
@@ -560,7 +565,7 @@ def _finite_or_nan(value) -> float:
   return num
 
 
-def _publish_vision(pm, messaging, sample, vision_us: float) -> None:
+def _publish_vision(pm, messaging, sample, vision_us: float, clearance=(float("nan"), False)) -> None:
   msg = messaging.new_message("pathObstacleVisionNAP", valid=True)
   body = msg.pathObstacleVisionNAP
   body.trackId = int(sample.track_id) & 0xFFFFFFFFFFFFFFFF
@@ -592,6 +597,8 @@ def _publish_vision(pm, messaging, sample, vision_us: float) -> None:
   body.lateral = _finite_or_nan(getattr(sample, "lateral", float("nan")))
   body.spanM = _finite_or_nan(getattr(sample, "span_m", 0.0))
   body.vRel = _finite_or_nan(getattr(sample, "v_rel", float("nan")))
+  body.bottomClearanceM = _finite_or_nan(clearance[0])
+  body.overheadIgnore = bool(clearance[1])
   pm.send("pathObstacleVisionNAP", msg)
 
 
@@ -601,6 +608,7 @@ class Helper:
   def __init__(self, det: PathObstacleDetector | None = None):
     self.det = det or PathObstacleDetector()
     self.cams = _Cameras()
+    self.clearance = nap_clearance.ClearanceGate()
     self.log_on = True
     self.chime_on = True
     self.param_t = 0.0
@@ -687,6 +695,9 @@ class Helper:
       if vision is not None and patch is not None and vision.conf >= 0.30:
         self.cams.last_thumb = _maybe_thumb(patch, now, self.cams.last_thumb)
     sample = self.det.commit(hit, vision, chime_enabled=self.chime_on, now=now, vision_motion=motion)
+    if attempted:
+      self.clearance.update(hit.track_id, hit.x, getattr(self.cams, "clearance_profile", None) if vision is not None else None,
+                            now, nap_clearance.daylight_from_gps(self.gps))
     if attempted and vision is None:
       sample = replace(sample, vision_fail_reason=fail or "no_frame")
     return sample, vision_us
@@ -888,7 +899,7 @@ def _run() -> None:
         if result is None:
           continue
         sample, vision_us = result
-        _publish_vision(pm, messaging, sample, vision_us)
+        _publish_vision(pm, messaging, sample, vision_us, helper.clearance.get(sample.track_id))
       except Exception:
         continue
     cone = _latest_body(messaging, cone_sock)
