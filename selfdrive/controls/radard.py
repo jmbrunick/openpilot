@@ -443,6 +443,22 @@ def _path_y_std_3s(model):
   return stds[idx]
 
 
+# SensorDirty escalation gate: a confident camera lead within radar range.
+VISION_LEAD_PROB = 0.6
+VISION_LEAD_MAX_M = 80.0
+
+
+def _vision_lead_present(model) -> bool:
+  try:
+    leads = model.leadsV3
+    if not len(leads):
+      return False
+    l0 = leads[0]
+    return float(l0.prob) >= VISION_LEAD_PROB and len(l0.x) > 0 and float(l0.x[0]) <= VISION_LEAD_MAX_M
+  except Exception:
+    return True  # unknown -> conservative (old behavior: clock runs)
+
+
 class RadarD:
   def __init__(self, delay: float = 0.0, rain_gate: RainRadarGate | None = None):
     self.current_time = 0.0
@@ -561,6 +577,7 @@ class RadarD:
     sensor_dirty_flag = bool(getattr(rr.errors, 'radarUnavailableTemporary', False))
     sensor_dirty_mask = self.sensor_dirty.update(
       sensor_dirty_flag, self._live_measured and not radar_timed_out, DT_MDL,
+      vision_lead=None if radar_timed_out else _vision_lead_present(sm['modelV2']),
       ignore=self.read_sensor_dirty_ignore())
     if sensor_dirty_mask:
       self.radar_state.radarErrors.radarUnavailableTemporary = False

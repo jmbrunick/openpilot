@@ -75,11 +75,24 @@ class SensorDirtyPolicy:
     self.no_track_s = 0.0
     self._live_s = 0.0
 
-  def update(self, flag: bool, live_tracks: bool, dt: float, ignore: bool = True) -> bool:
-    """Returns True when radard must mask `radarUnavailableTemporary`."""
+  def update(self, flag: bool, live_tracks: bool, dt: float, ignore: bool = True,
+             vision_lead: bool | None = None) -> bool:
+    """Returns True when radard must mask `radarUnavailableTemporary`.
+
+    vision_lead (Oct 15 2026, route 000001a3 15:10:59-15:11 CT, wet, spray):
+    the radar tracked the lead 100% for 1 min 44 s with SensorDirty set, then
+    the lead left and the road ahead was empty. No measured track is normal
+    on an empty road, so the no-track clock must only run when the camera
+    sees a confident lead the radar is not measuring (radar really blind).
+    None keeps the old behavior (clock runs on any no-track frame).
+    """
     if not ignore or not flag:
       self.reset()
       return False
+    if not live_tracks and vision_lead is False:
+      # Empty road ahead: nothing to measure, not evidence of blindness.
+      # Hold the no-track clock (no time accrues this frame).
+      dt = 0.0
     if live_tracks:
       self._live_s += dt
       if self._live_s >= SENSOR_DIRTY_LIVE_RECOVER_S:
