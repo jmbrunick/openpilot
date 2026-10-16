@@ -34,6 +34,7 @@ except Exception:  # pragma: no cover - unit tests without zmq
   cloudlog = _PrintLog()
 
 from openpilot.selfdrive.nap_dash.force_offroad_api import AckError, handle_ack, read_ack
+from openpilot.selfdrive.nap_dash.talk_api import TALK, parse_active
 from openpilot.selfdrive.nap_dash.settings import SettingError
 from openpilot.selfdrive.nap_dash.system_api import (
   SoftwareError,
@@ -188,6 +189,10 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_json(bookmark_status(_params()))
       except Exception as exc:
         return self.send_json({"error": str(exc)}, 500)
+    if path == "/api/talk/poll":
+      return self.send_json(TALK.poll(parse_active(urlparse(self.path).query)))
+    if path == "/api/talk/state":
+      return self.send_json(TALK.state())
     if path == "/api/software":
       try:
         return self.send_json(read_software(_params()))
@@ -208,6 +213,8 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_json(handle_ack(payload, _params()))
       if path == "/api/bookmark":
         return self.send_json(bookmark_tap(_params()))
+      if path == "/api/talk":
+        return self.send_json(TALK.tap())
       if path != "/api/set":
         return self.send_json({"error": "not found"}, 404)
       action = str(payload.get("action") or "").strip().lower()
