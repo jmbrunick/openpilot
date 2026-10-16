@@ -577,8 +577,8 @@ class RadarD:
     sensor_dirty_flag = bool(getattr(rr.errors, 'radarUnavailableTemporary', False))
     sensor_dirty_mask = self.sensor_dirty.update(
       sensor_dirty_flag, self._live_measured and not radar_timed_out, DT_MDL,
-      ignore=self.read_sensor_dirty_ignore(),
-      vision_lead=None if radar_timed_out else _vision_lead_present(sm['modelV2']))
+      vision_lead=None if radar_timed_out else _vision_lead_present(sm['modelV2']),
+      ignore=self.read_sensor_dirty_ignore())
     if sensor_dirty_mask:
       self.radar_state.radarErrors.radarUnavailableTemporary = False
 

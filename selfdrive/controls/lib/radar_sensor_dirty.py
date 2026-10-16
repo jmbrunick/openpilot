@@ -90,11 +90,9 @@ class SensorDirtyPolicy:
       self.reset()
       return False
     if not live_tracks and vision_lead is False:
-      # Empty road ahead: nothing to measure, not evidence of blindness. Hold the clock.
-      self._live_s = 0.0
-      self.escalated = self.no_track_s >= SENSOR_DIRTY_PERSIST_S
-      self.degraded = not self.escalated
-      return self.degraded
+      # Empty road ahead: nothing to measure, not evidence of blindness.
+      # Hold the no-track clock (no time accrues this frame).
+      dt = 0.0
     if live_tracks:
       self._live_s += dt
       if self._live_s >= SENSOR_DIRTY_LIVE_RECOVER_S:
