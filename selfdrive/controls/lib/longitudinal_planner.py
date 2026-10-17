@@ -1072,6 +1072,19 @@ class LongitudinalPlanner:
       command = min(command, existing)
     self.output_a_target = float(command)
 
+  def _would_regen_alert_log(self, would: bool, obj, v_ego: float) -> None:
+    """LOG-ONLY. Justin's future response to a confirmed in-path object: full regen
+    plus the alert so he can add the brake pedal. Rising edge -> one cloudlog event."""
+    was = getattr(self, "_would_regen_prev", False)
+    self._would_regen_prev = bool(would)
+    if would and not was:
+      try:
+        from openpilot.common.swaglog import cloudlog
+        cloudlog.event("wouldRegenAlert", range_m=round(float(obj.range_m), 1), v_ego=round(float(v_ego), 2),
+                       lateral_m=round(float(obj.lateral), 2), object_class=str(obj.object_class), commanded=False)
+      except Exception:
+        pass
+
   def _obstacle_brake_log(self, sm) -> tuple[bool, float, int]:
     """Oct 14 path-object brake, LOG-ONLY. Never touches the plan or accel.
 
@@ -1089,11 +1102,12 @@ class LongitudinalPlanner:
         return False, 0.0, self._obstacle_brake_mode
       cs = sm['carState']
       age = (sm.logMonoTime['carState'] - sm.logMonoTime['pathObstacleVisionNAP']) * 1e-9
-      obj = confirmed_from_msg(sm['pathObstacleVisionNAP'], float(age))
+      obj = confirmed_from_msg(sm['pathObstacleVisionNAP'], float(age), sm['liveMapDataNAP'] if sm.alive.get('liveMapDataNAP', False) else None, float(cs.vEgo))
       v = float(cs.vEgo)
       if obj is None or not gates_ok(v, bool(cs.gasPressed)):
         return False, 0.0, self._obstacle_brake_mode
       decel = brake_decel(obj, v, ACCEL_MIN)
+      self._would_regen_alert_log(decel < 0.0, obj, v)
       return decel < 0.0, float(decel), self._obstacle_brake_mode
     except Exception:
       return False, 0.0, getattr(self, "_obstacle_brake_mode", 0)

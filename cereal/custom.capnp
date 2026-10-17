@@ -30,6 +30,11 @@ struct LiveMapDataNAP @0x81c2f05a394cf4af {
   roundaboutDistance @15 :Float32;   # m to circulating way; 0 if on
   roundaboutSpeedLimit @16 :Float32; # m/s, OSM maxspeed on the RB way
   roundaboutWayId @17 :UInt64;
+  # NAP overhead map layer (pack schema 6, selfdrive/nap/path_object/overhead_map.py).
+  # Nearest tagged overhead spot ahead on our road, m along the heading after
+  # GPS-lag correction; 0 when none. Kind: bridge, gantry, signal, confirmed.
+  overheadAheadM @18 :Float32;
+  overheadKind @19 :Text;
 }
 
 # NAP on-drive MUTCD camera speed-sign sample. Display/log only. mph in the field name.
@@ -179,6 +184,11 @@ struct PathObstacleVisionNAP @0x80ae746ee2596b11 {
   # 6 ft + error(d); consumers drop the object (bridge, sign, signal arm).
   bottomClearanceM @24 :Float32;
   overheadIgnore @25 :Bool;
+  # Per-grab road-level read at the radar point (overhead map guards).
+  roadLights @26 :Bool;      # clipped or red blobs 0.15-1.6 m up: vehicle lights
+  roadLevelSeen @27 :Bool;   # solid-object contrast 0.15-1.6 m up
+  daylight @28 :Bool;        # GPS sun elevation > 3 deg
+  modelLead @29 :Bool;       # radard: a model or radar lead sits on this return
 }
 
 struct CustomReserved5 @0xa5cd762cd951a455 {

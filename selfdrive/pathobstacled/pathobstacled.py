@@ -518,9 +518,12 @@ def _vision_for(hit, cam, calib, cams: _Cameras, now: float):
     return None, elapsed(), None, reason or "no_frame"
   box = projection_box(ground[0], top[1], ground[1], focal, hit.x)
   try:
-    cams.clearance_profile = nap_clearance.edge_profile(plane, ground[0], ground[1], ground[1] - top[1], focal * 1.0 / max(hit.x, 1.0))
+    ppm, half_w = ground[1] - top[1], focal * 1.0 / max(hit.x, 1.0)
+    cams.clearance_profile = nap_clearance.edge_profile(plane, ground[0], ground[1], ppm, half_w)
+    cams.road_read = nap_clearance.road_level_read(plane, ground[0], ground[1], ppm, half_w, cams.chroma_v)
   except Exception:
     cams.clearance_profile = None
+    cams.road_read = None
   try:
     patch, road = _crop(plane, box)
   except Exception:
@@ -565,7 +568,8 @@ def _finite_or_nan(value) -> float:
   return num
 
 
-def _publish_vision(pm, messaging, sample, vision_us: float, clearance=(float("nan"), False)) -> None:
+def _publish_vision(pm, messaging, sample, vision_us: float, clearance=(float("nan"), False),
+                    road=(True, True, False, True)) -> None:
   msg = messaging.new_message("pathObstacleVisionNAP", valid=True)
   body = msg.pathObstacleVisionNAP
   body.trackId = int(sample.track_id) & 0xFFFFFFFFFFFFFFFF
@@ -599,6 +603,7 @@ def _publish_vision(pm, messaging, sample, vision_us: float, clearance=(float("n
   body.vRel = _finite_or_nan(getattr(sample, "v_rel", float("nan")))
   body.bottomClearanceM = _finite_or_nan(clearance[0])
   body.overheadIgnore = bool(clearance[1])
+  body.roadLights, body.roadLevelSeen, body.daylight, body.modelLead = (bool(x) for x in road)
   pm.send("pathObstacleVisionNAP", msg)
 
 
@@ -696,8 +701,11 @@ class Helper:
         self.cams.last_thumb = _maybe_thumb(patch, now, self.cams.last_thumb)
     sample = self.det.commit(hit, vision, chime_enabled=self.chime_on, now=now, vision_motion=motion)
     if attempted:
+      day = nap_clearance.daylight_from_gps(self.gps)
       self.clearance.update(hit.track_id, hit.x, getattr(self.cams, "clearance_profile", None) if vision is not None else None,
-                            now, nap_clearance.daylight_from_gps(self.gps))
+                            now, day)
+      self.clearance.note_road(hit.track_id, getattr(self.cams, "road_read", None) if vision is not None else None,
+                               day, bool(hit.model_lead))
     if attempted and vision is None:
       sample = replace(sample, vision_fail_reason=fail or "no_frame")
     return sample, vision_us
@@ -899,7 +907,8 @@ def _run() -> None:
         if result is None:
           continue
         sample, vision_us = result
-        _publish_vision(pm, messaging, sample, vision_us, helper.clearance.get(sample.track_id))
+        _publish_vision(pm, messaging, sample, vision_us, helper.clearance.get(sample.track_id),
+                        helper.clearance.road(sample.track_id))
       except Exception:
         continue
     cone = _latest_body(messaging, cone_sock)

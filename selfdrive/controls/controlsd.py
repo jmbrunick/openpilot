@@ -294,7 +294,9 @@ class Controls:
       try:
         if self.sm.seen.get("pathObstacleVisionNAP", False):
           age = (self.sm.logMonoTime["carState"] - self.sm.logMonoTime["pathObstacleVisionNAP"]) * 1e-9
-          obj = confirmed_from_msg(self.sm["pathObstacleVisionNAP"], float(age))
+          obj = confirmed_from_msg(self.sm["pathObstacleVisionNAP"], float(age),
+                                   self.sm["liveMapDataNAP"] if self.sm.alive.get("liveMapDataNAP", False) else None,
+                                   float(self.sm["carState"].vEgo))
       except Exception:
         obj = None
       room = None

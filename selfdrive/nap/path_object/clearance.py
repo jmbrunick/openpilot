@@ -133,6 +133,7 @@ class _Track:
 class ClearanceGate:
   tracks: dict = field(default_factory=dict)
   last: dict = field(default_factory=dict)   # track id -> (bottom_m, ignore)
+  roads: dict = field(default_factory=dict)  # track id -> (lights, seen, daylight, model_lead)
 
   def update(self, track_id: int, range_m: float, profile, now: float, daylight: bool = False) -> tuple[float, bool]:
     """Fold one grab in. Returns (bottomClearanceM, overheadIgnore)."""
@@ -175,3 +176,74 @@ class ClearanceGate:
 
   def get(self, track_id: int) -> tuple[float, bool]:
     return self.last.get(int(track_id), (float("nan"), False))
+
+  def note_road(self, track_id: int, read, daylight: bool, model_lead: bool) -> None:
+    """Latest road-level read for the overhead-map guards. No read = lights and seen (fail safe)."""
+    lights = True if read is None else bool(read.lights)
+    seen = True if read is None else bool(read.seen)
+    prev = self.roads.get(int(track_id))
+    if prev is not None:
+      # Sticky for the track's life: taillights flicker in and out of the band
+      # (Oct 14 9:4x PM stopped tanker at a signal read lights on 5 of 15 grabs).
+      lights, seen = lights or prev[0], seen or prev[1]
+      model_lead = model_lead or prev[3]
+    self.roads[int(track_id)] = (lights, seen, bool(daylight), bool(model_lead))
+    while len(self.roads) > MAX_TRACKS:
+      self.roads.pop(next(iter(self.roads)))
+
+  def road(self, track_id: int) -> tuple[bool, bool, bool, bool]:
+    """(roadLights, roadLevelSeen, daylight, modelLead). Unknown track = blocking defaults."""
+    return self.roads.get(int(track_id), (True, True, False, True))
+
+
+# Road-level read at the radar point (Oct 17: overhead-map lights check and
+# the night close-range recheck). Band from just above the road to 1.6 m,
+# car-width strip. lights: any clipped (Y >= SAT_Y) or red (bright + high V)
+# pixels, which is what headlights and taillights look like at any range.
+# seen: the strongest horizontal edges in the band above ROAD_SEEN_DN, i.e. a solid
+# object at road level, not just empty road.
+ROAD_BAND_M = (0.15, 1.6)
+SAT_Y = 235
+RED_Y_MIN = 160
+RED_V_MIN = 165
+LIGHT_PX_MIN = 3             # clipped/red pixels in the band (full res)
+LIGHT_FRAC_MIN = 0.002
+ROAD_SEEN_DN = 12.0          # top-3 row mean |dY/dv| in the band, 8-bit
+
+
+@dataclass(frozen=True)
+class RoadRead:
+  lights: bool
+  seen: bool
+  energy: float
+  light_px: int
+
+
+def road_level_read(plane, u: float, v_ground: float, ppm: float, half_w_px: float, v_half=None) -> RoadRead | None:
+  """Lights and object contrast at road level at the radar point, or None."""
+  if plane is None or not (math.isfinite(u) and math.isfinite(v_ground) and math.isfinite(ppm)) or ppm < MIN_PPM:
+    return None
+  h_img, w_img = plane.shape[:2]
+  x0, x1 = int(max(0, u - half_w_px)), int(min(w_img, u + half_w_px))
+  y0 = int(max(0, v_ground - ROAD_BAND_M[1] * ppm))
+  y1 = int(min(h_img, v_ground - ROAD_BAND_M[0] * ppm))
+  if x1 - x0 < 3 or y1 - y0 < 3:
+    return None
+  band = plane[y0:y1, x0:x1]
+  bf = band.astype(np.float32)
+  rows = np.abs(np.diff(bf, axis=0)).mean(axis=1)   # per-row horizontal-edge strength
+  energy = float(np.sort(rows)[-3:].mean())         # strongest edges: an object's top/bottom/bumper
+  bright = band >= SAT_Y
+  if v_half is not None:
+    try:
+      vh, vw = v_half.shape[:2]
+      ys = np.minimum(vh - 1, np.arange(y0, y1) // 2)
+      xs = np.minimum(vw - 1, np.arange(x0, x1) // 2)
+      vb = v_half[ys[:, None], xs[None, :]]
+      if vb.shape == band.shape:
+        bright = bright | ((band >= RED_Y_MIN) & (vb >= RED_V_MIN))
+    except Exception:
+      pass
+  n_light = int(np.count_nonzero(bright))
+  lights = n_light >= LIGHT_PX_MIN and n_light >= LIGHT_FRAC_MIN * band.size
+  return RoadRead(lights, energy >= ROAD_SEEN_DN, energy, n_light)

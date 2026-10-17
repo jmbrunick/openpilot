@@ -109,6 +109,7 @@ procs = [
   PythonProcess("pigeond", "system.ubloxd.pigeond", ublox, enabled=TICI),
   PythonProcess("plannerd", "selfdrive.controls.plannerd", not_long_maneuver),
   PythonProcess("mapd", "selfdrive.mapd.mapd", only_onroad),
+  PythonProcess("nap_maps_update", "openpilot.selfdrive.nap.maps_update.maps_updated", only_offroad, optional=True),  # NAP: map auto-update
   PythonProcess("speedsignd", "selfdrive.speedsignd.speedsignd", speed_sign_log),
   PythonProcess("maneuversd", "tools.longitudinal_maneuvers.maneuversd", long_maneuver),
   PythonProcess("lateral_maneuversd", "tools.lateral_maneuvers.lateral_maneuversd", lat_maneuver),

@@ -54,7 +54,7 @@ def _f(v, d=float("nan")) -> float:
   return out if math.isfinite(out) else d
 
 
-def confirmed_from_msg(obs, age_s: float) -> Confirmed | None:
+def confirmed_from_msg(obs, age_s: float, md=None, v_ego: float = float("nan")) -> Confirmed | None:
   """The vision-confirmed object, or None (not agreed, stale, or no geometry)."""
   if obs is None or not math.isfinite(age_s) or age_s > STALE_S:
     return None
@@ -62,6 +62,10 @@ def confirmed_from_msg(obs, age_s: float) -> Confirmed | None:
     return None
   if bool(getattr(obs, "overheadIgnore", False)):
     return None  # NAP clearance gate: bottom above 6 ft (bridge, sign, signal arm)
+  if md is not None:
+    from openpilot.selfdrive.nap.path_object.overhead_map import overhead_match
+    if overhead_match(obs, md, v_ego):
+      return None  # NAP overhead map: stationary object at a tagged bridge / gantry / signal
   rng, lat = _f(getattr(obs, "rangeM", None)), _f(getattr(obs, "lateral", None))
   if not (math.isfinite(rng) and math.isfinite(lat)) or rng <= 0.0 or rng > MAX_RANGE_M:
     return None
