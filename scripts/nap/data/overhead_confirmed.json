@@ -1,0 +1,7 @@
+{
+  "note": "Box-side daytime clearance-gate confirmations. Reviewed by hand; never learned on the car.",
+  "points": [
+    {"id": 1, "lat": 44.53244, "lon": -94.99464, "heading_deg": 4.0,
+     "what": "steel truss bridge over County Road 2, bottom ~4.25 m (clearance gate, route 0000019f seg 47, Oct 15 2026 10:46 AM CT)"}
+  ]
+}

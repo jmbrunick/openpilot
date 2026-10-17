@@ -21,6 +21,7 @@ from openpilot.selfdrive.mapd.gps_fix import (
 from openpilot.selfdrive.mapd.map_speed_policy import keep_rural_default_ms, map_source_for
 from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB
 from openpilot.selfdrive.mapd.speed_overrides import PARAM as SIGN_CONFIRMED_PARAM, SpeedOverrides
+from openpilot.selfdrive.nap.path_object.overhead_map import overhead_ahead_live
 from openpilot.selfdrive.mapd.roundabout_map import PARAM_RING, RingCache, roundabout_comfort_speed_ms
 from openpilot.selfdrive.mapd.roundabout_status import RingDataWatch, map_msg_valid
 
@@ -181,6 +182,15 @@ def main():
         d.roundaboutSpeedLimit = float(rb.speed_limit_ms)
       # A ring has no maxspeed to match. Keep the message valid for its hint.
       msg.valid = map_msg_valid(gps_ok=gps_ok, db_loaded=db.loaded, matched=match is not None, ring_hint=True)
+    # NAP overhead map (pack v6): nearest tagged bridge / gantry / signal ahead.
+    try:
+      ov = overhead_ahead_live(lat, lon, float(bearing), v_ego_ms, getattr(db, "_con", None)) \
+        if gps_ok and bearing is not None else None
+    except Exception:
+      ov = None
+    if ov is not None:
+      d.overheadAheadM = float(ov.distance_m) if ov.distance_m != 0.0 else 0.01
+      d.overheadKind = ov.kind
     pm.send("liveMapDataNAP", msg)
     rk.keep_time()
 

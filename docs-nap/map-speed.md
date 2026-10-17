@@ -277,3 +277,11 @@ Policy tests include lead precedence, fetch of a tiny sqlite over HTTP, and Refr
 ## Rail crossings (pack v5, data only)
 
 Pack schema 5 adds `rail_crossings` (node_id, lat, lon, way_id, kind, barrier, light, crossing): OSM `railway=level_crossing` / `railway=crossing` nodes that lie on a drivable highway way, with `crossing:barrier`, `crossing:light` and `crossing=*`. 250,339 in the US (2026-10-11 extracts), ~4.9 MB of the zst. `selfdrive/mapd/rail_crossings.py: crossings_ahead(con, lat, lon, bearing_deg, horizon_m, lateral_m)` returns them nearest-first. No alert/UI yet; older packs simply return [].
+
+## Overhead overlay (schema 6 table, shipped as its own file)
+
+`overhead_us.sqlite` next to the speed-limit pack holds one table, `overhead` (id, lat, lon, kind, under_way_id, heading_deg, source): OSM bridges crossing over a drivable road at a lower layer, `man_made=gantry`, `highway=traffic_signals` on drivable roads, and box-side daytime clearance-gate confirmations (`scripts/nap/data/overhead_confirmed.json`). No streetlights, no power lines. Build on the box one Geofabrik state at a time with `scripts/nap/build_overhead_layer.py --states minnesota --out overhead_us.sqlite` (PBFs are deleted after use). Minnesota: 8,408 signals, 8,534 bridges, 174 gantries, 1.7 MB sqlite / 0.6 MB zst. mapd reads it through `selfdrive/nap/path_object/overhead_map.py` and publishes `liveMapDataNAP.overheadAheadM / overheadKind`; a v6 pack with the same table also works.
+
+## Map auto-update (offroad)
+
+`selfdrive/nap/maps_update/maps_updated.py` (process `nap_maps_update`, offroad only) checks the published `maps-index.json` after a software version change and once a day. The big pack goes through `refresh_maps()` on an unmetered link only. Overlays listed under `"overlays": {"overhead": {"revision", "url", "sha256", "bytes"}}` install on any link when they are at most 20 MB: sha256-verified, decompressed to a `.partial`, table-checked, then `os.replace`d. State sits in `nap_maps_update.json` beside the maps. Nothing is published by the device.
