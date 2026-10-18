@@ -21,10 +21,14 @@ HUD_HOLD_S = 45.0
 # reads when infer is up to ~3 s.
 AGREE_READS = 2
 AGREE_WINDOW_S = 12.0
-# One real posted limit at this confidence lights the plate. Route 00000181
-# had 45@0.77, 30@0.75, 45@0.89, and 30@0.81 with no second read inside 12 s.
-# 0.60 still needs the second read. A different limit within 3 s clears it.
-SOLO_CONF = 0.70
+# One real posted limit at this confidence lights an empty plate, and a
+# *new track* at HOLD_OVERRIDE_CONF may replace a held plate. Reads were
+# rare when this was 0.70 (route 00000181: 45@0.77 / 30@0.75 / 30@0.81).
+# The pipeline now reads more often, so a solo below 0.85 needs two
+# agreeing votes to light or to change the plate. A different limit
+# within SOLO_CONTRADICT_S clears a provisional solo.
+SOLO_CONF = 0.85
+HOLD_OVERRIDE_CONF = 0.85
 SOLO_CONTRADICT_S = 3.0
 HUD_LABEL = "SIGN"
 # Logger On + ONNX missing: show this instead of a blank plate or a fake mph.
@@ -302,7 +306,8 @@ def frame_reads(sign: SpeedSign | None) -> tuple[list[tuple[int, float]], tuple[
   - class and OCR differ, both above their floors: no vote. A correct OCR
     beside a wrong class is a miss, not a misread.
   - class only: no vote. That is how route 17a posted 60 as 30.
-    LiveSignHold may still light one class-only read at SOLO_CONF.
+    LiveSignHold may still light one class-only read at SOLO_CONF, and a
+  new track at HOLD_OVERRIDE_CONF may replace a held plate.
   - OCR only (second look, or refine with no in-threshold class): one vote.
   - bare mph with neither field set (numpy tests): one vote.
   sl_unreadable and neg_* have no MUTCD mph here, so they never vote.
@@ -386,12 +391,22 @@ def posted_reads(sign: SpeedSign | None) -> list[tuple[int, float]]:
   return out
 
 
+def _track_id(sign) -> int | None:
+  tid = getattr(sign, "track_id", None)
+  if tid is None:
+    return None
+  try:
+    return int(tid)
+  except (TypeError, ValueError):
+    return None
+
+
 def solo_candidate(sign: SpeedSign | None) -> tuple[int, float] | None:
   """One real posted limit at ≥ SOLO_CONF. A class/OCR clash is not one.
 
   Class-only counts here even though frame_reads does not vote it. That is
-  how a lone 45@0.89 lights the plate. 0.60 does not. JSONL still needs
-  two frame_reads votes.
+  how a lone read at SOLO_CONF lights an empty plate. Below that, two
+  frame_reads votes are required. JSONL still needs two frame_reads votes.
   """
   if sign is None:
     return None
@@ -421,6 +436,21 @@ def solo_candidate(sign: SpeedSign | None) -> tuple[int, float] | None:
   return None
 
 
+def _track_for_mph(signs, mph: int) -> int | None:
+  """Track id of a sign in this batch that named `mph`, if it has one."""
+  for s in signs or []:
+    tid = _track_id(s)
+    if tid is None:
+      continue
+    pending, _pair = frame_reads(s)
+    if any(int(m) == int(mph) for m, _c in pending):
+      return tid
+    solo = solo_candidate(s)
+    if solo is not None and int(solo[0]) == int(mph):
+      return tid
+  return None
+
+
 def accepted_hud_sign(sign: SpeedSign | None) -> SpeedSign | None:
   """One frame never lights the HUD, even when class and OCR agree.
 
@@ -439,6 +469,7 @@ class LiveSignHold:
   until: float = 0.0
   provisional: bool = False
   provisional_until: float = 0.0
+  track_id: int | None = None
   _obs: list = field(default_factory=list)
 
   def _clear(self) -> None:
@@ -447,10 +478,11 @@ class LiveSignHold:
     self.until = 0.0
     self.provisional = False
     self.provisional_until = 0.0
+    self.track_id = None
 
   def update(self, signs, now: float) -> tuple[bool, int, float]:
     fresh_mphs: set[int] = set()
-    solos: list[tuple[int, float]] = []
+    solos: list[tuple[int, float, int | None]] = []
     seen: list[tuple[int, float]] = []
     for s in signs or []:
       pending, _pair = frame_reads(s)
@@ -460,7 +492,7 @@ class LiveSignHold:
       seen.extend(posted_reads(s))
       solo = solo_candidate(s)
       if solo is not None:
-        solos.append(solo)
+        solos.append((int(solo[0]), float(solo[1]), _track_id(s)))
     self._obs = [o for o in self._obs if now - o[0] <= AGREE_WINDOW_S]
     buckets: dict[int, list[float]] = {}
     for _t, mph, conf in self._obs:
@@ -488,21 +520,45 @@ class LiveSignHold:
         self.mph = int(new_mph)
         self.conf = float(new_conf)
         self.until = now + self.hold_s
+        tid = _track_for_mph(signs, int(new_mph))
+        if tid is not None:
+          self.track_id = tid
       else:
         self.until = now + self.hold_s
       self.provisional = False
-    elif not holding and solos:
-      # A locked hold is not replaced by one class-only read. An empty plate is.
-      choices = [item for item in solos if item[0] != cancelled]
-      if choices:
-        new_mph, new_conf = max(choices, key=lambda item: item[1])
+    else:
+      # Below SOLO_CONF a single read is not in `solos`, so it cannot light
+      # or change the plate. Two agreeing votes took the branch above.
+      choices = [item for item in solos if item[0] != cancelled and item[1] >= SOLO_CONF]
+      overrides = [
+        item for item in choices
+        if holding and item[1] >= HOLD_OVERRIDE_CONF and item[2] is not None and item[2] != self.track_id
+      ]
+      if overrides:
+        # A different track's confident solo replaces the held mph. The same
+        # track still needs a second agreeing vote (READS_AFTER_MPH).
+        new_mph, new_conf, new_tid = max(overrides, key=lambda item: item[1])
+        if int(new_mph) == int(self.mph):
+          self.conf = max(float(self.conf), float(new_conf))
+          self.until = now + self.hold_s
+          self.track_id = new_tid
+        else:
+          self.mph = int(new_mph)
+          self.conf = float(new_conf)
+          self.until = now + self.hold_s
+          self.track_id = new_tid
+          self.provisional = True
+          self.provisional_until = now + SOLO_CONTRADICT_S
+      elif not holding and choices:
+        new_mph, new_conf, new_tid = max(choices, key=lambda item: item[1])
         self.mph = int(new_mph)
         self.conf = float(new_conf)
         self.until = now + self.hold_s
+        self.track_id = new_tid
         self.provisional = True
         self.provisional_until = now + SOLO_CONTRADICT_S
-    elif holding and any(is_speed_limit_sighting(s) for s in (signs or [])):
-      self.until = now + self.hold_s
+      elif holding and any(is_speed_limit_sighting(s) for s in (signs or [])):
+        self.until = now + self.hold_s
     live = now < self.until and self.mph > 0
     if not live:
       return False, 0, 0.0

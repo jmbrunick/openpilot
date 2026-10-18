@@ -22,6 +22,9 @@ class SpeedSign:
   alt_conf: float = 0.0
   refine_mph: int | None = None
   refine_conf: float = 0.0
+  # Two-stage track that produced this read. HUD uses it so a new sign can
+  # override a held plate. Legacy tiles leave it unset.
+  track_id: int | None = None
 
 
 def shift_sign(sign: SpeedSign, dx: int, dy: int) -> SpeedSign:
