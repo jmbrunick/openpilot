@@ -46,5 +46,6 @@ def test_talk_api_has_no_car_paths():
   for bad in ("params", "messaging", "cereal", "panda", "opendbc", "selfdrive.car"):
     assert not any(bad in ln for ln in imports), imports
   html = (HERE / "dashboard.html").read_text(encoding="utf-8")
-  assert 'tk.id = "napTalk"' in html
-  assert html.index('bm.id = "bookmark"') < html.index('tk.id = "napTalk"')
+  # The Talk button is injected only by Phone Hub; the comma page must not render one.
+  assert 'bm.id = "bookmark"' in html
+  assert "napTalk" not in html and "talkTap" not in html

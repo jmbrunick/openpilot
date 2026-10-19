@@ -362,33 +362,6 @@ function bookmarkTap() {
   });
 }
 
-// Talk to CoS: only asks the phone to start/stop voice. No car control.
-var talk = { active: false, pending: false, phone: false };
-function renderTalk() {
-  var el = document.getElementById("napTalk");
-  if (!el) return;
-  if (talk.active || talk.pending) {
-    el.textContent = talk.active ? "Stop talk" : "Talk\u2026";
-    el.style.color = "#fff"; el.style.background = "#16a34a"; el.style.borderColor = "#86efac";
-  } else {
-    el.textContent = "Talk to CoS";
-    el.style.color = ""; el.style.background = ""; el.style.borderColor = "";
-  }
-}
-function talkPoll() {
-  getJSON("/api/talk/state", function (err, data) {
-    if (!err && data && typeof data.active === "boolean") { talk = data; renderTalk(); }
-  });
-}
-function talkTap() {
-  postJSON("/api/talk", {}, function (err, data) {
-    if (err) { setStatus("Talk failed"); return; }
-    setStatus(talk.active ? "Stopping voice on phone" : "Starting voice on phone");
-    talk.pending = true; renderTalk();
-    setTimeout(talkPoll, 1500);
-  });
-}
-
 function renderNav() {
   var nav = document.getElementById("nav");
   while (nav.firstChild) nav.removeChild(nav.firstChild);
@@ -410,12 +383,6 @@ function renderNav() {
   bm.id = "bookmark";
   bm.onclick = bookmarkTap;
   nav.appendChild(bm);
-  var tk = document.createElement("button");
-  tk.type = "button";
-  tk.id = "napTalk";
-  tk.onclick = talkTap;
-  nav.appendChild(tk);
-  renderTalk();
   renderBookmark();
   renderDrive();
   fitPane();
@@ -856,7 +823,6 @@ document.getElementById("foack-no").onclick = function () { foAnswer("no"); };
 foPoll();
 setInterval(foPoll, 1500);
 setInterval(bookmarkPoll, 1000);
-setInterval(talkPoll, 2000);
 
 window.onresize = fitPane;
 // Lets :active paint on touch screens that otherwise skip it.
