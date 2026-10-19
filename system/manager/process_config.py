@@ -114,6 +114,8 @@ procs = [
   PythonProcess("lateral_maneuversd", "tools.lateral_maneuvers.lateral_maneuversd", lat_maneuver),
   PythonProcess("radard", "selfdrive.controls.radard", only_onroad),
   PythonProcess("pathobstacled", "selfdrive.pathobstacled.pathobstacled", and_(only_onroad, lambda s, p, cp: p.get_bool("NAPObstacleLog")), optional=True),
+  # NAP animal/person detector. Log only, default off; a crash never disengages (optional).
+  PythonProcess("animaldetd", "selfdrive.nap.animal_detect.animaldetd", and_(only_onroad, lambda s, p, cp: p.get_bool("NAPAnimalDetect")), optional=True),
   PythonProcess("hardwared", "system.hardware.hardwared", always_run),
   PythonProcess("modem", "system.hardware.tici.modem", always_run, enabled=TICI),
   PythonProcess("tombstoned", "system.tombstoned", always_run, enabled=not PC),

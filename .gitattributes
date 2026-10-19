@@ -11,6 +11,8 @@
 *.wav filter=lfs diff=lfs merge=lfs -text
 # Generated chime. Small enough to live in git; comma's LFS remote is not ours to push.
 selfdrive/assets/sounds/animal_chime.wav !filter !diff !merge -text
+# NAP animal detector model, 3.7 MB. Plain git blob so every install has it.
+selfdrive/nap/animal_detect/models/animal_yolox_nano.onnx !filter !diff !merge -text
 
 selfdrive/car/tests/test_models_segs.txt filter=lfs diff=lfs merge=lfs -text
 system/hardware/tici/updater_weston filter=lfs diff=lfs merge=lfs -text

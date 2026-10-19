@@ -2595,7 +2595,7 @@ struct Event {
     coneLineNAP @109 :Custom.ConeLineNAP;
     pathObstacleNAP @110 :Custom.PathObstacleNAP;
     pathObstacleVisionNAP @111 :Custom.PathObstacleVisionNAP;
-    customReserved5 @112 :Custom.CustomReserved5;
+    animalDetectNAP @112 :Custom.AnimalDetectNAP;
     customReserved6 @113 :Custom.CustomReserved6;
     customReserved7 @114 :Custom.CustomReserved7;
     customReserved8 @115 :Custom.CustomReserved8;

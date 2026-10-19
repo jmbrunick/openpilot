@@ -100,6 +100,7 @@ _services: dict[str, tuple] = {
   # Decimation 1 keeps every published message in the qlog.
   "pathObstacleNAP": (True, 0., 1),
   "pathObstacleVisionNAP": (True, 0., 1),
+  "animalDetectNAP": (True, 5., 1),
   "customReservedRawData0": (True, 0.),
 }
 SERVICE_LIST = {name: Service(*vals) for

@@ -173,9 +173,56 @@ struct PathObstacleVisionNAP @0x80ae746ee2596b11 {
   lateral @21 :Float32;      # m, path-relative centre, +right
   spanM @22 :Float32;        # m, lateral span of the cluster
   vRel @23 :Float32;         # m/s, radar longitudinal relative
+  # NAP animal detector (log only): class and score of the animalDetectNAP
+  # detection on this track. Empty / NaN when NAPAnimalDetect is off or no match.
+  nnClass @24 :Text;
+  nnConf @25 :Float32;
 }
 
-struct CustomReserved5 @0xa5cd762cd951a455 {
+# NAP camera-first animal/person detector (selfdrive/nap/animal_detect). LOG ONLY.
+# Same type id as the old empty CustomReserved5. Nothing alerts or brakes on it.
+struct AnimalDetectNAP @0xa5cd762cd951a455 {
+  frameId @0 :UInt32;        # road camera frame
+  wideFrameId @1 :UInt32;    # 0 when the wide tile was not run
+  modelMs @2 :Float32;       # detector run time incl. readback
+  prepMs @3 :Float32;        # CPU crop + colour convert
+  # ok, no_model, no_frame, model_error, backoff
+  status @4 :Text;
+  tilesRun @5 :UInt8;
+  horizonV @6 :Float32;      # road camera horizon row used for the tiles
+  detections @7 :List(Detection);
+
+  struct Detection {
+    cls @0 :Class;
+    conf @1 :Float32;
+    camera @2 :Camera;
+    x0 @3 :Float32;          # box in full-resolution pixels of its camera
+    y0 @4 :Float32;
+    x1 @5 :Float32;
+    y1 @6 :Float32;
+    bearingDeg @7 :Float32;  # + right of straight ahead
+    rangeCam @8 :Float32;    # m, flat-road range from the box bottom, NaN above the horizon
+    trackId @9 :UInt32;      # camera track
+    frames @10 :UInt16;      # hits in a row
+    confirmed @11 :Bool;     # radar matched, or camera-only for >= 3 frames
+    radarMatched @12 :Bool;  # liveTracks point within 1.5 deg and 25 % range
+    radarTrackId @13 :UInt64;
+    range @14 :Float32;      # m, camera frame: radar when matched, else rangeCam
+    vRel @15 :Float32;       # m/s, radar only, NaN otherwise
+    lateral @16 :Float32;    # m, + right
+  }
+
+  enum Class {
+    person @0;
+    deer @1;
+    largeAnimal @2;
+    smallAnimal @3;
+  }
+
+  enum Camera {
+    road @0;
+    wide @1;
+  }
 }
 
 struct CustomReserved6 @0xf98d843bfd7004a3 {

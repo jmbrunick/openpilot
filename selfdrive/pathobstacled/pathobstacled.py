@@ -21,6 +21,7 @@ from openpilot.selfdrive.pathobstacled.cone_cam import (
   score_line,
   uv_planes_from_nv12,
 )
+from openpilot.selfdrive.nap.animal_detect.hook import animal_match
 from openpilot.selfdrive.controls.lib.path_obstacle import (
   PARAM_OBSTACLE_CHIME,
   PARAM_OBSTACLE_LOG,
@@ -560,9 +561,10 @@ def _finite_or_nan(value) -> float:
   return num
 
 
-def _publish_vision(pm, messaging, sample, vision_us: float) -> None:
+def _publish_vision(pm, messaging, sample, vision_us: float, nn: tuple[str, float] = ("", float("nan"))) -> None:
   msg = messaging.new_message("pathObstacleVisionNAP", valid=True)
   body = msg.pathObstacleVisionNAP
+  body.nnClass, body.nnConf = str(nn[0]), _finite_or_nan(nn[1])  # NAP animal detector, log only
   body.trackId = int(sample.track_id) & 0xFFFFFFFFFFFFFFFF
   body.visionEvaluated = bool(sample.vision_evaluated)
   body.visionConf = _finite_or_nan(sample.vision_conf)
@@ -847,6 +849,8 @@ def _run() -> None:
   dmd_sock = messaging.sub_sock("drivingModelData", conflate=True)
   cam_sock = messaging.sub_sock("roadCameraState", conflate=True)
   gps_sock = messaging.sub_sock(gps_service, conflate=True)
+  animal_sock = messaging.sub_sock("animalDetectNAP", conflate=True)  # NAP animal detector, log only
+  animal, animal_t = None, 0.0
   pm = messaging.PubMaster(["pathObstacleVisionNAP"])
   poller = messaging.Poller()
   poller.registerSocket(sock)
@@ -872,6 +876,9 @@ def _run() -> None:
     dmd = _latest_body(messaging, dmd_sock)
     if dmd is not None:
       driving_model = dmd
+    got = _latest_body(messaging, animal_sock)
+    if got is not None:
+      animal, animal_t = got, time.monotonic()
     # Obstacle first, unchanged: every queued pathObstacleNAP in order.
     while True:
       msg = messaging.recv_one_or_none(sock)
@@ -888,7 +895,9 @@ def _run() -> None:
         if result is None:
           continue
         sample, vision_us = result
-        _publish_vision(pm, messaging, sample, vision_us)
+        nn = animal_match(animal, animal_t, time.monotonic(), sample.track_id,
+                          getattr(sample, "range_m", float("nan")), getattr(sample, "lateral", float("nan")))
+        _publish_vision(pm, messaging, sample, vision_us, nn)
       except Exception:
         continue
     cone = _latest_body(messaging, cone_sock)

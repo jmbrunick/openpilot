@@ -279,6 +279,7 @@ SConscript([
   'selfdrive/controls/lib/longitudinal_mpc_lib/SConscript',
   'selfdrive/locationd/SConscript',
   'selfdrive/modeld/SConscript',
+  'selfdrive/nap/animal_detect/SConscript',  # NAP animal detector model (log only)
   'selfdrive/ui/SConscript',
 ])
 

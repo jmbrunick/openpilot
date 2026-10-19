@@ -118,6 +118,9 @@
     // Animals, people, and solid debris in or beside the lane. Does not
     // brake or steer. Off stops the log and the chime.
     {"NAPObstacleLog", {PERSISTENT, BOOL, "1"}},
+    // Camera-first animal/person detector (animalDetectNAP, selfdrive/nap/animal_detect).
+    // Default Off. LOG ONLY: no chime, alert, regen, or braking. Little cores, optional process.
+    {"NAPAnimalDetect", {PERSISTENT, BOOL, "0"}},
     // Chime when radar and vision agree something solid is in the lane
     // or stepping into it, and for an animal or a person near the road.
     // Default On. A still mailbox or post on the shoulder stays quiet.
