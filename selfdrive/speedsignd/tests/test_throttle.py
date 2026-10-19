@@ -419,6 +419,26 @@ def test_model_skip_or_exec_over_50ms_pauses_at_least_10s():
   assert model_guard_rest_s(0.2, 1.0, "model-skip", True) == 10.0
 
 
+def test_reader_share_excludes_proposer_time():
+  """Proposer at 2 Hz is ~22% of the core. A read must not be judged against that."""
+  from openpilot.selfdrive.speedsignd.speedsignd import model_reason_pauses_proposer, share_without_proposer
+  # 0.8 s read + 0.70 s of proposer across a 3.2 s gap. Process share is ~47%.
+  wall = 3.2
+  proposer_s = 0.22 * wall
+  reader_s = 0.8
+  share = (reader_s + proposer_s) / wall
+  assert cpu_over_budget(share)
+  read_share = share_without_proposer(share, wall, proposer_s)
+  assert abs(read_share - (reader_s / wall)) < 1e-9
+  assert not cpu_over_budget(read_share)
+  assert share_without_proposer(None, wall, proposer_s) is None
+  assert model_reason_pauses_proposer("model-lag")
+  assert model_reason_pauses_proposer("cpu-load+model-skip")
+  assert not model_reason_pauses_proposer("cpu-load")
+  assert not model_reason_pauses_proposer("cpu-budget")
+  assert not model_reason_pauses_proposer("")
+
+
 def test_cpu_share_meter_and_budget():
   text = "123 (speedsignd) R 1 1 1 0 -1 0 0 0 0 0 40 10 0 0"
   assert parse_proc_stat_jiffies(text) == 50

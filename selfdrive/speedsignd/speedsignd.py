@@ -14,12 +14,17 @@ DEV=CPU / CLANG). It must not open the QCOM GPU modeld uses. The first
 realize compiles only while known-disengaged and is cached per weights
 sha. One ONNX thread, SCHED_IDLE (else nice 19), pinned to little
 core 2 — not core 0 (UI), 1 (sensord), 3 (pandad/encoderd), 4 (controlsd),
-5 (plannerd/radard), 6 (camerad), or 7 (modeld). While engaged the average
-is at most 25% of that core: after each infer the process idles at least
-3× the infer time. modelV2 frame drops add more rest. A real modelV2
-frame skip, or modelExecutionTime above 50 ms, pauses at least 10 s.
-A 20 Hz SubMaster poll of 20 Hz modelV2 is not that skip. HUD lights
-only when two reads agree on the same mph, then holds 45 s. JSONL stays a
+5 (plannerd/radard), 6 (camerad), or 7 (modeld). Reader duty stays at most
+25% of that core: after each sharp read the reader idles at least 3× the
+read. The strip proposer is extra, on the same core, at its own cadence.
+modelV2 frame drops add more rest. A real modelV2 frame skip, or
+modelExecutionTime above 50 ms, pauses at least 10 s.
+A 20 Hz SubMaster poll of 20 Hz modelV2 is not that skip. The reader
+duty stays 25% of core 2. The strip proposer is outside that budget
+(it is already ~22% at 2 Hz) and pauses with modeld lag, not with the
+reader's cpu-budget rest. HUD lights on two agreeing reads, or one
+read at SOLO_CONF; a new track at HOLD_OVERRIDE_CONF can replace a
+held plate. JSONL stays a
 short line, skipped while engaged if disk stalls. SubMaster is polled at
 20 Hz. Unknown cereal after a short startup allows throttled detect, but
 not the compile. Not gated on park / Force Offroad. Detect copies one
@@ -58,7 +63,7 @@ os.environ["OPENCV_DNN_OPENCL"] = "0"
 
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from openpilot.selfdrive.speedsignd.debounce import SignDebounce
@@ -78,7 +83,7 @@ from openpilot.selfdrive.speedsignd.detect import (
   parse_infer_cap_ms,
   parse_infer_threads,
 )
-from openpilot.selfdrive.speedsignd.nv12 import copy_nv12_detect_crop, copy_nv12_rect
+from openpilot.selfdrive.speedsignd.nv12 import copy_nv12_detect_crop, copy_nv12_rect, subcrop_nv12
 from openpilot.selfdrive.speedsignd.paths import PARAM_KEY, default_log_path, default_onnx_path, default_proposer_path
 from openpilot.selfdrive.speedsignd import two_stage
 from openpilot.selfdrive.speedsignd.detect_types import SpeedSign
@@ -128,13 +133,19 @@ LAG_ALERT_MARKERS = (
 SPEEDSIGND_NICE = 19
 SPEEDSIGND_CORE = 2
 SPEEDSIGND_CORES = (SPEEDSIGND_CORE,)
-# Idle at least 3× infer between reads → duty = infer / (4× infer) = 25%.
+# Idle at least 3× infer between *reads* → reader duty = infer / (4× infer) = 25%.
+# The strip proposer is not part of this budget. At 2 Hz it is already ~22%
+# of core 2, so charging it here turned every ~0.8 s read into a multi-second
+# cpu-budget blackout. Proposer cadence is PROPOSER_HZ / PROPOSER_BURST_HZ.
 IDLE_FACTOR = 3.0
 CPU_BUDGET = 1.0 / (1.0 + IDLE_FACTOR)
 CPU_BUDGET_SLACK = 0.03
-# Duty is averaged over this window. A 2–3 frame burst may run back-to-back;
-# the idle after it brings the trailing average back to 25%.
+# Duty is averaged over this window, reader time only. A 2–3 frame burst may
+# run back-to-back; the idle after it brings the trailing average back to 25%.
 DUTY_WINDOW_S = 10.0
+# modeld-lag reasons. These pause the proposer and the reader. cpu-budget
+# and cpu-load pause the reader only.
+MODEL_PAUSE_REASONS = frozenset({"model-drop", "model-exec", "model-skip", "model-lag"})
 # Extra YOLO reads after the frame that scored ≥ SIGN_LIKE_CONF. Two extra
 # reads is three frames total, still on the tile that saw the sign.
 BURST_EXTRA = 2
@@ -792,6 +803,7 @@ class CpuShareMeter:
   def __init__(self) -> None:
     self._mono: float | None = None
     self._jiffies: int | None = None
+    self.last_dt: float | None = None
     self._clk = os.sysconf(os.sysconf_names["SC_CLK_TCK"]) if hasattr(os, "sysconf_names") else 100
 
   def sample(self, now: float, jiffies: int | None) -> float | None:
@@ -800,11 +812,13 @@ class CpuShareMeter:
     if self._mono is None or self._jiffies is None:
       self._mono = float(now)
       self._jiffies = int(jiffies)
+      self.last_dt = None
       return None
     dt = float(now) - self._mono
     dj = int(jiffies) - self._jiffies
     self._mono = float(now)
     self._jiffies = int(jiffies)
+    self.last_dt = dt
     if dt <= 1e-6 or self._clk <= 0:
       return None
     return (dj / float(self._clk)) / dt
@@ -812,6 +826,24 @@ class CpuShareMeter:
 
 def cpu_over_budget(share: float | None) -> bool:
   return share is not None and float(share) > CPU_BUDGET + CPU_BUDGET_SLACK
+
+
+def share_without_proposer(share: float | None, wall_s: float, proposer_s: float) -> float | None:
+  """Process CPU share with proposer time removed. The read budget sees the rest."""
+  if share is None:
+    return None
+  wall = float(wall_s)
+  if wall <= 1e-6:
+    return float(share)
+  adjusted = float(share) - max(0.0, float(proposer_s)) / wall
+  if adjusted < 0.0:
+    return 0.0
+  return adjusted
+
+
+def model_reason_pauses_proposer(reason: str) -> bool:
+  """modeld lag / drop / skip / exec. cpu-budget and cpu-load do not."""
+  return any(piece in MODEL_PAUSE_REASONS for piece in (reason or "").split("+"))
 
 
 def yield_to_modeld() -> str:
@@ -1377,9 +1409,11 @@ def main():
     )
 
   cloudlog.info(
-    "speedsignd two-stage proposer=%s path=%s err=%s hz=%.1f conf=%.2f strip=%s",
+    "speedsignd two-stage proposer=%s path=%s err=%s hz=%.1f burst_hz=%.1f conf=%.2f "
+    + "solo_prop=%.2f reads_after_mph=%d strip=%s",
     int(proposer.ok), proposer.path, proposer.error, two_stage.PROPOSER_HZ,
-    two_stage.PROPOSER_CONF, two_stage.STRIP_RECT,
+    two_stage.PROPOSER_BURST_HZ, two_stage.PROPOSER_CONF,
+    two_stage.TRACK_SOLO_PROPOSAL_CONF, two_stage.READS_AFTER_MPH, two_stage.STRIP_RECT,
   )
   sm = messaging.SubMaster(
     ["gpsLocationExternal", "gpsLocation", "selfdriveState", "modelV2"],
@@ -1391,6 +1425,10 @@ def main():
   last_connect = 0.0
   last_onnx_try = time.monotonic()
   next_detect = 0.0
+  next_propose = 0.0
+  # Proposer CPU seconds since the last reader sample. Subtracted from the
+  # process share so the 25% read budget does not see the strip proposer.
+  proposer_cpu_s = 0.0
   infer_ms: list[float] = []
   skip_count = 0
   last_timing_log = time.monotonic()
@@ -1445,6 +1483,8 @@ def main():
       # A frameDropPerc backoff still only extends a schedule that already exists.
       if next_detect > 0.0 or hard_now:
         next_detect = max(next_detect, now_mono + extra_now)
+      if next_propose > 0.0 or hard_now:
+        next_propose = max(next_propose, now_mono + extra_now)
       # A model pause is not a burst. Do not dump the extra reads when it ends.
       burst_left = 0
       burst_cluster_s = 0.0
@@ -1468,6 +1508,7 @@ def main():
     else:
       if should_reset_detect_after_wait(last_allow, sample.allow_detect):
         next_detect = 0.0
+        next_propose = 0.0
         in_holdoff = False
       slot.resume()
       # Engaged + not yet compiled: drop a queued result. The worker also
@@ -1514,53 +1555,17 @@ def main():
       if outcome is not None:
         signs = outcome.signs
         infer_ms.append(outcome.infer_s * 1000.0)
-        share = cpu_meter.sample(now_mono, read_proc_stat_jiffies())
-        os_threads = read_proc_thread_count()
-        cloudlog.info(
-          "%s",
-          format_read_timing(
-            read_interval_ms=pending_interval_ms,
-            infer_ms=outcome.infer_s * 1000.0,
-            engaged=sample.controlling,
-            backoff=pending_backoff,
-            reason=pending_reason,
-            cpu_share=share,
-            threads=threads,
-            os_threads=os_threads,
-            backend=detector.backend_name(),
-          ),
-        )
-        pressure = collect_host_pressure(sm)
-        model_reason = model_watch.reason()
-        hard = model_watch.hard_guard()
-        model_watch.consume()
-        reason = join_reasons(
-          pressure_reason(pressure),
-          model_reason,
-          "cpu-budget" if cpu_over_budget(share) else "",
-        )
-        extra_s = model_guard_rest_s(outcome.infer_s, period_s, reason, hard)
-        scheduled_backoff = extra_s > 0.0
-        scheduled_reason = reason or "pace"
-        if scheduled_backoff:
-          cloudlog.warning(
-            "%s",
-            format_backoff_timing(
-              extra_ms=extra_s * 1000.0,
-              infer_ms=outcome.infer_s * 1000.0,
-              engaged=sample.controlling,
-              reason=reason,
-              backend=detector.backend_name(),
-            ),
-          )
         raw = list(getattr(debounce, "last_raw", []))
         diag = outcome.diag if outcome.diag is not None else detector.diag_dict()
         two = isinstance(diag, dict) and bool(diag.get("two_stage"))
+        reader_ran = bool(two and diag.get("reader_ran"))
+        reader_s = float(diag.get("reader_s") or 0.0) if two else float(outcome.infer_s)
         if two:
-          t_frame = float(diag.get("t_frame", now_mono))
-          tracker.update(diag.get("props") or [], t_frame)
+          proposer_cpu_s += max(0.0, float(diag.get("prop_ms") or 0.0) / 1000.0)
+          if not diag.get("tracker_applied"):
+            tracker.update(diag.get("props") or [], float(diag.get("t_frame", now_mono)))
           read_tid = diag.get("read_tid")
-          if read_tid is not None:
+          if reader_ran and read_tid is not None:
             for tr in tracker.tracks:
               if tr.tid == read_tid:
                 tracker.mark_read(tr, got_mph=bool(signs), neg=two_stage.neg_read(diag.get("read_diag")))
@@ -1574,26 +1579,115 @@ def main():
                 **{"class": (diag.get("read_diag") or {}).get("peak_name")},
               )
               two_stage.write_pending(meta, diag.get("read_jpg"))
-        (
-          next_mono, burst_left, burst_window, window_i, burst_cluster_s, bursting_next,
-        ) = schedule_after_read(
-          now=now_mono,
-          infer_s=outcome.infer_s,
-          period_s=two_period_s if two else period_s,
-          budget_s=budget_s,
-          cap_s=cap_s,
-          backoff_s=extra_s,
-          sign_like=False if two else sign_burst_trigger(diag, raw),
-          window_used=pending_window,
-          window_count=1 if two else 2,
-          burst_left=burst_left,
-          burst_window=burst_window,
-          burst_cluster_s=burst_cluster_s,
-          spans=duty_spans,
-        )
-        duty_spans.append((now_mono, outcome.infer_s))
-        duty_spans = [(end, dur) for end, dur in duty_spans if now_mono - float(end) <= DUTY_WINDOW_S]
-        next_detect = max(next_detect, next_mono)
+        # Proposer-only ticks must not reset the CPU meter. The sample that
+        # ends on a read covers the idle plus the proposer, and the proposer
+        # seconds are subtracted before the 25% check.
+        share = None
+        read_share = None
+        if not two or reader_ran:
+          share = cpu_meter.sample(now_mono, read_proc_stat_jiffies())
+          if two:
+            read_share = share_without_proposer(share, cpu_meter.last_dt or 0.0, proposer_cpu_s)
+            proposer_cpu_s = 0.0
+          else:
+            read_share = share
+        os_threads = read_proc_thread_count()
+        if not two or reader_ran:
+          cloudlog.info(
+            "%s",
+            format_read_timing(
+              read_interval_ms=pending_interval_ms,
+              infer_ms=(reader_s if two else outcome.infer_s) * 1000.0,
+              engaged=sample.controlling,
+              backoff=pending_backoff,
+              reason=pending_reason,
+              cpu_share=read_share if two else share,
+              threads=threads,
+              os_threads=os_threads,
+              backend=detector.backend_name(),
+            ),
+          )
+        pressure = collect_host_pressure(sm)
+        model_reason = model_watch.reason()
+        hard = model_watch.hard_guard()
+        model_watch.consume()
+        if two and not reader_ran:
+          # cpu-load / cpu-budget used to rest ~1 s after every proposer
+          # tick (period is 1 s, infer is ~110 ms). Those rests stay on
+          # the reader. modeld lag still pauses both.
+          reason = model_reason
+        else:
+          reason = join_reasons(
+            pressure_reason(pressure),
+            model_reason,
+            "cpu-budget" if cpu_over_budget(read_share) else "",
+          )
+        pace_infer = reader_s if two and reader_ran else outcome.infer_s
+        extra_s = model_guard_rest_s(pace_infer, period_s, reason, hard)
+        scheduled_backoff = extra_s > 0.0
+        scheduled_reason = reason or "pace"
+        if scheduled_backoff and (not two or reader_ran or model_reason_pauses_proposer(reason)):
+          cloudlog.warning(
+            "%s",
+            format_backoff_timing(
+              extra_ms=extra_s * 1000.0,
+              infer_ms=pace_infer * 1000.0,
+              engaged=sample.controlling,
+              reason=reason,
+              backend=detector.backend_name(),
+            ),
+          )
+        bursting_next = False
+        if two:
+          t_frame = float(diag.get("t_frame", now_mono))
+          propose_at = t_frame + tracker.proposer_period_s(now_mono)
+          if model_reason_pauses_proposer(reason) and extra_s > 0.0:
+            propose_at = max(propose_at, now_mono + extra_s)
+            next_detect = max(next_detect, now_mono + extra_s)
+          next_propose = max(next_propose, propose_at)
+          if reader_ran:
+            read_backoff = 0.0 if model_reason_pauses_proposer(reason) else extra_s
+            (
+              next_mono, burst_left, burst_window, window_i, burst_cluster_s, bursting_next,
+            ) = schedule_after_read(
+              now=now_mono,
+              infer_s=max(0.0, reader_s),
+              period_s=period_s,
+              budget_s=budget_s,
+              cap_s=cap_s,
+              backoff_s=read_backoff,
+              sign_like=False,
+              window_used=pending_window,
+              window_count=1,
+              burst_left=0,
+              burst_window=0,
+              burst_cluster_s=0.0,
+              spans=duty_spans,
+            )
+            duty_spans.append((now_mono, reader_s))
+            duty_spans = [(end, dur) for end, dur in duty_spans if now_mono - float(end) <= DUTY_WINDOW_S]
+            next_detect = max(next_detect, next_mono)
+        else:
+          (
+            next_mono, burst_left, burst_window, window_i, burst_cluster_s, bursting_next,
+          ) = schedule_after_read(
+            now=now_mono,
+            infer_s=outcome.infer_s,
+            period_s=period_s,
+            budget_s=budget_s,
+            cap_s=cap_s,
+            backoff_s=extra_s,
+            sign_like=sign_burst_trigger(diag, raw),
+            window_used=pending_window,
+            window_count=2,
+            burst_left=burst_left,
+            burst_window=burst_window,
+            burst_cluster_s=burst_cluster_s,
+            spans=duty_spans,
+          )
+          duty_spans.append((now_mono, outcome.infer_s))
+          duty_spans = [(end, dur) for end, dur in duty_spans if now_mono - float(end) <= DUTY_WINDOW_S]
+          next_detect = max(next_detect, next_mono)
         if bursting_next and not scheduled_backoff:
           scheduled_reason = "burst"
         err = f" err={outcome.error}" if outcome.error else ""
@@ -1686,7 +1780,9 @@ def main():
                 logger.write(rec)
       if second_look.frames_left <= 0 or now_mono > second_look.deadline:
         second_look = None
-    elif sample.allow_detect and now_mono >= next_detect and not slot.busy:
+    elif sample.allow_detect and not slot.busy and now_mono >= (
+      next_propose if proposer.ok and detector.onnx is not None else next_detect
+    ):
       in_holdoff = False
       buf = client.recv(timeout_ms=VISION_TIMEOUT_MS)
       # Engage can happen during the vision wait — re-read before ONNX.
@@ -1709,7 +1805,7 @@ def main():
         stopped_skip = False
         if use_two and not two_stage.proposals_allowed(speed_ms):
           # Stopped: no proposer, no read. Holds / plate unchanged.
-          next_detect = now_mono + two_period_s
+          next_propose = now_mono + two_period_s
           last_skip_reason = "stopped"
           if now_mono - last_stopped_log >= INFER_LOG_PERIOD_S:
             cloudlog.info("speedsignd two-stage skip stopped v=%.1f", float(speed_ms or 0.0))
@@ -1719,19 +1815,17 @@ def main():
           nv12 = None
           two_job = None
         elif use_two:
+          # Copy the strip and a padded bank, then let the worker propose,
+          # update the tracker, and subcrop the measured box. The crop is
+          # not the box predicted from the previous frame.
+          fw = int(getattr(buf, "width", 1928) or 1928)
+          fh = int(getattr(buf, "height", 1208) or 1208)
           strip = copy_nv12_rect(buf, two_stage.STRIP_RECT)
+          bank = copy_nv12_rect(buf, two_stage.frame_bank_rect(fw, fh))
           t_frame = time.monotonic()
-          cand = tracker.capture_candidate(t_frame)
-          cap = None
-          cap_rect = None
-          if cand is not None:
-            cap_rect = two_stage.capture_rect(
-              cand.predicted(t_frame), int(getattr(buf, "width", 1928) or 1928),
-              int(getattr(buf, "height", 1208) or 1208),
-            )
-            cap = copy_nv12_rect(buf, cap_rect)
-          nv12 = cap if cap is not None else strip
-          two_job = (strip, cap, None if cand is None else cand.tid, cap_rect, t_frame)
+          allow_read = now_mono >= next_detect
+          nv12 = strip
+          two_job = None if strip is None else (strip, bank, allow_read, t_frame)
         else:
           nv12 = copy_nv12_detect_crop(buf, which) if buf is not None else None
           two_job = None
@@ -1781,27 +1875,44 @@ def main():
             if not detector.compile_allowed_now():
               raise RuntimeError("compile-blocked while driving")
             assert job is not None
-            strip_c, cap_c, tid, rect, t_fr = job
+            strip_c, bank_c, allow_read, t_fr = job
             t0 = time.monotonic()
             props = proposer.propose(strip_c)
             prop_ms = (time.monotonic() - t0) * 1000.0
+            cand = two_stage.select_read_target(
+              tracker, props, t_fr, allow_read=bool(allow_read),
+            )
+            cap_c = None
+            rect = None
+            tid = None
+            if cand is not None and bank_c is not None:
+              rect = two_stage.capture_rect(
+                cand.crop_box(), int(bank_c.frame_w), int(bank_c.frame_h),
+              )
+              cap_c = subcrop_nv12(bank_c, rect)
+              tid = None if cap_c is None else cand.tid
             signs_r: list = []
             written_r: list = []
             read_diag = None
             jpg = None
+            reader_s = 0.0
             if cap_c is not None:
+              t_r = time.monotonic()
               signs_r, written_r = detect_if_allowed(
                 cap_c.y, lat, lon, bearing, gps_ok, detector, logger, time.monotonic(),
                 controlling=engaged_now, rgb=None, debounce=debounce, nv12=cap_c,
                 disk_stalled=stalled,
               )
+              reader_s = time.monotonic() - t_r
               read_diag = detector.diag_dict()
               if signs_r and not (engaged_now and stalled):
                 jpg = two_stage.crop_jpeg_bytes(cap_c)
+              signs_r = [replace(s, track_id=tid) for s in signs_r]
             d = dict(read_diag or {})
             d.update(
               two_stage=1, t_frame=t_fr, props=props, prop_ms=round(prop_ms, 1),
               read_tid=tid, read_diag=read_diag, read_jpg=jpg,
+              tracker_applied=1, reader_ran=cap_c is not None, reader_s=reader_s,
               read_jpg_meta=None if cap_c is None else dict(
                 t=round(time.time(), 3),  # noqa: TID251
                 track_id=tid, crop=list(rect) if rect else None,
@@ -1826,6 +1937,8 @@ def main():
           if not permitted:
             last_skip_reason = "compile-wait"
             next_detect = max(next_detect, time.monotonic() + 1.0)
+            if two_job is not None:
+              next_propose = max(next_propose, time.monotonic() + 1.0)
             if now_mono - last_gate_log >= INFER_LOG_PERIOD_S:
               cloudlog.warning(
                 "%s",
@@ -1842,9 +1955,17 @@ def main():
             pending_backoff = scheduled_backoff
             pending_reason = scheduled_reason
             last_read_start = now_start
-            # Floor at one period. The outcome handler then applies the
-            # 3× idle duty cycle, which is longer whenever the infer is.
-            next_detect = now_start + (two_period_s if two_job is not None else period_s)
+            if two_job is not None:
+              # Floor at the fastest proposer period so a dropped outcome
+              # cannot spin. The outcome handler sets the real 2 Hz / 5 Hz
+              # cadence and, if a read ran, the reader duty gap. Do not
+              # push next_detect here: a proposer tick must not black out
+              # the next sharp read.
+              next_propose = max(next_propose, now_start + (1.0 / two_stage.PROPOSER_BURST_HZ))
+            else:
+              # Floor at one period. The outcome handler then applies the
+              # 3× idle duty cycle, which is longer whenever the infer is.
+              next_detect = now_start + period_s
             last_skip_reason = "ok"
           else:
             last_skip_reason = detect_skip_reason(
@@ -1854,7 +1975,13 @@ def main():
           last_skip_reason = detect_skip_reason(
             connected=True, onnx=False, busy=slot.busy, holdoff=False,
           )
-    elif sample.allow_detect and (slot.busy or (next_detect > 0 and now_mono < next_detect)):
+    elif sample.allow_detect and (
+      slot.busy
+      or (next_detect > 0 and now_mono < next_detect and not (proposer.ok and detector.onnx is not None))
+      or (
+        proposer.ok and detector.onnx is not None and next_propose > 0 and now_mono < next_propose
+      )
+    ):
       last_skip_reason = detect_skip_reason(
         connected=True, onnx=detector.onnx is not None, busy=slot.busy, holdoff=True,
       )

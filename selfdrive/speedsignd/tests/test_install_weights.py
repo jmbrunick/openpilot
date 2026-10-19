@@ -25,12 +25,18 @@ from openpilot.selfdrive.speedsignd.install import (
   weights_status_summary,
 )
 from openpilot.selfdrive.speedsignd.weights_manifest import (
+  ASSET_BYTES,
   ASSET_SHA256,
+  COMPATIBLE_SHA256,
+  FALLBACK_BYTES,
+  FALLBACK_SHA256,
   ORT_BYTES,
   ORT_SHA256,
   ORT_URL,
   ORT_VERSION,
   ORT_WHEEL,
+  V3_BYTES,
+  V3_SHA256,
   release_asset_url,
 )
 from scripts.nap.install_speed_sign_weights import main
@@ -83,9 +89,15 @@ def test_cli_download_file_url(tmp_path):
 
 def test_manifest_points_at_github_release():
   url = release_asset_url()
-  assert "speed-sign-onnx-v3" in url
+  assert "speed-sign-onnx-v4" in url
   assert url.endswith("speed_sign.onnx")
-  assert ASSET_SHA256 == "45e8d444df547a1c9176fd904991e39c2ab8ae1a7624213178ce215b1ec6fb13"
+  assert ASSET_SHA256 == "3774f74e260c150a08ab7028b1dd8eaf0d58377ae7695dfd4a8f10e3c85627a9"
+  assert ASSET_BYTES == 12658972
+  assert V3_SHA256 == "45e8d444df547a1c9176fd904991e39c2ab8ae1a7624213178ce215b1ec6fb13"
+  assert V3_BYTES == 12658971
+  assert FALLBACK_SHA256 == "1131200b7fe2d400596e09d7680fc3a26a08dcd8952acfdf261170bdb22d3d28"
+  assert FALLBACK_BYTES == 12658953
+  assert COMPATIBLE_SHA256 == (ASSET_SHA256, V3_SHA256, FALLBACK_SHA256)
 
 
 def test_weights_status_missing_and_installed(tmp_path):
@@ -346,7 +358,7 @@ def test_fetch_falls_back_to_v2_when_v3_missing(tmp_path, monkeypatch):
 
   def fake_download(url, dst):
     calls.append(url)
-    if "speed-sign-onnx-v3" in url:
+    if "speed-sign-onnx-v4" in url or "speed-sign-onnx-v3" in url:
       raise OSError("404")
     with open(dst, "wb") as f:
       f.write(body)
@@ -355,10 +367,88 @@ def test_fetch_falls_back_to_v2_when_v3_missing(tmp_path, monkeypatch):
   monkeypatch.delenv("NAP_SPEED_SIGN_ONNX_URL", raising=False)
   monkeypatch.setattr(inst, "download_url", fake_download)
   monkeypatch.setattr(inst, "FALLBACK_SHA256", hashlib.sha256(body).hexdigest())
+  monkeypatch.setattr(inst, "FALLBACK_BYTES", len(body))
   dest = tmp_path / "speed_sign.onnx"
   inst.fetch_and_install(dest=str(dest))
   assert dest.read_bytes() == body
-  assert "speed-sign-onnx-v3" in calls[0] and "speed-sign-onnx-v2" in calls[1]
+  assert "speed-sign-onnx-v4" in calls[0]
+  assert "speed-sign-onnx-v3" in calls[1]
+  assert "speed-sign-onnx-v2" in calls[2]
+
+
+def test_fetch_uses_v3_when_v4_missing(tmp_path, monkeypatch):
+  from openpilot.selfdrive.speedsignd import install as inst
+  body = b"v3-bytes"
+  calls = []
+
+  def fake_download(url, dst):
+    calls.append(url)
+    if "speed-sign-onnx-v4" in url:
+      raise OSError("404")
+    with open(dst, "wb") as f:
+      f.write(body)
+    return len(body)
+
+  monkeypatch.delenv("NAP_SPEED_SIGN_ONNX_URL", raising=False)
+  monkeypatch.setattr(inst, "download_url", fake_download)
+  monkeypatch.setattr(inst, "V3_SHA256", hashlib.sha256(body).hexdigest())
+  monkeypatch.setattr(inst, "V3_BYTES", len(body))
+  dest = tmp_path / "speed_sign.onnx"
+  inst.fetch_and_install(dest=str(dest))
+  assert dest.read_bytes() == body
+  assert len(calls) == 2
+  assert "speed-sign-onnx-v4" in calls[0] and "speed-sign-onnx-v3" in calls[1]
+
+
+def test_fetch_rejects_wrong_size_and_tries_next(tmp_path, monkeypatch):
+  from openpilot.selfdrive.speedsignd import install as inst
+  bad = b"not-the-published-v4"
+  good = b"v3-ok"
+  calls = []
+
+  def fake_download(url, dst):
+    calls.append(url)
+    data = bad if "speed-sign-onnx-v4" in url else good
+    with open(dst, "wb") as f:
+      f.write(data)
+    return len(data)
+
+  monkeypatch.delenv("NAP_SPEED_SIGN_ONNX_URL", raising=False)
+  monkeypatch.setattr(inst, "download_url", fake_download)
+  monkeypatch.setattr(inst, "ASSET_BYTES", len(bad) + 5)
+  monkeypatch.setattr(inst, "V3_SHA256", hashlib.sha256(good).hexdigest())
+  monkeypatch.setattr(inst, "V3_BYTES", len(good))
+  dest = tmp_path / "speed_sign.onnx"
+  inst.fetch_and_install(dest=str(dest))
+  assert dest.read_bytes() == good
+  assert "speed-sign-onnx-v4" in calls[0] and "speed-sign-onnx-v3" in calls[1]
+
+
+def test_install_replaces_v3_file_with_v4(tmp_path, monkeypatch):
+  """An already-installed v3 stays loadable, and Install weights replaces it."""
+  from openpilot.selfdrive.speedsignd import install as inst
+  dest = tmp_path / "speed_sign.onnx"
+  dest.write_bytes(b"v3" * 600_000)
+  v3 = hashlib.sha256(dest.read_bytes()).hexdigest()
+  monkeypatch.setattr(inst, "COMPATIBLE_SHA256", (ASSET_SHA256, v3, FALLBACK_SHA256))
+  assert inst.weights_loadable(str(dest))
+  assert not inst.weights_sha_matches(str(dest))
+  assert inst.weights_status_summary(str(dest)) == "Out of date"
+
+  body = b"v4-weights"
+  def fake_download(url, dst):
+    assert "speed-sign-onnx-v4" in url
+    with open(dst, "wb") as f:
+      f.write(body)
+    return len(body)
+
+  monkeypatch.delenv("NAP_SPEED_SIGN_ONNX_URL", raising=False)
+  monkeypatch.setattr(inst, "download_url", fake_download)
+  digest = hashlib.sha256(body).hexdigest()
+  monkeypatch.setattr(inst, "ASSET_SHA256", digest)
+  monkeypatch.setattr(inst, "ASSET_BYTES", len(body))
+  inst.fetch_and_install(dest=str(dest), sha256=digest)
+  assert dest.read_bytes() == body
 
 
 def test_fetch_no_fallback_for_explicit_url(tmp_path, monkeypatch):

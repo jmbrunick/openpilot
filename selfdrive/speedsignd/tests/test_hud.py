@@ -11,6 +11,7 @@ from openpilot.selfdrive.speedsignd.hud import (
   AGREE_WINDOW_S,
   HUD_DETECT_PAUSED_TEXT,
   HUD_HOLD_S,
+  HOLD_OVERRIDE_CONF,
   SOLO_CONF,
   SOLO_CONTRADICT_S,
   HUD_MISSING_WEIGHTS_TEXT,
@@ -265,16 +266,11 @@ def test_process_frame_hud_blank_when_yolo_65_refine_fails(tmp_path):
   signs, written = process_frame(
     y, 45.0, -95.0, 0.0, True, _Det(), log, now=1.0, debounce=debounce,
   )
-  # Class-only ≥0.70 is offered to the plate. It is not a JSONL row.
-  assert signs and signs[0].mph == 65
+  # Class-only below SOLO_CONF is not offered to the plate and is not a JSONL row.
+  assert signs == []
   assert written == []
   assert debounce.last_raw and debounce.last_raw[0].mph == 65
-  live, mph, _ = LiveSignHold().update(signs, 1.0)
-  assert live and mph == 65
-  live, mph, _ = LiveSignHold().update(
-    [SpeedSign(mph=65, conf=0.60, bbox=(0, 0, 8, 8), class_mph=65, class_conf=0.60)],
-    2.0,
-  )
+  live, mph, _ = LiveSignHold().update(debounce.last_raw, 1.0)
   assert not live and mph == 0
 
 
@@ -297,7 +293,8 @@ def test_hold_duration_constant():
   assert HUD_HOLD_S == 45.0
   assert AGREE_READS == 2
   assert AGREE_WINDOW_S == 12.0
-  assert SOLO_CONF == 0.70
+  assert SOLO_CONF == 0.85
+  assert HOLD_OVERRIDE_CONF == 0.85
   assert SOLO_CONTRADICT_S == 3.0
 
 
@@ -338,12 +335,18 @@ def test_hold_lasts_across_more_than_10s_empty_ticks():
 
 
 def test_yolo_65_refine_fail_lights_when_solo_confident():
-  """One class-only read at ≥0.70 lights. Below that, the plate stays blank."""
-  bad = SpeedSign(
-    mph=65, conf=0.73, bbox=(0, 0, 10, 10),
-    class_mph=65, class_conf=0.73, refine_mph=None,
+  """One class-only read at ≥ SOLO_CONF lights. Below that, the plate stays blank."""
+  mid = SpeedSign(
+    mph=65, conf=0.80, bbox=(0, 0, 10, 10),
+    class_mph=65, class_conf=0.80, refine_mph=None,
   )
-  assert accepted_hud_sign(bad) is None
+  assert accepted_hud_sign(mid) is None
+  live, mph, _ = LiveSignHold().update([mid], 1.0)
+  assert not live and mph == 0
+  bad = SpeedSign(
+    mph=65, conf=0.86, bbox=(0, 0, 10, 10),
+    class_mph=65, class_conf=0.86, refine_mph=None,
+  )
   live, mph, _ = LiveSignHold().update([bad], 1.0)
   assert live and mph == 65
   low = SpeedSign(
@@ -686,14 +689,20 @@ def test_ui_and_cereal_wire_live_sign():
 
 
 def test_route_181_solo_reads_light_and_a_contradiction_clears():
-  """45@0.60 stays dark. 0.77 / 0.75 / 0.89 / 0.81 light unless contradicted in 3 s."""
-  samples = ((45, 0.60, False), (45, 0.77, True), (30, 0.75, True), (45, 0.89, True), (30, 0.81, True))
+  """Below SOLO_CONF a single class read stays dark. 0.89 lights unless contradicted."""
+  samples = ((45, 0.60, False), (45, 0.77, False), (30, 0.75, False), (45, 0.89, True), (30, 0.81, False))
   for mph, conf, lights in samples:
     sign = SpeedSign(mph=mph, conf=conf, bbox=(0, 0, 10, 10), class_mph=mph, class_conf=conf)
     live, got, _ = LiveSignHold().update([sign], 1.0)
     assert live is lights
     if lights:
       assert got == mph
+  # Two agreeing sub-threshold reads still light.
+  agreed = LiveSignHold()
+  pair = [_sign(30, 0.77, class_mph=30, refine_mph=30, refine_conf=0.77)]
+  assert not agreed.update(pair, 0.0)[0]
+  live, mph, _ = agreed.update(pair, 0.4)
+  assert live and mph == 30
   h = LiveSignHold()
   lone = SpeedSign(mph=45, conf=0.89, bbox=(0, 0, 10, 10), class_mph=45, class_conf=0.89)
   assert h.update([lone], 0.0)[1] == 45
@@ -705,17 +714,57 @@ def test_route_181_solo_reads_light_and_a_contradiction_clears():
   weak = SpeedSign(mph=30, conf=0.50, bbox=(0, 0, 10, 10), class_mph=30, class_conf=0.50)
   live, mph, _ = cleared.update([weak], 5.0 + 1.0)
   assert not live and mph == 0
+  # 0.81 cancels the provisional solo but is not itself strong enough to light.
+  cancelled = LiveSignHold()
+  cancelled.update([lone], 8.0)
+  below = SpeedSign(mph=30, conf=0.81, bbox=(0, 0, 10, 10), class_mph=30, class_conf=0.81)
+  live, mph, _ = cancelled.update([below], 8.0 + 1.0)
+  assert not live and mph == 0
   swapped = LiveSignHold()
   swapped.update([lone], 8.0)
-  other = SpeedSign(mph=30, conf=0.81, bbox=(0, 0, 10, 10), class_mph=30, class_conf=0.81)
+  other = SpeedSign(mph=30, conf=0.86, bbox=(0, 0, 10, 10), class_mph=30, class_conf=0.86)
   live, mph, _ = swapped.update([other], 8.0 + 1.0)
   assert live and mph == 30
   held = LiveSignHold()
-  pair = [_sign(50, 0.60, class_mph=50, refine_mph=50, refine_conf=0.60)]
-  held.update(pair, 1.0)
-  held.update(pair, 1.2)
+  pair50 = [_sign(50, 0.60, class_mph=50, refine_mph=50, refine_conf=0.60)]
+  held.update(pair50, 1.0)
+  held.update(pair50, 1.2)
   live, mph, _ = held.update([other], 2.0)
   assert live and mph == 50
+
+
+def test_new_track_solo_replaces_held_plate_same_track_does_not():
+  """A held plate needs two votes, unless a different track solos at HOLD_OVERRIDE_CONF."""
+  h = LiveSignHold()
+  first = SpeedSign(
+    mph=40, conf=0.90, bbox=(0, 0, 10, 10),
+    class_mph=40, class_conf=0.90, refine_mph=40, refine_conf=0.90, track_id=1,
+  )
+  h.update([first], 1.0)
+  live, mph, _ = h.update([first], 1.2)
+  assert live and mph == 40 and not h.provisional
+  same = SpeedSign(
+    mph=55, conf=0.95, bbox=(0, 0, 10, 10),
+    class_mph=55, class_conf=0.95, refine_mph=None, track_id=1,
+  )
+  live, mph, _ = h.update([same], 2.0)
+  assert live and mph == 40
+  new = SpeedSign(
+    mph=30, conf=0.86, bbox=(0, 0, 10, 10),
+    class_mph=30, class_conf=0.86, refine_mph=None, track_id=7,
+  )
+  live, mph, conf = h.update([new], 2.4)
+  assert live and mph == 30 and conf == 0.86 and h.provisional and h.track_id == 7
+  # A solo under the override floor, even on a new track, does not change the plate.
+  weak_new = SpeedSign(
+    mph=45, conf=0.80, bbox=(0, 0, 10, 10),
+    class_mph=45, class_conf=0.80, refine_mph=None, track_id=8,
+  )
+  # 0.80 is below SOLO_CONF, so it is not a solo. It is a sighting, which
+  # only extends. Use a locked hold so a contradict does not clear it.
+  h.provisional = False
+  live, mph, _ = h.update([weak_new], 2.6)
+  assert live and mph == 30
   clash = SpeedSign(
     mph=50, conf=0.90, bbox=(0, 0, 10, 10),
     class_mph=45, class_conf=0.90, refine_mph=50, refine_conf=0.90,

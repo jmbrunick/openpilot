@@ -262,6 +262,38 @@ def copy_nv12_rect(buf, rect: tuple[int, int, int, int]) -> Nv12DetectCrop | Non
   return Nv12DetectCrop(y=y, uv=uv, frame_w=frame_w, frame_h=frame_h, crop=(cx, cy, cw, ch))
 
 
+def subcrop_nv12(parent: Nv12DetectCrop, rect: tuple[int, int, int, int]) -> Nv12DetectCrop | None:
+  """Slice a frame-coordinate rect out of an already-copied NV12 crop.
+
+  Used so the sharp read can be chosen after the proposer runs, without
+  holding the VisionBuf or running the proposer twice.
+  """
+  px, py, pw, ph = (int(v) for v in parent.crop)
+  x, y, w, h = (int(v) for v in rect)
+  x -= x % 2
+  y -= y % 2
+  w -= w % 2
+  h -= h % 2
+  if w < 2 or h < 2:
+    return None
+  x0 = x - px
+  y0 = y - py
+  if x0 < 0 or y0 < 0 or x0 + w > pw or y0 + h > ph:
+    return None
+  if parent.y.shape[0] < y0 + h or parent.y.shape[1] < x0 + w:
+    return None
+  y_plane = np.ascontiguousarray(parent.y[y0:y0 + h, x0:x0 + w]).copy()
+  uv = None
+  if parent.uv is not None and parent.uv.size:
+    uy0 = y0 // 2
+    uy1 = (y0 + h) // 2
+    if uy1 > uy0 and parent.uv.shape[0] >= uy1 and parent.uv.shape[1] >= x0 + w:
+      plane = parent.uv[uy0:uy1, x0:x0 + w]
+      if plane.size and plane.shape[1] >= 2:
+        uv = np.ascontiguousarray(plane).copy()
+  return Nv12DetectCrop(y=y_plane, uv=uv, frame_w=parent.frame_w, frame_h=parent.frame_h, crop=(x, y, w, h))
+
+
 def copy_nv12_detect_crop(buf, which: int = 0) -> Nv12DetectCrop | None:
   """Copy one detect tile. which=0 is the lower window, 1 is the upper.
 

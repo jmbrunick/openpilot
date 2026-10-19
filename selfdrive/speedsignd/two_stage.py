@@ -6,13 +6,16 @@ strip x 964-1928, y 525-875 of the 1928x1208 ROAD frame, resized to 352x128.
 2 m/s (GPS speed / modelV2 velocity; no carState subscriber).
 
 Stage 2 (read): proposals are linked into tracks (IoU or center distance).
-A track must be seen twice. When it is near its largest (box height >= 60 px,
-near the right edge, growth has stopped, or the track was lost) we copy one
-square native crop around it (3x the box, clamped 240-480 px), letterbox it to
-320 and run the existing v2 detector + refine_mph digit check once (up to two
-retries on later frames if nothing >= YOLO_MIN_CONF). A track whose read is
-neg_yellow / neg_other is suppressed and never read again. HUD rules
-(LiveSignHold / SignDebounce) are unchanged; reads feed them like before.
+A track must be seen twice, unless one proposal is at/above
+TRACK_SOLO_PROPOSAL_CONF. The read crop is the track box AFTER this frame's
+proposals are applied (the measured box, not the extrapolated one). When the
+track is near its largest (box height >= 60 px, near the right edge, growth
+has stopped, or the track was lost) we copy one square native crop around it
+(3x the box, clamped 240-480 px), letterbox it to 320 and run the v3 detector
++ digit check. A hit may be read once more (READS_AFTER_MPH) so a second HUD
+vote can land; a neg_yellow / neg_other read is suppressed and never read again.
+While any 1-hit track is alive the proposer runs at PROPOSER_BURST_HZ, then
+returns to PROPOSER_HZ. Proposer time is not part of the reader duty budget.
 
 Weights: Release speed-sign-proposer-v1 / sign_proposer.onnx (Install weights).
 When the proposer file is missing, speedsignd keeps the legacy fixed tiles.
@@ -34,17 +37,28 @@ PROPOSER_IN_H = 128
 PROPOSER_CONF = 0.15
 PROPOSER_IOU = 0.5
 PROPOSER_HZ = 2.0
+# While a 1-hit track is alive. 5 Hz * ~110 ms ≈ 55% of core 2, and only
+# until the second hit (or the track expires). Set equal to PROPOSER_HZ to
+# disable the burst.
+PROPOSER_BURST_HZ = 5.0
 PROPOSER_MIN_SPEED_MS = 2.0
 
 TRACK_IOU = 0.3
 TRACK_MAX_GAP_S = 1.6
 TRACK_MIN_HITS = 2
+# One proposal at/above this may be read without a second sighting.
+# Above 1.0 disables the bypass (seen-twice only). This is the proposer
+# score, not YOLO_MIN_CONF.
+TRACK_SOLO_PROPOSAL_CONF = 0.85
 CAPTURE_MIN_H = 60
 CAPTURE_EDGE_X = 1928 - 150
 CAPTURE_MIN_SIDE = 240
 CAPTURE_MAX_SIDE = 480
 CAPTURE_SCALE = 3.0
 MAX_READS_PER_TRACK = 3
+# Sharp reads allowed after the first mph, so a second HUD vote can land
+# on the same sign. 0 restores "done on the first mph".
+READS_AFTER_MPH = 1
 NEG_NAMES = ("neg_yellow", "neg_other")
 NEG_SUPPRESS_CONF = 0.40
 
@@ -179,18 +193,27 @@ class Track:
   hits: int = 1
   peak_h: float = 0.0
   reads: int = 0
+  got_mph: bool = False
   neg: bool = False
   done: bool = False
   history: list = field(default_factory=list)
 
   def predicted(self, t: float) -> tuple[float, float, float, float]:
-    """Constant growth / drift from the last two boxes."""
+    """Constant growth / drift from the last two boxes.
+
+    Not the read crop. Extrapolating past the last hit is what put the
+    sharp read beside the sign. crop_box() is the measurement.
+    """
     if len(self.history) < 2:
       return self.box
     (t0, b0), (t1, b1) = self.history[-2], self.history[-1]
     dt = max(1e-3, t1 - t0)
     k = min(2.0, (t - t1) / dt)
     return tuple(b1[i] + (b1[i] - b0[i]) * k for i in range(4))  # type: ignore[return-value]
+
+  def crop_box(self) -> tuple[float, float, float, float]:
+    """Last measured box, in frame pixels. The sharp-read crop uses this."""
+    return self.box
 
 
 class SignTracker:
@@ -231,27 +254,98 @@ class SignTracker:
     self.tracks = [tr for tr in self.tracks if t - tr.last_t <= TRACK_MAX_GAP_S * 2 and not (tr.done and t - tr.last_t > 1.0)]
     return self.tracks
 
+  def _readable(self, tr: Track) -> bool:
+    if tr.hits >= TRACK_MIN_HITS:
+      return True
+    return tr.hits >= 1 and tr.score >= TRACK_SOLO_PROPOSAL_CONF
+
   def capture_candidate(self, t: float) -> Track | None:
-    """Track due for its sharp read now, or None. Biggest first."""
+    """Track due for its sharp read now, or None. Biggest measured box first.
+
+    The box is the last measurement (after update), not predicted().
+    """
     due = []
     for tr in self.tracks:
-      if tr.done or tr.neg or tr.hits < TRACK_MIN_HITS or tr.reads >= MAX_READS_PER_TRACK:
+      if tr.done or tr.neg or tr.reads >= MAX_READS_PER_TRACK or not self._readable(tr):
         continue
-      x, y, w, h = tr.predicted(t)
+      x, _y, w, h = tr.box
       lost = t - tr.last_t > 0.6
       if h >= CAPTURE_MIN_H or x + w >= CAPTURE_EDGE_X or lost or (tr.reads > 0):
         due.append(tr)
     if not due:
       return None
-    return max(due, key=lambda tr: tr.predicted(t)[3])
+    return max(due, key=lambda tr: tr.box[3])
+
+  def wants_fast_proposer(self, t: float) -> bool:
+    """True while a not-yet-confirmed track is still inside the gap window."""
+    for tr in self.tracks:
+      if tr.done or tr.neg or tr.hits >= TRACK_MIN_HITS:
+        continue
+      if t - tr.last_t <= TRACK_MAX_GAP_S:
+        return True
+    return False
+
+  def proposer_period_s(self, t: float) -> float:
+    hz = PROPOSER_BURST_HZ if self.wants_fast_proposer(t) else PROPOSER_HZ
+    if hz <= 0.0:
+      hz = PROPOSER_HZ
+    return 1.0 / float(hz)
 
   def mark_read(self, tr: Track, *, got_mph: bool, neg: bool) -> None:
     tr.reads += 1
+    if got_mph:
+      tr.got_mph = True
     if neg:
       tr.neg = True
       tr.done = True
-    elif got_mph or tr.reads >= MAX_READS_PER_TRACK:
+    elif tr.reads >= MAX_READS_PER_TRACK:
       tr.done = True
+    elif tr.got_mph and tr.reads >= 1 + READS_AFTER_MPH:
+      tr.done = True
+
+
+def select_read_target(tracker: SignTracker, props, t: float, *, allow_read: bool) -> Track | None:
+  """Apply this frame's proposals, then pick the sharp-read track.
+
+  Call this before cropping. The returned track's crop_box() is the
+  measurement from `props`, not the box predicted from older hits.
+  `allow_read` False still updates the tracker (so the seen-twice gate
+  and the burst cadence advance) and returns None.
+  """
+  tracker.update(props, t)
+  if not allow_read:
+    return None
+  return tracker.capture_candidate(t)
+
+
+def frame_bank_rect(frame_w: int = 1928, frame_h: int = 1208) -> tuple[int, int, int, int]:
+  """Strip expanded by half the max read crop, even-aligned, clamped.
+
+  The worker proposes on STRIP_RECT, then subcrops the sharp read from
+  this bank of the same frame. No second proposer pass.
+  """
+  x, y, w, h = STRIP_RECT
+  pad = CAPTURE_MAX_SIDE // 2
+  x0 = int(x) - pad
+  y0 = int(y) - pad
+  x1 = int(x) + int(w) + pad
+  y1 = int(y) + int(h) + pad
+  x0 -= x0 % 2
+  y0 -= y0 % 2
+  if x1 % 2:
+    x1 += 1
+  if y1 % 2:
+    y1 += 1
+  fw, fh = int(frame_w), int(frame_h)
+  x0 = max(0, min(x0, max(0, fw - 2)))
+  y0 = max(0, min(y0, max(0, fh - 2)))
+  x1 = min(fw, max(x0 + 2, x1))
+  y1 = min(fh, max(y0 + 2, y1))
+  bw = x1 - x0
+  bh = y1 - y0
+  bw -= bw % 2
+  bh -= bh % 2
+  return x0, y0, max(2, bw), max(2, bh)
 
 
 def capture_rect(box, frame_w: int = 1928, frame_h: int = 1208) -> tuple[int, int, int, int]:
