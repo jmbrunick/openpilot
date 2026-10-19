@@ -120,11 +120,16 @@ def test_debounce_constants_match_duty_gap():
 
 
 def test_update_split_one_unrefined_read_does_not_confirm():
-  """Class-only ≥0.70 is handed to the plate. It still does not write JSONL."""
+  """Class-only at/above SOLO_CONF is handed to the plate. It still does not write JSONL."""
+  from openpilot.selfdrive.speedsignd.hud import SOLO_CONF
   d = SignDebounce()
   for i, mph in enumerate((40, 60, 65, 70)):
-    bad = SpeedSign(mph=mph, conf=0.73, bbox=(0, 0, 8, 8), class_mph=mph, class_conf=0.73)
-    split = d.update_split([bad], float(i) * 3.0)
+    below = SpeedSign(mph=mph, conf=0.73, bbox=(0, 0, 8, 8), class_mph=mph, class_conf=0.73)
+    assert d.update_split([below], float(i)).hud == []
+    bad = SpeedSign(
+      mph=mph, conf=SOLO_CONF, bbox=(0, 0, 8, 8), class_mph=mph, class_conf=SOLO_CONF,
+    )
+    split = d.update_split([bad], 10.0 + float(i) * 3.0)
     assert split.hud and split.hud[0].mph == mph
     assert split.confirmed == []
   low = SpeedSign(mph=45, conf=0.60, bbox=(0, 0, 8, 8), class_mph=45, class_conf=0.60)
@@ -150,15 +155,21 @@ def test_contradiction_does_not_confirm_and_two_ocr_frames_do():
 
 
 def test_update_split_one_unrefined_65_is_not_confirmed():
+  from openpilot.selfdrive.speedsignd.hud import SOLO_CONF
   d = SignDebounce()
-  bad = SpeedSign(
+  below = SpeedSign(
     mph=65, conf=0.73, bbox=(0, 0, 8, 8),
     class_mph=65, class_conf=0.73, refine_mph=None,
   )
-  split = d.update_split([bad], 0.0)
+  assert d.update_split([below], 0.0).hud == []
+  bad = SpeedSign(
+    mph=65, conf=SOLO_CONF, bbox=(0, 0, 8, 8),
+    class_mph=65, class_conf=SOLO_CONF, refine_mph=None,
+  )
+  split = d.update_split([bad], 1.0)
   assert split.hud and split.hud[0].mph == 65 and split.confirmed == []
   assert d.last_raw and d.last_raw[0].mph == 65
-  again = d.update_split([bad], 0.3)
+  again = d.update_split([bad], 1.3)
   assert again.confirmed == []
   assert again.hud and again.hud[0].mph == 65
 

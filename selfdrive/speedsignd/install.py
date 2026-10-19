@@ -21,14 +21,20 @@ from urllib.parse import unquote, urlparse
 
 from openpilot.selfdrive.speedsignd.paths import default_onnx_path, default_pylib_dir
 from openpilot.selfdrive.speedsignd.weights_manifest import (
+  ASSET_BYTES,
   ASSET_SHA256,
   COMPATIBLE_SHA256,
+  FALLBACK_BYTES,
   FALLBACK_RELEASE_TAG,
   FALLBACK_SHA256,
   ORT_SHA256,
   ORT_URL,
   ORT_VERSION,
+  RELEASE_TAG,
   USER_AGENT,
+  V3_BYTES,
+  V3_RELEASE_TAG,
+  V3_SHA256,
   release_asset_url,
 )
 
@@ -60,7 +66,7 @@ def weights_sha_matches(path: str | None = None, expected: str | None = None) ->
 
 
 def weights_loadable(path: str | None = None) -> bool:
-  """True for any published sha with the current class map (v3, or v2 fallback)."""
+  """True for any published sha with the current class map (v4, v3, or v2)."""
   path = path or default_onnx_path()
   if not weights_present(path):
     return False
@@ -155,30 +161,49 @@ def download_url(url: str, dest: str) -> int:
   return n
 
 
+def reader_weight_candidates() -> tuple[tuple[str, str, int], ...]:
+  """Newest reader first. Each entry is (release tag, sha256, byte size)."""
+  return (
+    (RELEASE_TAG, ASSET_SHA256, ASSET_BYTES),
+    (V3_RELEASE_TAG, V3_SHA256, V3_BYTES),
+    (FALLBACK_RELEASE_TAG, FALLBACK_SHA256, FALLBACK_BYTES),
+  )
+
+
 def fetch_and_install(
   dest: str | None = None,
   url: str | None = None,
   sha256: str | None = ASSET_SHA256,
 ) -> str:
-  """Download the published ONNX (checksum) onto dest."""
+  """Download the published ONNX (checksum and size) onto dest.
+
+  The settings button and the default CLI always replace whatever is
+  already at dest, so an installed v3 is upgraded to v4 when v4 verifies.
+  """
   dest = dest or default_onnx_path()
   default_src = url is None and not os.environ.get("NAP_SPEED_SIGN_ONNX_URL") and sha256 == ASSET_SHA256
-  url = url or os.environ.get("NAP_SPEED_SIGN_ONNX_URL") or release_asset_url()
-  try:
+  if not default_src:
+    url = url or os.environ.get("NAP_SPEED_SIGN_ONNX_URL") or release_asset_url()
     return _fetch_verify(dest, url, sha256)
-  except Exception:
-    if not default_src:
-      raise
-    # v3 asset unreachable or bad: fall back to the class-compatible v2 asset.
-    return _fetch_verify(dest, release_asset_url(tag=FALLBACK_RELEASE_TAG), FALLBACK_SHA256)
+  errors: list[str] = []
+  for tag, digest, nbytes in reader_weight_candidates():
+    try:
+      return _fetch_verify(dest, release_asset_url(tag=tag), digest, expected_bytes=nbytes)
+    except Exception as e:
+      errors.append(tag + ": " + str(e))
+  raise RuntimeError("speed-sign weights download failed (" + "; ".join(errors) + ")")
 
 
-def _fetch_verify(dest: str, url: str, sha256: str | None) -> str:
+def _fetch_verify(dest: str, url: str, sha256: str | None, expected_bytes: int | None = None) -> str:
   parent = os.path.dirname(os.path.abspath(dest)) or "."
   os.makedirs(parent, exist_ok=True)
   tmp = dest + ".download"
   try:
     download_url(url, tmp)
+    if expected_bytes is not None and os.path.getsize(tmp) != int(expected_bytes):
+      raise RuntimeError(
+        f"size mismatch for {url}: got {os.path.getsize(tmp)}, expected {expected_bytes}"
+      )
     if sha256:
       verify_sha256(tmp, sha256)
     os.replace(tmp, dest)
