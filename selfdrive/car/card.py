@@ -39,6 +39,7 @@ from openpilot.selfdrive.controls.lib.curve_follow import MODE_ACTIVE, MODE_SHAD
 from openpilot.selfdrive.controls.lib.curve_max_hold import CurveMaxHold
 from openpilot.selfdrive.controls.lib.radar_status_log import RadarStatusLogger
 from openpilot.selfdrive.controls.lib.follow_distance import published_cruise_ms
+from openpilot.selfdrive.controls.lib.gap_lock_bump import GapLockBumpCard, card_gap_lock_stalk
 from openpilot.selfdrive.controls.lib.hypermile import (
   FollowStalkGesture, button_event_closer, button_event_released,
   map_target_offset_kph, persist_follow_distance, read_hypermile_params,
@@ -302,6 +303,7 @@ class Car:
     self._pedal_self_write_kph: float | None = None
     self._follow_stalk_mono: float = 0.0
     self._follow_gesture = FollowStalkGesture()
+    self._gap_bump = GapLockBumpCard()
     self._refresh_map_speed_params()
 
     self.is_metric = self.params.get_bool("IsMetric")
@@ -787,16 +789,28 @@ class Car:
     except Exception:
       prev_raw = None
     events = getattr(CS, "buttonEvents", None)
+    detent = self._preap_cruise_detent()
+    button_closer = button_event_closer(events)
+    # Gap lock engaged: a tip steps the locked meters, never MAX or Follow.
+    gap_locked = self._gap_bump.refresh(self.params, detent, button_closer is not None)
+    saw_hold_before = self._follow_gesture.saw_hold
     commit, closer, undo = self._follow_gesture.update(
-      has_lead=has_lead,
-      detent=self._preap_cruise_detent(),
-      button_closer=button_event_closer(events),
+      has_lead=has_lead or gap_locked,
+      detent=detent,
+      button_closer=button_closer,
       button_released=button_event_released(events),
       raw_kph=raw_kph if soft_long else None,
       prev_raw_kph=prev_raw if soft_long else None,
     )
     routed = commit or self._follow_gesture.is_pending or undo is not None
-    if commit and closer is not None and (time.monotonic() - self._follow_stalk_mono) >= 0.25:
+    cooled = (time.monotonic() - self._follow_stalk_mono) >= 0.25
+    if card_gap_lock_stalk(self._gap_bump, self.params, gap_locked=gap_locked,
+                           saw_hold_before=saw_hold_before,
+                           saw_hold_now=self._follow_gesture.saw_hold,
+                           commit=commit, closer=closer):
+      # Each tip is one 1 m step (no Follow cooldown): two quick tips = 2 m.
+      self._follow_stalk_mono = time.monotonic()
+    elif commit and closer is not None and cooled and not gap_locked:
       # CarState.vCruise is still 0 here — card publishes it at the end of
       # the frame. Read the HUD MAX already on the helper.
       v_cruise_ms = published_cruise_ms(self.v_cruise_helper.v_cruise_kph, V_CRUISE_UNSET)

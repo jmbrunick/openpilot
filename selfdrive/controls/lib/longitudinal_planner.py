@@ -51,6 +51,7 @@ from openpilot.selfdrive.controls.lib.gap_lock import (
   gap_lock_param_enabled,
   stalk_follow_exit,
 )
+from openpilot.selfdrive.controls.lib.gap_lock_bump import GapLockBumpRouter, planner_gap_lock_step
 from openpilot.selfdrive.controls.lib.lead_approach import (
   lead_approach_track_ok,
   lead_close_should_cap,
@@ -235,6 +236,7 @@ class LongitudinalPlanner:
     self.unified_a_target = 0.0
     self._unified = UnifiedLeadController()
     self._gap_lock = GapLockLatch()
+    self._gap_bump = GapLockBumpRouter()
     self._gap_lock_enabled = False
     self._lead_leave = LeadLeavingEstimator()
     self.lead_leave_w = 0.0
@@ -867,19 +869,25 @@ class LongitudinalPlanner:
         y_rel = float(lead.yRel)
       except (TypeError, ValueError, AttributeError):
         y_rel = None
-    self._gap_lock.update(
-      self.dt,
-      enabled=self._gap_lock_enabled is True,
-      long_on=long_on,
-      seq=seq,
-      status=status,
-      radar=radar,
-      track_id=track_id,
-      d_rel=d_rel,
-      stalk_exit=stalk_follow_exit(cs),
-      holding=holding,
-      y_rel=y_rel,
-    )
+    def _latch(stalk_exit):
+      self._gap_lock.update(
+        self.dt,
+        enabled=self._gap_lock_enabled is True,
+        long_on=long_on,
+        seq=seq,
+        status=status,
+        radar=radar,
+        track_id=track_id,
+        d_rel=d_rel,
+        stalk_exit=stalk_exit,
+        holding=holding,
+        y_rel=y_rel,
+      )
+    # Locked: an up/down tip steps the meters 1 m; a full press still clears.
+    new_m = planner_gap_lock_step(self._gap_bump, self._gap_lock, self._params, self.dt,
+                                  stalk_press=stalk_follow_exit(cs), update_latch=_latch)
+    if new_m is not None:
+      cloudlog.info("gap lock bump: %.0f m", new_m)
 
   def _gap_set_override(self, lead, live: bool, held: bool):
     """Locked meters, or the in-hold median, for this radar id.
