@@ -28,5 +28,8 @@ here = Dir('.').abspath
 onnx = File('models/animal_yolox_nano.onnx').abspath
 pkl = os.path.join(here, 'models', 'animal_yolox_nano_tinygrad.pkl')
 pythonpath = 'PYTHONPATH="${PYTHONPATH}:' + env.Dir("#tinygrad_repo").abspath + '"'
-env.Command(pkl, [onnx] + tinygrad_files,
-            f'{pythonpath} {flags} python3 {env.Dir("#tinygrad_repo").abspath}/examples/openpilot/compile3.py {onnx} {pkl}')
+# No model committed yet (log-only stub stage): skip, so the main build never
+# fails on a missing ONNX. animaldetd then logs status "no_model" and idles.
+if os.path.isfile(onnx):
+  env.Command(pkl, [onnx] + tinygrad_files,
+              f'{pythonpath} {flags} python3 {env.Dir("#tinygrad_repo").abspath}/examples/openpilot/compile3.py {onnx} {pkl}')

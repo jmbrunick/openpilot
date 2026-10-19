@@ -56,3 +56,10 @@ def test_no_agpl_code_or_weights():
         assert "ultralytics" not in open(os.path.join(root, fn)).read().lower(), fn
   card = open(os.path.join(mod, "models", "MODEL_CARD.md")).read()
   assert "Apache-2.0" in card and "YOLOX" in card and "No Ultralytics / AGPL" in card
+
+
+def test_build_skips_missing_model():
+  s = read("selfdrive/nap/animal_detect/SConscript")
+  assert "if os.path.isfile(onnx):" in s
+  i = s.index("if os.path.isfile(onnx):")
+  assert s.index("env.Command(") > i
