@@ -391,6 +391,9 @@ def test_card_to_planner_end_to_end():
   assert latch.track_id == 4
 
 
-def test_decode_magicmock_params_is_none():
-  from unittest.mock import MagicMock
-  assert decode_bump(MagicMock()) == (0, BUMP_NONE)
+def test_decode_non_param_object_is_none():
+  """A mock Params returns an arbitrary object, which int() could coerce."""
+  class Coercible:
+    def __int__(self):
+      return 11
+  assert decode_bump(Coercible()) == (0, BUMP_NONE)
