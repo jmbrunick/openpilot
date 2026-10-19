@@ -284,6 +284,192 @@ def test_compile_stamp_and_lazy_session_block_while_engaged(tmp_path, monkeypatc
   assert warm.compiled
 
 
+def test_ort_new_sha_engaged_does_not_stick_the_reader(tmp_path, monkeypatch):
+  """Route 1b3: Install Weights v3→v4, engage before any disengaged reader pass.
+
+  speedsignd started at t=241.8 with sha 3774f74e and no cache stamp.
+  Cruise was engaged at t=248.5. The sharp reader then ran zero
+  inferences for the drive: compile_ready stayed false and onnxruntime
+  was gated like a clang compile. A cold onnxruntime sha must be allowed
+  immediately. A compile backend must not stay gated for the whole drive.
+  """
+  from openpilot.selfdrive.speedsignd.detect import (
+    COMPILE_GATE_TIMEOUT_S,
+    CompileGate,
+    OnnxSpeedSignDetector,
+    SpeedSignDetector,
+    _LazyCpuSession,
+    backend_needs_compile,
+    compile_allowed,
+    compile_cache_warm,
+    reader_session_warm,
+  )
+  from openpilot.selfdrive.speedsignd.speedsignd import (
+    CPU_BUDGET,
+    IDLE_FACTOR,
+    SPEEDSIGND_CORE,
+    arm_compile_gate,
+    drop_inflight_for_compile,
+  )
+  from openpilot.selfdrive.speedsignd.weights_manifest import YOLO_MIN_CONF
+
+  monkeypatch.setenv("NAP_SPEED_SIGN_CACHE", str(tmp_path))
+  sha = "3774f74e260c"
+  started = 241.8
+  engaged = 248.5
+  assert not compile_cache_warm(sha)
+  assert not backend_needs_compile("onnxruntime-cpu")
+  assert backend_needs_compile("tinygrad-clang")
+  assert backend_needs_compile("opencv-dnn-cpu")
+  assert YOLO_MIN_CONF == 0.40
+  assert CPU_BUDGET == 0.25
+  assert IDLE_FACTOR == 3.0
+  assert SPEEDSIGND_CORE == 2
+  assert COMPILE_GATE_TIMEOUT_S < 120.0
+
+  # Same cold sha. Clang still blocks; onnxruntime does not. Check clang
+  # before the ORT pass writes the per-sha stamp.
+  clang = _LazyCpuSession("/no/such.onnx", sha, "tinygrad-clang")
+  assert not clang.compiled
+  with pytest.raises(RuntimeError, match="compile-blocked"):
+    clang.run(None, {"images": np.zeros((1, 3, 2, 2), np.float32)})
+
+  ort = _LazyCpuSession("/no/such.onnx", sha, "onnxruntime-cpu")
+  assert ort.compiled
+  assert not reader_session_warm(ort)
+
+  class _StubOrt:
+    compiled = True
+    _nap_backend = "onnxruntime-cpu"
+    _nap_device = "CPU"
+    _nap_renderer = "onnxruntime-cpu"
+    runs = 0
+
+    def run(self, _outs, _feed):
+      self.runs += 1
+      return [np.zeros((1,), np.float32)]
+
+  stub = _StubOrt()
+  ort._build = lambda: stub
+  ort.allow_compile(False)
+  out = ort.run(None, {"images": np.zeros((1, 3, 2, 2), np.float32)})
+  assert stub.runs == 1
+  assert out[0].shape == (1,)
+  assert compile_cache_warm(sha)
+
+  # Engaged on the new sha. The old gate returned False for the rest of the route.
+  assert compile_allowed(
+    known=True, controlling=True, ready=False, needs_compile=False,
+  )
+  assert not compile_allowed(
+    known=True, controlling=True, ready=False, needs_compile=True, blocked_s=0.0,
+  )
+  det = SpeedSignDetector(
+    onnx=OnnxSpeedSignDetector("/no/such.onnx", ort, backend="onnxruntime-cpu"),
+  )
+  gate = CompileGate()
+  ok, warn = arm_compile_gate(gate, det, now=engaged, known=True, controlling=True)
+  assert ok
+  assert warn is None
+  assert det.compile_allowed_now()
+  assert not drop_inflight_for_compile(controlling=True, busy=True, allowed_now=True)
+
+  class _OrtNotReady:
+    """Loaded weights, compile_ready still false. The 1b3 stick."""
+    onnx = object()
+    allowed = None
+
+    def backend_name(self):
+      return "onnxruntime-cpu"
+
+    def compile_ready(self):
+      return False
+
+    def weights_sha_short(self):
+      return sha
+
+    def allow_compile(self, allow):
+      self.allowed = bool(allow)
+
+  stuck = _OrtNotReady()
+  ok, warn = arm_compile_gate(CompileGate(), stuck, now=engaged, known=True, controlling=True)
+  assert ok and warn is None and stuck.allowed is True
+
+  class _Cold:
+    onnx = object()
+    allowed = None
+
+    def backend_name(self):
+      return "tinygrad-clang"
+
+    def compile_ready(self):
+      return False
+
+    def weights_sha_short(self):
+      return sha
+
+    def allow_compile(self, allow):
+      self.allowed = bool(allow)
+
+  cold = _Cold()
+  clang_gate = CompileGate(timeout_s=60.0)
+  ok, warn = arm_compile_gate(clang_gate, cold, now=started, known=True, controlling=False)
+  assert ok and warn is None and cold.allowed is True
+  ok, warn = arm_compile_gate(clang_gate, cold, now=engaged, known=True, controlling=True)
+  assert not ok and warn is None and cold.allowed is False
+  assert drop_inflight_for_compile(controlling=True, busy=True, allowed_now=False)
+  ok, warn = arm_compile_gate(clang_gate, cold, now=engaged + 59.0, known=True, controlling=True)
+  assert not ok and warn is None
+  ok, warn = arm_compile_gate(clang_gate, cold, now=engaged + 60.0, known=True, controlling=True)
+  assert ok and cold.allowed is True
+  assert warn is not None and "compile-gate timeout" in warn and sha in warn
+  ok, warn = arm_compile_gate(clang_gate, cold, now=engaged + 120.0, known=True, controlling=True)
+  assert ok and warn is None
+
+  # A disengaged tick clears the timer. Re-engaging does not inherit it.
+  mid = CompileGate(timeout_s=60.0)
+  again = _Cold()
+  ok, warn = arm_compile_gate(mid, again, now=10.0, known=True, controlling=True)
+  assert not ok
+  ok, warn = arm_compile_gate(mid, again, now=20.0, known=True, controlling=False)
+  assert ok and warn is None
+  ok, warn = arm_compile_gate(mid, again, now=21.0, known=True, controlling=True)
+  assert not ok and warn is None
+
+
+def test_reader_warmup_is_once_and_skips_engaged_and_model_lag():
+  """Warm-up is one disengaged pass. Engaged and modeld-lag must not add a read."""
+  from openpilot.selfdrive.speedsignd.detect import OnnxSpeedSignDetector, SpeedSignDetector
+
+  class Sess:
+    def __init__(self):
+      self.compiled = False
+      self._allow_compile = False
+      self.runs = 0
+
+    def allow_compile(self, allow):
+      self._allow_compile = bool(allow)
+
+    def get_inputs(self):
+      return [type("I", (), {"name": "images", "shape": [1, 3, 8, 8]})()]
+
+    def run(self, _outs, feed):
+      assert self._allow_compile
+      self.runs += 1
+      self.compiled = True
+      return [np.zeros((1, 2), np.float32)]
+
+  sess = Sess()
+  det = SpeedSignDetector(onnx=OnnxSpeedSignDetector("w.onnx", sess, backend="onnxruntime-cpu"))
+  assert det.warmup(controlling=True, model_paused=False) is False
+  assert det.warmup(controlling=False, model_paused=True) is False
+  assert sess.runs == 0
+  assert det.warmup(controlling=False, model_paused=False) is True
+  assert sess.runs == 1
+  assert det.warmup(controlling=False, model_paused=False) is True
+  assert sess.runs == 1
+
+
 def test_read_mph_washes_out_above_fixed_90():
   """ROAD plates often have ink ≥ 90. Old threshold returned None → HUD kept 65."""
   from openpilot.selfdrive.speedsignd.detect import _read_mph

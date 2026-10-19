@@ -900,20 +900,111 @@ def write_compile_stamp(sha: str, backend: str) -> None:
     return
 
 
-def compile_allowed(*, known: bool, controlling: bool, ready: bool) -> bool:
+# onnxruntime InferenceSession is the load. There is no clang realize.
+# Route 1b3 (sha 3774f74e, engaged ~7 s after speedsignd start) kept the
+# sharp reader in compile-wait for the whole drive because a new weights
+# file had no stamp and this backend was gated like tinygrad.
+NO_COMPILE_BACKEND_PREFIXES = ("onnxruntime",)
+
+
+def backend_needs_compile(backend: str) -> bool:
+  """True when the first realize is a compile that must not start engaged.
+
+  onnxruntime-cpu has no compile step. tinygrad CLANG and the OpenCV
+  first forward still do.
+  """
+  name = (backend or "").strip().lower()
+  if not name or name in ("none", "numpy-mutcd"):
+    return False
+  return not name.startswith(NO_COMPILE_BACKEND_PREFIXES)
+
+
+# Shorter than a drive. Past this the reader is allowed through and one
+# swaglog warning is emitted, so a new sha cannot stay dark until park.
+# The opened read is a normal reader pass (25% budget, modeld-lag pause),
+# not an extra infer.
+COMPILE_GATE_TIMEOUT_S = 60.0
+
+
+def compile_allowed(*, known: bool, controlling: bool, ready: bool,
+                    needs_compile: bool = True, blocked_s: float = 0.0,
+                    timeout_s: float = COMPILE_GATE_TIMEOUT_S) -> bool:
   """Warm-up realizes kernels. Start it only when known disengaged.
 
   Unknown cereal is not disengaged: after the startup grace, unread
   selfdriveState used to set controlling False and the first clang
   realize ran while the car was engaged. A finished cache (ready) may
-  run while engaged. Offroad never reaches this process (manager starts
-  it only onroad); disengaged onroad is the compile window.
+  run while engaged. A backend with no compile step is allowed once the
+  weights have loaded (the caller passes needs_compile False). A gate
+  that has been shut for timeout_s opens so the reader cannot sit out a
+  whole drive.
+
+  Offroad never reaches this process (manager starts it only onroad);
+  disengaged onroad is the compile window for backends that need one.
   """
-  if ready:
+  if ready or not needs_compile:
+    return True
+  if timeout_s > 0.0 and blocked_s >= timeout_s:
     return True
   if controlling or not known:
     return False
   return True
+
+
+class CompileGate:
+  """How long the reader has been compile-gated this drive.
+
+  permitted() is the main-loop question. warning_text() is the one
+  swaglog line when the timeout is what opens the gate.
+  """
+
+  def __init__(self, timeout_s: float = COMPILE_GATE_TIMEOUT_S):
+    self.timeout_s = float(timeout_s)
+    self.blocked_since: float | None = None
+    self.timed_out = False
+    self.warned = False
+
+  def permitted(self, *, now: float, known: bool, controlling: bool, ready: bool,
+                needs_compile: bool = True) -> bool:
+    base = compile_allowed(
+      known=known, controlling=controlling, ready=ready,
+      needs_compile=needs_compile, blocked_s=0.0, timeout_s=self.timeout_s,
+    )
+    if base:
+      self.blocked_since = None
+      return True
+    if self.blocked_since is None:
+      self.blocked_since = float(now)
+      elapsed = 0.0
+    else:
+      elapsed = max(0.0, float(now) - self.blocked_since)
+    if self.timeout_s > 0.0 and elapsed >= self.timeout_s:
+      self.timed_out = True
+      return True
+    return False
+
+  def warning_text(self, *, backend: str, sha: str) -> str | None:
+    if not self.timed_out or self.warned:
+      return None
+    self.warned = True
+    return (
+      "speedsignd compile-gate timeout backend=%s sha=%s after %.0fs; allowing reader"
+      % (backend or "", sha or "", self.timeout_s)
+    )
+
+
+def reader_session_warm(session) -> bool:
+  """True after the CPU session has actually been built, not merely stamped.
+
+  A no-compile backend sets compiled at construction so the gate is open,
+  but the first InferenceSession is still the warmup. That pass runs once
+  while disengaged, not as a second infer while engaged.
+  """
+  if session is None:
+    return False
+  if isinstance(session, _LazyCpuSession):
+    return session._impl is not None
+  return bool(getattr(session, "compiled", False))
 
 
 def dnn_ids_are_cpu(
@@ -1240,6 +1331,10 @@ class _LazyCpuSession:
     self._nap_device = "CPU"
     self._nap_renderer = "CLANG" if kind == "tinygrad-clang" else kind
     self.compiled = bool(sha) and compile_cache_warm(sha)
+    if not backend_needs_compile(kind):
+      # Weights load is the session. A new sha has no stamp and must not
+      # wait for a disengaged realize this backend does not perform.
+      self.compiled = True
     self._inputs = [type("I", (), {"name": "images", "shape": [1, 3, YOLO_IMGSZ, YOLO_IMGSZ]})()]
 
   def allow_compile(self, allow: bool) -> None:
@@ -1495,10 +1590,50 @@ class SpeedSignDetector:
     return True
 
   def compile_ready(self) -> bool:
-    """False until warm-up or a per-sha cache stamp. Missing means not ready."""
+    """False until warm-up or a per-sha cache stamp. Missing means not ready.
+
+    onnxruntime sets compiled when the weights session is constructed.
+    There is no separate compile to wait for.
+    """
     if self.onnx is None or self.onnx.session is None:
       return True
     return bool(getattr(self.onnx.session, "compiled", False))
+
+  def reload_if_weights_changed(self) -> bool:
+    """Swap in a replaced ONNX (Install Weights). True when the sha changed."""
+    path = self.onnx_path
+    if self.onnx is None or not path or not os.path.isfile(path):
+      return False
+    sha = _sha_short(path)
+    if not sha or sha == self.weights_sha_short():
+      return False
+    loaded = OnnxSpeedSignDetector.try_load(path)
+    if loaded is None:
+      return False
+    self.onnx = loaded
+    return True
+
+  def warmup(self, *, controlling: bool, model_paused: bool) -> bool:
+    """One blank reader pass so the session exists before engage.
+
+    Refuses while engaged or while modeld is lagging. That would be an
+    infer on top of the normal 25% reader budget. Returns True when the
+    session is already warm or this pass built it.
+    """
+    if controlling or model_paused:
+      return False
+    if self.onnx is None or self.onnx.session is None:
+      return False
+    sess = self.onnx.session
+    if reader_session_warm(sess):
+      return True
+    self.allow_compile(True)
+    try:
+      blob = np.zeros((1, 3, YOLO_IMGSZ, YOLO_IMGSZ), dtype=np.float32)
+      sess.run(None, {_onnx_input_name(sess): blob})
+    except Exception:
+      return False
+    return reader_session_warm(sess) or bool(getattr(sess, "compiled", False))
 
   def allow_compile(self, allow: bool) -> None:
     sess = None if self.onnx is None else self.onnx.session
@@ -1525,3 +1660,16 @@ class SpeedSignDetector:
       return self.onnx.detect(y, min_conf=thr, rgb=rgb, nv12=nv12)
     thr = MIN_CONF if min_conf is None else min_conf
     return detect_mutcd_speed_signs(y, min_conf=thr)
+
+
+def warmup_reader_weights(path: str) -> bool:
+  """One reader pass right after Install Weights. Offroad, so not engaged.
+
+  A missing or unloadable file returns False. speedsignd retries the
+  same pass once at startup while disengaged. Failure does not fail
+  the install; the on-drive gate still opens for onnxruntime.
+  """
+  det = SpeedSignDetector(onnx_path=path)
+  if det.onnx is None:
+    return False
+  return det.warmup(controlling=False, model_paused=False)

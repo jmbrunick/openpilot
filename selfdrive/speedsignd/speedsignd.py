@@ -10,9 +10,14 @@ Stock modelV2 has no speedSign head — this is a separate process, default off.
 Safety: Logger On starts the process + HUD. Detect keeps running while
 openpilot is engaged. Inference is CPU only (onnxruntime
 CPUExecutionProvider, else cv2.dnn on the CPU target, else tinygrad
-DEV=CPU / CLANG). It must not open the QCOM GPU modeld uses. The first
-realize compiles only while known-disengaged and is cached per weights
-sha. One ONNX thread, SCHED_IDLE (else nice 19), pinned to little
+DEV=CPU / CLANG). It must not open the QCOM GPU modeld uses.
+onnxruntime has no compile step, so a new weights sha may read as soon
+as the file loads. tinygrad's first realize still compiles only while
+known-disengaged and is cached per weights sha; a timeout opens that
+gate (one swaglog warning) so the reader cannot stay dark for a whole
+drive. One warm-up pass runs at startup while disengaged and once after
+Install Weights. It is not an extra infer while engaged. One ONNX
+thread, SCHED_IDLE (else nice 19), pinned to little
 core 2 — not core 0 (UI), 1 (sensord), 3 (pandad/encoderd), 4 (controlsd),
 5 (plannerd/radard), 6 (camerad), or 7 (modeld). Reader duty stays at most
 25% of that core: after each sharp read the reader idles at least 3× the
@@ -74,14 +79,16 @@ from openpilot.selfdrive.speedsignd.detect import (
   CAP_MS_ENV,
   THREADS_DEFAULT,
   THREADS_ENV,
+  CompileGate,
   SpeedSignDetector,
   assert_cpu_backend,
-  compile_allowed,
+  backend_needs_compile,
   describe_infer_runtimes,
   limit_infer_threads,
   ocr_tight_y,
   parse_infer_cap_ms,
   parse_infer_threads,
+  reader_session_warm,
 )
 from openpilot.selfdrive.speedsignd.nv12 import copy_nv12_detect_crop, copy_nv12_rect, subcrop_nv12
 from openpilot.selfdrive.speedsignd.paths import PARAM_KEY, default_log_path, default_onnx_path, default_proposer_path
@@ -875,6 +882,35 @@ def should_reset_detect_after_wait(last_allow: bool | None, allow_detect: bool) 
   return bool(allow_detect) and last_allow is False
 
 
+def drop_inflight_for_compile(*, controlling: bool, busy: bool, allowed_now: bool) -> bool:
+  """Drop an in-flight realize only while the compile gate is still shut.
+
+  onnxruntime and a gate that has timed out report allowed_now. Pausing
+  those reads is how a new weights sha produced zero reader inferences.
+  """
+  return bool(controlling and busy and not allowed_now)
+
+
+def arm_compile_gate(gate: CompileGate, detector, *, now: float, known: bool, controlling: bool):
+  """Apply the compile gate and return (permitted, warning).
+
+  A loaded onnxruntime session is ready even when the per-sha stamp is
+  missing: that backend has no compile step. The warning is the one
+  swaglog line when the timeout is what opens the gate.
+  """
+  needs = backend_needs_compile(detector.backend_name())
+  ready = bool(detector.compile_ready())
+  if detector.onnx is not None and not needs:
+    ready = True
+  permitted = gate.permitted(
+    now=now, known=bool(known), controlling=bool(controlling),
+    ready=ready, needs_compile=needs,
+  )
+  warn = gate.warning_text(backend=detector.backend_name(), sha=detector.weights_sha_short())
+  detector.allow_compile(permitted)
+  return permitted, warn
+
+
 def drain_vision_latest(client) -> None:
   """Non-blocking ROAD recv so WAIT idle does not wedge the VisionIPC socket."""
   if client is None:
@@ -1435,6 +1471,14 @@ def main():
   started_at = time.monotonic()
   last_allow: bool | None = None
   last_paused: bool | None = None
+  compile_gate = CompileGate()
+  reader_warmed = False
+  next_reader_warmup = 0.0
+  cloudlog.info(
+    "speedsignd compile-gate backend=%s needs_compile=%s ready=%s timeout_s=%.0f",
+    backend, int(backend_needs_compile(backend)), int(detector.compile_ready()),
+    compile_gate.timeout_s,
+  )
   last_unknown_warn = 0.0
   last_empty_frame_log = 0.0
   last_empty_raw_log = 0.0
@@ -1467,14 +1511,15 @@ def main():
     now_mono = time.monotonic()
     sample = engagement_from_sm(sm, now=now_mono, started_at=started_at)
     # Refresh every tick, before any infer starts. The first frame of a boot
-    # that is already engaged sees controlling=True and does not compile.
-    # Unknown cereal is not permission either. The worker re-reads this flag
-    # inside run(), so a flip before realize still aborts.
-    detector.allow_compile(compile_allowed(
-      known=bool(sample.known),
-      controlling=bool(sample.controlling),
-      ready=detector.compile_ready(),
-    ))
+    # that is already engaged sees controlling=True and does not compile a
+    # backend that needs it. onnxruntime is already ready. Unknown cereal is
+    # not permission either. The worker re-reads this flag inside run().
+    _permitted, gate_warn = arm_compile_gate(
+      compile_gate, detector, now=now_mono,
+      known=bool(sample.known), controlling=bool(sample.controlling),
+    )
+    if gate_warn:
+      cloudlog.warning("%s", gate_warn)
     live_model = model_watch.reason()
     if live_model and not model_extended:
       hard_now = model_watch.hard_guard()
@@ -1511,11 +1556,14 @@ def main():
         next_propose = 0.0
         in_holdoff = False
       slot.resume()
-      # Engaged + not yet compiled: drop a queued result. The worker also
-      # re-reads allow_compile before realize, so boot-already-engaged never
-      # enters clang. A realize that has already entered clang cannot be
-      # killed; that only happens after a known-disengaged start.
-      if sample.controlling and slot.busy and not detector.compile_ready():
+      # Engaged + compile still forbidden: drop a queued realize. A no-compile
+      # backend and a gate timeout are allowed_now, so they are not dropped.
+      # A realize that has already entered clang cannot be killed; that only
+      # happens after a known-disengaged start.
+      if drop_inflight_for_compile(
+        controlling=bool(sample.controlling), busy=bool(slot.busy),
+        allowed_now=detector.compile_allowed_now(),
+      ):
         slot.pause()
     if last_allow != sample.allow_detect or last_paused != sample.detect_paused:
       cloudlog.info(
@@ -1536,22 +1584,75 @@ def main():
       infer_ms = []
       skip_count = 0
       last_timing_log = now_mono
-    # Retry the weights read at nice 19, including while engaged. Install
-    # itself stays an offroad settings action and does not run here.
-    # Session create can compile. Do that only while not engaged.
-    if (
-      sample.allow_detect and not sample.controlling and detector.onnx is None
-      and now_mono - last_onnx_try >= ONNX_RETRY_S
-    ):
+    # Retry the weights read at nice 19. Install itself stays offroad.
+    # Building the lazy session is not the clang realize. A replaced file
+    # (Install Weights, new sha) reloads here, including while engaged:
+    # onnxruntime is ready immediately; tinygrad stays gated until the
+    # disengaged warmup or the timeout.
+    if sample.allow_detect and not slot.busy and now_mono - last_onnx_try >= ONNX_RETRY_S:
       last_onnx_try = now_mono
-      if detector.try_reload():
+      if detector.onnx is None:
+        if not sample.controlling and detector.try_reload():
+          reader_warmed = False
+          next_reader_warmup = 0.0
+          cloudlog.info(
+            "speedsignd: ONNX loaded after retry backend=%s onnx=%s sha=%s",
+            detector.backend_name(), onnx_path, detector.weights_sha_short(),
+          )
+      elif detector.reload_if_weights_changed():
+        reader_warmed = False
+        next_reader_warmup = 0.0
         cloudlog.info(
-          "speedsignd: ONNX loaded after retry backend=%s onnx=%s sha=%s",
-          detector.backend_name(), onnx_path, detector.weights_sha_short(),
+          "speedsignd weights replaced backend=%s sha=%s",
+          detector.backend_name(), detector.weights_sha_short(),
+        )
+    # One blank reader pass while known-disengaged, at startup and after a
+    # new weights file. It runs on the infer thread (SCHED_IDLE, core 2),
+    # not the 20 Hz loop, and the outcome is budgeted like any other read
+    # (idle at least 3×). Not while engaged and not during modeld lag:
+    # that would be an infer on top of the normal reader budget.
+    if (
+      not reader_warmed and detector.onnx is not None
+      and reader_session_warm(detector.onnx.session)
+    ):
+      reader_warmed = True
+    elif (
+      not reader_warmed
+      and detector.onnx is not None
+      and sample.allow_detect
+      and sample.known
+      and not sample.controlling
+      and not slot.busy
+      and not model_watch.reason()
+      and now_mono >= next_reader_warmup
+    ):
+      def _warm(det=detector):
+        ok = det.warmup(controlling=False, model_paused=False)
+        return [], [], {"warmup": 1, "warmup_ok": int(bool(ok))}
+
+      if slot.start(_warm):
+        reader_warmed = True
+        next_reader_warmup = now_mono + ONNX_RETRY_S
+        cloudlog.info(
+          "speedsignd reader warmup starting backend=%s sha=%s",
+          detector.backend_name(), detector.weights_sha_short(),
         )
     signs: list = []
     if sample.allow_detect:
       outcome = slot.take()
+      if outcome is not None and isinstance(outcome.diag, dict) and outcome.diag.get("warmup"):
+        if outcome.diag.get("warmup_ok"):
+          cloudlog.info(
+            "speedsignd reader warmup done %.0fms backend=%s sha=%s",
+            outcome.infer_s * 1000.0, detector.backend_name(), detector.weights_sha_short(),
+          )
+        else:
+          reader_warmed = False
+          next_reader_warmup = now_mono + ONNX_RETRY_S
+          cloudlog.warning(
+            "speedsignd reader warmup failed backend=%s sha=%s err=%s",
+            detector.backend_name(), detector.weights_sha_short(), outcome.error or "",
+          )
       if outcome is not None:
         signs = outcome.signs
         infer_ms.append(outcome.infer_s * 1000.0)
@@ -1862,13 +1963,16 @@ def main():
           stalled = bool(sample.controlling) and disk_stalled(pressure_now)
           engaged_now = bool(sample.controlling)
 
-          ready = detector.compile_ready()
-          # Compile only when this read is known-disengaged. Unknown cereal
-          # is not that. A warm cache (ready) runs while engaged, on CPU.
-          permitted = compile_allowed(
-            known=bool(sample.known), controlling=engaged_now, ready=ready,
+          # Compile only when this read is known-disengaged, unless the
+          # backend has no compile step, the weights already loaded, or the
+          # gate has been shut long enough that the reader would miss the
+          # drive. A warm cache runs while engaged, on CPU.
+          permitted, gate_warn = arm_compile_gate(
+            compile_gate, detector, now=time.monotonic(),
+            known=bool(sample.known), controlling=engaged_now,
           )
-          detector.allow_compile(permitted)
+          if gate_warn:
+            cloudlog.warning("%s", gate_warn)
 
           def _run2(job=two_job, lat=lat, lon=lon, bearing=bearing, gps_ok=gps_ok,
                     engaged_now=engaged_now, stalled=stalled):
