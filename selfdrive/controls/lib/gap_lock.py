@@ -6,8 +6,10 @@ The latch is a setpoint for the existing unified lead law
 
 The hold arms whether longitudinal is already on, paused (pedal,
 One-Pedal, brake, standstill wait), or not yet taken. A completed hold
-resumes long so those meters become the setpoint. A tip, cancel, brake,
-One-Pedal pause, or toggle off still clears a lock that is already on.
+resumes long so those meters become the setpoint. A full up/down press,
+cancel, brake, One-Pedal pause, or toggle off still clears a lock that is
+already on. An up/down tip while locked steps the meters 1 m instead
+(gap_lock_bump.py).
 
 A radar track-id swap at the same gap is the same lead: the new id is
 adopted and the locked meters stay, with no toast. If nothing plausible
@@ -268,6 +270,23 @@ class GapLockLatch:
     self._t = 0.0
     self._absent = 0.0
     self._hud_until = 0.0
+    # Stalk-bump meters (gap_lock_bump). After a bump the car is still
+    # easing toward the new gap, so a same-car radar id swap is matched
+    # against the last tracked distance too.
+    self._nudged = False
+    self._last_d: float | None = None
+
+  def nudge(self, closer: bool) -> float | None:
+    """Step locked meters 1 m (closer = up tip). Clamped. None when not locked."""
+    if self.gap_m is None:
+      return None
+    from openpilot.selfdrive.controls.lib.gap_lock_bump import BUMP_CLOSER, BUMP_FARTHER, bumped_gap_m
+    new_m = bumped_gap_m(self.gap_m, BUMP_CLOSER if closer else BUMP_FARTHER)
+    if new_m is None:
+      return None
+    self.gap_m = float(new_m)
+    self._nudged = True
+    return self.gap_m
 
   def update(self, dt, *, enabled: bool, long_on: bool, seq, status: bool,
              radar: bool, track_id, d_rel, stalk_exit: bool, holding: bool = False,
@@ -349,6 +368,8 @@ class GapLockLatch:
     self.track_id = tid
     self.gap_m = float(med)
     self._absent = 0.0
+    self._nudged = False
+    self._last_d = float(med)
     self._pulse(HUD_ENGAGED, GAP_LOCK_ENGAGED_BANNER_S)
 
   def _plausible_rematch(self, status, radar, track_id, d_rel, y_rel) -> bool:
@@ -365,7 +386,10 @@ class GapLockLatch:
       return False
     if dist != dist or lateral != lateral:
       return False
-    if abs(dist - float(self.gap_m)) > GAP_LOCK_REMATCH_M:
+    near_lock = abs(dist - float(self.gap_m)) <= GAP_LOCK_REMATCH_M
+    near_last = (self._nudged and self._last_d is not None
+                 and abs(dist - float(self._last_d)) <= GAP_LOCK_REMATCH_M)
+    if not (near_lock or near_last):
       return False
     return lateral <= GAP_LOCK_REMATCH_Y_M
 
@@ -376,19 +400,31 @@ class GapLockLatch:
     tid = _track_id(track_id)
     if status is True and radar is True and tid == self.track_id:
       self._absent = 0.0
+      self._note_d(d_rel)
       return
     # Same car, new radar id. Keep the locked meters and follow the new id.
     if self._plausible_rematch(status, radar, track_id, d_rel, y_rel):
       self.track_id = tid
       self._absent = 0.0
+      self._note_d(d_rel)
       return
     # Vision-only, a different car, or no lead. Hold, then toast.
     self._absent += dt
     if self._absent >= GAP_LOCK_ABSENT_S:
       self._clear(toast=True)
 
+  def _note_d(self, d_rel) -> None:
+    try:
+      dist = float(d_rel)
+    except (TypeError, ValueError):
+      return
+    if dist == dist:
+      self._last_d = dist
+
   def _clear(self, *, toast: bool) -> None:
     had = self.gap_m is not None
+    self._nudged = False
+    self._last_d = None
     self.track_id = None
     self.gap_m = None
     self.preview_m = None

@@ -60,6 +60,11 @@
     // Settings → NAP → Driving Mannerisms → Gap lock. Default Off.
     // Pedal mode: 2 s engage-stalk hold latches radar dRel (long may be paused).
     {"NAPGapLock", {PERSISTENT, BOOL, "0"}},
+    // Gap lock stalk bump (gap_lock_bump.py). Not preferences.
+    // Active: planner writes on lock on/off; card reads once per stalk gesture.
+    // Bump: card writes seq*10+code per tip (1 closer, 2 farther, 3 full press).
+    {"NAPGapLockActive", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL, "0"}},
+    {"NAPGapLockBump", {CLEAR_ON_MANAGER_START, INT, "0"}},
     {"NAPRadarIgnoreSensorDirty", {PERSISTENT, BOOL, "1"}},
     // Companion Dash process. Default On. Off stops nap_dash without
     // blocking engage (process is optional / non-critical).
