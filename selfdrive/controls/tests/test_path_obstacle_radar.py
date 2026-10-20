@@ -282,7 +282,7 @@ def test_hit_round_trip():
   assert bool(msg.valid)
 
 
-def test_helper_without_trigger_does_not_open_visionipc():
+def test_helper_without_trigger_does_not_open_visionipc(monkeypatch):
   opened = []
 
   class VisionIpcClient:
@@ -293,7 +293,8 @@ def test_helper_without_trigger_does_not_open_visionipc():
   vipc = types.ModuleType("msgq.visionipc")
   vipc.VisionIpcClient = VisionIpcClient
   vipc.VisionStreamType = SimpleNamespace(VISION_STREAM_ROAD=1, VISION_STREAM_WIDE_ROAD=2)
-  sys.modules["msgq.visionipc"] = vipc
+  # monkeypatch restores the real module at teardown so later tests on this worker can import VisionBuf
+  monkeypatch.setitem(sys.modules, "msgq.visionipc", vipc)
 
   helper = Helper()
   assert helper.on_radar(None, time.monotonic()) is None
