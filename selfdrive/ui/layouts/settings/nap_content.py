@@ -231,11 +231,15 @@ PRECONDITIONS:
   3. ~40 MiB free on /data
 
 Takes a couple of minutes. speedsignd retries the ONNX onroad without a
-reboot. Leave Logger On while disengaged until the first CPU session
-finishes (reason=compile-wait while engaged), then engage. That session
-is cached per weights sha under /data. A clear MUTCD R2-1 needs two
-agreeing reads. Inference stays on CPU: the vendored onnxruntime, never
-the GPU. The stock 3X image has neither onnxruntime nor cv2.dnn.
+reboot. Install warms the reader once here (offroad), and speedsignd
+warms it once at startup while disengaged. onnxruntime has no compile
+step, so a new weights file does not wait on compile-wait, and the
+reader cannot stay gated for a whole drive (a timeout opens the gate
+and logs a warning). Tinygrad CLANG, only if onnxruntime is missing,
+still prefers that disengaged warmup. The session is cached per weights
+sha under /data. A clear MUTCD R2-1 needs two agreeing reads. Inference
+stays on CPU: the vendored onnxruntime, never the GPU. The stock 3X
+image has neither onnxruntime nor cv2.dnn.
 
 Does not write sqlite, does not change cruise / HUD MAX, and does not
 query osm.org.

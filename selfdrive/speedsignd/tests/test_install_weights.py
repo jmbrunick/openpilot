@@ -155,6 +155,8 @@ def test_install_script_does_not_reboot_and_settings_wire_it():
   assert "runtime missing" in content
   assert "NO RT" in content
   assert "pylib" in content
+  script = (root / "scripts" / "nap" / "install_speed_sign_weights.py").read_text(encoding="utf-8")
+  assert "warmup_reader_weights" in script
 
 
 def test_runtime_wheel_pin():

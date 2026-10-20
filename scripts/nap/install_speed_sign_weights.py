@@ -87,8 +87,15 @@ def main(argv: list[str] | None = None) -> int:
       return 1
     print(f"runtime -> {pylib}")
     print(runtime_status_summary())
+  try:
+    from openpilot.selfdrive.speedsignd.detect import warmup_reader_weights
+    if warmup_reader_weights(dest):
+      print("reader warmup cached (offroad, one pass)")
+    else:
+      print("reader warmup will run once at startup while disengaged")
+  except Exception as e:
+    print("reader warmup skipped: " + str(e), file=sys.stderr)
   print("enable: Settings → NAP → Speed Sign Logger, or Params put NAPSpeedSignLog 1")
-  print("leave Logger On while disengaged until the first session is cached, then engage")
   return 0
 
 
