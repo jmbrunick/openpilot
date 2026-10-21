@@ -184,3 +184,93 @@ def test_v21_proposer_duty_cap_25pct():
   assert n * ts.PROPOSER_PASS_S_DEFAULT <= 2.5 + 1e-6
   assert n == 20
   assert d.next_fit(t, 1) >= t
+
+
+# --- v2.2: planned bursts ------------------------------------------------
+
+class _S:
+  def __init__(self, mph, conf):
+    self.mph, self.conf = mph, conf
+
+
+def _boxes_at(d_list, t_list, cx=1400.0, cy=640.0):
+  out = []
+  for d in d_list:
+    h = T.FOCAL_PX * T.SIGN_H_M / d
+    out.append((cx - h * 0.4, cy - h / 2, h * 0.8, h))
+  return list(zip(t_list, out, strict=True))
+
+
+def test_v22_range_and_fit():
+  assert abs(T.range_m(T.FOCAL_PX * T.SIGN_H_M / 40.0) - 40.0) < 1e-6
+  hist = _boxes_at([80, 70], [0.0, 0.5])
+  t1, d1, closing = T.fit_range(hist, 20.0)
+  assert t1 == 0.5 and closing == 20.0 and abs(d1 - 70.0) < 0.01
+  # no speed -> slope fit (20 m/s)
+  assert abs(T.fit_range(hist, None)[2] - 20.0) < 1e-6
+
+
+def test_v22_exit_distance_from_mount_geometry():
+  # Sign whose top edge is 3 m above the axis: leaves the strip top (y 525)
+  # at f*3/(604-525) ~= 100 m.
+  d = 60.0
+  h = T.FOCAL_PX * T.SIGN_H_M / d
+  y_top = T.CAM_CY - T.FOCAL_PX * 3.0 / d
+  e = T.exit_distance_m((1000, y_top, h * 0.8, h), d)
+  assert abs(e - T.FOCAL_PX * 3.0 / (T.CAM_CY - 525)) < 0.5
+  # Low, near-centre sign: never exits the top; right edge dominates.
+  assert T.exit_distance_m((1100, 620, 10, 12), 100.0) < 30.0
+
+
+def test_v22_no_read_before_plan_then_burst():
+  tr = T.SignTracker(target_m=40.0)
+  hist = _boxes_at([90, 80, 70, 60, 50, 40, 35, 30], [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 2.75, 3.0])
+  reads = []
+  for t, b in hist:
+    c = T.select_read_target(tr, [(*b, 0.6)], t, allow_read=True, v_ego=20.0, next_t=t + 0.5)
+    if c is not None:
+      reads.append((t, round(T.range_m(c.box[3]))))
+      tr.mark_planned_read(c, [], c.box[3], t=t)
+  assert reads, "burst never fired"
+  assert reads[0][1] < 90                       # nothing on the first sighting
+  assert len(reads) <= T.BURST_READS + T.FALLBACK_READS   # one sign, one plan
+  assert len(tr.tracks) == 1
+
+
+def test_v22_decision_rules():
+  assert T.burst_decision([(45, 0.70, 60, _S(45, 0.7))]) == []                 # weak single
+  assert T.burst_decision([(45, 0.90, 50, _S(45, 0.9))]) == []                 # small single
+  one = _S(45, 0.9)
+  assert T.burst_decision([(45, 0.90, 60, one)]) == [one]                      # strong single
+  a, b = _S(35, 0.6), _S(35, 0.7)
+  assert T.burst_decision([(35, 0.6, 40, a), (50, 0.6, 45, _S(50, .6)), (35, 0.7, 50, b)]) == [a, b]
+
+
+def test_v22_hud_gated_and_fallback_only_after_empty_burst():
+  tr = T.SignTracker(target_m=40.0)
+  tr.update([(1400, 600, 30, 40, 0.6)], 0.0)
+  tr.update([(1405, 598, 32, 42, 0.6)], 0.5)
+  t = tr.tracks[0]
+  t.planned = True
+  assert tr.mark_planned_read(t, [_S(45, 0.7)], 50.0, t=1.0) == []           # held back
+  assert tr.mark_planned_read(t, [_S(45, 0.72)], 52.0, t=2.0) != []          # agreement
+  assert t.done and t.decided_mph == 45
+  t2 = T.Track(tid=9, box=(1400, 600, 30, 40), score=.6, first_t=0, last_t=0, hits=2, planned=True)
+  for i in range(T.BURST_READS):
+    tr.mark_planned_read(t2, [], 50.0, t=float(i))
+  assert not t2.done                                                          # one fallback allowed
+  tr.mark_planned_read(t2, [], 60.0, t=4.0)
+  assert t2.done
+
+
+def test_v22_read_box_follows_range():
+  tr = T.Track(tid=1, box=(1400, 600, 32, 40), score=.6, first_t=0, last_t=1.0)
+  tr.history = [(0.5, (1390, 602, 30, 38)), (1.0, (1400, 600, 32, 40))]
+  assert tr.read_box(1.0, 20.0) == tr.box
+  b = tr.read_box(1.5, 20.0)
+  d1 = T.range_m(40)
+  assert abs(b[3] - 40 * d1 / (d1 - 10.0)) < 1e-6 and b[0] + b[2] / 2 > 1416
+
+
+def test_v22_param_clamp():
+  assert T.clamp_read_dist(5) == 15.0 and T.clamp_read_dist(99) == 60.0 and T.clamp_read_dist("x") == 40.0

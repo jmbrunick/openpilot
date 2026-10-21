@@ -39,6 +39,16 @@ struct LiveSpeedSignNAP @0xaedffd8f31e7b55d {
   valid @2 :Bool;         # live detection including HUD hold
   weightsMissing @3 :Bool; # ONNX failed to load; HUD shows NO WT, never a fake mph
   detectPaused @4 :Bool;   # HUD WAIT if set. Engaged detect leaves this false.
+  # Where the last confirmed sign stands (GPS at the photo + box geometry).
+  # Log only; signSeq increments per new placement, 0 = none yet.
+  signSeq @5 :UInt32;
+  signLat @6 :Float64;
+  signLon @7 :Float64;
+  signHeading @8 :Float32;  # deg, vehicle GPS bearing at the photo
+  signSigmaM @9 :Float32;   # 1-sigma position uncertainty, m
+  signRangeM @10 :Float32;  # forward range at the read, m
+  signPx @11 :Float32;      # read box height, px
+  signMph @12 :Int16;
 }
 
 # NAP radar cone-line sample. Log only. Does not steer.
