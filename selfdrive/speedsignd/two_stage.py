@@ -23,6 +23,7 @@ When the proposer file is missing, speedsignd keeps the legacy fixed tiles.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -93,6 +94,32 @@ EXEMPT_GAP_X = 1.0
 REREAD_MAX_PX = 56.0
 REREAD_CONF = 0.85
 REREAD_GROW = 1.25
+# v2.2: planned reads. Range from the proposer box: d ~= FOCAL_PX * H / h.
+# After TRACK_MIN_HITS, range + closing speed (GPS / modelV2, else the fit)
+# give the time the sign reaches NAPSignReadDistM. No read before that; then a
+# burst of BURST_READS full-res reads on consecutive scheduled frames, placed
+# so it ends at least one frame before the predicted strip / frame exit. The
+# value needs 2 agreeing reads, or 1 read >= STRONG_CONF on a box >= STRONG_PX.
+# One fallback read only if the whole burst was empty and the sign is in view.
+FOCAL_PX = 2648.0
+SIGN_H_M = 0.76
+READ_DIST_PARAM = "NAPSignReadDistM"
+READ_DIST_DEFAULT_M = 40.0
+# Per-track read distance = max(NAPSignReadDistM, exit distance + margin).
+# Exit distance: where the sign (mount height / lateral offset recovered from
+# its image position and range) leaves the strip top or the right edge.
+# Margin: EXIT_MARGIN_FRAMES scheduled frames at the current speed.
+EXIT_MARGIN_FRAMES = 1.5
+CAM_CX = 1928 / 2.0
+CAM_CY = 1208 / 2.0
+READ_DIST_MIN_M = 15.0
+READ_DIST_MAX_M = 60.0
+BURST_READS = 3
+FALLBACK_READS = 1
+STRONG_PX = 56.0
+STRONG_CONF = 0.85
+READ_S_DEFAULT = 0.8
+EXIT_HORIZON_S = 4.0
 # Sharp reads allowed after the first mph, so a second HUD vote can land
 # on the same sign. 0 restores "done on the first mph".
 READS_AFTER_MPH = 1
@@ -234,6 +261,13 @@ class Track:
   neg: bool = False
   done: bool = False
   reread_h: float = 0.0
+  planned: bool = False
+  burst_n: int = 0
+  fallback_n: int = 0
+  votes: list = field(default_factory=list)  # (mph, conf, h, sign)
+  decided_mph: int = 0
+  burst_start_t: float = 0.0
+  read_dist_m: float = 0.0
   history: list = field(default_factory=list)
 
   def predicted(self, t: float) -> tuple[float, float, float, float]:
@@ -249,20 +283,100 @@ class Track:
     k = min(2.0, (t - t1) / dt)
     return tuple(b1[i] + (b1[i] - b0[i]) * k for i in range(4))  # type: ignore[return-value]
 
+  def read_box(self, t: float, v_ego: float | None = None) -> tuple[float, float, float, float]:
+    """Box to centre a planned read on at time t.
+
+    Measured this frame -> the measurement. Otherwise the centre drifts per
+    the last two boxes and the size follows range: h(t) = h1 * d1 / d(t),
+    d(t) = d1 - v*(t - t1) (v from GPS / modelV2; growth fit without it).
+    """
+    if abs(t - self.last_t) <= 1e-6 or len(self.history) < 2:
+      return self.box
+    (t0, b0), (t1, b1) = self.history[-2], self.history[-1]
+    dt = max(1e-3, t1 - t0)
+    k = min(2.0, (t - t1) / dt)
+    cx = b1[0] + b1[2] / 2 + ((b1[0] + b1[2] / 2) - (b0[0] + b0[2] / 2)) * k
+    cy = b1[1] + b1[3] / 2 + ((b1[1] + b1[3] / 2) - (b0[1] + b0[3] / 2)) * k
+    d1 = FOCAL_PX * SIGN_H_M / max(1.0, b1[3])
+    if v_ego is not None and float(v_ego) > 0.5:
+      dtt = max(3.0, d1 - float(v_ego) * (t - t1))
+      g = d1 / dtt
+    else:
+      g = max(0.5, 1.0 + (b1[3] / max(1.0, b0[3]) - 1.0) * k)
+    w, h = b1[2] * g, b1[3] * g
+    return (cx - w / 2, cy - h / 2, w, h)
+
   def crop_box(self) -> tuple[float, float, float, float]:
     """Last measured box, in frame pixels. The sharp-read crop uses this."""
     return self.box
 
 
 class SignTracker:
-  def __init__(self):
+  def __init__(self, target_m: float | None = None):
     self.tracks: list[Track] = []
     self._next = 1
+    # v2.2: None keeps the v2.1 px triggers; a distance enables planned bursts.
+    self.target_m: float | None = target_m      # NAPSignReadDistM (floor); None = v2.1 px triggers
+    self.read_s = READ_S_DEFAULT
+
+  @property
+  def planning(self) -> bool:
+    return self.target_m is not None
+
+  def target_for(self, tr: Track, d_now: float, closing: float, v_ego: float | None, strip=None) -> float:
+    """max(NAPSignReadDistM, exit distance + margin of 1.5 scheduled frames)."""
+    d_exit = exit_distance_m(tr.box, d_now, strip)
+    margin = closing * self.read_spacing_s(v_ego) * EXIT_MARGIN_FRAMES
+    return max(float(self.target_m or READ_DIST_DEFAULT_M), d_exit + margin)
+
+  def read_spacing_s(self, v_ego: float | None = None) -> float:
+    """Start-to-start of consecutive burst reads (read + one proposer pass)."""
+    return max(1.0 / scan_hz_for_speed(v_ego), float(self.read_s) + PROPOSER_PASS_S_DEFAULT)
+
+  def plan(self, tr: Track, v_ego: float | None, strip=None) -> tuple[float, float] | None:
+    """(burst start time, predicted exit time or inf) for a confirmed track."""
+    if not self.planning or tr.hits < TRACK_MIN_HITS:
+      return None
+    fit = fit_range(tr.history, v_ego)
+    if fit is None:
+      return None
+    t1, d1, closing = fit
+    tr.read_dist_m = self.target_for(tr, d1, closing, v_ego, strip)
+    t_target = t1 + (d1 - tr.read_dist_m) / closing
+    sp = self.read_spacing_s(v_ego)
+    # Burst ENDS at the read distance: the closest point still inside the
+    # strip / frame with margin (largest box, least blur). The
+    # NAPSignReadDistM floor keeps it from going nearer than that.
+    start = t_target - sp * (BURST_READS - 1)
+    # Geometric exit time too (the read distance already clears it by the margin).
+    d_exit = exit_distance_m(tr.box, d1, strip)
+    t_exit_geo = t1 + (d1 - d_exit) / closing
+    period = 1.0 / scan_hz_for_speed(v_ego)
+    start = min(start, t_exit_geo - period - self.read_s - sp * (BURST_READS - 1))
+    t_exit = predicted_exit_t(tr, strip)
+    if math.isfinite(t_exit):
+      # Last read must start one frame + one read before the exit.
+      period = 1.0 / scan_hz_for_speed(v_ego)
+      latest = t_exit - period - self.read_s - sp * (BURST_READS - 1)
+      start = min(start, latest)
+    return start, t_exit
+
+  def next_plan_t(self, t: float, v_ego: float | None, strip=None) -> float | None:
+    best = None
+    for tr in self.tracks:
+      if not tr.planned or tr.burst_n > 0 or tr.done or tr.neg:
+        continue
+      pl = self.plan(tr, v_ego, strip)
+      if pl is not None and pl[0] > t and (best is None or pl[0] < best):
+        best = pl[0]
+    return best
 
   def update(self, props, t: float) -> list[Track]:
     used = set()
     for tr in self.tracks:
-      if tr.done:
+      # A finished planned track keeps absorbing its sign so it is not
+      # re-born as a new track and read again.
+      if tr.done and not tr.planned:
         continue
       best, bi = 0.0, -1
       for i, p in enumerate(props):
@@ -316,6 +430,21 @@ class SignTracker:
     need_px = read_px_for_speed(v_ego)
     due = []
     for tr in self.tracks:
+      if (self.planning and tr.planned and not tr.done and not tr.neg and 0 < tr.burst_n < BURST_READS
+          and 1e-6 < t - tr.last_t <= LOST_S):
+        due.append(tr)                  # burst frame the proposer missed: predicted crop
+        continue
+      if self.planning and not tr.done and not tr.neg and abs(t - tr.last_t) <= 1e-6:
+        if tr.hits >= TRACK_MIN_HITS:
+          tr.planned = True
+        if tr.planned:
+          if self._planned_due(tr, t, v_ego, next_t, strip):
+            due.append(tr)
+          continue
+      if tr.planned:
+        if not tr.done and t - tr.last_t > LOST_S:
+          tr.done = True
+        continue
       if tr.done or tr.neg or tr.reads >= MAX_READS_PER_TRACK or not self._readable(tr):
         continue
       if abs(t - tr.last_t) > 1e-6:
@@ -335,6 +464,31 @@ class SignTracker:
       return None
     return max(due, key=lambda tr: tr.box[3])
 
+  def _planned_due(self, tr: Track, t: float, v_ego, next_t, strip) -> bool:
+    if tr.decided_mph:
+      return False
+    if 0 < tr.burst_n < BURST_READS:
+      return True                       # consecutive scheduled frames
+    if tr.burst_n >= BURST_READS:
+      empty = not any(v[0] for v in tr.votes)
+      return empty and tr.fallback_n < FALLBACK_READS
+    x, _y, w, h = tr.box
+    if x + w >= CAPTURE_EDGE_X or (next_t is not None and exits_before(tr, next_t, strip)):
+      return True                       # last frame before exit
+    pl = self.plan(tr, v_ego, strip)
+    if pl is None:
+      return h >= read_px_for_speed(v_ego)
+    half = 0.5 / scan_hz_for_speed(v_ego)
+    return t + half >= pl[0]            # frame nearest the planned start
+
+  def in_burst(self, t: float) -> bool:
+    """A planned burst has reads left on a live track (no gap between them)."""
+    for tr in self.tracks:
+      if tr.planned and not tr.done and not tr.neg and 0 < tr.burst_n and t - tr.last_t <= LOST_S:
+        if tr.burst_n < BURST_READS or (not any(v[0] for v in tr.votes) and tr.fallback_n < FALLBACK_READS):
+          return True
+    return False
+
   def budget_exempt(self, t: float) -> bool:
     """A confirmed (seen-twice) track is live and still owed a read.
 
@@ -344,6 +498,11 @@ class SignTracker:
     """
     for tr in self.tracks:
       if tr.done or tr.neg or tr.hits < TRACK_MIN_HITS:
+        continue
+      if tr.planned:
+        # Planned burst / fallback reads skip the pacing; the plan is the limit.
+        if not tr.decided_mph and tr.reads < BURST_READS + FALLBACK_READS and t - tr.last_t <= LOST_S:
+          return True
         continue
       if tr.reads >= min(MAX_READS_PER_TRACK, EXEMPT_READS_PER_TRACK):
         continue
@@ -360,13 +519,45 @@ class SignTracker:
         return True
     return False
 
-  def proposer_period_s(self, t: float, v_ego: float | None = None) -> float:
+  def proposer_period_s(self, t: float, v_ego: float | None = None, strip=None) -> float:
     hz = scan_hz_for_speed(v_ego)
     if self.wants_fast_proposer(t):
       hz = max(hz, PROPOSER_BURST_HZ)
     if hz <= 0.0:
       hz = PROPOSER_HZ
-    return 1.0 / float(hz)
+    per = 1.0 / float(hz)
+    nxt = self.next_plan_t(t, v_ego, strip) if self.planning else None
+    if nxt is not None and t < nxt < t + per:
+      per = max(1.0 / PROPOSER_BURST_HZ, nxt - t)   # land a frame on the plan
+    return per
+
+  def mark_planned_read(self, tr: Track, signs, read_h: float | None, neg: bool = False, t: float = 0.0) -> list:
+    """Record a planned read; return the signs released to the HUD (often [])."""
+    tr.reads += 1
+    if tr.burst_n < BURST_READS:
+      if tr.burst_n == 0:
+        tr.burst_start_t = float(t)
+      tr.burst_n += 1
+    else:
+      tr.fallback_n += 1
+    top = max(signs or [], key=lambda s: float(s.conf), default=None)
+    h = float(read_h or 0.0)
+    tr.votes.append((int(top.mph) if top is not None else 0, float(top.conf) if top is not None else 0.0, h, top))
+    if neg:
+      tr.neg = True
+      tr.done = True
+      return []
+    out = burst_decision(tr.votes)
+    if out:
+      tr.decided_mph = int(out[0].mph)
+      tr.got_mph = True
+      tr.done = True
+      return out
+    if tr.burst_n >= BURST_READS:
+      empty = not any(v[0] for v in tr.votes)
+      if not empty or tr.fallback_n >= FALLBACK_READS:
+        tr.done = True
+    return []
 
   def mark_read(self, tr: Track, *, got_mph: bool, neg: bool,
                 read_h: float | None = None, top_conf: float | None = None) -> None:
@@ -662,6 +853,104 @@ def scan_hz_for_speed(v_ego: float | None) -> float:
   v = float(v_ego)
   lo = SCAN_HZ_FLOOR if v < SCAN_FLOOR_V else SCAN_HZ_MIN
   return min(SCAN_HZ_MAX, max(lo, v / SCAN_SPACING_M))
+
+
+def range_m(h_px: float) -> float:
+  return FOCAL_PX * SIGN_H_M / max(1.0, float(h_px))
+
+
+def fit_range(history, v_ego: float | None):
+  """(t_last, range at t_last, closing m/s) from box heights; None if unusable.
+
+  Closing speed is the vehicle speed when known, else the least-squares slope.
+  The range at t_last is the mean of every sample carried forward at that speed.
+  """
+  pts = [(float(t), range_m(b[3])) for t, b in history]
+  if len(pts) < 2:
+    return None
+  t1 = pts[-1][0]
+  closing = None
+  if v_ego is not None and float(v_ego) > 0.5:
+    closing = float(v_ego)
+  else:
+    n = len(pts)
+    mt = sum(p[0] for p in pts) / n
+    md = sum(p[1] for p in pts) / n
+    den = sum((p[0] - mt) ** 2 for p in pts)
+    if den > 1e-6:
+      slope = sum((p[0] - mt) * (p[1] - md) for p in pts) / den
+      if -slope > 0.5:
+        closing = -slope
+  if closing is None:
+    return None
+  d1 = sum(d - closing * (t1 - t) for t, d in pts) / len(pts)
+  return t1, d1, closing
+
+
+def predicted_exit_t(tr: Track, strip=None, frame_w: int = 1928, horizon_s: float = EXIT_HORIZON_S) -> float:
+  """Linear (unclamped) extrapolation of the last two boxes -> first time out."""
+  if len(tr.history) < 2:
+    return math.inf
+  (t0, b0), (t1, b1) = tr.history[-2], tr.history[-1]
+  dt = max(1e-3, t1 - t0)
+  sx, sy, sw, sh = strip if strip is not None else STRIP_RECT
+  right = min(float(frame_w), float(sx + sw))
+  step = 0.05
+  k = step
+  while k <= horizon_s:
+    f = k / dt
+    px, py, pw, ph = (b1[i] + (b1[i] - b0[i]) * f for i in range(4))
+    if py < sy or px + pw > right or py + ph > sy + sh:
+      return t1 + k
+    k += step
+  return math.inf
+
+
+def burst_decision(votes) -> list:
+  """Signs to release: one strong read, or the two agreeing reads."""
+  for mph, conf, h, sign in votes:
+    if mph and conf >= STRONG_CONF and h >= STRONG_PX and sign is not None:
+      return [sign]
+  by: dict[int, list] = {}
+  for mph, _conf, _h, sign in votes:
+    if mph and sign is not None:
+      by.setdefault(mph, []).append(sign)
+  agreed = [v for v in by.values() if len(v) >= 2]
+  if agreed:
+    return max(agreed, key=lambda v: max(float(s.conf) for s in v))[:2]
+  return []
+
+
+def exit_distance_m(box, d_now: float, strip=None, frame_w: int = 1928) -> float:
+  """Range at which a sign at `box` (now at d_now) leaves the strip top or right edge.
+
+  Back-projects the box to a mount height Y (above the optical axis) and a
+  lateral offset X at d_now, then finds where its top edge reaches the strip
+  top and its right edge reaches the strip / frame right. Signs only grow up
+  and right as they approach, so those are the exits. 0 when it never exits.
+  """
+  x, y, w, h = (float(v) for v in box)
+  sx, sy, sw, _sh = strip if strip is not None else STRIP_RECT
+  right = min(float(frame_w), float(sx + sw))
+  d = max(1.0, float(d_now))
+  top_m = (CAM_CY - y) * d / FOCAL_PX               # sign top above the axis (m)
+  right_m = (x + w - CAM_CX) * d / FOCAL_PX         # sign right edge, right of axis (m)
+  out = 0.0
+  if top_m > 0.0 and CAM_CY - sy > 1.0:
+    out = max(out, FOCAL_PX * top_m / (CAM_CY - float(sy)))
+  if right_m > 0.0 and right - CAM_CX > 1.0:
+    out = max(out, FOCAL_PX * right_m / (right - CAM_CX))
+  return out
+
+
+def clamp_read_dist(v) -> float:
+  try:
+    d = float(v)
+  except Exception:
+    return READ_DIST_DEFAULT_M
+  if not math.isfinite(d):
+    return READ_DIST_DEFAULT_M
+  return min(READ_DIST_MAX_M, max(READ_DIST_MIN_M, d))
 
 
 def reader_next_after(*, end: float, infer_s: float, steady: float, duty_t: float,

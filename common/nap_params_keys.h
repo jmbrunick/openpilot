@@ -101,6 +101,7 @@
     // no vCruise / HUD MAX, no osm.org. Process: speedsignd.
     {"NAPSpeedSignLog", {PERSISTENT, BOOL, "0"}},
     {"NAPSignOthers", {PERSISTENT, BOOL, "0"}},
+    {"NAPSignReadDistM", {PERSISTENT, FLOAT, "40"}},  // speed sign read distance floor, 15-60 m
     {"NAPSpeedSignConfirmed", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, JSON}},
     // Soft wheel lateral handoff. Default ON. Yield on driver intent
     // (sustained torsion + aligned rate + hands on). Stay yielded while

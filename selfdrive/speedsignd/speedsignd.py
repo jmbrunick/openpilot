@@ -92,6 +92,7 @@ from openpilot.selfdrive.speedsignd.detect import (
 )
 from openpilot.selfdrive.speedsignd import others as other_signs_mod
 from openpilot.selfdrive.speedsignd import strip_geom
+from openpilot.selfdrive.speedsignd import sign_map
 from openpilot.selfdrive.speedsignd.nv12 import copy_nv12_detect_crop, copy_nv12_rect, subcrop_nv12
 from openpilot.selfdrive.speedsignd.paths import (
   OTHER_SIGNS_PARAM, PARAM_KEY, default_log_path, default_onnx_path, default_other_signs_path, default_proposer_path,
@@ -796,6 +797,21 @@ def read_others_param(params) -> bool:
     return False
 
 
+def read_plan_params(params) -> float:
+  """NAPSignReadDistM clamped to 15-60 m; bad / missing -> default."""
+  try:
+    v = params.get(two_stage.READ_DIST_PARAM)
+    if v is None or v == "" or v == b"":
+      return two_stage.READ_DIST_DEFAULT_M
+    return two_stage.clamp_read_dist(v)
+  except Exception:
+    return two_stage.READ_DIST_DEFAULT_M
+
+
+def apply_plan_params(tracker, dist_m: float) -> None:
+  tracker.target_m = float(dist_m)
+
+
 def join_reasons(*parts: str) -> str:
   out: list[str] = []
   for part in parts:
@@ -1261,7 +1277,7 @@ def live_sign_publish_fields(
 
 def _publish_live(
   pm, hold: LiveSignHold, signs, now_mono: float, messaging,
-  weights_missing: bool, detect_paused: bool = False,
+  weights_missing: bool, detect_paused: bool = False, sign_loc: dict | None = None,
 ) -> None:
   msg_valid, mph, conf, missing, paused = live_sign_publish_fields(
     hold, signs, now_mono, weights_missing, detect_paused,
@@ -1272,7 +1288,58 @@ def _publish_live(
     getattr(msg, SERVICE_NAME),
     mph=mph, conf=conf, valid=bool(mph), weights_missing=missing, detect_paused=paused,
   )
+  if sign_loc:
+    fill_sign_loc(getattr(msg, SERVICE_NAME), sign_loc)
   pm.send(SERVICE_NAME, msg)
+
+
+def gps_sigma_from_sm(sm) -> float | None:
+  for sock in ("gpsLocationExternal", "gpsLocation"):
+    try:
+      if sm.recv_frame.get(sock, -1) > 0:
+        acc = float(sm[sock].horizontalAccuracy)
+        if math.isfinite(acc) and acc > 0:
+          return acc
+    except Exception:
+      pass
+  return None
+
+
+def place_sign(diag: dict, released, tr, sm, path: str | None = None) -> dict | None:
+  """Place a burst decision on the ground and append it to sign_map.jsonl."""
+  meta = diag.get("read_jpg_meta") or {}
+  box = diag.get("read_box")
+  if not meta.get("gps_ok") or box is None:
+    return None
+  try:
+    rpy = calib_rpy_from_sm(sm)
+  except Exception:
+    rpy = None
+  loc = sign_map.locate(
+    float(meta.get("lat") or 0.0), float(meta.get("lon") or 0.0), meta.get("bearing"), box,
+    rpy=rpy, gps_sigma_m=gps_sigma_from_sm(sm),
+  )
+  if loc is None:
+    return None
+  top = max(released, key=lambda s: float(s.conf))
+  rec = sign_map.record(int(top.mph), float(top.conf), float(box[3]), loc,
+                        float(meta.get("t") or 0.0), int(tr.reads))
+  sign_map.append(rec, path or sign_map.SIGN_MAP_PATH)
+  return rec
+
+
+def fill_sign_loc(m, loc: dict) -> None:
+  try:
+    m.signSeq = int(loc.get("seq", 0))
+    m.signLat = float(loc["lat"])
+    m.signLon = float(loc["lon"])
+    m.signHeading = float(loc["heading"])
+    m.signSigmaM = float(loc["sigma_m"])
+    m.signRangeM = float(loc["range_m"])
+    m.signPx = float(loc["px"])
+    m.signMph = int(loc["mph"])
+  except Exception:
+    pass
 
 
 def format_read_timing(
@@ -1450,6 +1517,7 @@ def main():
   # optional classifier, display / log only. Never touches longitudinal.
   from openpilot.common.params import Params
   others_params = Params()
+  apply_plan_params(tracker, read_plan_params(others_params))
   others = other_signs_mod.OtherSigns(other_signs_mod.OnnxFamilyReader(default_other_signs_path()))
   others.set_enabled(read_others_param(others_params))
   others_param_t = time.monotonic()
@@ -1514,6 +1582,8 @@ def main():
   next_propose = 0.0
   # v2.1: proposer duty cap (all passes) and the exempt-read clock.
   prop_duty = two_stage.ProposerDuty()
+  sign_seq = 0
+  sign_loc: dict | None = None
   exempt_next = 0.0
   # Proposer CPU seconds since the last reader sample. Subtracted from the
   # process share so the 25% read budget does not see the strip proposer.
@@ -1725,7 +1795,19 @@ def main():
           read_tid = diag.get("read_tid")
           if reader_ran and read_tid is not None:
             for tr in tracker.tracks:
-              if tr.tid == read_tid:
+              if tr.tid == read_tid and tr.planned:
+                # v2.2: the HUD sees only a burst decision (2 agreeing reads,
+                # or one >= 0.85 on a >= 56 px box). JSONL already ran.
+                signs = tracker.mark_planned_read(
+                  tr, signs, diag.get("read_h"), neg=two_stage.neg_read(diag.get("read_diag")),
+                  t=float(diag.get("t_frame", now_mono)),
+                )
+                if signs:
+                  placed = place_sign(diag, signs, tr, sm)
+                  if placed is not None:
+                    sign_seq += 1
+                    sign_loc = dict(placed, seq=sign_seq)
+              elif tr.tid == read_tid:
                 tracker.mark_read(
                   tr, got_mph=bool(signs), neg=two_stage.neg_read(diag.get("read_diag")),
                   read_h=diag.get("read_h"), top_conf=two_stage.top_conf(signs),
@@ -1836,9 +1918,12 @@ def main():
             exempt_now = tracker.budget_exempt(float(diag.get("t_frame", now_mono)))
             paused = model_reason_pauses_proposer(reason) and extra_s > 0.0
             duty_t = earliest_budget_start(duty_spans, now_mono, max(0.0, reader_s))
+            if reader_s > 0.0:
+              tracker.read_s = 0.8 * tracker.read_s + 0.2 * reader_s
             if exempt_now and not paused:
+              in_burst = tracker.in_burst(float(diag.get("t_frame", now_mono)))
               exempt_next = two_stage.reader_next_after(
-                end=now_mono, infer_s=reader_s, steady=next_mono, duty_t=duty_t, exempt=True, empty=empty_read,
+                end=now_mono, infer_s=0.0 if in_burst else reader_s, steady=next_mono, duty_t=duty_t, exempt=True, empty=empty_read,
               )
               next_detect = max(next_detect, next_mono)
             elif empty_read and not paused and read_backoff <= 0.0:
@@ -2095,7 +2180,8 @@ def main():
             tid = None
             if cand is not None and bank_c is not None:
               rect = two_stage.capture_rect(
-                cand.crop_box(), int(bank_c.frame_w), int(bank_c.frame_h),
+                cand.read_box(t_fr, v_job) if cand.planned else cand.crop_box(),
+              int(bank_c.frame_w), int(bank_c.frame_h),
               )
               cap_c = subcrop_nv12(bank_c, rect)
               tid = None if cap_c is None else cand.tid
@@ -2122,7 +2208,10 @@ def main():
             d.update(
               two_stage=1, t_frame=t_fr, props=props, prop_ms=round(prop_ms, 1),
               prop_passes=1 if upper_c is None else 2,
-              read_h=None if cand is None or cap_c is None else float(cand.box[3]),
+              read_box=None if cand is None or cap_c is None else [float(v) for v in (
+                cand.read_box(t_fr, v_job) if cand.planned else cand.box)],
+              read_h=None if cand is None or cap_c is None else float(
+                (cand.read_box(t_fr, v_job) if cand.planned else cand.box)[3]),
               read_tid=tid, read_diag=read_diag, read_jpg=jpg,
               tracker_applied=1, reader_ran=cap_c is not None, reader_s=reader_s,
               read_jpg_meta=None if cap_c is None else dict(
@@ -2207,10 +2296,11 @@ def main():
           pass
     _publish_live(
       pm, hold, signs, now_mono, messaging,
-      detector.weights_missing(), detect_paused=sample.detect_paused,
+      detector.weights_missing(), detect_paused=sample.detect_paused, sign_loc=sign_loc,
     )
     if now_mono - others_param_t >= OTHERS_PARAM_PERIOD_S:
       others_param_t = now_mono
+      apply_plan_params(tracker, read_plan_params(others_params))
       others.set_enabled(read_others_param(others_params))
       others.prune(tr.tid for tr in tracker.tracks)
     snap = (others.state.enabled, others.state.track_id, others.state.family, others.state.reads,
