@@ -175,7 +175,20 @@ struct PathObstacleVisionNAP @0x80ae746ee2596b11 {
   vRel @23 :Float32;         # m/s, radar longitudinal relative
 }
 
-struct CustomReserved5 @0xa5cd762cd951a455 {
+# NAP other-sign reader (NAPSignOthers). Display / log only: nothing here
+# feeds planning or longitudinal control. Stop confirmations are cross-checked
+# against the driving model's own stop plan (modelV2 velocity), never sent on.
+struct OtherSignsNAP @0xa5cd762cd951a455 {
+  enabled @0 :Bool;          # NAPSignOthers on
+  readerMissing @1 :Bool;    # no other_signs.onnx installed; family reads are no-ops
+  family @2 :Text;           # stop, yield, do_not_enter, school, railroad, curve, or ""
+  conf @3 :Float32;
+  trackId @4 :UInt32;
+  hud @5 :Bool;              # passes the per-family HUD rule
+  confirmed @6 :Bool;        # passes the per-family confirmation (log) rule
+  reads @7 :UInt8;           # agreeing reads on this track
+  modelStopPlan @8 :Bool;    # modelV2 plan slows to a stop (stop cross-check)
+  detail @9 :Text;           # e.g. curve direction "left"/"right"
 }
 
 struct CustomReserved6 @0xf98d843bfd7004a3 {

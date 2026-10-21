@@ -90,8 +90,12 @@ from openpilot.selfdrive.speedsignd.detect import (
   parse_infer_threads,
   reader_session_warm,
 )
+from openpilot.selfdrive.speedsignd import others as other_signs_mod
+from openpilot.selfdrive.speedsignd import strip_geom
 from openpilot.selfdrive.speedsignd.nv12 import copy_nv12_detect_crop, copy_nv12_rect, subcrop_nv12
-from openpilot.selfdrive.speedsignd.paths import PARAM_KEY, default_log_path, default_onnx_path, default_proposer_path
+from openpilot.selfdrive.speedsignd.paths import (
+  OTHER_SIGNS_PARAM, PARAM_KEY, default_log_path, default_onnx_path, default_other_signs_path, default_proposer_path,
+)
 from openpilot.selfdrive.speedsignd import two_stage
 from openpilot.selfdrive.speedsignd.detect_types import SpeedSign
 from openpilot.selfdrive.speedsignd.yolo import REFINE_OVERRIDE_CONF, SIGN_LIKE_CONF
@@ -757,6 +761,41 @@ class ModelWatch:
     return reason
 
 
+def drop_cpu_reasons(reason: str, exempt: bool) -> str:
+  """While a confirmed sign track is live, skip the cpu-load / cpu-budget rest.
+
+  modeld lag, alert-lag and disk-stall reasons are kept.
+  """
+  if not exempt:
+    return reason
+  return "+".join(p for p in (reason or "").split("+") if p and p not in ("cpu-load", "cpu-budget"))
+
+
+def calib_rpy_from_sm(sm):
+  """liveCalibration rpyCalib when calibrated, else None. Never raises."""
+  try:
+    if not sm.alive.get("liveCalibration", False):
+      return None
+    lc = sm["liveCalibration"]
+    if str(lc.calStatus) != "calibrated":
+      return None
+    rpy = list(lc.rpyCalib)
+    return rpy if len(rpy) == 3 else None
+  except Exception:
+    return None
+
+
+OTHERS_PARAM_PERIOD_S = 5.0
+OTHERS_PUBLISH_PERIOD_S = 1.0
+
+
+def read_others_param(params) -> bool:
+  try:
+    return bool(params.get_bool(OTHER_SIGNS_PARAM))
+  except Exception:
+    return False
+
+
 def join_reasons(*parts: str) -> str:
   out: list[str] = []
   for part in parts:
@@ -1405,6 +1444,17 @@ def main():
   proposer = two_stage.Proposer(default_proposer_path())
   tracker = two_stage.SignTracker()
   two_period_s = 1.0 / two_stage.PROPOSER_HZ
+  last_speed_ms = None
+  scan_i = 0
+  # Other signs (NAPSignOthers, default Off): same proposer / tracker / crop,
+  # optional classifier, display / log only. Never touches longitudinal.
+  from openpilot.common.params import Params
+  others_params = Params()
+  others = other_signs_mod.OtherSigns(other_signs_mod.OnnxFamilyReader(default_other_signs_path()))
+  others.set_enabled(read_others_param(others_params))
+  others_param_t = time.monotonic()
+  others_pub_t = 0.0
+  others_last_sent = None
   last_proposer_try = time.monotonic()
   last_stopped_log = 0.0
   backend = detector.backend_name()
@@ -1452,10 +1502,10 @@ def main():
     two_stage.TRACK_SOLO_PROPOSAL_CONF, two_stage.READS_AFTER_MPH, two_stage.STRIP_RECT,
   )
   sm = messaging.SubMaster(
-    ["gpsLocationExternal", "gpsLocation", "selfdriveState", "modelV2"],
+    ["gpsLocationExternal", "gpsLocation", "selfdriveState", "modelV2", "liveCalibration"],
     frequency=SM_HZ,
   )
-  pm = messaging.PubMaster([SERVICE_NAME])
+  pm = messaging.PubMaster([SERVICE_NAME, "otherSignsNAP"])
   rk = Ratekeeper(SM_HZ, print_delay_threshold=None)
   client = None
   last_connect = 0.0
@@ -1718,11 +1768,11 @@ def main():
           # the reader. modeld lag still pauses both.
           reason = model_reason
         else:
-          reason = join_reasons(
+          reason = drop_cpu_reasons(join_reasons(
             pressure_reason(pressure),
             model_reason,
             "cpu-budget" if cpu_over_budget(read_share) else "",
-          )
+          ), two and tracker.budget_exempt(time.monotonic()))
         pace_infer = reader_s if two and reader_ran else outcome.infer_s
         extra_s = model_guard_rest_s(pace_infer, period_s, reason, hard)
         scheduled_backoff = extra_s > 0.0
@@ -1741,7 +1791,7 @@ def main():
         bursting_next = False
         if two:
           t_frame = float(diag.get("t_frame", now_mono))
-          propose_at = t_frame + tracker.proposer_period_s(now_mono)
+          propose_at = t_frame + tracker.proposer_period_s(now_mono, last_speed_ms)
           if model_reason_pauses_proposer(reason) and extra_s > 0.0:
             propose_at = max(propose_at, now_mono + extra_s)
             next_detect = max(next_detect, now_mono + extra_s)
@@ -1895,6 +1945,7 @@ def main():
       else:
         which = window_i
         speed_ms = two_stage.speed_from_sm(sm)
+        last_speed_ms = speed_ms
         if (
           proposer.ok is False and not sample.controlling
           and now_mono - last_proposer_try >= ONNX_RETRY_S
@@ -1921,12 +1972,23 @@ def main():
           # not the box predicted from the previous frame.
           fw = int(getattr(buf, "width", 1928) or 1928)
           fh = int(getattr(buf, "height", 1208) or 1208)
-          strip = copy_nv12_rect(buf, two_stage.STRIP_RECT)
-          bank = copy_nv12_rect(buf, two_stage.frame_bank_rect(fw, fh))
+          # Calibration-placed main strip; the upper strip (right road edge,
+          # top ~y350) alternates scans. Missing inputs -> legacy STRIP_RECT.
+          main_rect, upper_rect = strip_geom.strips(
+            fw, fh, rpy=calib_rpy_from_sm(sm), edge=strip_geom.edge_from_model(sm["modelV2"]),
+          )
+          scan_i += 1
+          if upper_rect is not None and scan_i % 2:
+            upper_rect = None
+          scan_rect = two_stage.union_rect(main_rect, upper_rect)
+          strip = copy_nv12_rect(buf, main_rect)
+          upper = copy_nv12_rect(buf, upper_rect) if upper_rect is not None else None
+          bank = copy_nv12_rect(buf, two_stage.frame_bank_rect(fw, fh, scan_rect))
           t_frame = time.monotonic()
           allow_read = now_mono >= next_detect
           nv12 = strip
-          two_job = None if strip is None else (strip, bank, allow_read, t_frame)
+          stop_plan_now = other_signs_mod.model_stop_plan(sm["modelV2"], speed_ms) if others.active else False
+          two_job = None if strip is None else (strip, bank, allow_read, t_frame, upper, scan_rect, speed_ms, stop_plan_now)
         else:
           nv12 = copy_nv12_detect_crop(buf, which) if buf is not None else None
           two_job = None
@@ -1979,12 +2041,15 @@ def main():
             if not detector.compile_allowed_now():
               raise RuntimeError("compile-blocked while driving")
             assert job is not None
-            strip_c, bank_c, allow_read, t_fr = job
+            strip_c, bank_c, allow_read, t_fr, upper_c, scan_rect, v_job, stop_plan_job = job
             t0 = time.monotonic()
             props = proposer.propose(strip_c)
+            if upper_c is not None:
+              props = list(props) + list(proposer.propose(upper_c))
             prop_ms = (time.monotonic() - t0) * 1000.0
             cand = two_stage.select_read_target(
               tracker, props, t_fr, allow_read=bool(allow_read),
+              v_ego=v_job, next_t=t_fr + tracker.proposer_period_s(t_fr, v_job), strip=scan_rect,
             )
             cap_c = None
             rect = None
@@ -2009,6 +2074,8 @@ def main():
               )
               reader_s = time.monotonic() - t_r
               read_diag = detector.diag_dict()
+              if others.active:
+                others.on_read(cap_c, tid, stop_plan=stop_plan_job)
               if signs_r and not (engaged_now and stalled):
                 jpg = two_stage.crop_jpeg_bytes(cap_c)
               signs_r = [replace(s, track_id=tid) for s in signs_r]
@@ -2101,6 +2168,17 @@ def main():
       pm, hold, signs, now_mono, messaging,
       detector.weights_missing(), detect_paused=sample.detect_paused,
     )
+    if now_mono - others_param_t >= OTHERS_PARAM_PERIOD_S:
+      others_param_t = now_mono
+      others.set_enabled(read_others_param(others_params))
+      others.prune(tr.tid for tr in tracker.tracks)
+    snap = (others.state.enabled, others.state.track_id, others.state.family, others.state.reads,
+            others.state.hud, others.state.confirmed)
+    if others.enabled and (snap != others_last_sent or now_mono - others_pub_t >= OTHERS_PUBLISH_PERIOD_S):
+      omsg = messaging.new_message("otherSignsNAP")
+      other_signs_mod.fill_message(omsg.otherSignsNAP, others.state)
+      pm.send("otherSignsNAP", omsg)
+      others_last_sent, others_pub_t = snap, now_mono
     rk.keep_time()
     reset_ratekeeper_if_behind(rk, time.monotonic())
 

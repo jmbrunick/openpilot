@@ -48,3 +48,14 @@ def default_proposer_path() -> str:
   if override:
     return override
   return os.path.join(nap_data_dir(), PROPOSER_FILENAME)
+
+OTHER_SIGNS_FILENAME = "other_signs.onnx"
+OTHER_SIGNS_PARAM = "NAPSignOthers"
+
+
+def default_other_signs_path() -> str:
+  """Optional symbol-sign classifier. Absent -> other-sign reads are no-ops."""
+  override = os.environ.get("NAP_OTHER_SIGNS_ONNX")
+  if override:
+    return override
+  return os.path.join(nap_data_dir(), OTHER_SIGNS_FILENAME)

@@ -23,6 +23,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   RADAR_OFFSET_MIN,
   RESTORE_EPAS_INSTRUCTIONS,
   INSTALL_SPEED_SIGN_WEIGHTS_INSTRUCTIONS,
+  NAP_SIGN_OTHERS,
   NAP_SPEED_SIGN_LOG,
   WIPER_SPEED_LABELS,
   WIPER_SPEED_VALUES,
@@ -227,6 +228,7 @@ class NAPLayoutMici(NavScroller):
     map_speed_btn.set_click_callback(lambda: gui_app.push_widget(self._map_speed_page))
 
     speed_sign_log = BigParamControl("speed sign logger", NAP_SPEED_SIGN_LOG)
+    sign_others = BigParamControl("other signs (display only)", NAP_SIGN_OTHERS)
 
     self._weights_status = BigButton("speed sign weights", install_status_summary())
     install_weights_btn = BigButton("install weights", "start")
@@ -330,6 +332,7 @@ class NAPLayoutMici(NavScroller):
 
     self._scroller.add_widgets([
       speed_sign_log,
+      sign_others,
       self._weights_status,
       install_weights_btn,
       pedal_enabled,

@@ -56,6 +56,21 @@ CAPTURE_MIN_SIDE = 240
 CAPTURE_MAX_SIDE = 480
 CAPTURE_SCALE = 3.0
 MAX_READS_PER_TRACK = 3
+# A track not re-measured for this long is retired (never cropped stale).
+LOST_S = 0.6
+# Speed-scaled read size: 60 px at/below READ_V_SLOW, 40 px at/above READ_V_FAST
+# (55 mph). The reader letterboxes to 320 either way; at 55 mph a 60 px box is
+# only ~1.2 s from the car and urban signs leave the strip top first (~42 m).
+READ_PX_SLOW = 60.0
+READ_PX_FAST = 40.0
+READ_V_SLOW = 15.6   # 35 mph
+READ_V_FAST = 24.6   # 55 mph
+# Early read (predicted exit) needs at least this box height.
+EARLY_MIN_PX = 24.0
+# Speed-scaled scan rate: about one proposer frame per SCAN_SPACING_M, clamped.
+SCAN_SPACING_M = 12.0
+SCAN_HZ_MIN = 0.5
+SCAN_HZ_MAX = 2.5
 # Sharp reads allowed after the first mph, so a second HUD vote can land
 # on the same sign. 0 restores "done on the first mph".
 READS_AFTER_MPH = 1
@@ -259,22 +274,52 @@ class SignTracker:
       return True
     return tr.hits >= 1 and tr.score >= TRACK_SOLO_PROPOSAL_CONF
 
-  def capture_candidate(self, t: float) -> Track | None:
+  def capture_candidate(self, t: float, *, v_ego: float | None = None, next_t: float | None = None,
+                        strip=None) -> Track | None:
     """Track due for its sharp read now, or None. Biggest measured box first.
 
-    The box is the last measurement (after update), not predicted().
+    The crop is always the box measured THIS frame (tr.last_t == t). A track
+    that was not re-measured this frame is never read: its stored box is where
+    the sign was, not where it is (Oct 19 "lost" reads cropped empty road).
+    A track lost longer than LOST_S is retired.
+
+    Timing (all optional; None keeps the fixed 60 px / right-edge triggers):
+      v_ego   speed (GPS, then modelV2) -> speed-scaled read size, ~40 px at >= 55 mph
+      next_t  time of the next proposer frame -> read now if Track.predicted()
+              says the box leaves the strip / frame before then
+      strip   (x, y, w, h) of the scanned area, used with next_t
+    predicted() only times the read. It is never cropped.
     """
+    need_px = read_px_for_speed(v_ego)
     due = []
     for tr in self.tracks:
       if tr.done or tr.neg or tr.reads >= MAX_READS_PER_TRACK or not self._readable(tr):
         continue
+      if abs(t - tr.last_t) > 1e-6:
+        if t - tr.last_t > LOST_S:
+          tr.done = True
+        continue
       x, _y, w, h = tr.box
-      lost = t - tr.last_t > 0.6
-      if h >= CAPTURE_MIN_H or x + w >= CAPTURE_EDGE_X or lost or (tr.reads > 0):
+      early = next_t is not None and h >= EARLY_MIN_PX and exits_before(tr, next_t, strip)
+      if h >= need_px or x + w >= CAPTURE_EDGE_X or early or (tr.reads > 0):
         due.append(tr)
     if not due:
       return None
     return max(due, key=lambda tr: tr.box[3])
+
+  def budget_exempt(self, t: float) -> bool:
+    """A confirmed (seen-twice) track is live and still owed a read.
+
+    While true, the reader's cpu-load / cpu-budget rest is skipped so the
+    1-3 s a sign is visible is not spent resting. Bounded by
+    MAX_READS_PER_TRACK per sign; the modeld-lag pause still applies.
+    """
+    for tr in self.tracks:
+      if tr.done or tr.neg or tr.reads >= MAX_READS_PER_TRACK or tr.hits < TRACK_MIN_HITS:
+        continue
+      if t - tr.last_t <= LOST_S:
+        return True
+    return False
 
   def wants_fast_proposer(self, t: float) -> bool:
     """True while a not-yet-confirmed track is still inside the gap window."""
@@ -285,8 +330,10 @@ class SignTracker:
         return True
     return False
 
-  def proposer_period_s(self, t: float) -> float:
-    hz = PROPOSER_BURST_HZ if self.wants_fast_proposer(t) else PROPOSER_HZ
+  def proposer_period_s(self, t: float, v_ego: float | None = None) -> float:
+    hz = scan_hz_for_speed(v_ego)
+    if self.wants_fast_proposer(t):
+      hz = max(hz, PROPOSER_BURST_HZ)
     if hz <= 0.0:
       hz = PROPOSER_HZ
     return 1.0 / float(hz)
@@ -304,7 +351,8 @@ class SignTracker:
       tr.done = True
 
 
-def select_read_target(tracker: SignTracker, props, t: float, *, allow_read: bool) -> Track | None:
+def select_read_target(tracker: SignTracker, props, t: float, *, allow_read: bool,
+                       v_ego: float | None = None, next_t: float | None = None, strip=None) -> Track | None:
   """Apply this frame's proposals, then pick the sharp-read track.
 
   Call this before cropping. The returned track's crop_box() is the
@@ -315,16 +363,16 @@ def select_read_target(tracker: SignTracker, props, t: float, *, allow_read: boo
   tracker.update(props, t)
   if not allow_read:
     return None
-  return tracker.capture_candidate(t)
+  return tracker.capture_candidate(t, v_ego=v_ego, next_t=next_t, strip=strip)
 
 
-def frame_bank_rect(frame_w: int = 1928, frame_h: int = 1208) -> tuple[int, int, int, int]:
+def frame_bank_rect(frame_w: int = 1928, frame_h: int = 1208, rect=None) -> tuple[int, int, int, int]:
   """Strip expanded by half the max read crop, even-aligned, clamped.
 
   The worker proposes on STRIP_RECT, then subcrops the sharp read from
   this bank of the same frame. No second proposer pass.
   """
-  x, y, w, h = STRIP_RECT
+  x, y, w, h = STRIP_RECT if rect is None else rect
   pad = CAPTURE_MAX_SIDE // 2
   x0 = int(x) - pad
   y0 = int(y) - pad
@@ -555,3 +603,46 @@ def record_answer(displayed_mph: int, yes: bool, d: str | None = None, now: floa
     return rec
   except Exception:
     return None
+
+
+def read_px_for_speed(v_ego: float | None) -> float:
+  """Box height (px) that triggers the sharp read. None -> CAPTURE_MIN_H."""
+  if v_ego is None:
+    return float(CAPTURE_MIN_H)
+  v = float(v_ego)
+  if v <= READ_V_SLOW:
+    return min(float(CAPTURE_MIN_H), READ_PX_SLOW)
+  if v >= READ_V_FAST:
+    return min(float(CAPTURE_MIN_H), READ_PX_FAST)
+  f = (v - READ_V_SLOW) / (READ_V_FAST - READ_V_SLOW)
+  return min(float(CAPTURE_MIN_H), READ_PX_SLOW + f * (READ_PX_FAST - READ_PX_SLOW))
+
+
+def scan_hz_for_speed(v_ego: float | None) -> float:
+  """~1 proposer frame per SCAN_SPACING_M, clamped. None -> PROPOSER_HZ."""
+  if v_ego is None:
+    return float(PROPOSER_HZ)
+  return min(SCAN_HZ_MAX, max(SCAN_HZ_MIN, float(v_ego) / SCAN_SPACING_M))
+
+
+def exits_before(tr: Track, next_t: float, strip=None, frame_w: int = 1928) -> bool:
+  """True if Track.predicted(next_t) leaves the scanned area or the frame.
+
+  Uses constant growth / drift from the last two measured boxes. Needs two
+  boxes; otherwise False (wait for the normal triggers).
+  """
+  if len(tr.history) < 2:
+    return False
+  px, py, pw, ph = tr.predicted(next_t)
+  sx, sy, sw, sh = strip if strip is not None else STRIP_RECT
+  right = min(float(frame_w), float(sx + sw))
+  return py < sy or px + pw > right or py + ph > sy + sh
+
+
+def union_rect(a, b):
+  """Smallest rect covering a and b (b may be None)."""
+  if b is None:
+    return a
+  x0, y0 = min(a[0], b[0]), min(a[1], b[1])
+  x1, y1 = max(a[0] + a[2], b[0] + b[2]), max(a[1] + a[3], b[1] + b[3])
+  return (x0, y0, x1 - x0, y1 - y0)
