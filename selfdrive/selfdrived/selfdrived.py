@@ -419,6 +419,12 @@ class SelfdriveD:
     else:
       self._low_vis_s = 0.0
 
+    # NAP cone_avoid take-over (controlsd only sets it in Active mode).
+    if self.enabled and bool(getattr(self.sm['controlsState'], 'coneAvoidTakeOver', False)):
+      cone_to = getattr(EventName, 'coneTakeOver', None)
+      if cone_to is not None:
+        self.events.add(cone_to)
+
     # Animal or person chime. Permanent, so it sounds engaged or not.
     # It does not enter the state machine as a disable or a no-entry.
     if self.obstacle_chime:

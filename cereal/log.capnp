@@ -149,6 +149,7 @@ struct OnroadEvent @0xc4fa6047f024e718 {
     obstacleChime @113;
     preapBrakeLongActive @114;  # Pre-AP: brake switch down while pedal long is still active. Log only.
     lowVisibilityProlonged @115;  # NAP: low-visibility lateral degrade latched > 45 s. Louder alert.
+    coneTakeOver @116;  # NAP cone_avoid: cones too close even after the capped shift
 
     soundsUnavailableDEPRECATED @47;
   }
@@ -838,6 +839,13 @@ struct ControlsState @0x97ff69c53601abf1 {
   coneLineHold @70 :Bool;   # NAP: holding the driver's offset or applying the cone shift near cones
   coneLineOffset @71 :Float32;  # m, +right, path shift applied (0 when not holding/shifting)
   obstacleAvoidOffset @72 :Float32;  # m, +right, in-lane shift away from a radar+vision confirmed object (Oct 14)
+  coneAvoidOffset @73 :Float32;   # NAP cone_avoid: planned offset m, +right (logged in every mode)
+  coneAvoidApplied @74 :Float32;  # m actually applied (0 unless NAPConeAvoid Active and ungated)
+  coneAvoidClear @75 :Float32;    # m, smallest cone-to-car-edge gap at the planned offset
+  coneAvoidTakeOver @76 :Bool;    # not enough room even after the capped shift (alert, Active only)
+  coneAvoidLowConf @77 :Bool;     # only low-confidence cones (radar single, no camera) seen
+  coneAvoidMode @78 :UInt8;       # 0 Off, 1 Log-only, 2 Active
+  coneLegacyWouldSteer @79 :Float32;  # coneLineNAP.wouldSteer read every loop (log-only bug fix)
 
   lateralControlState :union {
     pidState @53 :LateralPIDState;
