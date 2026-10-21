@@ -89,11 +89,13 @@ class ForceOffroadConfirmDialog(ConfirmDialog):
 
 
 _dialog_open = False
+_dialog: "ForceOffroadConfirmDialog | None" = None
 
 
 def _on_result(result: DialogResult):
-  global _dialog_open
+  global _dialog_open, _dialog
   _dialog_open = False
+  _dialog = None
   params = Params()
   if result == DialogResult.CONFIRM:
     confirm_force_offroad(params)
@@ -103,11 +105,30 @@ def _on_result(result: DialogResult):
 
 def show_force_offroad_confirm() -> bool:
   """Push the dialog once. Returns True if it was shown this call."""
-  global _dialog_open
+  global _dialog_open, _dialog
   if _dialog_open:
     return False
   _dialog_open = True
-  gui_app.push_widget(ForceOffroadConfirmDialog(callback=_on_result))
+  _dialog = ForceOffroadConfirmDialog(callback=_on_result)
+  gui_app.push_widget(_dialog)
+  return True
+
+
+def dismiss_force_offroad_confirm() -> bool:
+  """Close the dialog without answering: it was answered elsewhere (MCU / nap_dash).
+
+  The params already hold the answer; running the callback again would
+  re-write them (or, for No, cancel a Yes). Returns True if it was closed.
+  """
+  global _dialog_open, _dialog
+  if not _dialog_open:
+    return False
+  dlg = _dialog
+  _dialog_open = False
+  _dialog = None
+  stack = getattr(gui_app, "_nav_stack", None)
+  if dlg is not None and stack is not None and dlg in stack:
+    gui_app.pop_widget(stack.index(dlg))
   return True
 
 
@@ -121,9 +142,13 @@ def maybe_show_force_offroad_confirm(params=None, started: bool | None = None) -
   force = bool(params.get_bool(PARAM))
   confirmed = bool(params.get_bool(CONFIRMED_PARAM))
   if not force:
+    # No on the MCU (or toggle off) while the comma dialog is still up.
+    dismiss_force_offroad_confirm()
     if confirmed or params.get_bool(HANDOFF_READY_PARAM):
       apply_force_offroad_toggle(params, False, started=False)
     return False
   if not needs_driver_confirm(force, confirmed, started):
+    # Yes on the MCU already wrote NAPForceOffroadConfirmed: one prompt per action.
+    dismiss_force_offroad_confirm()
     return False
   return show_force_offroad_confirm()
