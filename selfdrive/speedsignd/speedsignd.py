@@ -1512,6 +1512,9 @@ def main():
   last_onnx_try = time.monotonic()
   next_detect = 0.0
   next_propose = 0.0
+  # v2.1: proposer duty cap (all passes) and the exempt-read clock.
+  prop_duty = two_stage.ProposerDuty()
+  exempt_next = 0.0
   # Proposer CPU seconds since the last reader sample. Subtracted from the
   # process share so the 25% read budget does not see the strip proposer.
   proposer_cpu_s = 0.0
@@ -1713,13 +1716,20 @@ def main():
         reader_s = float(diag.get("reader_s") or 0.0) if two else float(outcome.infer_s)
         if two:
           proposer_cpu_s += max(0.0, float(diag.get("prop_ms") or 0.0) / 1000.0)
+          prop_duty.add(
+            float(diag.get("t_frame", now_mono)), int(diag.get("prop_passes") or 1),
+            max(0.0, float(diag.get("prop_ms") or 0.0) / 1000.0),
+          )
           if not diag.get("tracker_applied"):
             tracker.update(diag.get("props") or [], float(diag.get("t_frame", now_mono)))
           read_tid = diag.get("read_tid")
           if reader_ran and read_tid is not None:
             for tr in tracker.tracks:
               if tr.tid == read_tid:
-                tracker.mark_read(tr, got_mph=bool(signs), neg=two_stage.neg_read(diag.get("read_diag")))
+                tracker.mark_read(
+                  tr, got_mph=bool(signs), neg=two_stage.neg_read(diag.get("read_diag")),
+                  read_h=diag.get("read_h"), top_conf=two_stage.top_conf(signs),
+                )
             if signs and diag.get("read_jpg_meta") is not None:
               top = max(signs, key=lambda s: float(s.conf))
               meta = dict(diag["read_jpg_meta"])
@@ -1772,7 +1782,7 @@ def main():
             pressure_reason(pressure),
             model_reason,
             "cpu-budget" if cpu_over_budget(read_share) else "",
-          ), two and tracker.budget_exempt(time.monotonic()))
+          ), two and tracker.budget_exempt(float(diag.get("t_frame", now_mono))))
         pace_infer = reader_s if two and reader_ran else outcome.infer_s
         extra_s = model_guard_rest_s(pace_infer, period_s, reason, hard)
         scheduled_backoff = extra_s > 0.0
@@ -1795,6 +1805,7 @@ def main():
           if model_reason_pauses_proposer(reason) and extra_s > 0.0:
             propose_at = max(propose_at, now_mono + extra_s)
             next_detect = max(next_detect, now_mono + extra_s)
+            exempt_next = max(exempt_next, now_mono + extra_s)
           next_propose = max(next_propose, propose_at)
           if reader_ran:
             read_backoff = 0.0 if model_reason_pauses_proposer(reason) else extra_s
@@ -1817,7 +1828,25 @@ def main():
             )
             duty_spans.append((now_mono, reader_s))
             duty_spans = [(end, dur) for end, dur in duty_spans if now_mono - float(end) <= DUTY_WINDOW_S]
-            next_detect = max(next_detect, next_mono)
+            # v2.1: a live confirmed track (<= EXEMPT_READS_PER_TRACK reads)
+            # skips the pacing (gap ~1x infer, none after an empty read); the
+            # span above is charged, so the next steady read waits it off. An
+            # empty read is not paced but stays inside the 25%/10 s cap.
+            empty_read = not signs
+            exempt_now = tracker.budget_exempt(float(diag.get("t_frame", now_mono)))
+            paused = model_reason_pauses_proposer(reason) and extra_s > 0.0
+            duty_t = earliest_budget_start(duty_spans, now_mono, max(0.0, reader_s))
+            if exempt_now and not paused:
+              exempt_next = two_stage.reader_next_after(
+                end=now_mono, infer_s=reader_s, steady=next_mono, duty_t=duty_t, exempt=True, empty=empty_read,
+              )
+              next_detect = max(next_detect, next_mono)
+            elif empty_read and not paused and read_backoff <= 0.0:
+              next_detect = two_stage.reader_next_after(
+                end=now_mono, infer_s=reader_s, steady=next_mono, duty_t=duty_t, exempt=False, empty=True,
+              )
+            else:
+              next_detect = max(next_detect, next_mono)
         else:
           (
             next_mono, burst_left, burst_window, window_i, burst_cluster_s, bursting_next,
@@ -1966,6 +1995,14 @@ def main():
           use_two = False
           nv12 = None
           two_job = None
+        elif use_two and not prop_duty.fits(now_mono, 1):
+          # v2.1: proposer duty cap (25% of a core over 10 s, all passes).
+          next_propose = max(now_mono + 1.0 / two_stage.PROPOSER_BURST_HZ, prop_duty.next_fit(now_mono, 1))
+          last_skip_reason = "prop-duty"
+          stopped_skip = True
+          use_two = False
+          nv12 = None
+          two_job = None
         elif use_two:
           # Copy the strip and a padded bank, then let the worker propose,
           # update the tracker, and subcrop the measured box. The crop is
@@ -1978,7 +2015,7 @@ def main():
             fw, fh, rpy=calib_rpy_from_sm(sm), edge=strip_geom.edge_from_model(sm["modelV2"]),
           )
           scan_i += 1
-          if upper_rect is not None and scan_i % 2:
+          if upper_rect is not None and (scan_i % two_stage.UPPER_EVERY or not prop_duty.fits(now_mono, 2)):
             upper_rect = None
           scan_rect = two_stage.union_rect(main_rect, upper_rect)
           strip = copy_nv12_rect(buf, main_rect)
@@ -1986,9 +2023,10 @@ def main():
           bank = copy_nv12_rect(buf, two_stage.frame_bank_rect(fw, fh, scan_rect))
           t_frame = time.monotonic()
           allow_read = now_mono >= next_detect
+          allow_exempt = now_mono >= exempt_next
           nv12 = strip
           stop_plan_now = other_signs_mod.model_stop_plan(sm["modelV2"], speed_ms) if others.active else False
-          two_job = None if strip is None else (strip, bank, allow_read, t_frame, upper, scan_rect, speed_ms, stop_plan_now)
+          two_job = None if strip is None else (strip, bank, allow_read, t_frame, upper, scan_rect, speed_ms, stop_plan_now, allow_exempt)
         else:
           nv12 = copy_nv12_detect_crop(buf, which) if buf is not None else None
           two_job = None
@@ -2041,7 +2079,7 @@ def main():
             if not detector.compile_allowed_now():
               raise RuntimeError("compile-blocked while driving")
             assert job is not None
-            strip_c, bank_c, allow_read, t_fr, upper_c, scan_rect, v_job, stop_plan_job = job
+            strip_c, bank_c, allow_read, t_fr, upper_c, scan_rect, v_job, stop_plan_job, allow_ex = job
             t0 = time.monotonic()
             props = proposer.propose(strip_c)
             if upper_c is not None:
@@ -2050,6 +2088,7 @@ def main():
             cand = two_stage.select_read_target(
               tracker, props, t_fr, allow_read=bool(allow_read),
               v_ego=v_job, next_t=t_fr + tracker.proposer_period_s(t_fr, v_job), strip=scan_rect,
+              allow_exempt=bool(allow_ex),
             )
             cap_c = None
             rect = None
@@ -2082,6 +2121,8 @@ def main():
             d = dict(read_diag or {})
             d.update(
               two_stage=1, t_frame=t_fr, props=props, prop_ms=round(prop_ms, 1),
+              prop_passes=1 if upper_c is None else 2,
+              read_h=None if cand is None or cap_c is None else float(cand.box[3]),
               read_tid=tid, read_diag=read_diag, read_jpg=jpg,
               tracker_applied=1, reader_ran=cap_c is not None, reader_s=reader_s,
               read_jpg_meta=None if cap_c is None else dict(

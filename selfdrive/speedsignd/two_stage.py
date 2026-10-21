@@ -71,6 +71,28 @@ EARLY_MIN_PX = 24.0
 SCAN_SPACING_M = 12.0
 SCAN_HZ_MIN = 0.5
 SCAN_HZ_MAX = 2.5
+# v2.1: never scan slower than this below SCAN_FLOOR_V (55 mph). At 27 mph
+# v/12 m gave ~1 Hz, so a sign got one or two proposer looks (Oct 19 replay).
+SCAN_HZ_FLOOR = 2.0
+SCAN_FLOOR_V = 24.6
+# v2.1: the upper (right road edge) strip runs on every UPPER_EVERY-th tick.
+UPPER_EVERY = 4
+# v2.1: proposer duty cap, all passes (main + upper + burst) in a trailing
+# window. 25% of a core = #354's 2 Hz x ~124 ms on-car pass.
+PROPOSER_DUTY_WINDOW_S = 10.0
+PROPOSER_DUTY_BUDGET = 0.25
+PROPOSER_PASS_S_DEFAULT = 0.124
+# v2.1: live confirmed track -> up to EXEMPT_READS_PER_TRACK reads that skip
+# the reader pacing (4x infer + 25%/10 s), spaced EXEMPT_GAP_X x infer. The
+# spans are still recorded, so the next steady read waits until the 10 s
+# window is back under 25% (charged afterwards).
+EXEMPT_READS_PER_TRACK = 3
+EXEMPT_GAP_X = 1.0
+# v2.1: a read on a box under REREAD_MAX_PX that comes back below REREAD_CONF
+# (or empty) is retried once the box has grown by REREAD_GROW.
+REREAD_MAX_PX = 56.0
+REREAD_CONF = 0.85
+REREAD_GROW = 1.25
 # Sharp reads allowed after the first mph, so a second HUD vote can land
 # on the same sign. 0 restores "done on the first mph".
 READS_AFTER_MPH = 1
@@ -211,6 +233,7 @@ class Track:
   got_mph: bool = False
   neg: bool = False
   done: bool = False
+  reread_h: float = 0.0
   history: list = field(default_factory=list)
 
   def predicted(self, t: float) -> tuple[float, float, float, float]:
@@ -301,7 +324,12 @@ class SignTracker:
         continue
       x, _y, w, h = tr.box
       early = next_t is not None and h >= EARLY_MIN_PX and exits_before(tr, next_t, strip)
-      if h >= need_px or x + w >= CAPTURE_EDGE_X or early or (tr.reads > 0):
+      if tr.reads > 0 and tr.reread_h > 0.0:
+        # Small low-confidence read: wait for growth (or an exit / edge).
+        again = h >= tr.reread_h or x + w >= CAPTURE_EDGE_X or early
+      else:
+        again = tr.reads > 0
+      if h >= need_px or x + w >= CAPTURE_EDGE_X or early or again:
         due.append(tr)
     if not due:
       return None
@@ -315,7 +343,9 @@ class SignTracker:
     MAX_READS_PER_TRACK per sign; the modeld-lag pause still applies.
     """
     for tr in self.tracks:
-      if tr.done or tr.neg or tr.reads >= MAX_READS_PER_TRACK or tr.hits < TRACK_MIN_HITS:
+      if tr.done or tr.neg or tr.hits < TRACK_MIN_HITS:
+        continue
+      if tr.reads >= min(MAX_READS_PER_TRACK, EXEMPT_READS_PER_TRACK):
         continue
       if t - tr.last_t <= LOST_S:
         return True
@@ -338,8 +368,14 @@ class SignTracker:
       hz = PROPOSER_HZ
     return 1.0 / float(hz)
 
-  def mark_read(self, tr: Track, *, got_mph: bool, neg: bool) -> None:
+  def mark_read(self, tr: Track, *, got_mph: bool, neg: bool,
+                read_h: float | None = None, top_conf: float | None = None) -> None:
     tr.reads += 1
+    small = read_h is not None and float(read_h) < REREAD_MAX_PX
+    if small and float(top_conf or 0.0) < REREAD_CONF:
+      tr.reread_h = float(read_h) * REREAD_GROW  # type: ignore[arg-type]
+    else:
+      tr.reread_h = 0.0
     if got_mph:
       tr.got_mph = True
     if neg:
@@ -352,7 +388,8 @@ class SignTracker:
 
 
 def select_read_target(tracker: SignTracker, props, t: float, *, allow_read: bool,
-                       v_ego: float | None = None, next_t: float | None = None, strip=None) -> Track | None:
+                       v_ego: float | None = None, next_t: float | None = None, strip=None,
+                       allow_exempt: bool = False) -> Track | None:
   """Apply this frame's proposals, then pick the sharp-read track.
 
   Call this before cropping. The returned track's crop_box() is the
@@ -361,7 +398,7 @@ def select_read_target(tracker: SignTracker, props, t: float, *, allow_read: boo
   and the burst cadence advance) and returns None.
   """
   tracker.update(props, t)
-  if not allow_read:
+  if not allow_read and not (allow_exempt and tracker.budget_exempt(t)):
     return None
   return tracker.capture_candidate(t, v_ego=v_ego, next_t=next_t, strip=strip)
 
@@ -622,7 +659,74 @@ def scan_hz_for_speed(v_ego: float | None) -> float:
   """~1 proposer frame per SCAN_SPACING_M, clamped. None -> PROPOSER_HZ."""
   if v_ego is None:
     return float(PROPOSER_HZ)
-  return min(SCAN_HZ_MAX, max(SCAN_HZ_MIN, float(v_ego) / SCAN_SPACING_M))
+  v = float(v_ego)
+  lo = SCAN_HZ_FLOOR if v < SCAN_FLOOR_V else SCAN_HZ_MIN
+  return min(SCAN_HZ_MAX, max(lo, v / SCAN_SPACING_M))
+
+
+def reader_next_after(*, end: float, infer_s: float, steady: float, duty_t: float,
+                      exempt: bool, empty: bool) -> float:
+  """Earliest next sharp-read start after a read that ended at `end`.
+
+  exempt (a live confirmed track still owed a read): end + EXEMPT_GAP_X x
+  infer, or `end` after an empty read. Not paced, not duty-gated; the read
+  is in the duty spans, so `steady` reads after the track wait it off.
+  empty, not exempt: no pacing gap, still inside the 25%/10 s cap (duty_t).
+  Otherwise `steady` (schedule_after_read).
+  """
+  if exempt:
+    return float(end) if empty else float(end) + EXEMPT_GAP_X * max(0.0, float(infer_s))
+  if empty:
+    return max(float(end), float(duty_t))
+  return float(steady)
+
+
+def top_conf(signs) -> float:
+  try:
+    return max((float(s.conf) for s in signs), default=0.0)
+  except Exception:
+    return 0.0
+
+
+class ProposerDuty:
+  """Proposer passes in a trailing window, capped at PROPOSER_DUTY_BUDGET.
+
+  Cost per pass is the measured pass time (on car ~124 ms); before the first
+  measurement PROPOSER_PASS_S_DEFAULT.
+  """
+
+  def __init__(self, window_s: float = PROPOSER_DUTY_WINDOW_S, budget: float = PROPOSER_DUTY_BUDGET):
+    self.window_s = float(window_s)
+    self.budget = float(budget)
+    self.spans: list[tuple[float, float]] = []  # (start, seconds)
+    self.pass_s = PROPOSER_PASS_S_DEFAULT
+
+  def _prune(self, t: float) -> None:
+    self.spans = [(a, d) for a, d in self.spans if t - a < self.window_s]
+
+  def used(self, t: float) -> float:
+    self._prune(t)
+    return sum(d for _a, d in self.spans)
+
+  def fits(self, t: float, passes: int = 1) -> bool:
+    return self.used(t) + passes * self.pass_s <= self.window_s * self.budget + 1e-6
+
+  def next_fit(self, t: float, passes: int = 1) -> float:
+    """Earliest time >= t at which `passes` more passes fit."""
+    if self.fits(t, passes):
+      return float(t)
+    for a, _d in sorted(self.spans):
+      tt = a + self.window_s
+      if tt > t and self.fits(tt, passes):
+        return tt
+    return float(t) + self.window_s
+
+  def add(self, t: float, passes: int, seconds: float | None = None) -> None:
+    n = max(1, int(passes))
+    if seconds is not None and seconds > 0.0:
+      self.pass_s = 0.8 * self.pass_s + 0.2 * (float(seconds) / n)
+    self.spans.append((float(t), n * self.pass_s))
+    self._prune(t)
 
 
 def exits_before(tr: Track, next_t: float, strip=None, frame_w: int = 1928) -> bool:
