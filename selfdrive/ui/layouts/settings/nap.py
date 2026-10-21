@@ -37,10 +37,12 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   NAP_HYPERMILE_HILL_CLIMB,
   NAP_HYPERMILE_STEP_DOWN,
   NAP_ONE_PEDAL_LONG,
+  NAP_SIGN_OTHERS,
   NAP_SPEED_SIGN_LOG,
   RADAR_OFFSET_MAX, RADAR_OFFSET_MIN,
   REFRESH_MAPS_INSTRUCTIONS,
   RESTORE_EPAS_INSTRUCTIONS,
+  SIGN_OTHERS_DESCRIPTION,
   SPEED_SIGN_LOG_DESCRIPTION,
   WIPER_SPEED_DESCRIPTION, WIPER_SPEED_LABELS, WIPER_SPEED_VALUES,
   WIPER_SENSITIVITY_DEFAULT, WIPER_SENSITIVITY_DESCRIPTION,
@@ -365,6 +367,13 @@ class NAPLayout(Widget):
       NAP_SPEED_SIGN_LOG,
       "Speed Sign Logger",
       SPEED_SIGN_LOG_DESCRIPTION,
+      dest=self._speed_sign_items,
+    )
+
+    self._add_toggle(
+      NAP_SIGN_OTHERS,
+      "Other Signs (display only)",
+      SIGN_OTHERS_DESCRIPTION,
       dest=self._speed_sign_items,
     )
 

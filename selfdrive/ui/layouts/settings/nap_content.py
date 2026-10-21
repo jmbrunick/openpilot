@@ -105,6 +105,7 @@ HYPERMILE_HILL_CLIMB_DESCRIPTION = (
 )
 
 NAP_SPEED_SIGN_LOG = "NAPSpeedSignLog"
+NAP_SIGN_OTHERS = "NAPSignOthers"
 NAP_DRIVER_LAT_HANDOFF = "NAPDriverLatHandoff"
 NAP_LOW_VIS_BACKOFF = "NAPLowVisBackoff"
 NAP_CONE_LINE_HOLD = "NAPConeLineHold"
@@ -179,6 +180,13 @@ FORCE_OFFROAD_DESCRIPTION = (
   "Default Off. Clears when you toggle Off, Reset to Defaults, reboot, or "
   "the next time ignition turns on."
 )
+SIGN_OTHERS_DESCRIPTION = (
+  "Default Off. Also classify stop, yield, do-not-enter, school, railroad and curve signs "
+  "on the Speed Sign Reader's crops. Display and log only: it never brakes, steers or changes speed. "
+  "Stop signs are only cross-checked against the driving model's own stop plan. "
+  "Needs an optional other_signs.onnx in /data/media/0/nap; without it this does nothing."
+)
+
 SPEED_SIGN_LOG_DESCRIPTION = (
   "Log-only MUTCD speed-sign detector on the ROAD camera + GPS. Default Off. "
   "When On, speedsignd shows a SIGN plate with Yes/No (only Yes sets a local map speed limit) and may append a short "

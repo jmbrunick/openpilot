@@ -94,6 +94,8 @@ _services: dict[str, tuple] = {
   "livestreamDriverEncodeData": (False, 20., None, QueueSize.MEDIUM),
   "liveMapDataNAP": (True, 2., 2),
   "liveSpeedSignNAP": (True, 4., 4),
+  # Other-sign reader (display / log only). Published on change, not health-checked.
+  "otherSignsNAP": (True, 0., 1),
   # Radar-rate cone line. Decimation 2 keeps ~4 Hz in the qlog.
   "coneLineNAP": (True, 8., 2),
   # On-demand obstacle samples. Frequency 0 is not health-checked.
