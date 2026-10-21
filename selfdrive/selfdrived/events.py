@@ -1251,6 +1251,18 @@ if _low_visibility_prolonged is not None:
   }
 
 
+# NAP cone_avoid: cones too close even after the capped shift. Warning with a
+# chime, no disengage; cone_avoid does not steer toward a gap it can't fit.
+_cone_take_over = getattr(EventName, "coneTakeOver", None)
+if _cone_take_over is not None:
+  EVENTS[_cone_take_over] = {
+    ET.WARNING: Alert(
+      "Construction: take over",
+      "Cones too close to steer around",
+      AlertStatus.userPrompt, AlertSize.mid,
+      Priority.HIGH, VisualAlert.steerRequired, AudibleAlert.promptRepeat, 0.5),
+  }
+
 def obstacle_chime_alert(CP, CS, sm, metric, soft_disable_time, personality):
   """Small text only. The wav is selected in soundd from this alert type.
 

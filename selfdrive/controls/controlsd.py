@@ -20,6 +20,7 @@ from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
 from opendbc.car.tesla.preap.lat_yield import UNDERTRACK_CURVATURE, roundabout_yield_context
 from openpilot.selfdrive.controls.lib.cone_line import lane_room_m
 from openpilot.selfdrive.controls.lib.path_object_response import AvoidShift, confirmed_from_msg
+from openpilot.selfdrive.nap.cone_avoid.hook import ConeAvoid  # NAP cone_avoid (removable)
 from openpilot.selfdrive.controls.lib.cone_line_hold import PARAM_CONE_LINE_HOLD, ConeLineHold, lane_offset_from_model, lookahead_m
 from openpilot.selfdrive.controls.lib.lat_low_visibility import (
   PARAM_LOW_VIS_BACKOFF, LowVisibility, fade_curvature, sun_ahead_from_fix)
@@ -59,6 +60,7 @@ ACTUATOR_FIELDS = tuple(car.CarControl.Actuators.schema.fields.keys())
 class Controls:
   def __init__(self) -> None:
     self.params = Params()
+    self.cone_avoid = ConeAvoid(self.params)  # NAP cone_avoid
     cloudlog.info("controlsd is waiting for CarParams")
     self.CP = messaging.log_from_bytes(self.params.get("CarParams", block=True), car.CarParams)
     cloudlog.info("controlsd got CarParams")
@@ -243,6 +245,15 @@ class Controls:
     path_x = path_y = None
     lane_offset = lane_centre = None
     cone_shift = 0.0
+    # Bug fix (Oct 21 route 1b8 seg 11): wouldSteer used to be read only in the
+    # else branch below, i.e. only when the cone zone was inactive, so it was
+    # always 0 exactly when needed. Read it unconditionally and log it. It stays
+    # log-only: the legacy shift is NOT passed to the hold (cone_shift stays 0);
+    # actuation belongs to selfdrive/nap/cone_avoid behind NAPConeAvoid.
+    try:
+      self._legacy_would_steer = float(getattr(cone, "wouldSteer", 0.0)) if cone is not None else 0.0
+    except (TypeError, ValueError):
+      self._legacy_would_steer = 0.0
     if self._cone_zone:
       # Model geometry changes at 20 Hz (modelV2); recompute only then.
       if self.sm.updated.get("modelV2", False) or getattr(self, "_cone_geom", None) is None:
@@ -255,10 +266,6 @@ class Controls:
       path_x, path_y, lane_offset, lane_centre = self._cone_geom
     else:
       self._cone_geom = None
-      try:
-        cone_shift = float(getattr(cone, "wouldSteer", 0.0)) if cone is not None else 0.0
-      except (TypeError, ValueError):
-        cone_shift = 0.0
     self._cone_out = self.cone_hold.update(
       enabled=enabled,
       shift_enabled=True,  # automatic cone corridor shift, independent of Hold my line
@@ -548,6 +555,8 @@ class Controls:
     # line. Identity otherwise. Longitudinal accel above is unchanged.
     model_or_plan_curvature = self._cone_curvature(float(model_or_plan_curvature), CS)
     model_or_plan_curvature = self._obstacle_avoid_curvature(float(model_or_plan_curvature), CS, bool(CC.latActive))
+    model_or_plan_curvature = self.cone_avoid.apply(model_or_plan_curvature, CS, self.sm, dt=DT_CTRL,  # NAP cone_avoid
+      lat_active=bool(CC.latActive) and not bool(self._lat_handoff.yielded), lane_change=bool(alc_active))
     # Low visibility eases the lateral target toward the wheel. Longitudinal
     # accel above is unchanged, and latActive / enabled are unchanged.
     # Not inside a cone corridor (Oct 14 seg 25: the alert was on while the cones closed in).
@@ -668,6 +677,10 @@ class Controls:
     cs.coneLineHold = bool(self._cone_out.active)
     cs.coneLineOffset = float(self._cone_out.offset_m)
     cs.obstacleAvoidOffset = float(self._avoid_offset)
+    ca = self.cone_avoid.out  # NAP cone_avoid
+    cs.coneAvoidOffset, cs.coneAvoidApplied, cs.coneAvoidClear = float(ca.offset_m), float(ca.applied_m), float(ca.clear_m)
+    cs.coneAvoidTakeOver, cs.coneAvoidLowConf, cs.coneAvoidMode = bool(ca.take_over and ca.mode == 2), bool(ca.low_conf), int(ca.mode)
+    cs.coneLegacyWouldSteer = float(getattr(self, "_legacy_would_steer", 0.0))
     cs.longControlState = self.LoC.long_control_state
     cs.upAccelCmd = float(self.LoC.pid.p)
     cs.uiAccelCmd = float(self.LoC.pid.i)

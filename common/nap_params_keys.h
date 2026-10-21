@@ -116,6 +116,12 @@
     // re-take holds that lateral offset instead of blending onto the
     // model path. Default On. Longitudinal is unchanged.
     {"NAPConeLineHold", {PERSISTENT, BOOL, "1"}},
+    // NAP cone_avoid (selfdrive/nap/cone_avoid): 0 Off, 1 Log-only, 2 Active. Default Log-only.
+    {"NAPConeAvoid", {PERSISTENT, INT, "1"}},
+    // Max lateral shift away from cones, m (clamped 0..2). Raise later as confidence grows.
+    {"NAPConeAvoidMaxShiftM", {PERSISTENT, FLOAT, "1.0"}},
+    // Target gap cone-to-car-edge, m (clamped 0.5..2).
+    {"NAPConeAvoidMinClearM", {PERSISTENT, FLOAT, "1.0"}},
     // Log-only cone-line detector (coneLineNAP in the qlog). Default On.
     // Off stops the publish; the hold then sees no line. Does not steer.
     {"NAPConeLineLog", {PERSISTENT, BOOL, "1"}},
