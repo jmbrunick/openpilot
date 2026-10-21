@@ -20,13 +20,14 @@ def test_read_px_scales_with_speed_and_defaults():
 def test_scan_hz_one_per_12m_clamped():
   assert T.scan_hz_for_speed(None) == T.PROPOSER_HZ
   assert T.scan_hz_for_speed(24.0) == 2.0
-  assert T.scan_hz_for_speed(1.0) == T.SCAN_HZ_MIN
+  assert T.scan_hz_for_speed(1.0) == T.SCAN_HZ_FLOOR  # v2.1 floor below 55 mph
   assert T.scan_hz_for_speed(40.0) == T.SCAN_HZ_MAX
 
 
 def test_proposer_period_uses_speed_and_burst():
   tr = T.SignTracker()
-  assert abs(tr.proposer_period_s(0.0, 12.0) - 1.0) < 1e-9
+  assert abs(tr.proposer_period_s(0.0, 12.0) - 0.5) < 1e-9  # v2.1 2 Hz floor
+  assert abs(tr.proposer_period_s(0.0, 28.8) - 1.0 / 2.4) < 1e-9
   tr.update([(1500, 600, 20, 25, 0.5)], 0.0)  # 1-hit track -> burst
   assert abs(tr.proposer_period_s(0.1, 12.0) - 1.0 / T.PROPOSER_BURST_HZ) < 1e-9
 
@@ -109,3 +110,77 @@ def test_bank_and_union_cover_upper():
   assert u[1] == 350 and u[1] + u[3] == main[1] + main[3]
   bx, by, bw, bh = T.frame_bank_rect(1928, 1208, u)
   assert by <= 350 and bx <= 964
+
+
+# --- v2.1 ---------------------------------------------------------------
+
+def test_v21_scan_floor_2hz_below_55mph():
+  from openpilot.selfdrive.speedsignd import two_stage as ts
+  assert ts.scan_hz_for_speed(8.0) == 2.0      # 18 mph
+  assert ts.scan_hz_for_speed(12.0) == 2.0     # 27 mph (was 1.0)
+  assert ts.scan_hz_for_speed(24.0) == 2.0
+  assert ts.scan_hz_for_speed(40.0) == ts.SCAN_HZ_MAX
+
+
+def test_v21_reader_next_after():
+  from openpilot.selfdrive.speedsignd import two_stage as ts
+  kw = dict(end=10.0, infer_s=0.8, steady=13.2, duty_t=11.0)
+  assert ts.reader_next_after(exempt=True, empty=False, **kw) == 10.8
+  assert ts.reader_next_after(exempt=True, empty=True, **kw) == 10.0
+  assert ts.reader_next_after(exempt=False, empty=True, **kw) == 11.0
+  assert ts.reader_next_after(exempt=False, empty=False, **kw) == 13.2
+
+
+def _confirmed(ts, h=40.0):
+  tr = ts.SignTracker()
+  tr.update([(1500, 600, h * 0.8, h, 0.6)], 0.0)
+  tr.update([(1510, 598, h * 0.8, h, 0.6)], 0.25)
+  return tr
+
+
+def test_v21_exempt_reads_capped_at_3():
+  from openpilot.selfdrive.speedsignd import two_stage as ts
+  tr = _confirmed(ts)
+  t = tr.tracks[0]
+  for i in range(3):
+    assert tr.budget_exempt(0.25)
+    t.reads = i + 1
+  assert not tr.budget_exempt(0.25)
+
+
+def test_v21_exempt_allows_read_while_resting():
+  from openpilot.selfdrive.speedsignd import two_stage as ts
+  tr = _confirmed(ts, h=70.0)
+  c = ts.select_read_target(tr, [(1520, 596, 56, 72, 0.6)], 0.5, allow_read=False, allow_exempt=True)
+  assert c is not None
+  tr2 = _confirmed(ts, h=70.0)
+  assert ts.select_read_target(tr2, [(1520, 596, 56, 72, 0.6)], 0.5, allow_read=False) is None
+
+
+def test_v21_small_low_conf_read_waits_for_growth():
+  from openpilot.selfdrive.speedsignd import two_stage as ts
+  tr = _confirmed(ts, h=48.0)
+  t = tr.tracks[0]
+  tr.mark_read(t, got_mph=False, neg=False, read_h=48.0, top_conf=0.6)
+  assert t.reread_h == 48.0 * ts.REREAD_GROW and not t.done
+  tr.update([(1515, 597, 40, 50, 0.6)], 0.5)
+  assert tr.capture_candidate(0.5) is None          # not grown enough
+  tr.update([(1520, 596, 50, 62, 0.6)], 0.75)
+  assert tr.capture_candidate(0.75) is t            # grown -> re-read
+  tr.mark_read(t, got_mph=True, neg=False, read_h=62.0, top_conf=0.95)
+  assert t.reread_h == 0.0
+
+
+def test_v21_proposer_duty_cap_25pct():
+  from openpilot.selfdrive.speedsignd import two_stage as ts
+  d = ts.ProposerDuty()
+  n = 0
+  t = 0.0
+  while t < 10.0:
+    if d.fits(t, 1):
+      d.add(t, 1)
+      n += 1
+    t += 0.2   # a 5 Hz burst asks for 50 passes
+  assert n * ts.PROPOSER_PASS_S_DEFAULT <= 2.5 + 1e-6
+  assert n == 20
+  assert d.next_fit(t, 1) >= t
