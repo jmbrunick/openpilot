@@ -151,6 +151,8 @@ SOLO_CLASS_CONF = 0.0
 SOLO_CLASS_PX = 0.0
 # One more burst read when no read so far had OCR agreeing and nothing decided.
 EXTRA_ON_SILENT = 0
+# Class-only pair (no OCR agree) needs its larger box >= this.
+PAIR_MIN_PX = 0.0
 READ_S_DEFAULT = 0.8
 EXIT_HORIZON_S = 4.0
 # Sharp reads allowed after the first mph, so a second HUD vote can land
@@ -1002,12 +1004,15 @@ def burst_decision(votes) -> list:
     if kind == "class" and SOLO_CLASS_CONF > 0.0 and conf >= SOLO_CLASS_CONF and h >= SOLO_CLASS_PX:
       return [sign]
   by: dict[int, list] = {}
-  for mph, conf, _h, sign, kind in vs:
+  for mph, conf, h, sign, kind in vs:
     if mph and sign is not None and conf >= PAIR_CONF and kind in ("agree", "class"):
-      by.setdefault(mph, []).append(sign)
+      by.setdefault(mph, []).append((sign, h, kind))
   agreed = [v for v in by.values() if len(v) >= 2]
   if len(agreed) == 1:
-    return agreed[0][:2]
+    g = agreed[0]
+    if PAIR_MIN_PX > 0.0 and not any(k == "agree" for _s, _h, k in g) and max(h for _s, h, _k in g) < PAIR_MIN_PX:
+      return []
+    return [s for s, _h, _k in g][:2]
   return []
 
 
