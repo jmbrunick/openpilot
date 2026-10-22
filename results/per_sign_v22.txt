@@ -1,0 +1,26 @@
+sign lab | r354 | r21 | v22d40
+#0733 45 | miss:0 n=1 px=[62] | wrong:65 n=1 px=[47] | miss:0 n=3 px=[36, 58, 27]
+#1 65 | miss:0 n=0 px=[] | miss:0 n=2 px=[66, 59] | miss:0 n=1 px=[87]
+#2 65 | miss:0 n=2 px=[76, 104] | ok:65 n=1 px=[75] | ok:65 n=1 px=[75]
+#3 65 | miss:0 n=1 px=[143] | miss:0 n=2 px=[41, 60] | miss:0 n=3 px=[43, 64, 35]
+#4 50 | miss:0 n=1 px=[69] | ok:50 n=2 px=[78, 55] | ok:50 n=3 px=[59, 49, 64]
+#5 65 | miss:0 n=1 px=[151] | wrong:50 n=3 px=[126, 50, 63] | wrong:50 n=4 px=[132, 36, 52, 62]
+#7 50 | wrong:70 n=1 px=[52] | miss:0 n=0 px=[] | miss:0 n=0 px=[]
+#8 35 | miss:0 n=1 px=[122] | ok:35 n=2 px=[49, 65] | ok:35 n=4 px=[49, 40, 38, 48]
+#9 30 | ok:30 n=2 px=[193, 77] | ok:30 n=1 px=[69] | miss:0 n=4 px=[38, 43, 55, 46]
+#11 40 | ok:40 n=1 px=[37] | ok:40 n=1 px=[62] | ok:40 n=5 px=[32, 44, 42, 78, 79]
+#13 30 | ok:30 n=1 px=[63] | ok:30 n=2 px=[64, 61] | ok:30 n=0 px=[]
+#14 30 | ok:30 n=1 px=[68] | ok:30 n=1 px=[63] | ok:30 n=3 px=[29, 33, 44]
+#15 45 | ok:45 n=1 px=[65] | ok:45 n=1 px=[66] | miss:0 n=0 px=[]
+#16 45 | ok:45 n=2 px=[68, 78] | ok:45 n=3 px=[61, 43, 79] | ok:45 n=3 px=[61, 35, 45]
+#17 35 | miss:0 n=2 px=[67, 128] | ok:35 n=1 px=[64] | miss:0 n=3 px=[35, 42, 49]
+#18 35 | ok:35 n=1 px=[94] | ok:35 n=1 px=[62] | ok:35 n=2 px=[51, 63]
+#19 35 | ok:35 n=1 px=[84] | ok:35 n=1 px=[81] | ok:35 n=1 px=[60]
+#20 50 | ok:50 n=1 px=[73] | ok:50 n=1 px=[61] | ok:50 n=3 px=[20, 46, 62]
+#21 50 | miss:0 n=1 px=[15] | miss:0 n=0 px=[] | miss:0 n=2 px=[21, 52]
+#23 40 | miss:0 n=2 px=[65, 96] | ok:40 n=2 px=[65, 78] | ok:40 n=3 px=[46, 63, 78]
+#24 50 | ok:50 n=1 px=[78] | wrong:35 n=2 px=[82, 49] | wrong:35 n=1 px=[52]
+#25 65 | wrong:50 n=1 px=[43] | wrong:35 n=2 px=[45, 73] | wrong:35 n=0 px=[]
+r354 {'ok': 10, 'wrong': 2, 'miss': 10} reads 26
+r21 {'ok': 14, 'wrong': 4, 'miss': 4} reads 32
+v22d40 {'ok': 11, 'wrong': 3, 'miss': 8} reads 49

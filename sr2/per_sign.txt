@@ -1,0 +1,26 @@
+sign posted | car | #354: reads ok/wrong/empty HUD | v2: reads ok/wrong/empty HUD
+#0733 45 | no rlog | 1 0/1/0 no show w:65@0.579 | 1 0/1/0 no show w:25@0.284
+#1 65 | 0 reads | 0 0/0/0 no show | 1 0/0/1 no show
+#2 65 | 1 read empty | 2 0/0/2 no show | 1 1/0/0 SHOW ok
+#3 65 | 1 read empty | 1 0/0/1 no show | 1 0/1/0 no show w:45@0.579
+#4 50 | 50 shown | 1 0/1/0 no show w:70@0.513 | 1 0/0/1 no show
+#5 65 | 1 read empty | 1 0/0/1 no show | 1 1/0/0 SHOW ok
+#7 50 | 0 reads | 1 0/0/1 SHOW [70] | 0 0/0/0 no show
+#8 35 | 0 reads | 1 0/0/1 no show | 1 1/0/0 SHOW ok
+#9 30 | 1 read empty | 2 1/0/1 SHOW ok | 1 0/0/1 no show
+#11 40 | 1 read empty | 1 0/0/1 SHOW ok | 1 1/0/0 SHOW ok
+#13 30 | 30@0.91 shown | 1 1/0/0 SHOW ok | 1 0/1/0 SHOW ok w:10@0.288
+#14 30 | 30@0.93 shown | 1 1/0/0 SHOW ok | 1 1/0/0 SHOW ok
+#15 45 | 1 read empty | 1 1/0/0 SHOW ok | 0 0/0/0 no show
+#16 45 | 0 reads | 2 1/0/1 SHOW ok | 1 0/0/1 no show
+#17 35 | 1 read empty | 2 0/0/2 no show | 1 1/0/0 SHOW ok
+#18 35 | 1 read empty | 1 1/0/0 SHOW ok | 0 0/0/0 no show
+#19 35 | 1 read empty | 1 0/1/0 SHOW ok w:50@0.637 | 0 0/0/0 no show
+#20 50 | 0 reads | 1 1/0/0 SHOW ok | 1 1/0/0 SHOW ok
+#21 50 | 0 reads | 1 0/0/1 no show | 1 1/0/0 SHOW ok
+#23 40 | 60@0.79 shown (WRONG) | 2 2/0/0 SHOW ok | 2 2/0/0 SHOW ok
+#24 50 | gate-blocked | 1 1/0/0 SHOW ok | 1 1/0/0 SHOW [35, 50]
+#25 65 | gate-blocked | 1 0/0/1 SHOW [50] | 1 0/1/0 SHOW [35, 45] w:45@0.885
+{'354': {'sh_ok': 11, 'sh_wrong': 2, 'miss': 9}, 'v2': {'sh_ok': 10, 'sh_wrong': 2, 'miss': 10}}
+354 ticks 2397 upper-strip ticks 0 box prop ms/pass med 4.75 box read ms med 17.1 reads 180
+v2 ticks 1865 upper-strip ticks 652 box prop ms/pass med 4.93 box read ms med 21.1 reads 95

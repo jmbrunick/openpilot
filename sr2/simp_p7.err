@@ -1,0 +1,103 @@
+[vost#0:0/rawvideo @ 0x558668e4e140] Error submitting a packet to the muxer: Broken pipe
+    Last message repeated 1 times
+[out#0/rawvideo @ 0x558668e4f000] Error muxing a packet
+[out#0/rawvideo @ 0x558668e4f000] Task finished with error code: -32 (Broken pipe)
+[out#0/rawvideo @ 0x558668e4f000] Terminating thread with return code -32 (Broken pipe)
+[vost#0:0/rawvideo @ 0x56280d3a6e00] Error submitting a packet to the muxer: Broken pipe
+    Last message repeated 1 times
+[out#0/rawvideo @ 0x56280d3a7d40] Error muxing a packet
+[out#0/rawvideo @ 0x56280d3a7d40] Task finished with error code: -32 (Broken pipe)
+[out#0/rawvideo @ 0x56280d3a7d40] Terminating thread with return code -32 (Broken pipe)
+[vost#0:0/rawvideo @ 0x55cff64e9200] Error submitting a packet to the muxer: Broken pipe
+    Last message repeated 1 times
+[out#0/rawvideo @ 0x55cff64ea0c0] Error muxing a packet
+[out#0/rawvideo @ 0x55cff64ea0c0] Task finished with error code: -32 (Broken pipe)
+[out#0/rawvideo @ 0x55cff64ea0c0] Terminating thread with return code -32 (Broken pipe)
+[vost#0:0/rawvideo @ 0x55e9ee2cdc40] Error submitting a packet to the muxer: Broken pipe
+    Last message repeated 1 times
+[out#0/rawvideo @ 0x55e9ee2ceb80] Error muxing a packet
+[out#0/rawvideo @ 0x55e9ee2ceb80] Task finished with error code: -32 (Broken pipe)
+[out#0/rawvideo @ 0x55e9ee2ceb80] Terminating thread with return code -32 (Broken pipe)
+[vost#0:0/rawvideo @ 0x55c750f65640] Error submitting a packet to the muxer: Broken pipe
+    Last message repeated 1 times
+[out#0/rawvideo @ 0x55c750f66580] Error muxing a packet
+[out#0/rawvideo @ 0x55c750f66580] Task finished with error code: -32 (Broken pipe)
+[out#0/rawvideo @ 0x55c750f66580] Terminating thread with return code -32 (Broken pipe)
+[vost#0:0/rawvideo @ 0x55c401100200] Error submitting a packet to the muxer: Broken pipe
+    Last message repeated 1 times
+[out#0/rawvideo @ 0x55c4011010c0] Error muxing a packet
+[out#0/rawvideo @ 0x55c4011010c0] Task finished with error code: -32 (Broken pipe)
+[out#0/rawvideo @ 0x55c4011010c0] Terminating thread with return code -32 (Broken pipe)
+[vost#0:0/rawvideo @ 0x55c819c5a100] Error submitting a packet to the muxer: Broken pipe
+    Last message repeated 1 times
+[out#0/rawvideo @ 0x55c819c5b040] Error muxing a packet
+[out#0/rawvideo @ 0x55c819c5b040] Task finished with error code: -32 (Broken pipe)
+[out#0/rawvideo @ 0x55c819c5b040] Terminating thread with return code -32 (Broken pipe)
+[vost#0:0/rawvideo @ 0x55a26db04d80] Error submitting a packet to the muxer: Broken pipe
+    Last message repeated 1 times
+[out#0/rawvideo @ 0x55a26db05c40] Error muxing a packet
+[out#0/rawvideo @ 0x55a26db05c40] Task finished with error code: -32 (Broken pipe)
+[out#0/rawvideo @ 0x55a26db05c40] Terminating thread with return code -32 (Broken pipe)
+[vost#0:0/rawvideo @ 0x562296199240] Error submitting a packet to the muxer: Broken pipe
+    Last message repeated 1 times
+[out#0/rawvideo @ 0x56229619a180] Error muxing a packet
+[out#0/rawvideo @ 0x56229619a180] Task finished with error code: -32 (Broken pipe)
+[out#0/rawvideo @ 0x56229619a180] Terminating thread with return code -32 (Broken pipe)
+[vost#0:0/rawvideo @ 0x56191d5b01c0] Error submitting a packet to the muxer: Broken pipe
+    Last message repeated 1 times
+[out#0/rawvideo @ 0x56191d5b1100] Error muxing a packet
+[out#0/rawvideo @ 0x56191d5b1100] Task finished with error code: -32 (Broken pipe)
+[out#0/rawvideo @ 0x56191d5b1100] Terminating thread with return code -32 (Broken pipe)
+[vost#0:0/rawvideo @ 0x556bcf44be00] Error submitting a packet to the muxer: Broken pipe
+    Last message repeated 1 times
+[out#0/rawvideo @ 0x556bcf44cd40] Error muxing a packet
+[out#0/rawvideo @ 0x556bcf44cd40] Task finished with error code: -32 (Broken pipe)
+[out#0/rawvideo @ 0x556bcf44cd40] Terminating thread with return code -32 (Broken pipe)
+[vost#0:0/rawvideo @ 0x56065fec2c80] Error submitting a packet to the muxer: Broken pipe
+    Last message repeated 1 times
+[out#0/rawvideo @ 0x56065fec3bc0] Error muxing a packet
+[out#0/rawvideo @ 0x56065fec3bc0] Task finished with error code: -32 (Broken pipe)
+[out#0/rawvideo @ 0x56065fec3bc0] Terminating thread with return code -32 (Broken pipe)
+[out#0/rawvideo @ 0x55cff64ea0c0] Error writing trailer: Broken pipe
+[out#0/rawvideo @ 0x55cff64ea0c0] Error closing file: Broken pipe
+[out#0/rawvideo @ 0x55e9ee2ceb80] Error writing trailer: Broken pipe
+[out#0/rawvideo @ 0x55e9ee2ceb80] Error closing file: Broken pipe
+[out#0/rawvideo @ 0x55c4011010c0] Error writing trailer: Broken pipe
+[out#0/rawvideo @ 0x55c4011010c0] Error closing file: Broken pipe
+[out#0/rawvideo @ 0x558668e4f000] Error writing trailer: Broken pipe
+[out#0/rawvideo @ 0x558668e4f000] Error closing file: Broken pipe
+[out#0/rawvideo @ 0x556bcf44cd40] Error writing trailer: Broken pipe
+[out#0/rawvideo @ 0x556bcf44cd40] Error closing file: Broken pipe
+[out#0/rawvideo @ 0x56229619a180] Error writing trailer: Broken pipe
+[out#0/rawvideo @ 0x56229619a180] Error closing file: Broken pipe
+[out#0/rawvideo @ 0x55c819c5b040] Error writing trailer: Broken pipe
+[out#0/rawvideo @ 0x55c819c5b040] Error closing file: Broken pipe
+[out#0/rawvideo @ 0x56191d5b1100] Error writing trailer: Broken pipe
+[out#0/rawvideo @ 0x56191d5b1100] Error closing file: Broken pipe
+[out#0/rawvideo @ 0x56280d3a7d40] Error writing trailer: Broken pipe
+[out#0/rawvideo @ 0x56280d3a7d40] Error closing file: Broken pipe
+[out#0/rawvideo @ 0x55c750f66580] Error writing trailer: Broken pipe
+[out#0/rawvideo @ 0x55c750f66580] Error closing file: Broken pipe
+[out#0/rawvideo @ 0x55a26db05c40] Error writing trailer: Broken pipe
+[out#0/rawvideo @ 0x55a26db05c40] Error closing file: Broken pipe
+[out#0/rawvideo @ 0x56065fec3bc0] Error writing trailer: Broken pipe
+[out#0/rawvideo @ 0x56065fec3bc0] Error closing file: Broken pipe
+v22 000001ab--399f110496--46 ticks 110 reads 2 prop_ms_box 8.47 read_ms_box 101.5
+v22 000001ab--399f110496--28 ticks 112 reads 10 prop_ms_box 8.77 read_ms_box 41.4
+v22 000001ab--399f110496--62 ticks 104 reads 7 prop_ms_box 8.73 read_ms_box 39.5
+v22 000001ab--399f110496--50 ticks 106 reads 10 prop_ms_box 8.72 read_ms_box 36.7
+v22 000001ab--399f110496--72 ticks 101 reads 24 prop_ms_box 8.64 read_ms_box 36.2
+v22 000001ab--399f110496--69 ticks 113 reads 12 prop_ms_box 8.18 read_ms_box 37.8
+v22 000001ab--399f110496--64 ticks 97 reads 22 prop_ms_box 8.93 read_ms_box 36.8
+v22 000001ab--399f110496--71 ticks 99 reads 18 prop_ms_box 8.78 read_ms_box 39.0
+v22 000001ab--399f110496--68 ticks 107 reads 7 prop_ms_box 8.73 read_ms_box 39.0
+v22 000001ac--15be151b87--1 ticks 102 reads 14 prop_ms_box 8.45 read_ms_box 38.5
+v22 000001ac--15be151b87--10 ticks 104 reads 12 prop_ms_box 8.56 read_ms_box 39.6
+v22 000001ac--15be151b87--9 ticks 109 reads 7 prop_ms_box 8.65 read_ms_box 35.6
+v22 000001af--24ded8e844--4 ticks 108 reads 14 prop_ms_box 8.37 read_ms_box 35.7
+v22 000001b1--0c5c05a040--0 ticks 107 reads 15 prop_ms_box 8.66 read_ms_box 32.3
+v22 000001af--24ded8e844--6 ticks 105 reads 15 prop_ms_box 8.07 read_ms_box 37.1
+v22 000001b1--0c5c05a040--1 ticks 104 reads 10 prop_ms_box 8.57 read_ms_box 30.5
+v22 000001b1--0c5c05a040--2 ticks 109 reads 5 prop_ms_box 8.61 read_ms_box 34.3
+v22 000001b1--0c5c05a040--3 ticks 106 reads 15 prop_ms_box 8.14 read_ms_box 35.8
+v22 000001b3--15f175418a--9 ticks 106 reads 13 prop_ms_box 8.52 read_ms_box 34.6

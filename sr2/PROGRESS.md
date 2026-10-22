@@ -1,0 +1,6 @@
+# sign reader v2 (a45bd4af0f) replay — 2026-10-21
+- pkg = git archive a45bd4af0f selfdrive/speedsignd + common/transformations; #354 = h17/rp/pkg354. sim.py (one worker, proposer then reader; device time: 123 ms per proposer pass, 800 ms per read; real schedule_after_read via sdsched.py, extracted from a45 speedsignd.py). v4.1 weights. Speed from GPS (carState fallback), liveCalibration + modelV2 roadEdges from rlogs (1ab_28 from the qlog: no edges, so no upper strip).
+- fcamera r19 had been deleted; re-downloaded from the comma server (fetch19b.out).
+- Results: per_sign.txt. #354: 11 correct shows, 2 wrong, 9 missed. v2: 10 correct, 2 wrong, 10 missed. Reads in the sign windows: v2 95 vs #354 180.
+- Main v2 limiter: the 4x-infer pacing plus the 25%/10 s duty still apply to live tracks (the exemption only drops cpu-load / cpu-budget backoff reasons). Also: a slow scan at city speed (v/12 m gives about 1 Hz at 27 mph), and early small reads (40 px) giving low-confidence or empty reads that use up the slot.
+- Proposer on the car: 124 ms median (100 min, 147 p90) per propose() across 3 builds; the box measures 4.7 ms single-threaded. SSH is not set up on the box (no ~/.ssh), and the device was onroad on nap-dev 32006156 -> no on-device benchmark.

@@ -1,0 +1,31 @@
+sign | r354 | r21 | v22d40 | v23g35_0.88 | v23clash | v23solocls | v23noextra | v23nohead
+#0733 45 | P:miss L:miss n=1 | P:wrong65 L:wrong65 n=1 | P:miss L:miss n=3 | P:miss L:miss n=3 | P:miss L:miss n=3 | P:miss L:miss n=3 | P:miss L:miss n=3 | P:miss L:miss n=3
+#1 65 | P:miss L:miss n=0 | P:miss L:miss n=2 | P:miss L:miss n=1 | P:miss L:miss n=1 | P:miss L:miss n=1 | P:miss L:miss n=1 | P:miss L:miss n=1 | P:miss L:miss n=1
+#2 65 | P:miss L:miss n=2 | P:ok65 L:ok65 n=1 | P:ok65 L:ok65 n=1 | P:miss L:miss n=1 | P:miss L:miss n=1 | P:ok65 L:ok65 n=1 | P:miss L:miss n=1 | P:miss L:miss n=1
+#3 65 | P:miss L:miss n=1 | P:miss L:miss n=2 | P:miss L:miss n=3 | P:miss L:miss n=2 | P:miss L:miss n=2 | P:ok65 L:ok65 n=2 | P:miss L:miss n=2 | P:ok65 L:ok65 n=3
+#4 50 | P:miss L:miss n=1 | P:ok50 L:ok50 n=2 | P:ok50 L:ok50 n=3 | P:ok50 L:ok50 n=3 | P:ok50 L:ok50 n=3 | P:ok50 L:ok50 n=2 | P:ok50 L:ok50 n=3 | P:ok50 L:ok50 n=3
+#5 65 | P:miss L:miss n=1 | P:wrong50 L:wrong50 n=3 | P:wrong50 L:wrong50 n=4 | P:ok65 L:ok65 n=4 | P:ok65 L:ok65 n=4 | P:miss L:wrong50 n=1 | P:miss L:wrong50 n=3 | P:ok65 L:ok65 n=4
+#7 50 | P:wrong70 L:wrong70 n=1 | P:miss L:miss n=0 | P:miss L:miss n=0 | P:miss L:wrong65 n=1 | P:miss L:wrong65 n=1 | P:ok50 L:ok50 n=1 | P:miss L:ok50 n=1 | P:miss L:wrong65 n=0
+#8 35 | P:miss L:miss n=1 | P:ok35 L:ok35 n=2 | P:ok35 L:ok35 n=4 | P:ok35 L:ok35 n=3 | P:ok35 L:ok35 n=3 | P:ok35 L:ok35 n=3 | P:ok35 L:ok35 n=3 | P:ok35 L:ok35 n=3
+#9 30 | P:ok30 L:ok30 n=2 | P:ok30 L:ok30 n=1 | P:miss L:miss n=4 | P:ok30 L:ok30 n=3 | P:ok30 L:ok30 n=3 | P:ok30 L:ok30 n=3 | P:ok30 L:ok30 n=3 | P:ok30 L:ok30 n=5
+#11 40 | P:ok40 L:ok40 n=1 | P:ok40 L:ok40 n=1 | P:ok40 L:ok40 n=5 | P:ok40 L:ok40 n=3 | P:ok40 L:ok40 n=3 | P:ok40 L:ok40 n=3 | P:ok40 L:ok40 n=3 | P:ok40 L:ok40 n=4
+#13 30 | P:ok30 L:ok30 n=1 | P:ok30 L:ok30 n=2 | P:ok30 L:ok30 n=0 | P:ok30 L:ok30 n=0 | P:ok30 L:ok30 n=0 | P:ok30 L:ok30 n=0 | P:ok30 L:ok30 n=0 | P:ok30 L:ok30 n=0
+#14 30 | P:ok30 L:ok30 n=1 | P:ok30 L:ok30 n=1 | P:ok30 L:ok30 n=3 | P:ok30 L:ok30 n=3 | P:ok30 L:ok30 n=3 | P:ok30 L:ok30 n=3 | P:ok30 L:ok30 n=3 | P:ok30 L:ok30 n=3
+#15 45 | P:ok45 L:ok45 n=1 | P:ok45 L:ok45 n=1 | P:miss L:miss n=0 | P:miss L:wrong30 n=1 | P:miss L:wrong30 n=1 | P:ok45 L:ok45 n=1 | P:miss L:wrong30 n=1 | P:miss L:wrong30 n=0
+#16 45 | P:ok45 L:ok45 n=2 | P:ok45 L:ok45 n=3 | P:ok45 L:ok45 n=3 | P:ok45 L:ok45 n=3 | P:ok45 L:ok45 n=3 | P:ok45 L:ok45 n=2 | P:ok45 L:ok45 n=3 | P:ok45 L:ok45 n=3
+#17 35 | P:miss L:miss n=2 | P:ok35 L:ok35 n=1 | P:miss L:miss n=3 | P:miss L:miss n=3 | P:miss L:miss n=3 | P:miss L:miss n=3 | P:miss L:miss n=3 | P:miss L:miss n=3
+#18 35 | P:ok35 L:ok35 n=1 | P:ok35 L:ok35 n=1 | P:ok35 L:ok35 n=2 | P:ok35 L:ok35 n=2 | P:ok35 L:ok35 n=2 | P:ok35 L:ok35 n=1 | P:ok35 L:ok35 n=2 | P:ok35 L:ok35 n=2
+#19 35 | P:ok35 L:ok35 n=1 | P:ok35 L:ok35 n=1 | P:ok35 L:ok35 n=1 | P:miss L:ok35 n=1 | P:miss L:ok35 n=1 | P:miss L:ok35 n=1 | P:miss L:ok35 n=1 | P:miss L:ok35 n=1
+#20 50 | P:ok50 L:ok50 n=1 | P:ok50 L:ok50 n=1 | P:ok50 L:ok50 n=3 | P:miss L:miss n=2 | P:miss L:miss n=2 | P:ok50 L:ok50 n=2 | P:miss L:miss n=2 | P:ok50 L:ok50 n=3
+#21 50 | P:miss L:miss n=1 | P:miss L:miss n=0 | P:miss L:miss n=2 | P:miss L:miss n=2 | P:miss L:miss n=2 | P:ok50 L:ok50 n=2 | P:miss L:miss n=2 | P:miss L:ok50 n=2
+#23 40 | P:miss L:miss n=2 | P:ok40 L:ok40 n=2 | P:ok40 L:ok40 n=3 | P:ok40 L:ok40 n=4 | P:ok40 L:ok40 n=4 | P:ok40 L:ok40 n=3 | P:ok40 L:ok40 n=4 | P:ok40 L:ok40 n=4
+#24 50 | P:ok50 L:ok50 n=1 | P:wrong35 L:wrong35 n=2 | P:wrong35 L:wrong35 n=1 | P:miss L:miss n=1 | P:miss L:miss n=1 | P:wrong35 L:miss n=1 | P:miss L:miss n=1 | P:miss L:miss n=1
+#25 65 | P:wrong50 L:wrong50 n=1 | P:wrong35 L:wrong35 n=2 | P:wrong35 L:wrong35 n=0 | P:miss L:miss n=0 | P:miss L:miss n=0 | P:miss L:miss n=0 | P:miss L:miss n=0 | P:miss L:miss n=0
+r354 prompt {'ok': 10, 'wrong': 2, 'miss': 10} plate {'ok': 10, 'wrong': 2, 'miss': 10} reads 26 false-prompts-outside 0
+r21 prompt {'ok': 14, 'wrong': 4, 'miss': 4} plate {'ok': 14, 'wrong': 4, 'miss': 4} reads 32 false-prompts-outside 0
+v22d40 prompt {'ok': 11, 'wrong': 3, 'miss': 8} plate {'ok': 11, 'wrong': 3, 'miss': 8} reads 49 false-prompts-outside 0
+v23g35_0.88 prompt {'ok': 10, 'wrong': 0, 'miss': 12} plate {'ok': 11, 'wrong': 2, 'miss': 9} reads 46 false-prompts-outside 1
+v23clash prompt {'ok': 10, 'wrong': 0, 'miss': 12} plate {'ok': 11, 'wrong': 2, 'miss': 9} reads 46 false-prompts-outside 1
+v23solocls prompt {'ok': 15, 'wrong': 1, 'miss': 6} plate {'ok': 16, 'wrong': 1, 'miss': 5} reads 39 false-prompts-outside 4
+v23noextra prompt {'ok': 9, 'wrong': 0, 'miss': 13} plate {'ok': 11, 'wrong': 2, 'miss': 9} reads 45 false-prompts-outside 1
+v23nohead prompt {'ok': 12, 'wrong': 0, 'miss': 10} plate {'ok': 14, 'wrong': 2, 'miss': 6} reads 49 false-prompts-outside 1

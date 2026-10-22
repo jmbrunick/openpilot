@@ -1,0 +1,20 @@
+v2 000001ab--399f110496--46 ticks 125 reads 3 prop_ms_box 4.69 read_ms_box 18.0
+v2 000001ab--399f110496--62 ticks 129 reads 6 prop_ms_box 4.86 read_ms_box 18.3
+v2 000001ab--399f110496--28 ticks 117 reads 5 prop_ms_box 4.99 read_ms_box 19.3
+v2 000001ab--399f110496--50 ticks 123 reads 5 prop_ms_box 4.91 read_ms_box 21.1
+v2 000001ab--399f110496--68 ticks 128 reads 6 prop_ms_box 4.85 read_ms_box 19.7
+v2 000001ab--399f110496--64 ticks 123 reads 13 prop_ms_box 4.78 read_ms_box 17.6
+v2 000001ab--399f110496--69 ticks 69 reads 4 prop_ms_box 5.13 read_ms_box 24.0
+v2 000001ab--399f110496--71 ticks 114 reads 5 prop_ms_box 4.83 read_ms_box 21.2
+v2 000001ac--15be151b87--1 ticks 73 reads 4 prop_ms_box 5.18 read_ms_box 26.6
+v2 000001ab--399f110496--72 ticks 101 reads 9 prop_ms_box 5.03 read_ms_box 27.6
+v2 000001ac--15be151b87--10 ticks 90 reads 5 prop_ms_box 4.89 read_ms_box 20.8
+v2 000001ac--15be151b87--9 ticks 63 reads 3 prop_ms_box 5.23 read_ms_box 22.3
+v2 000001af--24ded8e844--4 ticks 76 reads 6 prop_ms_box 5.21 read_ms_box 21.5
+v2 000001b1--0c5c05a040--0 ticks 115 reads 4 prop_ms_box 5.23 read_ms_box 36.4
+v2 000001af--24ded8e844--6 ticks 86 reads 1 prop_ms_box 5.65 read_ms_box 59.2
+v2 000001b1--0c5c05a040--1 ticks 77 reads 3 prop_ms_box 5.1 read_ms_box 26.7
+v2 000001b1--0c5c05a040--2 ticks 67 reads 2 prop_ms_box 4.75 read_ms_box 36.0
+v2 000001b3--15f175418a--9 ticks 96 reads 6 prop_ms_box 4.67 read_ms_box 18.3
+v2 000001b1--0c5c05a040--3 ticks 93 reads 5 prop_ms_box 4.7 read_ms_box 18.4
+ALLDONE
