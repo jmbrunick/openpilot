@@ -436,6 +436,16 @@ class OsmSpeedLimitDB:
     self._con = con
     return True
 
+  def way_coords(self, way_id: int) -> list[tuple[float, float]]:
+    """Stored polyline of one way ([] if unknown). Used for sign-override spans."""
+    if self._con is None:
+      return []
+    try:
+      row = self._con.execute("SELECT coords FROM ways WHERE way_id = ?", (int(way_id),)).fetchone()
+      return _unpack_coords(row["coords"]) if row is not None and row["coords"] else []
+    except (sqlite3.Error, IndexError, KeyError):
+      return []
+
   def close(self) -> None:
     if self._con is not None:
       self._con.close()

@@ -19,7 +19,7 @@ def test_yes_keyed_by_way_and_direction_and_persists(tmp_path):
   e = o.consume({"mph": 55, "seq": 1.0}, m(111), 90.0, 0.0)
   assert e["way_id"] == 111 and e["mph"] == 55
   assert abs(o.limit_ms(111, 100.0) - 55 * MPH_TO_MS) < 1e-6
-  assert o.limit_ms(111, 270.0) is None      # opposite direction keeps OSM
+  assert abs(o.limit_ms(111, 270.0) - 55 * MPH_TO_MS) < 1e-6   # both directions (no sign position: whole way)
   assert o.limit_ms(222, 90.0) is None
   assert o.consume({"mph": 55, "seq": 1.0}, m(222), 90.0, 1.0) is None  # same seq once
   o2 = SpeedOverrides(p)                        # future drive
@@ -71,8 +71,8 @@ def test_v23_yes_after_car_moved_uses_read_time_way(tmp_path):
   assert e is not None and e["way_id"] == 111 and e["heading"] == 90.0 and e["mph"] == 45
   assert o.find(222, 0.0) is None                    # never the tap-time way
   assert abs(o.limit_ms(111, 80.0) - 45 * MPH_TO_MS) < 1e-6
-  assert o.limit_ms(111, 270.0) is None              # one direction only
-  assert o.limit_ms(111, 160.0) is None              # outside +-60 deg
+  assert abs(o.limit_ms(111, 270.0) - 45 * MPH_TO_MS) < 1e-6   # both directions now
+  assert o.limit_ms(111, 160.0) is not None          # spans ignore heading
 
 
 def test_v23_yes_without_read_time_way_stores_nothing(tmp_path):
@@ -96,3 +96,47 @@ def test_yes_equal_to_current_limit_rewrites_nothing(tmp_path):
   assert len(o.entries) == 1 and o._mtime == t
   # Back to the OSM value differs from the override: replaced.
   assert o.consume({"mph": 45, "seq": 4.0, "way_id": 111, "heading": 90.0}, osm45, 90.0, 3.0)["mph"] == 45
+
+
+# --- both directions, from the sign onward ------------------------------------
+# Way 7 runs west -> east along lat 45.0, ~0.0127 deg lon per km.
+W7 = [(45.0, -93.0 + i * 0.00127) for i in range(11)]   # ~100 m apart, ~1 km long
+
+
+def _at(m_east):
+  return 45.0, -93.0 + m_east / 100.0 * 0.00127
+
+
+def test_yes_covers_both_directions_from_sign_onward(tmp_path):
+  o = SpeedOverrides(str(tmp_path / "o.json"))
+  lat, lon = _at(400)
+  e = o.consume({"mph": 30, "seq": 1.0, "way_id": 7, "heading": 90.0, "lat": lat, "lon": lon},
+                None, 90.0, 0.0, way_coords=lambda w: W7 if w == 7 else [])
+  assert e["both"] and e["dir"] == 1 and 390 < e["from_s"] < 410
+  for m_east in (450, 900):                 # past the sign: both directions
+    for hdg in (90.0, 270.0):
+      assert abs(o.limit_ms(7, hdg, *_at(m_east), W7) - 30 * MPH_TO_MS) < 1e-6
+  for hdg in (90.0, 270.0):                 # before the sign: OSM
+    assert o.limit_ms(7, hdg, *_at(200), W7) is None
+  assert o.limit_ms(7, 90.0) is None        # no position: no span match
+
+
+def test_westbound_sign_covers_west_part(tmp_path):
+  o = SpeedOverrides(str(tmp_path / "o.json"))
+  lat, lon = _at(600)
+  e = o.consume({"mph": 40, "seq": 1.0, "way_id": 7, "heading": 270.0, "lat": lat, "lon": lon},
+                None, 270.0, 0.0, way_coords=lambda w: W7)
+  assert e["dir"] == -1
+  assert o.limit_ms(7, 90.0, *_at(100), W7) is not None
+  assert o.limit_ms(7, 90.0, *_at(800), W7) is None
+
+
+def test_span_replaces_heading_only_row(tmp_path):
+  """A legacy eastbound-only 30 (Justin's E 30 / W 60 road) is replaced by a both-way span."""
+  o = SpeedOverrides(str(tmp_path / "o.json"))
+  o.entries = [{"way_id": 7, "heading": 90.0, "mph": 30}]
+  assert o.limit_ms(7, 90.0) and o.limit_ms(7, 270.0) is None
+  lat, lon = _at(0)
+  o.consume({"mph": 60, "seq": 2.0, "way_id": 7, "heading": 270.0, "lat": lat, "lon": lon},
+            None, 270.0, 0.0, way_coords=lambda w: W7)
+  assert len(o.entries) == 1 and o.entries[0]["both"]

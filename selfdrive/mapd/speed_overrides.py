@@ -19,10 +19,18 @@ way stores nothing.
 A YES whose mph already is the limit for that way + heading (the stored
 override, or OSM when the car is matched to that way and there is none)
 rewrites nothing; the sign itself is still recorded by two_stage.record_answer.
+
+Both directions (Oct 2026): a YES now covers the read-time way from the
+sign's position onward in the travel direction to the end of that way, and
+that span applies to BOTH directions of travel. Rows carry
+{"both": true, "from_s": m along the digitized way, "dir": +1|-1}; a row
+without a sign position covers the whole way, both directions. Old
+heading-only rows (no "both") still match within +-60 deg.
 """
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 
@@ -41,6 +49,38 @@ def overrides_path() -> str:
   base = "/data/media/0/nap" if os.path.isdir("/data/media/0") else os.path.join(
     os.path.expanduser("~"), ".comma", "media", "0", "nap")
   return os.path.join(base, FILENAME)
+
+
+EARTH_R = 6371000.0
+
+
+def _xy(lat: float, lon: float, lat0: float, lon0: float) -> tuple[float, float]:
+  return (math.radians(lon - lon0) * math.cos(math.radians(lat0)) * EARTH_R,
+          math.radians(lat - lat0) * EARTH_R)
+
+
+def _bearing(a, b) -> float:
+  x, y = _xy(b[0], b[1], a[0], a[1])
+  return math.degrees(math.atan2(x, y)) % 360.0
+
+
+def along_way(lat: float, lon: float, coords) -> tuple[float, float] | None:
+  """(meters from the way's first node to the closest point, that segment's bearing)."""
+  if lat is None or lon is None or not coords or len(coords) < 2:
+    return None
+  best, best_s, best_h, s = 1e18, 0.0, 0.0, 0.0
+  for i in range(len(coords) - 1):
+    ax, ay = _xy(coords[i][0], coords[i][1], lat, lon)
+    bx, by = _xy(coords[i + 1][0], coords[i + 1][1], lat, lon)
+    abx, aby = bx - ax, by - ay
+    ab2 = abx * abx + aby * aby
+    seg = math.sqrt(ab2)
+    t = 0.0 if ab2 < 1e-6 else max(0.0, min(1.0, (-ax * abx - ay * aby) / ab2))
+    d = math.hypot(ax + t * abx, ay + t * aby)
+    if d < best:
+      best, best_s, best_h = d, s + t * seg, _bearing(coords[i], coords[i + 1])
+    s += seg
+  return best_s, best_h
 
 
 def heading_delta(a: float, b: float) -> float:
@@ -106,32 +146,64 @@ class SpeedOverrides:
     os.replace(tmp, self.path)
     self._mtime = os.path.getmtime(self.path)
 
-  def find(self, way_id: int, bearing: float | None) -> dict | None:
-    if bearing is None:
-      return None
+  def find(self, way_id: int, bearing: float | None, lat: float | None = None, lon: float | None = None,
+           coords=None) -> dict | None:
+    """Newest row covering this point of the way. Spans ignore the heading."""
     best = None
+    pos = None
     for e in self.entries:
-      if int(e["way_id"]) == int(way_id) and heading_delta(e["heading"], bearing) <= HEADING_MATCH_DEG:
+      if int(e["way_id"]) != int(way_id):
+        continue
+      if e.get("both"):
+        if e.get("from_s") is None:
+          best = e
+          continue
+        if pos is None:
+          pos = along_way(lat, lon, coords) or (None, None)
+        if pos[0] is not None and (pos[0] - float(e["from_s"])) * int(e.get("dir", 1)) >= -1.0:
+          best = e
+      elif bearing is not None and heading_delta(e["heading"], bearing) <= HEADING_MATCH_DEG:
         best = e  # newest wins (appended last)
     return best
 
-  def limit_ms(self, way_id: int, bearing: float | None) -> float | None:
-    e = self.find(way_id, bearing)
+  def limit_ms(self, way_id: int, bearing: float | None, lat: float | None = None, lon: float | None = None,
+               coords=None) -> float | None:
+    e = self.find(way_id, bearing, lat, lon, coords)
     return None if e is None else int(e["mph"]) * MPH_TO_MS
 
-  def add(self, way_id: int, heading: float, conf: dict, road: str = "", now: float | None = None) -> dict:
+  def span(self, heading: float, conf: dict, coords) -> tuple[float | None, int]:
+    """(from_s, dir) for a sign at conf lat/lon read while heading `heading`."""
+    pos = along_way(conf.get("lat"), conf.get("lon"), coords)
+    if pos is None:
+      return None, 1
+    return round(pos[0], 1), (1 if heading_delta(heading, pos[1]) <= 90.0 else -1)
+
+  def add(self, way_id: int, heading: float, conf: dict, road: str = "", now: float | None = None,
+          coords=None) -> dict:
     now = time.time() if now is None else now  # noqa: TID251  wall clock in the stored row
-    self.entries = [e for e in self.entries
-                    if not (int(e["way_id"]) == int(way_id) and heading_delta(e["heading"], heading) <= HEADING_MATCH_DEG)]
+    from_s, d = self.span(heading, conf, coords)
+
+    def covered(e) -> bool:
+      if int(e["way_id"]) != int(way_id):
+        return False
+      if not e.get("both"):
+        return True        # the new span covers both directions of the old heading-only row
+      if from_s is None:
+        return True
+      return e.get("from_s") is not None and int(e.get("dir", 1)) == d and (float(e["from_s"]) - from_s) * d >= -1.0
+    self.entries = [e for e in self.entries if not covered(e)]
     e = {"way_id": int(way_id), "heading": round(float(heading), 1), "mph": int(conf["mph"]),
+         "both": True, "from_s": from_s, "dir": d,
          "lat": conf.get("lat"), "lon": conf.get("lon"), "road": road, "t": round(now, 1), "source": "sign_yes"}
     self.entries.append(e)
     self.save()
     return e
 
-  def same_as_current(self, way_id: int, heading: float, mph: int, match=None) -> bool:
-    """True when mph already is the limit mapd uses for this way + heading."""
-    e = self.find(way_id, heading)
+  def same_as_current(self, way_id: int, heading: float, mph: int, match=None, conf: dict | None = None,
+                      coords=None) -> bool:
+    """True when mph already is the limit mapd uses at the sign on this way."""
+    conf = conf or {}
+    e = self.find(way_id, heading, conf.get("lat"), conf.get("lon"), coords)
     if e is not None:
       return int(e["mph"]) == int(mph)
     if match is not None and int(getattr(match, "way_id", 0) or 0) == int(way_id):
@@ -141,7 +213,7 @@ class SpeedOverrides:
         return False
     return False
 
-  def consume(self, raw_param, match, bearing: float | None, mono_now: float) -> dict | None:
+  def consume(self, raw_param, match, bearing: float | None, mono_now: float, way_coords=None) -> dict | None:
     """Turn a new YES (by seq) into an override on the current matched way.
 
     Returns the stored entry when one was written this call.
@@ -153,9 +225,12 @@ class SpeedOverrides:
         # v2.3: read-time way + heading; never the current match.
         hdg = conf.get("heading", conf.get("bearing"))
         if conf.get("way_id") and hdg is not None:
-          if self.same_as_current(int(conf["way_id"]), float(hdg), conf["mph"], match):
+          coords = way_coords(int(conf["way_id"])) if way_coords is not None else None
+          if not coords and match is not None and int(getattr(match, "way_id", 0) or 0) == int(conf["way_id"]):
+            coords = getattr(match, "coords", None)
+          if self.same_as_current(int(conf["way_id"]), float(hdg), conf["mph"], match, conf, coords):
             return None
-          return self.add(int(conf["way_id"]), float(hdg), conf)
+          return self.add(int(conf["way_id"]), float(hdg), conf, coords=coords)
         return None
       self.pending, self.pending_t = conf, mono_now
     if self.pending is None:
@@ -166,10 +241,12 @@ class SpeedOverrides:
     hdg = bearing if bearing is not None else self.pending.get("bearing")
     if match is None or hdg is None:
       return None
-    if self.same_as_current(int(match.way_id), float(hdg), self.pending["mph"], match):
+    coords = getattr(match, "coords", None)
+    if self.same_as_current(int(match.way_id), float(hdg), self.pending["mph"], match, self.pending, coords):
       self.pending = None
       return None
-    e = self.add(int(match.way_id), float(hdg), self.pending, road=str(getattr(match, "road_name", "") or ""))
+    e = self.add(int(match.way_id), float(hdg), self.pending, road=str(getattr(match, "road_name", "") or ""),
+                 coords=coords)
     self.pending = None
     return e
 
