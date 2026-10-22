@@ -446,6 +446,34 @@ class OsmSpeedLimitDB:
     except (sqlite3.Error, IndexError, KeyError):
       return []
 
+  def way_info(self, way_id: int) -> dict | None:
+    """{way_id, name, highway, coords} for one way (None if unknown). Sign-override chains."""
+    if self._con is None:
+      return None
+    try:
+      row = self._con.execute("SELECT way_id, name, highway, maxspeed_ms, coords FROM ways WHERE way_id = ?", (int(way_id),)).fetchone()
+    except sqlite3.Error:
+      return None
+    if row is None or not row["coords"]:
+      return None
+    return {"way_id": int(row["way_id"]), "name": row["name"] or "", "highway": row["highway"] or "",
+            "maxspeed_ms": float(row["maxspeed_ms"] or 0.0), "coords": _unpack_coords(row["coords"])}
+
+  def ways_at(self, lat: float, lon: float, tol_m: float = 5.0) -> list[dict]:
+    """Ways with an end node within tol_m of (lat, lon): the possible continuations at a way end."""
+    out = []
+    for row in self._candidates(lat, lon, pad_deg=max(tol_m, 1.0) / 111000.0 * 2.0):
+      try:
+        c = _unpack_coords(row["coords"]) if row["coords"] else []
+      except (IndexError, KeyError):
+        continue
+      if len(c) < 2 or _is_non_road_highway(row["highway"]):
+        continue
+      if _meters_between(c[0], (lat, lon)) <= tol_m or _meters_between(c[-1], (lat, lon)) <= tol_m:
+        out.append({"way_id": int(row["way_id"]), "name": row["name"] or "", "highway": row["highway"] or "",
+                    "maxspeed_ms": float(row["maxspeed_ms"] or 0.0), "coords": c})
+    return out
+
   def close(self) -> None:
     if self._con is not None:
       self._con.close()
