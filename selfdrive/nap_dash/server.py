@@ -17,7 +17,7 @@ import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 try:
   from openpilot.common.swaglog import cloudlog
@@ -137,6 +137,148 @@ def ping_payload(now=None):
   return {"ok": True, "ts": int(round(float(now) * 1000.0))}
 
 
+class SignWatch:
+  """Pushes NAPSpeedSignPrompt changes to the MCU page.
+
+  The comma UI process writes the prompt (mcu_prompt.sync_hud_prompt), so
+  nap_dash cannot be called directly. One lazy thread stats the param file
+  every WATCH_S and re-reads it when the file changes (or every RECHECK_S,
+  so a note that times out still clears). Each real change bumps ``version``
+  and wakes every SSE stream and long-poll waiting on it.
+  """
+  WATCH_S = 0.05
+  RECHECK_S = 1.0
+  MAX_STREAMS = 4
+  MAX_WAITERS = 8
+
+  def __init__(self, read=None, params=None, clock=time.monotonic):
+    self._read = read
+    self._params = params
+    self._clock = clock
+    self.cond = threading.Condition()
+    self.version = 0
+    self.state = None
+    self._sig = None
+    self._last_read = -1e9
+    self._thread = None
+    self._streams = []
+    self._waiters = 0
+
+  def _params_obj(self):
+    return self._params() if callable(self._params) else _params()
+
+  def _read_state(self):
+    if self._read is not None:
+      return self._read()
+    return read_sign(self._params_obj())
+
+  def _signature(self):
+    try:
+      base = self._params_obj().get_param_path()
+      st = os.stat(os.path.join(base, "NAPSpeedSignPrompt"))
+      return (st.st_mtime_ns, st.st_size, st.st_ino)
+    except Exception:
+      return None
+
+  def check(self, force=False):
+    """Re-read when the file changed, RECHECK_S passed, or forced. True when the state changed."""
+    sig = self._signature()
+    now = self._clock()
+    if not force and sig is not None and sig == self._sig and now - self._last_read < self.RECHECK_S:
+      return False
+    try:
+      state = self._read_state()
+    except Exception:
+      return False
+    self._sig = sig
+    self._last_read = now
+    with self.cond:
+      if state == self.state:
+        return False
+      self.state = state
+      self.version += 1
+      self.cond.notify_all()
+    return True
+
+  def snapshot(self):
+    with self.cond:
+      return self.version, self.state
+
+  def payload(self):
+    version, state = self.snapshot()
+    out = dict(state or {"pending": False})
+    out["v"] = version
+    return out
+
+  def _loop(self):
+    while not STOP.is_set():
+      try:
+        self.check()
+      except Exception:
+        pass
+      time.sleep(self.WATCH_S)
+
+  def start(self):
+    with self.cond:
+      if self._thread is not None:
+        return
+      self._thread = threading.Thread(target=self._loop, name="nap_dash_sign_watch", daemon=True)
+      self._thread.start()
+    self.check(force=True)
+
+  def wait_change(self, since, timeout):
+    """Block until version != since or timeout. Returns the current version."""
+    deadline = self._clock() + max(0.0, timeout)
+    with self.cond:
+      while self.version == since and not STOP.is_set():
+        left = deadline - self._clock()
+        if left <= 0:
+          break
+        self.cond.wait(min(left, 1.0))
+      return self.version
+
+  def open_stream(self):
+    """Register one SSE stream. The newest MAX_STREAMS win: a reloaded MCU page
+    whose old socket is not closed yet must never lock the new one out."""
+    token = object()
+    with self.cond:
+      self._streams.append(token)
+      while len(self._streams) > self.MAX_STREAMS:
+        self._streams.pop(0)
+      self.cond.notify_all()
+    return token
+
+  def stream_alive(self, token):
+    with self.cond:
+      return token in self._streams
+
+  def close_stream(self, token):
+    with self.cond:
+      if token in self._streams:
+        self._streams.remove(token)
+
+  def enter_wait(self):
+    with self.cond:
+      if self._waiters >= self.MAX_WAITERS:
+        return False
+      self._waiters += 1
+      return True
+
+  def leave_wait(self):
+    with self.cond:
+      self._waiters = max(0, self._waiters - 1)
+
+
+SIGN_WATCH = SignWatch()
+SSE_HEARTBEAT_S = 15.0
+SSE_MAX_S = 600.0       # the page's EventSource reconnects; bounds a dead socket
+LONG_POLL_S = 25.0
+
+
+def sse_event(payload, event="sign") -> bytes:
+  return f"event: {event}\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n".encode()
+
+
 def dashboard_html() -> bytes:
   try:
     return DASHBOARD_PATH.read_bytes()
@@ -150,7 +292,7 @@ class Handler(BaseHTTPRequestHandler):
   def log_message(self, fmt, *args):
     # /api/ping is polled every couple of seconds. Skip the access line so
     # the comma is not writing a log record on each MCU poll.
-    if args and "/api/ping" in str(args[0]):
+    if args and ("/api/ping" in str(args[0]) or "/api/speed_sign?wait" in str(args[0])):
       return
     cloudlog.info("nap_dash " + (fmt % args))
 
@@ -180,8 +322,73 @@ class Handler(BaseHTTPRequestHandler):
     self.end_headers()
     self.wfile.write(body)
 
+  def _sign_stream(self, watch=None, heartbeat_s=None, max_s=None):
+    """Server-Sent Events: current state on connect, then one event per change."""
+    watch = SIGN_WATCH if watch is None else watch
+    heartbeat_s = SSE_HEARTBEAT_S if heartbeat_s is None else heartbeat_s
+    max_s = SSE_MAX_S if max_s is None else max_s
+    watch.start()
+    self.close_connection = True
+    self.send_response(200)
+    self.send_header("Content-Type", "text/event-stream")
+    self.send_header("Cache-Control", "no-cache, no-store, max-age=0")
+    self.send_header("Pragma", "no-cache")
+    self.send_header("Expires", "0")
+    self.send_header("Connection", "close")
+    self.end_headers()
+    token = watch.open_stream()
+    started = time.monotonic()
+    try:
+      # Padding: some WebKit builds buffer the first 2 KB before firing events.
+      self.wfile.write(b":" + b" " * 2048 + b"\nretry: 2000\n\n")
+      version, _ = watch.snapshot()
+      self.wfile.write(sse_event(watch.payload()))
+      self.wfile.flush()
+      last_write = time.monotonic()
+      while not STOP.is_set() and watch.stream_alive(token):
+        now = time.monotonic()
+        if now - started >= max_s:
+          break
+        wait = min(heartbeat_s - (now - last_write), max_s - (now - started))
+        new_version = watch.wait_change(version, max(0.05, wait))
+        if not watch.stream_alive(token):
+          break
+        if new_version != version:
+          version = new_version
+          self.wfile.write(sse_event(watch.payload()))
+        elif time.monotonic() - last_write >= heartbeat_s:
+          self.wfile.write(b": hb\n\n")
+        else:
+          continue
+        self.wfile.flush()
+        last_write = time.monotonic()
+    except (BrokenPipeError, ConnectionResetError, OSError):
+      pass
+    finally:
+      watch.close_stream(token)
+
+  def _sign_long_poll(self, since, watch=None, timeout=None):
+    """Fallback without EventSource: hold until the state version moves past ``since``."""
+    watch = SIGN_WATCH if watch is None else watch
+    watch.start()
+    if watch.enter_wait():
+      try:
+        if watch.snapshot()[0] == since:
+          watch.wait_change(since, LONG_POLL_S if timeout is None else timeout)
+      finally:
+        watch.leave_wait()
+    return self.send_json(watch.payload(), cache_control="no-store, max-age=0")
+
   def do_GET(self):
     path = urlparse(self.path).path
+    if path == "/api/speed_sign/stream":
+      return self._sign_stream()
+    if path == "/api/speed_sign" and "wait" in parse_qs(urlparse(self.path).query):
+      try:
+        since = int(parse_qs(urlparse(self.path).query)["wait"][0])
+      except (TypeError, ValueError):
+        since = -1
+      return self._sign_long_poll(since)
     if path in ("/", "/index.html", "/phone", "/phone/"):
       return self._send_html()
     if path == "/api/ping":
@@ -243,7 +450,9 @@ class Handler(BaseHTTPRequestHandler):
       if path == "/api/force_offroad":
         return self.send_json(handle_ack(payload, _params()), cache_control="no-store, max-age=0")
       if path == "/api/speed_sign":
-        return self.send_json(handle_sign(payload, _params()), cache_control="no-store, max-age=0")
+        out = handle_sign(payload, _params())
+        SIGN_WATCH.check(force=True)   # a tap here clears every other open MCU page now
+        return self.send_json(out, cache_control="no-store, max-age=0")
       if path == "/api/bookmark":
         return self.send_json(bookmark_tap(_params()))
       if path == "/api/talk":

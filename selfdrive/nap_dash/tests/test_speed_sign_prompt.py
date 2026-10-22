@@ -49,7 +49,7 @@ def test_page_shows_read_speed_and_one_prompt(monkeypatch, tmp_path):
   assert "way_id" not in snap
   html = (ROOT / "selfdrive/nap_dash/dashboard.html").read_text(encoding="utf-8")
   assert 'id="ssign"' in html and 'id="ssign-mph"' in html
-  assert "setInterval(ssPoll, 500)" in html
+  assert "setInterval(ssTick, 500)" in html
   poll = html.split("function ssPoll()", 1)[1].split("function ", 1)[0]
   assert "/api/speed_sign?t=" in poll
   show = html.split("function showPanel", 1)[1].split("function ", 1)[0]
