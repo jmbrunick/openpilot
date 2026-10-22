@@ -22,12 +22,21 @@ class _Params(dict):
 class _App:
   def __init__(self):
     self._nav_stack = ["main"]
+    self.ticks = []
 
   def push_widget(self, w):
     self._nav_stack.append(w)
 
   def pop_widget(self, idx=None):
     self._nav_stack.pop(len(self._nav_stack) - 1 if idx is None else idx)
+
+  def add_nav_stack_tick(self, fn):
+    if fn not in self.ticks:
+      self.ticks.append(fn)
+
+  def remove_nav_stack_tick(self, fn):
+    if fn in self.ticks:
+      self.ticks.remove(fn)
 
 
 def _load(monkeypatch):
@@ -95,3 +104,72 @@ def test_next_request_shows_again(monkeypatch):
   nfo.apply_force_offroad_toggle(p, False, started=False)
   p = _pending(nfo)
   assert mod.maybe_show_force_offroad_confirm(p, started=True)
+
+
+def _arm_tick(monkeypatch, mod, p):
+  """The frame tick reads Params() and ui_state.started, not the test's arguments."""
+  mod.Params = lambda: p
+  ui = types.SimpleNamespace(started=True)
+  monkeypatch.setitem(sys.modules, "openpilot.selfdrive.ui.ui_state", types.SimpleNamespace(ui_state=ui))
+
+
+def test_mcu_yes_closes_comma_dialog_from_the_nav_tick(monkeypatch):
+  """C3X does not render MainLayout while this dialog is on top, so nothing calls maybe_show again."""
+  mod, app, nfo = _load(monkeypatch)
+  p = _pending(nfo)
+  _arm_tick(monkeypatch, mod, p)
+  assert mod.maybe_show_force_offroad_confirm(p, started=True)
+  assert len(app.ticks) == 1
+  nfo.confirm_force_offroad(p)
+  app.ticks[0]()
+  assert app._nav_stack == ["main"]
+  assert p.get_bool(nfo.PARAM) and p.get_bool(nfo.CONFIRMED_PARAM)
+  app.ticks[0]()
+  assert app._nav_stack == ["main"]
+  assert p.get_bool(nfo.CONFIRMED_PARAM)
+
+
+def test_mcu_no_closes_comma_dialog_from_the_nav_tick(monkeypatch):
+  mod, app, nfo = _load(monkeypatch)
+  p = _pending(nfo)
+  _arm_tick(monkeypatch, mod, p)
+  mod.maybe_show_force_offroad_confirm(p, started=True)
+  nfo.cancel_force_offroad(p)
+  app.ticks[0]()
+  assert app._nav_stack == ["main"]
+  assert not p.get_bool(nfo.PARAM)
+  app.ticks[0]()
+  assert app._nav_stack == ["main"]
+  assert not p.get_bool(nfo.PARAM)
+
+
+def _mcu_pending(nfo, p) -> bool:
+  """Same condition as nap_dash force_offroad_api.read_ack."""
+  return nfo.needs_driver_confirm(
+    p.get_bool(nfo.PARAM), p.get_bool(nfo.CONFIRMED_PARAM), p.get_bool("IsOnroad"),
+  )
+
+
+def test_comma_yes_and_no_clear_the_mcu_prompt(monkeypatch):
+  mod, app, nfo = _load(monkeypatch)
+  p = _pending(nfo)
+  p.put_bool("IsOnroad", True)
+  _arm_tick(monkeypatch, mod, p)
+  mod.maybe_show_force_offroad_confirm(p, started=True)
+  assert _mcu_pending(nfo, p) is True
+  app.pop_widget()
+  mod._on_result(mod.DialogResult.CONFIRM)
+  assert app._nav_stack == ["main"]
+  assert _mcu_pending(nfo, p) is False
+  app.ticks[0]()
+  assert p.get_bool(nfo.PARAM) and p.get_bool(nfo.CONFIRMED_PARAM)
+
+  p2 = _pending(nfo)
+  p2.put_bool("IsOnroad", True)
+  _arm_tick(monkeypatch, mod, p2)
+  mod.maybe_show_force_offroad_confirm(p2, started=True)
+  app.pop_widget()
+  mod._on_result(mod.DialogResult.CANCEL)
+  assert app._nav_stack == ["main"]
+  assert _mcu_pending(nfo, p2) is False
+  assert not p2.get_bool(nfo.PARAM)

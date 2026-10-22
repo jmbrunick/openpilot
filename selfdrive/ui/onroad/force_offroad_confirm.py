@@ -90,6 +90,36 @@ class ForceOffroadConfirmDialog(ConfirmDialog):
 
 _dialog_open = False
 _dialog: "ForceOffroadConfirmDialog | None" = None
+_watch_installed = False
+
+
+def _watch_force_offroad_confirm() -> None:
+  """Close the comma dialog after an MCU answer.
+
+  C3X big_ui renders only the top nav widget. Once this dialog is pushed,
+  MainLayout._render stops, so the maybe_show call there never sees the
+  MCU's params. This tick still runs. It does not remove itself from the
+  tick list: that list is being iterated by the frame loop.
+  """
+  try:
+    maybe_show_force_offroad_confirm()
+  except Exception:
+    try:
+      from openpilot.common.swaglog import cloudlog
+      cloudlog.exception("force_offroad_confirm: nav tick failed")
+    except Exception:
+      pass
+
+
+def _start_watch() -> None:
+  global _watch_installed
+  if _watch_installed:
+    return
+  add = getattr(gui_app, "add_nav_stack_tick", None)
+  if add is None:
+    return
+  add(_watch_force_offroad_confirm)
+  _watch_installed = True
 
 
 def _on_result(result: DialogResult):
@@ -111,6 +141,7 @@ def show_force_offroad_confirm() -> bool:
   _dialog_open = True
   _dialog = ForceOffroadConfirmDialog(callback=_on_result)
   gui_app.push_widget(_dialog)
+  _start_watch()
   return True
 
 

@@ -214,6 +214,54 @@ def test_store_failure_still_confirms_the_comma_snapshot(monkeypatch, tmp_path):
   assert M.answer_prompt(4, True, params=p) is False
 
 
+def test_real_proposal_seq_is_not_replaced(monkeypatch, tmp_path):
+  p = _bind(monkeypatch, tmp_path)
+  assert M.sync_hud_prompt(_view(seq=4), p) is False
+  assert M.read_pending(p)["id"] == 4
+
+
+def test_string_json_put_still_publishes(monkeypatch, tmp_path):
+  """A JSON param written as a dict raises TypeError when the key type is STRING."""
+  p = _bind(monkeypatch, tmp_path)
+
+  def put(key, value, *a, **k):
+    if isinstance(value, dict):
+      raise TypeError("type mismatch")
+    p.store[key] = value
+
+  p.put = put
+  assert M.sync_hud_prompt(_view(seq=8, mph=30), p) is False
+  assert M.read_pending(p) == {"id": 8, "mph": 30, "way_id": 111, "heading": 90.0}
+
+
+def test_missing_param_key_falls_back_to_a_file(monkeypatch, tmp_path):
+  """params_pyx built before NAPSpeedSignPrompt raises. The comma used to swallow that."""
+  base = tmp_path / "params"
+  base.mkdir()
+
+  class Old:
+    def __init__(self):
+      self.store = {}
+
+    def get_param_path(self, key=""):
+      return str(base)
+
+    def get(self, key, *a, **k):
+      raise RuntimeError(f"UnknownKeyName {key}")
+
+    def put(self, key, value, *a, **k):
+      raise RuntimeError(f"UnknownKeyName {key}")
+
+    def remove(self, key):
+      raise RuntimeError(f"UnknownKeyName {key}")
+
+  monkeypatch.setenv("NAP_SPEED_SIGN_PROMPT_LOCK", str(tmp_path / "prompt.lock"))
+  p = Old()
+  assert M.sync_hud_prompt(_view(seq=6, mph=25), p) is False
+  assert M.read_pending(p)["mph"] == 25 and M.read_pending(p)["id"] == 6
+  assert (base / "NAPSpeedSignPrompt").is_file()
+
+
 def test_hook_surface_has_no_carstate_or_log_field():
   hud = (ROOT / "selfdrive/ui/onroad/speed_sign_hud.py").read_text(encoding="utf-8")
   impl = (ROOT / "selfdrive/speedsignd/mcu_prompt.py").read_text(encoding="utf-8")
@@ -222,6 +270,18 @@ def test_hook_surface_has_no_carstate_or_log_field():
   log = (ROOT / "cereal/log.capnp").read_text(encoding="utf-8")
   assert "sync_hud_prompt" in hud and "answer_prompt" in hud
   assert "Params(" not in hud
+  update = hud.split("def _update_state", 1)[1].split("\n  def ", 1)[0]
+  assert "cloudlog.exception(\"speed_sign_hud: MCU prompt sync failed\")" in update
+  assert "\n      pass\n" not in update
+  render = hud.split("def _render", 1)[1]
+  assert "draw_tici_speed_sign" in render and "self._view" in render
+  widget = (ROOT / "system/ui/widgets/__init__.py").read_text(encoding="utf-8")
+  widget_render = widget.split("def render", 1)[1].split("\n  def ", 1)[0]
+  assert widget_render.index("_update_state") < widget_render.index("_render")
+  onroad_hud = (ROOT / "selfdrive/ui/onroad/hud_renderer.py").read_text(encoding="utf-8")
+  road = (ROOT / "selfdrive/ui/onroad/augmented_road_view.py").read_text(encoding="utf-8")
+  assert "_speed_sign_hud.render" in onroad_hud
+  assert "_hud_renderer.render" in road
   assert "threading.Thread(target=_safe_confirm" in hud
   for text in (impl, api, hud):
     assert "carState" not in text

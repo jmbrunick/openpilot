@@ -171,6 +171,11 @@ class Handler(BaseHTTPRequestHandler):
     self.send_response(200)
     self.send_header("Content-Type", "text/html; charset=utf-8")
     self.send_header("Cache-Control", "no-cache, no-store")
+    # Tesla MCU WebKit ignores Cache-Control on a stable URL. Pragma/Expires
+    # match /api/ping. A cached dashboard from before the speed-sign overlay
+    # would never poll /api/speed_sign.
+    self.send_header("Pragma", "no-cache")
+    self.send_header("Expires", "0")
     self.send_header("Content-Length", str(len(body)))
     self.end_headers()
     self.wfile.write(body)
@@ -202,14 +207,14 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_json({"error": str(exc)}, 500)
     if path == "/api/force_offroad":
       try:
-        return self.send_json(read_ack(_params()))
+        return self.send_json(read_ack(_params()), cache_control="no-store, max-age=0")
       except Exception as exc:
-        return self.send_json({"error": str(exc)}, 500)
+        return self.send_json({"error": str(exc)}, 500, cache_control="no-store, max-age=0")
     if path == "/api/speed_sign":
       try:
-        return self.send_json(read_sign(_params()))
+        return self.send_json(read_sign(_params()), cache_control="no-store, max-age=0")
       except Exception as exc:
-        return self.send_json({"error": str(exc)}, 500)
+        return self.send_json({"error": str(exc)}, 500, cache_control="no-store, max-age=0")
     if path == "/api/bookmark":
       try:
         return self.send_json(bookmark_status(_params()))
@@ -236,9 +241,9 @@ class Handler(BaseHTTPRequestHandler):
       if path == "/api/software":
         return self.send_json(handle_software(payload, _params()))
       if path == "/api/force_offroad":
-        return self.send_json(handle_ack(payload, _params()))
+        return self.send_json(handle_ack(payload, _params()), cache_control="no-store, max-age=0")
       if path == "/api/speed_sign":
-        return self.send_json(handle_sign(payload, _params()))
+        return self.send_json(handle_sign(payload, _params()), cache_control="no-store, max-age=0")
       if path == "/api/bookmark":
         return self.send_json(bookmark_tap(_params()))
       if path == "/api/talk":

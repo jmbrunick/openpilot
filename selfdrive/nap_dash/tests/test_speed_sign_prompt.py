@@ -50,6 +50,13 @@ def test_page_shows_read_speed_and_one_prompt(monkeypatch, tmp_path):
   html = (ROOT / "selfdrive/nap_dash/dashboard.html").read_text(encoding="utf-8")
   assert 'id="ssign"' in html and 'id="ssign-mph"' in html
   assert "setInterval(ssPoll, 500)" in html
+  poll = html.split("function ssPoll()", 1)[1].split("function ", 1)[0]
+  assert "/api/speed_sign?t=" in poll
+  show = html.split("function showPanel", 1)[1].split("function ", 1)[0]
+  assert "ssPoll" not in show and "ssRender" not in show
+  assert html.find('id="content"') < html.find('id="ssign"')
+  render = html.split("function ssRender", 1)[1].split("function ", 1)[0]
+  assert "ssId = data.id" in render
   chunk = html.split("function ssAnswer", 1)[1].split("function ", 1)[0]
   assert "/api/speed_sign" in chunk
   assert "confirm" not in chunk
@@ -74,6 +81,28 @@ def test_yes_and_no_ignore_client_way_and_need_no_extra_confirm(monkeypatch, tmp
   p2 = _open(monkeypatch, tmp_path, seq=10, mph=50)
   assert handle_sign({"answer": "no", "id": 10}, p2)["pending"] is False
   assert seen[-1][1] is False and seen[-1][2]["way_id"] == 111
+
+
+def test_mcu_accepts_current_read_id_and_refuses_stale(monkeypatch, tmp_path):
+  """A newer read replaces the prompt. The MCU must answer that id, not the previous one."""
+  monkeypatch.setattr(
+    "openpilot.selfdrive.speedsignd.mcu_prompt.on_confirm_accuracy",
+    lambda *a, **k: None,
+  )
+  p = _open(monkeypatch, tmp_path, seq=1, mph=30, way=900, heading=10.0)
+  sync_hud_prompt(LiveSignView(
+    show_mph=True, mph=30, proposal_mode=True,
+    proposed_mph=30, proposed_seq=2, proposed_way_id=111, proposed_heading=90.0,
+  ), p)
+  snap = read_sign(p)
+  assert snap["pending"] is True and snap["id"] == 2 and snap["mph"] == 30
+  with pytest.raises(SignError, match="not waiting"):
+    handle_sign({"answer": "yes", "id": 1}, p)
+  assert read_sign(p)["pending"] is True and read_sign(p)["id"] == 2
+  done = handle_sign({"answer": "yes", "id": snap["id"]}, p)
+  assert done["pending"] is False
+  with pytest.raises(SignError, match="not waiting"):
+    handle_sign({"answer": "no", "id": 2}, p)
 
 
 def test_bad_answer_and_stale_id(monkeypatch, tmp_path):
@@ -106,14 +135,17 @@ def test_http_round_trip_closes_prompt_and_engage_stays_blocked(monkeypatch, tmp
     raw = json.dumps(body).encode() if body is not None else None
     conn.request(method, path, raw, headers={"Content-Type": "application/json"})
     resp = conn.getresponse()
-    out = (resp.status, json.loads(resp.read().decode()))
+    headers = {k.lower(): v for k, v in resp.getheaders()}
+    out = (resp.status, json.loads(resp.read().decode()), headers)
     conn.close()
     return out
 
   try:
-    status, data = call("GET", "/api/speed_sign")
+    status, data, headers = call("GET", "/api/speed_sign?t=1")
     assert status == 200 and data["pending"] is True and data["mph"] == 35
-    status, data = call("POST", "/api/speed_sign", {"answer": "yes", "id": data["id"], "way_id": 999})
+    assert "no-store" in headers.get("cache-control", "")
+    assert headers.get("pragma") == "no-cache"
+    status, data, _headers = call("POST", "/api/speed_sign", {"answer": "yes", "id": data["id"], "way_id": 999})
     assert status == 200 and data["pending"] is False
     assert call("POST", "/api/speed_sign", {"answer": "yes", "id": 9})[0] == 400
     assert call("POST", "/api/set", {"action": "engage"})[0] == 400

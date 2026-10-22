@@ -222,8 +222,12 @@ def _now() -> float:
   return time.monotonic()
 
 
-def _draw_live_sign(rect_fn, rect: rl.Rectangle, font_bold, font_label, digit_size: int, label_size: int) -> LiveSignView:
-  view = _GATE.filter(live_sign_from_sm(ui_state.sm, logger_enabled()), _now())
+def _draw_live_sign(rect_fn, rect: rl.Rectangle, font_bold, font_label, digit_size: int, label_size: int,
+                    view: LiveSignView | None = None) -> LiveSignView:
+  # The widget passes the view it already synced to nap_dash. A fresh read
+  # here would paint Yes/No after the MCU had already answered.
+  if view is None:
+    view = _GATE.filter(live_sign_from_sm(ui_state.sm, logger_enabled()), _now())
   if not view.show:
     return view
   if view.show_missing_weights or view.show_runtime_missing:
@@ -238,12 +242,12 @@ def _draw_live_sign(rect_fn, rect: rl.Rectangle, font_bold, font_label, digit_si
   return view
 
 
-def draw_tici_speed_sign(rect: rl.Rectangle, font_bold, font_label) -> LiveSignView:
-  return _draw_live_sign(tici_sign_rect, rect, font_bold, font_label, TICI_DIGIT, TICI_LABEL)
+def draw_tici_speed_sign(rect: rl.Rectangle, font_bold, font_label, view: LiveSignView | None = None) -> LiveSignView:
+  return _draw_live_sign(tici_sign_rect, rect, font_bold, font_label, TICI_DIGIT, TICI_LABEL, view)
 
 
-def draw_mici_speed_sign(rect: rl.Rectangle, font_bold, font_label) -> LiveSignView:
-  return _draw_live_sign(mici_sign_rect, rect, font_bold, font_label, MICI_DIGIT, MICI_LABEL)
+def draw_mici_speed_sign(rect: rl.Rectangle, font_bold, font_label, view: LiveSignView | None = None) -> LiveSignView:
+  return _draw_live_sign(mici_sign_rect, rect, font_bold, font_label, MICI_DIGIT, MICI_LABEL, view)
 
 
 def _safe_confirm(mph: int, yes: bool, proposal: dict | None = None) -> None:
@@ -298,12 +302,13 @@ class SpeedSignHud(Widget):
     view = _GATE.filter(live_sign_from_sm(ui_state.sm, logger_enabled()), _now())
     try:
       from openpilot.selfdrive.speedsignd.mcu_prompt import sync_hud_prompt
-      # A Yes/No on the MCU claims this id; hide here without answering again.
+      # A Yes/No on the MCU claims this read's seq; hide here without answering again.
+      # proposed_seq is that read's id. Do not substitute another one.
       if sync_hud_prompt(view) and view.proposal_mode and int(view.proposed_mph) > 0:
         _GATE.answer_seq(int(view.proposed_seq))
         view = _GATE.filter(view, _now())
     except Exception:
-      pass
+      cloudlog.exception("speed_sign_hud: MCU prompt sync failed")
     self._view = view
 
   def _layout(self) -> None:
@@ -367,10 +372,10 @@ class SpeedSignHud(Widget):
       return
     if self._tici:
       sign = tici_sign_rect(rect)
-      view = draw_tici_speed_sign(rect, self._font_bold, self._font_label)
+      view = draw_tici_speed_sign(rect, self._font_bold, self._font_label, self._view)
     else:
       sign = mici_sign_rect(rect)
-      view = draw_mici_speed_sign(rect, self._font_bold, self._font_label)
+      view = draw_mici_speed_sign(rect, self._font_bold, self._font_label, self._view)
     if not hud_confirm_visible(view):
       return
     mouse = rl.get_mouse_position()
