@@ -49,6 +49,15 @@ struct LiveSpeedSignNAP @0xaedffd8f31e7b55d {
   signRangeM @10 :Float32;  # forward range at the read, m
   signPx @11 :Float32;      # read box height, px
   signMph @12 :Int16;
+  # v2.3 confirm prompt. mph above is the last Yes-confirmed plate; an agreed
+  # read only proposes. The plate changes when the driver taps Yes.
+  proposedMph @13 :Int16;      # 0 = no prompt
+  proposedConf @14 :Float32;
+  proposedSeq @15 :UInt32;
+  proposedWayId @16 :UInt64;   # mapd way matched when the sign was READ
+  proposedHeading @17 :Float32; # GPS bearing at the read, deg
+  proposedLat @18 :Float64;    # car GPS at the read
+  proposedLon @19 :Float64;
 }
 
 # NAP radar cone-line sample. Log only. Does not steer.

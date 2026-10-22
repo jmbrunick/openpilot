@@ -103,6 +103,7 @@
     {"NAPSignOthers", {PERSISTENT, BOOL, "0"}},
     {"NAPSignReadDistM", {PERSISTENT, FLOAT, "40"}},  // speed sign read distance floor, 15-60 m
     {"NAPSpeedSignConfirmed", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, JSON}},
+    {"NAPSpeedSignAnswer", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, JSON}},  // v2.3 HUD Yes/No -> speedsignd plate
     // Soft wheel lateral handoff. Default ON. Yield on driver intent
     // (sustained torsion + aligned rate + hands on). Stay yielded while
     // handsOnLevel >= 1; blend after ~80 ms hands-off. Hard brake during

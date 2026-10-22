@@ -93,6 +93,7 @@ from openpilot.selfdrive.speedsignd.detect import (
 from openpilot.selfdrive.speedsignd import others as other_signs_mod
 from openpilot.selfdrive.speedsignd import strip_geom
 from openpilot.selfdrive.speedsignd import sign_map
+from openpilot.selfdrive.speedsignd import confirm
 from openpilot.selfdrive.speedsignd.nv12 import copy_nv12_detect_crop, copy_nv12_rect, subcrop_nv12
 from openpilot.selfdrive.speedsignd.paths import (
   OTHER_SIGNS_PARAM, PARAM_KEY, default_log_path, default_onnx_path, default_other_signs_path, default_proposer_path,
@@ -1278,16 +1279,29 @@ def live_sign_publish_fields(
 def _publish_live(
   pm, hold: LiveSignHold, signs, now_mono: float, messaging,
   weights_missing: bool, detect_paused: bool = False, sign_loc: dict | None = None,
+  plate: confirm.PlateState | None = None, way: tuple | None = None, gps: tuple | None = None,
 ) -> None:
   msg_valid, mph, conf, missing, paused = live_sign_publish_fields(
     hold, signs, now_mono, weights_missing, detect_paused,
   )
+  if plate is not None:
+    # v2.3: a lit hold (non-planned path) only proposes; the plate is the
+    # last Yes. Missing weights / WAIT still blank it.
+    if mph and not missing and not paused:
+      way_id, hdg = way or (0, None)
+      lat, lon, bearing = gps or (None, None, None)
+      plate.propose(int(mph), float(conf), way_id=way_id, heading=hdg if hdg is not None else bearing,
+                    lat=lat, lon=lon)
+    mph, conf = (plate.plate_mph, plate.plate_conf) if not missing and not paused else (0, 0.0)
+    msg_valid = True
   msg = messaging.new_message(SERVICE_NAME)
   msg.valid = msg_valid
   apply_live_sign(
     getattr(msg, SERVICE_NAME),
     mph=mph, conf=conf, valid=bool(mph), weights_missing=missing, detect_paused=paused,
   )
+  if plate is not None:
+    confirm.fill_proposal(getattr(msg, SERVICE_NAME), None if (missing or paused) else plate.proposal)
   if sign_loc:
     fill_sign_loc(getattr(msg, SERVICE_NAME), sign_loc)
   pm.send(SERVICE_NAME, msg)
@@ -1570,7 +1584,7 @@ def main():
     two_stage.TRACK_SOLO_PROPOSAL_CONF, two_stage.READS_AFTER_MPH, two_stage.STRIP_RECT,
   )
   sm = messaging.SubMaster(
-    ["gpsLocationExternal", "gpsLocation", "selfdriveState", "modelV2", "liveCalibration"],
+    ["gpsLocationExternal", "gpsLocation", "selfdriveState", "modelV2", "liveCalibration", "liveMapDataNAP"],
     frequency=SM_HZ,
   )
   pm = messaging.PubMaster([SERVICE_NAME, "otherSignsNAP"])
@@ -1584,6 +1598,8 @@ def main():
   prop_duty = two_stage.ProposerDuty()
   sign_seq = 0
   sign_loc: dict | None = None
+  plate = confirm.PlateState()
+  answer_t = 0.0
   exempt_next = 0.0
   # Proposer CPU seconds since the last reader sample. Subtracted from the
   # process share so the 25% read budget does not see the strip proposer.
@@ -1798,12 +1814,24 @@ def main():
               if tr.tid == read_tid and tr.planned:
                 # v2.2: the HUD sees only a burst decision (2 agreeing reads,
                 # or one >= 0.85 on a >= 56 px box). JSONL already ran.
-                signs = tracker.mark_planned_read(
-                  tr, signs, diag.get("read_h"), neg=two_stage.neg_read(diag.get("read_diag")),
+                # v2.3: the burst votes on the main reader's raw class mph.
+                released = tracker.mark_planned_read(
+                  tr, raw, diag.get("read_h"), neg=two_stage.neg_read(diag.get("read_diag")),
                   t=float(diag.get("t_frame", now_mono)),
                 )
-                if signs:
-                  placed = place_sign(diag, signs, tr, sm)
+                # The plate never follows a read; a decision only raises the prompt.
+                signs = []
+                if released:
+                  way_id, way_hdg = diag.get("read_way") or (0, None)
+                  meta = diag.get("read_jpg_meta") or {}
+                  top = max(released, key=lambda s: float(s.conf))
+                  plate.propose(
+                    int(top.mph), float(top.conf), way_id=way_id,
+                    heading=way_hdg if way_hdg is not None else meta.get("bearing"),
+                    lat=meta.get("lat"), lon=meta.get("lon"),
+                  )
+                if released:
+                  placed = place_sign(diag, released, tr, sm)
                   if placed is not None:
                     sign_seq += 1
                     sign_loc = dict(placed, seq=sign_seq)
@@ -2080,7 +2108,9 @@ def main():
           use_two = False
           nv12 = None
           two_job = None
-        elif use_two and not prop_duty.fits(now_mono, 1):
+        elif use_two and not prop_duty.fits(
+          now_mono, 1, two_stage.burst_headroom(tracker, now_mono, speed_ms),
+        ):
           # v2.1: proposer duty cap (25% of a core over 10 s, all passes).
           next_propose = max(now_mono + 1.0 / two_stage.PROPOSER_BURST_HZ, prop_duty.next_fit(now_mono, 1))
           last_skip_reason = "prop-duty"
@@ -2111,7 +2141,8 @@ def main():
           allow_exempt = now_mono >= exempt_next
           nv12 = strip
           stop_plan_now = other_signs_mod.model_stop_plan(sm["modelV2"], speed_ms) if others.active else False
-          two_job = None if strip is None else (strip, bank, allow_read, t_frame, upper, scan_rect, speed_ms, stop_plan_now, allow_exempt)
+          two_job = None if strip is None else (strip, bank, allow_read, t_frame, upper, scan_rect, speed_ms, stop_plan_now, allow_exempt,
+                                                 confirm.map_way_from_sm(sm))
         else:
           nv12 = copy_nv12_detect_crop(buf, which) if buf is not None else None
           two_job = None
@@ -2164,7 +2195,7 @@ def main():
             if not detector.compile_allowed_now():
               raise RuntimeError("compile-blocked while driving")
             assert job is not None
-            strip_c, bank_c, allow_read, t_fr, upper_c, scan_rect, v_job, stop_plan_job, allow_ex = job
+            strip_c, bank_c, allow_read, t_fr, upper_c, scan_rect, v_job, stop_plan_job, allow_ex, way_job = job
             t0 = time.monotonic()
             props = proposer.propose(strip_c)
             if upper_c is not None:
@@ -2208,6 +2239,7 @@ def main():
             d.update(
               two_stage=1, t_frame=t_fr, props=props, prop_ms=round(prop_ms, 1),
               prop_passes=1 if upper_c is None else 2,
+              read_way=way_job,
               read_box=None if cand is None or cap_c is None else [float(v) for v in (
                 cand.read_box(t_fr, v_job) if cand.planned else cand.box)],
               read_h=None if cand is None or cap_c is None else float(
@@ -2294,9 +2326,20 @@ def main():
           os.sched_yield()
         except Exception:
           pass
+    if now_mono - answer_t >= confirm.ANSWER_POLL_S:
+      answer_t = now_mono
+      try:
+        raw_answer = others_params.get(confirm.ANSWER_PARAM)
+        if raw_answer is not None:
+          others_params.remove(confirm.ANSWER_PARAM)
+          plate.answer(raw_answer)
+      except Exception:
+        pass
+    g_lat, g_lon, g_bearing, g_ok = gps_sample_from_sm(sm, now=now_mono)
     _publish_live(
       pm, hold, signs, now_mono, messaging,
       detector.weights_missing(), detect_paused=sample.detect_paused, sign_loc=sign_loc,
+      plate=plate, way=confirm.map_way_from_sm(sm), gps=(g_lat, g_lon, g_bearing) if g_ok else None,
     )
     if now_mono - others_param_t >= OTHERS_PARAM_PERIOD_S:
       others_param_t = now_mono

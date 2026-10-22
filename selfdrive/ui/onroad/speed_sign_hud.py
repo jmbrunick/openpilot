@@ -126,7 +126,7 @@ def mici_confirm_rects(sign: rl.Rectangle) -> tuple[tuple[float, float, float, f
   )
 
 
-def on_confirm_accuracy(mph: int, yes: bool) -> None:
+def on_confirm_accuracy(mph: int, yes: bool, proposal: dict | None = None) -> None:
   """Yes/No feedback: append to /data/media/0/nap/speedsign_feedback/feedback.jsonl.
 
   Keeps the peak-size crop JPEG speedsignd saved for the plate (pending.jpg)
@@ -143,9 +143,16 @@ def on_confirm_accuracy(mph: int, yes: bool) -> None:
   from openpilot.selfdrive.speedsignd.two_stage import record_answer
   rec = record_answer(int(mph), bool(yes))
   applied = False
+  prop = proposal or {}
+  if prop.get("seq"):
+    # v2.3: speedsignd moves the prompt to the plate only on Yes.
+    from openpilot.selfdrive.speedsignd.confirm import write_answer
+    if not write_answer(int(prop["seq"]), int(mph), bool(yes)):
+      cloudlog.warning("speed_sign_hud: answer param failed")
   if yes:
     from openpilot.selfdrive.mapd.speed_overrides import request_override
-    applied = request_override(int(mph), rec, time.monotonic())
+    applied = request_override(int(mph), rec, time.monotonic(),
+                               way_id=prop.get("way_id"), heading=prop.get("heading"))
   cloudlog.info("speed_sign_hud feedback mph=%s yes=%s saved=%s jpg=%s lat=%s lon=%s realdata=%s applied=%s",
                 int(mph), bool(yes), rec is not None, (rec or {}).get("jpg"),
                 (rec or {}).get("lat"), (rec or {}).get("lon"), (rec or {}).get("realdata"), applied)
@@ -207,16 +214,22 @@ def draw_accuracy_overlay(
   tici: bool,
   pressed_yes: bool = False,
   pressed_no: bool = False,
+  proposed: int = 0,
 ) -> None:
   font_size = TICI_CONFIRM_FONT if tici else MICI_CONFIRM_FONT
+  prompt = f"{int(proposed)} mph {HUD_CONFIRM_PROMPT}" if proposed else HUD_CONFIRM_PROMPT
+  if not tici and proposed:
+    yes_label = f"{HUD_CONFIRM_YES} {int(proposed)}"
+  else:
+    yes_label = HUD_CONFIRM_YES
   if tici:
-    prompt_w = measure_text_cached(font, HUD_CONFIRM_PROMPT, TICI_PROMPT_FONT).x
+    prompt_w = measure_text_cached(font, prompt, TICI_PROMPT_FONT).x
     rl.draw_text_ex(
-      font, HUD_CONFIRM_PROMPT,
+      font, prompt,
       rl.Vector2(sign.x + (sign.width - prompt_w) / 2, sign.y + sign.height + 6),
       TICI_PROMPT_FONT, 0, _PROMPT_INK,
     )
-  _draw_confirm_button(yes, HUD_CONFIRM_YES, font, font_size, _YES_BG, pressed_yes, _YES_BG_PRESSED)
+  _draw_confirm_button(yes, yes_label, font, font_size, _YES_BG, pressed_yes, _YES_BG_PRESSED)
   _draw_confirm_button(no, HUD_CONFIRM_NO, font, font_size, _NO_BG, pressed_no, _NO_BG_PRESSED)
 
 
@@ -252,9 +265,9 @@ def draw_mici_speed_sign(rect: rl.Rectangle, font_bold, font_label) -> LiveSignV
   return _draw_live_sign(mici_sign_rect, rect, font_bold, font_label, MICI_DIGIT, MICI_LABEL)
 
 
-def _safe_confirm(mph: int, yes: bool) -> None:
+def _safe_confirm(mph: int, yes: bool, proposal: dict | None = None) -> None:
   try:
-    on_confirm_accuracy(mph, yes)
+    on_confirm_accuracy(mph, yes, proposal)
   except Exception:
     cloudlog.exception("speed_sign_hud: feedback failed")
 
@@ -328,17 +341,25 @@ class SpeedSignHud(Widget):
     # One answer per plate: ignore repeat taps on the same mph for 3 s.
     import time as _time
     now = _time.monotonic()
+    v = self._view
+    mph = int(v.proposed_mph) if v.proposal_mode else int(v.mph)
+    key = (mph, int(v.proposed_seq))
     last = getattr(self, "_last_answer", (None, 0.0))
-    if last[0] == int(self._view.mph) and now - last[1] < 3.0:
+    if last[0] == key and now - last[1] < 3.0:
       return
-    self._last_answer = (int(self._view.mph), now)
-    mph = int(self._view.mph)
+    self._last_answer = (key, now)
+    proposal = None
+    if v.proposal_mode:
+      # The way + heading matched when the sign was READ, never the tap-time way.
+      proposal = {"seq": int(v.proposed_seq), "way_id": int(v.proposed_way_id),
+                  "heading": float(v.proposed_heading)}
+      _GATE.answer_seq(int(v.proposed_seq))
     # Hide the popup (question + prompt) this frame for Yes and No.
     _GATE.answer(mph, hit, now)
     self._view = _GATE.filter(self._view, now)
     # Disk / params work off the UI thread so a slow write can never stall frames.
     import threading
-    threading.Thread(target=_safe_confirm, args=(mph, hit), daemon=True, name="speedsign-tap").start()
+    threading.Thread(target=_safe_confirm, args=(mph, hit, proposal), daemon=True, name="speedsign-tap").start()
 
   def _render(self, rect: rl.Rectangle) -> None:
     if not self._view.show:
@@ -357,4 +378,5 @@ class SpeedSignHud(Widget):
       sign, self._yes, self._no, self._font_label, tici=self._tici,
       pressed_yes=pressed and hit_accuracy_button(mouse.x, mouse.y, self._yes, self._no) is True,
       pressed_no=pressed and hit_accuracy_button(mouse.x, mouse.y, self._yes, self._no) is False,
+      proposed=int(view.proposed_mph) if view.proposal_mode else 0,
     )

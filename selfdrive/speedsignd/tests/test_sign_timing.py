@@ -239,7 +239,8 @@ def test_v22_no_read_before_plan_then_burst():
 
 def test_v22_decision_rules():
   assert T.burst_decision([(45, 0.70, 60, _S(45, 0.7))]) == []                 # weak single
-  assert T.burst_decision([(45, 0.90, 50, _S(45, 0.9))]) == []                 # small single
+  assert T.burst_decision([(45, 0.90, 30, _S(45, 0.9))]) == []                 # small single
+  assert T.burst_decision([(45, 0.86, 50, _S(45, 0.86))]) == []               # v2.3: < 0.88 needs 56 px
   one = _S(45, 0.9)
   assert T.burst_decision([(45, 0.90, 60, one)]) == [one]                      # strong single
   a, b = _S(35, 0.6), _S(35, 0.7)
@@ -274,3 +275,72 @@ def test_v22_read_box_follows_range():
 
 def test_v22_param_clamp():
   assert T.clamp_read_dist(5) == 15.0 and T.clamp_read_dist(99) == 60.0 and T.clamp_read_dist("x") == 40.0
+
+
+# --- v2.3 ----------------------------------------------------------------
+
+def _sign(cls, cc, ref=None, rc=0.0):
+  from openpilot.selfdrive.speedsignd.detect_types import SpeedSign
+  mph = ref if (ref is not None and rc >= 0.28) else cls
+  return SpeedSign(mph=mph, conf=cc, bbox=(0, 0, 10, 10), class_mph=cls, class_conf=cc,
+                   refine_mph=ref, refine_conf=rc)
+
+
+def test_v23_vote_kinds_and_class_mph():
+  assert T.read_vote([_sign(65, 0.70)], 52)[0::4] == (65, "class")           # OCR silent
+  assert T.read_vote([_sign(30, 0.90, 30, 0.6)], 50)[0::4] == (30, "agree")
+  v = T.read_vote([_sign(30, 0.895, 5, 0.295)], 55)                           # Oct 19 #9 read 3
+  assert v[0] == 0 and v[4] == "clash"                                        # never votes 5 (or 30)
+  assert T.read_vote([], 40)[0] == 0
+
+
+def test_v23_class_pair_combines_single_needs_ocr():
+  a = T.read_vote([_sign(65, 0.70)], 52)
+  b = T.read_vote([_sign(65, 0.80)], 62)
+  assert T.burst_decision([a]) == []                                          # class-only single: no
+  out = T.burst_decision([a, b])
+  assert [int(s.mph) for s in out] == [65, 65]
+  lo = T.read_vote([_sign(65, 0.55)], 52)
+  assert T.burst_decision([lo, b]) == []                                      # pair needs >= 0.60 each
+  strong = T.read_vote([_sign(45, 0.90, 45, 0.7)], 36)
+  assert [int(s.mph) for s in T.burst_decision([strong])] == [45]             # >= 0.88 at >= 35 px
+  clash = T.read_vote([_sign(45, 0.95, 65, 0.9)], 80)
+  assert T.burst_decision([clash, T.read_vote([_sign(65, 0.7)], 60)]) == []   # clash never pairs OCR's 65
+
+
+def test_v23_extra_read_when_votes_disagree():
+  v50 = T.read_vote([_sign(50, 0.7)], 40)
+  v65 = T.read_vote([_sign(65, 0.7)], 50)
+  assert T.burst_len([v50, v65]) == T.BURST_READS + T.EXTRA_READS
+  assert T.burst_len([v65, v65]) == T.BURST_READS
+  tr = T.SignTracker(target_m=40.0)
+  t = T.Track(tid=1, box=(1400, 600, 30, 40), score=.6, first_t=0, last_t=0, hits=2, planned=True)
+  tr.mark_planned_read(t, [_sign(50, 0.7)], 40, t=0)
+  tr.mark_planned_read(t, [_sign(65, 0.62)], 45, t=1)
+  tr.mark_planned_read(t, [], 50, t=2)
+  assert not t.done                                                           # 4th read allowed
+  out = tr.mark_planned_read(t, [_sign(65, 0.80)], 62, t=3)
+  assert [int(s.mph) for s in out] == [65, 65] and t.done
+
+
+def test_v23_burst_headroom_only_for_confirm_pass():
+  d = T.ProposerDuty()
+  for i in range(20):
+    d.add(i * 0.5, 1)
+  assert not d.fits(9.6, 1)
+  assert d.fits(9.6, 1, T.PROPOSER_BURST_HEADROOM)
+
+
+def test_v23_burst_headroom_low_speed_only():
+  tr = T.SignTracker()
+
+  class _T:
+    done = neg = False
+    hits = 1
+    last_t = 10.0
+  tr.tracks = [_T()]
+  assert T.burst_headroom(tr, 10.2, 12.0) == T.PROPOSER_BURST_HEADROOM
+  assert T.burst_headroom(tr, 10.2, 25.0) == 0.0
+  assert T.burst_headroom(tr, 10.2, None) == 0.0
+  tr.tracks[0].hits = T.TRACK_MIN_HITS
+  assert T.burst_headroom(tr, 10.2, 12.0) == 0.0
