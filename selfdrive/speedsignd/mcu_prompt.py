@@ -22,7 +22,7 @@ from openpilot.selfdrive.speedsignd.hud import hud_confirm_visible
 try:
   from openpilot.common.swaglog import cloudlog
 except Exception:  # pragma: no cover - unit tests without zmq
-  class cloudlog:  # type: ignore
+  class cloudlog:
     @staticmethod
     def info(msg, *a):
       pass
