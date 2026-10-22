@@ -26,6 +26,18 @@ that span applies to BOTH directions of travel. Rows carry
 {"both": true, "from_s": m along the digitized way, "dir": +1|-1}; a row
 without a sign position covers the whole way, both directions. Old
 heading-only rows (no "both") still match within +-60 deg.
+
+Oct 22 hygiene: rows written now carry "v": ENTRY_VERSION plus the read
+lat/lon. A row with no "v" and no "both" was written by the old tap-time
+keying (e.g. the Oct 14 US 12 eastbound 30 that covered 4.5 km of 60 road).
+Those are LEGACY: kept in the file untouched for later verification, never
+applied to speedLimit and never removed by a new Yes. mapd logs
+"legacy override present: X mph vs OSM Y" when the car is on such a way
+(selfdrive/mapd/list_legacy_overrides.py lists them all next to OSM).
+A YES without a read-time way stores nothing (no tap-time matching).
+
+NAPSpeedSignClearOverride (bool) removes the current rows that cover where
+the car is now on the matched way. Legacy rows are never removed by it.
 """
 from __future__ import annotations
 
@@ -35,10 +47,12 @@ import os
 import time
 
 PARAM = "NAPSpeedSignConfirmed"
+CLEAR_PARAM = "NAPSpeedSignClearOverride"
+ENTRY_VERSION = 2
 FILENAME = "map_speed_overrides.json"
 MPH_TO_MS = 0.44704
 HEADING_MATCH_DEG = 60.0
-PENDING_MAX_S = 20.0   # a YES with no OSM match yet waits this long for one
+PENDING_MAX_S = 20.0   # kept for imports; tap-time matching is gone
 MAX_ENTRIES = 5000
 
 
@@ -114,10 +128,25 @@ def parse_confirmed(raw) -> dict | None:
   return out
 
 
+def _row_ok(e) -> bool:
+  return isinstance(e, dict) and "way_id" in e and "mph" in e and "heading" in e
+
+
+def is_legacy(e) -> bool:
+  """Unversioned heading-only row from the tap-time keying. Never applied."""
+  return _row_ok(e) and "v" not in e and not e.get("both")
+
+
+def is_current(e) -> bool:
+  return _row_ok(e) and not is_legacy(e)
+
+
 class SpeedOverrides:
   def __init__(self, path: str | None = None) -> None:
     self.path = path or overrides_path()
-    self.entries: list[dict] = []
+    self.rows: list[dict] = []      # every row in the file, legacy included, file order
+    self.entries: list[dict] = []   # rows that apply
+    self.legacy: list[dict] = []    # unversioned tap-time rows: logged, never applied
     self._mtime = None
     self.last_seq: float | None = None
     self.pending: dict | None = None
@@ -131,18 +160,24 @@ class SpeedOverrides:
         return
       with open(self.path) as f:
         data = json.load(f)
-      self.entries = [e for e in data.get("overrides", []) if "way_id" in e and "mph" in e and "heading" in e]
+      self.rows = [e for e in data.get("overrides", []) if isinstance(e, dict)]
+      self.entries = [e for e in self.rows if is_current(e)]
+      self.legacy = [e for e in self.rows if is_legacy(e)]
       self._mtime = m
     except (OSError, ValueError):
       if not os.path.exists(self.path):
-        self.entries = []
+        self.rows, self.entries, self.legacy = [], [], []
         self._mtime = None
 
   def save(self) -> None:
     os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
     tmp = self.path + ".tmp"
     with open(tmp, "w") as f:
-      json.dump({"version": 1, "overrides": self.entries[-MAX_ENTRIES:]}, f, separators=(",", ":"))
+      # Legacy and unknown rows ride along untouched; only current rows are trimmed.
+      keep = {id(e) for e in self.entries[-MAX_ENTRIES:]}
+      cur = {id(e) for e in self.entries}
+      rows = [e for e in self.rows if id(e) not in cur or id(e) in keep]
+      json.dump({"version": ENTRY_VERSION, "overrides": rows}, f, separators=(",", ":"))
     os.replace(tmp, self.path)
     self._mtime = os.path.getmtime(self.path)
 
@@ -165,6 +200,37 @@ class SpeedOverrides:
       elif bearing is not None and heading_delta(e["heading"], bearing) <= HEADING_MATCH_DEG:
         best = e  # newest wins (appended last)
     return best
+
+  def find_legacy(self, way_id: int, bearing: float | None) -> dict | None:
+    if bearing is None:
+      return None
+    best = None
+    for e in self.legacy:
+      try:
+        if int(e["way_id"]) == int(way_id) and heading_delta(e["heading"], bearing) <= HEADING_MATCH_DEG:
+          best = e
+      except (KeyError, TypeError, ValueError):
+        continue
+    return best
+
+  def _drop(self, gone) -> None:
+    ids = {id(e) for e in gone}
+    self.entries = [e for e in self.entries if id(e) not in ids]
+    self.rows = [e for e in self.rows if id(e) not in ids]
+
+  def clear(self, way_id: int, bearing: float | None, lat: float | None = None, lon: float | None = None,
+            coords=None) -> list[dict]:
+    """Remove every current row that applies here (repeat find). Legacy rows stay."""
+    gone = []
+    while True:
+      e = self.find(way_id, bearing, lat, lon, coords)
+      if e is None:
+        break
+      gone.append(e)
+      self._drop([e])
+    if gone:
+      self.save()
+    return gone
 
   def limit_ms(self, way_id: int, bearing: float | None, lat: float | None = None, lon: float | None = None,
                coords=None) -> float | None:
@@ -191,11 +257,12 @@ class SpeedOverrides:
       if from_s is None:
         return True
       return e.get("from_s") is not None and int(e.get("dir", 1)) == d and (float(e["from_s"]) - from_s) * d >= -1.0
-    self.entries = [e for e in self.entries if not covered(e)]
-    e = {"way_id": int(way_id), "heading": round(float(heading), 1), "mph": int(conf["mph"]),
+    self._drop([e for e in self.entries if covered(e)])
+    e = {"v": ENTRY_VERSION, "way_id": int(way_id), "heading": round(float(heading), 1), "mph": int(conf["mph"]),
          "both": True, "from_s": from_s, "dir": d,
          "lat": conf.get("lat"), "lon": conf.get("lon"), "road": road, "t": round(now, 1), "source": "sign_yes"}
     self.entries.append(e)
+    self.rows.append(e)
     self.save()
     return e
 
@@ -214,9 +281,10 @@ class SpeedOverrides:
     return False
 
   def consume(self, raw_param, match, bearing: float | None, mono_now: float, way_coords=None) -> dict | None:
-    """Turn a new YES (by seq) into an override on the current matched way.
+    """Turn a new YES (by seq) into an override on its read-time way.
 
-    Returns the stored entry when one was written this call.
+    Returns the stored entry when one was written this call. `match` is only
+    used for the read-time way's coords / OSM limit, never as the way.
     """
     conf = parse_confirmed(raw_param)
     if conf is not None and conf["seq"] != self.last_seq:
@@ -232,23 +300,7 @@ class SpeedOverrides:
             return None
           return self.add(int(conf["way_id"]), float(hdg), conf, coords=coords)
         return None
-      self.pending, self.pending_t = conf, mono_now
-    if self.pending is None:
-      return None
-    if mono_now - self.pending_t > PENDING_MAX_S:
-      self.pending = None
-      return None
-    hdg = bearing if bearing is not None else self.pending.get("bearing")
-    if match is None or hdg is None:
-      return None
-    coords = getattr(match, "coords", None)
-    if self.same_as_current(int(match.way_id), float(hdg), self.pending["mph"], match, self.pending, coords):
-      self.pending = None
-      return None
-    e = self.add(int(match.way_id), float(hdg), self.pending, road=str(getattr(match, "road_name", "") or ""),
-                 coords=coords)
-    self.pending = None
-    return e
+    return None
 
 
 def request_override(mph: int, rec: dict | None, seq: float, params=None,
