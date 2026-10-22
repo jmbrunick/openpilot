@@ -1,0 +1,7 @@
+v23: proposer avg 7.7% peak10s 37% | reader avg 15.8% peak10s 72% | total avg 23.4%
+vAsil: proposer avg 7.7% peak10s 37% | reader avg 15.7% peak10s 72% | total avg 23.4%
+vAhead: proposer avg 7.7% peak10s 37% | reader avg 15.5% peak10s 72% | total avg 23.2%
+vAfb2: proposer avg 7.6% peak10s 37% | reader avg 16.0% peak10s 72% | total avg 23.6%
+vBb4sil: proposer avg 7.6% peak10s 37% | reader avg 16.8% peak10s 72% | total avg 24.4%
+vBs85: proposer avg 7.8% peak10s 38% | reader avg 14.9% peak10s 72% | total avg 22.7%
+vBs90: proposer avg 7.8% peak10s 37% | reader avg 15.3% peak10s 72% | total avg 23.1%
