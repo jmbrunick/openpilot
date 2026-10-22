@@ -1297,7 +1297,7 @@ def _publish_live(
       way_id, hdg = way or (0, None)
       lat, lon, bearing = gps or (None, None, None)
       plate.propose(lit, float(conf), way_id=way_id, heading=hdg if hdg is not None else bearing,
-                    lat=lat, lon=lon, read_id=("hold", plate._hold_ep))
+                    lat=lat, lon=lon, read_id=("hold", plate._hold_ep), now=now_mono)
     mph, conf = (plate.plate_mph, plate.plate_conf) if not missing and not paused else (0, 0.0)
     msg_valid = True
   msg = messaging.new_message(SERVICE_NAME)
@@ -2348,10 +2348,13 @@ def main():
       except Exception:
         pass
     g_lat, g_lon, g_bearing, g_ok = gps_sample_from_sm(sm, now=now_mono)
+    cur_way = confirm.map_way_from_sm(sm)
+    if plate.expire(now_mono, cur_way[0], g_lat if g_ok else None, g_lon if g_ok else None):
+      cloudlog.info("speedsignd: prompt expired why=%s", plate.expired_why)
     _publish_live(
       pm, hold, signs, now_mono, messaging,
       detector.weights_missing(), detect_paused=sample.detect_paused, sign_loc=sign_loc,
-      plate=plate, way=confirm.map_way_from_sm(sm), gps=(g_lat, g_lon, g_bearing) if g_ok else None,
+      plate=plate, way=cur_way, gps=(g_lat, g_lon, g_bearing) if g_ok else None,
     )
     if now_mono - others_param_t >= OTHERS_PARAM_PERIOD_S:
       others_param_t = now_mono

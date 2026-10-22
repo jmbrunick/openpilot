@@ -28,6 +28,12 @@ UPPER_W, UPPER_H = 482, 175
 EDGE_STD_MAX = 1.0           # m; roadEdgeStds above this -> no placement
 EDGE_X_M = 40.0              # project the right edge at this range
 EDGE_MARGIN_M = 1.0          # signs stand ~1 m+ outside the edge; start the band 1 m inside
+# Oct 22 (000001bb s11, 15:51:39): with this car's calibration the horizon
+# clamps to +120, so main sat at y645-995 and a near 50 beyond a bypass lane
+# (box y~525-680, 4-6 m right) was above it for its whole ~0.7 s pass. Lift
+# main by this much relative to the calibrated horizon. Same 964x350 area and
+# scale, same pass count: no extra proposer CPU.
+MAIN_LIFT_PX = 0
 
 
 def _even(v: float) -> int:
@@ -85,7 +91,7 @@ def strips(frame_w: int, frame_h: int, *, rpy=None, edge=None):
   if dy is None:
     return MAIN, None
   mx, my, mw, mh = MAIN
-  my = my + (dy - dy % 2)
+  my = max(0, my + (dy - dy % 2) - _even(MAIN_LIFT_PX))
   main = (mx, my, mw, mh)
   upper = None
   if edge is not None:
