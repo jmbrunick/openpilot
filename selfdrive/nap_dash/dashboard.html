@@ -10,8 +10,11 @@ html, body { margin: 0; padding: 0; height: 100%; background: #121417; color: #e
 body { font-family: Arial, Helvetica, sans-serif; font-size: 16px; -webkit-text-size-adjust: 100%; }
 #shell { position: absolute; top: 0; right: 0; bottom: 0; left: 0; }
 #chrome { position: relative; background: #121417; padding: 4px 6px 2px; }
-.top { display: table; width: 100%; }
+.top { display: table; width: 100%; table-layout: fixed; }
 .topcell { display: table-cell; vertical-align: middle; }
+/* Fixed widths so the link dot sits in the gap and never moves the tabs or the drive badge. */
+#drivecell { width: 120px; text-align: right; }
+#conncell { width: 152px; padding-right: 8px; text-align: right; white-space: nowrap; vertical-align: middle; }
 #nav { font-size: 0; }
 #nav button, #sub button, .choice button, .soft button, .go, .sq, .overlay button {
   font-family: Arial, Helvetica, sans-serif;
@@ -58,6 +61,59 @@ body { font-family: Arial, Helvetica, sans-serif; font-size: 16px; -webkit-text-
 }
 #status { margin: 0; font-size: 12px; line-height: 1.2; color: #8b9198; }
 #status:empty { display: none; }
+#status.err { color: #f87171; font-weight: bold; }
+#conndetail { margin: 0; padding: 0 8px 1px 6px; font-size: 12px; line-height: 16px; color: #9aa0a6; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#conn, #conn:active, #conn:active:not(:disabled) {
+  display: inline-block;
+  min-height: 0;
+  height: 28px;
+  line-height: 24px;
+  margin: 0;
+  padding: 0 2px;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none;
+  color: #d1d5db;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 12px;
+  font-weight: bold;
+  vertical-align: middle;
+  -webkit-appearance: none;
+  -webkit-transform: none !important;
+  transform: none !important;
+}
+#conn.retry, #conn.retry:active { color: #e0b050 !important; }
+#conn.down, #conn.down:active { color: #f87171 !important; }
+#conn.ok, #conn.ok:active { color: #d1d5db !important; }
+#conn .cdot {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 6px;
+  margin: 0 6px 0 0;
+  vertical-align: middle;
+  background: #22c55e;
+}
+#conn.retry .cdot { background: #e0b050; }
+#conn.down .cdot { background: #ef4444; }
+.rowsub.err { color: #f87171; font-weight: bold; white-space: normal; }
+/* Disconnected: fade action controls in place. Tabs stay full strength. */
+body.offline button.actoff:disabled,
+body.offline .soft.swact button.actoff:disabled,
+body.offline .soft button.busy.actoff:disabled {
+  opacity: 0.45;
+  background: #d1d5db;
+  color: #6b7280;
+  border-color: #b0b6be;
+}
+body.offline button.actoff.on:disabled,
+body.offline .choice button.actoff.on:disabled,
+body.offline .soft button.actoff.on:disabled {
+  opacity: 0.45;
+  background: #9db7e4;
+  color: #445066;
+  border-color: #9db7e4;
+}
 #main {
   position: absolute;
   left: 0;
@@ -185,11 +241,17 @@ button:active:not(:disabled) {
   <div id="chrome">
     <div class="top">
       <div class="topcell" id="nav"></div>
-      <div class="topcell" style="width:120px;text-align:right">
+      <div class="topcell" id="conncell">
+        <button type="button" id="conn" class="retry">
+          <span class="cdot"></span><span id="connlabel">Reconnecting…</span>
+        </button>
+      </div>
+      <div class="topcell" id="drivecell">
         <div id="drive" class="banner">STANDBY</div>
       </div>
     </div>
     <div id="sub" class="hidden"></div>
+    <p id="conndetail" class="hidden"></p>
     <p id="status"></p>
   </div>
   <div id="main">
@@ -245,22 +307,42 @@ function getJSON(url, cb) {
   xhr.send(null);
 }
 
+function postFailMessage(xhr, data) {
+  if (!xhr || xhr.status === 0) return "Can't reach phone (check MCU Wi-Fi / hotspot)";
+  if (xhr.status === 502 || xhr.status === 503 || xhr.status === 504) return "Phone OK - comma not reachable";
+  if (data && data.error) return String(data.error);
+  if (xhr.status >= 400) return "Action failed (HTTP " + xhr.status + ")";
+  return "Action failed";
+}
+
 function postJSON(url, body, cb) {
   var xhr = new XMLHttpRequest();
+  var done = false;
+  function finish(err, data) {
+    if (done) return;
+    done = true;
+    cb(err, data);
+  }
   xhr.open("POST", url, true);
   xhr.setRequestHeader("Content-Type", "application/json");
+  xhr.timeout = 10000;
   xhr.onreadystatechange = function () {
     if (xhr.readyState !== 4) return;
     var data = null;
     try { data = JSON.parse(xhr.responseText); } catch (err) { data = null; }
-    if (xhr.status >= 200 && xhr.status < 300) cb(null, data);
-    else cb(new Error((data && data.error) || ("HTTP " + xhr.status)), data);
+    if (xhr.status >= 200 && xhr.status < 300) finish(null, data);
+    else finish(new Error(postFailMessage(xhr, data)), data);
   };
-  xhr.send(JSON.stringify(body));
+  xhr.ontimeout = function () { finish(new Error("Can't reach phone (check MCU Wi-Fi / hotspot)"), null); };
+  xhr.onerror = function () { finish(new Error("Can't reach phone (check MCU Wi-Fi / hotspot)"), null); };
+  try { xhr.send(JSON.stringify(body)); }
+  catch (err) { finish(new Error("Can't reach phone (check MCU Wi-Fi / hotspot)"), null); }
 }
 
-function setStatus(text) {
-  document.getElementById("status").textContent = text || "";
+function setStatus(text, isErr) {
+  var el = document.getElementById("status");
+  el.textContent = text || "";
+  el.className = isErr ? "err" : "";
   fitPane();
 }
 
@@ -368,8 +450,9 @@ function bookmarkPoll() {
   });
 }
 function bookmarkTap() {
+  if (linkDown) { setStatus(actionError(), true); return; }
   postJSON("/api/bookmark", {}, function (err, data) {
-    if (err) { setStatus("Bookmark failed"); return; }
+    if (err) { setStatus(err.message || "Bookmark failed", true); return; }
     if (data && data.ok === false) { setStatus("Bookmark works while driving"); return; }
     setStatus(bookmark.recording ? "Voice note saved" : "Bookmarked, recording voice note");
     setTimeout(bookmarkPoll, 400);
@@ -399,6 +482,7 @@ function renderNav() {
   nav.appendChild(bm);
   renderBookmark();
   renderDrive();
+  if (linkDown) lockActions(true);
   fitPane();
 }
 
@@ -462,6 +546,7 @@ function renderMain() {
     }
     root.appendChild(renderControl(ctrls[i]));
   }
+  if (linkDown) lockActions(true);
   fitPane();
 }
 
@@ -513,7 +598,7 @@ function renderControl(ctrl) {
       toggle.className = "go";
       toggle.textContent = "Run";
     } else if (ctrl.kind === "link") {
-      toggle.className = "go";
+      toggle.className = "go linknav";
       toggle.textContent = "Open";
     } else {
       var on = !!valueOf(ctrl);
@@ -522,9 +607,10 @@ function renderControl(ctrl) {
     }
     if (locked || ctrl.disabled) toggle.disabled = true;
     toggle.onclick = function () {
+      if (linkDown && ctrl.kind !== "link") { setStatus(actionError(), true); return; }
       if (ctrl.kind === "link") showPanel(ctrl.target_panel);
-      else if (ctrl.kind === "action") commit(ctrl, true, false);
-      else commit(ctrl, !valueOf(ctrl), false);
+      else if (ctrl.kind === "action") commit(ctrl, true, false, this);
+      else commit(ctrl, !valueOf(ctrl), false, this);
     };
     go.appendChild(toggle);
   }
@@ -541,9 +627,12 @@ function renderControl(ctrl) {
       b.textContent = ctrl.choices[n];
       if (same(cur, ctrl.values[n])) b.className = "on";
       if (locked || ctrl.disabled) b.disabled = true;
-      b.onclick = (function (value) {
-        return function () { commit(ctrl, value, false); };
-      })(ctrl.values[n]);
+      b.onclick = (function (value, button) {
+        return function () {
+          if (linkDown) { setStatus(actionError(), true); return; }
+          commit(ctrl, value, false, button);
+        };
+      })(ctrl.values[n], b);
       box.appendChild(b);
     }
     row.appendChild(box);
@@ -551,7 +640,8 @@ function renderControl(ctrl) {
   return row;
 }
 
-function commit(ctrl, value, confirmed) {
+function commit(ctrl, value, confirmed, btn) {
+  if (linkDown) { setStatus(actionError(), true); markRowError(btn, actionError()); return; }
   var turningOn = !(value === false || value === 0 || value === "0");
   // Force Offroad: no settings confirm; the only prompt is the steering Yes/No.
   if (!confirmed && ctrl.confirm && ctrl.writer !== "force_offroad" && (ctrl.kind === "action" || turningOn)) {
@@ -565,7 +655,8 @@ function commit(ctrl, value, confirmed) {
         askConfirm(ctrl, value);
         return;
       }
-      setStatus(err.message || "Save failed");
+      setStatus(err.message || "Save failed", true);
+      markRowError(btn, err.message || "Save failed");
       return;
     }
     snap = data;
@@ -723,6 +814,7 @@ function renderSoftware(root, data) {
     }));
   }
   root.appendChild(actions);
+  if (linkDown) lockActions(true);
   fitPane();
 }
 
@@ -734,6 +826,7 @@ function askSoftwareConfirm(title, body, run) {
 }
 
 function software(body, btn) {
+  if (linkDown) { setStatus(actionError(), true); markRowError(btn, actionError()); return; }
   var action = body.action;
   var label = action === "fetch" ? "Checking…" : (action === "download" ? "Downloading…" :
     (action === "install" ? "Rebooting to install…" : "Saving…"));
@@ -752,7 +845,8 @@ function software(body, btn) {
     if (err) {
       swPending = null;
       swNote = "";
-      setStatus(err.message || "Software failed");
+      setStatus(err.message || "Software failed", true);
+      markRowError(btn, err.message || "Software failed");
       loadSoftware();
       return;
     }
@@ -820,14 +914,15 @@ function foPoll() {
 }
 function foAnswer(answer) {
   if (foBusy) return;
+  if (linkDown) { setStatus(actionError(), true); return; }
   foBusy = true;
   document.getElementById("foack-yes").disabled = true;
   document.getElementById("foack-no").disabled = true;
   postJSON("/api/force_offroad", answer === "yes" ? {answer: "yes", confirm: true} : {answer: "no"}, function (err, data) {
     foBusy = false;
-    document.getElementById("foack-yes").disabled = false;
-    document.getElementById("foack-no").disabled = false;
-    if (err) { setStatus(err.message); foPoll(); return; }
+    document.getElementById("foack-yes").disabled = linkDown;
+    document.getElementById("foack-no").disabled = linkDown;
+    if (err) { setStatus(err.message || "Action failed", true); foPoll(); return; }
     foRender(data);
     refresh();
   });
@@ -856,11 +951,12 @@ function ssPoll() {
 }
 function ssAnswer(answer) {
   if (ssBusy) return;
+  if (linkDown) { setStatus(actionError(), true); return; }
   ssBusy = true;
   document.getElementById("ssign").className = "overlay hidden";
   postJSON("/api/speed_sign", {answer: answer, id: ssId}, function (err, data) {
     ssBusy = false;
-    if (err) { setStatus(err.message); ssPoll(); return; }
+    if (err) { setStatus(err.message || "Action failed", true); ssPoll(); return; }
     ssRender(data);
   });
 }
@@ -869,6 +965,316 @@ document.getElementById("ssign-no").onclick = function () { ssAnswer("no"); };
 ssPoll();
 setInterval(ssPoll, 500);
 setInterval(bookmarkPoll, 1000);
+
+/* LINK_STATE_START */
+var LINK_STALE_MS = 6000;
+var LINK_POLL_MS = 2000;
+var LINK_TIMEOUT_MS = 3000;
+
+function classifyPing(status, ageMs) {
+  if (status === 200) {
+    if (ageMs === null || ageMs >= LINK_STALE_MS) return "stale";
+    return "ok";
+  }
+  if (status === 0) return "phone";
+  if (status === 502 || status === 503 || status === 504) return "comma";
+  return "comma";
+}
+
+function pingServerMs(data) {
+  if (!data || typeof data.ts !== "number" || isNaN(data.ts)) return null;
+  if (data.ts > 1000000000000) return data.ts;
+  return data.ts * 1000;
+}
+
+function reconcileClock(localNow, serverMs, offset) {
+  if (offset === null) return {offset: localNow - serverMs, age: 0};
+  var age = localNow - serverMs - offset;
+  if (age < -5000) return {offset: localNow - serverMs, age: 0};
+  if (age < 0) age = 0;
+  return {offset: offset, age: age};
+}
+
+function linkView(good, elapsedMs) {
+  if (good) return "ok";
+  if (elapsedMs >= LINK_STALE_MS) return "down";
+  return "retry";
+}
+
+function linkLabel(view) {
+  if (view === "ok") return "Connected";
+  if (view === "down") return "No connection";
+  return "Reconnecting…";
+}
+
+function linkReason(kind) {
+  if (kind === "comma") return "comma not reachable";
+  if (kind === "phone") return "can't reach phone";
+  if (kind === "stale") return "comma not updating";
+  return "";
+}
+
+function linkDetail(view, kind, whenText) {
+  var when = whenText ? ("last update " + whenText) : "no update yet";
+  if (view === "ok") return when;
+  if (kind === "comma") return "Phone OK - comma not reachable - " + when;
+  if (kind === "phone") return "Can't reach phone (check MCU Wi-Fi / hotspot) - " + when;
+  if (kind === "stale") return "comma not updating - " + when;
+  return "No connection to openpilot - " + when;
+}
+
+function formatWhen(ms) {
+  var d = new Date(ms);
+  if (isNaN(d.getTime())) return "";
+  var h = d.getHours();
+  var min = d.getMinutes();
+  var sec = d.getSeconds();
+  var ap = h >= 12 ? "PM" : "AM";
+  h = h % 12;
+  if (h === 0) h = 12;
+  function z(n) { return (n < 10 ? "0" : "") + n; }
+  return h + ":" + z(min) + ":" + z(sec) + " " + ap;
+}
+/* LINK_STATE_END */
+
+var linkState = "retry";
+var linkKind = "";
+var linkDown = false;
+var sawLinkFailure = false;
+var lastGoodLocal = 0;
+var pageStarted = new Date().getTime();
+var clockOffset = null;
+var lastGoodServerMs = 0;
+var pingBusy = false;
+var connOpen = false;
+
+function linkElapsed() {
+  return new Date().getTime() - (lastGoodLocal || pageStarted);
+}
+
+function actionError() {
+  if (linkKind === "comma") return "No connection - phone OK, comma not reachable";
+  if (linkKind === "phone") return "No connection - can't reach phone (check MCU Wi-Fi / hotspot)";
+  if (linkKind === "stale") return "No connection - comma not updating";
+  return "No connection to openpilot";
+}
+
+function paintLink() {
+  var btn = document.getElementById("conn");
+  var label = document.getElementById("connlabel");
+  var detail = document.getElementById("conndetail");
+  if (!btn || !label) return;
+  btn.className = linkState;
+  label.textContent = linkLabel(linkState);
+  var text = linkDetail(linkState, linkKind, lastGoodServerMs ? formatWhen(lastGoodServerMs) : "");
+  if (detail) detail.textContent = text;
+  btn.title = text;
+}
+
+function setOffline(down) {
+  var body = document.body;
+  if (!body) return;
+  if (down) {
+    if (body.className.indexOf("offline") < 0) body.className += (body.className ? " " : "") + "offline";
+  } else {
+    body.className = body.className.replace(" offline", "").replace("offline", "");
+  }
+}
+
+function walkButtons(node, fn) {
+  if (!node || !node.childNodes) return;
+  var kids = node.childNodes;
+  var i;
+  for (i = 0; i < kids.length; i++) {
+    var c = kids[i];
+    if (!c || c.nodeType !== 1) continue;
+    if (c.tagName === "BUTTON") fn(c);
+    walkButtons(c, fn);
+  }
+}
+
+function lockOne(btn, down) {
+  if (!btn) return;
+  if (down) {
+    if (btn.getAttribute("data-linklock") !== "1") {
+      btn.setAttribute("data-wasdisabled", btn.disabled ? "1" : "0");
+      btn.setAttribute("data-linklock", "1");
+    }
+    btn.disabled = true;
+    if (btn.className.indexOf("actoff") < 0) btn.className += (btn.className ? " " : "") + "actoff";
+  } else if (btn.getAttribute("data-linklock") === "1") {
+    btn.disabled = btn.getAttribute("data-wasdisabled") === "1";
+    btn.removeAttribute("data-linklock");
+    btn.removeAttribute("data-wasdisabled");
+    btn.className = btn.className.replace(" actoff", "").replace("actoff", "");
+  }
+}
+
+function lockActions(down) {
+  var roots = ["content", "confirm", "foack", "ssign"];
+  var i;
+  for (i = 0; i < roots.length; i++) {
+    walkButtons(document.getElementById(roots[i]), function (btn) {
+      if (btn.className.indexOf("linknav") >= 0) return;
+      lockOne(btn, down);
+    });
+  }
+  var nav = document.getElementById("nav");
+  var bm = document.getElementById("bookmark");
+  if (bm) lockOne(bm, down);
+  if (nav && bm) {
+    var after = false;
+    var c = nav.firstChild;
+    while (c) {
+      if (c === bm) after = true;
+      else if (after && c.tagName === "BUTTON") lockOne(c, down);
+      c = c.nextSibling;
+    }
+  }
+}
+
+function isRowCard(node) {
+  if (!node || !node.className) return false;
+  var name = String(node.className);
+  if (name.indexOf("rowtable") === 0 || name.indexOf("rowlabel") === 0) return false;
+  if (name.indexOf("rowgo") === 0 || name.indexOf("rowsub") === 0) return false;
+  return name === "row" || name.indexOf("row ") === 0;
+}
+
+function markRowError(btn, message) {
+  if (!btn || !message) return;
+  var node = btn.parentNode;
+  while (node && node !== document.body) {
+    if (isRowCard(node)) break;
+    node = node.parentNode;
+  }
+  if (!isRowCard(node)) return;
+  var host = null;
+  var divs = node.getElementsByTagName("div");
+  var i;
+  for (i = 0; i < divs.length; i++) {
+    if (divs[i].className === "rowlabel") { host = divs[i]; break; }
+  }
+  if (!host) return;
+  var err = host.lastChild;
+  if (!err || !err.className || err.className.indexOf("rowerr") < 0) {
+    err = document.createElement("span");
+    err.className = "rowsub open err rowerr";
+    host.appendChild(err);
+  }
+  err.textContent = message;
+}
+
+function noteMiss(kind) {
+  sawLinkFailure = true;
+  if (kind) linkKind = kind;
+  var view = linkView(false, linkElapsed());
+  linkState = view;
+  paintLink();
+  if (view === "down") {
+    if (!linkDown) {
+      linkDown = true;
+      setOffline(true);
+    }
+    lockActions(true);
+  }
+}
+
+function clearLinkErrors() {
+  var status = document.getElementById("status");
+  if (status && status.className.indexOf("err") >= 0) setStatus("");
+  var nodes = document.getElementsByClassName("rowerr");
+  while (nodes.length) nodes[0].parentNode.removeChild(nodes[0]);
+}
+
+function noteGood(serverMs) {
+  var prev = linkState;
+  lastGoodServerMs = serverMs;
+  lastGoodLocal = new Date().getTime();
+  linkKind = "";
+  linkState = "ok";
+  paintLink();
+  if (linkDown) {
+    linkDown = false;
+    setOffline(false);
+    lockActions(false);
+  }
+  if (sawLinkFailure && prev !== "ok") {
+    clearLinkErrors();
+    reloadPageState();
+  }
+  sawLinkFailure = false;
+}
+
+function reloadPageState() {
+  getJSON("/api/manifest", function (err, data) {
+    if (!err && data) manifest = data;
+    refresh();
+    bookmarkPoll();
+    if (current === "network") loadNetwork();
+    if (current === "software") loadSoftware();
+    foPoll();
+    ssPoll();
+  });
+}
+
+function pingOnce() {
+  if (pingBusy) return;
+  pingBusy = true;
+  var xhr = new XMLHttpRequest();
+  var done = false;
+  var timer = setTimeout(function () { finish(0, null); }, LINK_TIMEOUT_MS);
+  function finish(status, data) {
+    if (done) return;
+    done = true;
+    clearTimeout(timer);
+    pingBusy = false;
+    if (status === 0) {
+      try { xhr.abort(); } catch (err) {}
+    }
+    if (status === 200) {
+      var serverMs = pingServerMs(data);
+      if (serverMs === null) { noteMiss("stale"); return; }
+      var clock = reconcileClock(new Date().getTime(), serverMs, clockOffset);
+      clockOffset = clock.offset;
+      if (classifyPing(200, clock.age) !== "ok") { noteMiss("stale"); return; }
+      noteGood(serverMs);
+      return;
+    }
+    noteMiss(classifyPing(status, null));
+  }
+  xhr.open("GET", "/api/ping?t=" + new Date().getTime(), true);
+  xhr.timeout = LINK_TIMEOUT_MS;
+  xhr.onreadystatechange = function () {
+    if (xhr.readyState !== 4) return;
+    var data = null;
+    if (xhr.status === 200) {
+      try { data = JSON.parse(xhr.responseText); } catch (err) { data = null; }
+    }
+    finish(xhr.status, data);
+  };
+  xhr.ontimeout = function () { finish(0, null); };
+  xhr.onerror = function () { finish(0, null); };
+  try { xhr.send(null); }
+  catch (err) { finish(0, null); }
+}
+
+document.getElementById("conn").onclick = function () {
+  connOpen = !connOpen;
+  var detail = document.getElementById("conndetail");
+  if (!detail) return;
+  detail.className = connOpen ? "" : "hidden";
+  fitPane();
+};
+
+paintLink();
+pingOnce();
+setInterval(pingOnce, LINK_POLL_MS);
+setInterval(function () {
+  if (linkState === "down") { lockActions(true); return; }
+  if (linkState === "ok") return;
+  if (linkElapsed() >= LINK_STALE_MS) noteMiss(linkKind || "phone");
+}, 500);
 
 window.onresize = fitPane;
 // Lets :active paint on touch screens that otherwise skip it.

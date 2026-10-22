@@ -126,6 +126,17 @@ def state_snapshot():
   }
 
 
+def ping_payload(now=None):
+  """Clock-only liveness for the MCU link dot.
+
+  No Params read and no cereal. A fresh ``ts`` (unix milliseconds) is the
+  data timestamp the page uses to notice a cached or stuck response.
+  """
+  if now is None:
+    now = time.time()
+  return {"ok": True, "ts": int(round(float(now) * 1000.0))}
+
+
 def dashboard_html() -> bytes:
   try:
     return DASHBOARD_PATH.read_bytes()
@@ -137,13 +148,20 @@ class Handler(BaseHTTPRequestHandler):
   protocol_version = "HTTP/1.1"
 
   def log_message(self, fmt, *args):
+    # /api/ping is polled every couple of seconds. Skip the access line so
+    # the comma is not writing a log record on each MCU poll.
+    if args and "/api/ping" in str(args[0]):
+      return
     cloudlog.info("nap_dash " + (fmt % args))
 
-  def send_json(self, obj, code=200):
+  def send_json(self, obj, code=200, cache_control=None):
     body = json.dumps(obj).encode()
     self.send_response(code)
     self.send_header("Content-Type", "application/json")
-    self.send_header("Cache-Control", "no-cache, no-store")
+    self.send_header("Cache-Control", cache_control or "no-cache, no-store")
+    if cache_control and "no-store" in cache_control:
+      self.send_header("Pragma", "no-cache")
+      self.send_header("Expires", "0")
     self.send_header("Content-Length", str(len(body)))
     self.end_headers()
     self.wfile.write(body)
@@ -161,6 +179,8 @@ class Handler(BaseHTTPRequestHandler):
     path = urlparse(self.path).path
     if path in ("/", "/index.html", "/phone", "/phone/"):
       return self._send_html()
+    if path == "/api/ping":
+      return self.send_json(ping_payload(), cache_control="no-store, max-age=0")
     if path == "/api/manifest":
       try:
         return self.send_json(public_manifest())
