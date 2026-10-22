@@ -133,7 +133,7 @@ def ping_payload(now=None):
   data timestamp the page uses to notice a cached or stuck response.
   """
   if now is None:
-    now = time.time()
+    now = time.time()  # noqa: TID251  unix ms the MCU shows as last update
   return {"ok": True, "ts": int(round(float(now) * 1000.0))}
 
 
