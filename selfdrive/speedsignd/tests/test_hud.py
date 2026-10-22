@@ -680,10 +680,15 @@ def test_ui_and_cereal_wire_live_sign():
   assert "on_confirm_accuracy" in onroad
   assert "draw_tici_speed_sign" in onroad
   assert "draw_mici_speed_sign" in onroad
-  # Yes goes through mapd.speed_overrides.request_override; the HUD itself
-  # never writes params / JSONL / sqlite / OSM directly.
+  # Yes goes through mapd.speed_overrides.request_override inside
+  # speedsignd/mcu_prompt.on_confirm_accuracy (comma and MCU share it).
+  # The HUD file does not write params / JSONL / sqlite / OSM directly.
   assert "Params(" not in onroad
   assert "request_override" in onroad
+  impl = (root / "selfdrive" / "speedsignd" / "mcu_prompt.py").read_text(encoding="utf-8")
+  assert "def on_confirm_accuracy" in impl
+  assert "request_override" in impl
+  assert "record_answer" in impl
   assert "append_jsonl" not in onroad
   assert "osm.org" in onroad  # mentioned as future work in the stub comment
 
