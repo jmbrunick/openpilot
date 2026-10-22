@@ -146,6 +146,11 @@ PAIR_CONF = 0.60
 EXTRA_READS = 1
 CLASH_VOTES = False
 SOLO_CLASS_ONLY = False
+# Class-only single (OCR silent): off unless SOLO_CLASS_CONF > 0.
+SOLO_CLASS_CONF = 0.90
+SOLO_CLASS_PX = 0.0
+# One more burst read when no read so far had OCR agreeing and nothing decided.
+EXTRA_ON_SILENT = 1
 READ_S_DEFAULT = 0.8
 EXIT_HORIZON_S = 4.0
 # Sharp reads allowed after the first mph, so a second HUD vote can land
@@ -974,7 +979,11 @@ def read_vote(signs, h: float) -> tuple:
 def burst_len(votes) -> int:
   """BURST_READS, plus EXTRA_READS once the votes name different mph."""
   named = {v[0] for v in votes if v[0]}
-  return BURST_READS + (EXTRA_READS if len(named) >= 2 else 0)
+  n = BURST_READS + (EXTRA_READS if len(named) >= 2 else 0)
+  if EXTRA_ON_SILENT and len(votes) >= BURST_READS and named and not burst_decision(votes) \
+     and not any(len(v) >= 5 and v[4] == "agree" for v in votes):
+    n += EXTRA_ON_SILENT
+  return n
 
 
 def _vote(v):
@@ -990,6 +999,8 @@ def burst_decision(votes) -> list:
     if kind == "agree" or (SOLO_CLASS_ONLY and kind == "class"):
       if (conf >= STRONG_CONF and h >= STRONG_PX) or (conf >= SOLO_HI_CONF and h >= SOLO_HI_PX):
         return [sign]
+    if kind == "class" and SOLO_CLASS_CONF > 0.0 and conf >= SOLO_CLASS_CONF and h >= SOLO_CLASS_PX:
+      return [sign]
   by: dict[int, list] = {}
   for mph, conf, _h, sign, kind in vs:
     if mph and sign is not None and conf >= PAIR_CONF and kind in ("agree", "class"):
