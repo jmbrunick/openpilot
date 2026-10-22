@@ -117,14 +117,15 @@ def main():
       raw_conf = None
     if raw_conf is not None or overrides.pending is not None:
       try:
-        added = overrides.consume(raw_conf, match, bearing, now)
+        added = overrides.consume(raw_conf, match, bearing, now, way_coords=db.way_coords)
         if raw_conf is not None:
           params.remove(SIGN_CONFIRMED_PARAM)
         if added is not None:
           cloudlog.info("mapd: sign override way=%s heading=%s mph=%s", added["way_id"], added["heading"], added["mph"])
       except Exception:
         cloudlog.exception("mapd: sign override failed")
-    sign_ms = overrides.limit_ms(int(match.way_id), bearing) if match is not None else None
+    sign_ms = (overrides.limit_ms(int(match.way_id), bearing, lat, lon, match.coords)
+               if match is not None else None)
 
     msg = messaging.new_message("liveMapDataNAP")
     msg.valid = map_msg_valid(gps_ok=gps_ok, db_loaded=db.loaded, matched=match is not None, ring_hint=False)
