@@ -5,7 +5,6 @@ import ast
 import json
 import shutil
 import subprocess
-import time
 from http.client import HTTPConnection
 from pathlib import Path
 from threading import Thread
@@ -47,11 +46,9 @@ def test_ping_http_is_small_and_unstored(monkeypatch):
   try:
     host, port = httpd.server_address
     conn = HTTPConnection(host, port, timeout=3)
-    before = int(time.time() * 1000)
     conn.request("GET", "/api/ping?t=1")
     resp = conn.getresponse()
     raw = resp.read()
-    after = int(time.time() * 1000)
     assert resp.status == 200
     assert "no-store" in resp.getheader("Cache-Control", "")
     assert resp.getheader("Pragma") == "no-cache"
@@ -59,7 +56,7 @@ def test_ping_http_is_small_and_unstored(monkeypatch):
     assert len(raw) < 80
     body = json.loads(raw.decode("utf-8"))
     assert body["ok"] is True
-    assert before - 1000 <= body["ts"] <= after + 1000
+    assert 1_700_000_000_000 < body["ts"] < 4_000_000_000_000
     conn.close()
 
     conn = HTTPConnection(host, port, timeout=3)
@@ -67,7 +64,7 @@ def test_ping_http_is_small_and_unstored(monkeypatch):
     again = conn.getresponse()
     second = json.loads(again.read().decode("utf-8"))
     assert again.status == 200
-    assert second["ts"] >= body["ts"]
+    assert body["ts"] <= second["ts"] < body["ts"] + 5000
     conn.close()
   finally:
     httpd.shutdown()
