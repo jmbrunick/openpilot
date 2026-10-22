@@ -40,6 +40,7 @@ PROMPT_PARAM = "NAPSpeedSignPrompt"
 
 _PARAMS = None
 _THREAD = threading.Lock()
+_logged_put_failure = False
 
 
 def _params(params):
@@ -103,13 +104,90 @@ def _load(raw):
 
 def _get(params) -> dict | None:
   try:
-    return _load(params.get(PROMPT_PARAM))
+    loaded = _load(params.get(PROMPT_PARAM))
+  except Exception:
+    return _read_fallback(params)
+  if loaded is not None:
+    return loaded
+  # Empty param is authoritative. The fallback file is only for a put that
+  # could not use Params; a later successful put deletes it.
+  return None
+
+
+def _fallback_path(params):
+  getter = getattr(params, "get_param_path", None)
+  if getter is None:
+    return None
+  try:
+    base = getter()
+  except Exception:
+    return None
+  if not base:
+    return None
+  return os.path.join(base, PROMPT_PARAM)
+
+
+def _write_fallback(params, obj: dict) -> bool:
+  """Used when the compiled params binary does not know NAPSpeedSignPrompt yet."""
+  path = _fallback_path(params)
+  if not path:
+    return False
+  os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+  tmp = path + ".tmp"
+  with open(tmp, "w", encoding="utf-8") as fh:
+    fh.write(json.dumps(obj))
+  os.replace(tmp, path)
+  return True
+
+
+def _read_fallback(params):
+  path = _fallback_path(params)
+  if not path or not os.path.isfile(path):
+    return None
+  try:
+    with open(path, encoding="utf-8") as fh:
+      return _load(fh.read())
   except Exception:
     return None
 
 
+def _erase_fallback(params) -> None:
+  path = _fallback_path(params)
+  if not path:
+    return
+  try:
+    os.remove(path)
+  except OSError:
+    pass
+
+
 def _put(params, obj: dict) -> None:
-  params.put(PROMPT_PARAM, obj)
+  """JSON keys accept a dict. A binary that still has the key as STRING accepts the dumped text.
+
+  UnknownKeyName (params built before this key) is written beside the params
+  dir so nap_dash can still read it. A successful Params put removes that file.
+  """
+  global _logged_put_failure
+  try:
+    params.put(PROMPT_PARAM, obj)
+  except TypeError:
+    try:
+      params.put(PROMPT_PARAM, json.dumps(obj))
+    except Exception:
+      if not _logged_put_failure:
+        cloudlog.exception("mcu_prompt: NAPSpeedSignPrompt put failed")
+        _logged_put_failure = True
+      if not _write_fallback(params, obj):
+        raise
+      return
+  except Exception:
+    if not _logged_put_failure:
+      cloudlog.exception("mcu_prompt: NAPSpeedSignPrompt put failed")
+      _logged_put_failure = True
+    if not _write_fallback(params, obj):
+      raise
+    return
+  _erase_fallback(params)
 
 
 def _clear(params, cleared_id: int = -1) -> None:

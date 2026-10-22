@@ -910,7 +910,7 @@ function foRender(data) {
 }
 function foPoll() {
   if (foBusy) return;
-  getJSON("/api/force_offroad", function (err, data) { if (!err && !foBusy) foRender(data); });
+  getJSON("/api/force_offroad?t=" + new Date().getTime(), function (err, data) { if (!err && !foBusy) foRender(data); });
 }
 function foAnswer(answer) {
   if (foBusy) return;
@@ -947,7 +947,7 @@ function ssRender(data) {
 }
 function ssPoll() {
   if (ssBusy) return;
-  getJSON("/api/speed_sign", function (err, data) { if (!err && !ssBusy) ssRender(data); });
+  getJSON("/api/speed_sign?t=" + new Date().getTime(), function (err, data) { if (!err && !ssBusy) ssRender(data); });
 }
 function ssAnswer(answer) {
   if (ssBusy) return;
