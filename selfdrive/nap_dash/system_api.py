@@ -16,6 +16,10 @@ BLOCKED_ACTIONS = {
     "force_onroad",
 }
 SOFTWARE_ACTIONS = {"set_branch", "fetch", "download", "install"}
+# nap_dash Software page branch picker only. updated still publishes every
+# remote branch, the comma on-device Software panel still lists them, and
+# set_branch still accepts any sanitized name.
+HIDDEN_BRANCH_PREFIX = "cursor/"
 UPDATED_PATTERNS = (
     "openpilot.system.updated.updated",
     "system.updated.updated",
@@ -254,18 +258,30 @@ def software_status(snap: dict) -> dict:
     }
 
 
+def visible_picker_branches(branches: list[str], installed: str) -> list[str]:
+    """Drop HIDDEN_BRANCH_PREFIX names. Always keep the installed branch."""
+    shown = [
+        name for name in branches
+        if name == installed or not name.startswith(HIDDEN_BRANCH_PREFIX)
+    ]
+    if installed and installed not in shown:
+        shown.append(installed)
+    return shown
+
+
 def read_software(params, running=None) -> dict:
+    installed = _as_str(_get(params, "GitBranch"))
     branches_raw = _as_str(_get(params, "UpdaterAvailableBranches"))
     branches = [part for part in branches_raw.split(",") if part]
     offline = _flag(params, "DisableUpdates")
     last = _as_time(_get(params, "LastUpdateTime"))
     alive = updated_running() if running is None else bool(running() if callable(running) else running)
     snap = {
-        "git_branch": _as_str(_get(params, "GitBranch")),
+        "git_branch": installed,
         "git_commit": _as_str(_get(params, "GitCommit")),
         "version": _as_str(_get(params, "Version")),
         "target_branch": _as_str(_get(params, "UpdaterTargetBranch")),
-        "available_branches": branches,
+        "available_branches": visible_picker_branches(branches, installed),
         "updater_state": _as_str(_get(params, "UpdaterState")).strip() or "idle",
         "fetch_available": _flag(params, "UpdaterFetchAvailable"),
         "update_available": _flag(params, "UpdateAvailable"),

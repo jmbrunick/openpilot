@@ -4,17 +4,20 @@ from __future__ import annotations
 import datetime
 import json
 from http.client import HTTPConnection
+from pathlib import Path
 from threading import Thread
 
 import pytest
 
 from openpilot.selfdrive.nap_dash.server import Handler, ThreadingHTTPServer
 from openpilot.selfdrive.nap_dash.system_api import (
+  HIDDEN_BRANCH_PREFIX,
   SoftwareError,
   handle_software,
   read_software,
   sanitize_branch,
   time_ago,
+  visible_picker_branches,
 )
 
 
@@ -266,9 +269,89 @@ def test_read_software_lists_available_branches():
   )
   snap = read_software(params, running=True)
   assert snap["git_branch"] == "nap-dev"
-  assert snap["available_branches"] == ["nap-release", "nap-dev", "cursor/nap-dash-dev-e946"]
+  assert snap["available_branches"] == ["nap-release", "nap-dev"]
   assert snap["fetch_available"] is True
   assert snap["offline"] is True
+  assert params.values["UpdaterAvailableBranches"] == "nap-release,nap-dev,cursor/nap-dash-dev-e946"
+  assert params.writes == []
+
+
+def test_hidden_branch_prefix_is_one_constant():
+  src = Path(read_software.__code__.co_filename).read_text(encoding="utf-8")
+  assert HIDDEN_BRANCH_PREFIX == "cursor/"
+  assert src.count("HIDDEN_BRANCH_PREFIX = ") == 1
+  assert src.count('"cursor/"') == 1
+
+
+def test_picker_hides_cursor_prefix_and_keeps_everything_else():
+  raw = [
+    "nap-alpha",
+    "nap-dev",
+    "nap-release",
+    "master",
+    "release2",
+    "feature/widget",
+    "cursor",
+    "Cursor/Foo",
+    "notcursor/thing",
+    "foo/cursor/bar",
+    "cursor/mcu-software-branch-allowlist",
+    "cursor/other",
+  ]
+  assert visible_picker_branches(raw, "nap-dev") == [
+    "nap-alpha",
+    "nap-dev",
+    "nap-release",
+    "master",
+    "release2",
+    "feature/widget",
+    "cursor",
+    "Cursor/Foo",
+    "notcursor/thing",
+    "foo/cursor/bar",
+  ]
+
+
+def test_picker_keeps_installed_cursor_branch_in_place():
+  params = FakeParams(values={
+    "GitBranch": "cursor/mcu-software-branch-allowlist",
+    "UpdaterAvailableBranches": "nap-dev,cursor/other,cursor/mcu-software-branch-allowlist,nap-release",
+  })
+  snap = read_software(params, running=True)
+  assert snap["available_branches"] == ["nap-dev", "cursor/mcu-software-branch-allowlist", "nap-release"]
+  assert params.writes == []
+
+
+def test_picker_appends_installed_branch_when_it_is_not_listed():
+  params = FakeParams(values={
+    "GitBranch": "cursor/local-only",
+    "UpdaterAvailableBranches": "nap-alpha,cursor/other,release2",
+  })
+  snap = read_software(params, running=True)
+  assert snap["available_branches"] == ["nap-alpha", "release2", "cursor/local-only"]
+
+  params = FakeParams(values={
+    "GitBranch": "",
+    "UpdaterAvailableBranches": "nap-dev,cursor/other",
+  })
+  assert read_software(params, running=True)["available_branches"] == ["nap-dev"]
+
+
+def test_set_branch_still_accepts_a_hidden_cursor_branch():
+  params = FakeParams(values={
+    "GitBranch": "nap-dev",
+    "UpdaterAvailableBranches": "nap-dev,cursor/hidden",
+    "UpdaterTargetBranch": "nap-dev",
+  })
+  snap = handle_software(
+    {"action": "set_branch", "branch": "cursor/hidden"},
+    params,
+    pinger=lambda *_a: None,
+    running=True,
+  )
+  assert snap["target_branch"] == "cursor/hidden"
+  assert ("UpdaterTargetBranch", "cursor/hidden") in params.writes
+  assert snap["available_branches"] == ["nap-dev"]
 
 
 def test_http_software_round_trip(monkeypatch):
