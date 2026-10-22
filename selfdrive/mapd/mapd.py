@@ -12,6 +12,7 @@ import cereal.messaging as messaging
 from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
+from openpilot.selfdrive.mapd.constants import osm_sign_lead_m
 from openpilot.selfdrive.mapd.db_paths import default_db_path
 from openpilot.selfdrive.mapd.gps_fix import (
   LAST_GPS_WRITE_PERIOD_S,
@@ -20,7 +21,7 @@ from openpilot.selfdrive.mapd.gps_fix import (
 )
 from openpilot.selfdrive.mapd.map_speed_policy import keep_rural_default_ms, map_source_for
 from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB
-from openpilot.selfdrive.mapd.speed_overrides import PARAM as SIGN_CONFIRMED_PARAM, SpeedOverrides
+from openpilot.selfdrive.mapd.speed_overrides import PARAM as SIGN_CONFIRMED_PARAM, SpeedOverrides, effective_next
 from openpilot.selfdrive.mapd.roundabout_map import PARAM_RING, RingCache, roundabout_comfort_speed_ms
 from openpilot.selfdrive.mapd.roundabout_status import RingDataWatch, map_msg_valid
 
@@ -158,8 +159,18 @@ def main():
           f"src={src}",
         ))
         cloudlog.error(msg_txt)
-      d.nextSpeedLimit = float(match.next_speed_limit_ms)
-      d.nextSpeedLimitDistance = float(match.next_distance_m)
+      # Next limit follows the effective limit ahead (confirmed sections, else OSM).
+      osm_next = ((float(match.next_speed_limit_ms), float(match.next_distance_m))
+                  if float(match.next_speed_limit_ms) > 0 else None)
+      try:
+        nxt = effective_next(overrides.entries, db, int(match.way_id),
+                             match.coords or db.way_coords(int(match.way_id)), lat, lon, bearing,
+                             float(d.speedLimit), sign_ms is not None, osm_next, osm_sign_lead_m(v_ego_ms))
+      except Exception:
+        cloudlog.exception("mapd: effective next limit failed")
+        nxt = osm_next
+      d.nextSpeedLimit = float(nxt[0]) if nxt is not None else 0.0
+      d.nextSpeedLimitDistance = float(nxt[1]) if nxt is not None else 0.0
       d.roadName = match.road_name
       d.highway = match.highway
       d.wayId = int(match.way_id)

@@ -402,3 +402,114 @@ def request_override(mph: int, rec: dict | None, seq: float, params=None,
     return True
   except Exception:
     return False
+
+
+# --- Effective next limit (Oct 22 2026) -------------------------------------
+# nextSpeedLimit / nextSpeedLimitDistance follow the EFFECTIVE limit ahead
+# (confirmed section where one covers the road, else OSM). Override events:
+# a section starting ahead, a section ending (hands back to OSM) and one
+# section handing to another. An OSM change inside a section is masked.
+# A plain OSM -> OSM change keeps mapd's existing OSM next (its stub filters
+# and GNSS-lag lead are unchanged).
+NEXT_STEP_M = 5.0
+NEXT_MAX_M = 600.0   # = constants.LOOKAHEAD_MAX_M
+
+
+def _point_at(coords, s: float) -> tuple[float, float]:
+  acc = 0.0
+  for i in range(len(coords) - 1):
+    a, b = coords[i], coords[i + 1]
+    seg = math.hypot(*_xy(b[0], b[1], a[0], a[1]))
+    if acc + seg >= s or i == len(coords) - 2:
+      f = 0.0 if seg < 1e-6 else max(0.0, min(1.0, (s - acc) / seg))
+      return a[0] + f * (b[0] - a[0]), a[1] + f * (b[1] - a[1])
+    acc += seg
+  return coords[-1]
+
+
+def chain_at(entries, way_id: int, s: float) -> dict | None:
+  best, best_d = None, 1e18
+  for e in entries:
+    if not e.get("chain"):
+      continue
+    dd = chain_dist(e, way_id, s)
+    if dd is not None and dd <= best_d:
+      best, best_d = e, dd
+  return best
+
+
+def route_ahead(db, way_id: int, coords, lat: float, lon: float, bearing: float,
+                max_m: float = NEXT_MAX_M) -> list[tuple[dict, float, float, int, float]]:
+  """Pieces ahead on the same road: [(way_info, s_from, s_to, dir, dist_at_s_from)].
+  Stops at max_m, a road change or a fork (same rule as sign sections)."""
+  info = db.way_info(int(way_id)) if db is not None and hasattr(db, "way_info") else None
+  if info is None or not coords:
+    return []
+  pos = along_way(lat, lon, coords)
+  if pos is None:
+    return []
+  s, seg_h = pos
+  L = _poly_len(coords)
+  d = 1 if heading_delta(bearing, seg_h) <= 90.0 else -1
+  rem = (L - s) if d > 0 else s
+  pieces = [(info, s, s + d * min(rem, max_m), d, 0.0)]
+  acc, end = rem, (coords[-1] if d > 0 else coords[0])
+  seen = {int(way_id)}
+  name, hw = info.get("name", ""), info.get("highway", "")
+  while acc < max_m and hasattr(db, "ways_at"):
+    cands = [w for w in db.ways_at(end[0], end[1], JOIN_TOL_M)
+             if int(w["way_id"]) not in seen and _same_road(name, hw, w)]
+    if len(cands) != 1:
+      break
+    w = cands[0]
+    c = w["coords"]
+    wl = _poly_len(c)
+    r = min(wl, max_m - acc)
+    if _near(c[0], end):
+      pieces.append((w, 0.0, r, 1, acc))
+      end = c[-1]
+    else:
+      pieces.append((w, wl, wl - r, -1, acc))
+      end = c[0]
+    seen.add(int(w["way_id"]))
+    acc += wl
+  return pieces
+
+
+def effective_next(entries, db, way_id: int, coords, lat: float, lon: float, bearing: float | None,
+                   cur_ms: float, cur_is_sign: bool, osm_next: tuple[float, float] | None,
+                   lead_m: float = 0.0) -> tuple[float, float] | None:
+  """(next effective limit m/s, distance m) ahead, or None when it does not change.
+
+  osm_next is mapd's OSM next (limit, distance) or None. lead_m is the GNSS-lag
+  lead mapd already subtracts from OSM next distances; override events get the same."""
+  if bearing is None or not any(e.get("chain") for e in entries):
+    return osm_next
+  pieces = route_ahead(db, way_id, coords, lat, lon, float(bearing))
+  if not pieces:
+    return osm_next
+  prev_ms, prev_sign = float(cur_ms), bool(cur_is_sign)
+  if not prev_sign:   # compare OSM to OSM (the published value may be a rural-default hold)
+    prev_ms = float(pieces[0][0].get("maxspeed_ms") or prev_ms)
+  walked = 0.0
+  for w, s_from, s_to, d, dist0 in pieces:
+    osm_ms = float(w.get("maxspeed_ms") or 0.0)
+    n = int(abs(s_to - s_from) // NEXT_STEP_M)
+    for k in range(n + 1):
+      s = s_from + d * k * NEXT_STEP_M
+      e = chain_at(entries, int(w["way_id"]), s)
+      ms = int(e["mph"]) * MPH_TO_MS if e is not None else osm_ms
+      dist = dist0 + k * NEXT_STEP_M
+      walked = dist
+      if abs(ms - prev_ms) <= 0.3:
+        prev_sign = e is not None
+        continue
+      if e is not None or prev_sign:
+        return ms, max(0.0, dist - NEXT_STEP_M / 2 - lead_m)
+      # plain OSM -> OSM change, not masked: keep mapd's OSM next
+      return osm_next   # (None when mapd's stub filter dropped it)
+  # No change on the known road. Beyond it no section applies; use OSM next only
+  # past the walked part and only if it differs from the effective limit.
+  if osm_next is not None and osm_next[1] + lead_m >= walked - 1.0 and abs(osm_next[0] - prev_ms) > 0.3:
+    return osm_next
+  return None
