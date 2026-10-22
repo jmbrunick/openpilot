@@ -811,7 +811,8 @@ def copy_to_realdata(rec: dict, line: str, d: str, root: str | None = None, now:
     return None
 
 
-def record_answer(displayed_mph: int, yes: bool, d: str | None = None, now: float | None = None) -> dict | None:
+def record_answer(displayed_mph: int, yes: bool, d: str | None = None, now: float | None = None,
+                  seq: int | None = None) -> dict | None:
   """UI Yes/No: append feedback.jsonl (+confirmed.jsonl on Yes), keep the crop JPEG.
 
   Uses the pending read only when its mph matches the plate the driver saw.
@@ -827,7 +828,11 @@ def record_answer(displayed_mph: int, yes: bool, d: str | None = None, now: floa
         meta = json.load(f)
     except Exception:
       meta = {}
-    if int(meta.get("mph", -1)) != int(displayed_mph):
+    # The pending read must be the prompt's read: same seq when the caller
+    # knows it (a newer read with the same mph is a different sign), else mph.
+    if int(meta.get("mph", -1)) != int(displayed_mph) or (
+        seq is not None and meta.get("seq") is not None and int(meta["seq"]) != int(seq)) or (
+        seq is not None and meta.get("seq") is None):
       meta = {"mph": int(displayed_mph), "stale_pending": True}
     stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(now))
     rec = {
@@ -839,6 +844,8 @@ def record_answer(displayed_mph: int, yes: bool, d: str | None = None, now: floa
       "refine_mph": meta.get("refine_mph"),
       "refine_conf": meta.get("refine_conf"),
       "track_id": meta.get("track_id"),
+      "seq": None if seq is None else int(seq),
+      "way_id": meta.get("way_id"),
       "read_t": meta.get("t"),
       "lat": meta.get("lat"),
       "lon": meta.get("lon"),

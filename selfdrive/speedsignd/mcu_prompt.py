@@ -112,15 +112,9 @@ def _put(params, obj: dict) -> None:
   params.put(PROMPT_PARAM, obj)
 
 
-def _clear(params) -> None:
-  remove = getattr(params, "remove", None)
-  if remove is not None:
-    try:
-      remove(PROMPT_PARAM)
-      return
-    except Exception:
-      pass
-  _put(params, {"cleared": True})
+def _clear(params, cleared_id: int = -1) -> None:
+  """Close the open prompt. The id is kept so a late tap on it is refused."""
+  _put(params, {"cleared": True, "id": int(cleared_id)})
 
 
 def _open(cur) -> bool:
@@ -191,7 +185,7 @@ def sync_hud_prompt(view, params=None) -> bool:
     cur = _get(params)
     if showing is None:
       if _open(cur):
-        _clear(params)
+        _clear(params, int(cur["id"]))
       return False
     if isinstance(cur, dict) and cur.get("answered") and int(cur.get("id", -1)) == showing["id"]:
       return True
@@ -218,9 +212,11 @@ def on_confirm_accuracy(mph: int, yes: bool, proposal: dict | None = None) -> No
   """
   import time
   from openpilot.selfdrive.speedsignd.two_stage import record_answer
-  rec = record_answer(int(mph), bool(yes))
-  applied = False
   prop = proposal or {}
+  rec = record_answer(int(mph), bool(yes), seq=int(prop["seq"]) if prop.get("seq") else None)
+  if rec is not None and rec.get("stale_pending"):
+    rec = dict(rec, lat=None, lon=None, bearing=None)   # never another read's location
+  applied = False
   if prop.get("seq"):
     # The plate already shows the read; Yes only adds the map override.
     from openpilot.selfdrive.speedsignd.confirm import write_answer
@@ -261,8 +257,13 @@ def answer_prompt(prompt_id: int, yes: bool, params=None, snapshot: dict | None 
           snap = _fields(snapshot)
         except (TypeError, ValueError, KeyError):
           snap = None
-        same = isinstance(cur, dict) and cur.get("answered") and int(cur.get("id", -1)) == prompt_id
-        if snap is not None and snap["id"] == prompt_id and snap["mph"] > 0 and not same:
+        # Any record with this id or a newer one means the snapshot is stale:
+        # answered, timed out, or replaced by a newer read.
+        try:
+          seen = int(cur.get("id", -1)) if isinstance(cur, dict) else -1
+        except (TypeError, ValueError):
+          seen = -1
+        if snap is not None and snap["id"] == prompt_id and snap["mph"] > 0 and prompt_id > seen:
           owned = snap
       if owned is None:
         return False
