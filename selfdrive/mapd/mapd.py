@@ -117,7 +117,7 @@ def main():
       raw_conf = None
     if raw_conf is not None or overrides.pending is not None:
       try:
-        added = overrides.consume(raw_conf, match, bearing, now, way_coords=db.way_coords)
+        added = overrides.consume(raw_conf, match, bearing, now, way_coords=db.way_coords, db=db)
         if raw_conf is not None:
           params.remove(SIGN_CONFIRMED_PARAM)
         if added is not None:
