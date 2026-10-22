@@ -167,6 +167,12 @@ button:active:not(:disabled) {
 #foack .card { max-width: none; height: 100%; text-align: center; padding: 16px; }
 #foack h2 { font-size: 34px; color: #c9c9c9; margin: 18px 0 24px; }
 #foack button { width: 46%; min-height: 96px; font-size: 32px; margin: 0 1%; }
+/* Speed-sign Yes/No: one prompt, the read mph, no second confirm. */
+#ssign { z-index: 40; padding: 10px; }
+#ssign .card { max-width: none; height: 100%; text-align: center; padding: 16px; }
+#ssign h2 { font-size: 72px; color: #111; background: #fff; border: 6px solid #b42828; border-radius: 12px; margin: 12px auto 8px; max-width: 280px; line-height: 1.1; padding: 8px 0; }
+#ssign p { font-size: 28px; color: #e5e7eb; margin: 0 0 18px; }
+#ssign button { width: 46%; min-height: 96px; font-size: 32px; margin: 0 1%; }
 .hidden { display: none; }
 @media (min-width: 720px) {
   #content .row { width: 49.5%; margin: 0 0.5% 6px 0; }
@@ -203,6 +209,14 @@ button:active:not(:disabled) {
     <h2 id="foack-prompt">Ready to resume steering control?</h2>
     <button id="foack-no" type="button">No</button>
     <button id="foack-yes" type="button" class="on">Yes</button>
+  </div>
+</div>
+<div id="ssign" class="overlay hidden">
+  <div class="card">
+    <h2 id="ssign-mph"></h2>
+    <p id="ssign-prompt">accurate?</p>
+    <button id="ssign-no" type="button">No</button>
+    <button id="ssign-yes" type="button" class="on">Yes</button>
   </div>
 </div>
 <script>
@@ -822,6 +836,38 @@ document.getElementById("foack-yes").onclick = function () { foAnswer("yes"); };
 document.getElementById("foack-no").onclick = function () { foAnswer("no"); };
 foPoll();
 setInterval(foPoll, 1500);
+
+// Speed-sign Yes/No. One prompt; a tap here or on the comma clears both.
+var ssBusy = false;
+var ssId = 0;
+function ssRender(data) {
+  var box = document.getElementById("ssign");
+  if (!data || !data.pending) { box.className = "overlay hidden"; return; }
+  ssId = data.id;
+  document.getElementById("ssign-mph").textContent = String(data.mph);
+  document.getElementById("ssign-prompt").textContent = data.prompt;
+  document.getElementById("ssign-yes").textContent = data.yes;
+  document.getElementById("ssign-no").textContent = data.no;
+  box.className = "overlay";
+}
+function ssPoll() {
+  if (ssBusy) return;
+  getJSON("/api/speed_sign", function (err, data) { if (!err && !ssBusy) ssRender(data); });
+}
+function ssAnswer(answer) {
+  if (ssBusy) return;
+  ssBusy = true;
+  document.getElementById("ssign").className = "overlay hidden";
+  postJSON("/api/speed_sign", {answer: answer, id: ssId}, function (err, data) {
+    ssBusy = false;
+    if (err) { setStatus(err.message); ssPoll(); return; }
+    ssRender(data);
+  });
+}
+document.getElementById("ssign-yes").onclick = function () { ssAnswer("yes"); };
+document.getElementById("ssign-no").onclick = function () { ssAnswer("no"); };
+ssPoll();
+setInterval(ssPoll, 500);
 setInterval(bookmarkPoll, 1000);
 
 window.onresize = fitPane;

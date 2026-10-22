@@ -34,6 +34,7 @@ except Exception:  # pragma: no cover - unit tests without zmq
   cloudlog = _PrintLog()
 
 from openpilot.selfdrive.nap_dash.force_offroad_api import AckError, handle_ack, read_ack
+from openpilot.selfdrive.nap_dash.speed_sign_api import SignError, handle_sign, read_sign
 from openpilot.selfdrive.nap_dash.talk_api import TALK, parse_active
 from openpilot.selfdrive.nap_dash.settings import SettingError
 from openpilot.selfdrive.nap_dash.system_api import (
@@ -184,6 +185,11 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_json(read_ack(_params()))
       except Exception as exc:
         return self.send_json({"error": str(exc)}, 500)
+    if path == "/api/speed_sign":
+      try:
+        return self.send_json(read_sign(_params()))
+      except Exception as exc:
+        return self.send_json({"error": str(exc)}, 500)
     if path == "/api/bookmark":
       try:
         return self.send_json(bookmark_status(_params()))
@@ -211,6 +217,8 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_json(handle_software(payload, _params()))
       if path == "/api/force_offroad":
         return self.send_json(handle_ack(payload, _params()))
+      if path == "/api/speed_sign":
+        return self.send_json(handle_sign(payload, _params()))
       if path == "/api/bookmark":
         return self.send_json(bookmark_tap(_params()))
       if path == "/api/talk":
@@ -225,7 +233,7 @@ class Handler(BaseHTTPRequestHandler):
       # Lets the page raise the steering Yes/No right after the tap, not on the next poll.
       snap["force_offroad_ack"] = read_ack(_params())
       return self.send_json(snap)
-    except AckError as exc:
+    except (AckError, SignError) as exc:
       return self.send_json({"error": str(exc)}, 400)
     except SoftwareError as exc:
       return self.send_json({"error": str(exc)}, 400)
