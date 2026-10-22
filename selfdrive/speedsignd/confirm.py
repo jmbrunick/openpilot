@@ -1,11 +1,13 @@
-"""v2.3 plate / prompt state. Display only; nothing here brakes or limits.
+"""Plate / prompt state. Display only; nothing here brakes or limits.
 
-The plate shows the last speed the driver confirmed with Yes. An agreed
-read never changes it: it raises the Yes/No prompt with the proposed mph,
-plus the mapd way and heading matched when the sign was READ. Yes moves the
-proposal to the plate (and mapd stores it for that way, see
-mapd/speed_overrides.py). No, a failed read or a wrong read leave the old
-plate up. The UI answers through the NAPSpeedSignAnswer param.
+The SIGN plate shows the newest read: an agreed read replaces the plate mph
+at once and raises the Yes/No prompt for it, with the mapd way and heading
+matched when the sign was READ. Only the LIMIT/MAX map override waits for
+Yes (mapd stores it for that way, see mapd/speed_overrides.py). No and a
+timeout change nothing in the map; the plate keeps the read. A read equal
+to the current limit still prompts so Yes records the sign; mapd skips
+rewriting an override that already matches. A failed read
+leaves the plate as it was. The UI answers through NAPSpeedSignAnswer.
 """
 from __future__ import annotations
 
@@ -31,14 +33,16 @@ class PlateState:
   def __init__(self) -> None:
     self.plate_mph = 0
     self.plate_conf = 0.0
+    self.confirmed_mph = 0      # last Yes (map override); the plate may differ
     self.proposal: Proposal | None = None
     self.seq = 0
 
   def propose(self, mph: int, conf: float, *, way_id: int = 0, heading: float | None = None,
               lat: float | None = None, lon: float | None = None) -> Proposal | None:
     mph = int(mph)
-    if mph <= 0 or mph == self.plate_mph:
+    if mph <= 0:
       return None
+    self.plate_mph, self.plate_conf = mph, float(conf)   # the plate follows the read
     if self.proposal is not None and self.proposal.mph == mph:
       return self.proposal
     self.seq += 1
@@ -57,7 +61,7 @@ class PlateState:
     if p is None or seq != p.seq or mph != p.mph:
       return False
     if yes:
-      self.plate_mph, self.plate_conf = p.mph, p.conf
+      self.confirmed_mph = p.mph
     self.proposal = None
     return True
 

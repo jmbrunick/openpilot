@@ -163,8 +163,8 @@ class LiveSignView:
   show_missing_weights: bool = False
   show_detect_paused: bool = False
   show_runtime_missing: bool = False
-  # v2.3 prompt: mph is the Yes-confirmed plate; the prompt asks about
-  # proposed_mph (way + heading matched when the sign was read).
+  # Prompt: mph is the newest read (plate); the prompt asks to store
+  # proposed_mph in the map (way + heading matched when the sign was read).
   proposal_mode: bool = False
   proposed_mph: int = 0
   proposed_seq: int = 0
@@ -212,7 +212,7 @@ def live_sign_from_event(enabled: bool, d, msg_valid: bool) -> LiveSignView:
 
 
 def with_proposal(view: LiveSignView, d) -> LiveSignView:
-  """v2.3: attach the open prompt; the plate (mph) stays the last Yes."""
+  """Attach the open prompt; the plate (mph) is the newest read."""
   from dataclasses import replace as _replace
   pm = int(getattr(d, "proposedMph", 0) or 0)
   if view.show_missing_weights or view.show_runtime_missing or view.show_detect_paused:

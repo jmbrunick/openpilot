@@ -15,6 +15,10 @@ v2.3: the payload carries way_id + heading matched when the sign was READ
 (liveSpeedSignNAP.proposedWayId / proposedHeading). Those are stored as-is;
 the way the car is on at tap time is never used. A YES without a read-time
 way stores nothing.
+
+A YES whose mph already is the limit for that way + heading (the stored
+override, or OSM when the car is matched to that way and there is none)
+rewrites nothing; the sign itself is still recorded by two_stage.record_answer.
 """
 from __future__ import annotations
 
@@ -125,6 +129,18 @@ class SpeedOverrides:
     self.save()
     return e
 
+  def same_as_current(self, way_id: int, heading: float, mph: int, match=None) -> bool:
+    """True when mph already is the limit mapd uses for this way + heading."""
+    e = self.find(way_id, heading)
+    if e is not None:
+      return int(e["mph"]) == int(mph)
+    if match is not None and int(getattr(match, "way_id", 0) or 0) == int(way_id):
+      try:
+        return round(float(match.speed_limit_ms) / MPH_TO_MS) == int(mph)
+      except (AttributeError, TypeError, ValueError):
+        return False
+    return False
+
   def consume(self, raw_param, match, bearing: float | None, mono_now: float) -> dict | None:
     """Turn a new YES (by seq) into an override on the current matched way.
 
@@ -137,6 +153,8 @@ class SpeedOverrides:
         # v2.3: read-time way + heading; never the current match.
         hdg = conf.get("heading", conf.get("bearing"))
         if conf.get("way_id") and hdg is not None:
+          if self.same_as_current(int(conf["way_id"]), float(hdg), conf["mph"], match):
+            return None
           return self.add(int(conf["way_id"]), float(hdg), conf)
         return None
       self.pending, self.pending_t = conf, mono_now
@@ -147,6 +165,9 @@ class SpeedOverrides:
       return None
     hdg = bearing if bearing is not None else self.pending.get("bearing")
     if match is None or hdg is None:
+      return None
+    if self.same_as_current(int(match.way_id), float(hdg), self.pending["mph"], match):
+      self.pending = None
       return None
     e = self.add(int(match.way_id), float(hdg), self.pending, road=str(getattr(match, "road_name", "") or ""))
     self.pending = None
