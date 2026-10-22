@@ -1,3 +1,4 @@
+import os
 """v2.3 scoring. prompt = last proposal raised in the sign window; plate = Yes model
 (plate changes only when a proposal equals the posted value = Yes; anything else = No).
 Old builds (no 'prop' field): prompt = plate = value shown at the sign (score2 rule)."""
@@ -20,7 +21,9 @@ def run(m):
     if g.split('--')[0]!=route: route=g.split('--')[0]; plate=0
     for r in logs[g]:
       if newv and r.get('prop'):
-        p=r['prop']; inw=[w for w in win[g] if w[0]<=r['f']<=w[1]]
+        p=r['prop']
+        if os.environ.get('PLATE')=='follow': plate=p
+        inw=[w for w in win[g] if w[0]<=r['f']<=w[1]]
         if not inw:
           ah=sorted([w for w in win[g] if w[4]<=r['f']<w[0]],key=lambda w:w[0])[:1]
           if ah: inw=ah; early.append((ah[0][3],w_:=ah[0][0]+PRE-r['f']))

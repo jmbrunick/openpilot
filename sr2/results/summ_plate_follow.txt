@@ -1,0 +1,18 @@
+## PLATE=yes
+== signs19
+vBs90        prompt 16/0/6  plate 17/1/4  outside 0  wrongs []  new-vs-v23 []
+== signs_other
+vBs90        prompt 50/2/45  plate 62/30/5  outside 39  wrongs ['1a3_25:40->30', '169S21:50->35']  new-vs-v23 []
+[POST40] == signs19
+[POST40] vBs90        prompt 16/0/6  plate 17/1/4  outside 2  wrongs []  new-vs-v23 []
+[POST40] == signs_other
+[POST40] vBs90        prompt 66/1/30  plate 73/20/4  outside 25  wrongs ['169S21:50->35']  new-vs-v23 []
+## PLATE=follow
+== signs19
+vBs90        prompt 16/0/6  plate 17/1/4  outside 0  wrongs []  new-vs-v23 []
+== signs_other
+vBs90        prompt 50/2/45  plate 65/28/4  outside 39  wrongs ['1a3_25:40->30', '169S21:50->35']  new-vs-v23 []
+[POST40] == signs19
+[POST40] vBs90        prompt 16/0/6  plate 17/1/4  outside 2  wrongs []  new-vs-v23 []
+[POST40] == signs_other
+[POST40] vBs90        prompt 66/1/30  plate 75/18/4  outside 25  wrongs ['169S21:50->35']  new-vs-v23 []
