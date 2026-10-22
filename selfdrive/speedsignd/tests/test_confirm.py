@@ -20,8 +20,10 @@ def test_plate_follows_reads_map_waits_for_yes():
   assert pr is not None and pr.mph == 45 and p.plate_mph == 45
 
 
-def test_same_value_keeps_prompt_seq():
+def test_same_read_keeps_prompt_seq_new_read_does_not():
   p = C.PlateState()
-  a = p.propose(50, 0.7)
-  b = p.propose(50, 0.9)
+  a = p.propose(50, 0.7, read_id=("read", 3, 1.0))
+  b = p.propose(50, 0.9, read_id=("read", 3, 1.0))
   assert a.seq == b.seq
+  c = p.propose(50, 0.9, way_id=7, read_id=("read", 4, 2.0))   # same mph, another sign
+  assert c.seq != a.seq and c.way_id == 7

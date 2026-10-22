@@ -27,6 +27,7 @@ class Proposal:
   heading: float = 0.0
   lat: float = 0.0
   lon: float = 0.0
+  read_id: object = None   # the one read this prompt (mph, way, heading, location) came from
 
 
 class PlateState:
@@ -36,18 +37,26 @@ class PlateState:
     self.confirmed_mph = 0      # last Yes (map override); the plate may differ
     self.proposal: Proposal | None = None
     self.seq = 0
+    self.answered_read_id = None
 
   def propose(self, mph: int, conf: float, *, way_id: int = 0, heading: float | None = None,
-              lat: float | None = None, lon: float | None = None) -> Proposal | None:
+              lat: float | None = None, lon: float | None = None, read_id=None) -> Proposal | None:
+    """Open the prompt for one read. mph, way, heading and location always come
+    from the same read: a newer read replaces the prompt and its location
+    together (new seq), so an answer to the old seq is rejected. Only a repeat
+    of the same read_id keeps the open prompt."""
     mph = int(mph)
     if mph <= 0:
       return None
     self.plate_mph, self.plate_conf = mph, float(conf)   # the plate follows the read
-    if self.proposal is not None and self.proposal.mph == mph:
-      return self.proposal
+    if read_id is not None:
+      if self.proposal is not None and self.proposal.read_id == read_id:
+        return self.proposal
+      if read_id == self.answered_read_id:
+        return None       # this read was already answered; do not ask again
     self.seq += 1
     self.proposal = Proposal(mph, float(conf), self.seq, int(way_id or 0), float(heading or 0.0),
-                             float(lat or 0.0), float(lon or 0.0))
+                             float(lat or 0.0), float(lon or 0.0), read_id)
     return self.proposal
 
   def answer(self, raw) -> bool:
@@ -62,6 +71,7 @@ class PlateState:
       return False
     if yes:
       self.confirmed_mph = p.mph
+    self.answered_read_id = p.read_id
     self.proposal = None
     return True
 

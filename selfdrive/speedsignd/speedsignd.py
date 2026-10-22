@@ -1287,11 +1287,17 @@ def _publish_live(
   if plate is not None:
     # v2.3: a lit hold (non-planned path) only proposes; the plate is the
     # last Yes. Missing weights / WAIT still blank it.
-    if mph and not missing and not paused:
+    # One lit hold episode at one mph is one read: its way/heading/location
+    # are taken when it lights and never refreshed from later ticks.
+    lit = int(mph) if mph and not missing and not paused else 0
+    if lit and lit != getattr(plate, "_hold_mph", 0):
+      plate._hold_ep = getattr(plate, "_hold_ep", 0) + 1
+    plate._hold_mph = lit
+    if lit:
       way_id, hdg = way or (0, None)
       lat, lon, bearing = gps or (None, None, None)
-      plate.propose(int(mph), float(conf), way_id=way_id, heading=hdg if hdg is not None else bearing,
-                    lat=lat, lon=lon)
+      plate.propose(lit, float(conf), way_id=way_id, heading=hdg if hdg is not None else bearing,
+                    lat=lat, lon=lon, read_id=("hold", plate._hold_ep))
     mph, conf = (plate.plate_mph, plate.plate_conf) if not missing and not paused else (0, 0.0)
     msg_valid = True
   msg = messaging.new_message(SERVICE_NAME)
@@ -1825,11 +1831,17 @@ def main():
                   way_id, way_hdg = diag.get("read_way") or (0, None)
                   meta = diag.get("read_jpg_meta") or {}
                   top = max(released, key=lambda s: float(s.conf))
-                  plate.propose(
+                  pr = plate.propose(
                     int(top.mph), float(top.conf), way_id=way_id,
                     heading=way_hdg if way_hdg is not None else meta.get("bearing"),
                     lat=meta.get("lat"), lon=meta.get("lon"),
+                    read_id=("read", read_tid, float(diag.get("t_frame", now_mono))),
                   )
+                  if pr is not None and diag.get("read_jpg_meta") is not None:
+                    # pending.json is this prompt's read only (keyed by seq).
+                    pmeta = dict(meta, mph=int(top.mph), conf=round(float(top.conf), 3), seq=int(pr.seq),
+                                 way_id=int(way_id or 0))
+                    two_stage.write_pending(pmeta, diag.get("read_jpg"))
                 if released:
                   placed = place_sign(diag, released, tr, sm)
                   if placed is not None:
