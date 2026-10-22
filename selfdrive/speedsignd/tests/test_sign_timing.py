@@ -344,3 +344,24 @@ def test_v23_burst_headroom_low_speed_only():
   assert T.burst_headroom(tr, 10.2, None) == 0.0
   tr.tracks[0].hits = T.TRACK_MIN_HITS
   assert T.burst_headroom(tr, 10.2, 12.0) == 0.0
+
+
+class _S:
+  def __init__(self, mph, conf):
+    self.mph, self.conf = mph, conf
+
+
+def test_v24_class_only_single_at_090():
+  hi = (45, 0.91, 40.0, _S(45, 0.91), "class")
+  lo = (45, 0.89, 40.0, _S(45, 0.89), "class")
+  assert T.burst_decision([hi])
+  assert not T.burst_decision([lo])
+  clash = (45, 0.95, 60.0, _S(45, 0.95), "clash")
+  assert not T.burst_decision([clash])
+
+
+def test_v24_extra_read_when_ocr_silent():
+  v = [(45, 0.70, 40.0, _S(45, 0.7), "class"), (0, 0.0, 40.0, None, "none"), (0, 0.0, 40.0, None, "none")]
+  assert T.burst_len(v) == T.BURST_READS + T.EXTRA_ON_SILENT
+  agree = [(45, 0.70, 40.0, _S(45, 0.7), "agree"), (0, 0.0, 40.0, None, "none"), (0, 0.0, 40.0, None, "none")]
+  assert T.burst_len(agree) == T.BURST_READS
