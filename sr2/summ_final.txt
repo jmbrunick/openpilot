@@ -1,0 +1,14 @@
+== signs19
+v23          prompt 12/0/10  plate 14/2/6  outside 0  wrongs []  new-vs-v23 []
+vAsil        prompt 13/0/9  plate 15/2/5  outside 0  wrongs []  new-vs-v23 []
+vBs85        prompt 16/1/5  plate 17/1/4  outside 3  wrongs ['24:50->35']  new-vs-v23 ['24:50->35']
+vBs90        prompt 16/0/6  plate 17/1/4  outside 0  wrongs []  new-vs-v23 []
+vBs93        prompt 14/0/8  plate 16/1/5  outside 0  wrongs []  new-vs-v23 []
+vBs93h45     prompt 14/0/8  plate 16/1/5  outside 0  wrongs []  new-vs-v23 []
+== signs_other
+v23          prompt 33/3/61  plate 45/32/20  outside 35  wrongs ['1a3_23:30->40', '1a3_25:40->30', '169S21:50->35']  new-vs-v23 []
+vAsil        prompt 36/3/58  plate 47/30/20  outside 35  wrongs ['1a3_23:30->40', '1a3_25:40->30', '169S21:50->35']  new-vs-v23 []
+vBs85        prompt 53/2/42  plate 64/29/4  outside 45  wrongs ['1a3_25:40->30', '169S21:50->35']  new-vs-v23 []
+vBs90        prompt 50/2/45  plate 62/30/5  outside 39  wrongs ['1a3_25:40->30', '169S21:50->35']  new-vs-v23 []
+vBs93        prompt 40/3/54  plate 52/41/4  outside 37  wrongs ['1a3_23:30->40', '1a3_25:40->30', '169S21:50->35']  new-vs-v23 []
+vBs93h45     prompt 37/3/57  plate 49/39/9  outside 39  wrongs ['1a3_23:30->40', '1a3_25:40->30', '169S21:50->35']  new-vs-v23 []
