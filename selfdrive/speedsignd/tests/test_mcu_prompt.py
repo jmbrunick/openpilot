@@ -70,13 +70,13 @@ def test_yes_uses_read_time_way_not_the_car_now(monkeypatch, tmp_path):
   plate = C.PlateState()
   plate.propose(45, 0.91, way_id=111, heading=90.0)
 
-  def record(mph, yes):
+  def record(mph, yes, seq=None):
     order.append("record_answer")
     (tmp_path / "feedback").mkdir(exist_ok=True)
     (tmp_path / "feedback" / "pending.json").write_text(json.dumps({
-      "mph": 45, "lat": 45.0, "lon": -93.0, "bearing": 90.0,
+      "mph": 45, "seq": 1, "lat": 45.0, "lon": -93.0, "bearing": 90.0,
     }))
-    return real_record(mph, yes)
+    return real_record(mph, yes, seq=seq)
 
   def write(seq, mph, yes, params=None):
     order.append("write_answer")
@@ -120,7 +120,7 @@ def test_no_keeps_the_read_and_skips_the_map(monkeypatch, tmp_path):
   M.sync_hud_prompt(_view(seq=pr.seq, mph=pr.mph, way=pr.way_id, heading=pr.heading), p)
   calls = []
 
-  def record(mph, yes):
+  def record(mph, yes, seq=None):
     calls.append(("record_answer", mph, yes))
     return {"lat": 1.0, "lon": 2.0, "bearing": 90.0}
 
@@ -233,3 +233,73 @@ def test_hook_surface_has_no_carstate_or_log_field():
   body = impl.split("def on_confirm_accuracy", 1)[1].split("\ndef ", 1)[0]
   assert body.index("record_answer") < body.index("write_answer") < body.index("request_override")
   assert "if yes:" in body
+
+
+# --- one prompt = one read: stale pairings -------------------------------------
+
+def _capture(monkeypatch):
+  """Real on_confirm_accuracy, recording what reaches mapd."""
+  sent = []
+  monkeypatch.setattr("openpilot.selfdrive.speedsignd.confirm.write_answer", lambda *a, **k: True)
+  monkeypatch.setattr("openpilot.selfdrive.mapd.speed_overrides.request_override",
+                      lambda mph, rec, seq, params=None, way_id=None, heading=None:
+                      sent.append({"mph": mph, "way_id": way_id, "heading": heading,
+                                   "lat": (rec or {}).get("lat")}) or True)
+  return sent
+
+
+def test_newer_same_mph_read_replaces_prompt_and_location():
+  """Justin's 60->30 case: a 30 read outside town, then a real 30 in town."""
+  plate = C.PlateState()
+  out = plate.propose(30, 0.9, way_id=900, heading=10.0, lat=1.0, lon=1.0, read_id=("read", 1, 1.0))
+  town = plate.propose(30, 0.9, way_id=111, heading=90.0, lat=2.0, lon=2.0, read_id=("read", 2, 9.0))
+  assert town.seq != out.seq and town.way_id == 111 and town.lat == 2.0
+  assert not plate.answer({"seq": out.seq, "mph": 30, "yes": True})     # old id rejected
+  assert plate.answer({"seq": town.seq, "mph": 30, "yes": True})
+  # The answered read does not ask again; an open read keeps its prompt.
+  assert plate.propose(30, 0.95, way_id=555, heading=0.0, read_id=("read", 2, 9.0)) is None
+  nxt = plate.propose(40, 0.9, way_id=7, read_id=("read", 3, 12.0))
+  assert plate.propose(40, 0.9, way_id=8, read_id=("read", 3, 12.0)) is nxt and nxt.way_id == 7
+
+
+def test_new_read_before_answer_rejects_old_id(monkeypatch, tmp_path):
+  p = _bind(monkeypatch, tmp_path)
+  sent = _capture(monkeypatch)
+  M.sync_hud_prompt(_view(seq=1, mph=30, way=900, heading=10.0), p)
+  M.sync_hud_prompt(_view(seq=2, mph=30, way=111, heading=90.0), p)    # newer read shown
+  # MCU still holding id 1, comma snapshot of id 1: both refused.
+  assert M.answer_prompt(1, True, params=p) is False
+  assert M.answer_prompt(1, True, params=p, snapshot={"id": 1, "mph": 30, "way_id": 900, "heading": 10.0}) is False
+  assert sent == []
+  assert M.answer_prompt(2, True, params=p)
+  assert sent == [{"mph": 30, "way_id": 111, "heading": 90.0, "lat": None}]
+
+
+def test_late_yes_after_timeout_is_refused(monkeypatch, tmp_path):
+  p = _bind(monkeypatch, tmp_path)
+  sent = _capture(monkeypatch)
+  M.sync_hud_prompt(_view(seq=3, mph=30, way=111), p)
+  M.sync_hud_prompt(LiveSignView(show_mph=True, mph=30), p)            # timed out, hidden
+  assert M.answer_prompt(3, True, params=p) is False
+  assert M.answer_prompt(3, True, params=p, snapshot={"id": 3, "mph": 30, "way_id": 111, "heading": 90.0}) is False
+  assert sent == []
+
+
+def test_yes_from_mcu_and_comma_applies_once(monkeypatch, tmp_path):
+  p = _bind(monkeypatch, tmp_path)
+  sent = _capture(monkeypatch)
+  M.sync_hud_prompt(_view(seq=5, mph=30, way=111, heading=90.0), p)
+  assert M.answer_prompt(5, True, params=p)                             # MCU
+  assert M.answer_prompt(5, True, params=p, snapshot={"id": 5, "mph": 30, "way_id": 111, "heading": 90.0}) is False
+  assert len(sent) == 1 and sent[0]["way_id"] == 111
+
+
+def test_pending_location_of_another_read_is_not_used(monkeypatch, tmp_path):
+  """pending.json from a different read with the same mph must not lend its lat/lon."""
+  p = _bind(monkeypatch, tmp_path)
+  sent = _capture(monkeypatch)
+  (tmp_path / "feedback").mkdir(exist_ok=True)
+  (tmp_path / "feedback" / "pending.json").write_text(json.dumps({"mph": 30, "seq": 1, "lat": 45.0, "lon": -93.0}))
+  M.sync_hud_prompt(_view(seq=2, mph=30, way=111, heading=90.0), p)
+  assert M.answer_prompt(2, True, params=p)
+  assert sent[0]["lat"] is None and sent[0]["way_id"] == 111
