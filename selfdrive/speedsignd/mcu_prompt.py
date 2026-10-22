@@ -182,8 +182,8 @@ def read_pending(params=None) -> dict | None:
 def sync_hud_prompt(view, params=None) -> bool:
   """Publish what the HUD is showing. True when this id was already answered elsewhere.
 
-  A hidden prompt clears an unanswered record (No-equivalent timeout: the plate
-  is not touched). An answered record stays so the same id cannot be answered again.
+  A hidden prompt clears an unanswered record (No-equivalent timeout: the map
+  override is not touched). An answered record stays so the same id cannot be answered again.
   """
   params = _params(params)
   showing = prompt_from_view(view)
@@ -222,7 +222,7 @@ def on_confirm_accuracy(mph: int, yes: bool, proposal: dict | None = None) -> No
   applied = False
   prop = proposal or {}
   if prop.get("seq"):
-    # v2.3: speedsignd moves the prompt to the plate only on Yes.
+    # The plate already shows the read; Yes only adds the map override.
     from openpilot.selfdrive.speedsignd.confirm import write_answer
     if not write_answer(int(prop["seq"]), int(mph), bool(yes)):
       cloudlog.warning("speed_sign_hud: answer param failed")
