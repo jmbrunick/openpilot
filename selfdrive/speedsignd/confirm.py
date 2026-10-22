@@ -1,21 +1,22 @@
 """Plate / prompt state. Display only; nothing here brakes or limits.
 
-The SIGN plate shows the newest read: an agreed read replaces the plate mph
-at once and raises the Yes/No prompt for it, with the mapd way and heading
-matched when the sign was READ. Only the LIMIT/MAX map override waits for
-Yes (mapd stores it for that way, see mapd/speed_overrides.py). No and a
-timeout change nothing in the map; the plate keeps the read. A read equal
-to the current limit still prompts so Yes records the sign; mapd skips
-rewriting an override that already matches. A failed read
-leaves the plate as it was. The UI answers through NAPSpeedSignAnswer.
+The SIGN plate shows a read only while its Yes/No prompt is open: an agreed
+read puts its mph on the plate at once with the prompt (mapd way, heading
+and location matched when the sign was READ). Any answer (comma or MCU) or
+the PROMPT_TIMEOUT_S timeout clears both the prompt and the read plate.
+Yes also hands the mph to mapd (NAPSpeedSignConfirmed), which makes it the
+LIMIT for that way (both directions, from the sign on). No and timeouts
+change nothing in the map. The UI answers through NAPSpeedSignAnswer.
 """
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 
 ANSWER_PARAM = "NAPSpeedSignAnswer"
 ANSWER_POLL_S = 0.25
+PROMPT_TIMEOUT_S = 20.0   # unanswered prompt + read plate clear after this
 
 
 @dataclass
@@ -28,6 +29,7 @@ class Proposal:
   lat: float = 0.0
   lon: float = 0.0
   read_id: object = None   # the one read this prompt (mph, way, heading, location) came from
+  t: float = 0.0           # monotonic time the prompt opened
 
 
 class PlateState:
@@ -40,7 +42,8 @@ class PlateState:
     self.answered_read_id = None
 
   def propose(self, mph: int, conf: float, *, way_id: int = 0, heading: float | None = None,
-              lat: float | None = None, lon: float | None = None, read_id=None) -> Proposal | None:
+              lat: float | None = None, lon: float | None = None, read_id=None,
+              now: float | None = None) -> Proposal | None:
     """Open the prompt for one read. mph, way, heading and location always come
     from the same read: a newer read replaces the prompt and its location
     together (new seq), so an answer to the old seq is rejected. Only a repeat
@@ -48,15 +51,16 @@ class PlateState:
     mph = int(mph)
     if mph <= 0:
       return None
-    self.plate_mph, self.plate_conf = mph, float(conf)   # the plate follows the read
     if read_id is not None:
       if self.proposal is not None and self.proposal.read_id == read_id:
         return self.proposal
       if read_id == self.answered_read_id:
         return None       # this read was already answered; do not ask again
+    self.plate_mph, self.plate_conf = mph, float(conf)   # the plate shows the read with its prompt
     self.seq += 1
     self.proposal = Proposal(mph, float(conf), self.seq, int(way_id or 0), float(heading or 0.0),
-                             float(lat or 0.0), float(lon or 0.0), read_id)
+                             float(lat or 0.0), float(lon or 0.0), read_id,
+                             time.monotonic() if now is None else float(now))
     return self.proposal
 
   def answer(self, raw) -> bool:
@@ -71,9 +75,22 @@ class PlateState:
       return False
     if yes:
       self.confirmed_mph = p.mph
+    self._close(p)
+    return True
+
+  def expire(self, now: float | None = None) -> bool:
+    """Timeout: clear an unanswered prompt and its read plate. True when one closed."""
+    p = self.proposal
+    now = time.monotonic() if now is None else float(now)
+    if p is None or now - p.t < PROMPT_TIMEOUT_S:
+      return False
+    self._close(p)
+    return True
+
+  def _close(self, p: Proposal) -> None:
     self.answered_read_id = p.read_id
     self.proposal = None
-    return True
+    self.plate_mph, self.plate_conf = 0, 0.0
 
 
 def map_way_from_sm(sm) -> tuple[int, float | None]:

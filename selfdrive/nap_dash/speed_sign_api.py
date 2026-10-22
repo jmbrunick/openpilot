@@ -8,7 +8,7 @@ does not open cereal sockets and does not engage.
 from __future__ import annotations
 
 from openpilot.selfdrive.speedsignd.hud import HUD_CONFIRM_NO, HUD_CONFIRM_PROMPT, HUD_CONFIRM_YES
-from openpilot.selfdrive.speedsignd.mcu_prompt import answer_prompt, read_pending
+from openpilot.selfdrive.speedsignd.mcu_prompt import answer_prompt, read_note, read_pending
 
 
 class SignError(ValueError):
@@ -18,7 +18,8 @@ class SignError(ValueError):
 def read_sign(params) -> dict:
   pending = read_pending(params)
   if not pending:
-    return {"pending": False}
+    note = read_note(params)
+    return {"pending": False, "note": note} if note else {"pending": False}
   mph = int(pending["mph"])
   return {
     "pending": True,

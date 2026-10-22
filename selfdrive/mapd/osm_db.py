@@ -1184,5 +1184,6 @@ class OsmSpeedLimitDB:
       distance_m=match.distance_m,
       next_speed_limit_ms=next_limit,
       next_distance_m=next_dist,
+      coords=match.coords,
       estimated=match.estimated,
     )

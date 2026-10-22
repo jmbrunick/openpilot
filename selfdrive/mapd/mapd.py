@@ -124,7 +124,9 @@ def main():
           cloudlog.info("mapd: sign override way=%s heading=%s mph=%s", added["way_id"], added["heading"], added["mph"])
       except Exception:
         cloudlog.exception("mapd: sign override failed")
-    sign_ms = (overrides.limit_ms(int(match.way_id), bearing, lat, lon, match.coords)
+    # Span rows need the way polyline; a match with a next limit can arrive
+    # without coords, so fall back to the stored way.
+    sign_ms = (overrides.limit_ms(int(match.way_id), bearing, lat, lon, match.coords or db.way_coords(int(match.way_id)))
                if match is not None else None)
 
     msg = messaging.new_message("liveMapDataNAP")

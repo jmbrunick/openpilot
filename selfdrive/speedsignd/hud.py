@@ -618,10 +618,11 @@ class AnswerGate:
     if view.show_missing_weights or view.show_runtime_missing or view.show_detect_paused:
       return view
     if view.proposal_mode:
-      # Hide only the answered prompt; the plate stays.
+      # The answered read goes away at once (prompt and read plate) on this
+      # screen; speedsignd clears it for every screen on its next answer poll.
       from dataclasses import replace as _replace
       if view.proposed_mph and view.proposed_seq == getattr(self, "seq", -1):
-        return _replace(view, proposed_mph=0, show_mph=int(view.mph) > 0)
+        return _replace(view, proposed_mph=0, show_mph=False, mph=0)
       return view
     if self.mph <= 0:
       return view

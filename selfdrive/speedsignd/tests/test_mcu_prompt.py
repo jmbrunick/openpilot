@@ -7,7 +7,7 @@ from pathlib import Path
 
 from openpilot.selfdrive.speedsignd import confirm as C
 from openpilot.selfdrive.speedsignd import mcu_prompt as M
-from openpilot.selfdrive.speedsignd.hud import LiveSignView
+from openpilot.selfdrive.speedsignd.hud import LiveSignView, hud_confirm_visible
 from openpilot.selfdrive.mapd.speed_overrides import PARAM, SpeedOverrides, request_override
 
 
@@ -102,7 +102,7 @@ def test_yes_uses_read_time_way_not_the_car_now(monkeypatch, tmp_path):
   assert order == ["record_answer", "write_answer", "request_override"]
   assert captured["way_id"] == 111 and captured["heading"] == 90.0
   assert captured["param"]["way_id"] == 111 and captured["param"]["heading"] == 90.0
-  assert plate.plate_mph == 45
+  assert plate.plate_mph == 0 and plate.confirmed_mph == 45   # read cleared; mph went to mapd
   stored = SpeedOverrides(str(tmp_path / "map.json"))
   got = stored.consume(captured["param"], type("M", (), {"way_id": 222, "road_name": "now"})(), 0.0, 1.0)
   assert got["way_id"] == 111 and got["heading"] == 90.0
@@ -113,7 +113,7 @@ def test_yes_uses_read_time_way_not_the_car_now(monkeypatch, tmp_path):
   assert order == ["record_answer", "write_answer", "request_override"]
 
 
-def test_no_keeps_the_read_and_skips_the_map(monkeypatch, tmp_path):
+def test_no_clears_the_read_and_skips_the_map(monkeypatch, tmp_path):
   p = _bind(monkeypatch, tmp_path)
   plate = C.PlateState()
   pr = plate.propose(45, 0.8, way_id=111, heading=90.0)
@@ -137,7 +137,7 @@ def test_no_keeps_the_read_and_skips_the_map(monkeypatch, tmp_path):
   monkeypatch.setattr("openpilot.selfdrive.speedsignd.confirm.write_answer", write)
   monkeypatch.setattr("openpilot.selfdrive.mapd.speed_overrides.request_override", override)
   assert M.answer_prompt(pr.seq, False, params=p)
-  assert plate.plate_mph == 45 and plate.confirmed_mph == 0 and plate.proposal is None
+  assert plate.plate_mph == 0 and plate.confirmed_mph == 0 and plate.proposal is None
   assert "request_override" not in calls
   assert [c[0] for c in calls] == ["record_answer", "write_answer"]
 
@@ -155,6 +155,9 @@ def test_timeout_clears_the_prompt_and_skips_the_map(monkeypatch, tmp_path):
   assert called == []
   assert M.answer_prompt(pr.seq, True, params=p) is False
   assert plate.plate_mph == 45 and plate.confirmed_mph == 0 and plate.proposal is not None
+  assert plate.expire(pr.t + C.PROMPT_TIMEOUT_S)              # speedsignd timeout clears the read
+  assert plate.plate_mph == 0 and plate.proposal is None
+  assert not plate.answer({"seq": pr.seq, "mph": 45, "yes": True})
   assert called == []
 
 
@@ -363,3 +366,45 @@ def test_pending_location_of_another_read_is_not_used(monkeypatch, tmp_path):
   M.sync_hud_prompt(_view(seq=2, mph=30, way=111, heading=90.0), p)
   assert M.answer_prompt(2, True, params=p)
   assert sent[0]["lat"] is None and sent[0]["way_id"] == 111
+
+
+def test_comma_gate_hides_prompt_and_plate_on_answer():
+  from openpilot.selfdrive.speedsignd.hud import AnswerGate
+  g = AnswerGate()
+  view = _view(seq=7, mph=45, plate=45)
+  assert hud_confirm_visible(g.filter(view, 0.0))
+  g.answer_seq(7)
+  g.answer(45, True, 1.0)
+  out = g.filter(view, 1.0)
+  assert out.proposed_mph == 0 and out.mph == 0 and not out.show_mph
+  assert not hud_confirm_visible(out)
+
+
+def test_yes_without_read_time_road_never_writes_the_map(monkeypatch, tmp_path):
+  p = _bind(monkeypatch, tmp_path)
+  M.sync_hud_prompt(_view(seq=5, mph=55, way=0, heading=0.0), p)
+  calls = []
+  monkeypatch.setattr("openpilot.selfdrive.speedsignd.two_stage.record_answer",
+                      lambda mph, yes, seq=None: {"lat": 1.0, "lon": 2.0, "bearing": 90.0})
+  monkeypatch.setattr("openpilot.selfdrive.speedsignd.confirm.write_answer", lambda *a, **k: True)
+  monkeypatch.setattr("openpilot.selfdrive.mapd.speed_overrides.request_override",
+                      lambda *a, **k: calls.append(a) or True)
+  assert M.answer_prompt(5, True, params=p)
+  assert calls == []                       # no guessed road, nothing to mapd
+  assert PARAM not in p.store
+  assert M.read_pending(p) is None
+  assert M.read_note(p) == M.NO_ROAD_NOTE  # comma HUD and MCU both read this
+  from openpilot.selfdrive.nap_dash.speed_sign_api import read_sign
+  assert read_sign(p) == {"pending": False, "note": M.NO_ROAD_NOTE}
+  import time
+  assert M.read_note(p, now=time.monotonic() + M.NOTE_S + 1) is None
+
+
+def test_yes_with_road_has_no_note(monkeypatch, tmp_path):
+  p = _bind(monkeypatch, tmp_path)
+  M.sync_hud_prompt(_view(seq=6), p)
+  monkeypatch.setattr("openpilot.selfdrive.speedsignd.two_stage.record_answer", lambda *a, **k: None)
+  monkeypatch.setattr("openpilot.selfdrive.speedsignd.confirm.write_answer", lambda *a, **k: True)
+  monkeypatch.setattr("openpilot.selfdrive.mapd.speed_overrides.request_override", lambda *a, **k: True)
+  assert M.answer_prompt(6, True, params=p)
+  assert M.read_note(p) is None
