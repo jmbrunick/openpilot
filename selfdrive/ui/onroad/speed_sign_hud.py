@@ -15,7 +15,9 @@ Yes/No ("is this accurate?") appears only with a live mph — not for NO WT
 or NO RT.
 Taps are logged to speedsign_feedback/ (JSONL + crop JPEG). Yes also becomes a local
 map override (mapd/speed_overrides.py) shown on the regular speed-limit sign;
-No is log-only. Either tap hides this popup at once (AnswerGate).
+No is log-only. Nothing is uploaded to osm.org. Either tap hides this popup
+at once (AnswerGate). The same prompt is mirrored to nap_dash; either screen
+answers once.
 """
 from __future__ import annotations
 
@@ -127,35 +129,14 @@ def mici_confirm_rects(sign: rl.Rectangle) -> tuple[tuple[float, float, float, f
 
 
 def on_confirm_accuracy(mph: int, yes: bool, proposal: dict | None = None) -> None:
-  """Yes/No feedback: append to /data/media/0/nap/speedsign_feedback/feedback.jsonl.
+  """Comma and MCU Yes/No. Body lives in speedsignd/mcu_prompt.on_confirm_accuracy.
 
-  Keeps the peak-size crop JPEG speedsignd saved for the plate (pending.jpg)
-  and, on Yes, also appends confirmed.jsonl (future OSM confirmed readings;
-  nothing is uploaded to osm.org). The row and crop are mirrored into the
-  current realdata segment for athena harvest.
-
-  Yes only: also sets NAPSpeedSignConfirmed; mapd stores it as a local
-  override for the matched OSM way + heading, so the regular speed-limit sign
-  and Map Speed Limit (MAX = limit + offset) use it now and on future drives
-  (selfdrive/mapd/speed_overrides.py). No is log-only.
+  Yes calls mapd request_override (NAPSpeedSignConfirmed) with the way and
+  heading captured when the sign was read. No is log-only. This module does
+  not construct Params.
   """
-  import time
-  from openpilot.selfdrive.speedsignd.two_stage import record_answer
-  rec = record_answer(int(mph), bool(yes))
-  applied = False
-  prop = proposal or {}
-  if prop.get("seq"):
-    # v2.3: speedsignd moves the prompt to the plate only on Yes.
-    from openpilot.selfdrive.speedsignd.confirm import write_answer
-    if not write_answer(int(prop["seq"]), int(mph), bool(yes)):
-      cloudlog.warning("speed_sign_hud: answer param failed")
-  if yes:
-    from openpilot.selfdrive.mapd.speed_overrides import request_override
-    applied = request_override(int(mph), rec, time.monotonic(),
-                               way_id=prop.get("way_id"), heading=prop.get("heading"))
-  cloudlog.info("speed_sign_hud feedback mph=%s yes=%s saved=%s jpg=%s lat=%s lon=%s realdata=%s applied=%s",
-                int(mph), bool(yes), rec is not None, (rec or {}).get("jpg"),
-                (rec or {}).get("lat"), (rec or {}).get("lon"), (rec or {}).get("realdata"), applied)
+  from openpilot.selfdrive.speedsignd.mcu_prompt import on_confirm_accuracy as _confirm
+  _confirm(mph, yes, proposal)
 
 
 def draw_speed_sign_plate(
@@ -267,6 +248,17 @@ def draw_mici_speed_sign(rect: rl.Rectangle, font_bold, font_label) -> LiveSignV
 
 def _safe_confirm(mph: int, yes: bool, proposal: dict | None = None) -> None:
   try:
+    prop = proposal or {}
+    if "seq" in prop:
+      # Same once-per-id entry the MCU POST uses. Read-time way and heading.
+      from openpilot.selfdrive.speedsignd.mcu_prompt import answer_prompt
+      answer_prompt(int(prop["seq"]), bool(yes), snapshot={
+        "id": int(prop["seq"]),
+        "mph": int(mph),
+        "way_id": int(prop.get("way_id") or 0),
+        "heading": float(prop.get("heading") or 0.0),
+      })
+      return
     on_confirm_accuracy(mph, yes, proposal)
   except Exception:
     cloudlog.exception("speed_sign_hud: feedback failed")
@@ -303,7 +295,16 @@ class SpeedSignHud(Widget):
       return False
 
   def _update_state(self) -> None:
-    self._view = _GATE.filter(live_sign_from_sm(ui_state.sm, logger_enabled()), _now())
+    view = _GATE.filter(live_sign_from_sm(ui_state.sm, logger_enabled()), _now())
+    try:
+      from openpilot.selfdrive.speedsignd.mcu_prompt import sync_hud_prompt
+      # A Yes/No on the MCU claims this id; hide here without answering again.
+      if sync_hud_prompt(view) and view.proposal_mode and int(view.proposed_mph) > 0:
+        _GATE.answer_seq(int(view.proposed_seq))
+        view = _GATE.filter(view, _now())
+    except Exception:
+      pass
+    self._view = view
 
   def _layout(self) -> None:
     sign = tici_sign_rect(self._rect) if self._tici else mici_sign_rect(self._rect)

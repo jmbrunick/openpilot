@@ -182,7 +182,7 @@ def test_server_has_no_high_rate_cereal():
   assert "/export/" not in src
   assert '"can"' not in src
   assert "'can'" not in src
-  for name in ("settings.py", "system_api.py", "ui_api.py", "discover.py"):
+  for name in ("settings.py", "system_api.py", "ui_api.py", "discover.py", "speed_sign_api.py", "force_offroad_api.py"):
     companion = (ROOT / "selfdrive" / "nap_dash" / name).read_text(encoding="utf-8")
     assert "SubMaster" not in companion
     assert "modelV2" not in companion
