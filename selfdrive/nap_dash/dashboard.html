@@ -948,7 +948,68 @@ function ssRender(data) {
 }
 function ssPoll() {
   if (ssBusy) return;
-  getJSON("/api/speed_sign?t=" + new Date().getTime(), function (err, data) { if (!err && !ssBusy) ssRender(data); });
+  ssLastPoll = new Date().getTime();
+  getJSON("/api/speed_sign?t=" + ssLastPoll, function (err, data) { if (!err && !ssBusy) ssRender(data); });
+}
+// Push: the comma sends each prompt change the moment speedsignd opens,
+// answers, or clears it (Server-Sent Events, long-poll without EventSource).
+// The poll stays as a backstop: every 5 s while push is up, 500 ms while down.
+var ssPush = false;
+var ssLastPoll = 0;
+var ssVer = -1;
+var ssStream = null;
+var SS_PUSH_BACKSTOP_MS = 5000;
+function ssPushed(data) {
+  if (!document.getElementById("ssign")) { window.location.reload(true); return; }
+  if (data && typeof data.v === "number") ssVer = data.v;
+  if (!ssBusy) ssRender(data);
+}
+function ssStreamOpen() {
+  try { ssStream = new EventSource("/api/speed_sign/stream?t=" + new Date().getTime()); }
+  catch (err) { ssStream = null; ssLongPoll(); return; }
+  ssStream.onopen = function () { ssPush = true; };
+  ssStream.addEventListener("sign", function (ev) {
+    var data = null;
+    try { data = JSON.parse(ev.data); } catch (err) { return; }
+    ssPush = true;
+    ssPushed(data);
+  }, false);
+  ssStream.onerror = function () {
+    ssPush = false;
+    // CONNECTING: the browser retries on its own. CLOSED (e.g. 503): reopen here.
+    if (ssStream && ssStream.readyState === 2) {
+      ssStream = null;
+      setTimeout(ssStreamOpen, 2000);
+    }
+  };
+}
+function ssLongPoll() {
+  var xhr = new XMLHttpRequest();
+  xhr.open("GET", "/api/speed_sign?wait=" + ssVer + "&t=" + new Date().getTime(), true);
+  xhr.timeout = 35000;
+  var done = false;
+  function again(ok) {
+    if (done) return;
+    done = true;
+    ssPush = ok;
+    setTimeout(ssLongPoll, ok ? 0 : 2000);
+  }
+  xhr.onreadystatechange = function () {
+    if (xhr.readyState !== 4) return;
+    if (xhr.status === 200) {
+      var data = null;
+      try { data = JSON.parse(xhr.responseText); } catch (err) { data = null; }
+      if (data) { ssPushed(data); again(true); return; }
+    }
+    again(false);
+  };
+  xhr.ontimeout = function () { again(false); };
+  xhr.onerror = function () { again(false); };
+  try { xhr.send(null); } catch (err) { again(false); }
+}
+function ssTick() {
+  if (ssPush && new Date().getTime() - ssLastPoll < SS_PUSH_BACKSTOP_MS) return;
+  ssPoll();
 }
 function ssAnswer(answer) {
   if (ssBusy) return;
@@ -964,7 +1025,8 @@ function ssAnswer(answer) {
 document.getElementById("ssign-yes").onclick = function () { ssAnswer("yes"); };
 document.getElementById("ssign-no").onclick = function () { ssAnswer("no"); };
 ssPoll();
-setInterval(ssPoll, 500);
+setInterval(ssTick, 500);
+if (window.EventSource) ssStreamOpen(); else ssLongPoll();
 setInterval(bookmarkPoll, 1000);
 
 /* LINK_STATE_START */
