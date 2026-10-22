@@ -1,0 +1,38 @@
+== POST=10 PPRE=400
+== signs19
+vBs90        prompt 16/0/6  plate 17/1/4  outside 0  wrongs []  
+vCp34        prompt 16/0/6  plate 17/1/4  outside 0  wrongs []  
+vCp36        prompt 16/0/6  plate 17/1/4  outside 0  wrongs []  
+vCp40        prompt 16/0/6  plate 17/1/4  outside 0  wrongs []  
+vDsp35       prompt 16/0/6  plate 17/1/4  outside 1  wrongs []  
+vDsp35p34    prompt 16/0/6  plate 17/1/4  outside 1  wrongs []  
+vDsp40       prompt 16/0/6  plate 17/1/4  outside 1  wrongs []  
+== signs_other
+vBs90        prompt 50/2/45  plate 62/30/5  outside 39  wrongs ['1a3_25:40->30', '169S21:50->35']  
+vCp34        prompt 48/2/47  plate 62/30/5  outside 40  wrongs ['1a3_25:40->30', '169S21:50->35']  
+vCp36        prompt 47/2/48  plate 61/30/6  outside 41  wrongs ['1a3_25:40->30', '169S21:50->35']  
+vCp40        prompt 46/2/49  plate 57/30/10  outside 41  wrongs ['1a3_25:40->30', '169S21:50->35']  
+vDsp35       prompt 47/2/48  plate 60/32/5  outside 39  wrongs ['1a3_25:40->30', '169S21:50->35']  
+vDsp35p34    prompt 46/1/50  plate 59/33/5  outside 40  wrongs ['1a3_25:40->30']  
+vDsp40       prompt 44/2/51  plate 57/31/9  outside 42  wrongs ['1a3_25:40->30', '169S21:50->35']  
+== POST=40 PPRE=200
+== signs19
+vBs90        prompt 16/0/6  plate 17/1/4  outside 2  wrongs []  
+vCp34        prompt 16/0/6  plate 17/1/4  outside 2  wrongs []  
+vCp36        prompt 16/0/6  plate 17/1/4  outside 2  wrongs []  
+vCp40        prompt 16/0/6  plate 17/1/4  outside 2  wrongs []  
+vDsp35       prompt 16/0/6  plate 17/1/4  outside 4  wrongs []  
+vDsp35p34    prompt 16/0/6  plate 17/1/4  outside 4  wrongs []  
+vDsp40       prompt 16/0/6  plate 17/1/4  outside 4  wrongs []  
+== signs_other
+vBs90        prompt 66/1/30  plate 73/20/4  outside 25  wrongs ['169S21:50->35']  
+vCp34        prompt 64/1/32  plate 73/20/4  outside 26  wrongs ['169S21:50->35']  
+vCp36        prompt 64/1/32  plate 73/20/4  outside 26  wrongs ['169S21:50->35']  
+vCp40        prompt 64/1/32  plate 73/20/4  outside 26  wrongs ['169S21:50->35']  
+vDsp35       prompt 62/2/33  plate 70/23/4  outside 26  wrongs ['1a3_25:40->30', '169S21:50->35']  
+vDsp35p34    prompt 60/1/36  plate 68/25/4  outside 28  wrongs ['1a3_25:40->30']  
+vDsp40       prompt 62/2/33  plate 70/23/4  outside 26  wrongs ['1a3_25:40->30', '169S21:50->35']  
+vBs90: proposer avg 7.8% peak10s 37% | reader avg 15.3% peak10s 72% | total avg 23.1%
+vDsp35: proposer avg 7.7% peak10s 37% | reader avg 15.4% peak10s 72% | total avg 23.1%
+vDsp35p34: proposer avg 7.7% peak10s 37% | reader avg 15.8% peak10s 72% | total avg 23.5%
+vDsp40: proposer avg 7.7% peak10s 37% | reader avg 15.5% peak10s 72% | total avg 23.3%
