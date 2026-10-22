@@ -80,3 +80,19 @@ def test_v23_yes_without_read_time_way_stores_nothing(tmp_path):
   assert o.consume({"mph": 45, "seq": 3.0, "way_id": 0, "heading": 90.0}, m(222), 0.0, 1.0) is None
   assert o.consume(None, m(222), 0.0, 2.0) is None
   assert o.entries == []
+
+
+def test_yes_equal_to_current_limit_rewrites_nothing(tmp_path):
+  o = SpeedOverrides(str(tmp_path / "o.json"))
+  osm45 = SimpleNamespace(way_id=111, road_name="CR 31", speed_limit_ms=45 * MPH_TO_MS)
+  # Same as OSM on the matched way: nothing stored.
+  assert o.consume({"mph": 45, "seq": 1.0, "way_id": 111, "heading": 90.0}, osm45, 90.0, 0.0) is None
+  assert o.entries == []
+  # Different: stored.
+  assert o.consume({"mph": 35, "seq": 2.0, "way_id": 111, "heading": 90.0}, osm45, 90.0, 1.0)["mph"] == 35
+  t = o._mtime
+  # Same as the stored override: no rewrite.
+  assert o.consume({"mph": 35, "seq": 3.0, "way_id": 111, "heading": 95.0}, None, 90.0, 2.0) is None
+  assert len(o.entries) == 1 and o._mtime == t
+  # Back to the OSM value differs from the override: replaced.
+  assert o.consume({"mph": 45, "seq": 4.0, "way_id": 111, "heading": 90.0}, osm45, 90.0, 3.0)["mph"] == 45

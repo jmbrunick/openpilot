@@ -113,7 +113,7 @@ def test_yes_uses_read_time_way_not_the_car_now(monkeypatch, tmp_path):
   assert order == ["record_answer", "write_answer", "request_override"]
 
 
-def test_no_leaves_the_plate_and_skips_the_map(monkeypatch, tmp_path):
+def test_no_keeps_the_read_and_skips_the_map(monkeypatch, tmp_path):
   p = _bind(monkeypatch, tmp_path)
   plate = C.PlateState()
   pr = plate.propose(45, 0.8, way_id=111, heading=90.0)
@@ -137,12 +137,12 @@ def test_no_leaves_the_plate_and_skips_the_map(monkeypatch, tmp_path):
   monkeypatch.setattr("openpilot.selfdrive.speedsignd.confirm.write_answer", write)
   monkeypatch.setattr("openpilot.selfdrive.mapd.speed_overrides.request_override", override)
   assert M.answer_prompt(pr.seq, False, params=p)
-  assert plate.plate_mph == 0 and plate.proposal is None
+  assert plate.plate_mph == 45 and plate.confirmed_mph == 0 and plate.proposal is None
   assert "request_override" not in calls
   assert [c[0] for c in calls] == ["record_answer", "write_answer"]
 
 
-def test_timeout_clears_the_prompt_and_leaves_the_plate(monkeypatch, tmp_path):
+def test_timeout_clears_the_prompt_and_skips_the_map(monkeypatch, tmp_path):
   p = _bind(monkeypatch, tmp_path)
   plate = C.PlateState()
   pr = plate.propose(45, 0.8, way_id=111, heading=90.0)
@@ -154,7 +154,7 @@ def test_timeout_clears_the_prompt_and_leaves_the_plate(monkeypatch, tmp_path):
   assert M.read_pending(p) is None
   assert called == []
   assert M.answer_prompt(pr.seq, True, params=p) is False
-  assert plate.plate_mph == 0 and plate.proposal is not None
+  assert plate.plate_mph == 45 and plate.confirmed_mph == 0 and plate.proposal is not None
   assert called == []
 
 
