@@ -1285,6 +1285,7 @@ def _publish_live(
     hold, signs, now_mono, weights_missing, detect_paused,
   )
   if plate is not None:
+    plate.expire(now_mono)
     # v2.3: a lit hold (non-planned path) only proposes; the plate is the
     # last Yes. Missing weights / WAIT still blank it.
     # One lit hold episode at one mph is one read: its way/heading/location
@@ -1297,7 +1298,7 @@ def _publish_live(
       way_id, hdg = way or (0, None)
       lat, lon, bearing = gps or (None, None, None)
       plate.propose(lit, float(conf), way_id=way_id, heading=hdg if hdg is not None else bearing,
-                    lat=lat, lon=lon, read_id=("hold", plate._hold_ep))
+                    lat=lat, lon=lon, read_id=("hold", plate._hold_ep), now=now_mono)
     mph, conf = (plate.plate_mph, plate.plate_conf) if not missing and not paused else (0, 0.0)
     msg_valid = True
   msg = messaging.new_message(SERVICE_NAME)
@@ -1835,7 +1836,7 @@ def main():
                     int(top.mph), float(top.conf), way_id=way_id,
                     heading=way_hdg if way_hdg is not None else meta.get("bearing"),
                     lat=meta.get("lat"), lon=meta.get("lon"),
-                    read_id=("read", read_tid, float(diag.get("t_frame", now_mono))),
+                    read_id=("read", read_tid, float(diag.get("t_frame", now_mono))), now=now_mono,
                   )
                   if pr is not None and diag.get("read_jpg_meta") is not None:
                     # pending.json is this prompt's read only (keyed by seq).

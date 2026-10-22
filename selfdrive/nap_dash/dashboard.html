@@ -937,6 +937,7 @@ var ssBusy = false;
 var ssId = 0;
 function ssRender(data) {
   var box = document.getElementById("ssign");
+  if (data && data.note) setStatus(data.note, true);
   if (!data || !data.pending) { box.className = "overlay hidden"; return; }
   ssId = data.id;
   document.getElementById("ssign-mph").textContent = String(data.mph);

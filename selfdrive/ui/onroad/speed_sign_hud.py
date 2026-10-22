@@ -309,6 +309,11 @@ class SpeedSignHud(Widget):
         view = _GATE.filter(view, _now())
     except Exception:
       cloudlog.exception("speed_sign_hud: MCU prompt sync failed")
+    try:
+      from openpilot.selfdrive.speedsignd.mcu_prompt import read_note
+      self._note = read_note()
+    except Exception:
+      self._note = None
     self._view = view
 
   def _layout(self) -> None:
@@ -368,6 +373,12 @@ class SpeedSignHud(Widget):
     threading.Thread(target=_safe_confirm, args=(mph, hit, proposal), daemon=True, name="speedsign-tap").start()
 
   def _render(self, rect: rl.Rectangle) -> None:
+    note = getattr(self, "_note", None)
+    if note:
+      sign = tici_sign_rect(rect) if self._tici else mici_sign_rect(rect)
+      w = measure_text_cached(self._font_label, note, TICI_PROMPT_FONT).x
+      rl.draw_text_ex(self._font_label, note, rl.Vector2(sign.x + (sign.width - w) / 2, sign.y + sign.height + 6),
+                      TICI_PROMPT_FONT, 0, _PROMPT_INK)
     if not self._view.show:
       return
     if self._tici:

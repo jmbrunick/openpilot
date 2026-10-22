@@ -1048,3 +1048,20 @@ def test_simplify_collinear_and_f64_unpack():
   assert abs(pts[0][0] - 37.5) < 1e-9
   assert len(_unpack_coords(packed64)) == 2
 
+
+
+def test_match_with_next_limit_keeps_way_coords(tmp_path):
+  # Rebuilding the match to add the next limit must keep the way polyline;
+  # without it mapd could not place a Yes override past the sign.
+  path = str(tmp_path / "speed_limits.sqlite")
+  con = OsmSpeedLimitDB.create(path)
+  OsmSpeedLimitDB.insert_way(con, 1, "Main", "primary", 45 * CV.MPH_TO_MS, [(37.0, -122.004), (37.0, -122.000)])
+  OsmSpeedLimitDB.insert_way(con, 2, "Main", "primary", 25 * CV.MPH_TO_MS, [(37.0, -122.000), (37.0, -121.996)])
+  con.commit()
+  con.close()
+  db = OsmSpeedLimitDB(path)
+  assert db.open()
+  m = db.lookup(37.0, -122.002, bearing_deg=90.0)
+  assert m is not None and m.way_id == 1 and m.next_speed_limit_ms > 0
+  assert m.coords and len(m.coords) >= 2
+  db.close()

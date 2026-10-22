@@ -19,6 +19,11 @@ from contextlib import contextmanager
 
 from openpilot.selfdrive.speedsignd.hud import hud_confirm_visible
 
+# Yes on a prompt with no road matched at read time writes nothing to the map
+# (never a guessed road); both screens show this briefly instead.
+NO_ROAD_NOTE = "Not saved to map"
+NOTE_S = 3.0
+
 try:
   from openpilot.common.swaglog import cloudlog
 except Exception:  # pragma: no cover - unit tests without zmq
@@ -251,6 +256,23 @@ def read_pending(params=None) -> dict | None:
     return _fields(cur)
 
 
+def read_note(params=None, now: float | None = None) -> str | None:
+  """Brief note left by the last answer (e.g. NO_ROAD_NOTE), or None once it is old."""
+  import time
+  try:
+    params = _params(params)
+    with _locked(params):
+      cur = _get(params)
+    if not isinstance(cur, dict) or not cur.get("note"):
+      return None
+    now = time.monotonic() if now is None else float(now)
+    if 0.0 <= now - float(cur.get("note_t") or 0.0) <= NOTE_S:
+      return str(cur["note"])
+  except Exception:
+    pass
+  return None
+
+
 def sync_hud_prompt(view, params=None) -> bool:
   """Publish what the HUD is showing. True when this id was already answered elsewhere.
 
@@ -300,7 +322,10 @@ def on_confirm_accuracy(mph: int, yes: bool, proposal: dict | None = None) -> No
     from openpilot.selfdrive.speedsignd.confirm import write_answer
     if not write_answer(int(prop["seq"]), int(mph), bool(yes)):
       cloudlog.warning("speed_sign_hud: answer param failed")
-  if yes:
+  if yes and int(prop.get("way_id") or 0) <= 0:
+    # No road matched when the sign was read: never guess one. Nothing goes to mapd.
+    cloudlog.info("speed_sign_hud: yes without a read-time road; not saved to map")
+  elif yes:
     from openpilot.selfdrive.mapd.speed_overrides import request_override
     applied = request_override(int(mph), rec, time.monotonic(),
                                way_id=prop.get("way_id"), heading=prop.get("heading"))
@@ -345,7 +370,11 @@ def answer_prompt(prompt_id: int, yes: bool, params=None, snapshot: dict | None 
           owned = snap
       if owned is None:
         return False
-      _put(params, dict(owned, answered=True, yes=bool(yes)))
+      rec = dict(owned, answered=True, yes=bool(yes))
+      if yes and owned["way_id"] <= 0:
+        import time
+        rec.update(note=NO_ROAD_NOTE, note_t=time.monotonic())
+      _put(params, rec)
   except Exception:
     # The comma tap carries the read-time snapshot. A broken prompt record
     # must not drop that Yes/No; the MCU has no snapshot and cannot invent one.
