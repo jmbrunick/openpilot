@@ -93,6 +93,9 @@ def hud_confirm_visible(view: LiveSignView | None = None, *, show_mph: bool = Fa
     show_missing_weights = view.show_missing_weights
     show_detect_paused = view.show_detect_paused
     show_runtime_missing = view.show_runtime_missing
+  if view is not None and view.proposal_mode:
+    return (int(view.proposed_mph) > 0 and not bool(show_missing_weights)
+            and not bool(show_detect_paused) and not bool(show_runtime_missing))
   return (
     bool(show_mph) and int(mph) > 0
     and not bool(show_missing_weights) and not bool(show_detect_paused)
@@ -160,6 +163,15 @@ class LiveSignView:
   show_missing_weights: bool = False
   show_detect_paused: bool = False
   show_runtime_missing: bool = False
+  # v2.3 prompt: mph is the Yes-confirmed plate; the prompt asks about
+  # proposed_mph (way + heading matched when the sign was read).
+  proposal_mode: bool = False
+  proposed_mph: int = 0
+  proposed_seq: int = 0
+  proposed_way_id: int = 0
+  proposed_heading: float = 0.0
+  proposed_lat: float = 0.0
+  proposed_lon: float = 0.0
 
   @property
   def show(self) -> bool:
@@ -174,7 +186,7 @@ class LiveSignView:
     if self.show_detect_paused:
       return HUD_DETECT_PAUSED_TEXT
     if self.show_mph:
-      return str(int(self.mph))
+      return str(int(self.mph)) if int(self.mph) > 0 else "--"
     return ""
 
   @property
@@ -186,13 +198,32 @@ def live_sign_from_event(enabled: bool, d, msg_valid: bool) -> LiveSignView:
   """Parse a liveSpeedSignNAP-like object for the on-road plate."""
   weights_missing = bool(getattr(d, "weightsMissing", False))
   detect_paused = bool(getattr(d, "detectPaused", False))
-  return live_sign_view(
+  view = live_sign_view(
     enabled=bool(enabled),
     msg_valid=bool(msg_valid) or weights_missing or detect_paused,
     mph=int(getattr(d, "mph", 0) or 0),
     valid=bool(getattr(d, "valid", False)),
     weights_missing=weights_missing,
     detect_paused=detect_paused,
+  )
+  if not hasattr(d, "proposedMph") or not enabled:
+    return view
+  return with_proposal(view, d)
+
+
+def with_proposal(view: LiveSignView, d) -> LiveSignView:
+  """v2.3: attach the open prompt; the plate (mph) stays the last Yes."""
+  from dataclasses import replace as _replace
+  pm = int(getattr(d, "proposedMph", 0) or 0)
+  if view.show_missing_weights or view.show_runtime_missing or view.show_detect_paused:
+    return _replace(view, proposal_mode=True)
+  return _replace(
+    view, proposal_mode=True, show_mph=view.show_mph or pm > 0, proposed_mph=pm,
+    proposed_seq=int(getattr(d, "proposedSeq", 0) or 0),
+    proposed_way_id=int(getattr(d, "proposedWayId", 0) or 0),
+    proposed_heading=float(getattr(d, "proposedHeading", 0.0) or 0.0),
+    proposed_lat=float(getattr(d, "proposedLat", 0.0) or 0.0),
+    proposed_lon=float(getattr(d, "proposedLon", 0.0) or 0.0),
   )
 
 
@@ -580,8 +611,17 @@ class AnswerGate:
   def answer(self, mph: int, yes: bool, now: float) -> None:
     self.mph, self.t = int(mph), float(now)
 
+  def answer_seq(self, seq: int) -> None:
+    self.seq = int(seq)
+
   def filter(self, view: LiveSignView, now: float) -> LiveSignView:
     if view.show_missing_weights or view.show_runtime_missing or view.show_detect_paused:
+      return view
+    if view.proposal_mode:
+      # Hide only the answered prompt; the plate stays.
+      from dataclasses import replace as _replace
+      if view.proposed_mph and view.proposed_seq == getattr(self, "seq", -1):
+        return _replace(view, proposed_mph=0, show_mph=int(view.mph) > 0)
       return view
     if self.mph <= 0:
       return view

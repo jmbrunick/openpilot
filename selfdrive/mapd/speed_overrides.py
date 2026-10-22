@@ -10,6 +10,11 @@ speed-limit sign and the Map Speed Limit cruise path (MAX = limit + offset)
 use it on this and future drives. The opposite direction keeps OSM.
 A newer YES on the same way + direction replaces the old value. Nothing is
 uploaded (OSM edits are future work). NO taps never reach this file.
+
+v2.3: the payload carries way_id + heading matched when the sign was READ
+(liveSpeedSignNAP.proposedWayId / proposedHeading). Those are stored as-is;
+the way the car is on at tap time is never used. A YES without a read-time
+way stores nothing.
 """
 from __future__ import annotations
 
@@ -51,7 +56,12 @@ def parse_confirmed(raw) -> dict | None:
   if not (5 <= mph <= 85) or mph % 5:
     return None
   out = {"mph": mph, "seq": seq}
-  for k in ("lat", "lon", "bearing"):
+  try:
+    if d.get("way_id") is not None and int(d["way_id"]) > 0:
+      out["way_id"] = int(d["way_id"])
+  except (TypeError, ValueError):
+    pass
+  for k in ("lat", "lon", "bearing", "heading"):
     try:
       if d.get(k) is not None:
         out[k] = float(d[k])
@@ -123,6 +133,12 @@ class SpeedOverrides:
     conf = parse_confirmed(raw_param)
     if conf is not None and conf["seq"] != self.last_seq:
       self.last_seq = conf["seq"]
+      if "way_id" in conf or "heading" in conf:
+        # v2.3: read-time way + heading; never the current match.
+        hdg = conf.get("heading", conf.get("bearing"))
+        if conf.get("way_id") and hdg is not None:
+          return self.add(int(conf["way_id"]), float(hdg), conf)
+        return None
       self.pending, self.pending_t = conf, mono_now
     if self.pending is None:
       return None
@@ -137,9 +153,14 @@ class SpeedOverrides:
     return e
 
 
-def request_override(mph: int, rec: dict | None, seq: float, params=None) -> bool:
-  """HUD YES: hand the confirmed mph (+ where it was read) to mapd."""
+def request_override(mph: int, rec: dict | None, seq: float, params=None,
+                     way_id: int | None = None, heading: float | None = None) -> bool:
+  """HUD YES: hand the confirmed mph (+ the way / heading it was READ on) to mapd."""
   payload: dict = {"mph": int(mph), "seq": float(seq)}
+  if way_id is not None:
+    payload["way_id"] = int(way_id)
+    if heading is not None:
+      payload["heading"] = float(heading)
   for k in ("lat", "lon", "bearing"):
     if (rec or {}).get(k) is not None:
       payload[k] = (rec or {})[k]

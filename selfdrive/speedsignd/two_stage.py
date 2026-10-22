@@ -83,6 +83,21 @@ UPPER_EVERY = 4
 PROPOSER_DUTY_WINDOW_S = 10.0
 PROPOSER_DUTY_BUDGET = 0.25
 PROPOSER_PASS_S_DEFAULT = 0.124
+# v2.3: a 1-hit track's confirm pass may use this much extra duty in the
+# window. At the 2 Hz floor the 25% cap is already full (20 x 124 ms / 10 s),
+# so the 5 Hz confirm burst never ran and a slow ~40 px sign seen once was
+# lost (Oct 19 #15). Bursts are short; the long-run average stays ~25%.
+PROPOSER_BURST_HEADROOM = 0.05
+# Only at low speed (#15 was 10-15 m/s). Above this the sign closes fast
+# enough that the 2 Hz floor already gets two hits, and extra passes only
+# shift read timing.
+PROPOSER_BURST_MAX_V = 15.5
+
+
+def burst_headroom(tracker, t: float, v_ego: float | None) -> float:
+  if v_ego is None or v_ego > PROPOSER_BURST_MAX_V:
+    return 0.0
+  return PROPOSER_BURST_HEADROOM if tracker.wants_fast_proposer(t) else 0.0
 # v2.1: live confirmed track -> up to EXEMPT_READS_PER_TRACK reads that skip
 # the reader pacing (4x infer + 25%/10 s), spaced EXEMPT_GAP_X x infer. The
 # spans are still recorded, so the next steady read waits until the 10 s
@@ -116,8 +131,21 @@ READ_DIST_MIN_M = 15.0
 READ_DIST_MAX_M = 60.0
 BURST_READS = 3
 FALLBACK_READS = 1
+# v2.3 decision (votes are the main reader's CLASS mph, never the OCR's):
+#  - pair: two reads of the track in one burst, same class mph, each at
+#    >= PAIR_CONF, neither an OCR clash -> decide.
+#  - single: class and OCR agree, conf >= STRONG_CONF on a box >= STRONG_PX,
+#    or conf >= SOLO_HI_CONF on a box >= SOLO_HI_PX.
+#  - an OCR clash (OCR above its floor naming another mph) votes for nothing.
+#  - EXTRA_READS more burst reads when the votes name different mph.
 STRONG_PX = 56.0
 STRONG_CONF = 0.85
+SOLO_HI_CONF = 0.88
+SOLO_HI_PX = 35.0
+PAIR_CONF = 0.60
+EXTRA_READS = 1
+CLASH_VOTES = False
+SOLO_CLASS_ONLY = False
 READ_S_DEFAULT = 0.8
 EXIT_HORIZON_S = 4.0
 # Sharp reads allowed after the first mph, so a second HUD vote can land
@@ -430,7 +458,7 @@ class SignTracker:
     need_px = read_px_for_speed(v_ego)
     due = []
     for tr in self.tracks:
-      if (self.planning and tr.planned and not tr.done and not tr.neg and 0 < tr.burst_n < BURST_READS
+      if (self.planning and tr.planned and not tr.done and not tr.neg and 0 < tr.burst_n < burst_len(tr.votes)
           and 1e-6 < t - tr.last_t <= LOST_S):
         due.append(tr)                  # burst frame the proposer missed: predicted crop
         continue
@@ -467,7 +495,7 @@ class SignTracker:
   def _planned_due(self, tr: Track, t: float, v_ego, next_t, strip) -> bool:
     if tr.decided_mph:
       return False
-    if 0 < tr.burst_n < BURST_READS:
+    if 0 < tr.burst_n < burst_len(tr.votes):
       return True                       # consecutive scheduled frames
     if tr.burst_n >= BURST_READS:
       empty = not any(v[0] for v in tr.votes)
@@ -485,7 +513,7 @@ class SignTracker:
     """A planned burst has reads left on a live track (no gap between them)."""
     for tr in self.tracks:
       if tr.planned and not tr.done and not tr.neg and 0 < tr.burst_n and t - tr.last_t <= LOST_S:
-        if tr.burst_n < BURST_READS or (not any(v[0] for v in tr.votes) and tr.fallback_n < FALLBACK_READS):
+        if tr.burst_n < burst_len(tr.votes) or (not any(v[0] for v in tr.votes) and tr.fallback_n < FALLBACK_READS):
           return True
     return False
 
@@ -501,7 +529,7 @@ class SignTracker:
         continue
       if tr.planned:
         # Planned burst / fallback reads skip the pacing; the plan is the limit.
-        if not tr.decided_mph and tr.reads < BURST_READS + FALLBACK_READS and t - tr.last_t <= LOST_S:
+        if not tr.decided_mph and tr.reads < BURST_READS + EXTRA_READS + FALLBACK_READS and t - tr.last_t <= LOST_S:
           return True
         continue
       if tr.reads >= min(MAX_READS_PER_TRACK, EXEMPT_READS_PER_TRACK):
@@ -534,15 +562,13 @@ class SignTracker:
   def mark_planned_read(self, tr: Track, signs, read_h: float | None, neg: bool = False, t: float = 0.0) -> list:
     """Record a planned read; return the signs released to the HUD (often [])."""
     tr.reads += 1
-    if tr.burst_n < BURST_READS:
+    if tr.burst_n < burst_len(tr.votes):
       if tr.burst_n == 0:
         tr.burst_start_t = float(t)
       tr.burst_n += 1
     else:
       tr.fallback_n += 1
-    top = max(signs or [], key=lambda s: float(s.conf), default=None)
-    h = float(read_h or 0.0)
-    tr.votes.append((int(top.mph) if top is not None else 0, float(top.conf) if top is not None else 0.0, h, top))
+    tr.votes.append(read_vote(signs, float(read_h or 0.0)))
     if neg:
       tr.neg = True
       tr.done = True
@@ -553,7 +579,7 @@ class SignTracker:
       tr.got_mph = True
       tr.done = True
       return out
-    if tr.burst_n >= BURST_READS:
+    if tr.burst_n >= burst_len(tr.votes):
       empty = not any(v[0] for v in tr.votes)
       if not empty or tr.fallback_n >= FALLBACK_READS:
         tr.done = True
@@ -906,18 +932,71 @@ def predicted_exit_t(tr: Track, strip=None, frame_w: int = 1928, horizon_s: floa
   return math.inf
 
 
+def read_vote(signs, h: float) -> tuple:
+  """(class mph or 0, class conf, box px, sign, kind) for one burst read.
+
+  kind: "agree" (OCR names the class mph), "class" (OCR silent / below its
+  floor), "clash" (OCR above its floor names another mph), "none".
+  The vote is always the main reader's class mph, never the OCR's.
+  """
+  from openpilot.selfdrive.speedsignd.detect_types import MUTCD_MPH
+  from openpilot.selfdrive.speedsignd.yolo import REFINE_OVERRIDE_CONF
+  top = max(signs or [], key=lambda s: float(getattr(s, "class_conf", 0.0) or s.conf), default=None)
+  if top is None:
+    return (0, 0.0, float(h), None, "none")
+  cls = getattr(top, "class_mph", None)
+  if cls is None:
+    cls, cc = int(top.mph), float(top.conf)
+  else:
+    cls, cc = int(cls), float(getattr(top, "class_conf", 0.0) or top.conf)
+  ref = getattr(top, "refine_mph", None)
+  rc = float(getattr(top, "refine_conf", 0.0) or 0.0)
+  kind = "class"
+  if ref is not None:
+    try:
+      ri = int(ref)
+      if ri in MUTCD_MPH and rc >= REFINE_OVERRIDE_CONF:
+        kind = "agree" if ri == cls else "clash"
+    except (TypeError, ValueError):
+      pass
+  if cls not in MUTCD_MPH:
+    return (0, cc, float(h), top, "none")
+  if kind == "clash" and not CLASH_VOTES:
+    return (0, cc, float(h), top, "clash")
+  from dataclasses import replace as _replace
+  try:
+    sign = _replace(top, mph=cls, conf=cc)
+  except Exception:
+    sign = top
+  return (cls, cc, float(h), sign, kind)
+
+
+def burst_len(votes) -> int:
+  """BURST_READS, plus EXTRA_READS once the votes name different mph."""
+  named = {v[0] for v in votes if v[0]}
+  return BURST_READS + (EXTRA_READS if len(named) >= 2 else 0)
+
+
+def _vote(v):
+  return v if len(v) >= 5 else (v[0], v[1], v[2], v[3], "agree")
+
+
 def burst_decision(votes) -> list:
-  """Signs to release: one strong read, or the two agreeing reads."""
-  for mph, conf, h, sign in votes:
-    if mph and conf >= STRONG_CONF and h >= STRONG_PX and sign is not None:
-      return [sign]
+  """Signs to release (as a proposal): one strong agreeing read, or a pair."""
+  vs = [_vote(v) for v in votes]
+  for mph, conf, h, sign, kind in vs:
+    if not mph or sign is None:
+      continue
+    if kind == "agree" or (SOLO_CLASS_ONLY and kind == "class"):
+      if (conf >= STRONG_CONF and h >= STRONG_PX) or (conf >= SOLO_HI_CONF and h >= SOLO_HI_PX):
+        return [sign]
   by: dict[int, list] = {}
-  for mph, _conf, _h, sign in votes:
-    if mph and sign is not None:
+  for mph, conf, _h, sign, kind in vs:
+    if mph and sign is not None and conf >= PAIR_CONF and kind in ("agree", "class"):
       by.setdefault(mph, []).append(sign)
   agreed = [v for v in by.values() if len(v) >= 2]
-  if agreed:
-    return max(agreed, key=lambda v: max(float(s.conf) for s in v))[:2]
+  if len(agreed) == 1:
+    return agreed[0][:2]
   return []
 
 
@@ -997,8 +1076,8 @@ class ProposerDuty:
     self._prune(t)
     return sum(d for _a, d in self.spans)
 
-  def fits(self, t: float, passes: int = 1) -> bool:
-    return self.used(t) + passes * self.pass_s <= self.window_s * self.budget + 1e-6
+  def fits(self, t: float, passes: int = 1, headroom: float = 0.0) -> bool:
+    return self.used(t) + passes * self.pass_s <= self.window_s * (self.budget + headroom) + 1e-6
 
   def next_fit(self, t: float, passes: int = 1) -> float:
     """Earliest time >= t at which `passes` more passes fit."""

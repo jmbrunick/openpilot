@@ -49,3 +49,34 @@ def test_request_override_writes_param():
   assert request_override(35, {"lat": 1.0, "bearing": 90.0}, 3.0, params=p)
   assert p.d[PARAM] == {"mph": 35, "seq": 3.0, "lat": 1.0, "bearing": 90.0}
   assert not request_override(33, None, 4.0, params=P())
+
+
+def test_v23_yes_after_car_moved_uses_read_time_way(tmp_path):
+  """Sign read on way 111 heading 90; the car turned onto way 222 (heading 0) before the tap."""
+  from openpilot.selfdrive.mapd.speed_overrides import request_override
+
+  class P:
+    def __init__(self):
+      self.d = {}
+
+    def put(self, k, v):
+      self.d[k] = v
+
+  params = P()
+  assert request_override(45, {"lat": 45.0, "lon": -93.0, "bearing": 90.0}, 7.0, params=params,
+                          way_id=111, heading=90.0)
+  payload = list(params.d.values())[0]
+  o = SpeedOverrides(str(tmp_path / "o.json"))
+  e = o.consume(payload, m(222), 0.0, 1.0)          # tap-time match is way 222
+  assert e is not None and e["way_id"] == 111 and e["heading"] == 90.0 and e["mph"] == 45
+  assert o.find(222, 0.0) is None                    # never the tap-time way
+  assert abs(o.limit_ms(111, 80.0) - 45 * MPH_TO_MS) < 1e-6
+  assert o.limit_ms(111, 270.0) is None              # one direction only
+  assert o.limit_ms(111, 160.0) is None              # outside +-60 deg
+
+
+def test_v23_yes_without_read_time_way_stores_nothing(tmp_path):
+  o = SpeedOverrides(str(tmp_path / "o.json"))
+  assert o.consume({"mph": 45, "seq": 3.0, "way_id": 0, "heading": 90.0}, m(222), 0.0, 1.0) is None
+  assert o.consume(None, m(222), 0.0, 2.0) is None
+  assert o.entries == []
