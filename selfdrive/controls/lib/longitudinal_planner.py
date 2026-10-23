@@ -46,6 +46,7 @@ from openpilot.selfdrive.controls.lib.sight_cap import LOG_PERIOD_S as SIGHT_LOG
 from openpilot.selfdrive.controls.lib.sight_cap import format_log_line as sight_log_line
 from openpilot.selfdrive.controls.lib.lead_leaving import LeadLeavingEstimator
 from openpilot.selfdrive.controls.lib.unified_lead import UnifiedLeadController, unified_follow_desired
+from openpilot.selfdrive.controls.lib.approach_accel_trim import ApproachAccelTrim
 from openpilot.selfdrive.controls.lib.gap_lock import (
   GapLockLatch,
   gap_lock_param_enabled,
@@ -235,6 +236,8 @@ class LongitudinalPlanner:
     # Continuous lead follow: the one longitudinal controller for a lead on Pre-AP.
     self.unified_a_target = 0.0
     self._unified = UnifiedLeadController()
+    self._approach_trim = ApproachAccelTrim(dt)
+    self.approach_trim_a = 0.0
     self._gap_lock = GapLockLatch()
     self._gap_bump = GapLockBumpRouter()
     self._gap_lock_enabled = False
@@ -1071,8 +1074,23 @@ class LongitudinalPlanner:
     if self._unified_faulted or command is None:
       self.unified_a_target = 0.0
       self._unified_following = False
+      self._approach_trim.reset(0.0)
+      self.approach_trim_a = 0.0
       return
     self._unified_following = gap is not None
+    # Oct 23: closed-loop trim on accel the car carries over the command
+    # (grade, pedal map) while approaching a lead. Bounded, slewed, <= 0.
+    try:
+      cs = sm["carState"]
+      trim_on = long_on and not bool(cs.gasPressed) and not bool(cs.brakePressed)
+      self.approach_trim_a = float(self._approach_trim.update(
+        a_ego=float(cs.aEgo), a_cmd=command, v_ego=v_ego, v_lead=v_lead,
+        gap=gap, long_on=trim_on, a_floor=float(self.prev_accel_clip[0]),
+      ))
+    except Exception:
+      self._approach_trim.reset(0.0)
+      self.approach_trim_a = 0.0
+    command = command + self.approach_trim_a
     self.unified_a_target = command
     if gap is None:
       return
