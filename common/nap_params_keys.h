@@ -101,6 +101,10 @@
     // no vCruise / HUD MAX, no osm.org. Process: speedsignd.
     {"NAPSpeedSignLog", {PERSISTENT, BOOL, "0"}},
     {"NAPSignOthers", {PERSISTENT, BOOL, "0"}},
+    // Tesla Pre-AP map limit (CAN 0x238 mux 3 / 0x2F8) into liveMapDataNAP + review flags. Default off.
+    {"NAPTeslaLimitEnable", {PERSISTENT, BOOL, "0"}},
+    // Auto-confirm a located sign read that matches raw OSM or the Tesla base limit. Default off.
+    {"NAPSignAutoConfirm", {PERSISTENT, BOOL, "0"}},
     {"NAPSignReadDistM", {PERSISTENT, FLOAT, "40"}},  // speed sign read distance floor, 15-60 m
     {"NAPSpeedSignConfirmed", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, JSON}},
     {"NAPSpeedSignAnswer", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, JSON}},  // v2.3 HUD Yes/No -> speedsignd plate

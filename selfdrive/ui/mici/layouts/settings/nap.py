@@ -23,8 +23,10 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   RADAR_OFFSET_MIN,
   RESTORE_EPAS_INSTRUCTIONS,
   INSTALL_SPEED_SIGN_WEIGHTS_INSTRUCTIONS,
+  NAP_SIGN_AUTO_CONFIRM,
   NAP_SIGN_OTHERS,
   NAP_SPEED_SIGN_LOG,
+  NAP_TESLA_LIMIT_ENABLE,
   WIPER_SPEED_LABELS,
   WIPER_SPEED_VALUES,
   WIPER_SENSITIVITY_DEFAULT,
@@ -229,6 +231,8 @@ class NAPLayoutMici(NavScroller):
 
     speed_sign_log = BigParamControl("speed sign logger", NAP_SPEED_SIGN_LOG)
     sign_others = BigParamControl("other signs (display only)", NAP_SIGN_OTHERS)
+    tesla_limit = BigParamControl("tesla map limit", NAP_TESLA_LIMIT_ENABLE)
+    sign_auto_confirm = BigParamControl("auto-confirm signs", NAP_SIGN_AUTO_CONFIRM)
 
     self._weights_status = BigButton("speed sign weights", install_status_summary())
     install_weights_btn = BigButton("install weights", "start")
@@ -333,6 +337,8 @@ class NAPLayoutMici(NavScroller):
     self._scroller.add_widgets([
       speed_sign_log,
       sign_others,
+      tesla_limit,
+      sign_auto_confirm,
       self._weights_status,
       install_weights_btn,
       pedal_enabled,
