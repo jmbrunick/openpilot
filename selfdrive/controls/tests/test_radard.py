@@ -920,3 +920,73 @@ def test_path_collapse_blocks_new_wide_lead_keeps_centered():
   )
   assert lead.radar
   assert lead.radarTrackId == 9
+
+
+# Oct 23 17:28 US 212: early radar lead (selfdrive/controls/lib/early_radar_lead.py).
+STRAIGHT_X = [float(x) for x in range(0, 200, 10)]
+STRAIGHT_Y = [0.0] * len(STRAIGHT_X)
+
+
+def _early_run(seconds, *, v_ego=26.8, d0=155.0, y=0.0, v_rel=-9.0, vision_prob=0.1,
+               vision_d=None, vision_v=None, path=True, v_rel_after=None, switch_s=None, track_s=None):
+  scenario = RadarScenario(v_ego=v_ego)
+  scenario.set_radar_enabled(False)
+  leads = []
+  d = d0
+  dt = 0.05
+  for k in range(int(seconds / dt)):
+    t = 1.0 + k * dt
+    vr = v_rel if (switch_s is None or k * dt < switch_s) else v_rel_after
+    pts = [(5, d, y, vr)] if (track_s is None or k * dt < track_s) else []
+    vd = d if vision_d is None else vision_d
+    lead = scenario.step(t, vision_d_rel=vd, radar_points=pts, vision_v=vision_v, vision_prob=vision_prob,
+                         path_x=STRAIGHT_X if path else None, path_y=STRAIGHT_Y if path else None)
+    leads.append((k * dt, bool(lead.status), bool(lead.radar), int(lead.radarTrackId), float(lead.dRel)))
+    d += vr * dt
+  return leads
+
+
+def test_early_lone_fast_closing_track_becomes_lead_after_persistence():
+  leads = _early_run(4.0)
+  early = [x for x in leads if x[1] and x[2] and x[3] == 5]
+  assert early, "lone in-path closing track never taken"
+  assert early[0][0] >= 1.4  # not before it has persisted
+  assert early[0][0] <= 1.8
+  assert early[0][4] > 130.0  # long before a camera match at ~85 m
+
+
+@pytest.mark.parametrize("kw", [
+  dict(v_rel=-26.8),          # stationary return: bridge, overhead sign, stopped car
+  dict(y=3.5),                # adjacent lane
+  dict(v_rel=-2.5),           # slow close: the normal path handles it
+  dict(d0=190.0, v_rel=-5.0),  # beyond range
+  dict(d0=150.0, v_rel=-4.5),  # time-to-contact over 20 s
+  dict(v_ego=12.0, v_rel=-5.0, d0=80.0),  # town speed
+  dict(path=False),           # no model path
+  dict(track_s=1.0),          # one-second blip
+])
+def test_early_lead_gates_reject(kw):
+  leads = _early_run(4.0, **kw)
+  assert not any(x[2] and x[3] == 5 for x in leads)
+
+
+def test_early_lead_is_held_once_speed_matched():
+  leads = _early_run(6.0, v_rel_after=-0.5, switch_s=2.5)
+  taken = [x for x in leads if x[2] and x[3] == 5]
+  assert taken
+  first = taken[0][0]
+  assert all(x[2] and x[3] == 5 for x in leads if x[0] >= first)
+
+
+def test_far_vision_lead_with_wrong_speed_matches_slower_radar():
+  # Camera at the right distance but ~10 m/s too fast: stock association
+  # refuses on velocity. After persistence radar wins.
+  leads = _early_run(4.0, vision_prob=0.95, vision_v=26.5, d0=110.0)
+  assert not leads[5][2]
+  assert any(x[2] and x[3] == 5 for x in leads if x[0] >= 1.5)
+
+
+def test_far_vision_lead_slower_than_radar_is_not_overridden():
+  # Radar faster than vision is not a brake reason; stays as before.
+  leads = _early_run(4.0, vision_prob=0.95, vision_v=10.0, d0=110.0, v_rel=-5.0)
+  assert not any(x[2] and x[3] == 5 for x in leads)
