@@ -19,7 +19,10 @@ from openpilot.selfdrive.speedsignd.nv12 import Nv12DetectCrop
 from openpilot.selfdrive.speedsignd.yolo import (
   PEAK_NAME_MIN,
   POSTED_LOG_MPH,
+  REFINE_MIN_OVERRIDE_MPH,
   REFINE_OVERRIDE_CONF,
+  STRONG_CLASS_CONF,
+  STRONG_REFINE_CONF,
   _resize_rgb,
   class_to_mph,
   decode_yolov8,
@@ -508,3 +511,66 @@ def test_real_onnx_empty_road_is_quiet():
   rgb[:80] = (140, 170, 200)
   rgb[80:] = (45, 45, 40)
   assert det.detect(None, min_conf=0.40, rgb=rgb) == []
+
+
+def test_refine_5_never_replaces_degraff_30():
+  """Oct 22 DeGraff 30 (seg 13): class 30, refine 5 @ 0.29-0.38 put 5 on the HUD.
+
+  A 5 / 10 under a posted class is a lost digit, not a read. The class stays,
+  and the 5 is not stored, so it cannot clash the 30 into a blank vote.
+  """
+  y = np.zeros((80, 80), np.uint8)
+  for class_conf in (0.659, 0.74, 0.90):
+    for bad, rc in ((5, 0.38), (5, 0.35), (5, 0.29), (10, 0.95), (5, 0.99)):
+      sign = SpeedSign(mph=30, conf=class_conf, bbox=(10, 10, 40, 50), class_mph=30, class_conf=class_conf)
+      out = refine_mph(sign, y, lambda _c, bad=bad, rc=rc: (bad, rc))
+      assert out.mph == 30
+      assert out.class_mph == 30
+      assert out.refine_mph is None
+      assert not prefer_refine(sign, bad, rc)
+
+
+def test_degraff_30_read_votes_30_not_clash():
+  from openpilot.selfdrive.speedsignd.two_stage import read_vote
+  sign = SpeedSign(mph=30, conf=0.74, bbox=(10, 10, 40, 50), class_mph=30, class_conf=0.74)
+  out = refine_mph(sign, np.zeros((80, 80), np.uint8), lambda _c: (5, 0.38))
+  mph, _conf, _h, _s, kind = read_vote([out], 40.0)
+  assert mph == 30 and kind == "class"
+
+
+def test_weak_refine_does_not_replace_strong_class():
+  """class >= STRONG_CLASS_CONF needs refine >= class conf or >= STRONG_REFINE_CONF."""
+  sign = SpeedSign(mph=30, conf=0.90, bbox=(10, 10, 40, 50), class_mph=30, class_conf=0.90)
+  out = refine_mph(sign, np.zeros((80, 80), np.uint8), lambda _c: (50, 0.35))
+  assert out.mph == 30 and out.conf == 0.90
+  assert out.refine_mph == 50          # kept as a clash (no vote), not a read
+  assert not prefer_refine(sign, 50, STRONG_REFINE_CONF - 0.01)
+  assert prefer_refine(sign, 50, STRONG_REFINE_CONF)
+  assert prefer_refine(sign, 50, 0.92)
+
+
+def test_weak_class_still_takes_refine_at_floor():
+  sign = SpeedSign(mph=65, conf=0.57, bbox=(10, 10, 40, 50), class_mph=65, class_conf=0.57)
+  assert STRONG_CLASS_CONF > 0.57
+  assert prefer_refine(sign, 55, REFINE_OVERRIDE_CONF)
+
+
+def test_parked_50_still_overrides_65_at_logged_refine_conf():
+  """Parked close 50: class 65 @ 0.73, cls=50:0.00, refine 50 @ 0.71 (diag log) and 0.40."""
+  y = np.zeros((80, 80), np.uint8)
+  for rc in (0.40, 0.71):
+    wrong = SpeedSign(
+      mph=65, conf=0.73, bbox=(10, 10, 40, 50),
+      class_mph=65, class_conf=0.73, alt_mph=70, alt_conf=0.11,
+    )
+    out = refine_mph(wrong, y, lambda _c, rc=rc: (50, rc))
+    assert out.mph == 50
+    assert out.class_mph == 65
+    assert out.refine_mph == 50
+    assert prefer_refine(wrong, 50, rc)
+
+
+def test_refine_guard_constants():
+  assert REFINE_MIN_OVERRIDE_MPH == 15
+  assert STRONG_CLASS_CONF == 0.70
+  assert REFINE_OVERRIDE_CONF <= STRONG_REFINE_CONF <= STRONG_CLASS_CONF
