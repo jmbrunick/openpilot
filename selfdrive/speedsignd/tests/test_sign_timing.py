@@ -365,3 +365,82 @@ def test_v24_extra_read_when_ocr_silent():
   assert T.burst_len(v) == T.BURST_READS + T.EXTRA_ON_SILENT
   agree = [(45, 0.70, 40.0, _S(45, 0.7), "agree"), (0, 0.0, 40.0, None, "none"), (0, 0.0, 40.0, None, "none")]
   assert T.burst_len(agree) == T.BURST_READS
+
+
+# --- read size floor (Oct 22 DeGraff 30 read as 50 at 20 / 23 px) ---
+
+def test_read_size_floor_constants():
+  assert T.READ_MIN_PX == 26.0 and T.READ_MAX_RANGE_M == 78.0
+  assert not T.read_size_ok(None)
+  assert not T.read_size_ok(20.0)                    # 101 m
+  assert not T.read_size_ok(23.0)                    # 89 m
+  assert not T.read_size_ok(25.0)                    # 80 m, under READ_MIN_PX
+  assert T.read_size_ok(26.0)                        # 77 m
+  assert T.read_size_ok(28.0)                        # 72 m: Oct 19 sign 25 read
+  assert T.read_size_ok(34.0)                        # 59 m: 6:21 Benson 50
+  assert T.range_m(T.READ_MIN_PX) <= T.READ_MAX_RANGE_M
+
+
+def _planned_pair(h0, h1, x=1400.0, t0=0.0, t1=0.5, target_m=40.0):
+  tr = T.SignTracker(target_m=target_m)
+  tr.update([(x, 600, h0 * 0.8, h0, 0.9)], t0)
+  tr.update([(x + 4, 598, h1 * 0.8, h1, 0.9)], t1)
+  return tr
+
+
+def test_planned_exit_read_needs_floor():
+  """Two-hit planned track at the frame edge: v2.4 read it at any size."""
+  x = T.CAPTURE_EDGE_X - 10.0
+  tr = _planned_pair(20.0, 23.0, x=x)
+  assert tr.capture_candidate(0.5, v_ego=15.0) is None
+  assert tr.tracks[0].planned                         # still planned, just not read
+  tr.update([(x + 6, 596, 34 * 0.8, 34.0, 0.9)], 1.0)
+  assert tr.capture_candidate(1.0, v_ego=15.0) is tr.tracks[0]
+
+
+def test_planned_burst_start_far_box_is_not_read():
+  """Plan start reached (huge read distance) but the box is 89 m away."""
+  tr = _planned_pair(20.0, 23.0, target_m=200.0)
+  assert tr.capture_candidate(0.5, v_ego=15.0) is None
+  big = _planned_pair(30.0, 34.0, target_m=200.0)
+  assert big.capture_candidate(0.5, v_ego=15.0) is big.tracks[0]
+
+
+def test_degraff_psA_sequence_never_reads_far():
+  """Approach from 120 m: no planned read of a box farther than READ_MAX_RANGE_M."""
+  tr = T.SignTracker(target_m=200.0)                 # plan as early as possible
+  hist = _boxes_at([120, 101, 89, 80, 72, 66, 59, 50], [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5])
+  reads = []
+  for t, b in hist:
+    c = T.select_read_target(tr, [(*b, 0.9)], t, allow_read=True, v_ego=15.0, next_t=t + 0.5)
+    if c is not None:
+      h = c.read_box(t, 15.0)[3] if c.planned else c.box[3]
+      reads.append((t, h))
+      tr.mark_planned_read(c, [], h, t=t)
+  assert reads, "never read"
+  assert all(h >= T.READ_MIN_PX and T.range_m(h) <= T.READ_MAX_RANGE_M for _t, h in reads)
+
+
+def test_predicted_burst_crop_needs_floor():
+  """Burst frame the proposer missed: the predicted read_box is the crop."""
+  tr = T.SignTracker(target_m=40.0)
+  tk = T.Track(tid=1, box=(1400, 600, 18, 22), score=.9, first_t=0.0, last_t=0.5, hits=3, planned=True, burst_n=1)
+  tk.history = [(0.0, (1398, 601, 17, 21)), (0.5, (1400, 600, 18, 22))]
+  tk.votes = [(0, 0.0, 22.0, None, "none")]
+  tr.tracks = [tk]
+  assert tk.read_box(0.8, 15.0)[3] < T.READ_MIN_PX
+  assert tr.capture_candidate(0.8, v_ego=15.0) is None
+  tk.box = (1400, 600, 30, 36)
+  tk.history = [(0.0, (1398, 601, 28, 34)), (0.5, (1400, 600, 30, 36))]
+  assert tr.capture_candidate(0.8, v_ego=15.0) is tk
+
+
+def test_unplanned_early_and_edge_reads_need_floor():
+  # Legacy (no target distance): edge trigger and predicted-exit early read.
+  x = T.CAPTURE_EDGE_X - 5.0
+  tr = _tracker_with([(0.0, (x - 10, 600, 20, 24)), (0.5, (x, 598, 21, 25))])
+  assert tr.capture_candidate(0.5, v_ego=15.0) is None
+  tr = _tracker_with([(0.0, (1500, 560, 20, 24)), (0.5, (1540, 535, 21, 25))])
+  assert tr.capture_candidate(0.5, v_ego=15.0, next_t=1.0, strip=T.STRIP_RECT) is None
+  tr = _tracker_with([(0.0, (1500, 560, 26, 32)), (0.5, (1540, 535, 30, 38))])
+  assert tr.capture_candidate(0.5, v_ego=15.0, next_t=1.0, strip=T.STRIP_RECT) is not None
