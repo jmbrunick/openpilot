@@ -28,6 +28,15 @@ from openpilot.selfdrive.speedsignd.weights_manifest import (
 # digit read that returns a different MUTCD mph at this floor.
 # _read_mph already requires min digit NCC ≥ 0.25.
 REFINE_OVERRIDE_CONF = 0.28
+# A digit-refine read below this never replaces a posted class: a 5 or 10
+# from a 2-digit plate is a lost digit (Oct 22 DeGraff 30 read as 5 @ 0.29-0.38).
+REFINE_MIN_OVERRIDE_MPH = 15
+# A class at/above STRONG_CLASS_CONF is replaced only by a refine read that is
+# at least as confident, or at least STRONG_REFINE_CONF (the parked 50: class
+# 65 @ 0.73, cls=50:0.00, refine 50 @ 0.40-0.71). A weaker refine still tags
+# the sign (a clash, not a vote) but leaves the class mph.
+STRONG_CLASS_CONF = 0.70
+STRONG_REFINE_CONF = 0.40
 CROP_OVERRIDE_CONF = REFINE_OVERRIDE_CONF  # old name; was 0.55 and hid 50s
 
 # v2 names are sl_25 … sl_70. speedLimitNN still parses so older logs and
@@ -387,6 +396,9 @@ def prefer_refine(sign: SpeedSign, mph: int, conf: float) -> bool:
   Justin's parked 50 is class 65 @ 0.73 with cls=50:0.00. Do not require a
   runner-up margin — the 50 head is not in the race. A value outside 5–85
   step 5 never replaces the class, and a dropped digit (45 → 5) does not either.
+  A refine read under REFINE_MIN_OVERRIDE_MPH never replaces a posted class
+  (DeGraff 30 → 5). A class at/above STRONG_CLASS_CONF needs a refine read at
+  least as confident as the class, or at least STRONG_REFINE_CONF.
   """
   ocr = _posted_ocr(mph)
   if ocr is None or conf < REFINE_OVERRIDE_CONF:
@@ -395,6 +407,12 @@ def prefer_refine(sign: SpeedSign, mph: int, conf: float) -> bool:
   class_i = _posted_ocr(raw)
   if class_i is not None and ocr_dropped_digit(class_i, ocr):
     return False
+  if class_i is not None and ocr < REFINE_MIN_OVERRIDE_MPH:
+    return False
+  class_conf = float(sign.class_conf or sign.conf or 0.0)
+  if class_i is not None and class_conf >= STRONG_CLASS_CONF:
+    if float(conf) < class_conf and float(conf) < STRONG_REFINE_CONF:
+      return False
   return True
 
 
@@ -402,7 +420,8 @@ def refine_mph(sign: SpeedSign, y: np.ndarray | None, read_mph) -> SpeedSign:
   """Digit read on every in-threshold speed-limit crop. Does not invent a hit.
 
   A different posted limit (5–85, step 5) at the override floor replaces
-  sign.mph. Anything else — 4, 46, 100, a dropped digit such as 45 → 5 —
+  sign.mph (prefer_refine). Anything else — 4, 46, 100, a dropped digit such
+  as 45 → 5, or a 5 / 10 under a posted class (30 → 5) —
   leaves the class mph alone and is not stored as refine_mph, so it cannot
   contradict the class into a blank vote. sl_unreadable (mph not in MUTCD,
   no class_mph) is left unchanged. Logs keep both class_mph and refine_mph.
@@ -433,7 +452,7 @@ def refine_mph(sign: SpeedSign, y: np.ndarray | None, read_mph) -> SpeedSign:
   ocr_i = _posted_ocr(mph)
   dropped = (
     ocr_i is not None and class_i is not None and class_i in US_POSTED_MPH
-    and ocr_dropped_digit(class_i, ocr_i)
+    and (ocr_dropped_digit(class_i, ocr_i) or ocr_i < REFINE_MIN_OVERRIDE_MPH)
   )
   usable = ocr_i is not None and not dropped
   tagged = replace(
