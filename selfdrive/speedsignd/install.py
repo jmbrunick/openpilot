@@ -219,13 +219,20 @@ def _fetch_verify(dest: str, url: str, sha256: str | None, expected_bytes: int |
 
 def fetch_and_install_proposer(dest: str | None = None, url: str | None = None,
                                sha256: str | None = None) -> str:
-  """Download the two-stage strip proposer ONNX (checksum) next to speed_sign.onnx."""
+  """Download the two-stage strip proposer ONNX (checksum) next to speed_sign.onnx.
+
+  The default source also checks the published byte size. A failed download
+  or checksum leaves any already-installed proposer untouched.
+  """
+  from openpilot.selfdrive.speedsignd import weights_manifest as wm
   from openpilot.selfdrive.speedsignd.paths import default_proposer_path
-  from openpilot.selfdrive.speedsignd.weights_manifest import PROPOSER_SHA256, proposer_asset_url
+  dest = dest or default_proposer_path()
+  if url is None and not os.environ.get("NAP_SPEED_SIGN_PROPOSER_URL") and sha256 is None:
+    return _fetch_verify(dest, wm.proposer_asset_url(), wm.PROPOSER_SHA256, expected_bytes=wm.PROPOSER_BYTES)
   return fetch_and_install(
-    dest=dest or default_proposer_path(),
-    url=url or os.environ.get("NAP_SPEED_SIGN_PROPOSER_URL") or proposer_asset_url(),
-    sha256=PROPOSER_SHA256 if sha256 is None else (sha256 or None),
+    dest=dest,
+    url=url or os.environ.get("NAP_SPEED_SIGN_PROPOSER_URL") or wm.proposer_asset_url(),
+    sha256=wm.PROPOSER_SHA256 if sha256 is None else (sha256 or None),
   )
 
 
