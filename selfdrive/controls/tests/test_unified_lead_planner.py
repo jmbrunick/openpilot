@@ -455,3 +455,97 @@ def test_planner_update_cycle_stays_cheap_with_a_lead():
   _run(planner, inputs, frames)
   mean_ms = 1000.0 * (time.perf_counter() - t0) / frames
   assert mean_ms < 5.0
+
+
+# Oct 23 16:52 CR 31: approach accel-error trim (grade / pedal excess).
+import random  # noqa: E402
+
+from openpilot.selfdrive.controls.lib.approach_accel_trim import (  # noqa: E402
+  ApproachAccelTrim,
+  TRIM_MIN_MS2,
+  TRIM_RATE_MS3,
+)
+
+TRIM_DT = 0.05
+
+
+def _trim_run(trim, seconds, *, excess=0.3, cmd=-0.2, v_ego=23.5, v_lead=22.0, gap=25.0,
+         long_on=True, noise=0.0, rng=None, a_floor=-1.5):
+  """Plant: delayed, lagged command plus `excess`. Returns the trim trace."""
+  out = []
+  hist = [0.0] * 8
+  a = 0.0
+  for _ in range(int(seconds / TRIM_DT)):
+    t = trim.update(a_ego=a + (rng.gauss(0.0, noise) if noise else 0.0), a_cmd=cmd, v_ego=v_ego,
+                    v_lead=v_lead, gap=gap, long_on=long_on, a_floor=a_floor)
+    hist.append(cmd + t)
+    a += (hist.pop(0) + excess - a) * TRIM_DT / 0.25
+    out.append(t)
+  return out
+
+
+def test_trim_no_lead_or_not_closing_is_zero():
+  for kw in (dict(gap=None), dict(v_lead=24.0), dict(v_lead=23.5)):
+    tr = ApproachAccelTrim(TRIM_DT)
+    assert max(abs(x) for x in _trim_run(tr, 10.0, **kw)) == 0.0
+
+
+def test_trim_far_lead_or_accel_command_is_zero():
+  assert min(_trim_run(ApproachAccelTrim(TRIM_DT), 10.0, gap=90.0)) == 0.0
+  assert min(_trim_run(ApproachAccelTrim(TRIM_DT), 10.0, cmd=0.3)) == 0.0
+  assert min(_trim_run(ApproachAccelTrim(TRIM_DT), 10.0, v_ego=4.0, v_lead=2.0, gap=8.0)) == 0.0
+
+
+def test_trim_closing_with_excess_accel_trims_bounded_and_smooth():
+  tr = ApproachAccelTrim(TRIM_DT)
+  out = _trim_run(tr, 20.0, excess=0.35)
+  assert min(out) >= TRIM_MIN_MS2 - 1e-9
+  assert max(out) <= 0.0
+  assert out[int(6.0 / TRIM_DT)] <= -0.15  # acts inside an approach, not after it
+  steps = [abs(b - a) for a, b in zip(out, out[1:], strict=False)]
+  assert max(steps) <= TRIM_RATE_MS3 * TRIM_DT + 1e-9
+
+
+def test_trim_large_excess_is_capped():
+  assert min(_trim_run(ApproachAccelTrim(TRIM_DT), 30.0, excess=1.5)) == pytest.approx(TRIM_MIN_MS2)
+
+
+def test_trim_zero_mean_noise_does_not_build_a_trim():
+  rng = random.Random(4)
+  out = _trim_run(ApproachAccelTrim(TRIM_DT), 60.0, excess=0.0, noise=0.3, rng=rng)
+  assert min(out) > -0.10
+
+
+def test_trim_small_excess_inside_deadband_is_ignored():
+  assert min(_trim_run(ApproachAccelTrim(TRIM_DT), 20.0, excess=0.05)) > -0.02
+
+
+def test_trim_unwinds_when_the_approach_ends_or_car_overbrakes():
+  tr = ApproachAccelTrim(TRIM_DT)
+  _trim_run(tr, 15.0, excess=0.35)
+  assert tr.trim < -0.2
+  out = _trim_run(tr, 8.0, excess=0.0, v_lead=24.0)  # lead pulling away
+  assert out[-1] > -0.02
+  tr2 = ApproachAccelTrim(TRIM_DT)
+  _trim_run(tr2, 15.0, excess=0.35)
+  out = _trim_run(tr2, 10.0, excess=-0.4)  # now braking harder than asked
+  assert out[-1] > -0.05
+
+
+def test_trim_driver_or_long_off_resets_immediately():
+  tr = ApproachAccelTrim(TRIM_DT)
+  _trim_run(tr, 15.0, excess=0.35)
+  assert tr.trim < -0.2
+  assert _trim_run(tr, 0.1, long_on=False)[-1] == 0.0
+
+
+def test_trim_no_windup_on_the_floor():
+  tr = ApproachAccelTrim(TRIM_DT)
+  out = _trim_run(tr, 20.0, cmd=-1.5, excess=0.6, a_floor=-1.5)
+  assert min(out) > -0.06
+
+
+def test_trim_nonfinite_inputs_reset():
+  tr = ApproachAccelTrim(TRIM_DT)
+  _trim_run(tr, 10.0)
+  assert tr.update(a_ego=float("nan"), a_cmd=-0.2, v_ego=23.0, v_lead=22.0, gap=25.0, long_on=True) == 0.0
