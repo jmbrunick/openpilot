@@ -14,8 +14,13 @@ NAPTeslaLimitEnable alone is log-only (liveMapDataNAP tesla* fields + the
 both-maps review notes). NAPTeslaLimitPrimary (default on) runs the same CAN
 read by itself and changes what mapd publishes:
   current limit (speedLimit, MAX = limit + offset):
-      confirmed sign > Tesla base (debounced, briefly held) > active
-      Tesla-learned section (tesla_learned.py) > OSM
+      confirmed sign > active Tesla-learned section (tesla_learned.py) >
+      Tesla base (debounced, held through short dropouts) > OSM.
+      No cap: wherever Tesla has a value it beats OSM, higher or lower.
+      A learned section (Tesla seen disagreeing with OSM on 2 separate
+      passes) beats the live value, so it covers the spot from the first
+      meter and through Tesla dropouts; a pass where live Tesla reads a
+      different value replaces the row (inactive until 2 passes again).
   lookahead (nextSpeedLimit, early slowdown):
       confirmed sign > active Tesla-learned section > OSM. The live Tesla value
       has no lookahead, so the walk starts from the sign / learned / OSM value
@@ -165,24 +170,37 @@ FLAG_PERIOD_S = 1.0
 # with NAPTeslaLimitEnable only.
 PARAM_PRIMARY = "NAPTeslaLimitPrimary"
 SOURCE_TESLA = "tesla"
-SOURCE_LEARNED = "tesla_learned"   # active Tesla-learned section (tesla_learned.py), Tesla not live here
+SOURCE_LEARNED = "tesla_learned"   # active Tesla-learned section (tesla_learned.py); beats live Tesla
 MPH_TO_MS = 0.44704
 # Keep the last debounced base value through a short dropout (0 / low conf /
 # a missed frame) on the same road, so a gap does not flip the limit to OSM
 # and back. A sub-HOLD_S 0->60->0 flash never debounces, so it never shows.
-PRIMARY_HOLD_S = 4.0
+# Real car (rlogs Oct 9-22, Oct 23 route 000001c2 qlogs): mux 3 drops to 0 for
+# one frame (~0.4-1 s) about every 15 s while driving, which the 3 s debounce
+# turned into a 3-4 s hole every ~15-20 s; a few gaps run 2-6 s. 6 s covers
+# them; the same value coming back is bridged through its 3 s re-debounce.
+PRIMARY_HOLD_S = 6.0
+# A dropout that lands on a way-name change (US 12 -> Atlantic Ave in town) only
+# gets a short grace: enough for the usual 1-frame gap, not a carried limit.
+ROAD_CHANGE_HOLD_S = 3.0
+SEEN_GRACE_S = 1.0    # a Tesla value seen this recently still counts through one 0 frame
 
 
 class TeslaPrimary:
   """Current limit from the Tesla base map for NAPTeslaLimitPrimary.
 
-  Priority (mapd): confirmed sign override > this value > raw OSM.
+  Priority (mapd): confirmed sign override > active learned section > this
+  value > raw OSM.
   Returns mph (0 = no usable Tesla value, use OSM). Never reads MPP.
     * debounced base (TeslaLimitFusion.valid): use it, remember it + the road
     * base gone (0, conf < 90, stale): keep the last value up to hold_s, same road only
     * the same value coming back inside the hold: keep it through its 3 s
-      re-debounce (no OSM flip while the fusion re-holds it)
-    * road changed (name / class) or hold over: 0 -> OSM
+      re-debounce (no OSM flip while the fusion re-holds it), also across a
+      map-match road-name flicker
+    * a different value debouncing: keep the old one until the new one is
+      published (up to hold_s + HOLD_S), so old -> new with no OSM blip
+    * road changed (name / class) and Tesla has nothing: ROAD_CHANGE_HOLD_S
+      grace, then 0 -> OSM; same road: hold_s, then 0 -> OSM
   teslaBaseMph / teslaValid in liveMapDataNAP stay the plain debounced
   values; auto-confirm and review notes never see the held value.
   """
@@ -193,24 +211,42 @@ class TeslaPrimary:
     self.last_t: float | None = None
     self.last_road = None
     self.held = False
+    self.seen_mph, self.seen_t = 0, None
 
   def reset(self) -> None:
     self.last_mph, self.last_t, self.last_road, self.held = 0, None, None, False
+    self.seen_mph, self.seen_t = 0, None
 
   def update(self, fusion: TeslaLimitFusion, now: float, road=None) -> int:
     st = fusion.state(now)
     self.held = False
     if st.valid:
       self.last_mph, self.last_t, self.last_road = st.base_mph, now, road
+      self.seen_mph, self.seen_t = st.base_mph, now
       return st.base_mph
     if self.last_t is None or self.last_mph <= 0:
       return 0
-    if road != self.last_road or now - self.last_t > self.hold_s:
+    fresh = fusion.last_base_t is not None and now - fusion.last_base_t <= BASE_STALE_S
+    cand = int(fusion.cand or 0) if fresh else 0
+    if cand > 0:
+      self.seen_mph, self.seen_t = cand, now
+    # a 1-frame 0 inside a new candidate is not "Tesla has nothing"
+    pending = cand if cand > 0 else (self.seen_mph if self.seen_t is not None and now - self.seen_t <= SEEN_GRACE_S else 0)
+    since = now - self.last_t
+    if cand == self.last_mph and since <= self.hold_s:
+      # same value back: bridge its re-debounce, also across a map-match
+      # road-name flicker (Tesla itself still says this value here)
+      self.last_t, self.last_road = now, road
+    elif pending > 0 and pending != self.last_mph and since <= self.hold_s + HOLD_S:
+      # a new value is debouncing: keep the old one until it is published,
+      # so the limit goes old -> new, never old -> OSM -> new
+      pass
+    elif road != self.last_road and since > ROAD_CHANGE_HOLD_S:
+      self.reset()     # new road and Tesla has nothing: OSM after a 1-frame grace
+      return 0
+    elif since > self.hold_s:
       self.reset()
       return 0
-    fresh = fusion.last_base_t is not None and now - fusion.last_base_t <= BASE_STALE_S
-    if fresh and fusion.cand == self.last_mph:
-      self.last_t = now   # same value back: bridge its re-debounce
     self.held = True
     return self.last_mph
 
@@ -219,15 +255,16 @@ def select_current(sign_ms: float | None, tesla_mph: int, osm_ms: float,
                    learned_ms: float | None = None) -> tuple[float, str | None]:
   """(published current limit m/s, source) for NAPTeslaLimitPrimary.
 
-  Priority: confirmed sign > live (or briefly held) Tesla > active learned
-  section > OSM. source is "sign" / "tesla" / "tesla_learned", or None when
-  OSM applies (caller keeps its osm / osm_default source)."""
+  Priority (Justin, Oct 23): confirmed sign > active learned section > live
+  (or held) Tesla > OSM. No cap: Tesla beats OSM higher or lower. source is
+  "sign" / "tesla_learned" / "tesla", or None when OSM applies (caller keeps
+  its osm / osm_default source)."""
   if sign_ms is not None:
     return float(sign_ms), "sign"
-  if int(tesla_mph) > 0:
-    return int(tesla_mph) * MPH_TO_MS, SOURCE_TESLA
   if learned_ms is not None and learned_ms > 0:
     return float(learned_ms), SOURCE_LEARNED
+  if int(tesla_mph) > 0:
+    return int(tesla_mph) * MPH_TO_MS, SOURCE_TESLA
   return float(osm_ms), None
 
 

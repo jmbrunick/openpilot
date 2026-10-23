@@ -208,8 +208,9 @@ SIGN_AUTO_CONFIRM_DESCRIPTION = (
 TESLA_LIMIT_PRIMARY_DESCRIPTION = (
   "Default On. The car's own map speed limit (Pre-AP cluster base map, held 3 s at high confidence) "
   + "is the speed limit openpilot uses, ahead of OSM. Order: a sign you confirmed (Yes or auto-confirm) wins, "
-  + "then the Tesla limit, then a spot learned from the Tesla limit on earlier drives, then OSM. "
-  + "Short Tesla dropouts keep the last value for a few seconds on the same road. "
+  + "then a spot learned from the Tesla limit on earlier drives, then the live Tesla limit, then OSM. "
+  + "Tesla wins over OSM whether it is higher or lower. "
+  + "Short Tesla dropouts keep the last value for up to 6 s on the same road. "
   + "Where Tesla and OSM disagree on two separate drives, that stretch is remembered in "
   + "/data/media/0/nap/tesla_learned_limits.json so the next drive can slow early for it, and a review note is written. "
   + "Learned spots never count as a confirmed sign. The MPP value is never used. "

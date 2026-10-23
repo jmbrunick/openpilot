@@ -198,8 +198,8 @@ def main():
       # Raw OSM (tagged or road-type default), never the sign override.
       osm_raw_mph = int(round(lim_ms * 2.23694)) if lim_ms > 0 else 0
       d.osmRawMph = osm_raw_mph
-      # Current limit: confirmed sign > Tesla base > active Tesla-learned
-      # section > OSM (Tesla parts: NAPTeslaLimitPrimary).
+      # Current limit: confirmed sign > active Tesla-learned section > Tesla
+      # base (held through dropouts) > OSM (Tesla parts: NAPTeslaLimitPrimary).
       tesla_mph, learned_ms = 0, None
       if tesla is not None:
         try:

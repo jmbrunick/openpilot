@@ -20,8 +20,8 @@ where Tesla flips ahead of a sign does not split a section):
                                      since the row was last seen; ACTIVE at 2
   * Tesla != OSM, different value -> row replaced (1 pass, inactive)
   * Tesla == OSM                  -> row retired (deleted)
-Active rows are used by mapd: current limit = confirmed sign > live Tesla >
-active learned > OSM; lookahead (nextSpeedLimit) = confirmed sign > active
+Active rows are used by mapd: current limit = confirmed sign > active
+learned > live Tesla > OSM; lookahead (nextSpeedLimit) = confirmed sign > active
 learned > OSM. They are never sign confirmations and never reach
 auto-confirm (that compares a read with raw OSM and the live Tesla value).
 
