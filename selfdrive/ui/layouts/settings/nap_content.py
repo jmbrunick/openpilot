@@ -107,6 +107,7 @@ HYPERMILE_HILL_CLIMB_DESCRIPTION = (
 NAP_SPEED_SIGN_LOG = "NAPSpeedSignLog"
 NAP_SIGN_OTHERS = "NAPSignOthers"
 NAP_TESLA_LIMIT_ENABLE = "NAPTeslaLimitEnable"
+NAP_TESLA_LIMIT_PRIMARY = "NAPTeslaLimitPrimary"
 NAP_SIGN_AUTO_CONFIRM = "NAPSignAutoConfirm"
 NAP_DRIVER_LAT_HANDOFF = "NAPDriverLatHandoff"
 NAP_LOW_VIS_BACKOFF = "NAPLowVisBackoff"
@@ -192,7 +193,8 @@ SIGN_OTHERS_DESCRIPTION = (
 TESLA_LIMIT_DESCRIPTION = (
   "Default Off. Reads the instrument cluster's map speed limit from the Pre-AP chassis CAN "
   + "(base map limit 0x238, held 3 s at high confidence; the MPP value is shown in logs only and never confirms). "
-  + "It is logged next to the OSM limit and never changes the speed limit openpilot uses. "
+  + "It is logged next to the OSM limit. On its own it never changes the speed limit openpilot uses; "
+  + "Tesla Map Limit First does that and reads the same CAN messages without this toggle. "
   + "Also writes review notes to /data/media/0/nap/review_flags.jsonl where both maps change but no sign was read, "
   + "so those spots can be checked for a sign. No bookmarks, alerts or voice notes. Applies within 15 s."
 )
@@ -200,7 +202,18 @@ SIGN_AUTO_CONFIRM_DESCRIPTION = (
   "Default Off. When a read sign matches the raw OSM limit or the Tesla base map limit "
   + "(read on a known road, heading matches, confidence at least 85 percent), it is saved as if you tapped Yes "
   + "and the Yes/No prompt clears. A read that matches neither map still asks you. "
-  + "The Tesla match needs Tesla Map Limit On."
+  + "The Tesla match needs Tesla Map Limit or Tesla Map Limit First On."
+)
+
+TESLA_LIMIT_PRIMARY_DESCRIPTION = (
+  "Default On. The car's own map speed limit (Pre-AP cluster base map, held 3 s at high confidence) "
+  + "is the speed limit openpilot uses, ahead of OSM. Order: a sign you confirmed (Yes or auto-confirm) wins, "
+  + "then the Tesla limit, then a spot learned from the Tesla limit on earlier drives, then OSM. "
+  + "Short Tesla dropouts keep the last value for a few seconds on the same road. "
+  + "Where Tesla and OSM disagree on two separate drives, that stretch is remembered in "
+  + "/data/media/0/nap/tesla_learned_limits.json so the next drive can slow early for it, and a review note is written. "
+  + "Learned spots never count as a confirmed sign. The MPP value is never used. "
+  + "Off: OSM and confirmed signs only. Applies within 15 s."
 )
 
 SPEED_SIGN_LOG_DESCRIPTION = (

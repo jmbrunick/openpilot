@@ -58,6 +58,10 @@ FONT_SIZES = FontSizes()
 COLORS = Colors()
 
 
+# liveMapDataNAP.source -> short tag under the LIMIT number
+MAP_SOURCE_TAGS = {"sign": "SIGN", "tesla": "TESLA", "tesla_learned": "LEARNED", "osm": "OSM", "osm_default": "OSM EST"}
+
+
 class HudRenderer(Widget):
   def __init__(self):
     super().__init__()
@@ -68,6 +72,7 @@ class HudRenderer(Widget):
     self.speed: float = 0.0
     self.map_speed_valid: bool = False
     self.map_speed_limit: float = 0.0
+    self.map_speed_source: str = ""
     self.gap_lock_chip: str | None = None
 
     self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
@@ -109,6 +114,7 @@ class HudRenderer(Widget):
 
     self.map_speed_valid = False
     self.map_speed_limit = 0.0
+    self.map_speed_source = ""
     self.gap_lock_chip = None
     if sm.valid.get("longitudinalPlan", False):
       self.gap_lock_chip = gap_lock_hud_chip(getattr(sm["longitudinalPlan"], "gapLockM", 0.0))
@@ -117,6 +123,7 @@ class HudRenderer(Widget):
       if md.speedLimitValid and md.speedLimit > 0:
         self.map_speed_valid = True
         self.map_speed_limit = md.speedLimit * speed_conversion
+        self.map_speed_source = str(md.source or "")
 
   def _render(self, rect: rl.Rectangle) -> None:
     """Render HUD elements to the screen."""
@@ -232,6 +239,11 @@ class HudRenderer(Widget):
     num = str(round(self.map_speed_limit))
     num_w = measure_text_cached(self._font_bold, num, 64).x
     rl.draw_text_ex(self._font_bold, num, rl.Vector2(x + (w - num_w) / 2, y + 52), 64, 0, rl.BLACK)
+    # Small gray source tag (liveMapDataNAP.source): which map set this limit.
+    tag = MAP_SOURCE_TAGS.get(self.map_speed_source, "")
+    if tag:
+      tag_w = measure_text_cached(self._font_semi_bold, tag, 22).x
+      rl.draw_text_ex(self._font_semi_bold, tag, rl.Vector2(x + (w - tag_w) / 2, y + 128), 22, 0, rl.Color(120, 120, 120, 255))
 
   def _draw_current_speed(self, rect: rl.Rectangle) -> None:
     """Draw the current vehicle speed and unit."""

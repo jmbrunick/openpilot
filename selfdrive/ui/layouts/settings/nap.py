@@ -41,6 +41,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   NAP_SIGN_OTHERS,
   NAP_SPEED_SIGN_LOG,
   NAP_TESLA_LIMIT_ENABLE,
+  NAP_TESLA_LIMIT_PRIMARY,
   RADAR_OFFSET_MAX, RADAR_OFFSET_MIN,
   REFRESH_MAPS_INSTRUCTIONS,
   RESTORE_EPAS_INSTRUCTIONS,
@@ -48,6 +49,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   SIGN_OTHERS_DESCRIPTION,
   SPEED_SIGN_LOG_DESCRIPTION,
   TESLA_LIMIT_DESCRIPTION,
+  TESLA_LIMIT_PRIMARY_DESCRIPTION,
   WIPER_SPEED_DESCRIPTION, WIPER_SPEED_LABELS, WIPER_SPEED_VALUES,
   WIPER_SENSITIVITY_DEFAULT, WIPER_SENSITIVITY_DESCRIPTION,
   WIPER_SENSITIVITY_LABELS, WIPER_SENSITIVITY_VALUES,
@@ -378,6 +380,13 @@ class NAPLayout(Widget):
       NAP_SIGN_OTHERS,
       "Other Signs (display only)",
       SIGN_OTHERS_DESCRIPTION,
+      dest=self._speed_sign_items,
+    )
+
+    self._add_toggle(
+      NAP_TESLA_LIMIT_PRIMARY,
+      "Tesla Map Limit First",
+      TESLA_LIMIT_PRIMARY_DESCRIPTION,
       dest=self._speed_sign_items,
     )
 
@@ -836,6 +845,7 @@ class NAPLayout(Widget):
     self._params.remove("NAPMapSpeedDbPath")
     self._params.put_bool(NAP_SPEED_SIGN_LOG, False)
     self._params.put_bool(NAP_TESLA_LIMIT_ENABLE, False)
+    self._params.put_bool(NAP_TESLA_LIMIT_PRIMARY, True)
     self._params.put_bool(NAP_SIGN_AUTO_CONFIRM, False)
     self._params.put_bool(NAP_DRIVER_LAT_HANDOFF, True)
     self._params.put_bool(NAP_LOW_VIS_BACKOFF, True)

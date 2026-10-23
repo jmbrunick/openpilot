@@ -103,6 +103,11 @@
     {"NAPSignOthers", {PERSISTENT, BOOL, "0"}},
     // Tesla Pre-AP map limit (CAN 0x238 mux 3 / 0x2F8) into liveMapDataNAP + review flags. Default off.
     {"NAPTeslaLimitEnable", {PERSISTENT, BOOL, "0"}},
+    // Tesla Map Limit First. Default ON. The Tesla base map limit (0x238 mux 3, held 3 s at conf >= 90)
+    // becomes the current limit: confirmed sign > Tesla base > Tesla-learned section > OSM. Also learns
+    // where Tesla disagrees with OSM (tesla_learned_limits.json) for the lookahead. Runs the CAN read on
+    // its own; NAPTeslaLimitEnable only adds the both-maps review notes. MPP is never used.
+    {"NAPTeslaLimitPrimary", {PERSISTENT, BOOL, "1"}},
     // Auto-confirm a located sign read that matches raw OSM or the Tesla base limit. Default off.
     {"NAPSignAutoConfirm", {PERSISTENT, BOOL, "0"}},
     {"NAPSignReadDistM", {PERSISTENT, FLOAT, "40"}},  // speed sign read distance floor, 15-60 m

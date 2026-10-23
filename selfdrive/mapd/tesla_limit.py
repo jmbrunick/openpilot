@@ -10,11 +10,28 @@ Two IC messages on bus 0 (opendbc tesla_preap.dbc):
         was always 0 on this US car (mph); 1 is treated as kph. Display /
         unknown fallback only; it NEVER confirms.
 
-Nothing here actuates: mapd only copies the values into liveMapDataNAP.
+NAPTeslaLimitEnable alone is log-only (liveMapDataNAP tesla* fields + the
+both-maps review notes). NAPTeslaLimitPrimary (default on) runs the same CAN
+read by itself and changes what mapd publishes:
+  current limit (speedLimit, MAX = limit + offset):
+      confirmed sign > Tesla base (debounced, briefly held) > active
+      Tesla-learned section (tesla_learned.py) > OSM
+  lookahead (nextSpeedLimit, early slowdown):
+      confirmed sign > active Tesla-learned section > OSM. The live Tesla value
+      has no lookahead, so the walk starts from the sign / learned / OSM value
+      and a next equal to the published limit is dropped (next_for_published):
+      a Tesla-vs-OSM mismatch is never an "upcoming change".
+  liveMapDataNAP.source: "sign" | "tesla" | "tesla_learned" | "osm" | "osm_default".
+Auto-confirm still compares a read with raw OSM (osmRawMph) and the plain
+debounced Tesla value (teslaBaseMph / teslaValid), never the published value,
+and learned sections never count as confirmations. MPP is never used for a limit.
+The learned layer and its review notes ride on NAPTeslaLimitPrimary (no
+separate param): learning only makes sense while Tesla is the primary source.
 """
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass
 
 ADDR_ROAD_SIGN = 0x238
@@ -142,12 +159,101 @@ class TeslaCanReader:
 PARAM_ENABLE = "NAPTeslaLimitEnable"
 FLAG_PERIOD_S = 1.0
 
+# NAPTeslaLimitPrimary (default on): the Tesla base limit is the CURRENT limit
+# mapd publishes when no confirmed sign covers the spot. It needs the CAN
+# read, so mapd runs the reader while either param is on; review notes stay
+# with NAPTeslaLimitEnable only.
+PARAM_PRIMARY = "NAPTeslaLimitPrimary"
+SOURCE_TESLA = "tesla"
+SOURCE_LEARNED = "tesla_learned"   # active Tesla-learned section (tesla_learned.py), Tesla not live here
+MPH_TO_MS = 0.44704
+# Keep the last debounced base value through a short dropout (0 / low conf /
+# a missed frame) on the same road, so a gap does not flip the limit to OSM
+# and back. A sub-HOLD_S 0->60->0 flash never debounces, so it never shows.
+PRIMARY_HOLD_S = 4.0
+
+
+class TeslaPrimary:
+  """Current limit from the Tesla base map for NAPTeslaLimitPrimary.
+
+  Priority (mapd): confirmed sign override > this value > raw OSM.
+  Returns mph (0 = no usable Tesla value, use OSM). Never reads MPP.
+    * debounced base (TeslaLimitFusion.valid): use it, remember it + the road
+    * base gone (0, conf < 90, stale): keep the last value up to hold_s, same road only
+    * the same value coming back inside the hold: keep it through its 3 s
+      re-debounce (no OSM flip while the fusion re-holds it)
+    * road changed (name / class) or hold over: 0 -> OSM
+  teslaBaseMph / teslaValid in liveMapDataNAP stay the plain debounced
+  values; auto-confirm and review notes never see the held value.
+  """
+
+  def __init__(self, hold_s: float = PRIMARY_HOLD_S) -> None:
+    self.hold_s = hold_s
+    self.last_mph = 0
+    self.last_t: float | None = None
+    self.last_road = None
+    self.held = False
+
+  def reset(self) -> None:
+    self.last_mph, self.last_t, self.last_road, self.held = 0, None, None, False
+
+  def update(self, fusion: TeslaLimitFusion, now: float, road=None) -> int:
+    st = fusion.state(now)
+    self.held = False
+    if st.valid:
+      self.last_mph, self.last_t, self.last_road = st.base_mph, now, road
+      return st.base_mph
+    if self.last_t is None or self.last_mph <= 0:
+      return 0
+    if road != self.last_road or now - self.last_t > self.hold_s:
+      self.reset()
+      return 0
+    fresh = fusion.last_base_t is not None and now - fusion.last_base_t <= BASE_STALE_S
+    if fresh and fusion.cand == self.last_mph:
+      self.last_t = now   # same value back: bridge its re-debounce
+    self.held = True
+    return self.last_mph
+
+
+def select_current(sign_ms: float | None, tesla_mph: int, osm_ms: float,
+                   learned_ms: float | None = None) -> tuple[float, str | None]:
+  """(published current limit m/s, source) for NAPTeslaLimitPrimary.
+
+  Priority: confirmed sign > live (or briefly held) Tesla > active learned
+  section > OSM. source is "sign" / "tesla" / "tesla_learned", or None when
+  OSM applies (caller keeps its osm / osm_default source)."""
+  if sign_ms is not None:
+    return float(sign_ms), "sign"
+  if int(tesla_mph) > 0:
+    return int(tesla_mph) * MPH_TO_MS, SOURCE_TESLA
+  if learned_ms is not None and learned_ms > 0:
+    return float(learned_ms), SOURCE_LEARNED
+  return float(osm_ms), None
+
+
+def next_for_published(nxt: tuple[float, float] | None, published_ms: float) -> tuple[float, float] | None:
+  """Drop a 'next' limit that equals what is already published.
+
+  The lookahead (nextSpeedLimit) is computed from OSM + confirmed sections
+  only, because Tesla has no lookahead. When Tesla leads OSM (Tesla flips ~40 m
+  before the sign, OSM ~25 m after) OSM's next change is often the value
+  Tesla already shows; that is not an upcoming change. A next that differs
+  is kept: a lower one still drives the early slowdown from the published
+  value (card eases from max(vEgo, current) down to it), a higher one is
+  ignored by the decrease-only policy anyway."""
+  if nxt is None:
+    return None
+  if abs(float(nxt[0]) - float(published_ms)) <= 0.3:
+    return None
+  return nxt
+
 
 class MapdTeslaHook:
-  """mapd side of NAPTeslaLimitEnable: drains `can`, fuses, runs review flags.
+  """mapd side of NAPTeslaLimitEnable / NAPTeslaLimitPrimary: drains `can`, fuses,
+  picks the Tesla current limit (primary) and runs review flags (enable only).
 
-  Only exists while the param is on, so the `can` subscription (100 Hz) costs
-  nothing when off. messaging is passed in so tests can run without msgq.
+  Only exists while either param is on, so the `can` subscription (100 Hz) costs
+  nothing when both are off. messaging is passed in so tests can run without msgq.
   """
 
   def __init__(self, messaging, flagger=None, reader: TeslaCanReader | None = None, sock=None) -> None:
@@ -156,6 +262,12 @@ class MapdTeslaHook:
     self.reader = reader or TeslaCanReader()
     self.sock = sock if sock is not None else messaging.sub_sock("can", conflate=False)
     self.flagger = flagger or ReviewFlagger()
+    self.primary = TeslaPrimary()
+    self.learned = None       # TeslaLearned, created on first use while primary_on
+    self._learn_drive = int(time.time())  # noqa: TID251  one mapd start = one drive (only_onroad)
+    # Set by mapd from the params each reload.
+    self.flags_on = True      # NAPTeslaLimitEnable: review notes
+    self.primary_on = False   # NAPTeslaLimitPrimary: Tesla sets the current limit
     self._flag_t = -1e9
     self._prop_seq = None
     self._sign_seq = None
@@ -184,9 +296,47 @@ class MapdTeslaHook:
     except Exception:
       pass
 
+  def primary_mph(self, now: float, road=None) -> int:
+    """Tesla mph for the published limit (0 = use OSM); 0 while NAPTeslaLimitPrimary is off."""
+    if not self.primary_on:
+      self.primary.reset()
+      return 0
+    return self.primary.update(self.reader.fusion, now, road)
+
+  def learned_store(self):
+    """The Tesla-learned table (loaded once), or None while NAPTeslaLimitPrimary is off."""
+    if not self.primary_on:
+      return None
+    if self.learned is None:
+      from openpilot.selfdrive.mapd.tesla_learned import TeslaLearned
+      self.learned = TeslaLearned(drive=self._learn_drive)
+      self.learned.load()
+    return self.learned
+
+  def learn_tick(self, now: float, wall: float, way_id, s, osm_raw_mph: int, speed_ms: float,
+                 lat, lon, bearing, road: str) -> list | None:
+    """Record live debounced Tesla vs raw OSM for the current way section.
+
+    Only the live debounced base (never the held value, never MPP). A section
+    that just became active gets a review note (kind "disagree", 7-day dedupe)."""
+    store = self.learned_store()
+    if store is None:
+      return None
+    st = self.state(now)
+    row = store.observe(way_id, s, st.base_mph if st.valid else 0, int(osm_raw_mph or 0), speed_ms, wall)
+    if row is not None:
+      try:
+        self.flagger.seg_clock.update(now)
+        self.flagger.note_disagree(now, wall, float(lat or 0.0), float(lon or 0.0), bearing, speed_ms, road,
+                                   row[2], row[3], way_id=row[0])
+      except Exception:
+        pass
+    store.save(now)
+    return row
+
   def flag_tick(self, now: float, wall: float, lat, lon, bearing, speed_ms: float, road: str,
                 osm_raw_mph: int, gps_ok: bool) -> dict | None:
-    if now - self._flag_t < FLAG_PERIOD_S:
+    if not self.flags_on or now - self._flag_t < FLAG_PERIOD_S:
       return None
     self._flag_t = now
     self.flagger.seg_clock.update(now)
