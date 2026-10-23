@@ -28,6 +28,7 @@ from openpilot.selfdrive.controls.lib.cone_line import (
 )
 from openpilot.selfdrive.controls.lib.crossing_vehicle import GroundLateral
 from openpilot.selfdrive.controls.lib.cone_line_hold import PARAM_CONE_LINE_LOG
+from openpilot.selfdrive.controls.lib.early_radar_lead import EarlyRadarLead, vision_disagree_match
 from openpilot.selfdrive.controls.lib.radar_path_gate import (
   PATH_INCUMBENT_HALF_WIDTH_M,
   RADAR_TO_CAMERA_M,
@@ -259,15 +260,18 @@ def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: floa
 
 
 class LeadTrackAssociation:
-  def __init__(self, low_speed_override: bool):
+  def __init__(self, low_speed_override: bool, early: bool = False):
     self.low_speed_override = low_speed_override
+    # Oct 23 17:28 US 212: lead one may take a fast-closing in-path radar
+    # track before the camera matches it (early_radar_lead.py).
+    self.early = EarlyRadarLead() if early else None
     self.incumbent_track_id: int | None = None
     self._rain_lost_frames = 0
     self._held_radar_lead: dict[str, Any] | None = None
 
   def update(self, v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capnp._DynamicStructReader,
              model_v_ego: float, rain_hold: bool = False, radar_prefer: bool | None = None,
-             path_x=None, path_y=None, collapsed=False) -> dict[str, Any]:
+             path_x=None, path_y=None, collapsed=False, t: float | None = None) -> dict[str, Any]:
     if radar_prefer is None:
       radar_prefer = rain_hold
     if tracks and ready and lead_msg.prob > .5:
@@ -275,6 +279,17 @@ class LeadTrackAssociation:
                                     path_x=path_x, path_y=path_y, collapsed=collapsed)
     else:
       track = None
+
+    early = []
+    if self.early is not None:
+      if t is not None and ready and tracks and not collapsed:
+        early = self.early.update(t, tracks, v_ego, path_x, path_y)
+      else:
+        self.early.reset()
+    if track is None and early and len(lead_msg.x) and len(lead_msg.y) and len(lead_msg.v):
+      # Far vision lead that agrees with the track except for a faster speed.
+      track = vision_disagree_match(early, v_ego, float(lead_msg.x[0] - RADAR_TO_CAMERA),
+                                    float(-lead_msg.y[0]), float(lead_msg.v[0]), float(lead_msg.prob))
 
     if radar_prefer:
       track = pick_rain_radar_track(track, tracks, self.incumbent_track_id, v_ego,
@@ -318,6 +333,13 @@ class LeadTrackAssociation:
       # while the path model is collapsed (right-side construction blip).
       if collapse_blocks_new_lead(lead_dict.get("yRel"), collapsed, incumbent=False):
         lead_dict = {'status': False}
+
+    if not lead_dict['status'] and early:
+      # Lone fast-closing in-path track, nothing else to follow.
+      lead_dict = early[0].get_RadarState(float(lead_msg.prob))
+    if self.early is not None:
+      taken = lead_dict.get('radarTrackId') if lead_dict.get('radar', False) else None
+      self.early.hold(taken if any(tr.identifier == taken for tr in early) else None)
 
     if self.low_speed_override:
       low_speed_tracks = [candidate for candidate in tracks.values() if candidate.potential_low_speed_lead(v_ego)]
@@ -475,7 +497,7 @@ class RadarD:
     self.radar_state_valid = False
 
     self.ready = False
-    self.lead_one_association = LeadTrackAssociation(low_speed_override=True)
+    self.lead_one_association = LeadTrackAssociation(low_speed_override=True, early=True)
     self.lead_two_association = LeadTrackAssociation(low_speed_override=False)
     self.rain_gate = rain_gate if rain_gate is not None else RainRadarGate()
     self.reliability = RadarReliability()
@@ -609,7 +631,7 @@ class RadarD:
       lead_one = self.lead_one_association.update(
         self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego,
         rain_hold=radar_prefer, radar_prefer=radar_prefer,
-        path_x=path_x, path_y=path_y, collapsed=collapsed)
+        path_x=path_x, path_y=path_y, collapsed=collapsed, t=self.current_time)
       self.radar_state.leadOne = lead_one
       self.radar_state.leadTwo = self.lead_two_association.update(
         self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego,
