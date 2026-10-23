@@ -17,12 +17,19 @@ def tesla_at(x):
   return 45 if 1500 <= x < 2500 else 55
 
 
+def s_at(w, x):
+  lat, lon = pt(x)
+  aw = along_way(lat, lon, w["coords"])
+  assert aw is not None
+  return aw[0]
+
+
 def drive(lt, db, wall, tesla=tesla_at, x0=0, x1=4000, step=12.5, osm=55):
   """One eastbound pass at 25 m/s (mapd 2 Hz = 12.5 m per tick). Returns promoted rows."""
   out, x = [], x0
   while x < x1:
     w = way_at(db, x)
-    s = along_way(*pt(x), w["coords"])[0]
+    s = s_at(w, x)
     r = lt.observe(w["way_id"], s, tesla(x), osm, 25.0, wall + (x - x0) / 25.0)
     if r is not None:
       out.append(r)
@@ -33,7 +40,7 @@ def drive(lt, db, wall, tesla=tesla_at, x0=0, x1=4000, step=12.5, osm=55):
 
 def learned_mph(lt, db, x):
   w = way_at(db, x)
-  ms = lt.limit_ms(w["way_id"], along_way(*pt(x), w["coords"])[0])
+  ms = lt.limit_ms(w["way_id"], s_at(w, x))
   return None if ms is None else round(ms / MPH_TO_MS)
 
 
@@ -105,7 +112,7 @@ def test_slow_samples_ignored(tmp_path):
   db = mk_db(tmp_path, short_ways(ROAD))
   lt = tl.TeslaLearned(str(tmp_path / "l.json"), drive="d1")
   w = way_at(db, 2000)
-  s = along_way(*pt(2000), w["coords"])[0]
+  s = s_at(w, 2000)
   for i in range(20):
     lt.observe(w["way_id"], s, 45, 55, 1.0, float(i))
   lt.flush()
@@ -217,7 +224,7 @@ def test_hook_learns_live_tesla_and_writes_one_review_note(tmp_path):
       fusion.add_base(t, tesla_at(x), 99)
       w = way_at(db, x)
       lat, lon = pt(x)
-      hook.learn_tick(t, wall0 + t, w["way_id"], along_way(lat, lon, w["coords"])[0], 55, 25.0, lat, lon, 90.0, "US 12")
+      hook.learn_tick(t, wall0 + t, w["way_id"], s_at(w, x), 55, 25.0, lat, lon, 90.0, "US 12")
       x += 12.5
       t += 0.5
     hook.learn_tick(t, wall0 + t, None, None, 0, 0.0, None, None, None, "")
