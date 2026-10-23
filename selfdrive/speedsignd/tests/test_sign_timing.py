@@ -370,12 +370,13 @@ def test_v24_extra_read_when_ocr_silent():
 # --- read size floor (Oct 22 DeGraff 30 read as 50 at 20 / 23 px) ---
 
 def test_read_size_floor_constants():
-  assert T.READ_MIN_PX == 30.0 and T.READ_MAX_RANGE_M == 70.0
+  assert T.READ_MIN_PX == 26.0 and T.READ_MAX_RANGE_M == 78.0
   assert not T.read_size_ok(None)
   assert not T.read_size_ok(20.0)                    # 101 m
   assert not T.read_size_ok(23.0)                    # 89 m
-  assert not T.read_size_ok(29.0)                    # 69 m, under READ_MIN_PX
-  assert T.read_size_ok(30.0)                        # 67 m
+  assert not T.read_size_ok(25.0)                    # 80 m, under READ_MIN_PX
+  assert T.read_size_ok(26.0)                        # 77 m
+  assert T.read_size_ok(28.0)                        # 72 m: Oct 19 sign 25 read
   assert T.read_size_ok(34.0)                        # 59 m: 6:21 Benson 50
   assert T.range_m(T.READ_MIN_PX) <= T.READ_MAX_RANGE_M
 
@@ -437,9 +438,9 @@ def test_predicted_burst_crop_needs_floor():
 def test_unplanned_early_and_edge_reads_need_floor():
   # Legacy (no target distance): edge trigger and predicted-exit early read.
   x = T.CAPTURE_EDGE_X - 5.0
-  tr = _tracker_with([(0.0, (x - 10, 600, 20, 26)), (0.5, (x, 598, 22, 28))])
+  tr = _tracker_with([(0.0, (x - 10, 600, 20, 24)), (0.5, (x, 598, 21, 25))])
   assert tr.capture_candidate(0.5, v_ego=15.0) is None
-  tr = _tracker_with([(0.0, (1500, 560, 22, 26)), (0.5, (1540, 535, 24, 28))])
+  tr = _tracker_with([(0.0, (1500, 560, 20, 24)), (0.5, (1540, 535, 21, 25))])
   assert tr.capture_candidate(0.5, v_ego=15.0, next_t=1.0, strip=T.STRIP_RECT) is None
   tr = _tracker_with([(0.0, (1500, 560, 26, 32)), (0.5, (1540, 535, 30, 38))])
   assert tr.capture_candidate(0.5, v_ego=15.0, next_t=1.0, strip=T.STRIP_RECT) is not None
