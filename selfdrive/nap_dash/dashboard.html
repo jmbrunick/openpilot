@@ -546,8 +546,67 @@ function renderMain() {
     }
     root.appendChild(renderControl(ctrls[i]));
   }
+  for (i = 0; i < ctrls.length; i++) {
+    if (ctrls[i].param === "NAPTeslaLimitEnable") { appendReviewFlags(root); break; }
+  }
   if (linkDown) lockActions(true);
   fitPane();
+}
+
+/* Sign review notes (mapd review_flags.jsonl): read-only list, newest first.
+   Each is a spot to check for a speed limit sign for the training set. */
+var reviewKind = "both";
+function appendReviewFlags(root) {
+  var h = document.createElement("div");
+  h.className = "sech";
+  h.textContent = "Sign review notes";
+  root.appendChild(h);
+  var box = document.createElement("div");
+  box.id = "reviewflags";
+  box.className = "row span";
+  box.textContent = "Loading…";
+  root.appendChild(box);
+  loadReviewFlags();
+}
+function reviewRow(f) {
+  var row = document.createElement("div");
+  row.className = "rowlabel";
+  var when = f.wall ? new Date(f.wall * 1000).toLocaleString() : "?";
+  row.textContent = when + " · " + (f.mph || "?") + " mph · " + (f.reason || "");
+  var seg = f.route ? (f.route + "--" + f.segment + (f.seg_offset_s != null ? " @" + f.seg_offset_s + "s" : "")) : "no segment";
+  addSub(row, (f.road || "unnamed road") + " · " + seg + " · reads " + JSON.stringify(f.reads_nearby || []));
+  if (f.lat != null && f.lon != null) {
+    var a = document.createElement("a");
+    a.href = "https://www.google.com/maps?q=" + f.lat + "," + f.lon;
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.textContent = " map";
+    a.style.color = "#93c5fd";
+    row.appendChild(a);
+  }
+  return row;
+}
+function loadReviewFlags() {
+  getJSON("/api/review_flags?kind=" + reviewKind, function (err, data) {
+    var box = document.getElementById("reviewflags");
+    if (!box) return;
+    while (box.firstChild) box.removeChild(box.firstChild);
+    var tabs = document.createElement("div");
+    tabs.className = "soft";
+    [["both", "Both maps"], ["single", "One map"]].forEach(function (k) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.textContent = k[1];
+      if (reviewKind === k[0]) b.className = "on";
+      b.onclick = function () { reviewKind = k[0]; loadReviewFlags(); };
+      tabs.appendChild(b);
+    });
+    box.appendChild(tabs);
+    if (err || !data || data.error) { box.appendChild(document.createTextNode((err && err.message) || (data && data.error) || "Unavailable")); return; }
+    if (!data.flags.length) { box.appendChild(document.createTextNode("No review notes yet.")); return; }
+    var i;
+    for (i = 0; i < data.flags.length; i++) box.appendChild(reviewRow(data.flags[i]));
+  });
 }
 
 function addSub(row, text) {

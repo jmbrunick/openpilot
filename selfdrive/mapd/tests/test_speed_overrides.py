@@ -140,3 +140,27 @@ def test_span_replaces_heading_only_row(tmp_path):
   o.consume({"mph": 60, "seq": 2.0, "way_id": 7, "heading": 270.0, "lat": lat, "lon": lon},
             None, 270.0, 0.0, way_coords=lambda w: W7)
   assert len(o.entries) == 1 and o.entries[0]["both"]
+
+
+def test_auto_confirm_payload_and_row_source(tmp_path):
+  from openpilot.selfdrive.mapd.speed_overrides import request_override
+
+  class P:
+    def __init__(self):
+      self.d = {}
+
+    def put(self, k, v):
+      self.d[k] = v
+  p = P()
+  assert request_override(50, {"lat": 45.3, "lon": -95.5, "bearing": 292.0}, 7.0, params=p,
+                          way_id=111, heading=292.0, auto="tesla")
+  payload = p.d["NAPSpeedSignConfirmed"]
+  assert payload["auto"] == "tesla"
+  assert parse_confirmed(payload)["auto"] == "tesla"
+  assert not request_override(50, None, 8.0, params=P(), way_id=111, heading=292.0, auto="mpp")   # MPP never confirms
+  assert "auto" not in parse_confirmed({"mph": 50, "seq": 1, "auto": "mpp"})
+  o = SpeedOverrides(str(tmp_path / "o.json"))
+  e = o.consume(payload, m(111), 292.0, 0.0)
+  assert e["source"] == "sign_auto_tesla"
+  e2 = o.consume({"mph": 45, "seq": 9.0, "way_id": 222, "heading": 90.0}, m(222), 90.0, 1.0)
+  assert e2["source"] == "sign_yes"

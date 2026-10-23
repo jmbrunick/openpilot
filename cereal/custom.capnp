@@ -30,6 +30,15 @@ struct LiveMapDataNAP @0x81c2f05a394cf4af {
   roundaboutDistance @15 :Float32;   # m to circulating way; 0 if on
   roundaboutSpeedLimit @16 :Float32; # m/s, OSM maxspeed on the RB way
   roundaboutWayId @17 :UInt64;
+  # Tesla Pre-AP map limit (NAPTeslaLimitEnable). CAN bus 0, log/confirm only.
+  teslaBaseMph @18 :Int16;           # 0x238 mux 3 base map limit, debounced (3 s, conf >= 90); 0 = unknown
+  teslaMppMph @19 :Int16;            # 0x2F8 MPP limit, display only, never confirms; 0 = unknown
+  teslaConf @20 :Int16;              # 0x238 UI_splineLocConfidence (latest)
+  teslaValid @21 :Bool;              # teslaBaseMph is debounced and fresh
+  osmRawMph @22 :Int16;              # tagged OSM limit before any sign override; 0 = unknown / estimated
+  autoConfirmSeq @23 :UInt32;        # +1 per auto-confirmed sign override mapd stored
+  reviewFlag @24 :Bool;              # true only on the tick a review flag line was written
+  reviewReason @25 :Text;            # reason of that flag ("" otherwise)
 }
 
 # NAP on-drive MUTCD camera speed-sign sample. Display/log only. mph in the field name.

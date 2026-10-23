@@ -24,6 +24,7 @@ from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB
 from openpilot.selfdrive.mapd.speed_overrides import PARAM as SIGN_CONFIRMED_PARAM, SpeedOverrides, effective_next
 from openpilot.selfdrive.mapd.roundabout_map import PARAM_RING, RingCache, roundabout_comfort_speed_ms
 from openpilot.selfdrive.mapd.roundabout_status import RingDataWatch, map_msg_valid
+from openpilot.selfdrive.mapd.tesla_limit import PARAM_ENABLE as TESLA_PARAM, MapdTeslaHook
 
 MAPD_HZ = 2.0
 RELOAD_PERIOD_S = 15.0
@@ -61,9 +62,16 @@ def _v_ego_ms(sm) -> float:
   return 0.0
 
 
+def _param_bool(params: Params, key: str) -> bool:
+  try:
+    return bool(params.get_bool(key))
+  except Exception:
+    return False
+
+
 def main():
   params = Params()
-  sm = messaging.SubMaster(["gpsLocationExternal", "gpsLocation", "carState"])
+  sm = messaging.SubMaster(["gpsLocationExternal", "gpsLocation", "carState", "liveSpeedSignNAP"])
   pm = messaging.PubMaster(["liveMapDataNAP"])
   rk = Ratekeeper(MAPD_HZ, print_delay_threshold=None)
 
@@ -77,6 +85,10 @@ def main():
   overrides = SpeedOverrides()
   ring_cache = RingCache()
   ring_watch = RingDataWatch()
+  # NAPTeslaLimitEnable (default off): Tesla map limit + review flags. The
+  # `can` socket only exists while it is on.
+  tesla: MapdTeslaHook | None = None
+  auto_confirm_seq = 0
 
   def _publish_ring(payload: dict) -> None:
     try:
@@ -100,6 +112,16 @@ def main():
       db.open()
       overrides.load()
       last_reload = now
+      tesla_on = _param_bool(params, TESLA_PARAM)
+      if tesla_on and tesla is None:
+        try:
+          tesla = MapdTeslaHook(messaging)
+          cloudlog.info("mapd: Tesla map limit on")
+        except Exception:
+          cloudlog.exception("mapd: Tesla map limit init failed")
+      elif not tesla_on and tesla is not None:
+        tesla = None
+        cloudlog.info("mapd: Tesla map limit off")
       if db.loaded:
         note = ring_watch.check(db.path)
         if note is not None:
@@ -121,6 +143,8 @@ def main():
         added = overrides.consume(raw_conf, match, bearing, now, way_coords=db.way_coords, db=db)
         if raw_conf is not None:
           params.remove(SIGN_CONFIRMED_PARAM)
+        if added is not None and str(added.get("source", "")).startswith("sign_auto"):
+          auto_confirm_seq += 1
         if added is not None:
           cloudlog.info("mapd: sign override way=%s heading=%s mph=%s", added["way_id"], added["heading"], added["mph"])
       except Exception:
@@ -130,6 +154,15 @@ def main():
     sign_ms = (overrides.limit_ms(int(match.way_id), bearing, lat, lon, match.coords or db.way_coords(int(match.way_id)))
                if match is not None else None)
 
+    tesla_st = None
+    if tesla is not None:
+      try:
+        tesla.update_can()
+        tesla_st = tesla.state(now)
+        tesla.note_sign(sm["liveSpeedSignNAP"] if sm.recv_frame.get("liveSpeedSignNAP", -1) > 0 else None, now)
+      except Exception:
+        cloudlog.exception("mapd: Tesla map limit update failed")
+
     msg = messaging.new_message("liveMapDataNAP")
     msg.valid = map_msg_valid(gps_ok=gps_ok, db_loaded=db.loaded, matched=match is not None, ring_hint=False)
     d = msg.liveMapDataNAP
@@ -138,6 +171,13 @@ def main():
     d.bearingDeg = float(bearing or 0.0)
     d.dbLoaded = bool(db.loaded)
     d.source = "osm"
+    d.autoConfirmSeq = auto_confirm_seq
+    osm_raw_mph = 0
+    if tesla_st is not None:
+      d.teslaBaseMph = int(tesla_st.base_mph)
+      d.teslaMppMph = int(tesla_st.mpp_mph)
+      d.teslaConf = int(tesla_st.conf)
+      d.teslaValid = bool(tesla_st.valid)
     if match is not None:
       est = bool(getattr(match, "estimated", False))
       lim_ms = float(match.speed_limit_ms)
@@ -146,6 +186,9 @@ def main():
         lim_ms = keep_rural_default_ms(lim_ms, estimated=est, highway=match.highway,
                                        road_name=match.road_name, prev=rural_prev)
       rural_prev = (match.road_name, match.highway, lim_ms)
+      # Raw OSM (tagged or road-type default), never the sign override.
+      osm_raw_mph = int(round(lim_ms * 2.23694)) if lim_ms > 0 else 0
+      d.osmRawMph = osm_raw_mph
       d.speedLimit = float(sign_ms if sign_ms is not None else lim_ms)
       d.speedLimitValid = True
       d.source = map_source_for(est, sign=sign_ms is not None)
@@ -195,6 +238,16 @@ def main():
         d.roundaboutSpeedLimit = float(rb.speed_limit_ms)
       # A ring has no maxspeed to match. Keep the message valid for its hint.
       msg.valid = map_msg_valid(gps_ok=gps_ok, db_loaded=db.loaded, matched=match is not None, ring_hint=True)
+    if tesla is not None:
+      try:
+        flag = tesla.flag_tick(now, time.time(), lat, lon, bearing, _v_ego_ms(sm),  # noqa: TID251  wall time in the flag line
+                               match.road_name if match is not None else "", osm_raw_mph, gps_ok)
+        if flag is not None:
+          d.reviewFlag = True
+          d.reviewReason = flag["reason"]
+          cloudlog.info("mapd: review flag %s %s", flag["kind"], flag["reason"])
+      except Exception:
+        cloudlog.exception("mapd: review flag failed")
     pm.send("liveMapDataNAP", msg)
     rk.keep_time()
 

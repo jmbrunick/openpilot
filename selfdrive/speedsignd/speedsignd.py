@@ -94,6 +94,7 @@ from openpilot.selfdrive.speedsignd import others as other_signs_mod
 from openpilot.selfdrive.speedsignd import strip_geom
 from openpilot.selfdrive.speedsignd import sign_map
 from openpilot.selfdrive.speedsignd import confirm
+from openpilot.selfdrive.speedsignd.auto_confirm import AutoConfirm
 from openpilot.selfdrive.speedsignd.nv12 import copy_nv12_detect_crop, copy_nv12_rect, subcrop_nv12
 from openpilot.selfdrive.speedsignd.paths import (
   OTHER_SIGNS_PARAM, PARAM_KEY, default_log_path, default_onnx_path, default_other_signs_path, default_proposer_path,
@@ -1606,6 +1607,7 @@ def main():
   sign_seq = 0
   sign_loc: dict | None = None
   plate = confirm.PlateState()
+  auto_conf = AutoConfirm()   # NAPSignAutoConfirm, default off
   answer_t = 0.0
   exempt_next = 0.0
   # Proposer CPU seconds since the last reader sample. Subtracted from the
@@ -2349,6 +2351,14 @@ def main():
       except Exception:
         pass
     g_lat, g_lon, g_bearing, g_ok = gps_sample_from_sm(sm, now=now_mono)
+    auto_conf.refresh(others_params, now_mono)
+    if auto_conf.enabled and plate.proposal is not None and sm.valid.get("liveMapDataNAP", False):
+      try:
+        src = auto_conf.tick(plate, sm["liveMapDataNAP"], (g_lat, g_lon, g_bearing) if g_ok else None, now_mono)
+        if src is not None:
+          cloudlog.info("speedsignd: auto-confirmed sign source=%s", src)
+      except Exception:
+        cloudlog.exception("speedsignd: auto-confirm failed")
     _publish_live(
       pm, hold, signs, now_mono, messaging,
       detector.weights_missing(), detect_paused=sample.detect_paused, sign_loc=sign_loc,
