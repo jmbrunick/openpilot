@@ -17,7 +17,7 @@ vote can land; a neg_yellow / neg_other read is suppressed and never read again.
 While any 1-hit track is alive the proposer runs at PROPOSER_BURST_HZ, then
 returns to PROPOSER_HZ. Proposer time is not part of the reader duty budget.
 
-Weights: Release speed-sign-proposer-v1 / sign_proposer.onnx (Install weights).
+Weights: Release speed-sign-proposer-v2 / sign_proposer.onnx (Install weights).
 When the proposer file is missing, speedsignd keeps the legacy fixed tiles.
 """
 from __future__ import annotations

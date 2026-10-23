@@ -108,11 +108,19 @@ DEBOUNCE_WINDOW_S = 12.0
 
 # Two-stage strip proposer: 1-class "sign" YOLOv8 (width 0.125), input
 # [1,3,128,352] = lower-right strip x 964-1928, y 525-875, output [1,5,924].
-# Trained on Justin's drives + teacher pseudo-labels + night augmentation.
-PROPOSER_RELEASE_TAG = "speed-sign-proposer-v1"
+# v2 (psA, Oct 22): v1 data plus the missed 50 passes (Oct 22 6:21 / 5:48)
+# and mined hard positives / negatives. Same input, output and file name, so
+# speedsignd loads either file. Install weights replaces v1 with v2; if the
+# v2 download or checksum fails, the installed v1 file stays in place.
+PROPOSER_RELEASE_TAG = "speed-sign-proposer-v2"
 PROPOSER_ASSET_NAME = "sign_proposer.onnx"
-PROPOSER_SHA256 = "1ef4b7d4131678399e2a2b2049276637759f7e2e3829d1441e98a1e43be94422"
-PROPOSER_BYTES = 3732311
+PROPOSER_SHA256 = "e1ae6bea1e62aa5828c78471996bd8de064650ccf9558467aaa592967f377f45"
+PROPOSER_BYTES = 3732327
+
+# Previous proposer (two-stage launch, Oct 13). Kept for reference / rollback.
+PROPOSER_V1_RELEASE_TAG = "speed-sign-proposer-v1"
+PROPOSER_V1_SHA256 = "1ef4b7d4131678399e2a2b2049276637759f7e2e3829d1441e98a1e43be94422"
+PROPOSER_V1_BYTES = 3732311
 
 
 def proposer_asset_url(repo: str = GITHUB_REPO) -> str:

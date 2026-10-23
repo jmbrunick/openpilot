@@ -43,7 +43,7 @@ def default_pylib_dir() -> str:
 
 
 def default_proposer_path() -> str:
-  """Two-stage strip proposer (Release speed-sign-proposer-v1)."""
+  """Two-stage strip proposer (Release speed-sign-proposer-v2)."""
   override = os.environ.get("NAP_SPEED_SIGN_PROPOSER")
   if override:
     return override
