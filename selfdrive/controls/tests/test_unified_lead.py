@@ -112,12 +112,13 @@ def test_sep23_222_exemplars_match_a_braking_lead():
 
 
 def test_inside_fd_0803_and_short_headway():
-  """08:03 is about −0.40. Headway under 0.5 s reaches about −1."""
+  """08:03 was about −0.40 at 0.59 s headway. Since the Oct 23 minimum
+  headway floor (0.90 s) it is a gentle pull under −1.2. Headway under
+  0.5 s reaches about −1."""
   accel, _ = _settle(
     60, gap=19.7, v_ego=33.5, v_lead=32.5, a_lead=0.0, t_follow=0.9, v_ceiling=40.0,
   )
-  assert accel == pytest.approx(-0.40, abs=0.10)
-  assert accel <= -0.35
+  assert -1.2 <= accel <= -0.80
   for closing in (1.1, 0.8, 0.5, 0.35):
     sample = unified_follow_desired(
       19.7, 33.5, 33.5 - closing, 0.0, 0.9, v_ceiling=40.0,
@@ -1283,3 +1284,87 @@ def test_far_off_path_rapid_lead_does_not_firm_and_a_one_frame_spike_does_not_dr
   for _ in range(40):
     released = held.step(**{**kw, "y_rel": 2.8, "path_lat": 2.8})
   assert released > -0.5
+
+
+# Oct 23 16:52 CR 31: setting 1 (0.70 s + 6 m) let a slow close walk the
+# headway down to 0.47 s on a -0.2 m/s² command.
+from openpilot.selfdrive.controls.lib.unified_lead import (  # noqa: E402
+  HW_FLOOR_MARGIN_S,
+  HW_FLOOR_S,
+  _headway_floor_pull,
+  headway_floor_s,
+)
+
+
+@pytest.mark.parametrize("t_follow", [0.7, 0.9, 1.1, 1.5, 1.9])
+@pytest.mark.parametrize("v", [12.0, 22.0, 33.0])
+def test_floor_pull_is_zero_at_and_near_the_setpoint(t_follow, v):
+  gs = gap_set_m(v, t_follow)
+  floor = headway_floor_s(v, gs)
+  assert floor <= gs / v - HW_FLOOR_MARGIN_S + 1e-9
+  assert floor <= HW_FLOOR_S
+  for gap in (gs, gs - 0.5 * HW_FLOOR_MARGIN_S * v, floor * v):
+    assert _headway_floor_pull(gap, v, 1.0, gs) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_floor_pull_skips_a_lead_pulling_away_and_low_speed():
+  v = 23.0
+  gs = gap_set_m(v, 0.7)
+  gap = 0.6 * v
+  assert _headway_floor_pull(gap, v, 1.0, gs) < -0.3
+  assert _headway_floor_pull(gap, v, -0.5, gs) == pytest.approx(0.0, abs=1e-9)
+  assert _headway_floor_pull(0.6 * 4.0, 4.0, 1.0, gap_set_m(4.0, 0.7)) == 0.0
+
+
+def test_floor_pull_is_continuous_in_gap():
+  v = 23.0
+  prev = None
+  for i in range(400):
+    gap = 8.0 + i * 0.05
+    a = unified_follow_desired(gap, v, v - 1.0, 0.0, 0.7)
+    if prev is not None:
+      assert abs(a - prev) < 0.05
+    prev = a
+
+
+def test_setting1_slow_close_inside_gap_brakes_firmer_but_gently():
+  # 16:52:30 shape: 23.4 m/s ego, lead 22.4, headway ~0.7 s, setting 0.70 s.
+  v_e, v_l = 23.4, 22.4
+  a = unified_follow_desired(0.70 * v_e, v_e, v_l, 0.0, 0.7)
+  assert -1.0 <= a <= -0.45
+
+
+def test_setting1_slow_close_with_uncommanded_push_holds_headway(monkeypatch):
+  # First-order actuator plus a +0.3 m/s² push the command does not know
+  # about (incident 1). Headway stays above ~0.65 s where it reached 0.47 s.
+  import openpilot.selfdrive.controls.lib.unified_lead as ul
+
+  def run():
+    v_l = 22.0
+    v_e = 23.5
+    gap = 1.3 * v_e
+    a = 0.0
+    min_hw = 9.0
+    peak = 0.0
+    for _ in range(int(40 / DT)):
+      cmd = unified_follow_desired(gap, v_e, v_l, 0.0, 0.7)
+      peak = min(peak, cmd)
+      a += (cmd + 0.3 - a) * min(1.0, DT / 0.5)
+      v_e = max(0.0, v_e + a * DT)
+      gap += (v_l - v_e) * DT
+      min_hw = min(min_hw, gap / max(v_e, 1.0))
+    return min_hw, peak
+
+  new_hw, new_peak = run()
+  monkeypatch.setattr(ul, "HW_FLOOR_A", 0.0)
+  old_hw, _ = run()
+  assert new_hw >= old_hw + 0.08
+  assert new_hw >= 0.58
+  assert new_peak >= -1.0
+
+
+def test_floor_pull_leaves_fast_closes_to_the_kinematic_bound():
+  v = 25.0
+  gs = gap_set_m(v, 0.7)
+  assert _headway_floor_pull(0.5 * v, v, 4.0, gs) == 0.0
+  assert _headway_floor_pull(0.5 * v, v, 1.5, gs) < -0.5

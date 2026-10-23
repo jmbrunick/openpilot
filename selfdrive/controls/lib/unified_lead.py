@@ -181,6 +181,20 @@ GAP_CATCH_A_BOUND_RAMP = 0.10
 SHORT_HW_S = 0.60
 SHORT_HW_BAND_S = 0.30
 SHORT_HW_A = 0.60
+# Minimum-headway floor. Setting 1 (0.70 s plus 6 m) sat inside the gap on a
+# -0.2 m/s² command while a slow close walked headway down to 0.47 s
+# (Oct 23 16:52 CR 31). Under the floor the command firms up gently while
+# still closing. The floor sits under the setpoint headway by a margin so
+# settled following at any setting is untouched. The kinematic intrusion
+# room is not shrunk: that turned fast deep closes into -3.5 m/s² stabs.
+HW_FLOOR_S = 0.90
+HW_FLOOR_MARGIN_S = 0.08
+HW_FLOOR_BAND_S = 0.20
+HW_FLOOR_A = 0.60
+HW_FLOOR_MIN_V = 5.0
+# Slow closes only. A fast close is the kinematic bound's job.
+HW_FLOOR_CLOSE_FADE_LO_MS = 2.0
+HW_FLOOR_CLOSE_FADE_HI_MS = 3.5
 
 # Pulling away near the gap: positive command compresses to a trickle.
 # The compression fades out once the slack is large (real catch-up).
@@ -523,6 +537,28 @@ def _short_headway(gap: float, v_ego: float, v_close: float) -> float:
   return -SHORT_HW_A * w * closing_w
 
 
+def headway_floor_s(v_ego: float, gap_set: float) -> float:
+  """Minimum time headway to hold: HW_FLOOR_S, never above the setpoint
+  headway less a margin."""
+  hw_set = float(gap_set) / max(float(v_ego), 1.0)
+  return max(0.0, min(HW_FLOOR_S, hw_set - HW_FLOOR_MARGIN_S))
+
+
+def _headway_floor_pull(gap: float, v_ego: float, v_close: float, gap_set: float) -> float:
+  """Gentle extra pull once headway is under the floor while still closing."""
+  v_e = float(v_ego)
+  if v_e < HW_FLOOR_MIN_V:
+    return 0.0
+  hw = float(gap) / v_e
+  w = _smooth01((headway_floor_s(v_e, gap_set) - hw) / HW_FLOOR_BAND_S)
+  if w <= 0.0:
+    return 0.0
+  closing_w = _smooth01((float(v_close) + 0.3) / 0.8)
+  closing_w *= 1.0 - _smooth01((float(v_close) - HW_FLOOR_CLOSE_FADE_LO_MS)
+                               / (HW_FLOOR_CLOSE_FADE_HI_MS - HW_FLOOR_CLOSE_FADE_LO_MS))
+  return -HW_FLOOR_A * w * closing_w
+
+
 def _depart_fade(y_rel: float, curvature: float, gap: float,
                  path_lat: float | None = None) -> float:
   """0 on the travel path, 1 when the lead has left it.
@@ -728,7 +764,8 @@ def unified_follow_desired(gap: float, v_ego: float, v_lead: float, a_lead: floa
   glide_keep = GLIDE_KEEP + (GLIDE_KEEP_INSIDE - GLIDE_KEEP) * _smooth01(-slack / GLIDE_GAP_M)
   keep = 1.0 - glide_keep * glide
   a_gv = (k_g * slack + k_v * v_err) * keep
-  a_gv += _short_headway(gap_f, v_e, v_close)
+  a_gv += min(_short_headway(gap_f, v_e, v_close),
+              _headway_floor_pull(gap_f, v_e, v_close, gap_set))
   a_pd = a_gv + k_a * a_l
 
   a_kin = _a_kin(slack, v_close, gap_f, v_e, t_follow, v_l)
