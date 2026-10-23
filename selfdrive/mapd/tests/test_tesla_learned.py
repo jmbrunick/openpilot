@@ -3,6 +3,8 @@ import json
 import os
 from types import SimpleNamespace
 
+import pytest
+
 from openpilot.selfdrive.mapd import tesla_learned as tl
 from openpilot.selfdrive.mapd.review_flags import FLAGS_NAME, ReviewFlagger, SegmentClock
 from openpilot.selfdrive.mapd.speed_overrides import MPH_TO_MS, SpeedOverrides, along_way, effective_next
@@ -11,6 +13,13 @@ from openpilot.selfdrive.mapd.tests.test_speed_override_sections import mk_db, p
 
 # OSM: 55 the whole way. Posted (what Tesla shows): 45 from 1500 to 2500 m.
 ROAD = [(0, 4000, 55)]
+
+
+@pytest.fixture
+def db(tmp_path):
+  d = mk_db(tmp_path, short_ways(ROAD))
+  yield d
+  d.close()
 
 
 def tesla_at(x):
@@ -55,8 +64,7 @@ def nxt(db, x, o=None, lt=None, osm_next=None):
   return None if r is None else (round(r[0] / MPH_TO_MS), r[1])
 
 
-def test_promotion_needs_two_separate_passes(tmp_path):
-  db = mk_db(tmp_path, short_ways(ROAD))
+def test_promotion_needs_two_separate_passes(tmp_path, db):
   lt = tl.TeslaLearned(str(tmp_path / "l.json"), drive="d1")
   assert drive(lt, db, 1000.0) == []
   assert lt.rows and not lt.has_active()
@@ -74,16 +82,14 @@ def test_promotion_needs_two_separate_passes(tmp_path):
   assert all(r[tl.MPH] != r[tl.OSM] for r in lt.rows.values())
 
 
-def test_same_drive_after_30_min_counts(tmp_path):
-  db = mk_db(tmp_path, short_ways(ROAD))
+def test_same_drive_after_30_min_counts(tmp_path, db):
   lt = tl.TeslaLearned(str(tmp_path / "l.json"), drive="d1")
   drive(lt, db, 1000.0)
   assert drive(lt, db, 1000.0 + tl.PASS_GAP_S + 300) != []
   assert learned_mph(lt, db, 2000) == 45
 
 
-def test_replace_then_retire(tmp_path):
-  db = mk_db(tmp_path, short_ways(ROAD))
+def test_replace_then_retire(tmp_path, db):
   lt = tl.TeslaLearned(str(tmp_path / "l.json"), drive="d1")
   drive(lt, db, 0.0)
   lt.drive = "d2"
@@ -101,15 +107,13 @@ def test_replace_then_retire(tmp_path):
   assert lt.rows == {}
 
 
-def test_held_or_unknown_tesla_never_learned(tmp_path):
-  db = mk_db(tmp_path, short_ways(ROAD))
+def test_held_or_unknown_tesla_never_learned(tmp_path, db):
   lt = tl.TeslaLearned(str(tmp_path / "l.json"), drive="d1")
   drive(lt, db, 0.0, tesla=lambda x: 0)
   assert lt.rows == {}
 
 
-def test_slow_samples_ignored(tmp_path):
-  db = mk_db(tmp_path, short_ways(ROAD))
+def test_slow_samples_ignored(tmp_path, db):
   lt = tl.TeslaLearned(str(tmp_path / "l.json"), drive="d1")
   w = way_at(db, 2000)
   s = s_at(w, 2000)
@@ -139,8 +143,7 @@ def test_full_cap_under_1mb(tmp_path):
   assert os.path.getsize(lt.path) < 1_000_000
 
 
-def test_persistence_roundtrip_and_save_period(tmp_path):
-  db = mk_db(tmp_path, short_ways(ROAD))
+def test_persistence_roundtrip_and_save_period(tmp_path, db):
   path = str(tmp_path / "l.json")
   lt = tl.TeslaLearned(path, drive="d1")
   drive(lt, db, 0.0)
@@ -149,7 +152,8 @@ def test_persistence_roundtrip_and_save_period(tmp_path):
   assert not lt.save(120.0)              # inside SAVE_PERIOD_S
   assert lt.save(100.0 + tl.SAVE_PERIOD_S)
   assert not os.path.exists(path + ".tmp")
-  d = json.load(open(path))
+  with open(path) as fh:
+    d = json.load(fh)
   assert d["v"] == tl.VERSION
   lt2 = tl.TeslaLearned(path, drive="d2")
   lt2.load()
@@ -174,8 +178,7 @@ def _learned_45(tmp_path, db):
   return lt
 
 
-def test_lookahead_uses_learned_over_osm(tmp_path):
-  db = mk_db(tmp_path, short_ways(ROAD))
+def test_lookahead_uses_learned_over_osm(tmp_path, db):
   lt = _learned_45(tmp_path, db)
   # OSM has no change ahead; the learned 45 section starts ~500 m ahead
   assert nxt(db, 1000) is None
@@ -186,8 +189,7 @@ def test_lookahead_uses_learned_over_osm(tmp_path):
   assert m == 55 and abs(dist - 500) <= 100
 
 
-def test_confirmed_sign_beats_learned_in_lookahead(tmp_path):
-  db = mk_db(tmp_path, short_ways(ROAD))
+def test_confirmed_sign_beats_learned_in_lookahead(tmp_path, db):
   lt = _learned_45(tmp_path, db)
   o = SpeedOverrides(str(tmp_path / "o.json"))
   yes(o, db, 1400, 35, 90.0, 1)              # confirmed 35 sign covers the stretch
@@ -198,8 +200,7 @@ def test_confirmed_sign_beats_learned_in_lookahead(tmp_path):
   assert r is None or r[0] != 45
 
 
-def test_inactive_rows_not_used(tmp_path):
-  db = mk_db(tmp_path, short_ways(ROAD))
+def test_inactive_rows_not_used(tmp_path, db):
   lt = tl.TeslaLearned(str(tmp_path / "l.json"), drive="d1")
   drive(lt, db, 0.0)
   assert nxt(db, 1000, lt=lt if lt.has_active() else None) is None
@@ -210,8 +211,7 @@ class _Msg:
     return []
 
 
-def test_hook_learns_live_tesla_and_writes_one_review_note(tmp_path):
-  db = mk_db(tmp_path, short_ways(ROAD))
+def test_hook_learns_live_tesla_and_writes_one_review_note(tmp_path, db):
   fusion = TeslaLimitFusion()
   flagger = ReviewFlagger(out_dir=str(tmp_path / "nap"), seg_clock=SegmentClock(root=str(tmp_path / "logs")))
   hook = MapdTeslaHook(_Msg(), flagger=flagger, reader=SimpleNamespace(fusion=fusion, update=lambda evs: None), sock=object())
@@ -233,7 +233,7 @@ def test_hook_learns_live_tesla_and_writes_one_review_note(tmp_path):
   run("d1", 1_000_000.0, 0.0)
   run("d2", 1_100_000.0, 1000.0)
   assert hook.learned.has_active()
-  lines = [json.loads(s) for s in open(tmp_path / "nap" / FLAGS_NAME)]
+  lines = [json.loads(s) for s in (tmp_path / "nap" / FLAGS_NAME).read_text().splitlines()]
   assert lines and all(f["kind"] == "disagree" and f["reason"] == "tesla_osm_disagree_tesla_45_osm_55" for f in lines)
   n = len(lines)
   assert n <= 4    # one per active spot (200 m dedupe on a 1 km section)
@@ -244,7 +244,7 @@ def test_hook_learns_live_tesla_and_writes_one_review_note(tmp_path):
     hook.learned.rows[k][tl.ACTIVE] = 0
     hook.learned.rows[k][tl.N] = 1
   run("d3", 1_200_000.0, 2000.0)
-  assert len(open(tmp_path / "nap" / FLAGS_NAME).readlines()) == n
+  assert len((tmp_path / "nap" / FLAGS_NAME).read_text().splitlines()) == n
 
 
 def test_hook_primary_off_learns_nothing(tmp_path):
