@@ -4,6 +4,8 @@ import math
 import os
 from types import SimpleNamespace as NS
 
+import pytest
+
 from openpilot.selfdrive.mapd import temp_limit as T
 from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB
 from openpilot.selfdrive.mapd.speed_overrides import MPH_TO_MS
@@ -17,6 +19,16 @@ def pt(x_m, y_m=0.0):
   return (LAT0 + y_m / M_PER_DEG_LAT, LON0 + x_m / M_PER_DEG_LON)
 
 
+_DBS = []
+
+
+@pytest.fixture(autouse=True)
+def _close_dbs():
+  yield
+  while _DBS:
+    _DBS.pop().close()
+
+
 def mk_db(tmp_path, ways):
   """ways: [(way_id, name, mph, [(x, y), ...])]."""
   path = str(tmp_path / "osm.db")
@@ -27,6 +39,7 @@ def mk_db(tmp_path, ways):
   con.close()
   db = OsmSpeedLimitDB(path)
   assert db.open()
+  _DBS.append(db)
   return db
 
 
