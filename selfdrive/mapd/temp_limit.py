@@ -18,7 +18,7 @@ confirmed sign sections, Tesla and OSM, until the first of:
          never ends a Temp before the construction rule), or turns around on it. With no
          road at the read, the road mapd matches first (same name, or same
          class for unnamed roads) is the anchor. Leaving must last
-         ROAD_OFF_TICKS ticks AND ROAD_OFF_M metres, so a 3 s map-match
+         ROAD_OFF_TICKS ticks AND ROAD_OFF_M meters, so a 3 s map-match
          flicker onto a cross street (Oct 21 15:18:55 CDT, 304th Street) does
          not end it; map-limit changes are ignored on those off-road ticks.
   clear  no construction seen for NO_CUE_END_M of driving. Cues: a radar cone
@@ -63,7 +63,7 @@ NO_CUE_END_M = 5000.0
 MAP_CHANGE_MPH = 3
 MAP_CHANGE_TICKS = 2       # 1 s at 2 Hz
 ROAD_OFF_TICKS = 3         # 1.5 s at 2 Hz (GPS jitter at a junction)
-ROAD_OFF_M = 100.0         # and this far driven off the road: a junction mis-match is not a road change
+ROAD_OFF_M = 100.0         # and this far driven off the road: a junction mismatch is not a road change
 REVERSE_TICKS = 3
 REVERSE_MIN_MS = 3.0
 CHAIN_MAX_M = 50000.0      # far past NO_CUE_END_M: the length cap is never what ends a Temp
@@ -306,7 +306,7 @@ class TempLimit:
     st = self.state
     if st is None:
       return None
-    # road change / fork / turn-around (first, so a junction mis-match does not count as a map change)
+    # road change / fork / turn-around (first, so a junction mismatch does not count as a map change)
     off = rev = False
     if match is not None:
       off, rev = self._road_check(st, match, coords, lat, lon, bearing, v_ego)

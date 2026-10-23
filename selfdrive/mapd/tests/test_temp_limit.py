@@ -334,10 +334,12 @@ def test_request_temp_payload_and_state():
 
 def test_cleared_each_drive():
   root = os.path.join(os.path.dirname(__file__), "..", "..", "..")
-  keys = open(os.path.join(root, "common", "nap_params_keys.h")).read()
+  with open(os.path.join(root, "common", "nap_params_keys.h")) as f:
+    keys = f.read()
   for k in ("NAPSpeedSignTemp", "NAPSpeedSignTempState"):
     line = next(ln for ln in keys.splitlines() if f'"{k}"' in ln)
     assert "CLEAR_ON_OFFROAD_TRANSITION" in line and "CLEAR_ON_MANAGER_START" in line and "PERSISTENT" not in line
-  pc = open(os.path.join(root, "system", "manager", "process_config.py")).read()
+  with open(os.path.join(root, "system", "manager", "process_config.py")) as f:
+    pc = f.read()
   line = next(ln for ln in pc.splitlines() if '"mapd"' in ln)
   assert "only_onroad" in line                    # in-memory Temp dies with mapd at offroad
