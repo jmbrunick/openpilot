@@ -91,3 +91,21 @@ def test_refresh_reads_param():
   assert ac.enabled
   ac.refresh(P(False), 10.0)
   assert not ac.enabled
+
+
+def test_tick_passes_the_located_sign(tmp_path):
+  # the section starts at the sign (sign_map.locate), same as a Yes
+  p = PlateState()
+  s_lat, s_lon = ahead(45.0)
+  p.propose(50, 0.92, way_id=1557241351, heading=292.0, lat=LAT, lon=LON, read_id=("r", 1), now=100.0,
+            sign={"lat": s_lat, "lon": s_lon, "range_m": 45.3, "heading": 292.0})
+  calls = []
+
+  def req(mph, rec, seq, **kw):
+    calls.append(rec)
+    return True
+  ac = AutoConfirm(log_path=str(tmp_path / "auto_confirm.jsonl"))
+  ac.enabled = True
+  assert ac.tick(p, md(50, True), gps(80), 101.0, request=req) == "tesla"
+  assert calls[0]["sign_lat"] == s_lat and calls[0]["sign_lon"] == s_lon and calls[0]["sign_range_m"] == 45.3
+  assert calls[0]["lat"] == LAT

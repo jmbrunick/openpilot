@@ -315,7 +315,8 @@ def on_confirm_accuracy(mph: int, yes: bool, proposal: dict | None = None) -> No
   prop = proposal or {}
   rec = record_answer(int(mph), bool(yes), seq=int(prop["seq"]) if prop.get("seq") else None)
   if rec is not None and rec.get("stale_pending"):
-    rec = dict(rec, lat=None, lon=None, bearing=None)   # never another read's location
+    rec = dict(rec, lat=None, lon=None, bearing=None,   # never another read's location
+               sign_lat=None, sign_lon=None, sign_range_m=None)
   applied = False
   if prop.get("seq"):
     # The plate already shows the read; Yes only adds the map override.

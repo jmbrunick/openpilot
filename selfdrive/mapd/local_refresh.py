@@ -146,7 +146,7 @@ def merge_ways_into_db(
     for w in ways:
       OsmSpeedLimitDB.insert_way(
         con, w["way_id"], w["name"], w["highway"], w["maxspeed_ms"], w["coords"],
-        junction=w.get("junction") or "", estimated=bool(w.get("estimated")),
+        junction=w.get("junction") or "", estimated=bool(w.get("estimated")), ref=w.get("ref") or "",
       )
       inserted += 1
     OsmSpeedLimitDB.recount_ways(con)

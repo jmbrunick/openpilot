@@ -139,6 +139,14 @@ def _pack_coords(coords: list[tuple[float, float]]) -> bytes:
   return bytes(buf)
 
 
+def _row_ref(row) -> str:
+  """OSM ref of a ways row ("" for packs built before the ref column)."""
+  try:
+    return (row["ref"] or "") if "ref" in row.keys() else ""
+  except (IndexError, KeyError):
+    return ""
+
+
 def _unpack_coords(blob: bytes) -> list[tuple[float, float]]:
   n = _COORDS_HDR.unpack_from(blob)[0]
   rest = len(blob) - _COORDS_HDR.size
@@ -451,13 +459,14 @@ class OsmSpeedLimitDB:
     if self._con is None:
       return None
     try:
-      row = self._con.execute("SELECT way_id, name, highway, maxspeed_ms, coords FROM ways WHERE way_id = ?", (int(way_id),)).fetchone()
+      row = self._con.execute("SELECT * FROM ways WHERE way_id = ?", (int(way_id),)).fetchone()
     except sqlite3.Error:
       return None
     if row is None or not row["coords"]:
       return None
     return {"way_id": int(row["way_id"]), "name": row["name"] or "", "highway": row["highway"] or "",
-            "maxspeed_ms": float(row["maxspeed_ms"] or 0.0), "coords": _unpack_coords(row["coords"])}
+            "maxspeed_ms": float(row["maxspeed_ms"] or 0.0), "coords": _unpack_coords(row["coords"]),
+            "ref": _row_ref(row)}
 
   def ways_at(self, lat: float, lon: float, tol_m: float = 5.0) -> list[dict]:
     """Ways with an end node within tol_m of (lat, lon): the possible continuations at a way end."""
@@ -471,7 +480,7 @@ class OsmSpeedLimitDB:
         continue
       if _meters_between(c[0], (lat, lon)) <= tol_m or _meters_between(c[-1], (lat, lon)) <= tol_m:
         out.append({"way_id": int(row["way_id"]), "name": row["name"] or "", "highway": row["highway"] or "",
-                    "maxspeed_ms": float(row["maxspeed_ms"] or 0.0), "coords": c})
+                    "maxspeed_ms": float(row["maxspeed_ms"] or 0.0), "coords": c, "ref": _row_ref(row)})
     return out
 
   def close(self) -> None:
@@ -502,7 +511,8 @@ class OsmSpeedLimitDB:
         max_lon REAL NOT NULL,
         coords BLOB NOT NULL,
         junction TEXT,
-        estimated INTEGER NOT NULL DEFAULT 0
+        estimated INTEGER NOT NULL DEFAULT 0,
+        ref TEXT
       );
       CREATE VIRTUAL TABLE ways_rtree USING rtree(
         way_id, min_lat, max_lat, min_lon, max_lon
@@ -554,11 +564,14 @@ class OsmSpeedLimitDB:
     if "estimated" not in cols:
       # 1 = NAP state-default estimate (MN_169.14 / <ST>_default), 0 = OSM maxspeed.
       con.execute("ALTER TABLE ways ADD COLUMN estimated INTEGER NOT NULL DEFAULT 0")
+    if "ref" not in cols:
+      # OSM ref ("US 59"): sign sections continue on the same route number across name changes.
+      con.execute("ALTER TABLE ways ADD COLUMN ref TEXT")
 
   @staticmethod
   def insert_way(con: sqlite3.Connection, way_id: int, name: str, highway: str,
                  maxspeed_ms: float, coords: list[tuple[float, float]],
-                 junction: str = "", estimated: bool = False) -> None:
+                 junction: str = "", estimated: bool = False, ref: str = "") -> None:
     OsmSpeedLimitDB.ensure_junction_column(con)
     coords = simplify_coords(coords)
     if len(coords) < 2 or maxspeed_ms <= 0:
@@ -569,10 +582,10 @@ class OsmSpeedLimitDB:
     min_lon, max_lon = min(lons), max(lons)
     blob = _pack_coords(coords)
     con.execute(
-      "INSERT OR REPLACE INTO ways(way_id, name, highway, maxspeed_ms, min_lat, max_lat, min_lon, max_lon, coords, junction, estimated) "
-      + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT OR REPLACE INTO ways(way_id, name, highway, maxspeed_ms, min_lat, max_lat, min_lon, max_lon, coords, junction, estimated, ref) "
+      + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       (int(way_id), name or "", highway or "", float(maxspeed_ms), min_lat, max_lat, min_lon, max_lon, blob, junction or "",
-       1 if estimated else 0),
+       1 if estimated else 0, ref or ""),
     )
     con.execute(
       "INSERT OR REPLACE INTO ways_rtree(way_id, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?)",

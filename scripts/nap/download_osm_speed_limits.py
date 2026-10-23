@@ -54,7 +54,7 @@ def write_db(path: str, ways: list[dict], extra_meta: dict | None = None) -> int
   for w in ways:
     OsmSpeedLimitDB.insert_way(
       con, w["way_id"], w["name"], w["highway"], w["maxspeed_ms"], w["coords"],
-      junction=w.get("junction") or "",
+      junction=w.get("junction") or "", ref=w.get("ref") or "",
     )
     n += 1
   meta = {"way_count": str(n)}

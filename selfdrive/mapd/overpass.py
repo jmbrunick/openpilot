@@ -171,6 +171,7 @@ def ways_from_overpass(payload: dict, *, fill_unmarked: bool = False) -> list[di
       "source": source,
       "estimated": is_fill_source(source),
       "junction": tags.get("junction") or "",
+      "ref": tags.get("ref") or "",
     })
   if fill_unmarked:
     inherit_posted_neighbors(out)
