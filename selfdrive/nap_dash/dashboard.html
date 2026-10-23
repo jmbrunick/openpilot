@@ -223,12 +223,16 @@ button:active:not(:disabled) {
 #foack .card { max-width: none; height: 100%; text-align: center; padding: 16px; }
 #foack h2 { font-size: 34px; color: #c9c9c9; margin: 18px 0 24px; }
 #foack button { width: 46%; min-height: 96px; font-size: 32px; margin: 0 1%; }
-/* Speed-sign Yes/No: one prompt, the read mph, no second confirm. */
+/* Speed-sign Yes/No/Temp: one prompt, the read mph, no second confirm. */
 #ssign { z-index: 40; padding: 10px; }
 #ssign .card { max-width: none; height: 100%; text-align: center; padding: 16px; }
 #ssign h2 { font-size: 72px; color: #111; background: #fff; border: 6px solid #b42828; border-radius: 12px; margin: 12px auto 8px; max-width: 280px; line-height: 1.1; padding: 8px 0; }
 #ssign p { font-size: 28px; color: #e5e7eb; margin: 0 0 18px; }
-#ssign button { width: 46%; min-height: 96px; font-size: 32px; margin: 0 1%; }
+#ssign button { width: 31%; min-height: 96px; font-size: 32px; margin: 0 0.5%; }
+#ssign #ssign-temp { background: #c2560c; border-color: #f97316; color: #fff; }
+#stemp { position: fixed; top: 6px; right: 6px; z-index: 35; padding: 4px 10px; border-radius: 8px;
+  background: #c2560c; color: #fff; font-size: 20px; font-weight: bold; }
+#stemp.ended { background: #374151; }
 .hidden { display: none; }
 @media (min-width: 720px) {
   #content .row { width: 49.5%; margin: 0 0.5% 6px 0; }
@@ -278,9 +282,11 @@ button:active:not(:disabled) {
     <h2 id="ssign-mph"></h2>
     <p id="ssign-prompt">accurate?</p>
     <button id="ssign-no" type="button">No</button>
+    <button id="ssign-temp" type="button">Temp</button>
     <button id="ssign-yes" type="button" class="on">Yes</button>
   </div>
 </div>
+<div id="stemp" class="hidden"></div>
 <script>
 var manifest = null;
 var snap = null;
@@ -994,8 +1000,17 @@ setInterval(foPoll, 1500);
 // Speed-sign Yes/No. One prompt; a tap here or on the comma clears both.
 var ssBusy = false;
 var ssId = 0;
+function ssTempRender(data) {
+  var chip = document.getElementById("stemp");
+  if (!chip) return;
+  var t = data && data.temp_limit;
+  if (t && t.mph) { chip.textContent = "TEMP " + t.mph + " mph"; chip.className = ""; }
+  else if (t && t.ended) { chip.textContent = "Temp ended: " + t.ended; chip.className = "ended"; }
+  else chip.className = "hidden";
+}
 function ssRender(data) {
   var box = document.getElementById("ssign");
+  ssTempRender(data);
   if (data && data.note) setStatus(data.note, true);
   if (!data || !data.pending) { box.className = "overlay hidden"; return; }
   ssId = data.id;
@@ -1003,6 +1018,7 @@ function ssRender(data) {
   document.getElementById("ssign-prompt").textContent = data.prompt;
   document.getElementById("ssign-yes").textContent = data.yes;
   document.getElementById("ssign-no").textContent = data.no;
+  document.getElementById("ssign-temp").textContent = data.temp || "Temp";
   box.className = "overlay";
 }
 function ssPoll() {
@@ -1083,6 +1099,7 @@ function ssAnswer(answer) {
 }
 document.getElementById("ssign-yes").onclick = function () { ssAnswer("yes"); };
 document.getElementById("ssign-no").onclick = function () { ssAnswer("no"); };
+document.getElementById("ssign-temp").onclick = function () { ssAnswer("temp"); };
 ssPoll();
 setInterval(ssTick, 500);
 if (window.EventSource) ssStreamOpen(); else ssLongPoll();

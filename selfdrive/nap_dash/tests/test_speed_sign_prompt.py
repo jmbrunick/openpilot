@@ -166,3 +166,31 @@ def test_sources_do_not_subscribe_or_engage():
     assert "panda" not in text.lower()
     assert "controlsd" not in text
   assert "engaging openpilot from the web is not allowed" in server
+
+
+def test_mcu_temp_button_answers_temp(monkeypatch, tmp_path):
+  seen = []
+  monkeypatch.setattr(
+    "openpilot.selfdrive.speedsignd.mcu_prompt.on_confirm_accuracy",
+    lambda mph, yes, proposal=None: seen.append((mph, yes, dict(proposal or {}))),
+  )
+  p = _open(monkeypatch, tmp_path)
+  snap = read_sign(p)
+  assert snap["temp"] == "Temp"
+  done = handle_sign({"answer": "temp", "id": 9, "way_id": 999}, p)
+  assert done["pending"] is False
+  assert seen == [(35, "temp", {"seq": 9, "way_id": 111, "heading": 90.0})]
+  with pytest.raises(SignError, match="not waiting"):
+    handle_sign({"answer": "temp", "id": 9}, p)
+  html = (ROOT / "selfdrive/nap_dash/dashboard.html").read_text(encoding="utf-8")
+  assert 'id="ssign-temp"' in html and 'ssAnswer("temp")' in html and 'id="stemp"' in html
+
+
+def test_mcu_shows_running_temp_and_why_it_ended(monkeypatch, tmp_path):
+  import time
+  from openpilot.selfdrive.mapd import temp_limit as TL
+  p = Mem()
+  p.put(TL.STATE_PARAM, {"active": True, "mph": 45})
+  assert read_sign(p)["temp_limit"] == {"mph": 45}
+  p.put(TL.STATE_PARAM, {"active": False, "end": "road", "end_t": time.monotonic()})
+  assert read_sign(p)["temp_limit"] == {"ended": "road changed"}

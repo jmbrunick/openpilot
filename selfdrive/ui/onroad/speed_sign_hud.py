@@ -15,7 +15,8 @@ Yes/No ("is this accurate?") appears only with a live mph — not for NO WT
 or NO RT.
 Taps are logged to speedsign_feedback/ (JSONL + crop JPEG). Yes also becomes a local
 map override (mapd/speed_overrides.py) shown on the regular speed-limit sign;
-No is log-only. Nothing is uploaded to osm.org. Either tap hides this popup
+No is log-only. Temp applies the mph for this road, this drive only (mapd
+temp_limit.py) and is never saved. Nothing is uploaded to osm.org. Any tap hides this popup
 at once (AnswerGate). The same prompt is mirrored to nap_dash; either screen
 answers once.
 """
@@ -28,6 +29,7 @@ from openpilot.selfdrive.speedsignd.hud import (
   point_in_confirm_buttons,
   HUD_CONFIRM_NO,
   HUD_CONFIRM_PROMPT,
+  HUD_CONFIRM_TEMP,
   HUD_CONFIRM_YES,
   HUD_LABEL,
   LiveSignView,
@@ -40,9 +42,9 @@ from openpilot.selfdrive.speedsignd.hud import (
   TICI_CONFIRM_PROMPT_H,
   TICI_SIGN_H,
   TICI_SIGN_W,
-  accuracy_button_rects,
+  answer_button_rects,
   apply_runtime_plate,
-  hit_accuracy_button,
+  hit_answer_button,
   hud_confirm_visible,
   live_sign_from_event,
   mici_sign_origin,
@@ -77,6 +79,8 @@ _YES_BG = rl.Color(36, 130, 72, 235)
 _YES_BG_PRESSED = rl.Color(48, 160, 88, 255)
 _NO_BG = rl.Color(170, 40, 40, 235)
 _NO_BG_PRESSED = rl.Color(200, 52, 52, 255)
+_TEMP_BG = rl.Color(214, 108, 20, 235)
+_TEMP_BG_PRESSED = rl.Color(245, 130, 32, 255)
 _BTN_INK = rl.WHITE
 _PROMPT_INK = rl.Color(230, 230, 230, 255)
 
@@ -114,22 +118,24 @@ def mici_sign_rect(rect: rl.Rectangle) -> rl.Rectangle:
   return rl.Rectangle(x, y, MICI_W, MICI_H)
 
 
-def tici_confirm_rects(sign: rl.Rectangle) -> tuple[tuple[float, float, float, float], tuple[float, float, float, float]]:
-  return accuracy_button_rects(
+def tici_confirm_rects(sign: rl.Rectangle):
+  """(yes, no, temp)."""
+  return answer_button_rects(
     sign.x, sign.y, sign.width, sign.height,
     beside=False, btn_h=TICI_CONFIRM_BTN_H, gap=TICI_CONFIRM_GAP, prompt_h=TICI_CONFIRM_PROMPT_H,
   )
 
 
-def mici_confirm_rects(sign: rl.Rectangle) -> tuple[tuple[float, float, float, float], tuple[float, float, float, float]]:
-  return accuracy_button_rects(
+def mici_confirm_rects(sign: rl.Rectangle):
+  """(yes, no, temp)."""
+  return answer_button_rects(
     sign.x, sign.y, sign.width, sign.height,
     beside=True, btn_w=MICI_CONFIRM_BTN_W, gap=MICI_CONFIRM_GAP,
   )
 
 
-def on_confirm_accuracy(mph: int, yes: bool, proposal: dict | None = None) -> None:
-  """Comma and MCU Yes/No. Body lives in speedsignd/mcu_prompt.on_confirm_accuracy.
+def on_confirm_accuracy(mph: int, yes, proposal: dict | None = None) -> None:
+  """Comma and MCU Yes/No/Temp (yes = True / False / "temp"). Body lives in speedsignd/mcu_prompt.on_confirm_accuracy.
 
   Yes calls mapd request_override (NAPSpeedSignConfirmed) with the way and
   heading captured when the sign was read. No is log-only. This module does
@@ -196,6 +202,8 @@ def draw_accuracy_overlay(
   pressed_yes: bool = False,
   pressed_no: bool = False,
   proposed: int = 0,
+  temp: tuple[float, float, float, float] | None = None,
+  pressed_temp: bool = False,
 ) -> None:
   font_size = TICI_CONFIRM_FONT if tici else MICI_CONFIRM_FONT
   prompt = f"{int(proposed)} mph {HUD_CONFIRM_PROMPT}" if proposed else HUD_CONFIRM_PROMPT
@@ -212,6 +220,8 @@ def draw_accuracy_overlay(
     )
   _draw_confirm_button(yes, yes_label, font, font_size, _YES_BG, pressed_yes, _YES_BG_PRESSED)
   _draw_confirm_button(no, HUD_CONFIRM_NO, font, font_size, _NO_BG, pressed_no, _NO_BG_PRESSED)
+  if temp is not None:
+    _draw_confirm_button(temp, HUD_CONFIRM_TEMP, font, font_size, _TEMP_BG, pressed_temp, _TEMP_BG_PRESSED)
 
 
 _GATE = AnswerGate()
@@ -250,13 +260,13 @@ def draw_mici_speed_sign(rect: rl.Rectangle, font_bold, font_label, view: LiveSi
   return _draw_live_sign(mici_sign_rect, rect, font_bold, font_label, MICI_DIGIT, MICI_LABEL, view)
 
 
-def _safe_confirm(mph: int, yes: bool, proposal: dict | None = None) -> None:
+def _safe_confirm(mph: int, yes, proposal: dict | None = None) -> None:
   try:
     prop = proposal or {}
     if "seq" in prop:
       # Same once-per-id entry the MCU POST uses. Read-time way and heading.
       from openpilot.selfdrive.speedsignd.mcu_prompt import answer_prompt
-      answer_prompt(int(prop["seq"]), bool(yes), snapshot={
+      answer_prompt(int(prop["seq"]), yes if yes == "temp" else bool(yes), snapshot={
         "id": int(prop["seq"]),
         "mph": int(mph),
         "way_id": int(prop.get("way_id") or 0),
@@ -277,6 +287,7 @@ class SpeedSignHud(Widget):
     self._view = LiveSignView()
     self._yes = (0.0, 0.0, 0.0, 0.0)
     self._no = (0.0, 0.0, 0.0, 0.0)
+    self._temp = (0.0, 0.0, 0.0, 0.0)
     self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
     self._font_label: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
 
@@ -294,7 +305,7 @@ class SpeedSignHud(Widget):
   def owns_touch(self, x: float, y: float) -> bool:
     """Press is on a visible Yes/No button (onroad then skips the sidebar toggle)."""
     try:
-      return point_in_confirm_buttons(x, y, self._view, self._yes, self._no)
+      return point_in_confirm_buttons(x, y, self._view, self._yes, self._no, self._temp)
     except Exception:
       return False
 
@@ -319,20 +330,19 @@ class SpeedSignHud(Widget):
   def _layout(self) -> None:
     sign = tici_sign_rect(self._rect) if self._tici else mici_sign_rect(self._rect)
     if self._tici:
-      self._yes, self._no = tici_confirm_rects(sign)
+      self._yes, self._no, self._temp = tici_confirm_rects(sign)
     else:
-      self._yes, self._no = mici_confirm_rects(sign)
+      self._yes, self._no, self._temp = mici_confirm_rects(sign)
 
   @property
   def _hit_rect(self) -> rl.Rectangle:
     # Only Yes/No consume touches — the plate itself does not block onroad UI.
     if not hud_confirm_visible(self._view):
       return rl.Rectangle(0, 0, 0, 0)
-    yx, yy, yw, yh = self._yes
-    nx, ny, nw, nh = self._no
-    x = min(yx, nx)
-    y = min(yy, ny)
-    return rl.Rectangle(x, y, max(yx + yw, nx + nw) - x, max(yy + yh, ny + nh) - y)
+    rects = (self._yes, self._no, self._temp)
+    x = min(r[0] for r in rects)
+    y = min(r[1] for r in rects)
+    return rl.Rectangle(x, y, max(r[0] + r[2] for r in rects) - x, max(r[1] + r[3] for r in rects) - y)
 
   def _handle_mouse_press(self, mouse_pos: MousePos) -> None:
     # Answer on press, not release: the press is inside a drawn button right
@@ -346,9 +356,10 @@ class SpeedSignHud(Widget):
   def _answer_at(self, mouse_pos: MousePos) -> None:
     if not hud_confirm_visible(self._view):
       return
-    hit = hit_accuracy_button(mouse_pos.x, mouse_pos.y, self._yes, self._no)
-    if hit is None:
+    kind = hit_answer_button(mouse_pos.x, mouse_pos.y, self._yes, self._no, self._temp)
+    if kind is None:
       return
+    hit = "temp" if kind == "temp" else kind == "yes"
     # One answer per plate: ignore repeat taps on the same mph for 3 s.
     import time as _time
     now = _time.monotonic()
@@ -365,7 +376,7 @@ class SpeedSignHud(Widget):
       proposal = {"seq": int(v.proposed_seq), "way_id": int(v.proposed_way_id),
                   "heading": float(v.proposed_heading)}
       _GATE.answer_seq(int(v.proposed_seq))
-    # Hide the popup (question + prompt) this frame for Yes and No.
+    # Hide the popup (question + prompt) this frame for Yes, No and Temp.
     _GATE.answer(mph, hit, now)
     self._view = _GATE.filter(self._view, now)
     # Disk / params work off the UI thread so a slow write can never stall frames.
@@ -391,9 +402,10 @@ class SpeedSignHud(Widget):
       return
     mouse = rl.get_mouse_position()
     pressed = self.is_pressed
+    hit = hit_answer_button(mouse.x, mouse.y, self._yes, self._no, self._temp) if pressed else None
     draw_accuracy_overlay(
       sign, self._yes, self._no, self._font_label, tici=self._tici,
-      pressed_yes=pressed and hit_accuracy_button(mouse.x, mouse.y, self._yes, self._no) is True,
-      pressed_no=pressed and hit_accuracy_button(mouse.x, mouse.y, self._yes, self._no) is False,
+      pressed_yes=hit == "yes", pressed_no=hit == "no",
       proposed=int(view.proposed_mph) if view.proposal_mode else 0,
+      temp=self._temp, pressed_temp=hit == "temp",
     )
