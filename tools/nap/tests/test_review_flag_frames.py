@@ -30,8 +30,10 @@ def test_end_to_end_cuts_frames_and_crops(tmp_path):
   r = "000001bb--32fe2f4345"
   d = tmp_path / "routes" / f"{r}--11"
   d.mkdir(parents=True)
-  subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=526x330:rate=20", "-t", "20",
-                  str(d / "qcamera.ts")], check=True)
+  gen = subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=526x330:rate=20", "-t", "20",
+                        str(d / "qcamera.ts")], check=False)
+  if gen.returncode != 0:
+    pytest.skip("this ffmpeg build can't synthesize a test clip (no lavfi/encoder)")
   flags = tmp_path / "review_flags.jsonl"
   flags.write_text(json.dumps({"kind": "both", "reason": "both_maps_30_to_50", "mph": 50, "route": r, "segment": 11,
                                "seg_offset_s": 10.0, "lat": 45.3, "lon": -95.6}) + "\n")
