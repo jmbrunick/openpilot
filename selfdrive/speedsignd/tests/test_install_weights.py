@@ -458,3 +458,64 @@ def test_fetch_no_fallback_for_explicit_url(tmp_path, monkeypatch):
   monkeypatch.setattr(inst, "download_url", lambda u, d: (_ for _ in ()).throw(OSError("x")))
   with pytest.raises(OSError):
     inst.fetch_and_install(dest=str(tmp_path / "o.onnx"), url="file:///nope")
+
+
+# --- strip proposer v2 (psA) ---
+
+def test_proposer_manifest_is_v2():
+  from openpilot.selfdrive.speedsignd import weights_manifest as wm
+  assert wm.PROPOSER_RELEASE_TAG == "speed-sign-proposer-v2"
+  assert wm.PROPOSER_ASSET_NAME == "sign_proposer.onnx"
+  assert wm.PROPOSER_SHA256 == "e1ae6bea1e62aa5828c78471996bd8de064650ccf9558467aaa592967f377f45"
+  assert wm.PROPOSER_BYTES == 3732327
+  assert wm.PROPOSER_V1_SHA256 != wm.PROPOSER_SHA256
+  assert wm.proposer_asset_url().endswith("/releases/download/speed-sign-proposer-v2/sign_proposer.onnx")
+
+
+def test_proposer_install_downloads_v2_and_replaces_v1(tmp_path, monkeypatch):
+  from openpilot.selfdrive.speedsignd import install as inst
+  from openpilot.selfdrive.speedsignd import weights_manifest as wm
+  dest = tmp_path / "sign_proposer.onnx"
+  dest.write_bytes(b"v1-proposer")
+  body = b"psA-proposer"
+  calls = []
+
+  def fake_download(url, dst):
+    calls.append(url)
+    with open(dst, "wb") as f:
+      f.write(body)
+    return len(body)
+
+  monkeypatch.delenv("NAP_SPEED_SIGN_PROPOSER_URL", raising=False)
+  monkeypatch.setattr(inst, "download_url", fake_download)
+  monkeypatch.setattr(wm, "PROPOSER_SHA256", hashlib.sha256(body).hexdigest())
+  monkeypatch.setattr(wm, "PROPOSER_BYTES", len(body))
+  inst.fetch_and_install_proposer(dest=str(dest))
+  assert dest.read_bytes() == body
+  assert calls == [wm.proposer_asset_url()] and "speed-sign-proposer-v2" in calls[0]
+
+
+@pytest.mark.parametrize("bad", ["sha", "size", "404"])
+def test_proposer_failed_v2_keeps_installed_v1(tmp_path, monkeypatch, bad):
+  from openpilot.selfdrive.speedsignd import install as inst
+  from openpilot.selfdrive.speedsignd import weights_manifest as wm
+  dest = tmp_path / "sign_proposer.onnx"
+  dest.write_bytes(b"v1-proposer")
+  body = b"psA-proposer"
+
+  def fake_download(url, dst):
+    if bad == "404":
+      raise OSError("404")
+    with open(dst, "wb") as f:
+      f.write(body)
+    return len(body)
+
+  monkeypatch.delenv("NAP_SPEED_SIGN_PROPOSER_URL", raising=False)
+  monkeypatch.setattr(inst, "download_url", fake_download)
+  good_sha = hashlib.sha256(body).hexdigest()
+  monkeypatch.setattr(wm, "PROPOSER_SHA256", "0" * 64 if bad == "sha" else good_sha)
+  monkeypatch.setattr(wm, "PROPOSER_BYTES", len(body) + (3 if bad == "size" else 0))
+  with pytest.raises(OSError if bad == "404" else RuntimeError):
+    inst.fetch_and_install_proposer(dest=str(dest))
+  assert dest.read_bytes() == b"v1-proposer"
+  assert not os.path.exists(str(dest) + ".download")
