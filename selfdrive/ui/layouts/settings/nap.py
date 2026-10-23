@@ -37,13 +37,17 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   NAP_HYPERMILE_HILL_CLIMB,
   NAP_HYPERMILE_STEP_DOWN,
   NAP_ONE_PEDAL_LONG,
+  NAP_SIGN_AUTO_CONFIRM,
   NAP_SIGN_OTHERS,
   NAP_SPEED_SIGN_LOG,
+  NAP_TESLA_LIMIT_ENABLE,
   RADAR_OFFSET_MAX, RADAR_OFFSET_MIN,
   REFRESH_MAPS_INSTRUCTIONS,
   RESTORE_EPAS_INSTRUCTIONS,
+  SIGN_AUTO_CONFIRM_DESCRIPTION,
   SIGN_OTHERS_DESCRIPTION,
   SPEED_SIGN_LOG_DESCRIPTION,
+  TESLA_LIMIT_DESCRIPTION,
   WIPER_SPEED_DESCRIPTION, WIPER_SPEED_LABELS, WIPER_SPEED_VALUES,
   WIPER_SENSITIVITY_DEFAULT, WIPER_SENSITIVITY_DESCRIPTION,
   WIPER_SENSITIVITY_LABELS, WIPER_SENSITIVITY_VALUES,
@@ -374,6 +378,20 @@ class NAPLayout(Widget):
       NAP_SIGN_OTHERS,
       "Other Signs (display only)",
       SIGN_OTHERS_DESCRIPTION,
+      dest=self._speed_sign_items,
+    )
+
+    self._add_toggle(
+      NAP_TESLA_LIMIT_ENABLE,
+      "Tesla Map Limit",
+      TESLA_LIMIT_DESCRIPTION,
+      dest=self._speed_sign_items,
+    )
+
+    self._add_toggle(
+      NAP_SIGN_AUTO_CONFIRM,
+      "Auto-Confirm Signs",
+      SIGN_AUTO_CONFIRM_DESCRIPTION,
       dest=self._speed_sign_items,
     )
 
@@ -817,6 +835,8 @@ class NAPLayout(Widget):
     self._params.put("NAPMapSpeedAccel", MAP_SPEED_ACCEL_DEFAULT)
     self._params.remove("NAPMapSpeedDbPath")
     self._params.put_bool(NAP_SPEED_SIGN_LOG, False)
+    self._params.put_bool(NAP_TESLA_LIMIT_ENABLE, False)
+    self._params.put_bool(NAP_SIGN_AUTO_CONFIRM, False)
     self._params.put_bool(NAP_DRIVER_LAT_HANDOFF, True)
     self._params.put_bool(NAP_LOW_VIS_BACKOFF, True)
     self._params.put_bool(NAP_CONE_LINE_HOLD, True)

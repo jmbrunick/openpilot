@@ -209,7 +209,17 @@ def parse_confirmed(raw) -> dict | None:
         out[k] = float(d[k])
     except (TypeError, ValueError):
       pass
+  if d.get("auto") in AUTO_SOURCES:
+    out["auto"] = str(d["auto"])
   return out
+
+
+# Auto-confirm sources (NAPSignAutoConfirm). The stored row says which map agreed.
+AUTO_SOURCES = ("tesla", "osm")
+
+
+def row_source(conf: dict) -> str:
+  return f"sign_auto_{conf['auto']}" if conf.get("auto") in AUTO_SOURCES else "sign_yes"
 
 
 class SpeedOverrides:
@@ -307,7 +317,7 @@ class SpeedOverrides:
       self.entries = [e for e in self.entries if not replaced(e)]
       e = {"way_id": int(way_id), "heading": round(float(heading), 1), "mph": int(conf["mph"]),
            "both": True, "from_s": from_s, "dir": d, "chain": [[sp[0]] + [round(float(x), 1) for x in sp[1:]] for sp in chain],
-           "lat": conf.get("lat"), "lon": conf.get("lon"), "road": road, "t": round(now, 1), "source": "sign_yes"}
+           "lat": conf.get("lat"), "lon": conf.get("lon"), "road": road, "t": round(now, 1), "source": row_source(conf)}
       self.entries.append(e)
       self.save()
       return e
@@ -323,7 +333,7 @@ class SpeedOverrides:
     self.entries = [e for e in self.entries if not covered(e)]
     e = {"way_id": int(way_id), "heading": round(float(heading), 1), "mph": int(conf["mph"]),
          "both": True, "from_s": from_s, "dir": d,
-         "lat": conf.get("lat"), "lon": conf.get("lon"), "road": road, "t": round(now, 1), "source": "sign_yes"}
+         "lat": conf.get("lat"), "lon": conf.get("lon"), "road": road, "t": round(now, 1), "source": row_source(conf)}
     self.entries.append(e)
     self.save()
     return e
@@ -382,9 +392,18 @@ class SpeedOverrides:
 
 
 def request_override(mph: int, rec: dict | None, seq: float, params=None,
-                     way_id: int | None = None, heading: float | None = None) -> bool:
-  """HUD YES: hand the confirmed mph (+ the way / heading it was READ on) to mapd."""
+                     way_id: int | None = None, heading: float | None = None,
+                     auto: str | None = None) -> bool:
+  """HUD YES: hand the confirmed mph (+ the way / heading it was READ on) to mapd.
+
+  auto="tesla" / "osm" marks a speedsignd auto-confirm (NAPSignAutoConfirm):
+  same override path, the row is stored with source sign_auto_<auto>.
+  """
   payload: dict = {"mph": int(mph), "seq": float(seq)}
+  if auto is not None:
+    if auto not in AUTO_SOURCES:
+      return False
+    payload["auto"] = auto
   if way_id is not None:
     payload["way_id"] = int(way_id)
     if heading is not None:

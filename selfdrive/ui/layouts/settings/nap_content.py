@@ -106,6 +106,8 @@ HYPERMILE_HILL_CLIMB_DESCRIPTION = (
 
 NAP_SPEED_SIGN_LOG = "NAPSpeedSignLog"
 NAP_SIGN_OTHERS = "NAPSignOthers"
+NAP_TESLA_LIMIT_ENABLE = "NAPTeslaLimitEnable"
+NAP_SIGN_AUTO_CONFIRM = "NAPSignAutoConfirm"
 NAP_DRIVER_LAT_HANDOFF = "NAPDriverLatHandoff"
 NAP_LOW_VIS_BACKOFF = "NAPLowVisBackoff"
 NAP_CONE_LINE_HOLD = "NAPConeLineHold"
@@ -185,6 +187,20 @@ SIGN_OTHERS_DESCRIPTION = (
   "on the Speed Sign Reader's crops. Display and log only: it never brakes, steers or changes speed. "
   "Stop signs are only cross-checked against the driving model's own stop plan. "
   "Needs an optional other_signs.onnx in /data/media/0/nap; without it this does nothing."
+)
+
+TESLA_LIMIT_DESCRIPTION = (
+  "Default Off. Reads the instrument cluster's map speed limit from the Pre-AP chassis CAN "
+  + "(base map limit 0x238, held 3 s at high confidence; the MPP value is shown in logs only and never confirms). "
+  + "It is logged next to the OSM limit and never changes the speed limit openpilot uses. "
+  + "Also writes review notes to /data/media/0/nap/review_flags.jsonl where both maps change but no sign was read, "
+  + "so those spots can be checked for a sign. No bookmarks, alerts or voice notes. Applies within 15 s."
+)
+SIGN_AUTO_CONFIRM_DESCRIPTION = (
+  "Default Off. When a read sign matches the raw OSM limit or the Tesla base map limit "
+  + "(read on a known road, heading matches, confidence at least 85 percent), it is saved as if you tapped Yes "
+  + "and the Yes/No prompt clears. A read that matches neither map still asks you. "
+  + "The Tesla match needs Tesla Map Limit On."
 )
 
 SPEED_SIGN_LOG_DESCRIPTION = (
