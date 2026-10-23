@@ -68,6 +68,16 @@ READ_V_SLOW = 15.6   # 35 mph
 READ_V_FAST = 24.6   # 55 mph
 # Early read (predicted exit) needs at least this box height.
 EARLY_MIN_PX = 24.0
+# Hard floor for EVERY sharp read (planned burst, predicted burst crop,
+# fallback, exit / edge, early, re-read): the box that would be cropped must be
+# at least READ_MIN_PX tall AND estimated no farther than READ_MAX_RANGE_M
+# (range_m: 0.76 m plate at FOCAL_PX). Oct 22 DeGraff 30 read as 50 at 20 / 23 px
+# (101 / 89 m); the 6:21 Benson 50 read right at 34 px (59 m). Farther boxes are
+# a few px of digits and read as the wrong limit. 26 px (77 m) rather than 30:
+# on the v2.4 regression set a 30 px floor pushed reads closer, where the class
+# model misreads some signs (Oct 19 65 -> 45), while 26 px keeps every gate.
+READ_MIN_PX = 26.0
+READ_MAX_RANGE_M = 78.0
 # Speed-scaled scan rate: about one proposer frame per SCAN_SPACING_M, clamped.
 SCAN_SPACING_M = 12.0
 SCAN_HZ_MIN = 0.5
@@ -493,6 +503,7 @@ class SignTracker:
         again = tr.reads > 0
       if h >= need_px or x + w >= CAPTURE_EDGE_X or early or again:
         due.append(tr)
+    due = [tr for tr in due if read_size_ok(tr.read_box(t, v_ego)[3] if tr.planned else tr.box[3])]
     if not due:
       return None
     return max(due, key=lambda tr: tr.box[3])
@@ -895,6 +906,14 @@ def scan_hz_for_speed(v_ego: float | None) -> float:
 
 def range_m(h_px: float) -> float:
   return FOCAL_PX * SIGN_H_M / max(1.0, float(h_px))
+
+
+def read_size_ok(h_px: float | None) -> bool:
+  """Box big and near enough for a sharp read (READ_MIN_PX, READ_MAX_RANGE_M)."""
+  if h_px is None:
+    return False
+  h = float(h_px)
+  return h >= READ_MIN_PX and range_m(h) <= READ_MAX_RANGE_M
 
 
 def fit_range(history, v_ego: float | None):
