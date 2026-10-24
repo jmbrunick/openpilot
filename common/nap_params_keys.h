@@ -103,6 +103,8 @@
     {"NAPSignOthers", {PERSISTENT, BOOL, "0"}},
     // Night speed-sign short exposure: road cam trades exposure time for gain (same EV) while speedsignd tracks a sign. Default off.
     {"NAPSpeedSignShortExposure", {PERSISTENT, BOOL, "0"}},
+    // Speed-sign multi-frame stack: once a sign is tracked, align + average 3 consecutive road crops, read once. Default on.
+    {"NAPSpeedSignStack", {PERSISTENT, BOOL, "1"}},
     // Tesla Pre-AP map limit (CAN 0x238 mux 3 / 0x2F8) into liveMapDataNAP + review flags. Default off.
     {"NAPTeslaLimitEnable", {PERSISTENT, BOOL, "0"}},
     // Auto-confirm a located sign read that matches raw OSM or the Tesla base limit. Default off.
