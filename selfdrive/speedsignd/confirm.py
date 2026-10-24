@@ -123,7 +123,9 @@ def write_answer(seq: int, mph: int, yes: bool, params=None) -> bool:
     if params is None:
       from openpilot.common.params import Params
       params = Params()
-    params.put(ANSWER_PARAM, json.dumps({"seq": int(seq), "mph": int(mph), "yes": bool(yes)}))
+    # JSON-typed param: Params.put needs the dict. A json.dumps() string raises
+    # TypeError, so speedsignd never saw an MCU Yes/No (Oct 22 stuck 30).
+    params.put(ANSWER_PARAM, {"seq": int(seq), "mph": int(mph), "yes": bool(yes)})
     return True
   except Exception:
     return False
