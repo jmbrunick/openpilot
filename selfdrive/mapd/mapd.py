@@ -21,7 +21,7 @@ from openpilot.selfdrive.mapd.gps_fix import (
 )
 from openpilot.selfdrive.mapd.map_speed_policy import keep_rural_default_ms, map_source_for
 from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB
-from openpilot.selfdrive.mapd.speed_overrides import PARAM as SIGN_CONFIRMED_PARAM, SpeedOverrides, effective_next
+from openpilot.selfdrive.mapd.speed_overrides import CLEAR_PARAM as SIGN_CLEAR_PARAM, PARAM as SIGN_CONFIRMED_PARAM, SpeedOverrides, effective_next
 from openpilot.selfdrive.mapd.roundabout_map import PARAM_RING, RingCache, roundabout_comfort_speed_ms
 from openpilot.selfdrive.mapd.roundabout_status import RingDataWatch, map_msg_valid
 from openpilot.selfdrive.mapd.tesla_limit import PARAM_ENABLE as TESLA_PARAM, MapdTeslaHook
@@ -83,6 +83,7 @@ def main():
   last_path = db.path
 
   overrides = SpeedOverrides()
+  last_legacy_log = None
   ring_cache = RingCache()
   ring_watch = RingDataWatch()
   # NAPTeslaLimitEnable (default off): Tesla map limit + review flags. The
@@ -138,7 +139,7 @@ def main():
       raw_conf = params.get(SIGN_CONFIRMED_PARAM)
     except Exception:
       raw_conf = None
-    if raw_conf is not None or overrides.pending is not None:
+    if raw_conf is not None:
       try:
         added = overrides.consume(raw_conf, match, bearing, now, way_coords=db.way_coords, db=db)
         if raw_conf is not None:
@@ -149,10 +150,31 @@ def main():
           cloudlog.info("mapd: sign override way=%s heading=%s mph=%s", added["way_id"], added["heading"], added["mph"])
       except Exception:
         cloudlog.exception("mapd: sign override failed")
+    try:
+      clear_req = bool(params.get_bool(SIGN_CLEAR_PARAM))
+    except Exception:
+      clear_req = False
+    if clear_req:
+      try:
+        params.remove(SIGN_CLEAR_PARAM)
+        gone = (overrides.clear(int(match.way_id), bearing, lat, lon, match.coords or db.way_coords(int(match.way_id)))
+                if match is not None else [])
+        cloudlog.warning("mapd: sign override clear way=%s bearing=%s removed=%s",
+                         int(match.way_id) if match is not None else 0, bearing, [g["mph"] for g in gone])
+      except Exception:
+        cloudlog.exception("mapd: sign override clear failed")
     # Span rows need the way polyline; a match with a next limit can arrive
     # without coords, so fall back to the stored way.
     sign_ms = (overrides.limit_ms(int(match.way_id), bearing, lat, lon, match.coords or db.way_coords(int(match.way_id)))
                if match is not None else None)
+    legacy = overrides.find_legacy(int(match.way_id), bearing) if match is not None else None
+    lkey = (int(match.way_id), int(legacy["mph"])) if legacy is not None else None
+    if lkey is not None and lkey != last_legacy_log:
+      # Not applied. Logged so it can be checked against signs on later drives.
+      cloudlog.warning("mapd: legacy override present: %s mph vs OSM %.0f mph way=%s heading=%s name=%r (not applied)",
+                       int(legacy["mph"]), float(match.speed_limit_ms) * 2.23694, int(match.way_id),
+                       legacy.get("heading"), match.road_name)
+    last_legacy_log = lkey
 
     tesla_st = None
     if tesla is not None:
