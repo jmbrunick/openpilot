@@ -52,10 +52,10 @@ def test_unlockable_frame_falls_back():
   assert n == 1
 
 
-def test_config_default_on_and_respects_off():
+def test_config_default_off_and_respects_on():
   class P:
     def __init__(self, v): self.v = v
     def get(self, k): return self.v
     def get_bool(self, k): return self.v == b"1"
-  assert StackConfig().enabled(P(None), 0.0)
-  assert not StackConfig().enabled(P(b"0"), 0.0)
+  assert not StackConfig().enabled(P(None), 0.0)
+  assert StackConfig().enabled(P(b"1"), 0.0)

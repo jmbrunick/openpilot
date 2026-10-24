@@ -1,10 +1,15 @@
-"""Multi-frame sign stacking (NAPSpeedSignStack, default On on this branch).
+"""Multi-frame sign stacking (NAPSpeedSignStack, default Off).
 
 Once the tracker has a live sign, speedsignd copies the same bank rect from
 the next STACK_FRAMES-1 consecutive road frames. The read crop is cut from
 each bank, frames 2..N are aligned to frame 1 by integer phase correlation on
 Y (searched inside a small margin), then Y and UV are averaged and the reader
 runs ONCE on the stack. Any failure falls back to the single-frame crop.
+
+Oct 24 replay (111 labeled tracks, Oct 19 + Oct 23, v4 reader): single 85
+right / 21 wrong / 5 missed; this stack 78 / 27 / 6; ECC-affine stack 68 /
+28 / 15; sharpest-of-3 80 / 24 / 7. Averaging softens digit edges the
+reader was trained on, so this ships Off.
 """
 import numpy as np
 
@@ -89,10 +94,10 @@ def stack_crop(banks: list, rect) -> tuple[Nv12DetectCrop | None, int]:
 
 
 class StackConfig:
-  """Cached param read (every PARAM_POLL_S). Missing key / error -> default On."""
+  """Cached param read (every PARAM_POLL_S). Missing key / error -> default Off."""
   PARAM_POLL_S = 5.0
 
-  def __init__(self, default: bool = True):
+  def __init__(self, default: bool = False):
     self.default = default
     self._val = default
     self._next = 0.0
