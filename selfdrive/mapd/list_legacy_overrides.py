@@ -43,6 +43,8 @@ def rows(path: str, db: str) -> list[dict]:
     out.append({"legacy": is_legacy(e), "way_id": int(e["way_id"]), "heading": e.get("heading"), "mph": int(e["mph"]),
                 "osm_mph": None if o is None else round(o[2]), "osm_name": "" if o is None else o[0],
                 "road": e.get("road", ""), "t": e.get("t"), "lat": e.get("lat"), "lon": e.get("lon")})
+  if con is not None:
+    con.close()
   return out
 
 

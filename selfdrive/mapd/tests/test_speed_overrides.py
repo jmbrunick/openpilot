@@ -236,5 +236,6 @@ def test_list_legacy_script(tmp_path):
   con.execute("CREATE TABLE ways(way_id INTEGER, name TEXT, highway TEXT, maxspeed_ms REAL)")
   con.execute("INSERT INTO ways VALUES (18267060, 'US 12', 'trunk', ?)", (60 * MPH_TO_MS,))
   con.commit()
+  con.close()
   r = rows(p, db)
   assert r == [dict(r[0], legacy=True, mph=30, osm_mph=60)]

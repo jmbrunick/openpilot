@@ -204,6 +204,7 @@ def test_chain_rows_saved_and_legacy_kept_not_applied(tmp_path):
   assert rows[0] == legacy and any(r.get("chain") for r in rows)
   o2 = SpeedOverrides(p)                               # next drive: chain row came back from the file
   assert limit(o2, db, 1500) == 50 and len(o2.legacy) == 1
+  db.close()
 
 
 def test_clear_removes_chain_row_where_car_is(tmp_path):
@@ -221,3 +222,4 @@ def test_clear_removes_chain_row_where_car_is(tmp_path):
   assert [g["mph"] for g in gone] == [50]
   assert limit(o, db, 1500) == 60
   assert _read_json(p)["overrides"] == [legacy]   # legacy row stays
+  db.close()
