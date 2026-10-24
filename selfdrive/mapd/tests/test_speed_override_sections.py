@@ -10,6 +10,16 @@ LAT0, LON0 = 45.3150, -95.6000
 M_PER_DEG_LON = 111320.0 * math.cos(math.radians(LAT0))
 
 
+
+def _read_text(p):
+  with open(p) as f:
+    return f.read()
+
+
+def _read_json(p):
+  import json
+  return json.loads(_read_text(p))
+
 def pt(x_m):  # x meters east of LON0 along an east-west road
   return (LAT0, LON0 + x_m / M_PER_DEG_LON)
 
@@ -190,7 +200,7 @@ def test_chain_rows_saved_and_legacy_kept_not_applied(tmp_path):
   assert o.find_legacy(w["way_id"], 92.0)["mph"] == 30
   e = yes(o, db, 100, 50, 90.0, 1)
   assert e["chain"] and e["v"] == 2
-  rows = json.load(open(p))["overrides"]
+  rows = _read_json(p)["overrides"]
   assert rows[0] == legacy and any(r.get("chain") for r in rows)
   o2 = SpeedOverrides(p)                               # next drive: chain row came back from the file
   assert limit(o2, db, 1500) == 50 and len(o2.legacy) == 1
@@ -210,4 +220,4 @@ def test_clear_removes_chain_row_where_car_is(tmp_path):
   gone = o.clear(w["way_id"], 90.0, lat, lon, w["coords"])
   assert [g["mph"] for g in gone] == [50]
   assert limit(o, db, 1500) == 60
-  assert json.load(open(p))["overrides"] == [legacy]   # legacy row stays
+  assert _read_json(p)["overrides"] == [legacy]   # legacy row stays

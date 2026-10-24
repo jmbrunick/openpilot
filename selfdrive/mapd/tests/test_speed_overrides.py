@@ -3,6 +3,16 @@ from types import SimpleNamespace
 from openpilot.selfdrive.mapd.speed_overrides import MPH_TO_MS, PENDING_MAX_S, SpeedOverrides, parse_confirmed
 
 
+
+def _read_text(p):
+  with open(p) as f:
+    return f.read()
+
+
+def _read_json(p):
+  import json
+  return json.loads(_read_text(p))
+
 def m(way):
   return SimpleNamespace(way_id=way, road_name="CR 31")
 
@@ -175,26 +185,24 @@ def _legacy_file(p):
 
 
 def test_legacy_rows_kept_but_not_applied(tmp_path):
-  import json
   p = str(tmp_path / "o.json")
   rows = _legacy_file(p)
-  raw = open(p).read()
+  raw = _read_text(p)
   o = SpeedOverrides(p)
   assert o.limit_ms(18267060, 110.0) is None
   assert o.find_legacy(18267060, 110.0)["mph"] == 30
-  assert open(p).read() == raw                                  # load never rewrites
+  assert _read_text(p) == raw                                  # load never rewrites
   e = o.consume({"mph": 45, "seq": 3.0, "way_id": 777, "heading": 90.0, "lat": 44.9, "lon": -93.1}, None, None, 0.0)
   assert e["v"] == 2 and e["lat"] == 44.9 and e["lon"] == -93.1
-  data = json.load(open(p))["overrides"]
+  data = _read_json(p)["overrides"]
   assert data[0] == rows[0] and data[1]["way_id"] == 777          # legacy row untouched
   # A new versioned YES on the legacy way applies; the legacy row still stays.
   o.consume({"mph": 60, "seq": 4.0, "way_id": 18267060, "heading": 112.0}, None, None, 1.0)
   assert abs(o.limit_ms(18267060, 112.0) - 60 * MPH_TO_MS) < 1e-6
-  assert json.load(open(p))["overrides"][0] == rows[0]
+  assert _read_json(p)["overrides"][0] == rows[0]
 
 
 def test_clear_removes_current_way_only_and_keeps_legacy(tmp_path):
-  import json
   p = str(tmp_path / "o.json")
   _legacy_file(p)
   o = SpeedOverrides(p)
@@ -203,20 +211,19 @@ def test_clear_removes_current_way_only_and_keeps_legacy(tmp_path):
   gone = o.clear(18267060, 115.0)
   assert [g["mph"] for g in gone] == [60]
   assert o.limit_ms(18267060, 112.0) is None and o.find(99, 290.0)["mph"] == 40
-  data = json.load(open(p))["overrides"]
+  data = _read_json(p)["overrides"]
   assert any("v" not in r for r in data) and len(data) == 2
   assert o.clear(18267060, None) == []
 
 
 def test_new_yes_never_drops_legacy_row(tmp_path):
-  import json
   p = str(tmp_path / "o.json")
   rows = _legacy_file(p)
   o = SpeedOverrides(p)
   lat, lon = _at(0)
   o.consume({"mph": 60, "seq": 2.0, "way_id": 18267060, "heading": 292.0, "lat": lat, "lon": lon},
             None, 292.0, 0.0, way_coords=lambda w: W7)
-  assert json.load(open(p))["overrides"][0] == rows[0]
+  assert _read_json(p)["overrides"][0] == rows[0]
 
 
 def test_list_legacy_script(tmp_path):
