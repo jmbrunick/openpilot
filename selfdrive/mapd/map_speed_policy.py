@@ -355,7 +355,8 @@ def _sticky_decision(hold: MapCruiseHold, mode: int, posted_kph: float | None,
 
 
 def _apply_posted_change(hold: MapCruiseHold, posted_kph: float, prev: float, *,
-                         take_now: bool, resume_held: bool) -> MapCruiseDecision | None:
+                         take_now: bool, resume_held: bool,
+                         raw_kph: float | None = None) -> MapCruiseDecision | None:
   """Rebase MAX onto a new posted limit and forget a stalk set.
 
   Known a → known b and none → valid share this path, including how a
@@ -367,9 +368,17 @@ def _apply_posted_change(hold: MapCruiseHold, posted_kph: float, prev: float, *,
   hold.follow_override_until = 0.0
   hold.last_posted_kph = posted_kph
   hold.held_max_kph = float(posted_kph)
-  hold.last_raw_kph = float(posted_kph)
   hold.policy_kph = float(posted_kph)
   raised = float(posted_kph) > float(prev) + POSTED_LIMIT_EPS_KPH
+  # A raise writes posted onto pedal_speed (echo is self_wrote_pedal). A
+  # decrease writes nothing: pedal_speed still reads the old MAX. Keep that
+  # as last_raw so the next frame's old-vs-new gap is not read as a stalk
+  # step. Oct 23 US 59: 60 -> 55 is exactly a 5 mph hold step, which armed
+  # a sticky 60 in Follow and held MAX 60 for ~3 min.
+  if raised or take_now or resume_held or raw_kph is None or not (0.0 < float(raw_kph) < V_CRUISE_UNSET):
+    hold.last_raw_kph = float(posted_kph)
+  else:
+    hold.last_raw_kph = float(raw_kph)
   if take_now or resume_held:
     return None
   return MapCruiseDecision(
@@ -519,7 +528,7 @@ def decide_map_cruise(
     # must write the already-rebased held MAX onto pedal.
     changed = _apply_posted_change(
       hold, posted_kph, float(hold.last_posted_kph),
-      take_now=take_now, resume_held=resume_held,
+      take_now=take_now, resume_held=resume_held, raw_kph=raw_kph,
     )
     if changed is not None:
       return changed
@@ -551,6 +560,7 @@ def decide_map_cruise(
     if not posted_limits_same(prev, posted_kph):
       changed = _apply_posted_change(
         hold, posted_kph, prev, take_now=False, resume_held=resume_held,
+        raw_kph=raw_kph,
       )
       if changed is not None:
         return changed

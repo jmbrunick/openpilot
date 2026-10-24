@@ -885,3 +885,24 @@ def test_default_drop_no_harder_than_half():
       assert (cap - new) / 0.05 <= DEFAULT_DROP_A_MS2 + 1e-9
     cap = new
   assert cap > 30 * _MPH
+
+
+def test_follow_posted_5mph_drop_is_not_a_stalk_step():
+  """Oct 23 US 59: confirmed 60 -> map 55. The decrease writes no pedal, so
+  pedal_speed still reads 60 next frame. That 5 mph gap must not arm sticky."""
+  from openpilot.common.constants import CV
+  from openpilot.selfdrive.mapd.map_speed_policy import MapCruiseHold, decide_map_cruise, MODE_FOLLOW
+  h = MapCruiseHold()
+  k60, k55 = 60 * CV.MPH_TO_KPH, 55 * CV.MPH_TO_KPH
+  kw = dict(engaged=True, mode=MODE_FOLLOW, raw_kph=k60, now=0.0, traveled_kph=k60, long_active=True)
+  decide_map_cruise(h, posted_kph=k60, engage_rising=True, **kw)
+  decide_map_cruise(h, posted_kph=k60, engage_rising=False, **kw)
+  d = decide_map_cruise(h, posted_kph=k55, engage_rising=False, **kw)
+  assert not d.sticky and d.seed_kph is None
+  for _ in range(5):
+    d = decide_map_cruise(h, posted_kph=k55, engage_rising=False, **kw)
+    assert not d.sticky and d.seed_kph is None
+  assert h.sticky_set_kph is None
+  # A real stalk press afterwards still counts.
+  d = decide_map_cruise(h, posted_kph=k55, engage_rising=False, **{**kw, "raw_kph": k60 - 5 * CV.MPH_TO_KPH})
+  assert d.seed_kph is not None
