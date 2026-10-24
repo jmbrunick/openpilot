@@ -22,7 +22,7 @@ struct LiveMapDataNAP @0x81c2f05a394cf4af {
   roadName @7 :Text;
   highway @8 :Text;
   wayId @9 :UInt64;
-  source @10 :Text;                  # "osm"
+  source @10 :Text;                  # "sign" | "tesla" | "tesla_learned" | "osm" | "osm_default"
   dbLoaded @11 :Bool;
   matchDistance @12 :Float32;        # m, distance to matched way
   onRoundabout @13 :Bool;
@@ -30,7 +30,8 @@ struct LiveMapDataNAP @0x81c2f05a394cf4af {
   roundaboutDistance @15 :Float32;   # m to circulating way; 0 if on
   roundaboutSpeedLimit @16 :Float32; # m/s, OSM maxspeed on the RB way
   roundaboutWayId @17 :UInt64;
-  # Tesla Pre-AP map limit (NAPTeslaLimitEnable). CAN bus 0, log/confirm only.
+  # Tesla Pre-AP map limit (NAPTeslaLimitEnable or NAPTeslaLimitPrimary). CAN bus 0. Raw values:
+  # speedLimit / source carry the Tesla-first choice; these stay the plain debounced reads.
   teslaBaseMph @18 :Int16;           # 0x238 mux 3 base map limit, debounced (3 s, conf >= 90); 0 = unknown
   teslaMppMph @19 :Int16;            # 0x2F8 MPP limit, display only, never confirms; 0 = unknown
   teslaConf @20 :Int16;              # 0x238 UI_splineLocConfidence (latest)

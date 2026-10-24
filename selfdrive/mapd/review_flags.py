@@ -15,6 +15,12 @@ event is decided READ_AFTER_S after its last change:
   * otherwise (one map only / maps disagree)    -> review_single.jsonl
 A spot (DEDUPE_M, same heading, same new value) is logged once per 7 days.
 
+Tesla-learned sections (tesla_learned.py, NAPTeslaLimitPrimary): when a
+section where the Tesla base map disagrees with OSM becomes ACTIVE (same
+value on 2 passes), note_disagree() writes kind "disagree", reason
+tesla_osm_disagree_tesla_<t>_osm_<o>, into review_flags.jsonl with the same
+route / segment / offset fields and the same 7-day same-spot dedupe.
+
 Each line carries the route / segment / offset and the monotonic time of the
 change so tools/nap/review_flag_frames.py (box side) can cut camera frames.
 """
@@ -253,9 +259,36 @@ class ReviewFlagger:
     self._write(flag)
     return flag
 
+  def note_disagree(self, mono: float, wall: float, lat: float, lon: float, bearing: float | None, speed_ms: float,
+                    road: str, tesla_mph: int, osm_mph: int, way_id: int = 0) -> dict | None:
+    """A Tesla-vs-OSM learned section just became active: check this spot for a sign."""
+    seg = self.seg_clock.at(mono)
+    t = round(float(mono), 2)
+    flag = {
+      "kind": "disagree",
+      "reason": f"tesla_osm_disagree_tesla_{int(tesla_mph)}_osm_{int(osm_mph)}",
+      "mph": int(tesla_mph),
+      "wall": round(float(wall), 1),
+      "t_mono": t,
+      "frame_mono_ns": int(float(mono) * 1e9),
+      "route": seg["route"], "segment": seg["segment"], "seg_offset_s": seg["seg_offset_s"],
+      "lat": round(float(lat), 6), "lon": round(float(lon), 6), "bearing": round(float(bearing or 0.0), 1),
+      "speed_mph": round(float(speed_ms) * MS_TO_MPH, 1), "road": road or "",
+      "tesla": {"old": None, "new": int(tesla_mph), "t_mono": t},
+      "osm": {"old": None, "new": int(osm_mph), "t_mono": t},
+      "mpp_at_change": 0,
+      "reads_nearby": [m for (rt, m) in self.reads if abs(mono - rt) <= HISTORY_S],
+      "way_id": int(way_id),
+    }
+    if self._dupe(flag):
+      return None
+    self._write(flag)
+    return flag
+
   # ---- persistence ----
   def _path(self, kind: str) -> str:
-    return os.path.join(self.out_dir, FLAGS_NAME if kind == "both" else SINGLE_NAME)
+    # "both" and "disagree" (learned Tesla-vs-OSM) -> review_flags.jsonl; "single" -> review_single.jsonl
+    return os.path.join(self.out_dir, SINGLE_NAME if kind == "single" else FLAGS_NAME)
 
   def _load_recent(self) -> list[dict]:
     if self.recent is None:
