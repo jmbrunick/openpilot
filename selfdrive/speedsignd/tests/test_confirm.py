@@ -41,3 +41,13 @@ def test_timeout_clears_prompt_and_read_plate():
   assert p.confirmed_mph == 0
   assert p.propose(50, 0.9, read_id=("read", 1, 1.0), now=200.0) is None   # same read not re-asked
   assert p.plate_mph == 0
+
+
+def test_proposal_keeps_sign_location():
+  from openpilot.selfdrive.speedsignd.confirm import PlateState as PS
+  p = PS()
+  pr = p.propose(60, 0.9, way_id=7, heading=180.0, lat=44.79, lon=-95.8, read_id=("r", 1), now=1.0,
+                 sign={"lat": 44.7897, "lon": -95.8001, "range_m": 31.0})
+  assert pr.sign_fields() == {"sign_lat": 44.7897, "sign_lon": -95.8001, "sign_range_m": 31.0}
+  pr2 = PS().propose(60, 0.9, way_id=7, heading=180.0, lat=44.79, lon=-95.8, read_id=("r", 2), now=1.0)
+  assert pr2.sign_fields() == {}

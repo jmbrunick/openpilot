@@ -30,6 +30,29 @@ class Proposal:
   lon: float = 0.0
   read_id: object = None   # the one read this prompt (mph, way, heading, location) came from
   t: float = 0.0           # monotonic time the prompt opened
+  # Where the reader placed the sign itself (sign_map.locate); None when it could not.
+  # mapd starts the confirmed section here, not at the car's position at the read.
+  sign_lat: float | None = None
+  sign_lon: float | None = None
+  sign_range_m: float | None = None
+
+  def sign_fields(self) -> dict:
+    return {k: v for k, v in (("sign_lat", self.sign_lat), ("sign_lon", self.sign_lon),
+                              ("sign_range_m", self.sign_range_m)) if v is not None}
+
+
+def _sign_loc(sign: dict | None) -> tuple:
+  """(sign_lat, sign_lon, sign_range_m) from a sign_map record, Nones when absent."""
+  out = []
+  for k in ("lat", "lon", "range_m"):
+    try:
+      v = (sign or {}).get(k)
+      out.append(None if v is None else float(v))
+    except (TypeError, ValueError):
+      out.append(None)
+  if out[0] is None or out[1] is None:
+    out[0] = out[1] = None
+  return tuple(out)
 
 
 class PlateState:
@@ -43,7 +66,7 @@ class PlateState:
 
   def propose(self, mph: int, conf: float, *, way_id: int = 0, heading: float | None = None,
               lat: float | None = None, lon: float | None = None, read_id=None,
-              now: float | None = None) -> Proposal | None:
+              now: float | None = None, sign: dict | None = None) -> Proposal | None:
     """Open the prompt for one read. mph, way, heading and location always come
     from the same read: a newer read replaces the prompt and its location
     together (new seq), so an answer to the old seq is rejected. Only a repeat
@@ -60,7 +83,8 @@ class PlateState:
     self.seq += 1
     self.proposal = Proposal(mph, float(conf), self.seq, int(way_id or 0), float(heading or 0.0),
                              float(lat or 0.0), float(lon or 0.0), read_id,
-                             time.monotonic() if now is None else float(now))
+                             time.monotonic() if now is None else float(now),
+                             *_sign_loc(sign))
     return self.proposal
 
   def answer(self, raw) -> bool:

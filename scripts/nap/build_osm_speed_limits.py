@@ -177,6 +177,7 @@ def _ways_from_pyosmium(
         "source": source,
         "estimated": is_fill_source(source),
         "junction": tags.get("junction") or "",
+        "ref": w.tags.get("ref") or "",
       })
 
   print(f"Reading highway ways from {pbf}…", file=sys.stderr, flush=True)
@@ -272,7 +273,7 @@ def write_db(path: str, ways: list[dict], extra_meta: dict | None = None,
   for w in ways:
     OsmSpeedLimitDB.insert_way(
       con, w["way_id"], w["name"], w["highway"], w["maxspeed_ms"], w["coords"],
-      junction=w.get("junction") or "", estimated=bool(w.get("estimated")),
+      junction=w.get("junction") or "", estimated=bool(w.get("estimated")), ref=w.get("ref") or "",
     )
     n += 1
     if n % 100000 == 0:

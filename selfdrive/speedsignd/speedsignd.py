@@ -1830,7 +1830,11 @@ def main():
                 )
                 # The plate never follows a read; a decision only raises the prompt.
                 signs = []
+                placed = None
                 if released:
+                  # Locate the sign first: the prompt carries where the sign stands, so a Yes /
+                  # auto-confirm starts the map section at the sign, not at the car.
+                  placed = place_sign(diag, released, tr, sm)
                   way_id, way_hdg = diag.get("read_way") or (0, None)
                   meta = diag.get("read_jpg_meta") or {}
                   top = max(released, key=lambda s: float(s.conf))
@@ -1839,14 +1843,14 @@ def main():
                     heading=way_hdg if way_hdg is not None else meta.get("bearing"),
                     lat=meta.get("lat"), lon=meta.get("lon"),
                     read_id=("read", read_tid, float(diag.get("t_frame", now_mono))), now=now_mono,
+                    sign=placed,
                   )
                   if pr is not None and diag.get("read_jpg_meta") is not None:
                     # pending.json is this prompt's read only (keyed by seq).
                     pmeta = dict(meta, mph=int(top.mph), conf=round(float(top.conf), 3), seq=int(pr.seq),
-                                 way_id=int(way_id or 0))
+                                 way_id=int(way_id or 0), **pr.sign_fields())
                     two_stage.write_pending(pmeta, diag.get("read_jpg"))
                 if released:
-                  placed = place_sign(diag, released, tr, sm)
                   if placed is not None:
                     sign_seq += 1
                     sign_loc = dict(placed, seq=sign_seq)
