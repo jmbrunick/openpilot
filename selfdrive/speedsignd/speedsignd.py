@@ -1506,6 +1506,9 @@ def observe_model(watch: ModelWatch, sm, now: float | None = None) -> None:
 
 
 def main():
+  from openpilot.common.params import Params
+  from openpilot.selfdrive.speedsignd.night_exposure import NightExposure
+  from openpilot.selfdrive.speedsignd import stack as sign_stack
   from cereal import messaging
   from openpilot.common.realtime import Ratekeeper
   from openpilot.common.swaglog import cloudlog
@@ -1532,6 +1535,8 @@ def main():
   # Missing proposer file -> legacy fixed tiles (unchanged behavior).
   proposer = two_stage.Proposer(default_proposer_path())
   tracker = two_stage.SignTracker()
+  night_exp = NightExposure(Params())
+  stack_cfg = sign_stack.StackConfig()
   two_period_s = 1.0 / two_stage.PROPOSER_HZ
   last_speed_ms = None
   scan_i = 0
@@ -1817,6 +1822,7 @@ def main():
           )
           if not diag.get("tracker_applied"):
             tracker.update(diag.get("props") or [], float(diag.get("t_frame", now_mono)))
+          night_exp.update(bool(tracker.tracks), time.monotonic())
           read_tid = diag.get("read_tid")
           if reader_ran and read_tid is not None:
             for tr in tracker.tracks:
@@ -2005,7 +2011,7 @@ def main():
         if two:
           err = err + (
             f" two=props:{len(diag.get('props') or [])}/{float(diag.get('prop_ms') or 0.0):.0f}ms"
-            + f" read={diag.get('read_tid')} tracks={len(tracker.tracks)}"
+            + f" read={diag.get('read_tid')} tracks={len(tracker.tracks)} stack={diag.get('stack_n', 1)}"
           )
         (cloudlog.debug if (two and diag.get("read_tid") is None) else cloudlog.info)(
           "speedsignd infer %.0fms %s raw=%s hud=%s jsonl=%s%s",
@@ -2156,8 +2162,23 @@ def main():
           allow_exempt = now_mono >= exempt_next
           nv12 = strip
           stop_plan_now = other_signs_mod.model_stop_plan(sm["modelV2"], speed_ms) if others.active else False
+          # Stack: with a live track and a read allowed, copy the same bank
+          # from the next consecutive frames. The worker aligns + averages
+          # them and reads once. Off / no track / no frame -> single frame.
+          stack_banks = []
+          if (bank is not None and allow_read and tracker.tracks
+              and stack_cfg.enabled(others_params, now_mono)):
+            bank_rect = two_stage.frame_bank_rect(fw, fh, scan_rect)
+            for _ in range(sign_stack.STACK_FRAMES - 1):
+              nb = client.recv(timeout_ms=sign_stack.EXTRA_RECV_TIMEOUT_MS)
+              if nb is None:
+                break
+              eb = copy_nv12_rect(nb, bank_rect)
+              if eb is None:
+                break
+              stack_banks.append(eb)
           two_job = None if strip is None else (strip, bank, allow_read, t_frame, upper, scan_rect, speed_ms, stop_plan_now, allow_exempt,
-                                                 confirm.map_way_from_sm(sm))
+                                                 confirm.map_way_from_sm(sm), stack_banks)
         else:
           nv12 = copy_nv12_detect_crop(buf, which) if buf is not None else None
           two_job = None
@@ -2210,7 +2231,7 @@ def main():
             if not detector.compile_allowed_now():
               raise RuntimeError("compile-blocked while driving")
             assert job is not None
-            strip_c, bank_c, allow_read, t_fr, upper_c, scan_rect, v_job, stop_plan_job, allow_ex, way_job = job
+            strip_c, bank_c, allow_read, t_fr, upper_c, scan_rect, v_job, stop_plan_job, allow_ex, way_job, stack_b = job
             t0 = time.monotonic()
             props = proposer.propose(strip_c)
             if upper_c is not None:
@@ -2224,12 +2245,16 @@ def main():
             cap_c = None
             rect = None
             tid = None
+            stack_n = 1
             if cand is not None and bank_c is not None:
               rect = two_stage.capture_rect(
                 cand.read_box(t_fr, v_job) if cand.planned else cand.crop_box(),
               int(bank_c.frame_w), int(bank_c.frame_h),
               )
-              cap_c = subcrop_nv12(bank_c, rect)
+              if stack_b:
+                cap_c, stack_n = sign_stack.stack_crop([bank_c] + list(stack_b), rect)
+              else:
+                cap_c = subcrop_nv12(bank_c, rect)
               tid = None if cap_c is None else cand.tid
             signs_r: list = []
             written_r: list = []
@@ -2260,7 +2285,7 @@ def main():
               read_h=None if cand is None or cap_c is None else float(
                 (cand.read_box(t_fr, v_job) if cand.planned else cand.box)[3]),
               read_tid=tid, read_diag=read_diag, read_jpg=jpg,
-              tracker_applied=1, reader_ran=cap_c is not None, reader_s=reader_s,
+              tracker_applied=1, reader_ran=cap_c is not None, reader_s=reader_s, stack_n=stack_n,
               read_jpg_meta=None if cap_c is None else dict(
                 t=round(time.time(), 3),  # noqa: TID251
                 track_id=tid, crop=list(rect) if rect else None,

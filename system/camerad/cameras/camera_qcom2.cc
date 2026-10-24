@@ -14,6 +14,7 @@
 
 #include "common/params.h"
 #include "common/swaglog.h"
+#include "system/camerad/cameras/nap_short_exposure.h"
 
 
 ExitHandler do_exit;
@@ -43,6 +44,10 @@ public:
   float target_grey_fraction = 0.125;
 
   float fl_pix = 0;
+  // NAP night speed-sign short exposure (road cam only, default Off)
+  bool nap_se_enabled = false;
+  bool nap_se_active = false;
+  NapSeGate nap_se_gate;
   std::unique_ptr<PubMaster> pm;
 
   CameraState(SpectraMaster *master, const CameraConfig &config) : camera(master, config) {};
@@ -192,6 +197,31 @@ void CameraState::set_camera_exposure(float grey_frac) {
 
       update_exposure_score(desired_ev, t, g, gain);
     }
+  }
+
+  // NAP: speedsignd asked for a sharper road frame. Same EV, shorter time, more gain.
+  if (camera.cc.stream_type == VISION_STREAM_ROAD && !env_ctrl_exp_from_params) {
+    const uint32_t fid = camera.buf.cur_frame_data.frame_id;
+    if (fid % 100 == 0) {
+      static Params nap_params;
+      nap_se_enabled = nap_params.getBool("NAPSpeedSignShortExposure");
+    }
+    bool want = false;
+    if (nap_se_enabled && fid % 2 == 0) {
+      want = nap_se_request_live(nap_se_mono_ns());
+    } else if (nap_se_enabled) {
+      want = nap_se_active;  // check the file every other frame
+    }
+    bool was = nap_se_active;
+    nap_se_active = nap_se_gate.step(want) && new_exp_t > 0;
+    if (nap_se_active) {
+      NapExpChoice c = nap_short_exposure(desired_ev, new_exp_t, new_exp_g,
+                                          sensor->exposure_time_max / NAP_SE_CAP_DIV, sensor->exposure_time_min,
+                                          sensor->sensor_analog_gains, sensor->analog_gain_max_idx, get_gain_factor());
+      new_exp_t = c.t;
+      new_exp_g = c.g;
+    }
+    if (was != nap_se_active) LOGW("nap short exposure %s t=%d g=%d", nap_se_active ? "on" : "off", new_exp_t, new_exp_g);
   }
 
   measured_grey_fraction = grey_frac;
