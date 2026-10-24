@@ -155,7 +155,7 @@ def test_timeout_clears_the_prompt_and_skips_the_map(monkeypatch, tmp_path):
   assert called == []
   assert M.answer_prompt(pr.seq, True, params=p) is False
   assert plate.plate_mph == 45 and plate.confirmed_mph == 0 and plate.proposal is not None
-  assert plate.expire(pr.t + C.PROMPT_TIMEOUT_S)              # speedsignd timeout clears the read
+  assert plate.expire(pr.t + C.PROMPT_TIMEOUT_S + 0.01)   # +0.01: (t + 20) - t can round below 20              # speedsignd timeout clears the read
   assert plate.plate_mph == 0 and plate.proposal is None
   assert not plate.answer({"seq": pr.seq, "mph": 45, "yes": True})
   assert called == []

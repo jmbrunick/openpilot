@@ -10,6 +10,16 @@ LAT0, LON0 = 45.3150, -95.6000
 M_PER_DEG_LON = 111320.0 * math.cos(math.radians(LAT0))
 
 
+
+def _read_text(p):
+  with open(p) as f:
+    return f.read()
+
+
+def _read_json(p):
+  import json
+  return json.loads(_read_text(p))
+
 def pt(x_m):  # x meters east of LON0 along an east-west road
   return (LAT0, LON0 + x_m / M_PER_DEG_LON)
 
@@ -174,3 +184,42 @@ def test_legacy_bad_row_superseded(tmp_path):
   assert limit(o, db, 1500) == 30
   yes(o, db, 100, 60, 90.0, 1)
   assert limit(o, db, 1500) == 60
+
+
+def test_chain_rows_saved_and_legacy_kept_not_applied(tmp_path):
+  """Oct 22 hygiene on sign chains: a chain Yes persists, never drops the legacy row, legacy never applies."""
+  import json
+  db = mk_db(tmp_path, short_ways([(0, 3000, 60)]))
+  p = str(tmp_path / "o.json")
+  w = way_at(db, 1500)
+  legacy = {"way_id": w["way_id"], "heading": 90.0, "mph": 30, "lat": 0.0, "lon": 0.0, "t": 1.0, "source": "sign_yes"}
+  with open(p, "w") as f:
+    json.dump({"version": 1, "overrides": [legacy]}, f)
+  o = SpeedOverrides(p)
+  assert limit(o, db, 1500) == 60                      # legacy 30 not applied
+  assert o.find_legacy(w["way_id"], 92.0)["mph"] == 30
+  e = yes(o, db, 100, 50, 90.0, 1)
+  assert e["chain"] and e["v"] == 2
+  rows = _read_json(p)["overrides"]
+  assert rows[0] == legacy and any(r.get("chain") for r in rows)
+  o2 = SpeedOverrides(p)                               # next drive: chain row came back from the file
+  assert limit(o2, db, 1500) == 50 and len(o2.legacy) == 1
+  db.close()
+
+
+def test_clear_removes_chain_row_where_car_is(tmp_path):
+  import json
+  db = mk_db(tmp_path, short_ways([(0, 3000, 60)]))
+  p = str(tmp_path / "o.json")
+  legacy = {"way_id": way_at(db, 2500)["way_id"], "heading": 90.0, "mph": 30, "t": 1.0}
+  with open(p, "w") as f:
+    json.dump({"version": 1, "overrides": [legacy]}, f)
+  o = SpeedOverrides(p)
+  yes(o, db, 100, 50, 90.0, 1)
+  w = way_at(db, 1500)
+  lat, lon = pt(1500)
+  gone = o.clear(w["way_id"], 90.0, lat, lon, w["coords"])
+  assert [g["mph"] for g in gone] == [50]
+  assert limit(o, db, 1500) == 60
+  assert _read_json(p)["overrides"] == [legacy]   # legacy row stays
+  db.close()
