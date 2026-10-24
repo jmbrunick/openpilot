@@ -4,6 +4,7 @@ from openpilot.common.constants import CV
 from openpilot.selfdrive.controls.lib.gap_lock import gap_lock_hud_chip
 from openpilot.selfdrive.ui.onroad.exp_button import ExpButton
 from openpilot.selfdrive.ui.onroad.speed_sign_hud import SpeedSignHud
+from openpilot.selfdrive.ui.onroad.temp_limit_hud import TempEndNote, draw_end_note, draw_temp_plate, temp_from_md
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.multilang import tr
@@ -68,6 +69,9 @@ class HudRenderer(Widget):
     self.speed: float = 0.0
     self.map_speed_valid: bool = False
     self.map_speed_limit: float = 0.0
+    self.map_speed_temp: bool = False
+    self.temp_end_note: str | None = None
+    self._temp_end = TempEndNote()
     self.gap_lock_chip: str | None = None
 
     self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
@@ -109,6 +113,8 @@ class HudRenderer(Widget):
 
     self.map_speed_valid = False
     self.map_speed_limit = 0.0
+    self.map_speed_temp = False
+    self.temp_end_note = None
     self.gap_lock_chip = None
     if sm.valid.get("longitudinalPlan", False):
       self.gap_lock_chip = gap_lock_hud_chip(getattr(sm["longitudinalPlan"], "gapLockM", 0.0))
@@ -117,6 +123,8 @@ class HudRenderer(Widget):
       if md.speedLimitValid and md.speedLimit > 0:
         self.map_speed_valid = True
         self.map_speed_limit = md.speedLimit * speed_conversion
+        self.map_speed_temp = temp_from_md(md)[0]
+      self.temp_end_note = self._temp_end.update(md.tempEndSeq, md.tempEndReason)
 
   def _render(self, rect: rl.Rectangle) -> None:
     """Render HUD elements to the screen."""
@@ -224,8 +232,13 @@ class HudRenderer(Widget):
     y = rect.y + 45
     w, h = 132, 168
     sign = rl.Rectangle(x, y, w, h)
-    rl.draw_rectangle_rounded(sign, 0.12, 8, rl.WHITE)
-    rl.draw_rectangle_rounded_lines_ex(sign, 0.12, 8, 4, rl.Color(180, 40, 40, 255))
+    if self.temp_end_note:
+      draw_end_note(self._font_semi_bold, self.temp_end_note, x, y + h + 8)
+    if self.map_speed_temp:
+      draw_temp_plate(sign, self._font_bold)   # speed-sign Temp: this road, this drive
+    else:
+      rl.draw_rectangle_rounded(sign, 0.12, 8, rl.WHITE)
+      rl.draw_rectangle_rounded_lines_ex(sign, 0.12, 8, 4, rl.Color(180, 40, 40, 255))
     label = tr("LIMIT")
     label_w = measure_text_cached(self._font_semi_bold, label, 28).x
     rl.draw_text_ex(self._font_semi_bold, label, rl.Vector2(x + (w - label_w) / 2, y + 14), 28, 0, rl.Color(40, 40, 40, 255))

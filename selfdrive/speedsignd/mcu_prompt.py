@@ -1,10 +1,12 @@
-"""Pending speed-sign Yes/No, shared by the comma HUD and nap_dash.
+"""Pending speed-sign Yes/No/Temp, shared by the comma HUD and nap_dash.
 
 The HUD publishes the prompt it is showing (read speed, plus the way and
 heading captured when the sign was read). Either screen answers through
 answer_prompt(), once per prompt id. That calls on_confirm_accuracy, which
 is the comma Yes/No path: two_stage.record_answer, and on Yes
-mapd.speed_overrides.request_override (NAPSpeedSignConfirmed).
+mapd.speed_overrides.request_override (NAPSpeedSignConfirmed). Temp logs the
+answer as "temp" and hands the mph to mapd.temp_limit.request_temp
+(NAPSpeedSignTemp): a this-drive-only limit that is never saved.
 
 No cereal subscriber and no log fields. Nothing here brakes, steers, or
 engages.
@@ -23,6 +25,7 @@ from openpilot.selfdrive.speedsignd.hud import hud_confirm_visible
 # (never a guessed road); both screens show this briefly instead.
 NO_ROAD_NOTE = "Not saved to map"
 NOTE_S = 3.0
+TEMP_NOTE = "Temp {mph} this drive"
 
 try:
   from openpilot.common.swaglog import cloudlog
@@ -295,7 +298,7 @@ def sync_hud_prompt(view, params=None) -> bool:
     return False
 
 
-def on_confirm_accuracy(mph: int, yes: bool, proposal: dict | None = None) -> None:
+def on_confirm_accuracy(mph: int, yes, proposal: dict | None = None) -> None:
   """Yes/No feedback: append to /data/media/0/nap/speedsign_feedback/feedback.jsonl.
 
   Keeps the peak-size crop JPEG speedsignd saved for the plate (pending.jpg)
@@ -308,44 +311,63 @@ def on_confirm_accuracy(mph: int, yes: bool, proposal: dict | None = None) -> No
   and Map Speed Limit (MAX = limit + offset) use it now and on future drives
   (selfdrive/mapd/speed_overrides.py). No is log-only.
 
+  Temp (yes="temp"): the row is logged with answer "temp" (never
+  confirmed.jsonl), and NAPSpeedSignTemp hands the mph to mapd for this road,
+  this drive only (mapd/temp_limit.py). Nothing is saved to the map.
+
   way_id and heading come from the proposal captured when the sign was read.
   """
   import time
+  from openpilot.selfdrive.speedsignd.confirm import answer_kind
   from openpilot.selfdrive.speedsignd.two_stage import record_answer
+  kind = answer_kind(yes)
+  yes = kind == "yes"
   prop = proposal or {}
-  rec = record_answer(int(mph), bool(yes), seq=int(prop["seq"]) if prop.get("seq") else None)
+  seq = int(prop["seq"]) if prop.get("seq") else None
+  rec = (record_answer(int(mph), False, seq=seq, answer="temp") if kind == "temp"
+         else record_answer(int(mph), yes, seq=seq))
   if rec is not None and rec.get("stale_pending"):
     rec = dict(rec, lat=None, lon=None, bearing=None)   # never another read's location
   applied = False
   if prop.get("seq"):
     # The plate already shows the read; Yes only adds the map override.
     from openpilot.selfdrive.speedsignd.confirm import write_answer
-    if not write_answer(int(prop["seq"]), int(mph), bool(yes)):
+    if not write_answer(int(prop["seq"]), int(mph), "temp" if kind == "temp" else yes):
       cloudlog.warning("speed_sign_hud: answer param failed")
-  if yes and int(prop.get("way_id") or 0) <= 0:
+  if kind == "temp":
+    # This drive only, never saved. No read-time road: mapd anchors it on the road it is on now.
+    from openpilot.selfdrive.mapd.temp_limit import request_temp
+    applied = request_temp(int(mph), rec, read_seq=prop.get("seq"),
+                           way_id=prop.get("way_id"), heading=prop.get("heading"))
+  elif yes and int(prop.get("way_id") or 0) <= 0:
     # No road matched when the sign was read: never guess one. Nothing goes to mapd.
     cloudlog.info("speed_sign_hud: yes without a read-time road; not saved to map")
   elif yes:
     from openpilot.selfdrive.mapd.speed_overrides import request_override
     applied = request_override(int(mph), rec, time.monotonic(),
                                way_id=prop.get("way_id"), heading=prop.get("heading"))
-  cloudlog.info("speed_sign_hud feedback mph=%s yes=%s saved=%s jpg=%s lat=%s lon=%s realdata=%s applied=%s",
-                int(mph), bool(yes), rec is not None, (rec or {}).get("jpg"),
+  cloudlog.info("speed_sign_hud feedback mph=%s answer=%s saved=%s jpg=%s lat=%s lon=%s realdata=%s applied=%s",
+                int(mph), kind, rec is not None, (rec or {}).get("jpg"),
                 (rec or {}).get("lat"), (rec or {}).get("lon"), (rec or {}).get("realdata"), applied)
 
 
-def answer_prompt(prompt_id: int, yes: bool, params=None, snapshot: dict | None = None) -> bool:
+def answer_prompt(prompt_id: int, yes, params=None, snapshot: dict | None = None) -> bool:
   """Answer prompt `prompt_id` at most once. True when this call owned it.
+
+  `yes` is True (Yes), False (No) or "temp" (Temp: this road, this drive only).
 
   An open record wins over `snapshot` (the comma's in-memory copy). snapshot
   is only used when nothing is open, so a tap that lands before the first
   publish still answers, and a second tap does not. The stored way and heading
   are the ones published with the prompt. Callers cannot substitute another way.
   """
+  from openpilot.selfdrive.speedsignd.confirm import answer_kind
   try:
     prompt_id = int(prompt_id)
+    kind = answer_kind(yes)
   except (TypeError, ValueError):
     return False
+  yes = kind == "yes"
   owned = None
   try:
     params = _params(params)
@@ -370,10 +392,13 @@ def answer_prompt(prompt_id: int, yes: bool, params=None, snapshot: dict | None 
           owned = snap
       if owned is None:
         return False
-      rec = dict(owned, answered=True, yes=bool(yes))
+      rec = dict(owned, answered=True, yes=bool(yes), answer=kind)
       if yes and owned["way_id"] <= 0:
         import time
         rec.update(note=NO_ROAD_NOTE, note_t=time.monotonic())
+      elif kind == "temp":
+        import time
+        rec.update(note=TEMP_NOTE.format(mph=int(owned["mph"])), note_t=time.monotonic())
       _put(params, rec)
   except Exception:
     # The comma tap carries the read-time snapshot. A broken prompt record
@@ -389,7 +414,7 @@ def answer_prompt(prompt_id: int, yes: bool, params=None, snapshot: dict | None 
     elif owned is None:
       return False
   try:
-    on_confirm_accuracy(int(owned["mph"]), bool(yes), {
+    on_confirm_accuracy(int(owned["mph"]), "temp" if kind == "temp" else yes, {
       "seq": int(owned["id"]),
       "way_id": int(owned["way_id"]),
       "heading": float(owned["heading"]),

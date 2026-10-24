@@ -110,6 +110,10 @@
     {"NAPSpeedSignAnswer", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, JSON}},  // v2.3 HUD Yes/No -> speedsignd plate
     // Open speed-sign Yes/No, so nap_dash can show the same prompt. Display + map only.
     {"NAPSpeedSignPrompt", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, JSON}},
+    // Speed-sign Temp: HUD/MCU Temp -> mapd (this drive only, never saved), and mapd's
+    // Temp status for the MCU page. Both cleared on manager start and offroad.
+    {"NAPSpeedSignTemp", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, JSON}},
+    {"NAPSpeedSignTempState", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, JSON}},
     // Soft wheel lateral handoff. Default ON. Yield on driver intent
     // (sustained torsion + aligned rate + hands on). Stay yielded while
     // handsOnLevel >= 1; blend after ~80 ms hands-off. Hard brake during

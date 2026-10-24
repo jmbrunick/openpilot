@@ -2,6 +2,7 @@ import pyray as rl
 from dataclasses import dataclass
 from openpilot.common.constants import CV
 from openpilot.selfdrive.ui.mici.onroad.torque_bar import TorqueBar
+from openpilot.selfdrive.ui.onroad.temp_limit_hud import TempEndNote, draw_end_note, temp_from_md
 from openpilot.selfdrive.ui.onroad.speed_sign_hud import SpeedSignHud
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.system.ui.lib.application import gui_app, FontWeight
@@ -108,6 +109,9 @@ class HudRenderer(Widget):
     self._engaged: bool = False
     self.map_speed_valid: bool = False
     self.map_speed_limit: float = 0.0
+    self.map_speed_temp: bool = False
+    self.temp_end_note: str | None = None
+    self._temp_end = TempEndNote()
 
     self._can_draw_top_icons = True
     self._show_wheel_critical = False
@@ -172,11 +176,15 @@ class HudRenderer(Widget):
 
     self.map_speed_valid = False
     self.map_speed_limit = 0.0
+    self.map_speed_temp = False
+    self.temp_end_note = None
     if "liveMapDataNAP" in sm.valid and sm.valid["liveMapDataNAP"]:
       md = sm["liveMapDataNAP"]
       if md.speedLimitValid and md.speedLimit > 0:
         self.map_speed_valid = True
         self.map_speed_limit = md.speedLimit * speed_conversion
+        self.map_speed_temp = temp_from_md(md)[0]
+      self.temp_end_note = self._temp_end.update(md.tempEndSeq, md.tempEndReason)
 
   def _render(self, rect: rl.Rectangle) -> None:
     """Render HUD elements to the screen."""
@@ -278,14 +286,18 @@ class HudRenderer(Widget):
 
     if self.map_speed_valid:
       lim = str(round(self.map_speed_limit))
+      temp = self.map_speed_temp   # speed-sign Temp: this road, this drive (orange)
       rl.draw_text_ex(
         self._font_semi_bold,
-        f"OSM {lim}",
+        f"TEMP {lim}" if temp else f"OSM {lim}",
         rl.Vector2(x + 25, y + FONT_SIZES.set_speed + FONT_SIZES.max_speed - 4),
         22,
         0,
-        rl.Color(255, 255, 255, int(200 * alpha)),
+        rl.Color(255, 150, 60, int(255 * alpha)) if temp else rl.Color(255, 255, 255, int(200 * alpha)),
       )
+    if self.temp_end_note:
+      draw_end_note(self._font_semi_bold, self.temp_end_note, x + 25,
+                    y + FONT_SIZES.set_speed + FONT_SIZES.max_speed + 20, size=18)
 
   def _draw_current_speed(self, rect: rl.Rectangle) -> None:
     """Draw the current vehicle speed and unit."""

@@ -25,6 +25,7 @@ from openpilot.selfdrive.mapd.speed_overrides import PARAM as SIGN_CONFIRMED_PAR
 from openpilot.selfdrive.mapd.roundabout_map import PARAM_RING, RingCache, roundabout_comfort_speed_ms
 from openpilot.selfdrive.mapd.roundabout_status import RingDataWatch, map_msg_valid
 from openpilot.selfdrive.mapd.tesla_limit import PARAM_ENABLE as TESLA_PARAM, MapdTeslaHook
+from openpilot.selfdrive.mapd import temp_limit
 
 MAPD_HZ = 2.0
 RELOAD_PERIOD_S = 15.0
@@ -71,7 +72,7 @@ def _param_bool(params: Params, key: str) -> bool:
 
 def main():
   params = Params()
-  sm = messaging.SubMaster(["gpsLocationExternal", "gpsLocation", "carState", "liveSpeedSignNAP"])
+  sm = messaging.SubMaster(["gpsLocationExternal", "gpsLocation", "carState", "liveSpeedSignNAP", "coneLineNAP"])
   pm = messaging.PubMaster(["liveMapDataNAP"])
   rk = Ratekeeper(MAPD_HZ, print_delay_threshold=None)
 
@@ -89,6 +90,8 @@ def main():
   # `can` socket only exists while it is on.
   tesla: MapdTeslaHook | None = None
   auto_confirm_seq = 0
+  # Speed-sign Temp (NAPSpeedSignTemp): this drive only, in memory, never saved.
+  temp = temp_limit.TempLimit()
 
   def _publish_ring(payload: dict) -> None:
     try:
@@ -133,6 +136,25 @@ def main():
       last_gps_write = now
     v_ego_ms = _v_ego_ms(sm) if gps_ok else 0.0
     match = db.lookup(lat, lon, bearing, v_ego_ms=v_ego_ms) if gps_ok and db.loaded else None
+    end_seq0 = temp.end_seq
+    try:
+      temp.advance(now, _v_ego_ms(sm))
+      sign_live = sm["liveSpeedSignNAP"] if sm.recv_frame.get("liveSpeedSignNAP", -1) > 0 else None
+      raw_temp = params.get(temp_limit.PARAM)
+      if raw_temp is not None:
+        params.remove(temp_limit.PARAM)
+        started = temp.consume(raw_temp, match, lat if gps_ok else None, lon if gps_ok else None,
+                               bearing, db=db, sign_live=sign_live)
+        if started is not None:
+          cloudlog.info("mapd: temp limit %s mph start %s", started.mph, started.info)
+          temp_limit.log_event({"event": "start", "mph": started.mph, "read_seq": started.read_seq, **started.info})
+          temp_limit.write_state(params, temp, now)
+      if sm.updated.get("liveSpeedSignNAP", False):
+        temp.note_sign(sign_live)
+      if sm.updated.get("coneLineNAP", False):
+        temp.note_cones(sm["coneLineNAP"])
+    except Exception:
+      cloudlog.exception("mapd: temp limit input failed")
     # Driver-confirmed sign (HUD YES): key it to this way + heading, once.
     try:
       raw_conf = params.get(SIGN_CONFIRMED_PARAM)
@@ -212,12 +234,31 @@ def main():
       except Exception:
         cloudlog.exception("mapd: effective next limit failed")
         nxt = osm_next
+      # Temp beats everything above (sign sections, Tesla, OSM) until it ends.
+      try:
+        temp_ms = temp.tick(match, match.coords or db.way_coords(int(match.way_id)), lat, lon, bearing,
+                            _v_ego_ms(sm), float(d.speedLimit), osm_raw_mph,
+                            int(tesla_st.base_mph) if tesla_st is not None else 0,
+                            bool(tesla_st.valid) if tesla_st is not None else False)
+        nxt = temp_limit.apply_to_msg(d, temp, temp_ms, nxt)
+      except Exception:
+        cloudlog.exception("mapd: temp limit failed")
       d.nextSpeedLimit = float(nxt[0]) if nxt is not None else 0.0
       d.nextSpeedLimitDistance = float(nxt[1]) if nxt is not None else 0.0
       d.roadName = match.road_name
       d.highway = match.highway
       d.wayId = int(match.way_id)
       d.matchDistance = float(match.distance_m)
+    else:
+      try:
+        temp.tick(None, None, lat, lon, bearing, _v_ego_ms(sm), 0.0)
+        temp_limit.apply_to_msg(d, temp, None, None)
+      except Exception:
+        cloudlog.exception("mapd: temp limit failed")
+    if temp.end_seq != end_seq0 and temp.last_end is not None:
+      cloudlog.info("mapd: temp limit ended %s", temp.last_end)
+      temp_limit.log_event({"event": "end", **temp.last_end})
+      temp_limit.write_state(params, temp, now)
     # Same road as the published speed limit. Freeway / trunk matches drop
     # nearby residential loops (I-74 Maritime / Seaway false RB).
     current_hw = match.highway if match is not None else None
