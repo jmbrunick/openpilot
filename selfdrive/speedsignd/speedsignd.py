@@ -1506,6 +1506,8 @@ def observe_model(watch: ModelWatch, sm, now: float | None = None) -> None:
 
 
 def main():
+  from openpilot.common.params import Params
+  from openpilot.selfdrive.speedsignd.night_exposure import NightExposure
   from cereal import messaging
   from openpilot.common.realtime import Ratekeeper
   from openpilot.common.swaglog import cloudlog
@@ -1532,6 +1534,7 @@ def main():
   # Missing proposer file -> legacy fixed tiles (unchanged behavior).
   proposer = two_stage.Proposer(default_proposer_path())
   tracker = two_stage.SignTracker()
+  night_exp = NightExposure(Params())
   two_period_s = 1.0 / two_stage.PROPOSER_HZ
   last_speed_ms = None
   scan_i = 0
@@ -1817,6 +1820,7 @@ def main():
           )
           if not diag.get("tracker_applied"):
             tracker.update(diag.get("props") or [], float(diag.get("t_frame", now_mono)))
+          night_exp.update(bool(tracker.tracks), time.monotonic())
           read_tid = diag.get("read_tid")
           if reader_ran and read_tid is not None:
             for tr in tracker.tracks:
