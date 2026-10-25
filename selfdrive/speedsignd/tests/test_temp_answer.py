@@ -82,7 +82,7 @@ def test_temp_logs_temp_and_saves_nothing(monkeypatch, tmp_path):
   assert not (tmp_path / "map_speed_overrides.json").exists()
   temp = TL.parse_temp(p.store[TL.PARAM])
   assert temp["mph"] == 45 and temp["read_seq"] == 4 and temp["way_id"] == 111 and temp["lat"] == 45.0
-  answer_row = json.loads(p.store[C.ANSWER_PARAM])
+  answer_row = p.store[C.ANSWER_PARAM]           # JSON param: stored as the dict (hygiene fix)
   assert answer_row == {"seq": 4, "mph": 45, "yes": False, "answer": "temp"}
   rec = p.store[M.PROMPT_PARAM]
   assert rec["answered"] and rec["answer"] == "temp" and rec["yes"] is False
