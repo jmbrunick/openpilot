@@ -557,33 +557,55 @@ def route_ahead(db, way_id: int, coords, lat: float, lon: float, bearing: float,
 
 def effective_next(entries, db, way_id: int, coords, lat: float, lon: float, bearing: float | None,
                    cur_ms: float, cur_is_sign: bool, osm_next: tuple[float, float] | None,
-                   lead_m: float = 0.0) -> tuple[float, float] | None:
+                   lead_m: float = 0.0, learned=None) -> tuple[float, float] | None:
   """(next effective limit m/s, distance m) ahead, or None when it does not change.
 
   osm_next is mapd's OSM next (limit, distance) or None. lead_m is the GNSS-lag
-  lead mapd already subtracts from OSM next distances; override events get the same."""
-  if bearing is None or not any(e.get("chain") for e in entries):
+  lead mapd already subtracts from OSM next distances; override events get the same.
+
+  learned (NAPTeslaLimitPrimary, Oct 23 2026) is an optional callable
+  (way_id, s) -> m/s or None: an ACTIVE Tesla-learned section. Priority at each
+  point ahead: confirmed sign section > learned section > OSM. A learned value
+  is an event like a sign section (start / end / change); it never masks a
+  confirmed section. cur_ms / cur_is_sign describe the sign or OSM value here,
+  never the live Tesla value (Tesla has no lookahead)."""
+  has_chain = any(e.get("chain") for e in entries)
+  if bearing is None or (not has_chain and learned is None):
     return osm_next
   pieces = route_ahead(db, way_id, coords, lat, lon, float(bearing))
   if not pieces:
     return osm_next
+
+  def at(w, s, osm_ms):
+    e = chain_at(entries, int(w["way_id"]), s) if has_chain else None
+    if e is not None:
+      return int(e["mph"]) * MPH_TO_MS, True
+    if learned is not None:
+      lm = learned(int(w["way_id"]), s)
+      if lm is not None:
+        return float(lm), True
+    return osm_ms, False
+
   prev_ms, prev_sign = float(cur_ms), bool(cur_is_sign)
   if not prev_sign:   # compare OSM to OSM (the published value may be a rural-default hold)
-    prev_ms = float(pieces[0][0].get("maxspeed_ms") or prev_ms)
+    w0, s0 = pieces[0][0], pieces[0][1]
+    prev_ms = float(w0.get("maxspeed_ms") or prev_ms)
+    lm = learned(int(w0["way_id"]), s0) if learned is not None else None
+    if lm is not None:   # an active learned section here (no sign section here by cur_is_sign)
+      prev_ms, prev_sign = float(lm), True
   walked = 0.0
   for w, s_from, s_to, d, dist0 in pieces:
     osm_ms = float(w.get("maxspeed_ms") or 0.0)
     n = int(abs(s_to - s_from) // NEXT_STEP_M)
     for k in range(n + 1):
       s = s_from + d * k * NEXT_STEP_M
-      e = chain_at(entries, int(w["way_id"]), s)
-      ms = int(e["mph"]) * MPH_TO_MS if e is not None else osm_ms
+      ms, masked = at(w, s, osm_ms)
       dist = dist0 + k * NEXT_STEP_M
       walked = dist
       if abs(ms - prev_ms) <= 0.3:
-        prev_sign = e is not None
+        prev_sign = masked
         continue
-      if e is not None or prev_sign:
+      if masked or prev_sign:
         return ms, max(0.0, dist - NEXT_STEP_M / 2 - lead_m)
       # plain OSM -> OSM change, not masked: keep mapd's OSM next
       return osm_next   # (None when mapd's stub filter dropped it)
