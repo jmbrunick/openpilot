@@ -185,6 +185,15 @@ def main():
       except Exception:
         cloudlog.exception("mapd: Tesla map limit update failed")
 
+    tesla_st = None
+    if tesla is not None:
+      try:
+        tesla.update_can()
+        tesla_st = tesla.state(now)
+        tesla.note_sign(sm["liveSpeedSignNAP"] if sm.recv_frame.get("liveSpeedSignNAP", -1) > 0 else None, now)
+      except Exception:
+        cloudlog.exception("mapd: Tesla map limit update failed")
+
     msg = messaging.new_message("liveMapDataNAP")
     msg.valid = map_msg_valid(gps_ok=gps_ok, db_loaded=db.loaded, matched=match is not None, ring_hint=False)
     d = msg.liveMapDataNAP
