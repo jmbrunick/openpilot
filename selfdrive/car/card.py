@@ -459,7 +459,10 @@ class Car:
     md = self.sm['liveMapDataNAP'] if map_valid else None
     raw_posted_kph = None
     # Oct 25: a higher posted limit must hold RISE_HOLD_S before MAX sees it (drops immediate).
-    md_limit_ms = self._posted_rise.update(float(md.speedLimit) if md is not None else None, time.monotonic())
+    rise_db = getattr(self, "_posted_rise", None)
+    if rise_db is None:
+      self._posted_rise = rise_db = PostedRiseDebounce()
+    md_limit_ms = rise_db.update(float(md.speedLimit) if md is not None else None, time.monotonic())
     if md is not None and md_limit_ms is not None and md_limit_ms > 0:
       raw_posted_kph = float(md_limit_ms) * CV.MS_TO_KPH
     # Offset from raw OSM posted (mph). Hypermile eco / Step Down apply
