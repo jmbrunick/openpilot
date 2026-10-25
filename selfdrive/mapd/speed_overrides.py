@@ -52,12 +52,27 @@ applied to speedLimit, never removed by a new Yes or by Clear. mapd logs
 A YES without a read-time way stores nothing (no tap-time matching).
 NAPSpeedSignClearOverride (bool) removes the current rows (sign chains
 included) that cover where the car is now.
+
+At the sign (Oct 23 2026, Clarkfield US 59 / DeGraff US 12): speed-change
+signs stand where the map's own limit changes, so a section keyed to the car's
+read-time way and stopped at the first map change could end a meter after the
+sign. Now:
+  * the section starts at the SIGN (reader's located sign_lat / sign_lon, else
+    the forward range sign_range_m), not the car's position at the read; a sign
+    at / past the end of the read-time way starts on the next way ahead.
+  * same road = same name OR same route number (OSM ref when the map has it,
+    or a route-style name: "US 59" == "US Highway 59").
+  * a sign within CARRY_M of a map limit change carries onto the first next way
+    even though its map limit differs (and, there only, across a name change
+    when that way is the single straight-through continuation); after that it
+    stops at the next map limit change as before.
 """
 from __future__ import annotations
 
 import json
 import math
 import os
+import re
 import time
 
 PARAM = "NAPSpeedSignConfirmed"
@@ -71,6 +86,9 @@ MAX_ENTRIES = 5000
 CHAIN_MAX_M = 10000.0  # cap on how far one confirmed sign reaches
 JOIN_TOL_M = 5.0       # way end nodes closer than this are connected
 SAME_SIGN_M = 40.0     # a YES this close (same direction) replaces that sign's row
+CARRY_M = 150.0        # a sign this close to a map limit change carries past it (once)
+SIGN_AHEAD_MAX_M = 150.0   # sanity cap on how far ahead of the read point the sign can be
+STRAIGHT_DEG = 30.0    # straight-through continuation at a way end (name change at the sign)
 
 
 def overrides_path() -> str:
@@ -128,11 +146,72 @@ def _near(a, b, tol: float = JOIN_TOL_M) -> bool:
   return math.hypot(*_xy(a[0], a[1], b[0], b[1])) <= tol
 
 
-def _same_road(name: str, highway: str, w: dict) -> bool:
+_ROUTE_PATTERNS = (
+  # (prefix key, regex) -- "US 59", "US Highway 59", "U.S. Hwy 59", "MN 7", "State Highway 7",
+  # "County Road 31", "CR 31", "CSAH 31", "I 90", "Interstate 90".
+  ("us", r"^u\.?\s?s\.?\s*(?:highway|hwy|route|rte)?\s*(\d+[a-z]?)$"),
+  ("i", r"^(?:i|interstate)(?:\s*-\s*|\s+|-?)(?:highway\s*)?(\d+)$"),
+  ("cr", r"^(?:county\s+(?:road|highway|rd|hwy|state\s+aid\s+highway)|cr|csah|co\.?\s*rd\.?|co\.?\s*hwy)\s*(\d+[a-z]?)$"),
+  ("st", r"^(?:mn|wi|ia|nd|sd|il|in|ky|th|sh|sr|state\s+(?:highway|hwy|route|road|trunk\s+highway)"
+         + r"|(?:minnesota|wisconsin|iowa)\s+(?:state\s+)?(?:highway|hwy|trunk\s+highway))\s*(\d+[a-z]?)$"),
+)
+
+
+def route_keys(*labels: str) -> set[str]:
+  """Route numbers named by OSM name / ref strings ("US 59;MN 7" -> {"us59", "st7"})."""
+  out: set[str] = set()
+  for lab in labels:
+    for part in str(lab or "").replace(",", ";").split(";"):
+      t = " ".join(part.strip().lower().split())
+      if not t:
+        continue
+      for key, pat in _ROUTE_PATTERNS:
+        m = re.match(pat, t)
+        if m:
+          out.add(key + m.group(1))
+          break
+  return out
+
+
+def _same_road(name: str, highway: str, w: dict, ref: str = "") -> bool:
+  """Same name, or a shared route number (OSM ref, or a route-style name). Unnamed: same class."""
   a, b = (name or "").strip().lower(), (w.get("name") or "").strip().lower()
+  if a and a == b:
+    return True
+  ka, kb = route_keys(name, ref), route_keys(w.get("name") or "", w.get("ref") or "")
+  if ka and ka & kb:
+    return True
   if a or b:
-    return a == b
+    return False
   return (highway or "").strip().lower() == (w.get("highway") or "").strip().lower()
+
+
+def _end_heading(coords, at_end: bool) -> float:
+  """Travel bearing leaving the way at its last node (at_end) or its first node (traveling against it)."""
+  return _bearing(coords[-2], coords[-1]) if at_end else _bearing(coords[1], coords[0])
+
+
+def _start_heading(w_coords, end) -> float:
+  """Travel bearing entering way w at `end`."""
+  return _bearing(w_coords[0], w_coords[1]) if _near(w_coords[0], end) else _bearing(w_coords[-1], w_coords[-2])
+
+
+def _next_way(db, end, h_in: float, name: str, hw: str, ref: str, seen: set, straight_ok: bool):
+  """The single continuation at a way end: same road (name / ref), else (straight_ok) the single
+  straight-through way. None at a road change or a fork."""
+  ways = [w for w in db.ways_at(end[0], end[1], JOIN_TOL_M) if int(w["way_id"]) not in seen]
+  same = [w for w in ways if _same_road(name, hw, w, ref)]
+  if len(same) == 1:
+    return same[0]
+  if same or not straight_ok:
+    return None
+  straight = [w for w in ways if len(w["coords"]) >= 2
+              and heading_delta(_start_heading(w["coords"], end), h_in) <= STRAIGHT_DEG]
+  return straight[0] if len(straight) == 1 else None
+
+
+def _r6(x):
+  return None if x is None else round(float(x), 6)
 
 
 def _mph(ms) -> int:
@@ -142,10 +221,45 @@ def _mph(ms) -> int:
     return 0
 
 
-def build_chain(way_id: int, from_s: float, d: int, coords, db, max_m: float = CHAIN_MAX_M) -> list[list]:
+def _walk(db, way_id: int, s: float, d: int, coords, skip_m: float, info: dict | None):
+  """Move skip_m meters ahead of (way_id, s) in direction d along the road. Returns
+  (way_id, s, d, coords, info, moved_m). Crosses way ends into the next way ahead (same road, or
+  the single straight-through way); stops at the last way end it can reach."""
+  moved = 0.0
+  seen = {int(way_id)}
+  while True:
+    L = _poly_len(coords)
+    rem = (L - s) if d > 0 else s
+    if skip_m - moved <= rem + 0.05:
+      s = s + d * max(0.0, skip_m - moved)
+      return int(way_id), max(0.0, min(L, s)), d, coords, info, skip_m
+    moved += rem
+    end = coords[-1] if d > 0 else coords[0]
+    if info is None or db is None or not hasattr(db, "ways_at"):
+      return int(way_id), (L if d > 0 else 0.0), d, coords, info, moved
+    w = _next_way(db, end, _end_heading(coords, d > 0), info.get("name", ""), info.get("highway", ""),
+                  info.get("ref", ""), seen, straight_ok=True)
+    if w is None:
+      return int(way_id), (L if d > 0 else 0.0), d, coords, info, moved
+    way_id, coords, info = int(w["way_id"]), w["coords"], w
+    seen.add(way_id)
+    if _near(coords[0], end):
+      d, s = 1, 0.0
+    else:
+      d, s = -1, _poly_len(coords)
+
+
+def build_chain(way_id: int, from_s: float, d: int, coords, db, max_m: float = CHAIN_MAX_M,
+                carry_m: float = CARRY_M, mph: int | None = None) -> list[list]:
   """[[way_id, s0, s1, dist_at_s0, dist_at_s1], ...] from the sign forward (d = +1 along the
-  digitized way, -1 against it) through same-road continuations. Stops at max_m, a road change
-  (no continuation) or a fork (more than one)."""
+  digitized way, -1 against it) through same-road continuations (same name or route number).
+  Stops at max_m, a road change (no continuation) or a fork (more than one), and at the first way
+  whose map limit differs from the map's limit at the sign -- except that a map limit change
+  within carry_m of the sign is carried past once (onto that one next way; a name change there is
+  allowed when it is the single straight-through way), then the chain stops at the next change.
+  With the sign's mph given, the carry needs the sign to be closer to the next way's map limit
+  than to the one it replaces (the map's change is the change the sign marks): a 35 read 109 m
+  before a map 40 -> 30 change is not carried onto the 30 (Montevideo MN 7, Oct 23)."""
   L = _poly_len(coords)
   from_s = max(0.0, min(L, float(from_s)))
   if d > 0:
@@ -161,26 +275,39 @@ def build_chain(way_id: int, from_s: float, d: int, coords, db, max_m: float = C
   info = db.way_info(int(way_id)) if db is not None and hasattr(db, "way_info") else None
   if info is None or not hasattr(db, "ways_at"):
     return spans
-  name, hw = info.get("name", ""), info.get("highway", "")
+  name, hw, ref = info.get("name", ""), info.get("highway", ""), info.get("ref", "")
   replaced = _mph(info.get("maxspeed_ms"))   # the map's limit at the sign: the value this YES replaces
+  carried = False
+  h_in = _end_heading(coords, d > 0)
   seen = {int(way_id)}
   while acc < max_m:
-    cands = [w for w in db.ways_at(end[0], end[1], JOIN_TOL_M)
-             if int(w["way_id"]) not in seen and _same_road(name, hw, w)]
-    if len(cands) != 1:
+    near_sign = (not carried) and acc <= carry_m
+    w = _next_way(db, end, h_in, name, hw, ref, seen, straight_ok=near_sign)
+    if w is None:
       break           # road change (none) or ambiguous fork (several)
-    w = cands[0]
-    if _mph(w.get("maxspeed_ms")) != replaced:
-      break           # the map's own limit changes here: the next posted section starts
+    same = _same_road(name, hw, w, ref)
+    nxt = _mph(w.get("maxspeed_ms"))
+    if nxt != replaced:
+      if not near_sign or (mph is not None and abs(int(mph) - nxt) >= abs(int(mph) - replaced)):
+        break         # the map's own limit changes here: the next posted section starts
+      carried = True  # the sign stands at the map's change: carry onto this way, stop at its next change
+      replaced = nxt
+    elif not same:
+      break           # a name change with no map limit change is a road change
+    # the road is followed way to way ("US 59" -> "Main Street" ref US 59 -> "Main Street"); a
+    # straight-through name change is only taken at the map's change at the sign (13th St -> US Hwy 59)
+    name, hw, ref = w.get("name", ""), w.get("highway", ""), w.get("ref", "")
     c = w["coords"]
     wl = _poly_len(c)
     r = min(wl, max_m - acc)
     if _near(c[0], end):
       spans.append([int(w["way_id"]), 0.0, r, acc, acc + r])
       end = c[-1]
+      h_in = _end_heading(c, True)
     else:
       spans.append([int(w["way_id"]), wl - r, wl, acc + r, acc])
       end = c[0]
+      h_in = _end_heading(c, False)
     seen.add(int(w["way_id"]))
     acc += r
   return spans
@@ -216,7 +343,7 @@ def parse_confirmed(raw) -> dict | None:
       out["way_id"] = int(d["way_id"])
   except (TypeError, ValueError):
     pass
-  for k in ("lat", "lon", "bearing", "heading"):
+  for k in ("lat", "lon", "bearing", "heading", "sign_lat", "sign_lon", "sign_range_m"):
     try:
       if d.get(k) is not None:
         out[k] = float(d[k])
@@ -376,24 +503,55 @@ class SpeedOverrides:
       return None, 1
     return round(pos[0], 1), (1 if heading_delta(heading, pos[1]) <= 90.0 else -1)
 
+  @staticmethod
+  def sign_ahead_m(heading: float, conf: dict) -> float:
+    """How far ahead of the read point (conf lat/lon, the car at the photo) the sign stands, along
+    the heading: the reader's located sign (sign_lat / sign_lon) projected on the heading, else its
+    range (sign_range_m), else 0 (old payloads: the read point). Clamped to [0, SIGN_AHEAD_MAX_M]."""
+    f = None
+    try:
+      if conf.get("sign_lat") is not None and conf.get("sign_lon") is not None and conf.get("lat") is not None:
+        x, y = _xy(float(conf["sign_lat"]), float(conf["sign_lon"]), float(conf["lat"]), float(conf["lon"]))
+        h = math.radians(float(heading))
+        f = x * math.sin(h) + y * math.cos(h)
+      elif conf.get("sign_range_m") is not None:
+        f = float(conf["sign_range_m"])
+    except (TypeError, ValueError):
+      f = None
+    if f is None or not math.isfinite(f):
+      return 0.0
+    return max(0.0, min(SIGN_AHEAD_MAX_M, f))
+
   def add(self, way_id: int, heading: float, conf: dict, road: str = "", now: float | None = None,
           coords=None, db=None) -> dict:
     now = time.time() if now is None else now  # noqa: TID251  wall clock in the stored row
     from_s, d = self.span(heading, conf, coords)
+    read_pt = (conf.get("lat"), conf.get("lon"))
+    sign_pt = read_pt
     if from_s is not None and coords:
-      chain = build_chain(int(way_id), from_s, d, coords, db)
+      ahead = self.sign_ahead_m(heading, conf)
+      if ahead > 0.0:
+        # start at the sign, not the car: walk ahead along the road (onto the next way when the
+        # sign stands at / past the end of the read-time way)
+        info = db.way_info(int(way_id)) if db is not None and hasattr(db, "way_info") else None
+        way_id, s_at, d, coords, _, _moved = _walk(db, int(way_id), from_s, d, coords, ahead, info)
+        from_s = round(s_at, 1)
+        sign_pt = _point_at(coords, from_s)
+      chain = build_chain(int(way_id), from_s, d, coords, db, mph=int(conf["mph"]))
       ways = {int(sp[0]) for sp in chain}
 
       def replaced(e) -> bool:
         if e.get("chain"):     # the same sign confirmed again (same spot, same direction)
-          return (e.get("lat") is not None and conf.get("lat") is not None
-                  and _near((e["lat"], e["lon"]), (conf["lat"], conf["lon"]), SAME_SIGN_M)
+          return (e.get("lat") is not None and sign_pt[0] is not None
+                  and _near((e["lat"], e["lon"]), sign_pt, SAME_SIGN_M)
                   and heading_delta(e.get("heading", 0.0), heading) <= HEADING_MATCH_DEG)
         return int(e["way_id"]) in ways   # older span rows on ways this section now covers
       self._drop([e for e in self.entries if replaced(e)])   # legacy rows are not in entries: kept
       e = {"v": ENTRY_VERSION, "way_id": int(way_id), "heading": round(float(heading), 1), "mph": int(conf["mph"]),
            "both": True, "from_s": from_s, "dir": d, "chain": [[sp[0]] + [round(float(x), 1) for x in sp[1:]] for sp in chain],
-           "lat": conf.get("lat"), "lon": conf.get("lon"), "road": road, "t": round(now, 1), "source": row_source(conf)}
+           "lat": _r6(sign_pt[0]), "lon": _r6(sign_pt[1]), "road": road, "t": round(now, 1), "source": row_source(conf)}
+      if sign_pt != read_pt:
+        e["read_lat"], e["read_lon"] = read_pt
       self._append(e)
       self.save()
       return e
@@ -468,7 +626,7 @@ def request_override(mph: int, rec: dict | None, seq: float, params=None,
     payload["way_id"] = int(way_id)
     if heading is not None:
       payload["heading"] = float(heading)
-  for k in ("lat", "lon", "bearing"):
+  for k in ("lat", "lon", "bearing", "sign_lat", "sign_lon", "sign_range_m"):
     if (rec or {}).get(k) is not None:
       payload[k] = (rec or {})[k]
   if parse_confirmed(payload) is None:
@@ -518,9 +676,10 @@ def chain_at(entries, way_id: int, s: float) -> dict | None:
 
 
 def route_ahead(db, way_id: int, coords, lat: float, lon: float, bearing: float,
-                max_m: float = NEXT_MAX_M) -> list[tuple[dict, float, float, int, float]]:
+                max_m: float = NEXT_MAX_M, chain_ways: set | None = None) -> list[tuple[dict, float, float, int, float]]:
   """Pieces ahead on the same road: [(way_info, s_from, s_to, dir, dist_at_s_from)].
-  Stops at max_m, a road change or a fork (same rule as sign sections)."""
+  Stops at max_m, a road change or a fork (same rule as sign sections). A straight-through name
+  change is followed only onto a way a sign section covers (chain_ways), as sections do at a sign."""
   info = db.way_info(int(way_id)) if db is not None and hasattr(db, "way_info") else None
   if info is None or not coords:
     return []
@@ -534,22 +693,26 @@ def route_ahead(db, way_id: int, coords, lat: float, lon: float, bearing: float,
   pieces = [(info, s, s + d * min(rem, max_m), d, 0.0)]
   acc, end = rem, (coords[-1] if d > 0 else coords[0])
   seen = {int(way_id)}
-  name, hw = info.get("name", ""), info.get("highway", "")
+  name, hw, ref = info.get("name", ""), info.get("highway", ""), info.get("ref", "")
+  h_in = _end_heading(coords, d > 0)
   while acc < max_m and hasattr(db, "ways_at"):
-    cands = [w for w in db.ways_at(end[0], end[1], JOIN_TOL_M)
-             if int(w["way_id"]) not in seen and _same_road(name, hw, w)]
-    if len(cands) != 1:
+    w = _next_way(db, end, h_in, name, hw, ref, seen, straight_ok=bool(chain_ways))
+    if w is None:
       break
-    w = cands[0]
+    if not _same_road(name, hw, w, ref) and int(w["way_id"]) not in (chain_ways or ()):
+      break
+    name, hw, ref = w.get("name", ""), w.get("highway", ""), w.get("ref", "")
     c = w["coords"]
     wl = _poly_len(c)
     r = min(wl, max_m - acc)
     if _near(c[0], end):
       pieces.append((w, 0.0, r, 1, acc))
       end = c[-1]
+      h_in = _end_heading(c, True)
     else:
       pieces.append((w, wl, wl - r, -1, acc))
       end = c[0]
+      h_in = _end_heading(c, False)
     seen.add(int(w["way_id"]))
     acc += wl
   return pieces
@@ -572,7 +735,8 @@ def effective_next(entries, db, way_id: int, coords, lat: float, lon: float, bea
   has_chain = any(e.get("chain") for e in entries)
   if bearing is None or (not has_chain and learned is None):
     return osm_next
-  pieces = route_ahead(db, way_id, coords, lat, lon, float(bearing))
+  chain_ways = {int(sp[0]) for e in entries for sp in (e.get("chain") or ())}
+  pieces = route_ahead(db, way_id, coords, lat, lon, float(bearing), chain_ways=chain_ways)
   if not pieces:
     return osm_next
 

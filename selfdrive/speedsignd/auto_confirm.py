@@ -89,6 +89,9 @@ class AutoConfirm:
     if request is None:
       from openpilot.selfdrive.mapd.speed_overrides import request_override as request
     rec = {"lat": p.lat, "lon": p.lon, "bearing": p.heading}
+    sign_fields = getattr(p, "sign_fields", None)
+    if callable(sign_fields):
+      rec.update(sign_fields())   # start the section at the sign (same as a Yes)
     ok = request(int(p.mph), rec, now, way_id=int(p.way_id), heading=float(p.heading), auto=src)
     # Same as a Yes: confirmed mph set, prompt + read plate closed (both screens clear).
     plate.confirmed_mph = p.mph
