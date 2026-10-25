@@ -42,6 +42,7 @@ HUD_DETECT_PAUSED_TEXT = "WAIT"
 HUD_CONFIRM_PROMPT = "accurate?"
 HUD_CONFIRM_YES = "Yes"
 HUD_CONFIRM_NO = "No"
+HUD_CONFIRM_TEMP = "Temp"   # this road, this drive only (mapd/temp_limit.py); never saved
 
 # TICI 2160x1080 — driver-left, below the MAX box (hud_renderer UI_CONFIG).
 TICI_SIGN_W = 200
@@ -135,6 +136,39 @@ def accuracy_button_rects(
   yes = (sign_x, y0, sign_w, btn_h)
   no = (sign_x, y0 + btn_h + gap, sign_w, btn_h)
   return yes, no
+
+
+def answer_button_rects(
+  sign_x: float,
+  sign_y: float,
+  sign_w: float,
+  sign_h: float,
+  *,
+  beside: bool = False,
+  btn_w: float | None = None,
+  btn_h: float = TICI_CONFIRM_BTN_H,
+  gap: float = TICI_CONFIRM_GAP,
+  prompt_h: float = 0.0,
+) -> tuple[tuple[float, float, float, float], tuple[float, float, float, float], tuple[float, float, float, float]]:
+  """(yes, no, temp). TICI stacks Yes, No, Temp under the plate; mici splits the side column in three."""
+  if beside:
+    w = MICI_CONFIRM_BTN_W if btn_w is None else btn_w
+    h = (sign_h - 2 * gap) / 3.0
+    x = sign_x + sign_w + gap
+    return (x, sign_y, w, h), (x, sign_y + h + gap, w, h), (x, sign_y + 2 * (h + gap), w, h)
+  yes, no = accuracy_button_rects(sign_x, sign_y, sign_w, sign_h, btn_h=btn_h, gap=gap, prompt_h=prompt_h)
+  temp = (no[0], no[1] + btn_h + gap, no[2], btn_h)
+  return yes, no, temp
+
+
+def hit_answer_button(px: float, py: float, yes, no, temp=None) -> str | None:
+  """'yes' / 'no' / 'temp', or None on a miss."""
+  hit = hit_accuracy_button(px, py, yes, no)
+  if hit is not None:
+    return "yes" if hit else "no"
+  if temp is not None and point_in_rect(px, py, temp):
+    return "temp"
+  return None
 
 
 def point_in_rect(px: float, py: float, r: tuple[float, float, float, float]) -> bool:
@@ -637,15 +671,16 @@ class AnswerGate:
 
 def point_in_confirm_buttons(x: float, y: float, view: LiveSignView | None,
                              yes: tuple[float, float, float, float],
-                             no: tuple[float, float, float, float]) -> bool:
-  """True only while the Yes/No popup is shown and (x, y) is inside a button.
+                             no: tuple[float, float, float, float],
+                             temp: tuple[float, float, float, float] | None = None) -> bool:
+  """True only while the Yes/No/Temp popup is shown and (x, y) is inside a button.
 
   The onroad view uses this to skip its sidebar toggle for that press; any
   other touch (or any touch while the popup is hidden) is left to onroad.
   """
   if view is None or not hud_confirm_visible(view):
     return False
-  for bx, by, bw, bh in (yes, no):
+  for bx, by, bw, bh in (yes, no) + ((temp,) if temp is not None else ()):
     if bw > 0 and bh > 0 and bx <= x <= bx + bw and by <= y <= by + bh:
       return True
   return False

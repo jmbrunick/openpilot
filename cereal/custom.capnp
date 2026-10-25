@@ -40,6 +40,13 @@ struct LiveMapDataNAP @0x81c2f05a394cf4af {
   autoConfirmSeq @23 :UInt32;        # +1 per auto-confirmed sign override mapd stored
   reviewFlag @24 :Bool;              # true only on the tick a review flag line was written
   reviewReason @25 :Text;            # reason of that flag ("" otherwise)
+  # Speed-sign Temp (mapd/temp_limit.py): this drive only, never saved.
+  # While tempActive, speedLimit = tempMph and source = "temp".
+  tempActive @26 :Bool;
+  tempMph @27 :Int16;
+  tempEndReason @28 :Text;           # why the last Temp ended: sign / map / road / clear ("" = none yet)
+  tempEndSeq @29 :UInt32;            # +1 each time a Temp ends (UI shows the reason briefly)
+  tempNoCueM @30 :Float32;           # m driven since the last construction cue (ends at 5000)
 }
 
 # NAP on-drive MUTCD camera speed-sign sample. Display/log only. mph in the field name.

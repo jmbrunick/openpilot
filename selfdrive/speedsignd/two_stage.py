@@ -823,12 +823,17 @@ def copy_to_realdata(rec: dict, line: str, d: str, root: str | None = None, now:
 
 
 def record_answer(displayed_mph: int, yes: bool, d: str | None = None, now: float | None = None,
-                  seq: int | None = None) -> dict | None:
-  """UI Yes/No: append feedback.jsonl (+confirmed.jsonl on Yes), keep the crop JPEG.
+                  seq: int | None = None, answer: str | None = None) -> dict | None:
+  """UI Yes/No/Temp: append feedback.jsonl (+confirmed.jsonl on Yes), keep the crop JPEG.
 
+  answer="temp" (the Temp button) logs the row with answer "temp" and a
+  `_temp_` crop; it is never written to confirmed.jsonl (a temporary,
+  this-drive limit, e.g. a work zone, is not a permanent confirmation).
   Uses the pending read only when its mph matches the plate the driver saw.
   No upload, no cruise / HUD / map-speed change.
   """
+  answer = "temp" if str(answer or "").lower() == "temp" else ("yes" if yes else "no")
+  yes = answer == "yes"
   d = d or feedback_dir()
   now = time.time() if now is None else now  # noqa: TID251  wall clock for feedback rows
   try:
@@ -848,7 +853,7 @@ def record_answer(displayed_mph: int, yes: bool, d: str | None = None, now: floa
     stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(now))
     rec = {
       "t": round(now, 3),
-      "answer": "yes" if yes else "no",
+      "answer": answer,
       "displayed_mph": int(displayed_mph),
       "class": meta.get("class"),
       "conf": meta.get("conf"),

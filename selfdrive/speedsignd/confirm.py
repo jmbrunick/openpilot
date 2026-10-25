@@ -5,8 +5,10 @@ read puts its mph on the plate at once with the prompt (mapd way, heading
 and location matched when the sign was READ). Any answer (comma or MCU) or
 the PROMPT_TIMEOUT_S timeout clears both the prompt and the read plate.
 Yes also hands the mph to mapd (NAPSpeedSignConfirmed), which makes it the
-LIMIT for that way (both directions, from the sign on). No and timeouts
-change nothing in the map. The UI answers through NAPSpeedSignAnswer.
+LIMIT for that way (both directions, from the sign on). Temp hands the mph to
+mapd as a this-drive-only limit (NAPSpeedSignTemp, mapd/temp_limit.py) and is
+never saved. No and timeouts change nothing in the map. The UI answers through
+NAPSpeedSignAnswer.
 """
 from __future__ import annotations
 
@@ -37,6 +39,7 @@ class PlateState:
     self.plate_mph = 0
     self.plate_conf = 0.0
     self.confirmed_mph = 0      # last Yes (map override); the plate may differ
+    self.temp_mph = 0           # last Temp (this drive only); never a map override
     self.proposal: Proposal | None = None
     self.seq = 0
     self.answered_read_id = None
@@ -64,17 +67,20 @@ class PlateState:
     return self.proposal
 
   def answer(self, raw) -> bool:
-    """Apply a UI answer {seq, mph, yes}. True when it matched the open prompt."""
+    """Apply a UI answer {seq, mph, yes[, answer]}. True when it matched the open prompt."""
     try:
       d = json.loads(raw) if isinstance(raw, (str, bytes, bytearray)) else dict(raw)
       seq, mph, yes = int(d["seq"]), int(d["mph"]), bool(d["yes"])
+      kind = answer_kind(d.get("answer", yes))
     except Exception:
       return False
     p = self.proposal
     if p is None or seq != p.seq or mph != p.mph:
       return False
-    if yes:
+    if kind == "yes":
       self.confirmed_mph = p.mph
+    elif kind == "temp":
+      self.temp_mph = p.mph
     self._close(p)
     return True
 
@@ -117,15 +123,29 @@ def fill_proposal(dst, p: Proposal | None) -> None:
   dst.proposedLon = float(p.lon)
 
 
-def write_answer(seq: int, mph: int, yes: bool, params=None) -> bool:
-  """UI side: hand a Yes/No on prompt `seq` to speedsignd."""
+ANSWERS = ("yes", "no", "temp")
+
+
+def answer_kind(v) -> str:
+  """'yes' / 'no' / 'temp' from a bool or a label. Anything else raises ValueError."""
+  if isinstance(v, bool):
+    return "yes" if v else "no"
+  s = str(v).strip().lower()
+  if s in ANSWERS:
+    return s
+  raise ValueError(f"unknown answer {v!r}")
+
+
+def write_answer(seq: int, mph: int, yes, params=None) -> bool:
+  """UI side: hand a Yes/No/Temp on prompt `seq` to speedsignd. `yes` is a bool or 'temp'."""
   try:
+    kind = answer_kind(yes)
     if params is None:
       from openpilot.common.params import Params
       params = Params()
     # JSON-typed param: Params.put needs the dict. A json.dumps() string raises
     # TypeError, so speedsignd never saw an MCU Yes/No (Oct 22 stuck 30).
-    params.put(ANSWER_PARAM, {"seq": int(seq), "mph": int(mph), "yes": bool(yes)})
+    params.put(ANSWER_PARAM, {"seq": int(seq), "mph": int(mph), "yes": kind == "yes", "answer": kind})
     return True
   except Exception:
     return False
