@@ -25,7 +25,7 @@ from openpilot.selfdrive.mapd.constants import MANUAL_SET_EPS_KPH, map_accel_a_m
 from openpilot.selfdrive.mapd.map_speed_policy import (
   DEFAULT_DROP_A_MS2,
   MAP_SOURCE_DEFAULT,
-  MapCruiseHold, apply_map_speed_kph, decide_map_cruise, effective_map_limit_ms,
+  MapCruiseHold, PostedRiseDebounce, apply_map_speed_kph, decide_map_cruise, effective_map_limit_ms,
   map_slew_a_ms2, read_map_speed_params, should_write_preap_pedal, slew_map_speed_ms,
 )
 from openpilot.selfdrive.mapd.roundabout import (
@@ -297,6 +297,7 @@ class Car:
 
     self.v_cruise_helper = VCruiseHelper(self.CP)
     self._map_hold = MapCruiseHold()
+    self._posted_rise = PostedRiseDebounce()
     self._curve_max = CurveMaxHold()
     self._map_slew_ms: float | None = None
     self._last_pedal_kph: float | None = None
@@ -457,8 +458,10 @@ class Car:
     map_valid = bool(self.sm.valid.get('liveMapDataNAP', False) and self.sm['liveMapDataNAP'].speedLimitValid)
     md = self.sm['liveMapDataNAP'] if map_valid else None
     raw_posted_kph = None
-    if md is not None and md.speedLimit > 0:
-      raw_posted_kph = float(md.speedLimit) * CV.MS_TO_KPH
+    # Oct 25: a higher posted limit must hold RISE_HOLD_S before MAX sees it (drops immediate).
+    md_limit_ms = self._posted_rise.update(float(md.speedLimit) if md is not None else None, time.monotonic())
+    if md is not None and md_limit_ms is not None and md_limit_ms > 0:
+      raw_posted_kph = float(md_limit_ms) * CV.MS_TO_KPH
     # Offset from raw OSM posted (mph). Hypermile eco / Step Down apply
     # only with a known map posted — never invent a drop when maps are
     # off, unmatched, or speedLimit unknown (same as sticky MAX).
@@ -510,7 +513,7 @@ class Car:
     if map_valid and md is not None and not dec.sticky:
       # Any posted decrease: kin+110 m ease, never assign the new limit in one shot.
       lim = effective_map_limit_ms(
-        float(md.speedLimit),
+        float(md_limit_ms or 0.0),
         float(md.nextSpeedLimit),
         float(md.nextSpeedLimitDistance),
         float(CS.vEgo),
@@ -534,7 +537,7 @@ class Car:
     if self._rb_exit_gate.update(rb_hint, bool(getattr(CS, "rightBlinker", False)), curve_kappa, DT_CTRL):
       rb_hint = None
     if rb_hint is not None:
-      posted_ms = float(md.speedLimit) if md is not None and md.speedLimit > 0 else float(CS.vEgo)
+      posted_ms = float(md_limit_ms) if md is not None and md_limit_ms else float(CS.vEgo)
       rb_lim = roundabout_ease_v_ms(rb_hint, float(CS.vEgo), posted_ms, self._map_speed_lookahead)
       if rb_lim is not None and map_valid and md is not None:
         lim = rb_lim if lim is None else min(float(lim), rb_lim)
@@ -547,7 +550,7 @@ class Car:
         dec.follow_override = bool(dec.sticky)
         if not dec.sticky and map_valid and md is not None:
           lim = effective_map_limit_ms(
-            float(md.speedLimit),
+            float(md_limit_ms or 0.0),
             float(md.nextSpeedLimit),
             float(md.nextSpeedLimitDistance),
             float(CS.vEgo),

@@ -57,6 +57,59 @@ def keep_rural_default_ms(limit_ms: float, *, estimated: bool, highway: str, roa
   return lim
 
 
+# Oct 25 2026 (route 000001cd 08:51:55 CDT, DeGraff Atlantic Ave): a stale SIGN 60
+# blipped in for ~4 s over a Tesla / OSM 30 and MAX seeded 30 -> 59.4 at once, then
+# took ~20 s to ease back down. A posted RISE must now hold this long before MAX
+# sees it; drops stay immediate (the ease-down and #386's sticky rules are unchanged).
+RISE_HOLD_S = 3.0
+RISE_GAP_S = 5.0     # a map dropout shorter than this keeps the debounced value
+
+
+class PostedRiseDebounce:
+  """Posted limit (m/s) as MAX should see it: decreases pass through at once, an increase
+  only after it has been present continuously for RISE_HOLD_S (the lowest value seen during
+  that hold is adopted, so a 30 -> 60 -> 45 flicker can only rise to 45)."""
+
+  def __init__(self, hold_s: float = RISE_HOLD_S, gap_s: float = RISE_GAP_S) -> None:
+    self.hold_s = float(hold_s)
+    self.gap_s = float(gap_s)
+    self.reset()
+
+  def reset(self) -> None:
+    self.value_ms: float | None = None
+    self.pending_ms: float | None = None
+    self.pending_t: float = 0.0
+    self.last_valid_t: float | None = None
+
+  @property
+  def pending(self) -> bool:
+    return self.pending_ms is not None
+
+  def update(self, limit_ms: float | None, now: float) -> float | None:
+    eps = POSTED_LIMIT_EPS_KPH / 3.6
+    if limit_ms is None or not math.isfinite(float(limit_ms)) or float(limit_ms) <= 0.0:
+      self.pending_ms = None
+      if self.last_valid_t is not None and now - self.last_valid_t > self.gap_s:
+        self.value_ms = None
+      return None
+    v = float(limit_ms)
+    if self.value_ms is None or (self.last_valid_t is not None and now - self.last_valid_t > self.gap_s):
+      self.value_ms, self.pending_ms = v, None        # first limit (or after a long gap): as is
+    elif v <= self.value_ms + eps:
+      if v < self.value_ms - eps:
+        self.value_ms = v                             # drop: immediate
+      self.pending_ms = None                          # a rise that fell back never lands
+    else:
+      if self.pending_ms is None:
+        self.pending_ms, self.pending_t = v, now
+      else:
+        self.pending_ms = min(self.pending_ms, v)
+      if now - self.pending_t >= self.hold_s - 1e-6:
+        self.value_ms, self.pending_ms = self.pending_ms, None
+    self.last_valid_t = now
+    return self.value_ms
+
+
 def default_drop_cap_ms(cap_ms: float, prev_ms: float | None, v_ego_ms: float, dt: float) -> float:
   """Ceiling that follows a lower DEFAULT limit down at DEFAULT_DROP_A_MS2 at most."""
   cap = float(cap_ms)
