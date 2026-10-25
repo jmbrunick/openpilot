@@ -58,11 +58,15 @@ def test_section_end_hands_back_to_osm(tmp_path):
   assert m == 30 and abs(dist - 150) <= 5
 
 
-def test_westbound_sees_sections(tmp_path):
+def test_westbound_ignores_eastbound_sections(tmp_path):
   o, db = benson(tmp_path)
-  # westbound at 3600 (30 section): the 30 section's west end is the 30 sign at 3200 -> map 40 there
-  m, dist = nxt(o, db, 3600, bearing=270.0, osm_next=None)
-  assert m == 40 and abs(dist - 400) <= 5
+  # Oct 25 (direction-aware): westbound at 3600 the eastbound 30 / 50 sections do not apply, so
+  # the lookahead is plain OSM (map 40 -> 60 at 3000 is mapd's own OSM next).
+  assert nxt(o, db, 3600, bearing=270.0, osm_next=None) is None
+  assert nxt(o, db, 3600, bearing=270.0, osm_next=(60, 600)) == (60, 600)
+  # eastbound still sees them
+  m, dist = nxt(o, db, 1600)
+  assert m == 50
 
 
 def test_no_sections_keeps_osm_next(tmp_path):

@@ -197,6 +197,11 @@ def main():
     # without coords, so fall back to the stored way.
     sign_ms = (overrides.limit_ms(int(match.way_id), bearing, lat, lon, match.coords or db.way_coords(int(match.way_id)))
                if match is not None else None)
+    for way_s, mph_s, hdg_s in overrides.take_skipped():
+      cloudlog.info("mapd: sign override %s mph way=%s read heading=%s skipped: opposite direction (bearing=%s)",
+                    mph_s, way_s, hdg_s, bearing)
+    for way_u, mph_u in overrides.take_undirected():
+      cloudlog.warning("mapd: sign override %s mph way=%s has no direction; applied both ways (old behavior)", mph_u, way_u)
     legacy = overrides.find_legacy(int(match.way_id), bearing) if match is not None else None
     lkey = (int(match.way_id), int(legacy["mph"])) if legacy is not None else None
     if lkey is not None and lkey != last_legacy_log:

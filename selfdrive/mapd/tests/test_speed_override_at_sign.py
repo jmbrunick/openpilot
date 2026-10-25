@@ -100,7 +100,7 @@ def test_clarkfield_60_at_town_line_carries_onto_us_highway_59(tmp_path):
   for y in (-30, -600, -1490, -1510, -2990):
     assert r.limit(y, 180.0) == 60, y                 # was 55 for 26 s on Oct 23
   assert r.limit(-3100, 180.0) == 45                  # stops at the next map change
-  assert r.limit(-600, 0.0) == 60                     # both directions from the sign forward
+  assert r.limit(-600, 0.0) == 55                     # other direction: map (Oct 25: direction-aware)
 
 
 def test_clarkfield_old_payload_without_sign_location_still_carries(tmp_path):
@@ -162,6 +162,21 @@ def test_degraff_westbound_60_starts_at_its_sign_not_in_town(tmp_path):
   assert r.limit(1015, 270.0) == 60 and r.limit(500, 270.0) == 60   # from the sign on (onto US 12)
   r.yes(985.0, 30, 90.0, 2, sign_u=998.0)                          # the eastbound 30 sign
   assert r.limit(1045, 90.0) == 30 and r.limit(1300, 90.0) == 30
+
+
+def test_degraff_westbound_60_not_applied_eastbound(tmp_path):
+  # Oct 25 2026: route 000001cd 08:51:55 CDT, turning eastbound onto Atlantic Avenue the Oct 22
+  # westbound 60 section (sign at 1029, covering west onto US 12) applied for ~60 m (SIGN 60 vs
+  # Tesla/OSM 30) and MAX jumped to 59. A confirmed sign now applies only in its read direction.
+  r = degraff(tmp_path)
+  r.yes(1060.0, 60, 270.0, 1, sign_u=1029.0)
+  for x in (1028, 1015, 1005):
+    assert r.limit(x, 270.0) == 60, x                  # westbound: the sign's section
+    for hdg in (90.0, 60.0, 120.0, 45.0):              # eastbound, incl. mid-turn headings
+      assert r.limit(x, hdg) == 30, (x, hdg)           # map (was 60)
+  assert r.limit(500, 90.0) == 60                     # US 12 eastbound: map 60 anyway
+  assert r.limit(1015, 240.0) == 60                   # 30 deg off the westbound way: still applies
+  assert r.limit(1015, 200.0) == 30                   # 70 deg off: not the sign's direction
 
 
 def test_degraff_25_on_atlantic_stops_at_its_end(tmp_path):
