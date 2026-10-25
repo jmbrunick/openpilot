@@ -462,7 +462,9 @@ class Car:
     rise_db = getattr(self, "_posted_rise", None)
     if rise_db is None:
       self._posted_rise = rise_db = PostedRiseDebounce()
-    md_limit_ms = rise_db.update(float(md.speedLimit) if md is not None else None, time.monotonic())
+    # Cycle clock (DT_CTRL per card step), not wall time: deterministic in replays and tests.
+    self._posted_rise_t = float(getattr(self, "_posted_rise_t", 0.0)) + DT_CTRL
+    md_limit_ms = rise_db.update(float(md.speedLimit) if md is not None else None, self._posted_rise_t)
     if md is not None and md_limit_ms is not None and md_limit_ms > 0:
       raw_posted_kph = float(md_limit_ms) * CV.MS_TO_KPH
     # Offset from raw OSM posted (mph). Hypermile eco / Step Down apply

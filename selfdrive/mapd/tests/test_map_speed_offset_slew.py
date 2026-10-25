@@ -15,6 +15,7 @@ from openpilot.selfdrive.car.card import Car
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.selfdrive.controls.lib.curve_max_hold import CurveMaxHold
 from openpilot.selfdrive.mapd.constants import ACCEL_DEFAULT, LOOKAHEAD_NORMAL, MODE_FOLLOW
+from openpilot.selfdrive.mapd.map_speed_policy import RISE_HOLD_S
 from openpilot.selfdrive.mapd.map_speed_policy import MapCruiseHold
 
 
@@ -131,6 +132,8 @@ def test_posted_raise_keeps_single_offset():
   _expect_max(h, limit_55 + offset_kph)
   md.speedLimit = limit_65 * CV.KPH_TO_MS
   _run_s(h, cs, 1.0, first=False)
+  _expect_max(h, limit_55 + offset_kph)      # Oct 25: a rise holds RISE_HOLD_S before MAX sees it
+  _run_s(h, cs, RISE_HOLD_S + 1.0, first=False)
   _expect_max(h, limit_65 + offset_kph)
 
 
