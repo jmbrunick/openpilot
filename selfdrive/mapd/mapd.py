@@ -26,9 +26,10 @@ from openpilot.selfdrive.mapd.speed_overrides import CLEAR_PARAM as SIGN_CLEAR_P
 from openpilot.selfdrive.mapd.roundabout_map import PARAM_RING, RingCache, roundabout_comfort_speed_ms
 from openpilot.selfdrive.mapd.roundabout_status import RingDataWatch, map_msg_valid
 from openpilot.selfdrive.mapd.tesla_limit import (
-  PARAM_ENABLE as TESLA_PARAM, PARAM_PRIMARY as TESLA_PRIMARY_PARAM, MapdTeslaHook, next_for_published, select_current,
+  PARAM_ENABLE as TESLA_PARAM, PARAM_PRIMARY as TESLA_PRIMARY_PARAM, MapdTeslaHook, next_for_published,
 )
 from openpilot.selfdrive.mapd import temp_limit
+from openpilot.selfdrive.mapd import limit_source
 
 MAPD_HZ = 2.0
 RELOAD_PERIOD_S = 15.0
@@ -101,6 +102,10 @@ def main():
   auto_confirm_seq = 0
   # Speed-sign Temp (NAPSpeedSignTemp): this drive only, in memory, never saved.
   temp = temp_limit.TempLimit()
+  # PR #391: source toggle (A), popup manual entry (B/C), > 20 mph Tesla-vs-OSM fallback.
+  prefer_osm = False
+  osm_fallback_on = True
+  fallback_key = None
 
   def _publish_ring(payload: dict) -> None:
     try:
@@ -139,6 +144,12 @@ def main():
       elif not tesla_on and tesla is not None:
         tesla = None
         cloudlog.info("mapd: Tesla map limit off")
+      prefer_osm = _param_bool(params, limit_source.PARAM_PREFER_OSM)
+      try:
+        fb = params.get_bool(limit_source.PARAM_OSM_FALLBACK)
+        osm_fallback_on = True if fb is None else bool(fb)
+      except Exception:
+        osm_fallback_on = True
       if tesla is not None:
         tesla.flags_on = tesla_log_on
         tesla.primary_on = tesla_primary_on
@@ -191,6 +202,21 @@ def main():
           cloudlog.info("mapd: sign override way=%s heading=%s mph=%s", added["way_id"], added["heading"], added["mph"])
       except Exception:
         cloudlog.exception("mapd: sign override failed")
+    # LIMIT-plate popup (arrows / tap Tesla or OSM / Save): a confirmed row from the car's spot on.
+    try:
+      raw_man = params.get(limit_source.PARAM_MANUAL)
+    except Exception:
+      raw_man = None
+    if raw_man is not None:
+      try:
+        params.remove(limit_source.PARAM_MANUAL)
+        conf = limit_source.manual_confirmed(raw_man, int(match.way_id) if match is not None else None,
+                                             lat if gps_ok else None, lon if gps_ok else None, bearing)
+        added = overrides.consume(conf, match, bearing, now, way_coords=db.way_coords, db=db) if conf is not None else None
+        cloudlog.warning("mapd: manual limit %s way=%s heading=%s stored=%s", (conf or {}).get("mph"),
+                         (conf or {}).get("way_id"), bearing, added is not None)
+      except Exception:
+        cloudlog.exception("mapd: manual limit failed")
     try:
       clear_req = bool(params.get_bool(SIGN_CLEAR_PARAM))
     except Exception:
@@ -266,7 +292,22 @@ def main():
             learned_ms = learned.limit_ms(learn_way, learn_s)
         except Exception:
           cloudlog.exception("mapd: Tesla primary limit failed")
-      cur_ms, cur_src = select_current(sign_ms, tesla_mph, lim_ms, learned_ms)
+      cur_ms, cur_src, fell_back = limit_source.choose_current(
+        sign_ms, tesla_mph, lim_ms, learned_ms, prefer_osm=prefer_osm, fallback_on=osm_fallback_on,
+        osm_tagged_mph=0 if est else osm_raw_mph)
+      fkey = (int(match.way_id), int(tesla_mph), osm_raw_mph) if fell_back else None
+      if fkey is not None and fkey != fallback_key:
+        reason = f"osm_fallback_tesla_{int(tesla_mph) or round(float(learned_ms or 0) * 2.23694)}_osm_{osm_raw_mph}"
+        cloudlog.warning("mapd: Tesla vs OSM over %d mph: using OSM (%s)", limit_source.FALLBACK_DIFF_MPH, reason)
+        d.reviewFlag = True
+        d.reviewReason = reason
+        try:
+          if tesla is not None:
+            tesla.flagger.note_disagree(now, time.time(), lat, lon, bearing, v_ego_ms,  # noqa: TID251  wall time in the flag line
+                                        match.road_name, int(tesla_mph), osm_raw_mph, int(match.way_id), reason=reason)
+        except Exception:
+          cloudlog.exception("mapd: fallback review flag failed")
+      fallback_key = fkey
       learned_fn = learned.limit_ms if learned is not None and learned.has_active() else None
       prof, prof_walked = [], 0.0
       try:

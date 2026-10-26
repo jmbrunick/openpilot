@@ -260,13 +260,14 @@ class ReviewFlagger:
     return flag
 
   def note_disagree(self, mono: float, wall: float, lat: float, lon: float, bearing: float | None, speed_ms: float,
-                    road: str, tesla_mph: int, osm_mph: int, way_id: int = 0) -> dict | None:
+                    road: str, tesla_mph: int, osm_mph: int, way_id: int = 0,
+                    reason: str | None = None) -> dict | None:
     """A Tesla-vs-OSM learned section just became active: check this spot for a sign."""
     seg = self.seg_clock.at(mono)
     t = round(float(mono), 2)
     flag = {
       "kind": "disagree",
-      "reason": f"tesla_osm_disagree_tesla_{int(tesla_mph)}_osm_{int(osm_mph)}",
+      "reason": reason or f"tesla_osm_disagree_tesla_{int(tesla_mph)}_osm_{int(osm_mph)}",
       "mph": int(tesla_mph),
       "wall": round(float(wall), 1),
       "t_mono": t,

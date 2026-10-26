@@ -29,7 +29,7 @@ SHORT_JUMP_MS = SHORT_JUMP_MPH * so.MPH_TO_MS + 0.05
 EPS_MS = 0.3
 PROFILE_MAX_M = 400.0
 NEXT_MATCH_M = 40.0            # nxt (lead-adjusted) vs profile change distance
-GEOMETRIC = (None, "sign", "tesla_learned", "osm", "osm_default")
+GEOMETRIC = (None, "sign", "tesla_learned", "osm", "osm_default", "osm_fallback")
 
 
 def limit_profile(entries, db, way_id: int, coords, lat: float, lon: float, bearing: float | None,

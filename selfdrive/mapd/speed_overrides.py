@@ -420,14 +420,19 @@ def parse_confirmed(raw) -> dict | None:
       pass
   if d.get("auto") in AUTO_SOURCES:
     out["auto"] = str(d["auto"])
+  if d.get("manual"):
+    out["manual"] = True   # popup entry (limit_source.py): starts where the car is, no sign search
   return out
 
 
 # Auto-confirm sources (NAPSignAutoConfirm). The stored row says which map agreed.
 AUTO_SOURCES = ("tesla", "osm")
+MANUAL_SOURCE = "manual"   # driver-entered limit from the LIMIT-plate long-press popup
 
 
 def row_source(conf: dict) -> str:
+  if conf.get("manual"):
+    return MANUAL_SOURCE
   return f"sign_auto_{conf['auto']}" if conf.get("auto") in AUTO_SOURCES else "sign_yes"
 
 
@@ -626,7 +631,9 @@ class SpeedOverrides:
         sign_pt = _point_at(coords, from_s)
       chain = build_chain(int(way_id), from_s, d, coords, db, mph=int(conf["mph"]))
       sign_at, cut = "located", 0.0
-      if ahead <= 0.0:   # no located sign: the chain starts at the read point, behind the sign
+      if conf.get("manual"):
+        sign_at = "manual"   # the driver set it here: start at the car, never moved, never behind
+      elif ahead <= 0.0:   # no located sign: the chain starts at the read point, behind the sign
         cut, sign_at = sign_cut_m(chain, int(conf["mph"]), db)
         chain = trim_chain(chain, cut)
         if chain and cut > 0.0:

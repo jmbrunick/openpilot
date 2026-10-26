@@ -42,6 +42,10 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   NAP_SPEED_SIGN_LOG,
   NAP_TESLA_LIMIT_ENABLE,
   NAP_TESLA_LIMIT_PRIMARY,
+  NAP_SPEED_LIMIT_PREFER_OSM,
+  NAP_SPEED_LIMIT_OSM_FALLBACK,
+  SPEED_LIMIT_PREFER_OSM_DESCRIPTION,
+  SPEED_LIMIT_OSM_FALLBACK_DESCRIPTION,
   RADAR_OFFSET_MAX, RADAR_OFFSET_MIN,
   REFRESH_MAPS_INSTRUCTIONS,
   RESTORE_EPAS_INSTRUCTIONS,
@@ -387,6 +391,20 @@ class NAPLayout(Widget):
       NAP_TESLA_LIMIT_PRIMARY,
       "Tesla Map Limit First",
       TESLA_LIMIT_PRIMARY_DESCRIPTION,
+      dest=self._speed_sign_items,
+    )
+
+    self._add_toggle(
+      NAP_SPEED_LIMIT_PREFER_OSM,
+      "Speed Limit Source: OSM",
+      SPEED_LIMIT_PREFER_OSM_DESCRIPTION,
+      dest=self._speed_sign_items,
+    )
+
+    self._add_toggle(
+      NAP_SPEED_LIMIT_OSM_FALLBACK,
+      "OSM When Maps Differ > 20 mph",
+      SPEED_LIMIT_OSM_FALLBACK_DESCRIPTION,
       dest=self._speed_sign_items,
     )
 
@@ -846,6 +864,8 @@ class NAPLayout(Widget):
     self._params.put_bool(NAP_SPEED_SIGN_LOG, False)
     self._params.put_bool(NAP_TESLA_LIMIT_ENABLE, False)
     self._params.put_bool(NAP_TESLA_LIMIT_PRIMARY, True)
+    self._params.put_bool(NAP_SPEED_LIMIT_PREFER_OSM, False)
+    self._params.put_bool(NAP_SPEED_LIMIT_OSM_FALLBACK, True)
     self._params.put_bool(NAP_SIGN_AUTO_CONFIRM, False)
     self._params.put_bool(NAP_DRIVER_LAT_HANDOFF, True)
     self._params.put_bool(NAP_LOW_VIS_BACKOFF, True)

@@ -4,6 +4,7 @@ from openpilot.common.constants import CV
 from openpilot.selfdrive.controls.lib.gap_lock import gap_lock_hud_chip
 from openpilot.selfdrive.ui.onroad.exp_button import ExpButton
 from openpilot.selfdrive.ui.onroad.speed_sign_hud import SpeedSignHud
+from openpilot.selfdrive.ui.onroad.limit_popup_hud import LimitPopupHud
 from openpilot.selfdrive.ui.onroad.temp_limit_hud import TempEndNote, draw_end_note, draw_temp_plate, temp_from_md
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.system.ui.lib.application import gui_app, FontWeight
@@ -60,7 +61,7 @@ COLORS = Colors()
 
 
 # liveMapDataNAP.source -> short tag under the LIMIT number
-MAP_SOURCE_TAGS = {"sign": "SIGN", "tesla": "TESLA", "tesla_learned": "LEARNED", "osm": "OSM", "osm_default": "OSM EST", "temp": "TEMP"}
+MAP_SOURCE_TAGS = {"sign": "SIGN", "tesla": "TESLA", "tesla_learned": "LEARNED", "osm": "OSM", "osm_default": "OSM EST", "osm_fallback": "OSM*", "temp": "TEMP"}
 
 
 class HudRenderer(Widget):
@@ -85,6 +86,11 @@ class HudRenderer(Widget):
 
     self._exp_button: ExpButton = ExpButton(UI_CONFIG.button_size, UI_CONFIG.wheel_icon_size)
     self._speed_sign_hud = SpeedSignHud(tici=True)
+    # PR #391: hold the LIMIT plate 2 s -> Tesla / OSM / arrows / Save / Clear / source popup.
+    self._limit_popup = LimitPopupHud()
+    self._limit_sign_rect: rl.Rectangle | None = None
+    self.map_tesla_mph = 0
+    self.map_osm_mph = 0
 
   def _update_state(self) -> None:
     """Update HUD state based on car state and controls state."""
@@ -122,6 +128,8 @@ class HudRenderer(Widget):
     self.map_speed_temp = False
     self.temp_end_note = None
     self.gap_lock_chip = None
+    self.map_tesla_mph = 0
+    self.map_osm_mph = 0
     if sm.valid.get("longitudinalPlan", False):
       self.gap_lock_chip = gap_lock_hud_chip(getattr(sm["longitudinalPlan"], "gapLockM", 0.0))
     if "liveMapDataNAP" in sm.valid and sm.valid["liveMapDataNAP"]:
@@ -131,6 +139,11 @@ class HudRenderer(Widget):
         self.map_speed_limit = md.speedLimit * speed_conversion
         self.map_speed_source = str(md.source or "")
         self.map_speed_temp = temp_from_md(md)[0]
+      try:
+        self.map_tesla_mph = int(md.teslaBaseMph) if bool(md.teslaValid) else 0
+        self.map_osm_mph = int(md.osmRawMph)
+      except Exception:
+        pass
       self.temp_end_note = self._temp_end.update(md.tempEndSeq, md.tempEndReason)
 
   def _render(self, rect: rl.Rectangle) -> None:
@@ -152,16 +165,20 @@ class HudRenderer(Widget):
 
     self._draw_current_speed(rect)
     self._speed_sign_hud.render(rect)
+    sign = self._limit_sign_rect if (self.is_cruise_available and self.map_speed_valid and not ui_state.is_metric) else None
+    self._limit_popup.set_inputs(sign, self.map_speed_limit, self.map_tesla_mph, self.map_osm_mph)
+    self._limit_popup.render(rect)
 
     button_x = rect.x + rect.width - UI_CONFIG.border_size - UI_CONFIG.button_size
     button_y = rect.y + UI_CONFIG.border_size
     self._exp_button.render(rl.Rectangle(button_x, button_y, UI_CONFIG.button_size, UI_CONFIG.button_size))
 
   def touch_on_hud_button(self, x: float, y: float) -> bool:
-    return self._speed_sign_hud.owns_touch(x, y)
+    return self._speed_sign_hud.owns_touch(x, y) or self._limit_popup.owns_touch(x, y)
 
   def user_interacting(self) -> bool:
-    return self._exp_button.is_pressed or self._speed_sign_hud.is_pressed
+    return (self._exp_button.is_pressed or self._speed_sign_hud.is_pressed
+            or self._limit_popup.is_pressed or self._limit_popup.is_open)
 
   def _draw_set_speed(self, rect: rl.Rectangle) -> None:
     """Draw the MAX speed indicator box."""
@@ -239,6 +256,7 @@ class HudRenderer(Widget):
     y = rect.y + 45
     w, h = 132, 168
     sign = rl.Rectangle(x, y, w, h)
+    self._limit_sign_rect = sign
     if self.temp_end_note:
       draw_end_note(self._font_semi_bold, self.temp_end_note, x, y + h + 8)
     if self.map_speed_temp:

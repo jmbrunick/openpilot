@@ -112,6 +112,12 @@
     {"NAPSignAutoConfirm", {PERSISTENT, BOOL, "0"}},
     {"NAPSignReadDistM", {PERSISTENT, FLOAT, "40"}},  // speed sign read distance floor, 15-60 m
     {"NAPSpeedSignConfirmed", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, JSON}},
+    // PR #391 speed limit source selection. PreferOsm: global source toggle (On = OSM over Tesla; confirmed
+    // signs / manual entries still win). OsmFallback: Tesla vs tagged OSM over 20 mph -> OSM + review flag.
+    // Manual: LIMIT-plate long-press popup -> mapd (confirmed row from the car's spot, both directions, never behind).
+    {"NAPSpeedLimitPreferOsm", {PERSISTENT, BOOL, "0"}},
+    {"NAPSpeedLimitOsmFallback", {PERSISTENT, BOOL, "1"}},
+    {"NAPSpeedLimitManual", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, JSON}},
     {"NAPSpeedSignClearOverride", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL}},  // remove the Yes override where the car is now
     {"NAPSpeedSignAnswer", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, JSON}},  // v2.3 HUD Yes/No -> speedsignd plate
     // Open speed-sign Yes/No, so nap_dash can show the same prompt. Display + map only.

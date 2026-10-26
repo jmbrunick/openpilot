@@ -109,6 +109,8 @@ NAP_SIGN_OTHERS = "NAPSignOthers"
 NAP_TESLA_LIMIT_ENABLE = "NAPTeslaLimitEnable"
 NAP_TESLA_LIMIT_PRIMARY = "NAPTeslaLimitPrimary"
 NAP_SIGN_AUTO_CONFIRM = "NAPSignAutoConfirm"
+NAP_SPEED_LIMIT_PREFER_OSM = "NAPSpeedLimitPreferOsm"
+NAP_SPEED_LIMIT_OSM_FALLBACK = "NAPSpeedLimitOsmFallback"
 NAP_DRIVER_LAT_HANDOFF = "NAPDriverLatHandoff"
 NAP_LOW_VIS_BACKOFF = "NAPLowVisBackoff"
 NAP_CONE_LINE_HOLD = "NAPConeLineHold"
@@ -215,6 +217,20 @@ TESLA_LIMIT_PRIMARY_DESCRIPTION = (
   + "/data/media/0/nap/tesla_learned_limits.json so the next drive can slow early for it, and a review note is written. "
   + "Learned spots never count as a confirmed sign. The MPP value is never used. "
   + "Off: OSM and confirmed signs only. Applies within 15 s."
+)
+
+SPEED_LIMIT_PREFER_OSM_DESCRIPTION = (
+  "Default Off. Speed limit source: Off uses the Tesla map limit ahead of OSM (Tesla Map Limit First). "
+  + "On uses the OSM limit instead; the Tesla limit is still read and shown in the LIMIT popup but never used. "
+  + "Confirmed signs and limits you set in the popup always win. Hold the onroad LIMIT plate 2 s for the popup: "
+  + "tap the Tesla or OSM number to use it on this road, or set it with the 5 mph arrows and Save. "
+  + "Saved limits apply from where you are on, both directions, never behind, until you tap Clear there. Applies within 15 s."
+)
+SPEED_LIMIT_OSM_FALLBACK_DESCRIPTION = (
+  "Default On. When the Tesla limit (live or learned) and the tagged OSM limit differ by more than 20 mph, "
+  + "OSM is used (LIMIT shows OSM*) and the spot is added to the sign review list "
+  + "(/data/media/0/nap/review_flags.jsonl). Road-type default (estimated) OSM limits never trigger it. "
+  + "Confirmed signs and popup limits still win. Applies within 15 s."
 )
 
 SPEED_SIGN_LOG_DESCRIPTION = (
