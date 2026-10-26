@@ -67,16 +67,17 @@ sign. Now:
     when that way is the single straight-through continuation); after that it
     stops at the next map limit change as before.
 
-Direction-aware (Oct 25 2026, DeGraff Atlantic Ave, route 000001cd 08:51:55): a
-westbound 60 section applied eastbound for ~60 m and MAX jumped to 59. The
-"both directions" rule above is replaced: a confirmed sign (chain piece, span or
-whole-way row) applies only while the car travels the way it was read -- within
-DIR_MATCH_DEG of the way's bearing in the row's direction (chain pieces carry it
-in their along-sign distance order; spans in "dir"; else the stored read heading).
-The opposite direction falls through to learned / Tesla / OSM. No GPS bearing:
-old behavior (applies). A row with no direction info at all still applies both
-ways and mapd logs it once. Skipped opposite-direction rows are logged once per
-stretch. The lookahead (effective_next) skips opposite-direction pieces too.
+Never behind the sign (Oct 26 2026, DeGraff Atlantic Ave, route 000001cd 08:51:55):
+a section is the road from the sign forward in its read direction, and it applies to
+traffic in both directions on that stretch -- but nothing on the far side of the sign.
+A row read before the reader located signs starts at the read point, which is
+behind the sign (the car reads it on approach): a westbound 60 read on the 30
+street covered ~45 m of it, and eastbound MAX jumped to 59 there. Such rows are
+moved up to the sign (sign_cut_m): to the first way boundary within
+SIGN_AHEAD_MAX_M where the map turns toward the sign's value (no such change:
+the read point stays). New rows record sign_at ("located" / "map_change" /
+"read"); old rows are fixed in memory at load (fix_starts, logged once).
+The 1 m end tolerance no longer reaches behind a sign or a span's from_s.
 """
 from __future__ import annotations
 
@@ -100,7 +101,6 @@ SAME_SIGN_M = 40.0     # a YES this close (same direction) replaces that sign's 
 CARRY_M = 150.0        # a sign this close to a map limit change carries past it (once)
 SIGN_AHEAD_MAX_M = 150.0   # sanity cap on how far ahead of the read point the sign can be
 STRAIGHT_DEG = 30.0    # straight-through continuation at a way end (name change at the sign)
-DIR_MATCH_DEG = 45.0   # a confirmed sign applies only within this of the direction it was read in
 
 
 def overrides_path() -> str:
@@ -147,44 +147,6 @@ def along_way(lat: float, lon: float, coords) -> tuple[float, float] | None:
 def heading_delta(a: float, b: float) -> float:
   d = abs(float(a) - float(b)) % 360.0
   return 360.0 - d if d > 180.0 else d
-
-
-def _travel_heading(seg_h: float, d: int) -> float:
-  return seg_h % 360.0 if d > 0 else (seg_h + 180.0) % 360.0
-
-
-def piece_dir(sp) -> int:
-  """+1 when the sign was read traveling along the way's digitized direction, -1 against, 0 unknown."""
-  ds, da = float(sp[2]) - float(sp[1]), float(sp[4]) - float(sp[3])
-  if abs(ds) < 1e-6 or abs(da) < 1e-6:
-    return 0
-  return 1 if ds * da > 0 else -1
-
-
-def same_direction(e: dict, bearing: float | None, seg_h: float | None, d: int) -> bool:
-  """Direction-aware overrides (Oct 25 2026, DeGraff Atlantic Ave): a confirmed sign applies only
-  when the car travels the way it was read. d is the row's travel direction along this way
-  (+1 / -1, 0 unknown). With no bearing, keep the old behavior (apply). With an unknown piece
-  direction, compare against the read heading stored on the row."""
-  if bearing is None:
-    return True
-  if d != 0 and seg_h is not None:
-    return heading_delta(bearing, _travel_heading(seg_h, d)) <= DIR_MATCH_DEG
-  h = e.get("heading")
-  if h is None:
-    return True   # no direction info at all: old behavior (logged by mapd)
-  return heading_delta(bearing, float(h)) <= DIR_MATCH_DEG
-
-
-def chain_dir(e: dict, way_id: int, s: float | None) -> int:
-  for sp in e.get("chain") or ():
-    if int(sp[0]) == int(way_id) and s is not None and float(min(sp[1], sp[2])) - 1.0 <= s <= float(max(sp[1], sp[2])) + 1.0:
-      return piece_dir(sp)
-  return 0
-
-
-def has_direction(e: dict) -> bool:
-  return e.get("heading") is not None or any(piece_dir(sp) for sp in (e.get("chain") or ()))
 
 
 def _poly_len(coords) -> float:
@@ -365,15 +327,72 @@ def build_chain(way_id: int, from_s: float, d: int, coords, db, max_m: float = C
 
 def chain_dist(e: dict, way_id: int, s: float | None) -> float | None:
   """Distance from e's sign along its chain to point s of way_id; None if not covered."""
+  start = min((min(float(sp[3]), float(sp[4])) for sp in e.get("chain") or ()), default=0.0)
   for sp in e.get("chain") or ():
     if int(sp[0]) != int(way_id):
       continue
     s0, s1, a0, a1 = float(sp[1]), float(sp[2]), float(sp[3]), float(sp[4])
     if s is None or not (s0 - 1.0 <= s <= s1 + 1.0):
       continue
+    # Never behind the sign (Oct 26 2026): the 1 m end tolerance only applies away from the sign.
+    if (s < s0 and a0 <= start + 0.05) or (s > s1 and a1 <= start + 0.05):
+      continue
     f = 0.0 if s1 - s0 < 1e-6 else (min(max(s, s0), s1) - s0) / (s1 - s0)
     return a0 + f * (a1 - a0)
   return None
+
+
+def trim_chain(chain, cut_m: float) -> list[list]:
+  """Drop the first cut_m meters of a chain (from its sign end); distances restart at 0 at the new start."""
+  if cut_m <= 0.0:
+    return [list(sp) for sp in chain]
+  out = []
+  for sp in chain:
+    w, s0, s1, a0, a1 = int(sp[0]), float(sp[1]), float(sp[2]), float(sp[3]), float(sp[4])
+    if max(a0, a1) <= cut_m:
+      continue
+    if min(a0, a1) < cut_m:
+      f = (cut_m - a0) / (a1 - a0)
+      sc = s0 + f * (s1 - s0)
+      if a0 < a1:
+        s0, a0 = sc, cut_m
+      else:
+        s1, a1 = sc, cut_m
+    out.append([w, round(s0, 1), round(s1, 1), round(a0 - cut_m, 1), round(a1 - cut_m, 1)])
+  return out
+
+
+def sign_cut_m(chain, mph: int, db) -> tuple[float, str]:
+  """Where along a chain built from the READ POINT the sign itself stands (Oct 26 2026, DeGraff
+  Atlantic Ave: a westbound 60 read on the 30 street, its sign at the town edge where the map turns
+  60; the section from the read point covered ~45 m behind the sign and eastbound MAX jumped).
+  The car reads a sign before reaching it, so the sign is ahead of the read point:
+    * map_change: the first way boundary within SIGN_AHEAD_MAX_M where the map's limit moves to
+      (or toward) the sign's value while the first way's map limit is not the sign's -- signs stand
+      where the posted limit changes;
+    * read: no map evidence -- keep the read point (the best position known; the reader's
+      located sign, stored on every row since Oct 23, is the real fix).
+  Returns (meters to cut from the chain start, how it was found). Never cuts the whole chain."""
+  pcs = sorted(chain, key=lambda sp: min(float(sp[3]), float(sp[4])))
+  total = max((max(float(sp[3]), float(sp[4])) for sp in pcs), default=0.0)
+  if not pcs or total <= 1.0:
+    return 0.0, "read"
+  def info(w):
+    return db.way_info(int(w)) if db is not None and hasattr(db, "way_info") else None
+  i0 = info(pcs[0][0])
+  first = _mph(i0.get("maxspeed_ms")) if i0 else None
+  if first is not None and first != int(mph):
+    prev = first
+    for sp in pcs[1:]:
+      a = min(float(sp[3]), float(sp[4]))
+      if a > SIGN_AHEAD_MAX_M:
+        break
+      iw = info(sp[0])
+      m = _mph(iw.get("maxspeed_ms")) if iw else None
+      if m is not None and m != prev and abs(int(mph) - m) < abs(int(mph) - prev):
+        return min(a, total - 1.0), "map_change"
+      prev = m if m is not None else prev
+  return 0.0, "read"
 
 
 def parse_confirmed(raw) -> dict | None:
@@ -435,11 +454,6 @@ class SpeedOverrides:
     self.last_seq: float | None = None
     self.pending: dict | None = None
     self.pending_t = 0.0
-    self.skipped: list[tuple[int, int, float | None]] = []   # (way, mph, read heading) skipped as opposite direction
-    self.undirected: set[int] = set()   # ids of applied rows with no direction info (logged once)
-    self.undirected_new: list[tuple[int, int]] = []
-    self._skip_last: set = set()
-    self._skip_now: set = set()
     self.load()
 
   def load(self) -> None:
@@ -473,9 +487,7 @@ class SpeedOverrides:
   def find(self, way_id: int, bearing: float | None, lat: float | None = None, lon: float | None = None,
            coords=None) -> dict | None:
     """Row that sets the limit at this point. Sign chains first: the nearest sign behind the point
-    along its chain (ties: newest). Else the newest legacy row covering it.
-    Direction-aware (Oct 25 2026): a row read in the other direction of travel is skipped."""
-    self._skip_last, self._skip_now = self._skip_now, set()
+    along its chain (ties: newest). Else the newest legacy row covering it. Spans ignore the heading."""
     pos = None
     if any(e.get("chain") for e in self.entries):
       pos = along_way(lat, lon, coords) or (None, None)
@@ -484,14 +496,10 @@ class SpeedOverrides:
         if not e.get("chain"):
           continue
         dd = chain_dist(e, way_id, pos[0])
-        if dd is None or dd > best_d:
-          continue
-        if not same_direction(e, bearing, pos[1], chain_dir(e, way_id, pos[0])):
-          self._note_skip(e, way_id)
-          continue
-        best_c, best_d = e, dd
+        if dd is not None and dd <= best_d:
+          best_c, best_d = e, dd
       if best_c is not None:
-        return self._undirected_note(best_c)
+        return best_c
     best = None
     for e in self.entries:
       if e.get("chain"):
@@ -500,43 +508,33 @@ class SpeedOverrides:
         continue
       if e.get("both"):
         if e.get("from_s") is None:
-          if same_direction(e, bearing, None, 0):
-            best = e
-          else:
-            self._note_skip(e, way_id)
+          best = e
           continue
         if pos is None:
           pos = along_way(lat, lon, coords) or (None, None)
-        if pos[0] is not None and (pos[0] - float(e["from_s"])) * int(e.get("dir", 1)) >= -1.0:
-          if same_direction(e, bearing, pos[1], int(e.get("dir", 1))):
-            best = e
-          else:
-            self._note_skip(e, way_id)
+        if pos[0] is not None and (pos[0] - float(e["from_s"])) * int(e.get("dir", 1)) >= 0.0:
+          best = e
       elif bearing is not None and heading_delta(e["heading"], bearing) <= HEADING_MATCH_DEG:
         best = e  # newest wins (appended last)
-    return self._undirected_note(best) if best is not None else None
+    return best
 
-  def _note_skip(self, e: dict, way_id: int) -> None:
-    k = (int(way_id), int(e["mph"]), e.get("heading"))
-    self._skip_now.add(k)
-    if k not in self._skip_last:   # log once per stretch, not every cycle
-      self.skipped.append(k)
-      del self.skipped[:-20]
-
-  def _undirected_note(self, e: dict) -> dict:
-    """Rows with no direction info at all keep applying both ways; note each once for the log."""
-    if not has_direction(e) and id(e) not in self.undirected:
-      self.undirected.add(id(e))
-      self.undirected_new.append((int(e["way_id"]), int(e["mph"])))
-    return e
-
-  def take_undirected(self) -> list:
-    out, self.undirected_new = self.undirected_new, []
-    return out
-
-  def take_skipped(self) -> list:
-    out, self.skipped = self.skipped, []
-    return out
+  def fix_starts(self, db) -> list[dict]:
+    """Rows written before the sign was located (no sign_at, no read_lat) start at the read point,
+    behind the sign. Move each start up to its sign (sign_cut_m), in memory; the original chain is
+    kept as chain_read. Returns the rows changed this call (mapd logs them once)."""
+    done = []
+    for e in self.entries:
+      if not e.get("chain") or e.get("sign_at") or e.get("read_lat") is not None:
+        continue
+      cut, how = sign_cut_m(e["chain"], int(e["mph"]), db)
+      e["sign_at"] = how
+      if cut <= 0.0:
+        continue
+      e["chain_read"] = e["chain"]
+      e["chain"] = trim_chain(e["chain"], cut)
+      e["cut_m"] = round(cut, 1)
+      done.append(e)
+    return done
 
   def find_legacy(self, way_id: int, bearing: float | None) -> dict | None:
     """Newest legacy row on this way within +-60 deg (log only; never applied)."""
@@ -571,7 +569,7 @@ class SpeedOverrides:
         continue
       if e.get("both"):
         if e.get("from_s") is None or pos[0] is None or \
-           (pos[0] - float(e["from_s"])) * int(e.get("dir", 1)) >= -1.0:
+           (pos[0] - float(e["from_s"])) * int(e.get("dir", 1)) >= 0.0:
           gone.append(e)
       elif bearing is not None and heading_delta(e["heading"], bearing) <= HEADING_MATCH_DEG:
         gone.append(e)
@@ -627,6 +625,17 @@ class SpeedOverrides:
         from_s = round(s_at, 1)
         sign_pt = _point_at(coords, from_s)
       chain = build_chain(int(way_id), from_s, d, coords, db, mph=int(conf["mph"]))
+      sign_at, cut = "located", 0.0
+      if ahead <= 0.0:   # no located sign: the chain starts at the read point, behind the sign
+        cut, sign_at = sign_cut_m(chain, int(conf["mph"]), db)
+        chain = trim_chain(chain, cut)
+        if chain and cut > 0.0:
+          w0 = int(chain[0][0])
+          from_s = float(chain[0][1] if chain[0][3] <= chain[0][4] else chain[0][2])
+          if w0 != int(way_id):
+            coords = db.way_coords(w0) if db is not None and hasattr(db, "way_coords") else coords
+            way_id = w0
+          sign_pt = _point_at(coords, from_s)
       ways = {int(sp[0]) for sp in chain}
 
       def replaced(e) -> bool:
@@ -639,6 +648,9 @@ class SpeedOverrides:
       e = {"v": ENTRY_VERSION, "way_id": int(way_id), "heading": round(float(heading), 1), "mph": int(conf["mph"]),
            "both": True, "from_s": from_s, "dir": d, "chain": [[sp[0]] + [round(float(x), 1) for x in sp[1:]] for sp in chain],
            "lat": _r6(sign_pt[0]), "lon": _r6(sign_pt[1]), "road": road, "t": round(now, 1), "source": row_source(conf)}
+      e["sign_at"] = sign_at
+      if cut > 0.0:
+        e["cut_m"] = round(cut, 1)
       if sign_pt != read_pt:
         e["read_lat"], e["read_lon"] = read_pt
       self._append(e)
@@ -753,16 +765,12 @@ def _point_at(coords, s: float) -> tuple[float, float]:
   return coords[-1]
 
 
-def chain_at(entries, way_id: int, s: float, d: int = 0) -> dict | None:
-  """Nearest sign chain covering (way_id, s). d (+1 / -1 travel direction along the way, 0 any)
-  drops chains read in the other direction (a piece of unknown direction still applies)."""
+def chain_at(entries, way_id: int, s: float) -> dict | None:
   best, best_d = None, 1e18
   for e in entries:
     if not e.get("chain"):
       continue
     dd = chain_dist(e, way_id, s)
-    if d and dd is not None and chain_dir(e, way_id, s) == -d:
-      continue
     if dd is not None and dd <= best_d:
       best, best_d = e, dd
   return best
@@ -833,8 +841,8 @@ def effective_next(entries, db, way_id: int, coords, lat: float, lon: float, bea
   if not pieces:
     return osm_next
 
-  def at(w, s, osm_ms, d):
-    e = chain_at(entries, int(w["way_id"]), s, d) if has_chain else None
+  def at(w, s, osm_ms):
+    e = chain_at(entries, int(w["way_id"]), s) if has_chain else None
     if e is not None:
       return int(e["mph"]) * MPH_TO_MS, True
     if learned is not None:
@@ -856,7 +864,7 @@ def effective_next(entries, db, way_id: int, coords, lat: float, lon: float, bea
     n = int(abs(s_to - s_from) // NEXT_STEP_M)
     for k in range(n + 1):
       s = s_from + d * k * NEXT_STEP_M
-      ms, masked = at(w, s, osm_ms, d)
+      ms, masked = at(w, s, osm_ms)
       dist = dist0 + k * NEXT_STEP_M
       walked = dist
       if abs(ms - prev_ms) <= 0.3:

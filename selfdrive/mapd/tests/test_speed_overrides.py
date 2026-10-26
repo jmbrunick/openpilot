@@ -29,10 +29,7 @@ def test_yes_keyed_by_way_and_direction_and_persists(tmp_path):
   e = o.consume({"mph": 55, "seq": 1.0, "way_id": 111, "heading": 90.0}, m(111), 90.0, 0.0)
   assert e["way_id"] == 111 and e["mph"] == 55
   assert abs(o.limit_ms(111, 100.0) - 55 * MPH_TO_MS) < 1e-6
-  assert o.limit_ms(111, 270.0) is None   # whole way, read direction only (Oct 25: direction-aware)
-  assert abs(o.limit_ms(111, 130.0) - 55 * MPH_TO_MS) < 1e-6   # within 45 deg of the read heading
-  assert o.limit_ms(111, 140.0) is None
-  assert abs(o.limit_ms(111, None) - 55 * MPH_TO_MS) < 1e-6    # no bearing: old behavior
+  assert abs(o.limit_ms(111, 270.0) - 55 * MPH_TO_MS) < 1e-6   # both directions (no sign position: whole way)
   assert o.limit_ms(222, 90.0) is None
   assert o.consume({"mph": 55, "seq": 1.0, "way_id": 222, "heading": 90.0}, m(222), 90.0, 1.0) is None  # same seq once
   o2 = SpeedOverrides(p)                        # future drive
@@ -82,9 +79,8 @@ def test_v23_yes_after_car_moved_uses_read_time_way(tmp_path):
   assert e is not None and e["way_id"] == 111 and e["heading"] == 90.0 and e["mph"] == 45
   assert o.find(222, 0.0) is None                    # never the tap-time way
   assert abs(o.limit_ms(111, 80.0) - 45 * MPH_TO_MS) < 1e-6
-  assert o.limit_ms(111, 270.0) is None                          # read direction only
-  assert o.limit_ms(111, 160.0) is None              # 70 deg off the read heading (Oct 25)
-  assert o.limit_ms(111, 130.0) is not None
+  assert abs(o.limit_ms(111, 270.0) - 45 * MPH_TO_MS) < 1e-6   # both directions now
+  assert o.limit_ms(111, 160.0) is not None          # spans ignore heading
 
 
 def test_v23_yes_without_read_time_way_stores_nothing(tmp_path):
@@ -125,9 +121,9 @@ def test_yes_covers_both_directions_from_sign_onward(tmp_path):
   e = o.consume({"mph": 30, "seq": 1.0, "way_id": 7, "heading": 90.0, "lat": lat, "lon": lon},
                 None, 90.0, 0.0, way_coords=lambda w: W7 if w == 7 else [])
   assert e["both"] and e["dir"] == 1 and 390 < e["from_s"] < 410
-  for m_east in (450, 900):                 # past the sign: read direction only (Oct 25)
-    assert abs(o.limit_ms(7, 90.0, *_at(m_east), W7) - 30 * MPH_TO_MS) < 1e-6
-    assert o.limit_ms(7, 270.0, *_at(m_east), W7) is None
+  for m_east in (450, 900):                 # past the sign: both directions
+    for hdg in (90.0, 270.0):
+      assert abs(o.limit_ms(7, hdg, *_at(m_east), W7) - 30 * MPH_TO_MS) < 1e-6
   for hdg in (90.0, 270.0):                 # before the sign: OSM
     assert o.limit_ms(7, hdg, *_at(200), W7) is None
   assert o.limit_ms(7, 90.0) is None        # no position: no span match
@@ -139,9 +135,8 @@ def test_westbound_sign_covers_west_part(tmp_path):
   e = o.consume({"mph": 40, "seq": 1.0, "way_id": 7, "heading": 270.0, "lat": lat, "lon": lon},
                 None, 270.0, 0.0, way_coords=lambda w: W7)
   assert e["dir"] == -1
-  assert o.limit_ms(7, 270.0, *_at(100), W7) is not None
-  assert o.limit_ms(7, 90.0, *_at(100), W7) is None    # eastbound: not the sign's direction (Oct 25)
-  assert o.limit_ms(7, 270.0, *_at(800), W7) is None   # behind the sign
+  assert o.limit_ms(7, 90.0, *_at(100), W7) is not None
+  assert o.limit_ms(7, 90.0, *_at(800), W7) is None
 
 
 def test_span_replaces_heading_only_row(tmp_path):
@@ -244,22 +239,3 @@ def test_list_legacy_script(tmp_path):
   con.close()
   r = rows(p, db)
   assert r == [dict(r[0], legacy=True, mph=30, osm_mph=60)]
-
-
-def test_opposite_direction_skip_logged_once_per_stretch(tmp_path):
-  o = SpeedOverrides(str(tmp_path / "o.json"))
-  o.consume({"mph": 40, "seq": 1.0, "way_id": 7, "heading": 270.0, "lat": _at(600)[0], "lon": _at(600)[1]},
-            None, 270.0, 0.0, way_coords=lambda w: W7)
-  for x in (100, 150, 200):
-    assert o.limit_ms(7, 90.0, *_at(x), W7) is None
-  assert len(o.take_skipped()) == 1
-  assert o.take_skipped() == []
-
-
-def test_row_without_direction_still_applies_and_is_noted(tmp_path):
-  o = SpeedOverrides(str(tmp_path / "o.json"))
-  row = {"v": 2, "way_id": 7, "heading": None, "mph": 35, "both": True}
-  o.entries, o.rows = [row], [row]
-  assert o.limit_ms(7, 90.0) is not None and o.limit_ms(7, 270.0) is not None
-  assert o.take_undirected() == [(7, 35)]
-  assert o.take_undirected() == []

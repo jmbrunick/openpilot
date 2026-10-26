@@ -96,9 +96,9 @@ def test_benson_60_50_30_eastbound(tmp_path, order):
   assert limit(o, db, 3300) == 30          # 30 section
   assert limit(o, db, 4900) == 30          # map stays 40 until 5000
   assert limit(o, db, 6000) == 30          # map 30 beyond (30 span ended at the map change)
-  # Oct 25: eastbound signs do not apply westbound (map there)
-  assert limit(o, db, 2500, bearing=270.0) == 60
-  assert limit(o, db, 3500, bearing=270.0) == 40
+  # both directions of travel: westbound sees the same sections
+  assert limit(o, db, 2500, bearing=270.0) == 50
+  assert limit(o, db, 3500, bearing=270.0) == 30
 
 
 def test_benson_westbound_signs(tmp_path):
@@ -108,7 +108,7 @@ def test_benson_westbound_signs(tmp_path):
   yes(o, db, 4800, 45, 270.0, 1)
   assert limit(o, db, 4900, 270.0) == 40   # never behind the sign
   assert limit(o, db, 3100, 270.0) == 45
-  assert limit(o, db, 3100, 90.0) == 40    # eastbound: map (direction-aware, Oct 25)
+  assert limit(o, db, 3100, 90.0) == 45    # both directions
   assert limit(o, db, 2900, 270.0) == 60   # map changes 40 -> 60 at 3000: stop
 
 

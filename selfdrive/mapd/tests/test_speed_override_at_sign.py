@@ -100,15 +100,17 @@ def test_clarkfield_60_at_town_line_carries_onto_us_highway_59(tmp_path):
   for y in (-30, -600, -1490, -1510, -2990):
     assert r.limit(y, 180.0) == 60, y                 # was 55 for 26 s on Oct 23
   assert r.limit(-3100, 180.0) == 45                  # stops at the next map change
-  assert r.limit(-600, 0.0) == 55                     # other direction: map (Oct 25: direction-aware)
+  assert r.limit(-600, 0.0) == 60                     # both directions from the sign forward
 
 
 def test_clarkfield_old_payload_without_sign_location_still_carries(tmp_path):
   r = clarkfield(tmp_path)
-  e = r.yes(1.0, 60, 180.0, 1)                        # no sign_lat / sign_range_m: starts at the read
-  assert e["way_id"] == 794981138
-  assert [sp[0] for sp in e["chain"]] == [794981138, 18299620, 18299621]
-  assert r.limit(-1000, 180.0) == 60 and r.limit(-3100, 180.0) == 45
+  e = r.yes(1.0, 60, 180.0, 1)                        # no sign_lat / sign_range_m: read point only
+  # Oct 26: the read point is behind the sign; the sign stands where the map turns toward 60
+  assert e["way_id"] == 18299620 and e["sign_at"] == "map_change" and e["read_lat"] == ns(1.0)[0]
+  assert [sp[0] for sp in e["chain"]] == [18299620, 18299621]
+  assert r.limit(0.5, 180.0) == 30 and r.limit(0.5, 0.0) == 30   # 13th Street: behind the sign, both ways
+  assert r.limit(-1000, 180.0) == 60 and r.limit(-1000, 0.0) == 60 and r.limit(-3100, 180.0) == 45
 
 
 def test_sign_range_only_starts_ahead(tmp_path):
@@ -162,21 +164,6 @@ def test_degraff_westbound_60_starts_at_its_sign_not_in_town(tmp_path):
   assert r.limit(1015, 270.0) == 60 and r.limit(500, 270.0) == 60   # from the sign on (onto US 12)
   r.yes(985.0, 30, 90.0, 2, sign_u=998.0)                          # the eastbound 30 sign
   assert r.limit(1045, 90.0) == 30 and r.limit(1300, 90.0) == 30
-
-
-def test_degraff_westbound_60_not_applied_eastbound(tmp_path):
-  # Oct 25 2026: route 000001cd 08:51:55 CDT, turning eastbound onto Atlantic Avenue the Oct 22
-  # westbound 60 section (sign at 1029, covering west onto US 12) applied for ~60 m (SIGN 60 vs
-  # Tesla/OSM 30) and MAX jumped to 59. A confirmed sign now applies only in its read direction.
-  r = degraff(tmp_path)
-  r.yes(1060.0, 60, 270.0, 1, sign_u=1029.0)
-  for x in (1028, 1015, 1005):
-    assert r.limit(x, 270.0) == 60, x                  # westbound: the sign's section
-    for hdg in (90.0, 60.0, 120.0, 45.0):              # eastbound, incl. mid-turn headings
-      assert r.limit(x, hdg) == 30, (x, hdg)           # map (was 60)
-  assert r.limit(500, 90.0) == 60                     # US 12 eastbound: map 60 anyway
-  assert r.limit(1015, 240.0) == 60                   # 30 deg off the westbound way: still applies
-  assert r.limit(1015, 200.0) == 30                   # 70 deg off: not the sign's direction
 
 
 def test_degraff_25_on_atlantic_stops_at_its_end(tmp_path):
@@ -281,13 +268,13 @@ def test_build_chain_without_db_is_one_way():
 
 
 def test_next_limit_follows_section_across_the_town_line(tmp_path):
-  # section starts on 13th Street (old payload: at the read); standing on it just past the read,
-  # nextSpeedLimit must not offer US Highway 59's map 55 (the section covers it)
+  # old payload: the section starts at the town line (the map's change), not on 13th Street;
+  # standing in it past the line, nextSpeedLimit must not offer US Highway 59's map 55
   r = clarkfield(tmp_path)
   r.yes(1.0, 60, 180.0, 1)
-  w = r.way_at(0.8)
-  lat, lon = ns(0.8)
-  assert r.limit(0.8, 180.0) == 60
+  w = r.way_at(-5.0)
+  lat, lon = ns(-5.0)
+  assert r.limit(0.8, 180.0) == 30 and r.limit(-5.0, 180.0) == 60
   n = effective_next(r.o.entries, r.db, w["way_id"], w["coords"], lat, lon, 180.0, 60 * MPH_TO_MS, True,
                      (55 * MPH_TO_MS, 0.8))
   assert n is None
