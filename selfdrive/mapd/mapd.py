@@ -118,6 +118,9 @@ def main():
         last_path = path
       db.open()
       overrides.load()
+      for e_fix in overrides.fix_starts(db):
+        cloudlog.info("mapd: sign override %s mph way=%s started at the read point; moved %.0f m up to the sign (%s)",
+                      e_fix["mph"], e_fix["way_id"], e_fix["cut_m"], e_fix["sign_at"])
       last_reload = now
       tesla_log_on = _param_bool(params, TESLA_PARAM)
       tesla_primary_on = _param_bool(params, TESLA_PRIMARY_PARAM)

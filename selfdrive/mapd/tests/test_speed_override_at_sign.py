@@ -105,10 +105,12 @@ def test_clarkfield_60_at_town_line_carries_onto_us_highway_59(tmp_path):
 
 def test_clarkfield_old_payload_without_sign_location_still_carries(tmp_path):
   r = clarkfield(tmp_path)
-  e = r.yes(1.0, 60, 180.0, 1)                        # no sign_lat / sign_range_m: starts at the read
-  assert e["way_id"] == 794981138
-  assert [sp[0] for sp in e["chain"]] == [794981138, 18299620, 18299621]
-  assert r.limit(-1000, 180.0) == 60 and r.limit(-3100, 180.0) == 45
+  e = r.yes(1.0, 60, 180.0, 1)                        # no sign_lat / sign_range_m: read point only
+  # Oct 26: the read point is behind the sign; the sign stands where the map turns toward 60
+  assert e["way_id"] == 18299620 and e["sign_at"] == "map_change" and e["read_lat"] == ns(1.0)[0]
+  assert [sp[0] for sp in e["chain"]] == [18299620, 18299621]
+  assert r.limit(0.5, 180.0) == 30 and r.limit(0.5, 0.0) == 30   # 13th Street: behind the sign, both ways
+  assert r.limit(-1000, 180.0) == 60 and r.limit(-1000, 0.0) == 60 and r.limit(-3100, 180.0) == 45
 
 
 def test_sign_range_only_starts_ahead(tmp_path):
@@ -266,13 +268,13 @@ def test_build_chain_without_db_is_one_way():
 
 
 def test_next_limit_follows_section_across_the_town_line(tmp_path):
-  # section starts on 13th Street (old payload: at the read); standing on it just past the read,
-  # nextSpeedLimit must not offer US Highway 59's map 55 (the section covers it)
+  # old payload: the section starts at the town line (the map's change), not on 13th Street;
+  # standing in it past the line, nextSpeedLimit must not offer US Highway 59's map 55
   r = clarkfield(tmp_path)
   r.yes(1.0, 60, 180.0, 1)
-  w = r.way_at(0.8)
-  lat, lon = ns(0.8)
-  assert r.limit(0.8, 180.0) == 60
+  w = r.way_at(-5.0)
+  lat, lon = ns(-5.0)
+  assert r.limit(0.8, 180.0) == 30 and r.limit(-5.0, 180.0) == 60
   n = effective_next(r.o.entries, r.db, w["way_id"], w["coords"], lat, lon, 180.0, 60 * MPH_TO_MS, True,
                      (55 * MPH_TO_MS, 0.8))
   assert n is None
