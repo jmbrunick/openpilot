@@ -14,6 +14,8 @@ Press and hold 2 s on the on-screen speed limit sign (comma overlay, not nav) to
 ## C) OSM comparison
 The same hold shows OSM's number beside Tesla's before overriding.
 
+In the 2 s hold popup, Tesla's and OSM's limits are shown side by side. Tapping directly on either value instantly sets that number as the active limit for the current road segment, with no arrows needed. The arrows remain for fine-tuning in 5 mph steps, and Save still writes the chosen value to the overlay for that segment, forward and backward.
+
 ## Optional: confidence rule
 A disagreement above a threshold (e.g. 20 mph) auto-falls back to OSM and flags it on the sign review list.
 
