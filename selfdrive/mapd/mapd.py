@@ -87,7 +87,7 @@ def main():
   last_path = db.path
 
   overrides = SpeedOverrides()
-  # Oct 26: posted segments under 100 yd with a <= 15 mph jump are written out (short_segment.py).
+  # Oct 26: posted segments under 100 yd with a > 15 mph jump are written out (short_segment.py).
   short_hold = ShortSegmentHold()
   odo_m, odo_t = 0.0, None
   last_short_log = None

@@ -1,9 +1,10 @@
 """Short speed-limit segments are written out (Justin, Oct 26 2026).
 
 A posted-limit segment shorter than SHORT_SEG_M (100 yd, ~91 m) whose jump from the
-surrounding limit is at most SHORT_JUMP_MPH (15 mph) is not published: the surrounding
-limit holds across it. Example: the map changes at A, the sign the map meant stands at B
-200 ft later -- the A..B sliver is gone. Larger jumps always apply normally.
+surrounding limit is MORE than SHORT_JUMP_MPH (15 mph), up or down, is not published: the
+surrounding limit holds across it (Justin, Oct 26: "an increase or decrease that is under
+100 yards of over 15 mph is what is ignored"). Example: a 60 read for ~50 m on a 30 street
+(DeGraff, Clarkfield). Jumps of 15 mph or less always apply normally.
 
 Applied to the final resolved values mapd publishes (sign sections > Tesla-learned >
 Tesla > OSM; temp limits still beat it), both the current limit and the lookahead.
@@ -13,7 +14,7 @@ Causality. A segment's length is only known ahead of time from map geometry:
     profile can see): at the change point the profile gives the distance to the next
     change, so a short segment is recognized the moment it starts and held through, rises
     and drops alike (geometry-backed, both ends known);
-  * live Tesla (no lookahead): a rise of <= 15 mph is held until it has lasted SHORT_SEG_M
+  * live Tesla (no lookahead): a rise of more than 15 mph is held until it has lasted SHORT_SEG_M
     of travel (delaying a rise is safe). A DROP is applied at once -- never delayed on a
     guess -- and if the previous limit comes back within SHORT_SEG_M the drop is ended at
     once (no rise hold): the sliver is cut short, not prevented.
@@ -66,12 +67,12 @@ def limit_profile(entries, db, way_id: int, coords, lat: float, lon: float, bear
 
 
 def _filtered_changes(held_ms: float, prof, walked: float) -> list[tuple[float, float]]:
-  """Change points after short <= 15 mph segments are folded into the held limit around them."""
+  """Change points after short > 15 mph segments are folded into the held limit around them."""
   out, held = [], float(held_ms)
   for i in range(1, len(prof)):
     start, ms = prof[i]
     end = prof[i + 1][0] if i + 1 < len(prof) else None   # None: runs past the walk (long)
-    if end is not None and end - start < SHORT_SEG_M and abs(ms - held) <= SHORT_JUMP_MS:
+    if end is not None and end - start < SHORT_SEG_M and abs(ms - held) > SHORT_JUMP_MS:
       continue
     if abs(ms - held) > EPS_MS:
       out.append((start, ms))
@@ -115,7 +116,7 @@ class ShortSegmentHold:
     self.held = False
     if self.pub is not None and abs(raw - self.pub) <= EPS_MS:
       return self.pub
-    if self.pub is None or abs(raw - self.pub) > SHORT_JUMP_MS:
+    if self.pub is None or abs(raw - self.pub) <= SHORT_JUMP_MS:
       self._adopt(raw, odo_m)
       return raw
     run = odo_m - self.odo_change
