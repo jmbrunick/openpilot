@@ -21,6 +21,7 @@ from openpilot.selfdrive.mapd.gps_fix import (
 )
 from openpilot.selfdrive.mapd.map_speed_policy import keep_rural_default_ms, map_source_for
 from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB
+from openpilot.selfdrive.mapd.short_segment import ShortSegmentHold, filter_next as short_filter_next, limit_profile
 from openpilot.selfdrive.mapd.speed_overrides import CLEAR_PARAM as SIGN_CLEAR_PARAM, PARAM as SIGN_CONFIRMED_PARAM, SpeedOverrides, along_way, effective_next
 from openpilot.selfdrive.mapd.roundabout_map import PARAM_RING, RingCache, roundabout_comfort_speed_ms
 from openpilot.selfdrive.mapd.roundabout_status import RingDataWatch, map_msg_valid
@@ -86,6 +87,10 @@ def main():
   last_path = db.path
 
   overrides = SpeedOverrides()
+  # Oct 26: posted segments under 100 yd with a <= 15 mph jump are written out (short_segment.py).
+  short_hold = ShortSegmentHold()
+  odo_m, odo_t = 0.0, None
+  last_short_log = None
   last_legacy_log = None
   ring_cache = RingCache()
   ring_watch = RingDataWatch()
@@ -144,6 +149,9 @@ def main():
       persist_last_gps_position(params, lat, lon)
       last_gps_write = now
     v_ego_ms = _v_ego_ms(sm) if gps_ok else 0.0
+    if odo_t is not None:
+      odo_m += max(0.0, _v_ego_ms(sm)) * max(0.0, min(1.0, now - odo_t))
+    odo_t = now
     match = db.lookup(lat, lon, bearing, v_ego_ms=v_ego_ms) if gps_ok and db.loaded else None
     end_seq0 = temp.end_seq
     try:
@@ -256,6 +264,21 @@ def main():
         except Exception:
           cloudlog.exception("mapd: Tesla primary limit failed")
       cur_ms, cur_src = select_current(sign_ms, tesla_mph, lim_ms, learned_ms)
+      learned_fn = learned.limit_ms if learned is not None and learned.has_active() else None
+      prof, prof_walked = [], 0.0
+      try:
+        prof, prof_walked = limit_profile(overrides.entries, db, int(match.way_id),
+                                          match.coords or db.way_coords(int(match.way_id)), lat, lon, bearing,
+                                          learned=learned_fn)
+        raw_cur_ms = float(cur_ms)
+        cur_ms = short_hold.update(raw_cur_ms, cur_src, odo_m, prof, prof_walked)
+        skey = (round(raw_cur_ms, 1), round(float(cur_ms), 1)) if short_hold.held else None
+        if skey is not None and skey != last_short_log:
+          cloudlog.info("mapd: short segment written out: %.0f mph held over %.0f mph (src=%s)",
+                        float(cur_ms) * 2.23694, raw_cur_ms * 2.23694, cur_src)
+        last_short_log = skey
+      except Exception:
+        cloudlog.exception("mapd: short segment filter failed")
       d.speedLimit = float(cur_ms)
       d.speedLimitValid = True
       d.source = cur_src or map_source_for(est)
@@ -285,6 +308,10 @@ def main():
       except Exception:
         cloudlog.exception("mapd: effective next limit failed")
         nxt = osm_next
+      try:
+        nxt = short_filter_next(float(d.speedLimit), nxt, prof, prof_walked)
+      except Exception:
+        cloudlog.exception("mapd: short segment next failed")
       if cur_src in ("tesla", "tesla_learned"):
         nxt = next_for_published(nxt, float(d.speedLimit))
       # Temp beats everything above (sign sections, Tesla, OSM) until it ends.
@@ -303,6 +330,7 @@ def main():
       d.wayId = int(match.way_id)
       d.matchDistance = float(match.distance_m)
     else:
+      short_hold.reset()
       try:
         temp.tick(None, None, lat, lon, bearing, _v_ego_ms(sm), 0.0)
         temp_limit.apply_to_msg(d, temp, None, None)
