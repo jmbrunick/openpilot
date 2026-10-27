@@ -78,7 +78,8 @@ def _replay(yes_events):
   """Replay 1d5 mapd inputs. sections: way -> mph of the per-way confirmed
   section a Yes created (the way it was given on, plus 3rd St S way 307499710
   that the Cold Spring section already carried to)."""
-  rows = json.load(open(DATA))["rows"]
+  with open(DATA) as f:
+    rows = json.load(f)["rows"]
   h = SignHold()
   sections = {}
   last_tesla, last_tesla_t = 0, -1e9

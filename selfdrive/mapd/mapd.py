@@ -250,11 +250,11 @@ def main():
                        legacy.get("heading"), match.road_name)
     last_legacy_log = lkey
 
-    if sm.updated.get("liveSpeedSignNAP", False):
-      try:
+    try:
+      if sign_hold.active and sm.updated.get("liveSpeedSignNAP", False):
         sign_hold.note_sign(sm["liveSpeedSignNAP"].signSeq, sm["liveSpeedSignNAP"].signMph)
-      except Exception:
-        cloudlog.exception("mapd: sign hold note failed")
+    except Exception:
+      cloudlog.exception("mapd: sign hold note failed")
     hold_ms = sign_hold.update(now, match.road_name if match is not None else "",
                                lat if gps_ok else None, lon if gps_ok else None)
     if sign_hold.end_reason is not None:
