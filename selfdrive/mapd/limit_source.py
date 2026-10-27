@@ -28,7 +28,8 @@ SOURCE_OSM_FALLBACK = "osm_fallback"
 
 
 def choose_current(sign_ms: float | None, tesla_mph: int, osm_ms: float, learned_ms: float | None = None, *,
-                   prefer_osm: bool = False, fallback_on: bool = True, osm_tagged_mph: int = 0
+                   prefer_osm: bool = False, fallback_on: bool = True, osm_tagged_mph: int = 0,
+                   hold_ms: float | None = None, osm_estimated: bool = True
                    ) -> tuple[float, str | None, bool]:
   """(limit m/s, source, disagreement fallback fired).
 
@@ -36,9 +37,12 @@ def choose_current(sign_ms: float | None, tesla_mph: int, osm_ms: float, learned
   plus SOURCE_OSM_FALLBACK when the > 20 mph rule picked OSM."""
   if sign_ms is not None:
     return float(sign_ms), "sign", False
+  # A held Yes (SignHold, #392) is a confirmed sign: it beats the source choice too.
+  if hold_ms is not None and hold_ms > 0:
+    return float(hold_ms), "sign", False
   if prefer_osm:
     return float(osm_ms), None, False
-  cur_ms, src = select_current(None, tesla_mph, osm_ms, learned_ms)
+  cur_ms, src = select_current(None, tesla_mph, osm_ms, learned_ms, osm_estimated=osm_estimated)
   if fallback_on and src in (SOURCE_TESLA, SOURCE_LEARNED) and int(osm_tagged_mph) > 0:
     cur_mph = int(round(cur_ms / MPH_TO_MS))
     if abs(cur_mph - int(osm_tagged_mph)) > FALLBACK_DIFF_MPH:
