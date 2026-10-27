@@ -325,6 +325,32 @@ def build_chain(way_id: int, from_s: float, d: int, coords, db, max_m: float = C
   return spans
 
 
+def manual_stretch(way_id: int, s: float, d: int, coords, db):
+  """Whole map-limit stretch around the car at (way_id, s), travelling d. Walks back (against d)
+  to the previous map limit change (or road change / fork / CHAIN_MAX_M), then builds the chain
+  forward from there past the car to the next map limit change. No carry at either end.
+  Returns (way_id, from_s, d, coords, chain, back_m) for the stretch start, or None when the
+  forward chain does not reach the car (e.g. a fork seen only in one direction)."""
+  back = build_chain(int(way_id), s, -d, coords, db, carry_m=-1.0)
+  if not back:
+    return None
+  far = max(back, key=lambda sp: max(float(sp[3]), float(sp[4])))
+  w0 = int(far[0])
+  back_m = max(float(far[3]), float(far[4]))
+  if float(far[4]) >= float(far[3]):   # walked back along +s: the far end is s1, forward is -1
+    s0, d0 = float(far[2]), -1
+  else:
+    s0, d0 = float(far[1]), 1
+  c0 = coords if w0 == int(way_id) else (db.way_coords(w0) if db is not None and hasattr(db, "way_coords") else None)
+  if not c0:
+    return None
+  chain = build_chain(w0, s0, d0, c0, db, max_m=back_m + CHAIN_MAX_M, carry_m=-1.0)
+  e = {"chain": chain}
+  if chain_dist(e, int(way_id), s) is None:
+    return None
+  return w0, round(s0, 1), d0, c0, chain, back_m
+
+
 def chain_dist(e: dict, way_id: int, s: float | None) -> float | None:
   """Distance from e's sign along its chain to point s of way_id; None if not covered."""
   start = min((min(float(sp[3]), float(sp[4])) for sp in e.get("chain") or ()), default=0.0)
@@ -629,10 +655,22 @@ class SpeedOverrides:
         way_id, s_at, d, coords, _, _moved = _walk(db, int(way_id), from_s, d, coords, ahead, info)
         from_s = round(s_at, 1)
         sign_pt = _point_at(coords, from_s)
-      chain = build_chain(int(way_id), from_s, d, coords, db, mph=int(conf["mph"]))
+      back_m = None
+      if conf.get("manual"):
+        # Manual Save (Oct 27 2026): the driver fixes a limit that has already been wrong for a
+        # while, so the row covers the whole current map-limit stretch -- from the previous map
+        # limit change behind the car to the next one ahead (both directions of travel).
+        st = manual_stretch(int(way_id), from_s, d, coords, db)
+        if st is not None:
+          way_id, from_s, d, coords, chain, back_m = st
+          sign_pt = _point_at(coords, from_s)
+        else:   # stretch walk failed (fork behind, no map): start at the car, as before
+          chain = build_chain(int(way_id), from_s, d, coords, db, mph=int(conf["mph"]))
+      else:
+        chain = build_chain(int(way_id), from_s, d, coords, db, mph=int(conf["mph"]))
       sign_at, cut = "located", 0.0
       if conf.get("manual"):
-        sign_at = "manual"   # the driver set it here: start at the car, never moved, never behind
+        sign_at = "manual_stretch" if back_m is not None else "manual"   # never moved at load
       elif ahead <= 0.0:   # no located sign: the chain starts at the read point, behind the sign
         cut, sign_at = sign_cut_m(chain, int(conf["mph"]), db)
         chain = trim_chain(chain, cut)
@@ -656,6 +694,8 @@ class SpeedOverrides:
            "both": True, "from_s": from_s, "dir": d, "chain": [[sp[0]] + [round(float(x), 1) for x in sp[1:]] for sp in chain],
            "lat": _r6(sign_pt[0]), "lon": _r6(sign_pt[1]), "road": road, "t": round(now, 1), "source": row_source(conf)}
       e["sign_at"] = sign_at
+      if back_m is not None:
+        e["back_m"] = round(back_m, 1)
       if cut > 0.0:
         e["cut_m"] = round(cut, 1)
       if sign_pt != read_pt:

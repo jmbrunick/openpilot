@@ -61,22 +61,42 @@ def test_manual_payload_needs_a_matched_way():
   assert parse_confirmed(c)["manual"] is True
 
 
-def test_manual_row_starts_at_the_car_both_directions_never_behind(tmp_path):
+def test_manual_row_covers_the_whole_map_stretch_both_directions(tmp_path):
+  # Oct 27 2026: a manual Save covers the current map-limit stretch, behind the car too
   db = mk_db(tmp_path, DEGRAFF)
   o = SpeedOverrides(str(tmp_path / "o.json"))
   w = way_at(db, 1045)
   lat, lon = pt(1045)
   conf = manual_confirmed({"mph": 45, "seq": 5}, w["way_id"], lat, lon, WB)
   e = o.consume(conf, None, WB, 5.0, way_coords=db.way_coords, db=db)
-  assert e is not None and e["source"] == MANUAL_SOURCE and e["sign_at"] == "manual" and "cut_m" not in e
-  for x in (1035, 1010):
-    assert limit(o, db, x, WB) == 45, x
+  assert e is not None and e["source"] == MANUAL_SOURCE and e["sign_at"] == "manual_stretch" and "cut_m" not in e
+  assert e["back_m"] > 500.0                # walked back to the 60 -> 30 change behind (x = 1600 end)
+  for x in (1010, 1035, 1060, 1080, 1300, 1590):
+    assert limit(o, db, x, WB) == 45, x      # ahead of and behind the car, up to each map change
     assert limit(o, db, x, EB) == 45, x
-  assert limit(o, db, 900, WB) == 60      # this road segment only: the next mapped limit is its own
-  for x in (1060, 1080):
-    assert limit(o, db, x, WB) == 30, x    # behind where it was set: untouched
-    assert limit(o, db, x, EB) == 30, x
-  assert o.fix_starts(db) == []           # never moved at load
-  # Clear where the car is removes it
+  assert limit(o, db, 900, WB) == 60        # past the next map limit change: untouched
+  assert limit(o, db, 900, EB) == 60
+  assert o.fix_starts(db) == []             # never moved at load
   gone = o.clear(w["way_id"], WB, *pt(1040), w["coords"])
-  assert gone and limit(o, db, 1035, WB) == 30
+  assert gone and limit(o, db, 1035, WB) == 30 and limit(o, db, 1300, WB) == 30
+
+
+def test_manual_stretch_stops_at_the_change_behind(tmp_path):
+  # 60 | 30 | 30 | 60: set at 1250 heading east, covers only the 30 stretch
+  db = mk_db(tmp_path, [(0, 500, 60, False), (500, 1000, 30, True), (1000, 1500, 30, False), (1500, 2000, 60, False)])
+  o = SpeedOverrides(str(tmp_path / "o.json"))
+  w = way_at(db, 1250)
+  e = o.consume(manual_confirmed({"mph": 40, "seq": 1}, w["way_id"], *pt(1250), EB), None, EB, 1.0,
+                way_coords=db.way_coords, db=db)
+  assert e is not None and e["sign_at"] == "manual_stretch"
+  for x in (520, 900, 1250, 1480):
+    assert limit(o, db, x, EB) == 40, x
+  assert limit(o, db, 400, EB) == 60 and limit(o, db, 1600, EB) == 60
+
+
+def test_sign_rows_still_never_behind_the_sign(tmp_path):
+  from openpilot.selfdrive.mapd.tests.test_speed_override_sections import yes
+  db = mk_db(tmp_path, DEGRAFF)
+  o = SpeedOverrides(str(tmp_path / "o.json"))
+  yes(o, db, 1300, 45, WB, 1)
+  assert limit(o, db, 1290, WB) == 45 and limit(o, db, 1400, WB) == 30
