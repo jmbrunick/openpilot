@@ -122,7 +122,7 @@ def _install_stubs() -> None:
 
 _install_stubs()
 
-from openpilot.selfdrive.controls.lib.path_obstacle import (  # noqa: E402
+from openpilot.selfdrive.controls.lib.path_obstacle import (
   BUDGET_S,
   MAX_POINTS,
   ObstacleStage,
@@ -131,16 +131,16 @@ from openpilot.selfdrive.controls.lib.path_obstacle import (  # noqa: E402
   hit_from_msg,
   hit_to_msg,
 )
-from openpilot.selfdrive.controls.radard import RadarD  # noqa: E402
-from openpilot.selfdrive.controls.tests.test_radard import RadarScenario  # noqa: E402
-from openpilot.selfdrive.pathobstacled.pathobstacled import (  # noqa: E402
+from openpilot.selfdrive.controls.radard import RadarD
+from openpilot.selfdrive.controls.tests.test_radard import RadarScenario
+from openpilot.selfdrive.pathobstacled.pathobstacled import (
   VISION_FAIL_REASONS,
   Helper,
   _Cameras,
   _crop,
   _vision_for,
 )
-import cereal.messaging as messaging  # noqa: E402
+import cereal.messaging as messaging
 
 
 class _Capture:
@@ -282,7 +282,7 @@ def test_hit_round_trip():
   assert bool(msg.valid)
 
 
-def test_helper_without_trigger_does_not_open_visionipc():
+def test_helper_without_trigger_does_not_open_visionipc(monkeypatch):
   opened = []
 
   class VisionIpcClient:
@@ -293,7 +293,9 @@ def test_helper_without_trigger_does_not_open_visionipc():
   vipc = types.ModuleType("msgq.visionipc")
   vipc.VisionIpcClient = VisionIpcClient
   vipc.VisionStreamType = SimpleNamespace(VISION_STREAM_ROAD=1, VISION_STREAM_WIDE_ROAD=2)
-  sys.modules["msgq.visionipc"] = vipc
+  # Scoped to this test: a leaked stub breaks later imports of msgq.visionipc
+  # (e.g. modeld's VisionBuf in test_manager) on the same xdist worker.
+  monkeypatch.setitem(sys.modules, "msgq.visionipc", vipc)
 
   helper = Helper()
   assert helper.on_radar(None, time.monotonic()) is None

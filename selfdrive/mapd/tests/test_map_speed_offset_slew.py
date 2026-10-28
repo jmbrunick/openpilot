@@ -97,7 +97,7 @@ def _expect_max(h, expected_kph: float) -> None:
   assert h.v_cruise_helper.v_cruise_kph == pytest.approx(expected_kph, abs=0.05)
 
 
-@pytest.mark.parametrize("offset_mph", range(0, 11))
+@pytest.mark.parametrize("offset_mph", range(11))
 def test_engage_mph_offset_is_limit_plus_offset_after_1s(offset_mph):
   """55 mph engage: MAX is exactly limit+offset after 1 s, and not a sticky stalk set."""
   limit_kph = 55.0 * CV.MPH_TO_KPH

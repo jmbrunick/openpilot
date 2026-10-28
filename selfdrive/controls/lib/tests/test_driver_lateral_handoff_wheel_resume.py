@@ -362,9 +362,9 @@ def test_controlsd_passes_the_steering_angle_to_the_handoff():
   repo = Path(__file__).resolve().parents[4]
   controlsd = (repo / "selfdrive/controls/controlsd.py").read_text()
   assert (
-    "      steering_angle_deg=float(CS.steeringAngleDeg),\n"
-    "      steering_pressed=bool(CS.steeringPressed),\n"
-    "      model_curvature=float(self._raw_model_curvature),\n"
+    "      steering_angle_deg=float(CS.steeringAngleDeg),\n" +
+    "      steering_pressed=bool(CS.steeringPressed),\n" +
+    "      model_curvature=float(self._raw_model_curvature),\n" +
     "      measured_curvature=float(self.curvature),\n"
   ) in controlsd
 

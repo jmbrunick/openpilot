@@ -251,12 +251,12 @@ def test_sun_gate_and_morning_geometry():
   # Oct 7 2026 12:33 UTC, ~45.3N 93.2W, heading due east: sun is low and
   # a few degrees south of east (right of ahead). Qualitative, not a survey.
   import datetime
-  ts = datetime.datetime(2026, 10, 7, 12, 33, tzinfo=datetime.timezone.utc).timestamp()
+  ts = datetime.datetime(2026, 10, 7, 12, 33, tzinfo=datetime.UTC).timestamp()
   elev, az = solar_position(45.3, -93.2, ts)
   assert -1.0 < elev < 8.0
   assert sun_low_and_ahead(elevation_deg=elev, heading_deg=90.0, azimuth_deg=az)
   # Summer noon is high and not "ahead" of an east heading.
-  noon = datetime.datetime(2026, 6, 21, 18, 0, tzinfo=datetime.timezone.utc).timestamp()
+  noon = datetime.datetime(2026, 6, 21, 18, 0, tzinfo=datetime.UTC).timestamp()
   elev_n, az_n = solar_position(45.3, -93.2, noon)
   assert elev_n > 50.0
   assert not sun_low_and_ahead(elevation_deg=elev_n, heading_deg=90.0, azimuth_deg=az_n)

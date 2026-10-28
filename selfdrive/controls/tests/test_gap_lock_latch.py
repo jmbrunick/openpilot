@@ -1,7 +1,7 @@
 """Gap-lock latch, clear, and actuator-guard slack."""
 
 import pathlib
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock  # noqa: TID251
 
 import pytest
 

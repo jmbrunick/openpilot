@@ -159,9 +159,9 @@ def test_controlsd_and_card_pass_steering_pressed_to_the_handoff():
   repo = Path(__file__).resolve().parents[4]
   controlsd = (repo / "selfdrive/controls/controlsd.py").read_text()
   call_tail = (
-    "      steering_pressed=bool(CS.steeringPressed),\n"
-    "      model_curvature=float(self._raw_model_curvature),\n"
-    "      measured_curvature=float(self.curvature),\n"
+    "      steering_pressed=bool(CS.steeringPressed),\n" +
+    "      model_curvature=float(self._raw_model_curvature),\n" +
+    "      measured_curvature=float(self.curvature),\n" +
     "    )\n"
   )
   assert call_tail in controlsd

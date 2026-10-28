@@ -23,7 +23,14 @@ EXCLUDE_DIRS = ("selfdrive/debug", "tools", "scripts", "system/webrtc")
 EXCLUDE_FILES = {
   "system/camerad/snapshot.py",
   "selfdrive/mapd/gps_fix.py",
+  # Not launched: process_config runs NAP bookmarkd in its place (no carState reader).
+  "selfdrive/ui/feedback/feedbackd.py",
 }
+
+
+def _read(path: str) -> str:
+  with open(path) as f:
+    return f.read()
 
 
 def num_readers() -> int:
@@ -32,7 +39,7 @@ def num_readers() -> int:
     path = os.path.join(BASEDIR, rel)
     if not os.path.exists(path):
       continue
-    match = re.search(r"#define\s+NUM_READERS\s+(\d+)", open(path).read())
+    match = re.search(r"#define\s+NUM_READERS\s+(\d+)", _read(path))
     if match:
       found.append(int(match.group(1)))
   assert found, "NUM_READERS missing from msgq.h"
@@ -41,7 +48,7 @@ def num_readers() -> int:
 
 
 def _services():
-  src = open(os.path.join(BASEDIR, "cereal/services.py")).read()
+  src = _read(os.path.join(BASEDIR, "cereal/services.py"))
   out = {}
   for name, should_log in re.findall(r'^\s*"(\w+)":\s*\((True|False)', src, re.M):
     out[name] = should_log == "True"
@@ -255,7 +262,7 @@ def count_readers():
           continue
         if fn.endswith(".py"):
           try:
-            tree = ast.parse(open(path).read())
+            tree = ast.parse(_read(path))
           except SyntaxError:
             continue
           visitor = _Readers()
@@ -270,7 +277,7 @@ def count_readers():
             counts[name] += 1
             where[name].append(loc)
         elif fn.endswith((".cc", ".h", ".hpp")):
-          for name, loc in _cpp_readers(rel, open(path).read()):
+          for name, loc in _cpp_readers(rel, _read(path)):
             if name not in services:
               continue
             counts[name] += 1

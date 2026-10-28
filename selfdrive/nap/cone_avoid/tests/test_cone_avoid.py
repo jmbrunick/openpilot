@@ -134,7 +134,8 @@ def _msg(r):
 def test_replay_route_1b8_seg11_12_log_only():
   """Oct 21 3:17-3:18 PM construction zone: Log-only would shift right and keep clearance."""
   path = os.path.join(os.path.dirname(__file__), "route_1b8_seg11_12_cones.json")
-  rows = json.load(open(path))["rows"]
+  with open(path) as f:
+    rows = json.load(f)["rows"]
   ca = ConeAvoid()
   ca.mode = MODE_LOG
   log = []

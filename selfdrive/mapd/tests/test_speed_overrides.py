@@ -111,7 +111,7 @@ def test_yes_equal_to_current_limit_rewrites_nothing(tmp_path):
 W7 = [(45.0, -93.0 + i * 0.00127) for i in range(11)]   # ~100 m apart, ~1 km long
 
 
-def _at(m_east):
+def _at(m_east) -> tuple[float, float]:
   return 45.0, -93.0 + m_east / 100.0 * 0.00127
 
 

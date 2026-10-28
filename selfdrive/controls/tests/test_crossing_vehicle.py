@@ -212,7 +212,7 @@ def test_stationary_roadside_object_is_not_a_crosser():
   rows = _run(y_of, v_lat_of=v_of, model_prob=0.90, v_lead=0.0, seconds=3.0, gap0=70.0)
   assert not any(classified for _, _, _, classified, _ in rows)
   plain = _run(y_of, v_lat_of=lambda t: 0.0, model_prob=0.90, v_lead=0.0, seconds=3.0, gap0=70.0)
-  for got, base in zip(rows, plain):
+  for got, base in zip(rows, plain, strict=False):
     assert abs(got[2] - base[2]) < 0.08
 
 

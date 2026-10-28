@@ -20,7 +20,7 @@ import shutil
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Literal, cast
 
 from openpilot.common.constants import CV
 from openpilot.selfdrive.mapd.db_paths import default_db_path
@@ -252,7 +252,7 @@ def _resolve_live_fix(
   live_fix: object,
 ) -> tuple[float, float] | None:
   if live_fix is not _UNSET:
-    return live_fix if isinstance(live_fix, tuple) else None
+    return cast("tuple[float, float]", live_fix) if isinstance(live_fix, tuple) else None
   if lat is not None and lon is not None:
     return None
   _p(f"Waiting up to {REFRESH_GNSS_WAIT_S:.0f}s for a satellite fix...")

@@ -272,17 +272,17 @@ MUTATIONS_A = (
     name="same-direction nudge during ALC treated as takeover",
     source_path="selfdrive/controls/lib/lane_change_nudge.py",
     original=(
-      b"  # Same-direction nudge during tipped ALC is the lane-change confirm, not a takeover.\n"
-      b"  if same_direction:\n"
+      b"  # Same-direction nudge during tipped ALC is the lane-change confirm, not a takeover.\n" +
+      b"  if same_direction:\n" +
       b"    return False\n"
     ),
     replacement=(
-      b"  # Same-direction nudge during tipped ALC is the lane-change confirm, not a takeover.\n"
-      b"  if same_direction:\n"
+      b"  # Same-direction nudge during tipped ALC is the lane-change confirm, not a takeover.\n" +
+      b"  if same_direction:\n" +
       b"    return True\n"
     ),
     test_nodes=(
-      "selfdrive/controls/lib/tests/test_lane_change_nudge.py::"
+      "selfdrive/controls/lib/tests/test_lane_change_nudge.py::" +
       "test_tip_at_45_same_direction_nudge_confirms_through_flash_gap",
     ),
   ),
@@ -290,17 +290,17 @@ MUTATIONS_A = (
     name="emergency yank suppressed during ALC",
     source_path="selfdrive/controls/lib/lane_change_nudge.py",
     original=(
-      b"  # Emergency yank always releases, including a same-direction yank during ALC.\n"
-      b"  if emergency:\n"
+      b"  # Emergency yank always releases, including a same-direction yank during ALC.\n" +
+      b"  if emergency:\n" +
       b"    return True\n"
     ),
     replacement=(
-      b"  # Emergency yank always releases, including a same-direction yank during ALC.\n"
-      b"  if emergency:\n"
+      b"  # Emergency yank always releases, including a same-direction yank during ALC.\n" +
+      b"  if emergency:\n" +
       b"    return False\n"
     ),
     test_nodes=(
-      "selfdrive/controls/lib/tests/test_lane_change_nudge.py::"
+      "selfdrive/controls/lib/tests/test_lane_change_nudge.py::" +
       "test_emergency_yank_same_direction_releases_and_cancels",
     ),
   ),
@@ -402,16 +402,16 @@ MUTATIONS_A = (
     name="current-way-stickiness-removed",
     source_path="selfdrive/mapd/osm_db.py",
     original=(
-      b"    \"\"\"Keep the previous way unless a candidate is clearly closer for several lookups.\"\"\"\n"
-      b"    if prev_dist_m > STICK_KEEP_M or not heading_aligned:\n"
-      b"      return False\n"
-      b"    if closer_m >= STICK_SWITCH_CLOSER_M and pending_lookups >= STICK_SWITCH_LOOKUPS:\n"
-      b"      return False\n"
+      b"    \"\"\"Keep the previous way unless a candidate is clearly closer for several lookups.\"\"\"\n" +
+      b"    if prev_dist_m > STICK_KEEP_M or not heading_aligned:\n" +
+      b"      return False\n" +
+      b"    if closer_m >= STICK_SWITCH_CLOSER_M and pending_lookups >= STICK_SWITCH_LOOKUPS:\n" +
+      b"      return False\n" +
       b"    return True\n"
     ),
     replacement=(
-      b"    \"\"\"Keep the previous way unless a candidate is clearly closer for several lookups.\"\"\"\n"
-      b"    _ = prev_dist_m, heading_aligned, closer_m, pending_lookups\n"
+      b"    \"\"\"Keep the previous way unless a candidate is clearly closer for several lookups.\"\"\"\n" +
+      b"    _ = prev_dist_m, heading_aligned, closer_m, pending_lookups\n" +
       b"    return False\n"
     ),
     test_nodes=(

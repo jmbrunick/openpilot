@@ -458,9 +458,9 @@ def test_planner_update_cycle_stays_cheap_with_a_lead():
 
 
 # Oct 23 16:52 CR 31: approach accel-error trim (grade / pedal excess).
-import random  # noqa: E402
+import random
 
-from openpilot.selfdrive.controls.lib.approach_accel_trim import (  # noqa: E402
+from openpilot.selfdrive.controls.lib.approach_accel_trim import (
   ApproachAccelTrim,
   TRIM_MIN_MS2,
   TRIM_RATE_MS3,

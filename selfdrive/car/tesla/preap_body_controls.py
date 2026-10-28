@@ -1210,6 +1210,6 @@ def install_body_controls_test():
   except Exception:
     pass
   _put_wiper_status(
-    "nap wiper auto setting=- on=0 gear=- gear_src=none raw=- drive=0 rain=0 wipe=0 "
+    "nap wiper auto setting=- on=0 gear=- gear_src=none raw=- drive=0 rain=0 wipe=0 " +
     "sens=- acq=0 rpt=0 gap=- thin=0 thin_gap=- park=- v0=- collar=0 wash=0 installed=1 waiting"
   )

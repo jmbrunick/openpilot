@@ -102,16 +102,16 @@ def test_params_round_trip_native_types():
       declared = params.get_type(key)
       if declared == ParamKeyType.BOOL:
         assert isinstance(value, bool)
-        params.put_bool(key, value)
+        params.put_bool(key, value, block=True)
         assert params.get_bool(key) is value
       elif declared == ParamKeyType.INT:
         assert isinstance(value, int)
         assert not isinstance(value, bool)
-        params.put(key, value)
+        params.put(key, value, block=True)
         assert params.get(key) == value
       elif declared == ParamKeyType.FLOAT:
         assert isinstance(value, float)
-        params.put(key, value)
+        params.put(key, value, block=True)
         assert params.get(key) == value
       else:
         raise AssertionError(f"unexpected type for {key}: {declared}")

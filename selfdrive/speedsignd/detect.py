@@ -988,8 +988,7 @@ class CompileGate:
       return None
     self.warned = True
     return (
-      "speedsignd compile-gate timeout backend=%s sha=%s after %.0fs; allowing reader"
-      % (backend or "", sha or "", self.timeout_s)
+      f"speedsignd compile-gate timeout backend={backend or ''} sha={sha or ''} after {self.timeout_s:.0f}s; allowing reader"
     )
 
 

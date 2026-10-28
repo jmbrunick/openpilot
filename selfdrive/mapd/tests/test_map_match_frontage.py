@@ -159,7 +159,7 @@ def test_exit_persists_by_distance_before_5s(tmp_path):
     anchored = db.lookup(on_hwy[0], on_hwy[1], bearing_deg=ROAD_BEARING, v_ego_ms=55.0 * CV.MPH_TO_MS, now_s=now)
     assert anchored is not None and anchored.way_id == MOTORWAY_ID
     accepted = None
-    for i in range(0, 20):
+    for i in range(20):
       dist = 120.0 + 10.0 * i
       now += 0.1
       lat, lon = _offset_point(gore[0], gore[1], ramp_bearing, dist)

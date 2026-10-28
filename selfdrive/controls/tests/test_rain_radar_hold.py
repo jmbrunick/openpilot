@@ -57,7 +57,7 @@ class FakeParams:
 def nap_wiper_status(*, rain=1, wipe=1, acq=1, score=5.03):
   """Status line Auto Wipers writes. Mode gate must not require these fields."""
   return (
-    f"nap wiper auto setting=3 rain={int(rain)} wipe={int(wipe)} "
+    f"nap wiper auto setting=3 rain={int(rain)} wipe={int(wipe)} " +
     f"acq={int(acq)} score={score:.2f} collar=1"
   )
 

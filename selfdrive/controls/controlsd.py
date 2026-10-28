@@ -245,25 +245,27 @@ class Controls:
     path_x = path_y = None
     lane_offset = lane_centre = None
     cone_shift = 0.0
-    # Bug fix (Oct 21 route 1b8 seg 11): wouldSteer used to be read only in the
+    # Bug fix (Oct 21 route 1b8 seg 11): the cone would-steer shift used to be read only in the
     # else branch below, i.e. only when the cone zone was inactive, so it was
     # always 0 exactly when needed. Read it unconditionally and log it. It stays
     # log-only: the legacy shift is NOT passed to the hold (cone_shift stays 0);
     # actuation belongs to selfdrive/nap/cone_avoid behind NAPConeAvoid.
     try:
-      self._legacy_would_steer = float(getattr(cone, "wouldSteer", 0.0)) if cone is not None else 0.0
+      self._legacy_cone_shift_log = float(getattr(cone, "wouldSteer", 0.0)) if cone is not None else 0.0
     except (TypeError, ValueError):
-      self._legacy_would_steer = 0.0
+      self._legacy_cone_shift_log = 0.0
     if self._cone_zone:
       # Model geometry changes at 20 Hz (modelV2); recompute only then.
-      if self.sm.updated.get("modelV2", False) or getattr(self, "_cone_geom", None) is None:
+      cone_geom = getattr(self, "_cone_geom", None)
+      if self.sm.updated.get("modelV2", False) or cone_geom is None:
         px, py = model_path_xy(self.sm["modelV2"])
         try:
           lo, lc = lane_offset_from_model(self.sm["modelV2"], lookahead_m(float(CS.vEgo)))
         except Exception:
           lo = lc = None
-        self._cone_geom = (px, py, lo, lc)
-      path_x, path_y, lane_offset, lane_centre = self._cone_geom
+        cone_geom = (px, py, lo, lc)
+        self._cone_geom = cone_geom
+      path_x, path_y, lane_offset, lane_centre = cone_geom
     else:
       self._cone_geom = None
     self._cone_out = self.cone_hold.update(
@@ -680,7 +682,7 @@ class Controls:
     ca = self.cone_avoid.out  # NAP cone_avoid
     cs.coneAvoidOffset, cs.coneAvoidApplied, cs.coneAvoidClear = float(ca.offset_m), float(ca.applied_m), float(ca.clear_m)
     cs.coneAvoidTakeOver, cs.coneAvoidLowConf, cs.coneAvoidMode = bool(ca.take_over and ca.mode == 2), bool(ca.low_conf), int(ca.mode)
-    cs.coneLegacyWouldSteer = float(getattr(self, "_legacy_would_steer", 0.0))
+    cs.coneLegacyWouldSteer = float(getattr(self, "_legacy_cone_shift_log", 0.0))
     cs.longControlState = self.LoC.long_control_state
     cs.upAccelCmd = float(self.LoC.pid.p)
     cs.uiAccelCmd = float(self.LoC.pid.i)

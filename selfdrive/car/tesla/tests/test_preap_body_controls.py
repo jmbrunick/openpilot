@@ -22,7 +22,6 @@ from openpilot.selfdrive.car.tesla.preap_body_controls import (
   STW_WASH_MASK,
   apply_stw_collar,
   overlay_collar_on_can_msg,
-  requested_auto_collar_posn,
   stw_collar_posn,
   stw_wash,
   WIPER_SETTING_AUTO,

@@ -8,7 +8,14 @@ from markdown.extensions import Extension
 from markdown.preprocessors import Preprocessor
 from markdown.treeprocessors import Treeprocessor
 
-from zensical.extensions.links import LinksTreeprocessor
+try:  # zensical <= 0.0.4x: page path lives on the links treeprocessor
+  from zensical.extensions.links import LinksTreeprocessor
+except ImportError:  # newer zensical: page path lives on the rendering context
+  LinksTreeprocessor = None  # type: ignore[assignment,misc]
+try:
+  from zensical.extensions.context import ContextPreprocessor
+except ImportError:
+  ContextPreprocessor = None  # type: ignore[assignment,misc]
 
 GlossaryTerm = tuple[str, re.Pattern[str], str]
 
@@ -76,16 +83,24 @@ class GlossaryTreeprocessor(Treeprocessor):
     self.seen: set[str] = set()
 
   def run(self, root: ET.Element) -> None:
-    at = self.md.treeprocessors.get_index_for_name("zrelpath")
-    processor = self.md.treeprocessors[at]
-    if not isinstance(processor, LinksTreeprocessor):
-      raise TypeError("Links processor not registered")
-    if processor.path == GLOSSARY_PAGE:
+    page_path = self._page_path()
+    if page_path == GLOSSARY_PAGE:
       return
 
     self.seen.clear()
-    glossary_href = f"{posixpath.relpath(GLOSSARY_PAGE, posixpath.dirname(processor.path) or '.')}#"
+    glossary_href = f"{posixpath.relpath(GLOSSARY_PAGE, posixpath.dirname(page_path) or '.')}#"
     self._walk(root, glossary_href)
+
+  def _page_path(self) -> str:
+    if LinksTreeprocessor is not None and "zrelpath" in self.md.treeprocessors:
+      processor = self.md.treeprocessors[self.md.treeprocessors.get_index_for_name("zrelpath")]
+      if isinstance(processor, LinksTreeprocessor):
+        return processor.path
+    if ContextPreprocessor is not None:
+      context = ContextPreprocessor.from_markdown(self.md)
+      if context is not None:
+        return context.page.path
+    raise TypeError("zensical page path not available")
 
   def _walk(self, element: ET.Element, glossary_href: str) -> None:
     if element.tag in SKIP_TAGS or element.attrib.get("data-glossary-skip") is not None:

@@ -35,7 +35,9 @@ DT = 0.01
 
 
 def _ring(p) -> RingGeometry:
-  return RingGeometry.from_json(p["ring"])
+  ring = RingGeometry.from_json(p["ring"])
+  assert ring is not None
+  return ring
 
 
 def _interp(x, xs, ys):
@@ -57,7 +59,7 @@ def _interp(x, xs, ys):
 _LAST: dict = {}
 
 
-def simulate(name: str, kind: str, *, slow: bool = True, fix_scale: float = 1.0, pool=None):
+def simulate(name: str, kind: str, *, slow: bool = True, fix_scale: float = 1.0, pool=None) -> tuple[list, RingGeometry]:
   """Kinematic closed loop: model curvature by distance -> [guide] -> clip_curvature -> 0.2 s delay + 0.2 s lag.
 
   kind: "before" (model only) or "after" (guide On). slow: planner ring slow-down from the first hint.

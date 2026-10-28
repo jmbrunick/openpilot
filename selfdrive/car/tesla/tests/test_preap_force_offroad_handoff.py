@@ -6,7 +6,6 @@ from openpilot.selfdrive.car.tesla.preap_force_offroad_handoff import (
   CANCELING,
   CANCEL_DELAY_FRAMES,
   CC_ENGAGE_TIMEOUT_FRAMES,
-  DROP_AND_SET,
   ENABLED_WAIT_S,
   HANDOFF_READY_PARAM,
   HANDOFF_TIMEOUT_S,
@@ -335,7 +334,7 @@ def test_card_and_hardwared_wire_handoff():
 def test_stock_cc_arm_wrapper_sends_main_after_delay():
   import pytest
   pytest.importorskip("capnp")
-  from unittest.mock import MagicMock
+  from unittest.mock import MagicMock  # noqa: TID251
   from openpilot.selfdrive.car.tesla.preap_force_offroad_handoff import (
     install_force_offroad_handoff,
   )

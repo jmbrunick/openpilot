@@ -177,18 +177,18 @@ DM_FALSE_ALERT_IGNORE_DESCRIPTION = (
   + "hard-cancel. Turn Off for stock phone detection."
 )
 FORCE_OFFROAD_DESCRIPTION = (
-  "WARNING: Forces the device offroad and disengages openpilot even while "
-  "moving. On-road, a big Yes/No asks if you are ready to resume steering "
-  "control — No leaves assist as it was. Drive manually after Yes — no "
-  "steering or accel assist while this is on. Unlocks Download US Maps, "
-  "Refresh maps, software install, and other offroad-only NAP actions. "
-  "Default Off. Clears when you toggle Off, Reset to Defaults, reboot, or "
+  "WARNING: Forces the device offroad and disengages openpilot even while " +
+  "moving. On-road, a big Yes/No asks if you are ready to resume steering " +
+  "control — No leaves assist as it was. Drive manually after Yes — no " +
+  "steering or accel assist while this is on. Unlocks Download US Maps, " +
+  "Refresh maps, software install, and other offroad-only NAP actions. " +
+  "Default Off. Clears when you toggle Off, Reset to Defaults, reboot, or " +
   "the next time ignition turns on."
 )
 SIGN_OTHERS_DESCRIPTION = (
-  "Default Off. Also classify stop, yield, do-not-enter, school, railroad and curve signs "
-  "on the Speed Sign Reader's crops. Display and log only: it never brakes, steers or changes speed. "
-  "Stop signs are only cross-checked against the driving model's own stop plan. "
+  "Default Off. Also classify stop, yield, do-not-enter, school, railroad and curve signs " +
+  "on the Speed Sign Reader's crops. Display and log only: it never brakes, steers or changes speed. " +
+  "Stop signs are only cross-checked against the driving model's own stop plan. " +
   "Needs an optional other_signs.onnx in /data/media/0/nap; without it this does nothing."
 )
 
@@ -234,22 +234,22 @@ SPEED_LIMIT_OSM_FALLBACK_DESCRIPTION = (
 )
 
 SPEED_SIGN_LOG_DESCRIPTION = (
-  "Log-only MUTCD speed-sign detector on the ROAD camera + GPS. Default Off. "
-  "When On, speedsignd shows a SIGN plate with Yes/No (only Yes sets a local map speed limit) and may append a short "
-  "JSONL line under /data/media/0/nap/speed_signs.jsonl (t, lat, lon, bearing, mph, conf). "
-  "Detect keeps running while openpilot is engaged, at 1 Hz or slower so one "
-  "little core stays near 25 percent (idle at least 3× the inference). "
-  "Inference stays on CPU (never the GPU modeld uses). "
-  "SCHED_IDLE, or nice 19 if that is unavailable, one thread on core 2. "
-  "It backs off when the CPU is loaded or the driving model / controls report lag. "
-  "The plate shows the mph while engaged, not WAIT (WAIT was the old pause). "
-  "Manual driving — moving is OK — uses the same detect. Not gated on park or "
-  "Force Offroad. OSM upload is future work; this is JSONL + HUD only. "
-  "If you see TAKE CONTROL or driving-model lag, turn Logger Off and use "
-  "nap-release. Does not write sqlite, does not change cruise / HUD MAX, "
-  "and does not query osm.org. Stock modelV2 has no speedSign head. Real "
-  "roadside detection needs the compact YOLO ONNX on "
-  "/data/media/0/nap/speed_sign.onnx. If that file is missing, onroad SIGN "
+  "Log-only MUTCD speed-sign detector on the ROAD camera + GPS. Default Off. " +
+  "When On, speedsignd shows a SIGN plate with Yes/No (only Yes sets a local map speed limit) and may append a short " +
+  "JSONL line under /data/media/0/nap/speed_signs.jsonl (t, lat, lon, bearing, mph, conf). " +
+  "Detect keeps running while openpilot is engaged, at 1 Hz or slower so one " +
+  "little core stays near 25 percent (idle at least 3× the inference). " +
+  "Inference stays on CPU (never the GPU modeld uses). " +
+  "SCHED_IDLE, or nice 19 if that is unavailable, one thread on core 2. " +
+  "It backs off when the CPU is loaded or the driving model / controls report lag. " +
+  "The plate shows the mph while engaged, not WAIT (WAIT was the old pause). " +
+  "Manual driving — moving is OK — uses the same detect. Not gated on park or " +
+  "Force Offroad. OSM upload is future work; this is JSONL + HUD only. " +
+  "If you see TAKE CONTROL or driving-model lag, turn Logger Off and use " +
+  "nap-release. Does not write sqlite, does not change cruise / HUD MAX, " +
+  "and does not query osm.org. Stock modelV2 has no speedSign head. Real " +
+  "roadside detection needs the compact YOLO ONNX on " +
+  "/data/media/0/nap/speed_sign.onnx. If that file is missing, onroad SIGN " +
   "shows NO WT — use Install weights (Wi-Fi, offroad / Force Offroad), or: "
   + "python -m scripts.nap.install_speed_sign_weights. "
   + "That button also installs the CPU runtime into /data/media/0/nap/pylib. "
@@ -315,40 +315,40 @@ WIPER_SENSITIVITY_DEFAULT = 2
 HIGH_LOW_BEAM_VALUES = [0, 1, 2]
 HIGH_LOW_BEAM_LABELS = ["Off", "Low", "High"]
 WIPER_SPEED_DESCRIPTION = (
-  "NAP wipers: Off or Auto. Off leaves the driver's real stalk collar "
-  "alone. Auto overlays WprSw6Posn INTERVAL1 (collar=1) and "
-  "WprWashSw_Psd=0 only when the car is on, gear is Drive or Reverse, "
-  "speed is above a small creep floor, and the 3X road camera sees a "
-  "rainy or icy/frosted windshield. Hold INTERVAL1 at ~100 Hz (same "
-  "last-win as high-beam) so live stalk Off (collar=0) cannot cancel. "
-  "While Auto is selected and dry (or Park/Neutral/standstill), still "
-  "extra-forward 0x45 rest with collar forced 0 so Pre-AP drops "
-  "intermittent; a wipe 1→0 sends rest immediately. Park, Neutral, and "
-  "standstill (v≈0) never Auto-wipe. Default Off — Auto is opt-in, not "
-  "every drive. Double-flick the wiper collar Off→Int1→Off within 1 s "
-  "to toggle Auto on or off; the stock stalk stays Off. Sensitivity "
-  "(Drier→Wetter) sets Auto aggressiveness. DAS wiper fields stay 0 "
-  "(they were ignored and caused a controls mismatch). Do not engage NAP "
+  "NAP wipers: Off or Auto. Off leaves the driver's real stalk collar " +
+  "alone. Auto overlays WprSw6Posn INTERVAL1 (collar=1) and " +
+  "WprWashSw_Psd=0 only when the car is on, gear is Drive or Reverse, " +
+  "speed is above a small creep floor, and the 3X road camera sees a " +
+  "rainy or icy/frosted windshield. Hold INTERVAL1 at ~100 Hz (same " +
+  "last-win as high-beam) so live stalk Off (collar=0) cannot cancel. " +
+  "While Auto is selected and dry (or Park/Neutral/standstill), still " +
+  "extra-forward 0x45 rest with collar forced 0 so Pre-AP drops " +
+  "intermittent; a wipe 1→0 sends rest immediately. Park, Neutral, and " +
+  "standstill (v≈0) never Auto-wipe. Default Off — Auto is opt-in, not " +
+  "every drive. Double-flick the wiper collar Off→Int1→Off within 1 s " +
+  "to toggle Auto on or off; the stock stalk stays Off. Sensitivity " +
+  "(Drier→Wetter) sets Auto aggressiveness. DAS wiper fields stay 0 " +
+  "(they were ignored and caused a controls mismatch). Do not engage NAP " +
   "and do not pull the stalk. No spray. No auto headlights."
 )
 WIPER_SENSITIVITY_DESCRIPTION = (
-  "Auto only. More dry (Drier) ↔ more wet (Wetter). Mid is the baseline. "
-  "Lower wipes sooner / more often; higher tolerates more film before a "
-  "repeat wipe. Scales the first-wipe bar, the post-wipe repeat bar, and "
-  "the light-mist minimum rewipe gap (Drier ~5–8 s, Dry ~8–12 s, Mid "
-  "~20–25 s). Below acquire, Drier/Dry still fire an occasional thin-mist "
+  "Auto only. More dry (Drier) ↔ more wet (Wetter). Mid is the baseline. " +
+  "Lower wipes sooner / more often; higher tolerates more film before a " +
+  "repeat wipe. Scales the first-wipe bar, the post-wipe repeat bar, and " +
+  "the light-mist minimum rewipe gap (Drier ~5–8 s, Dry ~8–12 s, Mid " +
+  "~20–25 s). Below acquire, Drier/Dry still fire an occasional thin-mist " +
   "INTERVAL1 (~18/22 s). Does not spray."
 )
 HIGH_LOW_BEAM_DESCRIPTION = (
-  "Pre-AP Model S only, for on-car testing. Default Off. Low is the same as "
-  "Off — the stalk's rest 0x45 (00ff00) is low/cancel, so there is no extra "
-  "nibble to hold. The real stalk continuously sends 00ff04 while high "
-  "beams are held, not a one-shot press. High matches that: keep sending "
-  "00ff04 (nibble 4 held) on the live 0x45, same counter, until you turn "
-  "the setting off, so bus 0 IDLE cannot last-win as a cancel. Off/Low "
-  "returns the real stalk. Off/Low then High is not a one-shot tap. The "
-  "extra-forward is the same 0x45, not a second 0x45. No spray. DAS "
-  "wiper/beam fields stay 0. Car on is enough. Do not send FLASH. No auto "
+  "Pre-AP Model S only, for on-car testing. Default Off. Low is the same as " +
+  "Off — the stalk's rest 0x45 (00ff00) is low/cancel, so there is no extra " +
+  "nibble to hold. The real stalk continuously sends 00ff04 while high " +
+  "beams are held, not a one-shot press. High matches that: keep sending " +
+  "00ff04 (nibble 4 held) on the live 0x45, same counter, until you turn " +
+  "the setting off, so bus 0 IDLE cannot last-win as a cancel. Off/Low " +
+  "returns the real stalk. Off/Low then High is not a one-shot tap. The " +
+  "extra-forward is the same 0x45, not a second 0x45. No spray. DAS " +
+  "wiper/beam fields stay 0. Car on is enough. Do not send FLASH. No auto " +
   "headlights."
 )
 

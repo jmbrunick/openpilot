@@ -76,7 +76,7 @@ DENY_REQUIRED_KEYS = frozenset({"raw_input_sha256", "tokens"})
 DENY_OPTIONAL_KEYS = frozenset({"sanitized_output_sha256", "input_sha256"})
 # Attested release policy digest over POLICY_KEYS (canonical JSON). Weakened
 # caller policies fail closed even when self-consistent.
-RELEASE_POLICY_SHA256 = "8b37a7881af652246d5f7323dbd01f9e6c117440ee8d17fad77c88dfc3a1354f"
+RELEASE_POLICY_SHA256 = "be2d246ba0d0fd0c88c2e4d85350d84d7034329352181333410f21724f2e964c"
 PEDAL_MIN_FRAMES = 10
 PEDAL_MIN_COUNTERS = 8
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
@@ -114,9 +114,9 @@ MANDATORY_FORBIDDEN = frozenset({
   "roadEncodeData", "driverEncodeData", "wideRoadEncodeData", "qRoadEncodeData",
   "livestreamRoadEncodeData", "livestreamWideRoadEncodeData", "livestreamDriverEncodeData",
   "touch",
-  "qcomGnss", "ubloxRaw", "ubloxGnss", "gnssMeasurements", "gpsNMEA",
-  "uiDebug", "navInstruction", "navRoute", "navThumbnail", "mapRenderState", "thumbnail",
-  "managerState", "uploaderState",
+  "qcomGnss", "ubloxRaw", "ubloxGnss", "gnssMeasurementsDEPRECATED", "gpsNMEADEPRECATED",
+  "uiDebug", "navInstructionDEPRECATED", "navRouteDEPRECATED", "navThumbnailDEPRECATED", "mapRenderStateDEPRECATED", "thumbnail",
+  "managerState", "uploaderStateDEPRECATED",
   "rawAudioData", "soundPressure", "audioFeedback",
   "sendcan",
 })
