@@ -251,18 +251,149 @@ class TeslaPrimary:
     return self.last_mph
 
 
+# Oct 27 (1d5 St Joseph / Cold Spring): a Yes holds past its way section,
+# and a live Tesla value far above a low tagged OSM limit is not trusted.
+SIGN_HOLD_MAX_M = 2000.0       # a Yes holds at most ~2 km past where it was given
+SIGN_HOLD_MAX_S = 600.0        # and never longer than this (stopped / lost GPS)
+TOWN_OSM_MAX_MPH = 35          # tagged OSM at or below this = in town
+TOWN_TESLA_MAX_OVER_MPH = 10   # in town, live Tesla may exceed tagged OSM by at most this
+
+_DIR_WORDS = {"n", "s", "e", "w", "north", "south", "east", "west", "ne", "nw", "se", "sw",
+              "northeast", "northwest", "southeast", "southwest"}
+
+
+def road_key(name) -> str:
+  """Road name for hold matching: case-insensitive, without N/S/E/W words
+  (West / East Minnesota Street is one road). '' = unnamed (no decision)."""
+  words = [w for w in str(name or "").lower().replace(".", " ").split() if w not in _DIR_WORDS]
+  return " ".join(words)
+
+
+def _dist_m(lat1, lon1, lat2, lon2) -> float:
+  rl = math.radians((lat1 + lat2) / 2.0)
+  dy = (lat2 - lat1) * 111_320.0
+  dx = (lon2 - lon1) * 111_320.0 * math.cos(rl)
+  return math.hypot(dx, dy)
+
+
+class SignHold:
+  """A confirmed sign (Yes, or the existing #378 auto-confirm) keeps the limit
+  past the end of its way section until the first of:
+    * a new sign read with a different value (SIGN plate; same value refreshes)
+    * a road-name change (a turn onto another road)
+    * SIGN_HOLD_MAX_M driven since the Yes (or SIGN_HOLD_MAX_S)
+  Tesla / Tesla-learned / OSM do not override it while it holds. A confirmed
+  section (speed_overrides) on the current way still wins over the hold.
+  Nothing is saved; it lives for this mapd run only."""
+
+  def __init__(self, max_m: float = SIGN_HOLD_MAX_M, max_s: float = SIGN_HOLD_MAX_S) -> None:
+    self.max_m, self.max_s = max_m, max_s
+    self.reset()
+
+  def reset(self) -> None:
+    self.mph = 0
+    self.road = ""
+    self.t0 = 0.0
+    self.dist_m = 0.0
+    self.last_ll = None
+    self.sign_seq = None
+    self.end_reason = None
+    self._now = 0.0
+    self._pending_end = getattr(self, "_pending_end", None)
+
+  @property
+  def active(self) -> bool:
+    return self.mph > 0
+
+  def start(self, mph: int, road, now: float, lat=None, lon=None, sign_seq=None) -> None:
+    self.reset()
+    self.mph = int(mph)
+    self.road = road_key(road)
+    self.t0 = self._now = now
+    self.last_ll = (lat, lon) if lat is not None and lon is not None else None
+    self.sign_seq = sign_seq
+
+  def _end(self, reason: str) -> None:
+    mph = self.mph
+    self.reset()
+    self._pending_end = (reason, mph)
+
+  def note_sign(self, seq, mph) -> None:
+    """A SIGN plate read (liveSpeedSignNAP signSeq / signMph)."""
+    if not self.active or seq is None:
+      return
+    seq, mph = int(seq), int(mph or 0)
+    if self.sign_seq is None:
+      self.sign_seq = seq
+      return
+    if seq == self.sign_seq:
+      return
+    self.sign_seq = seq
+    if mph <= 0:
+      return
+    if mph == self.mph:
+      self.dist_m, self.t0 = 0.0, self._now  # same value again: the hold restarts here
+      return
+    self._end("sign")
+
+  def update(self, now: float, road, lat=None, lon=None) -> float | None:
+    """Held limit (m/s) or None."""
+    self.end_reason, self._pending_end = self._pending_end, None
+    self._now = now
+    if not self.active:
+      return None
+    if lat is not None and lon is not None:
+      if self.last_ll is not None:
+        step = _dist_m(self.last_ll[0], self.last_ll[1], lat, lon)
+        if step < 500.0:        # ignore a GPS jump
+          self.dist_m += step
+      self.last_ll = (lat, lon)
+    key = road_key(road)
+    if key and not self.road:
+      self.road = key
+    if key and self.road and key != self.road:
+      self._end("road")
+    elif self.dist_m > self.max_m:
+      self._end("distance")
+    elif now - self.t0 > self.max_s:
+      self._end("time")
+    if self._pending_end is not None:
+      self.end_reason, self._pending_end = self._pending_end, None
+    return self.mph * MPH_TO_MS if self.active else None
+
+
+def cap_town_tesla(tesla_mph: int, osm_ms: float, osm_estimated: bool) -> int:
+  """Live Tesla limit in town: tagged OSM <= 35 mph and Tesla more than 10 mph
+  above it -> 0 (use OSM). St Joseph 1d5: Tesla 55 on a tagged 25/30/35
+  residential street; Cold Spring: Tesla 50 on a tagged 35."""
+  t = int(tesla_mph or 0)
+  if t <= 0 or osm_estimated or osm_ms <= 0:
+    return t
+  osm_mph = int(round(float(osm_ms) / MPH_TO_MS))
+  if osm_mph <= TOWN_OSM_MAX_MPH and t > osm_mph + TOWN_TESLA_MAX_OVER_MPH:
+    return 0
+  return t
+
+
 def select_current(sign_ms: float | None, tesla_mph: int, osm_ms: float,
-                   learned_ms: float | None = None) -> tuple[float, str | None]:
+                   learned_ms: float | None = None, hold_ms: float | None = None,
+                   osm_estimated: bool = True) -> tuple[float, str | None]:
   """(published current limit m/s, source) for NAPTeslaLimitPrimary.
 
-  Priority (Justin, Oct 23): confirmed sign > active learned section > live
-  (or held) Tesla > OSM. No cap: Tesla beats OSM higher or lower. source is
-  "sign" / "tesla_learned" / "tesla", or None when OSM applies (caller keeps
-  its osm / osm_default source)."""
+  Priority (Justin, Oct 23 + Oct 27): confirmed sign section > held Yes
+  (SignHold) > active learned section > live (or held) Tesla > OSM. Tesla beats
+  OSM higher or lower, except in town (tagged OSM <= 35 mph) where a Tesla value
+  more than 10 mph above OSM is dropped (cap_town_tesla). source is "sign" /
+  "tesla_learned" / "tesla", or None when OSM applies (caller keeps its
+  osm / osm_default source). osm_estimated defaults to True (no town cap) for
+  older callers."""
   if sign_ms is not None:
     return float(sign_ms), "sign"
+  if hold_ms is not None and hold_ms > 0:
+    return float(hold_ms), "sign"
   if learned_ms is not None and learned_ms > 0:
     return float(learned_ms), SOURCE_LEARNED
+  tesla_mph = cap_town_tesla(tesla_mph, osm_ms, osm_estimated)
   if int(tesla_mph) > 0:
     return int(tesla_mph) * MPH_TO_MS, SOURCE_TESLA
   return float(osm_ms), None

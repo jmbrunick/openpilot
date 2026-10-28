@@ -26,7 +26,7 @@ from openpilot.selfdrive.mapd.speed_overrides import CLEAR_PARAM as SIGN_CLEAR_P
 from openpilot.selfdrive.mapd.roundabout_map import PARAM_RING, RingCache, roundabout_comfort_speed_ms
 from openpilot.selfdrive.mapd.roundabout_status import RingDataWatch, map_msg_valid
 from openpilot.selfdrive.mapd.tesla_limit import (
-  PARAM_ENABLE as TESLA_PARAM, PARAM_PRIMARY as TESLA_PRIMARY_PARAM, MapdTeslaHook, next_for_published,
+  PARAM_ENABLE as TESLA_PARAM, PARAM_PRIMARY as TESLA_PRIMARY_PARAM, MapdTeslaHook, SignHold, next_for_published,
 )
 from openpilot.selfdrive.mapd import temp_limit
 from openpilot.selfdrive.mapd import limit_source
@@ -99,6 +99,8 @@ def main():
   # Tesla sets the current limit) or NAPTeslaLimitEnable (log + review notes)
   # is on. The `can` socket only exists while one of them is on.
   tesla: MapdTeslaHook | None = None
+  # Oct 27: a Yes holds past its way section (next sign / road change / ~2 km).
+  sign_hold = SignHold()
   auto_confirm_seq = 0
   # Speed-sign Temp (NAPSpeedSignTemp): this drive only, in memory, never saved.
   temp = temp_limit.TempLimit()
@@ -199,6 +201,10 @@ def main():
         if added is not None and str(added.get("source", "")).startswith("sign_auto"):
           auto_confirm_seq += 1
         if added is not None:
+          sl = sm["liveSpeedSignNAP"] if sm.recv_frame.get("liveSpeedSignNAP", -1) > 0 else None
+          sign_hold.start(int(added["mph"]), match.road_name if match is not None else "", now,
+                          lat if gps_ok else None, lon if gps_ok else None,
+                          int(sl.signSeq) if sl is not None else None)
           cloudlog.info("mapd: sign override way=%s heading=%s mph=%s", added["way_id"], added["heading"], added["mph"])
       except Exception:
         cloudlog.exception("mapd: sign override failed")
@@ -224,6 +230,7 @@ def main():
     if clear_req:
       try:
         params.remove(SIGN_CLEAR_PARAM)
+        sign_hold.reset()
         gone = (overrides.clear(int(match.way_id), bearing, lat, lon, match.coords or db.way_coords(int(match.way_id)))
                 if match is not None else [])
         cloudlog.warning("mapd: sign override clear way=%s bearing=%s removed=%s",
@@ -242,6 +249,16 @@ def main():
                        int(legacy["mph"]), float(match.speed_limit_ms) * 2.23694, int(match.way_id),
                        legacy.get("heading"), match.road_name)
     last_legacy_log = lkey
+
+    try:
+      if sign_hold.active and sm.updated.get("liveSpeedSignNAP", False):
+        sign_hold.note_sign(sm["liveSpeedSignNAP"].signSeq, sm["liveSpeedSignNAP"].signMph)
+    except Exception:
+      cloudlog.exception("mapd: sign hold note failed")
+    hold_ms = sign_hold.update(now, match.road_name if match is not None else "",
+                               lat if gps_ok else None, lon if gps_ok else None)
+    if sign_hold.end_reason is not None:
+      cloudlog.info("mapd: sign hold %s mph ended (%s)", sign_hold.end_reason[1], sign_hold.end_reason[0])
 
     tesla_st = None
     if tesla is not None:
@@ -294,7 +311,7 @@ def main():
           cloudlog.exception("mapd: Tesla primary limit failed")
       cur_ms, cur_src, fell_back = limit_source.choose_current(
         sign_ms, tesla_mph, lim_ms, learned_ms, prefer_osm=prefer_osm, fallback_on=osm_fallback_on,
-        osm_tagged_mph=0 if est else osm_raw_mph)
+        osm_tagged_mph=0 if est else osm_raw_mph, hold_ms=hold_ms, osm_estimated=est)
       fkey = (int(match.way_id), int(tesla_mph), osm_raw_mph) if fell_back else None
       if fkey is not None and fkey != fallback_key:
         reason = f"osm_fallback_tesla_{int(tesla_mph) or round(float(learned_ms or 0) * 2.23694)}_osm_{osm_raw_mph}"
@@ -329,7 +346,7 @@ def main():
       key = (int(match.way_id), d.source, round(float(d.speedLimit), 1))
       if key != last_limit_log:
         last_limit_log = key
-        src = ("default" if est else "tagged") + (" sign" if sign_ms is not None else "")
+        src = ("default" if est else "tagged") + (" sign" if sign_ms is not None else (" hold" if hold_ms is not None else ""))
         msg_txt = " ".join((
           f"mapd_limit way={int(match.way_id)}", f"name={match.road_name!r}", f"hw={match.highway}",
           f"mph={float(d.speedLimit) * 2.23694:.0f}", f"raw_mph={float(match.speed_limit_ms) * 2.23694:.0f}",
@@ -356,7 +373,7 @@ def main():
         nxt = short_filter_next(float(d.speedLimit), nxt, prof, prof_walked)
       except Exception:
         cloudlog.exception("mapd: short segment next failed")
-      if cur_src in ("tesla", "tesla_learned"):
+      if cur_src in ("tesla", "tesla_learned") or (sign_ms is None and hold_ms is not None):
         nxt = next_for_published(nxt, float(d.speedLimit))
       # Temp beats everything above (sign sections, Tesla, OSM) until it ends.
       try:

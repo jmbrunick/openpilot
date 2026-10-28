@@ -100,3 +100,14 @@ def test_sign_rows_still_never_behind_the_sign(tmp_path):
   o = SpeedOverrides(str(tmp_path / "o.json"))
   yes(o, db, 1300, 45, WB, 1)
   assert limit(o, db, 1290, WB) == 45 and limit(o, db, 1400, WB) == 30
+
+
+def test_held_yes_beats_source_choice_and_fallback():
+  from openpilot.selfdrive.mapd.limit_source import choose_current
+  hold = 30 * 0.44704
+  # held Yes wins over live Tesla, prefer-OSM and the >20 mph fallback
+  assert choose_current(None, 55, 35 * 0.44704, None, hold_ms=hold)[:2] == (hold, "sign")
+  assert choose_current(None, 55, 35 * 0.44704, None, prefer_osm=True, hold_ms=hold)[:2] == (hold, "sign")
+  # town cap passes through: tagged OSM 35, Tesla 50 -> OSM
+  ms, src, _ = choose_current(None, 50, 35 * 0.44704, None, fallback_on=False, osm_estimated=False)
+  assert src is None and abs(ms - 35 * 0.44704) < 1e-6
