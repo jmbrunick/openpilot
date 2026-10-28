@@ -450,9 +450,9 @@ class NAPLayout(Widget):
     self._add_toggle(
       NAPParamKeys.RADAR_ENABLED,
       "Radar Enabled",
-      "Enable the stock Bosch radar for lead car detection. When on, "
-      "path-synced radar is preferred for long lead if the track is on "
-      "the model path and radar is healthy. Off or unhealthy falls back "
+      "Enable the stock Bosch radar for lead car detection. When on, " +
+      "path-synced radar is preferred for long lead if the track is on " +
+      "the model path and radar is healthy. Off or unhealthy falls back " +
       "to stock fusion. Requires reboot.",
       enabled=ui_state.is_offroad,
       needs_reboot=True,

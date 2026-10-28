@@ -19,7 +19,9 @@ def test_resolve_uses_coarse_offset_and_rolls_segments(tmp_path):
   flag = {"route": r, "segment": 11, "seg_offset_s": 19.1}
   assert rff.resolve(str(tmp_path), flag, None, "qcamera")[:2] == (11, 19.1)
   flag = {"route": r, "segment": 11, "seg_offset_s": -5.0}
-  seg, off, cam = rff.resolve(str(tmp_path), flag, None, "qcamera")
+  got = rff.resolve(str(tmp_path), flag, None, "qcamera")
+  assert got is not None
+  seg, off, cam = got
   assert seg == 10 and off == 55.0 and cam.endswith("10.qcamera.ts")
   assert rff.resolve(str(tmp_path), {"route": None, "segment": None}, None, "qcamera") is None
   assert rff.resolve(str(tmp_path), {"route": r, "segment": 3, "seg_offset_s": 1.0}, None, "qcamera") is None

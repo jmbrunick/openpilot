@@ -298,7 +298,7 @@ def compact_stream(*, pedal: bool = True, private_vin: str = PRIVATE_VIN,
   events.append(onroad)
 
   dms = stamp(capnp_log.Event.new_message())
-  dms.init("driverMonitoringState").awarenessStatus = 1.0
+  dms.init("driverMonitoringState").alertLevel = capnp_log.DriverMonitoringState.AlertLevel.one
   events.append(dms)
 
   assist = stamp(capnp_log.Event.new_message())

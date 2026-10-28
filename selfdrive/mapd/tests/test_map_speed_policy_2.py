@@ -544,7 +544,8 @@ def test_driving_mannerisms_submenu_wires_params():
   nap = (root / "selfdrive/ui/layouts/settings/nap.py").read_text()
   nap_mici = (root / "selfdrive/ui/mici/layouts/settings/nap.py").read_text()
   for src in (tici, mici):
-    for key in ("ADAPTIVE_ACCEL", "FOLLOW_DISTANCE", "NAP_DRIVER_LAT_HANDOFF", "NAP_ONE_PEDAL_LONG", "NAP_HYPERMILE", "NAP_HYPERMILE_STEP_DOWN", "NAPMapSpeedAccel"):
+    for key in ("ADAPTIVE_ACCEL", "FOLLOW_DISTANCE", "NAP_DRIVER_LAT_HANDOFF", "NAP_ONE_PEDAL_LONG",
+                "NAP_HYPERMILE", "NAP_HYPERMILE_STEP_DOWN", "NAPMapSpeedAccel"):
       assert key in src
   content = (root / "selfdrive/ui/layouts/settings/nap_content.py").read_text()
   assert "Hypermile" in tici

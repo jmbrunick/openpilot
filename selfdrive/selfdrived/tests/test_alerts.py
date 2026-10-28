@@ -171,7 +171,16 @@ class TestAlerts:
     from openpilot.selfdrive.controls.lib.gap_lock import HUD_ENGAGED, HUD_LOST, HUD_UNAVAILABLE
     from openpilot.selfdrive.selfdrived.events import Priority, gap_lock_alert
 
-    plan = self.sm["longitudinalPlan"]
+    # SubMaster holds read-only readers; swap in a writable plan for this test.
+    plan = log.LongitudinalPlan.new_message()
+    orig_plan = self.sm.data["longitudinalPlan"]
+    self.sm.data["longitudinalPlan"] = plan
+    try:
+      self._check_gap_lock_alert(plan, HUD_ENGAGED, HUD_LOST, HUD_UNAVAILABLE, Priority, gap_lock_alert)
+    finally:
+      self.sm.data["longitudinalPlan"] = orig_plan
+
+  def _check_gap_lock_alert(self, plan, HUD_ENGAGED, HUD_LOST, HUD_UNAVAILABLE, Priority, gap_lock_alert):
     plan.gapLockM = 32.4
     plan.gapLockEvent = HUD_ENGAGED
     args = (self.CP, self.CS, self.sm, False, 100, log.LongitudinalPersonality.standard)

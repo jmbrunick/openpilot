@@ -130,13 +130,13 @@ MUTATIONS = (
      f"{TG}::test_inference_contract_comment_present"),
   # -- wheel-resume gate: no take-back while the wheel is still uncoiling -
   _m("wheel-gate-removed-from-yielded-resume", HANDOFF,
-     b"    elif self._yielded:\n      pull_now = self._pull_pending and self._min_yield_met(dt)\n      ready = self._integrate_giveback(tq, curv_err, dt, have_curv)\n      if pull_now or (ready and not self._wheel_gate_holds(steering_angle_deg, dt)):\n",
-     b"    elif self._yielded:\n      pull_now = self._pull_pending and self._min_yield_met(dt)\n      ready = self._integrate_giveback(tq, curv_err, dt, have_curv)\n      if pull_now or ready:\n",
+     b"    elif self._yielded:\n      pull_now = self._pull_pending and self._min_yield_met(dt)\n      ready = self._integrate_giveback(tq, curv_err, dt, have_curv)\n      if pull_now or (ready and not self._wheel_gate_holds(steering_angle_deg, dt)):\n",  # noqa: E501
+     b"    elif self._yielded:\n      pull_now = self._pull_pending and self._min_yield_met(dt)\n      ready = self._integrate_giveback(tq, curv_err, dt, have_curv)\n      if pull_now or ready:\n",  # noqa: E501
      f"{TW}::test_uncoil_from_large_angle_does_not_resume_until_straight",
      f"{TW}::test_low_speed_lot_is_gated_and_crossing_10mph_at_lock_does_not_resume"),
   _m("wheel-gate-removed-from-inhibit-cleared-resume", HANDOFF,
-     b"      self._blinker_was_paused = False\n      self._enter_yield()\n      pull_now = self._pull_pending and self._min_yield_met(dt)\n      ready = self._integrate_giveback(tq, curv_err, dt, have_curv)\n      if pull_now or (ready and not self._wheel_gate_holds(steering_angle_deg, dt)):\n",
-     b"      self._blinker_was_paused = False\n      self._enter_yield()\n      pull_now = self._pull_pending and self._min_yield_met(dt)\n      ready = self._integrate_giveback(tq, curv_err, dt, have_curv)\n      if pull_now or ready:\n",
+     b"      self._blinker_was_paused = False\n      self._enter_yield()\n      pull_now = self._pull_pending and self._min_yield_met(dt)\n      ready = self._integrate_giveback(tq, curv_err, dt, have_curv)\n      if pull_now or (ready and not self._wheel_gate_holds(steering_angle_deg, dt)):\n",  # noqa: E501
+     b"      self._blinker_was_paused = False\n      self._enter_yield()\n      pull_now = self._pull_pending and self._min_yield_met(dt)\n      ready = self._integrate_giveback(tq, curv_err, dt, have_curv)\n      if pull_now or ready:\n",  # noqa: E501
      f"{TW}::test_inhibit_cleared_landing_cannot_blend_in_one_big_step"),
   _m("wheel-gate-straight-window-too-wide", HANDOFF,
      b"    if a <= WHEEL_RESUME_STRAIGHT_DEG:\n      self._straight_s += dt\n",

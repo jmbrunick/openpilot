@@ -20,7 +20,7 @@ def _read_json(p):
   import json
   return json.loads(_read_text(p))
 
-def pt(x_m):  # x meters east of LON0 along an east-west road
+def pt(x_m) -> tuple[float, float]:  # x meters east of LON0 along an east-west road
   return (LAT0, LON0 + x_m / M_PER_DEG_LON)
 
 

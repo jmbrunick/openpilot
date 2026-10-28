@@ -1450,10 +1450,10 @@ def sign_like_bbox(signs, diag) -> tuple[int, int, int, int] | None:
     if pending or conf >= SIGN_LIKE_CONF:
       box = getattr(s, "bbox", None)
       if box is not None and len(box) == 4:
-        return tuple(int(v) for v in box)
+        return (int(box[0]), int(box[1]), int(box[2]), int(box[3]))
   raw = (diag or {}).get("sign_like_bbox") if diag else None
   if raw is not None and len(raw) == 4:
-    return tuple(int(v) for v in raw)
+    return (int(raw[0]), int(raw[1]), int(raw[2]), int(raw[3]))
   return None
 
 

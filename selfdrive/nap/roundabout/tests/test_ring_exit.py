@@ -12,7 +12,9 @@ def _pt(north_m, east_m):
 
 
 def test_center_radius():
-  la, lo, r = ring_center_radius(RING)
+  center = ring_center_radius(RING)
+  assert center is not None
+  la, lo, r = center
   assert abs(r - R) < 0.5
 
 

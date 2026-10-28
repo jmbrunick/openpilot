@@ -154,7 +154,7 @@ def test_rate_limit_holds_stock_then_slews_back():
   # slewed, not stepped
   assert np.max(np.abs(np.diff(outs))) <= tg.REDUCTION_SLEW_S_PER_S * DT_MDL + 1e-9
   # limiter releases: held 0.5 s, then back to full correction
-  for i in range(int(tg.RATE_LIMIT_HOLD_S / DT_MDL) - 1):
+  for _ in range(int(tg.RATE_LIMIT_HOLD_S / DT_MDL) - 1):
     c.update(enabled=True, stock_lookahead_s=STOCK, v_ego=6.0, ref_offset_m=0.35,
              lat_active=True, cmd_angle_deg=out_angle, out_angle_deg=out_angle)
     assert c.reduction_s == 0.0
@@ -271,7 +271,7 @@ def test_modeld_applies_only_to_model_action_lookahead():
 
 def test_lateral_maneuver_plan_bypasses_correction():
   src = (ROOT / "selfdrive/controls/controlsd.py").read_text()
-  assert ("    if self.sm.valid['lateralManeuverPlan']:\n"
+  assert ("    if self.sm.valid['lateralManeuverPlan']:\n" +
           "      model_or_plan_curvature = self.sm['lateralManeuverPlan'].desiredCurvature\n") in src
   assert "turn_geom.update" not in src
   assert "napLat" not in src

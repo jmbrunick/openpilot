@@ -49,7 +49,7 @@ RB_LON = -95.0610
 RB_R_M = 22.5
 
 
-def _offset(lat, lon, bearing_deg, dist_m):
+def _offset(lat, lon, bearing_deg, dist_m) -> tuple[float, float]:
   theta = dist_m / EARTH_R
   brng = math.radians(bearing_deg)
   phi1 = math.radians(lat)

@@ -791,7 +791,7 @@ def crop_light_stats(obj_rows, v_rows=None) -> tuple[float, float, float, float]
   if total <= 1.0:
     blob = 0.0
   else:
-    bright = sum(ex for v, ex in zip(lumas, excess) if v >= NEAR_SAT_Y)
+    bright = sum(ex for v, ex in zip(lumas, excess, strict=False) if v >= NEAR_SAT_Y)
     blob = bright / total
   return near, sat, red_frac, blob
 
@@ -1125,7 +1125,7 @@ def _line_lat(cone: ConeHint, x: float) -> float | None:
     return pts[0][1]
   if x >= pts[-1][0]:
     return pts[-1][1]
-  for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+  for (x0, y0), (x1, y1) in zip(pts, pts[1:], strict=False):
     if x0 <= x <= x1 and x1 > x0:
       t = (x - x0) / (x1 - x0)
       return y0 + t * (y1 - y0)
@@ -1270,7 +1270,7 @@ def patch_change_score(prev, rows) -> float:
   new = rows if isinstance(rows, tuple) else patch_signature(rows)
   if not old or not new or len(old) != len(new):
     return 0.0
-  delta = sum(abs(a - b) for a, b in zip(old, new)) / len(old)
+  delta = sum(abs(a - b) for a, b in zip(old, new, strict=False)) / len(old)
   return _clamp((delta - 12.0) / 28.0, 0.0, 1.0)
 
 
@@ -1914,7 +1914,7 @@ class PathObstacleDetector:
         dpsi = -0.25
       state["yaw_int"] = float(state.get("yaw_int", 0.0)) + dpsi
       y_fix = _unrotate_y(float(item["x"]), float(item["y"]), float(state["yaw_int"]))
-      hist = state.setdefault("hist", [])
+      hist: list = state.setdefault("hist", [])
       hist.append((
         float(state["age"]), float(item["x"]), y_fix,
         float(item["v_rel"]) + v_ego, float(state["v_lat"]),

@@ -352,7 +352,7 @@ def test_desired_accel_is_continuous_for_small_input_steps():
   tf = 1.3
   gap_set = gap_set_m(v_lead, tf)
   worst = 0.0
-  for closing in (i * 0.05 for i in range(0, 81)):
+  for closing in (i * 0.05 for i in range(81)):
     for slack in (i * 0.25 - 30.0 for i in range(241)):
       accel = unified_follow_desired(
         gap_set + slack, v_lead + closing, v_lead, 0.0, tf, v_ceiling=40.0,
@@ -1288,7 +1288,7 @@ def test_far_off_path_rapid_lead_does_not_firm_and_a_one_frame_spike_does_not_dr
 
 # Oct 23 16:52 CR 31: setting 1 (0.70 s + 6 m) let a slow close walk the
 # headway down to 0.47 s on a -0.2 m/s² command.
-from openpilot.selfdrive.controls.lib.unified_lead import (  # noqa: E402
+from openpilot.selfdrive.controls.lib.unified_lead import (
   HW_FLOOR_MARGIN_S,
   HW_FLOOR_S,
   _headway_floor_pull,

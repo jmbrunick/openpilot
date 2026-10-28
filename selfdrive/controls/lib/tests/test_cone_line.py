@@ -386,7 +386,7 @@ def _std_abs(vals):
 def _pts_yx(xs, y_rels, v=V):
   return [
     SimpleNamespace(dRel=x - 1.52, yRel=y_rel, vRel=-v, measured=True)
-    for x, y_rel in zip(xs, y_rels)
+    for x, y_rel in zip(xs, y_rels, strict=False)
   ]
 
 
@@ -425,7 +425,7 @@ def test_oct13_passes_a_to_g():
 
 def test_oct13_overpass_spans_both_sides_at_one_range():
   deck = _pts([40.0, 40.5, 41.0, 41.5], 0.0)
-  for p, y in zip(deck, (3.0, 1.5, -1.5, -3.0)):
+  for p, y in zip(deck, (3.0, 1.5, -1.5, -3.0), strict=False):
     p.yRel = y
   assert overhead_ranges(deck, V, STRAIGHT_X, STRAIGHT_Y)
   # One-sided cones are not overhead.
@@ -437,7 +437,7 @@ def test_oct13_overpass_blocks_the_shift_in_the_detector():
   pts = _cones(2.0)
   _run(det, pts, CONFIRM_S + 1.0)
   deck = _pts([30.0, 30.5, 31.0, 31.5], 0.0)
-  for p, y in zip(deck, (4.0, 2.5, -2.5, -4.0)):
+  for p, y in zip(deck, (4.0, 2.5, -2.5, -4.0), strict=False):
     p.yRel = y
   s = None
   for _ in range(20):

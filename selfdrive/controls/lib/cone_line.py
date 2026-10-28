@@ -260,7 +260,7 @@ def _fit_curve(xs: list[float], ys: list[float]) -> tuple | None:
   sy = sum(ys)
   su = sum(us)
   su2 = sum(u * u for u in us)
-  suy = sum(u * y for u, y in zip(us, ys))
+  suy = sum(u * y for u, y in zip(us, ys, strict=False))
   det = n * su2 - su * su
   if abs(det) < 1e-6:
     return (sy / n, 0.0, 0.0, x0)
@@ -271,7 +271,7 @@ def _fit_curve(xs: list[float], ys: list[float]) -> tuple | None:
     return linear
   p = [0.0, 0.0, 0.0, 0.0, 0.0]
   rhs = [0.0, 0.0, 0.0]
-  for u, y in zip(us, ys):
+  for u, y in zip(us, ys, strict=False):
     up = 1.0
     for k in range(5):
       p[k] += up

@@ -40,7 +40,7 @@ def test_grown_position_x_list_reports_indexed_additions():
 def test_remove_ignored_text_field_clears_string():
   message = messaging.new_message("radarState")
   message.radarState.radarPreferReason = "dropout"
-  cleared = remove_ignored_fields(message, ["radarState.radarPreferReason"])
+  cleared = remove_ignored_fields(message.as_reader(), ["radarState.radarPreferReason"])
   assert cleared.radarState.radarPreferReason == ""
 
 

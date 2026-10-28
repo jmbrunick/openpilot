@@ -28,7 +28,6 @@ from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   QUIET_WAIT_S,
   RATE_INTENT_MIN_DEG_S,
   RATE_SNA_ABS_DEG_S,
-  SMOOTHSTEP_MAX_SLOPE,
   SOFT_YIELD_DEBOUNCE_FRAMES,
   SOFT_YIELD_FAST_DEBOUNCE_FRAMES,
   SOFT_YIELD_RELEASE_NM,
@@ -54,7 +53,6 @@ from openpilot.selfdrive.controls.lib.driver_lateral_handoff import (
   lat_reenable_inhibited,
   pin_desired_curvature_to_measured,
   required_press_frames,
-  smoothstep,
   torque_rate_aligned,
 )
 from openpilot.common.nap_params import params_keys_text

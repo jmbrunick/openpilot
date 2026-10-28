@@ -79,7 +79,9 @@ def test_restore_rate_is_speed_dependent():
 def test_path_curvature_reads_model_yaw_rate():
   planner, inputs, _ = _planner(15.0)
   _set_model_path(inputs["modelV2"], 15.0, 0.0, (0.0, 500.0, 1.0 / 50.0, 1.0))
-  ts, xs, ks = path_curvature(inputs["modelV2"])
+  curv = path_curvature(inputs["modelV2"])
+  assert curv is not None
+  ts, xs, ks = curv
   assert len(ts) == len(xs) == len(ks)
   assert ks[5] == pytest.approx(1.0 / 50.0, rel=1e-6)
   assert path_lat_accel_ahead(15.0, ts, ks) == pytest.approx(225.0 / 50.0, rel=1e-3)
