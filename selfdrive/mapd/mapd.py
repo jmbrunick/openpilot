@@ -21,7 +21,7 @@ from openpilot.selfdrive.mapd.gps_fix import (
 )
 from openpilot.selfdrive.mapd.map_speed_policy import keep_rural_default_ms, map_source_for
 from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB
-from openpilot.selfdrive.mapd.short_segment import ShortSegmentHold, filter_next as short_filter_next, limit_profile
+from openpilot.selfdrive.mapd.short_segment import FreshYes, ShortSegmentHold, filter_next as short_filter_next, limit_profile
 from openpilot.selfdrive.mapd.speed_overrides import CLEAR_PARAM as SIGN_CLEAR_PARAM, PARAM as SIGN_CONFIRMED_PARAM, SpeedOverrides, along_way, effective_next
 from openpilot.selfdrive.mapd.roundabout_map import PARAM_RING, RingCache, roundabout_comfort_speed_ms
 from openpilot.selfdrive.mapd.roundabout_status import RingDataWatch, map_msg_valid
@@ -90,6 +90,7 @@ def main():
   overrides = SpeedOverrides()
   # Oct 26: posted segments under 100 yd with a > 15 mph jump are written out (short_segment.py).
   short_hold = ShortSegmentHold()
+  fresh_yes = FreshYes()   # Nov 1: a Yes is published once past its sign, never written out
   odo_m, odo_t = 0.0, None
   last_short_log = None
   last_legacy_log = None
@@ -205,6 +206,8 @@ def main():
           sign_hold.start(int(added["mph"]), match.road_name if match is not None else "", now,
                           lat if gps_ok else None, lon if gps_ok else None,
                           int(sl.signSeq) if sl is not None else None)
+          fresh_yes.start(int(added["mph"]), now, added.get("lat"), added.get("lon"), added.get("heading"))
+          short_hold.note_yes(int(added["mph"]), now)
           cloudlog.info("mapd: sign override way=%s heading=%s mph=%s", added["way_id"], added["heading"], added["mph"])
       except Exception:
         cloudlog.exception("mapd: sign override failed")
@@ -231,6 +234,7 @@ def main():
       try:
         params.remove(SIGN_CLEAR_PARAM)
         sign_hold.reset()
+        fresh_yes.clear()
         gone = (overrides.clear(int(match.way_id), bearing, lat, lon, match.coords or db.way_coords(int(match.way_id)))
                 if match is not None else [])
         cloudlog.warning("mapd: sign override clear way=%s bearing=%s removed=%s",
@@ -309,6 +313,9 @@ def main():
             learned_ms = learned.limit_ms(learn_way, learn_s)
         except Exception:
           cloudlog.exception("mapd: Tesla primary limit failed")
+      yes_ms = fresh_yes.current(now, lat if gps_ok else None, lon if gps_ok else None) if sign_hold.active else None
+      if yes_ms is not None and (sign_ms is None or abs(float(sign_ms) - yes_ms) > 0.3):
+        sign_ms = yes_ms     # fresh Yes, car past its sign: beats an older section still covering here
       cur_ms, cur_src, fell_back = limit_source.choose_current(
         sign_ms, tesla_mph, lim_ms, learned_ms, prefer_osm=prefer_osm, fallback_on=osm_fallback_on,
         osm_tagged_mph=0 if est else osm_raw_mph, hold_ms=hold_ms, osm_estimated=est)
@@ -332,7 +339,7 @@ def main():
                                           match.coords or db.way_coords(int(match.way_id)), lat, lon, bearing,
                                           learned=learned_fn)
         raw_cur_ms = float(cur_ms)
-        cur_ms = short_hold.update(raw_cur_ms, cur_src, odo_m, prof, prof_walked)
+        cur_ms = short_hold.update(raw_cur_ms, cur_src, odo_m, prof, prof_walked, now=now)
         skey = (round(raw_cur_ms, 1), round(float(cur_ms), 1)) if short_hold.held else None
         if skey is not None and skey != last_short_log:
           cloudlog.info("mapd: short segment written out: %.0f mph held over %.0f mph (src=%s)",
