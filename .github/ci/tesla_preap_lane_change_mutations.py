@@ -18,10 +18,10 @@ sys.modules[_spec.name] = parent
 _spec.loader.exec_module(parent)
 
 HistoricalMutation = parent.HistoricalMutation
-T = "selfdrive/controls/lib/tests/test_lane_change_lock.py"
-TARGET = "selfdrive/controls/lib/lane_change_target.py"
-DH = "selfdrive/controls/lib/desire_helper.py"
-EVENTS = "selfdrive/selfdrived/lane_change_alerts.py"
+T = "openpilot/selfdrive/controls/lib/tests/test_lane_change_lock.py"
+TARGET = "openpilot/selfdrive/controls/lib/lane_change_target.py"
+DH = "openpilot/selfdrive/controls/lib/desire_helper.py"
+EVENTS = "openpilot/selfdrive/selfdrived/lane_change_alerts.py"
 EXPECTED_COUNT = 11
 
 MUTATIONS = (
@@ -31,7 +31,7 @@ MUTATIONS = (
     original=b"      if probs[1 if direction == LEFT else 2] < LANE_LINE_MIN_PROB:\n",
     replacement=b"      if False:\n",
     test_nodes=(
-      "selfdrive/controls/lib/tests/test_lane_change_target.py::test_low_confidence_at_start_does_not_guess",
+      "openpilot/selfdrive/controls/lib/tests/test_lane_change_target.py::test_low_confidence_at_start_does_not_guess",
       f"{T}::test_weak_crossing_line_waits_shows_unclear_and_never_silently_cancels",
     ),
   ),
@@ -122,7 +122,7 @@ MUTATIONS = (
   ),
   HistoricalMutation(
     name="lc-unclear-alert-not-installed",
-    source_path="selfdrive/selfdrived/helpers.py",
+    source_path="openpilot/selfdrive/selfdrived/helpers.py",
     original=b"\ninstall_lane_change_alerts()\n",
     replacement=b"\n",
     test_nodes=(

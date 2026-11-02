@@ -8,13 +8,13 @@ policy (or of the radarstat line) and must fail the pinned tests with an Asserti
 """
 from tesla_preap_mutation_common import HistoricalMutation
 
-T = "selfdrive/controls/tests/test_radar_sensor_dirty.py"
-SD = "selfdrive/controls/lib/radar_sensor_dirty.py"
-RADARD = "selfdrive/controls/radard.py"
-EVENTS = "selfdrive/selfdrived/events.py"
-SELFDRIVED = "selfdrive/selfdrived/selfdrived.py"
-CARD = "selfdrive/car/card.py"
-STAT = "selfdrive/controls/lib/radar_status_log.py"
+T = "openpilot/selfdrive/controls/tests/test_radar_sensor_dirty.py"
+SD = "openpilot/selfdrive/controls/lib/radar_sensor_dirty.py"
+RADARD = "openpilot/selfdrive/controls/radard.py"
+EVENTS = "openpilot/selfdrive/selfdrived/events.py"
+SELFDRIVED = "openpilot/selfdrive/selfdrived/selfdrived.py"
+CARD = "openpilot/selfdrive/car/card.py"
+STAT = "openpilot/selfdrive/controls/lib/radar_status_log.py"
 
 
 def _m(name, path, original, replacement, *tests):
@@ -144,7 +144,7 @@ MUTATIONS_F = (
      b"    elif self.sm['radarState'].radarErrors.radarUnavailableTemporary:\n      self.events.add(EventName.radarTempUnavailable)\n",
      b"    elif self.sm['radarState'].radarErrors.radarUnavailableTemporary:\n      self.events.add(EventName.radarFault)\n",
      "test_selfdrived_wiring_is_unchanged_and_degrade_rides_the_fallback_event"),
-  _m("dirty-param-key-default-off", "common/nap_params_keys.h",
+  _m("dirty-param-key-default-off", "openpilot/common/nap_params_keys.h",
      b'{"NAPRadarIgnoreSensorDirty", {PERSISTENT, BOOL, "1"}}', b'{"NAPRadarIgnoreSensorDirty", {PERSISTENT, BOOL}}',
      "test_param_key_defaults_on"),
   # --- radarstat line -------------------------------------------------------------------

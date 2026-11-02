@@ -8,9 +8,9 @@ pinned tests with an AssertionError.
 """
 from tesla_preap_mutation_common import HistoricalMutation
 
-T = "selfdrive/selfdrived/tests/test_preap_regen_cmd_pin.py"
-PR = "selfdrive/selfdrived/preap_regen.py"
-SD = "selfdrive/selfdrived/selfdrived.py"
+T = "openpilot/selfdrive/selfdrived/tests/test_preap_regen_cmd_pin.py"
+PR = "openpilot/selfdrive/selfdrived/preap_regen.py"
+SD = "openpilot/selfdrive/selfdrived/selfdrived.py"
 
 
 def _m(name, path, original, replacement, *tests):

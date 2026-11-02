@@ -19,19 +19,19 @@ sys.modules[_spec.name] = parent
 _spec.loader.exec_module(parent)
 
 HistoricalMutation = parent.HistoricalMutation
-RB_GUIDE_TEST_PATH = "selfdrive/controls/lib/tests/test_roundabout_guide.py"
-RB_MAP_TEST_PATH = "selfdrive/mapd/tests/test_roundabout_map.py"
-RB_HOLD_TEST_PATH = "selfdrive/controls/lib/tests/test_roundabout_ring_hold.py"
-RB_MAPD_TEST_PATH = "selfdrive/mapd/tests/test_roundabout.py"
-RH_PATH = "selfdrive/controls/lib/roundabout_ring_hold.py"
-RG_PATH = "selfdrive/controls/lib/roundabout_guide.py"
+RB_GUIDE_TEST_PATH = "openpilot/selfdrive/controls/lib/tests/test_roundabout_guide.py"
+RB_MAP_TEST_PATH = "openpilot/selfdrive/mapd/tests/test_roundabout_map.py"
+RB_HOLD_TEST_PATH = "openpilot/selfdrive/controls/lib/tests/test_roundabout_ring_hold.py"
+RB_MAPD_TEST_PATH = "openpilot/selfdrive/mapd/tests/test_roundabout.py"
+RH_PATH = "openpilot/selfdrive/controls/lib/roundabout_ring_hold.py"
+RG_PATH = "openpilot/selfdrive/controls/lib/roundabout_guide.py"
 EXPECTED_COUNT = 110
 
 
 MUTATIONS = (
   HistoricalMutation(
     name="rb-guide-early-left-before-turn-distance",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    source_path="openpilot/selfdrive/controls/lib/roundabout_guide.py",
     original=b'      k_raw = max(model_k, k_pp)   # hold / add right only; never an early left\n',
     replacement=b'      k_raw = k_pp\n',
     test_nodes=(
@@ -40,7 +40,7 @@ MUTATIONS = (
   ),
   HistoricalMutation(
     name="rb-guide-correction-not-slewed",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    source_path="openpilot/selfdrive/controls/lib/roundabout_guide.py",
     original=b'    self.dk_out += min(max(dk - self.dk_out, -oslew * dt), oslew * dt)\n',
     replacement=b'    self.dk_out = dk\n',
     test_nodes=(
@@ -49,7 +49,7 @@ MUTATIONS = (
   ),
   HistoricalMutation(
     name="rb-guide-output-exceeds-jerk-limit",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    source_path="openpilot/selfdrive/controls/lib/roundabout_guide.py",
     original=b'      allowed = max(oslew * dt, abs(model_k - self.prev_model))\n',
     replacement=b'      allowed = 1.0\n',
     test_nodes=(
@@ -58,7 +58,7 @@ MUTATIONS = (
   ),
   HistoricalMutation(
     name="rb-guide-no-preview",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    source_path="openpilot/selfdrive/controls/lib/roundabout_guide.py",
     original=b'    px, py, ppsi = _arc_ahead(x, y, psi, v, yaw_rate, PREVIEW_S)\n',
     replacement=b'    px, py, ppsi = x, y, psi\n',
     test_nodes=(
@@ -67,7 +67,7 @@ MUTATIONS = (
   ),
   HistoricalMutation(
     name="rb-guide-circle-follow-wrong-sign",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    source_path="openpilot/selfdrive/controls/lib/roundabout_guide.py",
     original=b'  return -sense * k_center\n',
     replacement=b'  return sense * k_center\n',
     test_nodes=(
@@ -76,7 +76,7 @@ MUTATIONS = (
   ),
   HistoricalMutation(
     name="rb-guide-no-map-bias",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    source_path="openpilot/selfdrive/controls/lib/roundabout_guide.py",
     original=b'    bn += BIAS_GAIN * (ex - bn)\n',
     replacement=b'    bn += 0.0\n',
     test_nodes=(
@@ -85,7 +85,7 @@ MUTATIONS = (
   ),
   HistoricalMutation(
     name="rb-guide-ignores-fix-age",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    source_path="openpilot/selfdrive/controls/lib/roundabout_guide.py",
     original=b'    c_fix = _interp(t - self.last_fix_t, (FIX_FRESH_S, FIX_STALE_S), (1.0, 0.0))\n',
     replacement=b'    c_fix = 1.0\n',
     test_nodes=(
@@ -94,7 +94,7 @@ MUTATIONS = (
   ),
   HistoricalMutation(
     name="rb-guide-ignores-camera-edges",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    source_path="openpilot/selfdrive/controls/lib/roundabout_guide.py",
     original=b'    dy = max(dy, min(0.0, allowed))\n',
     replacement=b'    dy = dy\n',
     test_nodes=(
@@ -103,7 +103,7 @@ MUTATIONS = (
   ),
   HistoricalMutation(
     name="rb-guide-never-hands-back",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    source_path="openpilot/selfdrive/controls/lib/roundabout_guide.py",
     original=b'    if self.phase == EXITING and self.phase_w <= 0.0 and abs(self.dk_out) < HANDOFF_DK:\n',
     replacement=b'    if False:\n',
     test_nodes=(
@@ -112,7 +112,7 @@ MUTATIONS = (
   ),
   HistoricalMutation(
     name="rb-assist-ignores-toggle",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    source_path="openpilot/selfdrive/controls/lib/roundabout_guide.py",
     original=b'          on = bool(self.params.get_bool(PARAM_ROUNDABOUT_ASSIST))\n',
     replacement=b'          on = True\n',
     test_nodes=(
@@ -121,7 +121,7 @@ MUTATIONS = (
   ),
   HistoricalMutation(
     name="rb-assist-not-preap-only",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    source_path="openpilot/selfdrive/controls/lib/roundabout_guide.py",
     original=b'    if not self.preap:\n      return float(model_k)\n',
     replacement=b'    if False:\n      return float(model_k)\n',
     test_nodes=(
@@ -130,7 +130,7 @@ MUTATIONS = (
   ),
   HistoricalMutation(
     name="rb-assist-runs-during-maneuver",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    source_path="openpilot/selfdrive/controls/lib/roundabout_guide.py",
     original=b'    if maneuver_active or lane_change_active:\n      on = False\n',
     replacement=b'    if False:\n      on = False\n',
     test_nodes=(
@@ -139,7 +139,7 @@ MUTATIONS = (
   ),
   HistoricalMutation(
     name="rb-assist-without-hint",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    source_path="openpilot/selfdrive/controls/lib/roundabout_guide.py",
     original=b'    on = (t - self._last_hint_t) <= HINT_HOLD_S or busy\n',
     replacement=b'    on = True\n',
     test_nodes=(
@@ -148,7 +148,7 @@ MUTATIONS = (
   ),
   HistoricalMutation(
     name="rb-controlsd-legacy-bias-stacks-on-assist",
-    source_path="selfdrive/controls/controlsd.py",
+    source_path="openpilot/selfdrive/controls/controlsd.py",
     original=b'(0.0 if self.rb_assist.active else rb_bias)',
     replacement=b'rb_bias',
     test_nodes=(
@@ -157,7 +157,7 @@ MUTATIONS = (
   ),
   HistoricalMutation(
     name="rb-assist-default-on",
-    source_path="common/nap_params_keys.h",
+    source_path="openpilot/common/nap_params_keys.h",
     original=b'{"NAPRoundaboutAssist", {PERSISTENT, BOOL, "0"}}',
     replacement=b'{"NAPRoundaboutAssist", {PERSISTENT, BOOL, "1"}}',
     test_nodes=(
@@ -166,7 +166,7 @@ MUTATIONS = (
   ),
   HistoricalMutation(
     name="rb-guide-nan-odometry-poisons-pose",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    source_path="openpilot/selfdrive/controls/lib/roundabout_guide.py",
     original=b'    if not (math.isfinite(t) and math.isfinite(v) and math.isfinite(yaw_rate)):\n',
     replacement=b'    if False:\n',
     test_nodes=(
@@ -175,7 +175,7 @@ MUTATIONS = (
   ),
   HistoricalMutation(
     name="rb-map-ring-geometry-searches-around-car",
-    source_path="selfdrive/mapd/osm_db.py",
+    source_path="openpilot/selfdrive/mapd/osm_db.py",
     original=b'      lat, lon = 0.5 * (box[0] + box[1]), 0.5 * (box[2] + box[3])\n',
     replacement=b'      lat, lon = float(lat), float(lon)\n',
     test_nodes=(
@@ -184,7 +184,7 @@ MUTATIONS = (
   ),
   HistoricalMutation(
     name="rb-map-find-roundabout-skips-rb-ways",
-    source_path="selfdrive/mapd/osm_db.py",
+    source_path="openpilot/selfdrive/mapd/osm_db.py",
     original=b'    rows += [r for r in self._rb_candidates(float(lat), float(lon), RB_SEARCH_PAD_DEG, role=ROLE_RING)\n',
     replacement=b'    rows += [r for r in []\n',
     test_nodes=(
@@ -193,7 +193,7 @@ MUTATIONS = (
   ),
   HistoricalMutation(
     name="rb-map-overpass-drops-rings",
-    source_path="selfdrive/mapd/overpass.py",
+    source_path="openpilot/selfdrive/mapd/overpass.py",
     original=b'  rb_union = "" if not include_roundabouts else "\\n  .rb;\\n  .ap;"\n',
     replacement=b'  rb_union = ""\n',
     test_nodes=(
@@ -202,7 +202,7 @@ MUTATIONS = (
   ),
   HistoricalMutation(
     name="rb-map-refresh-drops-rb-rows",
-    source_path="selfdrive/mapd/local_refresh.py",
+    source_path="openpilot/selfdrive/mapd/local_refresh.py",
     original=b'      for row in rb_rows:\n        OsmSpeedLimitDB.insert_rb_way(con, row)\n',
     replacement=b'      for row in []:\n        OsmSpeedLimitDB.insert_rb_way(con, row)\n',
     test_nodes=(
@@ -211,7 +211,7 @@ MUTATIONS = (
   ),
   HistoricalMutation(
     name="rb-map-approach-direction-lost",
-    source_path="selfdrive/mapd/roundabout_map.py",
+    source_path="openpilot/selfdrive/mapd/roundabout_map.py",
     original=b'    fwd = list(reversed(trimmed)) if inbound else trimmed\n',
     replacement=b'    fwd = trimmed\n',
     test_nodes=(
@@ -220,7 +220,7 @@ MUTATIONS = (
   ),
   HistoricalMutation(
     name="rb-map-comfort-speed-outer-lane",
-    source_path="selfdrive/mapd/roundabout_map.py",
+    source_path="openpilot/selfdrive/mapd/roundabout_map.py",
     original=b'  r_inner = max(4.0, float(radius_m) - 0.5 * (lanes_n - 1) * LANE_WIDTH_M)\n',
     replacement=b'  r_inner = max(4.0, float(radius_m) + 0.5 * (lanes_n - 1) * LANE_WIDTH_M)\n',
     test_nodes=(
@@ -239,9 +239,9 @@ MUTATIONS = (
 )
 
 
-CARD = "selfdrive/car/card.py"
-MAPD = "selfdrive/mapd/mapd.py"
-RMAP = "selfdrive/mapd/roundabout_status.py"
+CARD = "openpilot/selfdrive/car/card.py"
+MAPD = "openpilot/selfdrive/mapd/mapd.py"
+RMAP = "openpilot/selfdrive/mapd/roundabout_status.py"
 T = RB_MAP_TEST_PATH
 
 MUTATIONS += (
@@ -374,7 +374,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-gps-latency-back-to-0-9",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    source_path="openpilot/selfdrive/controls/lib/roundabout_guide.py",
     original=b'GPS_LATENCY_S = 0.66 ',
     replacement=b'GPS_LATENCY_S = 0.9  ',
     test_nodes=(
@@ -384,7 +384,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-left-transition-a-lat-3-0",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    source_path="openpilot/selfdrive/controls/lib/roundabout_guide.py",
     original=b'A_LAT_CIRC_MAX = 2.2 ',
     replacement=b'A_LAT_CIRC_MAX = 3.0 ',
     test_nodes=(
@@ -393,7 +393,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-output-slew-back-to-0-07",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    source_path="openpilot/selfdrive/controls/lib/roundabout_guide.py",
     original=b'OUT_SLEW = 0.035 ',
     replacement=b'OUT_SLEW = 0.07  ',
     test_nodes=(
@@ -403,7 +403,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-bearing-accuracy-never-unreliable",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    source_path="openpilot/selfdrive/controls/lib/roundabout_guide.py",
     original=b'  unreliable = bearing_acc_deg > BEARING_ACC_UNRELIABLE_DEG or \\\n',
     replacement=b'  unreliable = False or \\\n',
     test_nodes=(
@@ -413,7 +413,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-large-bias-never-unreliable",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    source_path="openpilot/selfdrive/controls/lib/roundabout_guide.py",
     original=b'    (bias_m > BIAS_UNRELIABLE_M and bearing_acc_deg > BEARING_ACC_POOR_DEG)\n',
     replacement=b'    False\n',
     test_nodes=(
@@ -423,7 +423,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-latches-on-unreliable-pose",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    source_path="openpilot/selfdrive/controls/lib/roundabout_guide.py",
     original=b'    can_latch = not unreliable and drift <= BIAS_LATCH_DRIFT_M\n',
     replacement=b'    can_latch = True\n',
     test_nodes=(
@@ -433,7 +433,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-latches-before-bias-settles",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    source_path="openpilot/selfdrive/controls/lib/roundabout_guide.py",
     original=b'    can_latch = not unreliable and drift <= BIAS_LATCH_DRIFT_M\n',
     replacement=b'    can_latch = not unreliable\n',
     test_nodes=(
@@ -442,7 +442,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-fades-nothing-on-unreliable-pose",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    source_path="openpilot/selfdrive/controls/lib/roundabout_guide.py",
     original=b'      phase_target = 0.0 if (unreliable and not self.latched) else 1.0\n',
     replacement=b'      phase_target = 1.0\n',
     test_nodes=(
@@ -451,7 +451,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-curl-not-held-over-ring-speed",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    source_path="openpilot/selfdrive/controls/lib/roundabout_guide.py",
     original=b'      k_raw = hold_curl(k_raw, model_k, sense)\n',
     replacement=b'      pass\n',
     test_nodes=(
@@ -460,7 +460,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-hold-curl-wrong-side",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    source_path="openpilot/selfdrive/controls/lib/roundabout_guide.py",
     original=b'  return max(model_k, k_raw) if sense > 0.0 else min(model_k, k_raw)\n',
     replacement=b'  return min(model_k, k_raw) if sense > 0.0 else max(model_k, k_raw)\n',
     test_nodes=(
@@ -469,7 +469,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-hold-speed-window-removed",
-    source_path="selfdrive/controls/lib/roundabout_guide.py",
+    source_path="openpilot/selfdrive/controls/lib/roundabout_guide.py",
     original=b'    holding = v > self.ring_v + SPEED_HOLD_MS\n',
     replacement=b'    holding = False\n',
     test_nodes=(
@@ -479,7 +479,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-left-cap-ignores-circulation-side",
-    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    source_path='openpilot/selfdrive/controls/lib/roundabout_guide.py',
     original=b'  k_circ, k_other = A_LAT_CIRC_MAX / v2, A_LAT_MAX / v2\n',
     replacement=b'  k_circ, k_other = A_LAT_MAX / v2, A_LAT_MAX / v2\n',
     test_nodes=(
@@ -488,7 +488,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-poor-pose-uses-fast-output-slew",
-    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    source_path='openpilot/selfdrive/controls/lib/roundabout_guide.py',
     original=b'    oslew = RING_SLEW if self.latched else (OUT_SLEW if poor else OUT_SLEW_GOOD)\n',
     replacement=b'    oslew = RING_SLEW if self.latched else OUT_SLEW_GOOD\n',
     test_nodes=(
@@ -497,7 +497,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-poor-pose-uses-fast-target-slew",
-    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    source_path='openpilot/selfdrive/controls/lib/roundabout_guide.py',
     original=b'    slew = RING_SLEW if self.latched else (TARGET_SLEW if poor else TARGET_SLEW_GOOD)\n',
     replacement=b'    slew = RING_SLEW if self.latched else TARGET_SLEW_GOOD\n',
     test_nodes=(
@@ -506,7 +506,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-inner-lane-on-poor-pose",
-    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    source_path='openpilot/selfdrive/controls/lib/roundabout_guide.py',
     original=b'      inner = r <= R and not (poor or bias_m > BIAS_UNRELIABLE_M)           # doubtful pose: never the inner lane\n',
     replacement=b'      inner = r <= R\n',
     test_nodes=(
@@ -515,7 +515,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-ring-state-not-logged",
-    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    source_path='openpilot/selfdrive/controls/lib/roundabout_guide.py',
     original=b'      cloudlog.error(f"roundabout_assist {e}")\n',
     replacement=b'      pass\n',
     test_nodes=(
@@ -524,7 +524,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-ring-state-logged-below-qlog-level",
-    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    source_path='openpilot/selfdrive/controls/lib/roundabout_guide.py',
     original=b'      cloudlog.error(f"roundabout_assist {e}")\n',
     replacement=b'      cloudlog.warning(f"roundabout_assist {e}")\n',
     test_nodes=(
@@ -533,7 +533,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-raw-model-summary-not-logged",
-    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    source_path='openpilot/selfdrive/controls/lib/roundabout_guide.py',
     original=b'      cloudlog.error("roundabout_raw " + raw_ring_summary(g, t, v_ego, model_k, out, model_v2, driver))\n',
     replacement=b'      pass\n',
     test_nodes=(
@@ -542,7 +542,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-raw-model-summary-logged-far-from-ring",
-    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    source_path='openpilot/selfdrive/controls/lib/roundabout_guide.py',
     original=b'    near = on and g.d_edge is not None and g.d_edge < RAW_LOG_EDGE_M and g.phase != DONE\n',
     replacement=b'    near = on\n',
     test_nodes=(
@@ -551,7 +551,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-ring-cap-ratio-1-5",
-    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    source_path='openpilot/selfdrive/controls/lib/roundabout_guide.py',
     original=b'RING_CAP_RATIO = 1.15 ',
     replacement=b'RING_CAP_RATIO = 1.5  ',
     test_nodes=(
@@ -561,7 +561,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-ring-a-lat-cap-3-0",
-    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    source_path='openpilot/selfdrive/controls/lib/roundabout_guide.py',
     original=b'RING_A_LAT_MAX = 2.2 ',
     replacement=b'RING_A_LAT_MAX = 3.0 ',
     test_nodes=(
@@ -570,7 +570,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-ring-slew-0-07",
-    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    source_path='openpilot/selfdrive/controls/lib/roundabout_guide.py',
     original=b'RING_SLEW = 0.035 ',
     replacement=b'RING_SLEW = 0.07  ',
     test_nodes=(
@@ -580,7 +580,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-ring-floor-removed",
-    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    source_path='openpilot/selfdrive/controls/lib/roundabout_guide.py',
     original=b'RING_FLOOR_RATIO = 0.85 ',
     replacement=b'RING_FLOOR_RATIO = 0.0  ',
     test_nodes=(
@@ -589,7 +589,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-ring-cap-not-lateral-limited",
-    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    source_path='openpilot/selfdrive/controls/lib/roundabout_guide.py',
     original=b'  return max(s_model, min(RING_CAP_RATIO * max(ref_k, s_model) + RING_CAP_FLOOR, RING_A_LAT_MAX / max(v * v, 1.0)))\n',
     replacement=b'  return max(s_model, RING_CAP_RATIO * max(ref_k, s_model) + RING_CAP_FLOOR)\n',
     test_nodes=(
@@ -598,7 +598,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-ring-cap-steers-against-the-model",
-    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    source_path='openpilot/selfdrive/controls/lib/roundabout_guide.py',
     original=b'    return s_model          # model not curving with the circulation: the assist never steers against it\n',
     replacement=b'    return 0.0\n',
     test_nodes=(
@@ -607,7 +607,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-ring-cap-skipped-on-poor-pose",
-    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    source_path='openpilot/selfdrive/controls/lib/roundabout_guide.py',
     original=b'      base = -sense * model_k if holding else ring_cap(self.k_ref, model_k, v, sense)\n',
     replacement=b'      base = -sense * model_k if holding else (1e9 if poor else ring_cap(self.k_ref, model_k, v, sense))\n',
     test_nodes=(
@@ -616,7 +616,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-ring-hard-clamp-removed",
-    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    source_path='openpilot/selfdrive/controls/lib/roundabout_guide.py',
     original=b'      out = -sense * min(-sense * (model_k + self.dk_out), cap)\n',
     replacement=b'      out = model_k + self.dk_out\n',
     test_nodes=(
@@ -626,7 +626,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-lane-circle-is-the-center-line",
-    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    source_path='openpilot/selfdrive/controls/lib/roundabout_guide.py',
     original=b'        self.r_lane = R - LANE_CIRCLE_FRAC * hw\n',
     replacement=b'        self.r_lane = R\n',
     test_nodes=(
@@ -635,7 +635,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-latched-confidence-weight-only",
-    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    source_path='openpilot/selfdrive/controls/lib/roundabout_guide.py',
     original=b'    w = self.phase_w if self.latched else W_MAX * conf * self.phase_w     # latched: the cap, not the confidence, bounds the assist\n',
     replacement=b'    w = W_MAX * conf * self.phase_w\n',
     test_nodes=(
@@ -644,7 +644,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-stalk-releases-wrong-side",
-    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    source_path='openpilot/selfdrive/controls/lib/roundabout_guide.py',
     original=b'    exit_dir = 2 if sense > 0.0 else 1                      # exit side: right on a CCW ring\n',
     replacement=b'    exit_dir = 1 if sense > 0.0 else 2\n',
     test_nodes=(
@@ -654,7 +654,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-stalk-never-releases",
-    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    source_path='openpilot/selfdrive/controls/lib/roundabout_guide.py',
     original=b'    if drv.stalk_held and drv.stalk_dir == exit_dir:\n',
     replacement=b'    if False:\n',
     test_nodes=(
@@ -664,7 +664,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-any-stalk-releases",
-    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    source_path='openpilot/selfdrive/controls/lib/roundabout_guide.py',
     original=b'    if drv.stalk_held and drv.stalk_dir == exit_dir:\n',
     replacement=b'    if drv.stalk_held:\n',
     test_nodes=(
@@ -673,7 +673,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-pull-wrong-direction",
-    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    source_path='openpilot/selfdrive/controls/lib/roundabout_guide.py',
     original=b'    self.pull_s = self.pull_s + dt if -sense * drv.torque >= PULL_TORQUE_NM else 0.0\n',
     replacement=b'    self.pull_s = self.pull_s + dt if sense * drv.torque >= PULL_TORQUE_NM else 0.0\n',
     test_nodes=(
@@ -683,7 +683,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-pull-never-releases",
-    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    source_path='openpilot/selfdrive/controls/lib/roundabout_guide.py',
     original=b'    if self.pull_s >= PULL_RELEASE_S:\n',
     replacement=b'    if False:\n',
     test_nodes=(
@@ -692,7 +692,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-override-never-releases",
-    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    source_path='openpilot/selfdrive/controls/lib/roundabout_guide.py',
     original=b'    if self.override_s >= OVERRIDE_S:\n',
     replacement=b'    if False:\n',
     test_nodes=(
@@ -701,7 +701,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-map-only-exit",
-    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    source_path='openpilot/selfdrive/controls/lib/roundabout_guide.py',
     original=b'    if v > V_MAX + 2.0:\n      return "speed"\n',
     replacement=b'    if self.travel > 60.0:\n      return "map_exit"\n',
     test_nodes=(
@@ -710,7 +710,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-driver-torque-does-not-win",
-    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    source_path='openpilot/selfdrive/controls/lib/roundabout_guide.py',
     original=b'    drv_active, self.drv_s = RH.driver_wins(drv.stalk_held, drv.pressed, drv.torque, sense, self.drv_s, dt)\n',
     replacement=b'    drv_active, self.drv_s = bool(drv.stalk_held or drv.pressed), 0.0\n',
     test_nodes=(
@@ -720,7 +720,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-held-stalk-keeps-the-assist",
-    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    source_path='openpilot/selfdrive/controls/lib/roundabout_guide.py',
     original=b'    if not lat_active or drv_active:\n',
     replacement=b'    if not lat_active:\n',
     test_nodes=(
@@ -729,7 +729,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-held-stalk-weight-not-zero",
-    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    source_path='openpilot/selfdrive/controls/lib/roundabout_guide.py',
     original=b'    if drv_active:\n      w = 0.0\n',
     replacement=b'    if False:\n      w = 0.0\n',
     test_nodes=(
@@ -738,7 +738,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-latched-param-not-written",
-    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    source_path='openpilot/selfdrive/controls/lib/roundabout_guide.py',
     original=b'      self.params.put_bool(PARAM_RING_LATCHED, latched)\n',
     replacement=b'      pass\n',
     test_nodes=(
@@ -748,7 +748,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-guide-off-while-latched-keeps-the-ring",
-    source_path='selfdrive/controls/lib/roundabout_guide.py',
+    source_path='openpilot/selfdrive/controls/lib/roundabout_guide.py',
     original=b'      if self.guide.latched:\n        self.guide.reset_state()      # toggled Off on the ring: nothing carried over\n',
     replacement=b'      if False:\n        self.guide.reset_state()\n',
     test_nodes=(
@@ -757,7 +757,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-desire-helper-tips-not-suppressed-on-ring",
-    source_path='selfdrive/controls/lib/desire_helper.py',
+    source_path='openpilot/selfdrive/controls/lib/desire_helper.py',
     original=b'    tip_event = self._tip_turn.tip_event and not self._suppress_next_tip and not self.suppress_tips\n',
     replacement=b'    tip_event = self._tip_turn.tip_event and not self._suppress_next_tip\n',
     test_nodes=(
@@ -766,7 +766,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-modeld-ring-latch-not-read",
-    source_path='selfdrive/modeld/modeld.py',
+    source_path='openpilot/selfdrive/modeld/modeld.py',
     original=b'        DH.suppress_tips = params.get_bool(PARAM_RING_LATCHED)',
     replacement=b'        DH.suppress_tips = False',
     test_nodes=(
@@ -775,7 +775,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-controlsd-driver-stalk-not-passed",
-    source_path='selfdrive/controls/controlsd.py',
+    source_path='openpilot/selfdrive/controls/controlsd.py',
     original=b"stalk_state=int(getattr(CS, 'turnSignalStalkState', 0) or 0)",
     replacement=b'stalk_state=0',
     test_nodes=(
@@ -784,7 +784,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-controlsd-driver-torque-not-passed",
-    source_path='selfdrive/controls/controlsd.py',
+    source_path='openpilot/selfdrive/controls/controlsd.py',
     original=b'steering_pressed=bool(CS.steeringPressed), steering_torque=float(CS.steeringTorque)',
     replacement=b'steering_pressed=False, steering_torque=0.0',
     test_nodes=(
@@ -793,7 +793,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-latched-param-persists-across-drives",
-    source_path='common/nap_params_keys.h',
+    source_path='openpilot/common/nap_params_keys.h',
     original=b'{"NAPRoundaboutLatched", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}}',
     replacement=b'{"NAPRoundaboutLatched", {PERSISTENT, BOOL}}',
     test_nodes=(
@@ -802,7 +802,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-ring-speed-back-to-15-8-mph",
-    source_path='selfdrive/mapd/roundabout.py',
+    source_path='openpilot/selfdrive/mapd/roundabout.py',
     original=b'RB_RING_SPEED_MPH = 18.0',
     replacement=b'RB_RING_SPEED_MPH = 15.8',
     test_nodes=(
@@ -1044,7 +1044,7 @@ MUTATIONS += (
   ),
   HistoricalMutation(
     name="rb-hold-decel-onset-back-to-200m",
-    source_path="selfdrive/mapd/roundabout.py",
+    source_path="openpilot/selfdrive/mapd/roundabout.py",
     original=b'RB_ONSET_MIN_M = 140.0\n',
     replacement=b'RB_ONSET_MIN_M = 200.0\n',
     test_nodes=(

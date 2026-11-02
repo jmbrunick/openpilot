@@ -15,7 +15,7 @@ from tesla_preap_mutation_common import (
 MUTATIONS_D = (
   HistoricalMutation(
     name="release-buffer-removed",
-    source_path="selfdrive/controls/lib/curve_follow.py",
+    source_path="openpilot/selfdrive/controls/lib/curve_follow.py",
     original=(
       b'float(d) - RELEASE_BEFORE_TIGHTEST_S * v - min_room'
     ),
@@ -28,7 +28,7 @@ MUTATIONS_D = (
   ),
   HistoricalMutation(
     name="spike-clip-removed",
-    source_path="selfdrive/controls/lib/curve_follow.py",
+    source_path="openpilot/selfdrive/controls/lib/curve_follow.py",
     original=(
       b'if nb and kc[i] > SPIKE_MIN_K and kc[i] > SPIKE_RATIO * max(nb):'
     ),
@@ -41,7 +41,7 @@ MUTATIONS_D = (
   ),
   HistoricalMutation(
     name="k-filter-opens-as-fast-as-it-tightens",
-    source_path="selfdrive/controls/lib/curve_follow.py",
+    source_path="openpilot/selfdrive/controls/lib/curve_follow.py",
     original=(
       b'if x > cur else K_DOWN_TAU_S'
     ),
@@ -54,7 +54,7 @@ MUTATIONS_D = (
   ),
   HistoricalMutation(
     name="k-filter-removed",
-    source_path="selfdrive/controls/lib/curve_follow.py",
+    source_path="openpilot/selfdrive/controls/lib/curve_follow.py",
     original=(
       b'self._kf[i] = cur + dt / (tau + dt) * (x - cur)'
     ),
@@ -67,7 +67,7 @@ MUTATIONS_D = (
   ),
   HistoricalMutation(
     name="snr-accumulates-unsigned-curvature",
-    source_path="selfdrive/controls/lib/curve_follow.py",
+    source_path="openpilot/selfdrive/controls/lib/curve_follow.py",
     original=(
       b'k_mid = 0.5 * (float(ks[i]) + float(ks[i - 1]))'
     ),
@@ -80,7 +80,7 @@ MUTATIONS_D = (
   ),
   HistoricalMutation(
     name="snr-gate-removed",
-    source_path="selfdrive/controls/lib/curve_follow.py",
+    source_path="openpilot/selfdrive/controls/lib/curve_follow.py",
     original=(
       b'w[i] = _smooth01((abs(y) / std - SNR_S0) / (SNR_S1 - SNR_S0))'
     ),
@@ -93,7 +93,7 @@ MUTATIONS_D = (
   ),
   HistoricalMutation(
     name="position-std-ignored",
-    source_path="selfdrive/controls/lib/curve_follow.py",
+    source_path="openpilot/selfdrive/controls/lib/curve_follow.py",
     original=(
       b'std = max(STD_FLOOR_M, float(y_std[i]))'
     ),
@@ -106,7 +106,7 @@ MUTATIONS_D = (
   ),
   HistoricalMutation(
     name="low-speed-gate-removed",
-    source_path="selfdrive/controls/lib/curve_follow.py",
+    source_path="openpilot/selfdrive/controls/lib/curve_follow.py",
     original=(
       b'gate = 1.0 - (slow if not blinker else 0.0)'
     ),
@@ -119,7 +119,7 @@ MUTATIONS_D = (
   ),
   HistoricalMutation(
     name="blinker-does-not-open-the-low-speed-gate",
-    source_path="selfdrive/controls/lib/curve_follow.py",
+    source_path="openpilot/selfdrive/controls/lib/curve_follow.py",
     original=(
       b'gate = 1.0 - (slow if not blinker else 0.0)'
     ),
@@ -132,7 +132,7 @@ MUTATIONS_D = (
   ),
   HistoricalMutation(
     name="low-speed-horizon-cut-removed",
-    source_path="selfdrive/controls/lib/curve_follow.py",
+    source_path="openpilot/selfdrive/controls/lib/curve_follow.py",
     original=(
       b'far_cut = slow * _smooth01((float(t) - LOW_HORIZON_S) / LOW_HORIZON_BAND_S)'
     ),
@@ -145,7 +145,7 @@ MUTATIONS_D = (
   ),
   HistoricalMutation(
     name="lane-change-does-not-fade-the-term",
-    source_path="selfdrive/controls/lib/curve_follow.py",
+    source_path="openpilot/selfdrive/controls/lib/curve_follow.py",
     original=(
       b'ctx_ok = not (lane_change or rb_active or float(frame_drop_pct) > FRAME_DROP_MAX_PCT)'
     ),
@@ -158,7 +158,7 @@ MUTATIONS_D = (
   ),
   HistoricalMutation(
     name="roundabout-funnel-does-not-fade-the-term",
-    source_path="selfdrive/controls/lib/curve_follow.py",
+    source_path="openpilot/selfdrive/controls/lib/curve_follow.py",
     original=(
       b'ctx_ok = not (lane_change or rb_active or float(frame_drop_pct) > FRAME_DROP_MAX_PCT)'
     ),
@@ -171,7 +171,7 @@ MUTATIONS_D = (
   ),
   HistoricalMutation(
     name="frame-drops-do-not-fade-the-term",
-    source_path="selfdrive/controls/lib/curve_follow.py",
+    source_path="openpilot/selfdrive/controls/lib/curve_follow.py",
     original=(
       b'ctx_ok = not (lane_change or rb_active or float(frame_drop_pct) > FRAME_DROP_MAX_PCT)'
     ),
@@ -184,7 +184,7 @@ MUTATIONS_D = (
   ),
   HistoricalMutation(
     name="confidence-steps-instead-of-ramping",
-    source_path="selfdrive/controls/lib/curve_follow.py",
+    source_path="openpilot/selfdrive/controls/lib/curve_follow.py",
     original=(
       b'self._conf = min(1.0, max(0.0, self._conf + min(1.0, rate * dt) * (target - self._conf)))'
     ),
@@ -197,7 +197,7 @@ MUTATIONS_D = (
   ),
   HistoricalMutation(
     name="brake-build-jerk-limit-removed",
-    source_path="selfdrive/controls/lib/curve_follow.py",
+    source_path="openpilot/selfdrive/controls/lib/curve_follow.py",
     original=(
       b'build = min(BUILD_MAX_MS3, base + BUILD_PROP_1_S * (-err)) * dt'
     ),
@@ -210,7 +210,7 @@ MUTATIONS_D = (
   ),
   HistoricalMutation(
     name="brake-release-rate-unbounded",
-    source_path="selfdrive/controls/lib/curve_follow.py",
+    source_path="openpilot/selfdrive/controls/lib/curve_follow.py",
     original=(
       b'release = min(RELEASE_MAX_MS3, rel_base + RELEASE_PROP_1_S * max(0.0, err)) * dt'
     ),
@@ -223,7 +223,7 @@ MUTATIONS_D = (
   ),
   HistoricalMutation(
     name="near-field-term-allowed-to-brake-hard",
-    source_path="selfdrive/controls/lib/curve_follow.py",
+    source_path="openpilot/selfdrive/controls/lib/curve_follow.py",
     original=(
       b'max(over, -NEAR_BRAKE_MAX_MS2)'
     ),
@@ -236,7 +236,7 @@ MUTATIONS_D = (
   ),
   HistoricalMutation(
     name="apex-detection-removed",
-    source_path="selfdrive/controls/lib/curve_follow.py",
+    source_path="openpilot/selfdrive/controls/lib/curve_follow.py",
     original=(
       b'self.passed = _smooth01((PEAK_RATIO0 - k_ahead / k_now) / PEAK_BAND)'
     ),
@@ -249,7 +249,7 @@ MUTATIONS_D = (
   ),
   HistoricalMutation(
     name="relief-removed",
-    source_path="selfdrive/controls/lib/curve_follow.py",
+    source_path="openpilot/selfdrive/controls/lib/curve_follow.py",
     original=(
       b'relief = r0 * (1.0 - _smooth01((v - v_env) / max(v_prof - v_env, 0.5)))'
     ),
@@ -262,7 +262,7 @@ MUTATIONS_D = (
   ),
   HistoricalMutation(
     name="decel-limit-removed",
-    source_path="selfdrive/controls/lib/curve_follow.py",
+    source_path="openpilot/selfdrive/controls/lib/curve_follow.py",
     original=(
       b'a_c = min(FREE_A_MS2, max(a_c, -decel_limit_ms2(v, a_c)))'
     ),
@@ -275,7 +275,7 @@ MUTATIONS_D = (
   ),
   HistoricalMutation(
     name="mode-param-unknown-value-not-shadow",
-    source_path="selfdrive/controls/lib/curve_follow.py",
+    source_path="openpilot/selfdrive/controls/lib/curve_follow.py",
     original=(
       b'return mode if mode in (MODE_OFF, MODE_SHADOW, MODE_ACTIVE) else DEFAULT_MODE'
     ),
@@ -288,7 +288,7 @@ MUTATIONS_D = (
   ),
   HistoricalMutation(
     name="mode-param-default-is-active",
-    source_path="selfdrive/controls/lib/curve_follow.py",
+    source_path="openpilot/selfdrive/controls/lib/curve_follow.py",
     original=(
       b'DEFAULT_MODE = MODE_SHADOW'
     ),
@@ -301,7 +301,7 @@ MUTATIONS_D = (
   ),
   HistoricalMutation(
     name="shadow-overwrites-the-preview",
-    source_path="selfdrive/controls/lib/longitudinal_planner.py",
+    source_path="openpilot/selfdrive/controls/lib/longitudinal_planner.py",
     original=(
       b'if self._cf_mode == MODE_ACTIVE:\n' +
       b'        self.curve_preview_a = a_cf'
@@ -316,7 +316,7 @@ MUTATIONS_D = (
   ),
   HistoricalMutation(
     name="reactive-cap-skipped-when-untrusted",
-    source_path="selfdrive/controls/lib/longitudinal_planner.py",
+    source_path="openpilot/selfdrive/controls/lib/longitudinal_planner.py",
     original=(
       b'cf_owns_curve = self._cf_mode == MODE_ACTIVE and self._cf_trusted and not self._cf_faulted'
     ),
@@ -329,7 +329,7 @@ MUTATIONS_D = (
   ),
   HistoricalMutation(
     name="reactive-cap-skipped-in-shadow",
-    source_path="selfdrive/controls/lib/longitudinal_planner.py",
+    source_path="openpilot/selfdrive/controls/lib/longitudinal_planner.py",
     original=(
       b'cf_owns_curve = self._cf_mode == MODE_ACTIVE and self._cf_trusted and not self._cf_faulted'
     ),
@@ -342,7 +342,7 @@ MUTATIONS_D = (
   ),
   HistoricalMutation(
     name="fault-does-not-latch",
-    source_path="selfdrive/controls/lib/longitudinal_planner.py",
+    source_path="openpilot/selfdrive/controls/lib/longitudinal_planner.py",
     original=(
       b'      self._cf_faulted = True\n' +
       b'      self._cf_trusted = False'
@@ -356,7 +356,7 @@ MUTATIONS_D = (
   ),
   HistoricalMutation(
     name="log-failure-reaches-the-command",
-    source_path="selfdrive/controls/lib/longitudinal_planner.py",
+    source_path="openpilot/selfdrive/controls/lib/longitudinal_planner.py",
     original=(
       b'    except Exception:\n' +
       b'      pass  # logging must never touch the command'
@@ -371,7 +371,7 @@ MUTATIONS_D = (
   ),
   HistoricalMutation(
     name="shadow-retires-the-max-cap",
-    source_path="selfdrive/car/card.py",
+    source_path="openpilot/selfdrive/car/card.py",
     original=(
       b'curve_follow_on = getattr(self, "_curve_follow_mode", MODE_SHADOW) == MODE_ACTIVE'
     ),
@@ -384,7 +384,7 @@ MUTATIONS_D = (
   ),
   HistoricalMutation(
     name="active-keeps-the-max-cap",
-    source_path="selfdrive/car/card.py",
+    source_path="openpilot/selfdrive/car/card.py",
     original=(
       b'curve_follow_on = getattr(self, "_curve_follow_mode", MODE_SHADOW) == MODE_ACTIVE'
     ),

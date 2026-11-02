@@ -13,7 +13,7 @@ from tesla_preap_mutation_common import (
 MUTATIONS_C = (
   HistoricalMutation(
     name="road-class-filter-removed",
-    source_path="selfdrive/mapd/osm_db.py",
+    source_path="openpilot/selfdrive/mapd/osm_db.py",
     original=(
       b"      highway = row[\"highway\"] or \"\"\n" +
       b"      if _is_non_road_highway(highway):\n" +
@@ -27,7 +27,7 @@ MUTATIONS_C = (
   ),
   HistoricalMutation(
     name="road-class-filter-missing-from-next-limit",
-    source_path="selfdrive/mapd/osm_db.py",
+    source_path="openpilot/selfdrive/mapd/osm_db.py",
     original=b"      if _is_non_road_highway(highway):\n        continue\n",
     replacement=b"      if along_route is None and _is_non_road_highway(highway):\n        continue\n",
     test_nodes=(
@@ -36,7 +36,7 @@ MUTATIONS_C = (
   ),
   HistoricalMutation(
     name="road-class-filter-moved-into-candidates",
-    source_path="selfdrive/mapd/osm_db.py",
+    source_path="openpilot/selfdrive/mapd/osm_db.py",
     original=b"    return list(self._con.execute(q, ids))\n\n  def _best_match(",
     replacement=(
       b"    return [r for r in self._con.execute(q, ids) if not _is_non_road_highway(r[\"highway\"])]\n" +
