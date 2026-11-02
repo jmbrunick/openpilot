@@ -14,6 +14,10 @@ import unittest
 import warnings
 
 ROOT = Path(__file__).resolve().parents[1]
+# NAP: running this file puts tools/ first on sys.path, so `scripts` resolved to
+# tools/scripts and hid the repo-root scripts/nap package. Use the repo root instead.
+if sys.path and Path(sys.path[0] or ".").resolve() == Path(__file__).resolve().parent:
+  sys.path[0] = str(ROOT)
 IGNORED = (
   ROOT / "openpilot/selfdrive/test/process_replay/test_processes.py",
   ROOT / "openpilot/tools/sim",

@@ -103,6 +103,21 @@ packages = [
 [tool.hatch.metadata]
 allow-direct-references = true
 
+[tool.pytest.ini_options]
+# NAP: pytest config for NAP's pytest-style tests (upstream 0.11.2 dropped it for tools/test_runner.py)
+minversion = "6.0"
+addopts = "--strict-markers --durations=10 --dist=loadgroup"
+python_files = "test_*.py"
+testpaths = ["openpilot"]
+markers = [
+  "slow: tests that take awhile to run and can be skipped with -m 'not slow'",
+  "tici: tests that are only meant to run on the C3/C3X",
+  "skip_tici_setup: mark test to skip tici setup fixture",
+  "nocapture: don't capture test output",
+  "shared_download_cache: share download cache between tests",
+  "xdist_group_class_property: group tests by a property of the class that contains them",
+]
+
 [tool.codespell]
 quiet-level = 3
 # if you've got a short variable name that's getting flagged, add it here

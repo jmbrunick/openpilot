@@ -246,7 +246,11 @@ jobs:
       timeout-minutes: ${{ contains(runner.name, 'nsc') && 2 || 20 }}
       env:
         RAYLIB_BACKEND: headless
-      run: tools/op.sh test  # upstream v0.11.2 test runner (no pytest config at repo root anymore)
+      # NAP: pytest (not upstream's unittest-only tools/op.sh test) so NAP's
+      # pytest-style tests are collected; config in pyproject + openpilot/conftest.py
+      run: |
+        $PYTEST --collect-only -m 'not slow' -qq
+        MAX_EXAMPLES=1 $PYTEST -m 'not slow'
 
   process_replay:
     name: process replay (${{ matrix.shard }})
