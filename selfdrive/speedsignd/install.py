@@ -33,6 +33,9 @@ from openpilot.selfdrive.speedsignd.weights_manifest import (
   RELEASE_TAG,
   USER_AGENT,
   V3_BYTES,
+  V4_BYTES,
+  V4_RELEASE_TAG,
+  V4_SHA256,
   V3_RELEASE_TAG,
   V3_SHA256,
   release_asset_url,
@@ -165,6 +168,7 @@ def reader_weight_candidates() -> tuple[tuple[str, str, int], ...]:
   """Newest reader first. Each entry is (release tag, sha256, byte size)."""
   return (
     (RELEASE_TAG, ASSET_SHA256, ASSET_BYTES),
+    (V4_RELEASE_TAG, V4_SHA256, V4_BYTES),
     (V3_RELEASE_TAG, V3_SHA256, V3_BYTES),
     (FALLBACK_RELEASE_TAG, FALLBACK_SHA256, FALLBACK_BYTES),
   )
