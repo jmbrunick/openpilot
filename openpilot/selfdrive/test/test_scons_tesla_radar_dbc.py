@@ -1,7 +1,7 @@
 import subprocess
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[3]
 DBC_DIR = REPO / "opendbc_repo" / "opendbc" / "dbc"
 TESLA_RADAR_DBCS = (
   DBC_DIR / "tesla_radar_bosch_generated.dbc",
