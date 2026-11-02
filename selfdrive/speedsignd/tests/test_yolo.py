@@ -67,9 +67,9 @@ def test_class_to_mph_reads_sl_and_speed_limit():
 
 
 def test_yolo_class_list_is_v4_speed_sign():
-  assert RELEASE_TAG == "speed-sign-onnx-v4"
-  assert ASSET_SHA256 == "3774f74e260c150a08ab7028b1dd8eaf0d58377ae7695dfd4a8f10e3c85627a9"
-  assert ASSET_BYTES == 12658972
+  assert RELEASE_TAG == "speed-sign-onnx-v8"
+  assert ASSET_SHA256 == "a75dd8d291e00f7364c835138dc3c87c439947541c90796e82d36df81f05ef25"
+  assert ASSET_BYTES == 12658971
   assert YOLO_OUTPUT_LAYOUT == (1, 17, 2100)
   assert YOLO_MIN_CONF == 0.40
   names = list(YOLO_CLASS_NAMES)

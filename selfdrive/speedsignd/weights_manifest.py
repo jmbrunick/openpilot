@@ -7,19 +7,19 @@ Weights stay off git. Clone/flash stays small;
 Source model: YOLOv8n, imgsz 320, opset 12. Trained on 640×640 native
 crops resized to 320 (scale 0.5), which matches the 628×320 road window
 letterboxed at 320/628 ≈ 0.51. Output `[1, 17, 2100]` (xywh + 13 classes).
-v4 (speed-sign-onnx-v4) is the current reader. v3 and v2 share the
-same 13-class order and output shape, so an already-installed file still
-loads, and Install weights falls back v4 → v3 → v2 if a newer asset
-cannot be downloaded. Do not commit the ONNX.
-Release: speed-sign-onnx-v4 / speed_sign.onnx.
+v8 (speed-sign-onnx-v8, drive-test prerelease) is the current reader.
+v4.1, v3 and v2 share the same 13-class order and output shape, so an
+already-installed file still loads, and Install weights falls back
+v8 → v4 → v3 → v2 if a newer asset cannot be downloaded. Do not commit the ONNX.
+Release: speed-sign-onnx-v8 / speed_sign.onnx.
 """
 from __future__ import annotations
 
 # Host + tag for the pre-exported ONNX. Bump when republishing.
 GITHUB_REPO = "jmbrunick/openpilot"
-RELEASE_TAG = "speed-sign-onnx-v4"
+RELEASE_TAG = "speed-sign-onnx-v8"
 ASSET_NAME = "speed_sign.onnx"
-RELEASE_REVISION = "4"
+RELEASE_REVISION = "8"
 
 # HuggingFace checkpoint used by scripts.nap.export_speed_sign_onnx.
 # The shipped detector is the v2 Release asset, not a fresh export of this pt.
@@ -27,10 +27,15 @@ HF_REPO = "cvtechniques/JC-Traffic-Sign-Detection"
 HF_PT_PATH = "trainv8/weights/best.pt"
 HF_PT_SHA256 = "74089754755d904d724e07ec9d74488427decc11c1c8af323e2b4524664575ae"
 
-# SHA-256 of speed-sign-onnx-v4 / speed_sign.onnx (opset 12, 320²).
-# Same 13 classes and [1, 17, 2100] output as v3.
-ASSET_SHA256 = "3774f74e260c150a08ab7028b1dd8eaf0d58377ae7695dfd4a8f10e3c85627a9"
-ASSET_BYTES = 12658972
+# SHA-256 of speed-sign-onnx-v8 / speed_sign.onnx (opset 12, 320²).
+# Same 13 classes and [1, 17, 2100] output as v4.1.
+ASSET_SHA256 = "a75dd8d291e00f7364c835138dc3c87c439947541c90796e82d36df81f05ef25"
+ASSET_BYTES = 12658971
+
+# Previous reader v4.1 (speed-sign-onnx-v4). First fallback.
+V4_RELEASE_TAG = "speed-sign-onnx-v4"
+V4_SHA256 = "3774f74e260c150a08ab7028b1dd8eaf0d58377ae7695dfd4a8f10e3c85627a9"
+V4_BYTES = 12658972
 
 # Older readers, newest first. Same class map, so a file already on /data
 # still loads. Install weights tries v4, then these, and replaces the
@@ -43,7 +48,7 @@ V3_BYTES = 12658971
 FALLBACK_RELEASE_TAG = "speed-sign-onnx-v2"
 FALLBACK_SHA256 = "1131200b7fe2d400596e09d7680fc3a26a08dcd8952acfdf261170bdb22d3d28"
 FALLBACK_BYTES = 12658953
-COMPATIBLE_SHA256 = (ASSET_SHA256, V3_SHA256, FALLBACK_SHA256)
+COMPATIBLE_SHA256 = (ASSET_SHA256, V4_SHA256, V3_SHA256, FALLBACK_SHA256)
 
 # CPU onnxruntime for the stock 3X. The image has neither onnxruntime nor
 # cv2.dnn (route 00000180: onnxruntime-absent(ModuleNotFoundError),
