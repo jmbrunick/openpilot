@@ -41,6 +41,8 @@ jobs:
         timeout_minutes: 10
         max_attempts: 3
         command: ./tools/op.sh setup
+    - name: Add venv to PATH
+      run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
     - name: Build focused test dependencies
       run: scons -j$(nproc)
     - name: Run focused longitudinal tests
@@ -141,6 +143,8 @@ jobs:
       timeout-minutes: 1
       run: TARGET_DIR=$STRIPPED_DIR tools/release/build_stripped.sh
     - run: ./tools/op.sh setup
+    - name: Add venv to PATH
+      run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
     - name: Install video encoding deps
       run: sudo apt-get install -y libva-dev libva-drm2 libdrm-dev
     - name: Build openpilot and run checks
@@ -168,6 +172,8 @@ jobs:
         FILTERED=$(echo "$PATH" | tr ':' '\n' | grep -v '/opt/homebrew' | tr '\n' ':')
         echo "PATH=${FILTERED}/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" >> $GITHUB_ENV
     - run: ./tools/op.sh setup
+    - name: Add venv to PATH
+      run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
     - name: Building openpilot
       run: scons
 
@@ -184,6 +190,8 @@ jobs:
       with:
         submodules: true
     - run: ./tools/op.sh setup
+    - name: Add venv to PATH
+      run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
     - name: Static analysis
       timeout-minutes: 1
       run: scripts/lint/lint.sh
@@ -201,6 +209,8 @@ jobs:
       with:
         submodules: true
     - run: ./tools/op.sh setup
+    - name: Add venv to PATH
+      run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
     - name: Install extra deps
       run: |
         sudo apt-get install -y libva-dev libva-drm2 libdrm-dev
@@ -254,6 +264,8 @@ jobs:
         timeout_minutes: 10
         max_attempts: 3
         command: ./tools/op.sh setup
+    - name: Add venv to PATH
+      run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
     - name: Install video encoding deps
       run: sudo apt-get install -y libva-dev libva-drm2 libdrm-dev
     - name: Build openpilot
@@ -348,6 +360,8 @@ jobs:
       with:
         submodules: true
     - run: ./tools/op.sh setup
+    - name: Add venv to PATH
+      run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
     - name: Build openpilot
       run: scons -j$(nproc)
     - name: Driving test
@@ -368,6 +382,8 @@ jobs:
         with:
           submodules: true
       - run: ./tools/op.sh setup
+      - name: Add venv to PATH
+        run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
       - name: Install video encoding deps
         run: sudo apt-get install -y libva-dev libva-drm2 libdrm-dev
       - name: Build openpilot
