@@ -246,10 +246,7 @@ jobs:
       timeout-minutes: ${{ contains(runner.name, 'nsc') && 2 || 20 }}
       env:
         RAYLIB_BACKEND: headless
-      run: |
-        # Pre-compile Python bytecode so each pytest worker doesn't need to
-        $PYTEST --collect-only -m 'not slow' -qq
-        MAX_EXAMPLES=1 $PYTEST -m 'not slow'
+      run: tools/op.sh test  # upstream v0.11.2 test runner (no pytest config at repo root anymore)
 
   process_replay:
     name: process replay (${{ matrix.shard }})
