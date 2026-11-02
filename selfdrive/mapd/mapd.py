@@ -22,6 +22,7 @@ from openpilot.selfdrive.mapd.gps_fix import (
 from openpilot.selfdrive.mapd.map_speed_policy import keep_rural_default_ms, map_source_for
 from openpilot.selfdrive.mapd.osm_db import OsmSpeedLimitDB
 from openpilot.selfdrive.mapd.speed_overrides import CLEAR_PARAM as SIGN_CLEAR_PARAM, PARAM as SIGN_CONFIRMED_PARAM, SpeedOverrides, effective_next
+from openpilot.selfdrive.mapd.fresh_yes import FreshYes
 from openpilot.selfdrive.mapd.roundabout_map import PARAM_RING, RingCache, roundabout_comfort_speed_ms
 from openpilot.selfdrive.mapd.roundabout_status import RingDataWatch, map_msg_valid
 from openpilot.selfdrive.mapd.tesla_limit import PARAM_ENABLE as TESLA_PARAM, MapdTeslaHook
@@ -83,6 +84,7 @@ def main():
   last_path = db.path
 
   overrides = SpeedOverrides()
+  fresh_yes = FreshYes()   # Nov 1: a fresh Yes beats an older section once past its sign
   last_legacy_log = None
   ring_cache = RingCache()
   ring_watch = RingDataWatch()
@@ -147,6 +149,7 @@ def main():
         if added is not None and str(added.get("source", "")).startswith("sign_auto"):
           auto_confirm_seq += 1
         if added is not None:
+          fresh_yes.start(int(added["mph"]), now, added.get("lat"), added.get("lon"), added.get("heading"))
           cloudlog.info("mapd: sign override way=%s heading=%s mph=%s", added["way_id"], added["heading"], added["mph"])
       except Exception:
         cloudlog.exception("mapd: sign override failed")
@@ -157,6 +160,7 @@ def main():
     if clear_req:
       try:
         params.remove(SIGN_CLEAR_PARAM)
+        fresh_yes.clear()
         gone = (overrides.clear(int(match.way_id), bearing, lat, lon, match.coords or db.way_coords(int(match.way_id)))
                 if match is not None else [])
         cloudlog.warning("mapd: sign override clear way=%s bearing=%s removed=%s",
@@ -211,6 +215,9 @@ def main():
       # Raw OSM (tagged or road-type default), never the sign override.
       osm_raw_mph = int(round(lim_ms * 2.23694)) if lim_ms > 0 else 0
       d.osmRawMph = osm_raw_mph
+      yes_ms = fresh_yes.current(now, lat if gps_ok else None, lon if gps_ok else None)
+      if yes_ms is not None and (sign_ms is None or abs(float(sign_ms) - yes_ms) > 0.3):
+        sign_ms = yes_ms     # fresh Yes, car past its sign: beats an older section still covering here
       d.speedLimit = float(sign_ms if sign_ms is not None else lim_ms)
       d.speedLimitValid = True
       d.source = map_source_for(est, sign=sign_ms is not None)
