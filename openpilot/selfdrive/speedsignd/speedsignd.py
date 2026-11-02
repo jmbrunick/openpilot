@@ -1,0 +1,2388 @@
+#!/usr/bin/env python3
+"""On-drive MUTCD speed-sign logger (log-only).
+
+Reads the ROAD camera + GNSS, appends JSONL under /data, and publishes
+liveSpeedSignNAP for the on-road HUD. Does not write sqlite, does not change
+vCruise / HUD MAX, and does not talk to osm.org.
+
+Stock modelV2 has no speedSign head — this is a separate process, default off.
+
+Safety: Logger On starts the process + HUD. Detect keeps running while
+openpilot is engaged. Inference is CPU only (onnxruntime
+CPUExecutionProvider, else cv2.dnn on the CPU target, else tinygrad
+DEV=CPU / CLANG). It must not open the QCOM GPU modeld uses.
+onnxruntime has no compile step, so a new weights sha may read as soon
+as the file loads. tinygrad's first realize still compiles only while
+known-disengaged and is cached per weights sha; a timeout opens that
+gate (one swaglog warning) so the reader cannot stay dark for a whole
+drive. One warm-up pass runs at startup while disengaged and once after
+Install Weights. It is not an extra infer while engaged. One ONNX
+thread, SCHED_IDLE (else nice 19), pinned to little
+core 2 — not core 0 (UI), 1 (sensord), 3 (pandad/encoderd), 4 (controlsd),
+5 (plannerd/radard), 6 (camerad), or 7 (modeld). Reader duty stays at most
+25% of that core: after each sharp read the reader idles at least 3× the
+read. The strip proposer is extra, on the same core, at its own cadence.
+modelV2 frame drops add more rest. A real modelV2 frame skip, or
+modelExecutionTime above 50 ms, pauses at least 10 s.
+A 20 Hz SubMaster poll of 20 Hz modelV2 is not that skip. The reader
+duty stays 25% of core 2. The strip proposer is outside that budget
+(it is already ~22% at 2 Hz) and pauses with modeld lag, not with the
+reader's cpu-budget rest. HUD lights on two agreeing reads, or one
+read at SOLO_CONF; a new track at HOLD_OVERRIDE_CONF can replace a
+held plate. JSONL stays a
+short line, skipped while engaged if disk stalls. SubMaster is polled at
+20 Hz. Unknown cereal after a short startup allows throttled detect, but
+not the compile. Not gated on park / Force Offroad. Detect copies one
+right-side 628×320 ROAD window (x 1300–1928, y 520–840) and letterboxes
+it to YOLO_IMGSZ. 4 Hz YOLO on a 3X starved modeld; the default stays 1 Hz.
+"""
+from __future__ import annotations
+
+import math
+import os
+
+# Before numpy / tinygrad / OpenBLAS import. One compute thread.
+# Package __init__ sets the same keys even earlier. Manager forks after
+# numpy is already loaded, so main() also calls limit_infer_threads().
+for _thread_key in (
+  "OMP_NUM_THREADS",
+  "OPENBLAS_NUM_THREADS",
+  "MKL_NUM_THREADS",
+  "NUMEXPR_NUM_THREADS",
+  "VECLIB_MAXIMUM_THREADS",
+  "BLIS_NUM_THREADS",
+  "OPENCV_FOR_THREADS_NUM",
+  "GOTO_NUM_THREADS",
+  "TINYGRAD_NUM_THREADS",
+  "KMP_NUM_THREADS",
+):
+  os.environ[_thread_key] = "1"
+os.environ["OMP_DYNAMIC"] = "FALSE"
+os.environ["MKL_DYNAMIC"] = "FALSE"
+os.environ["OMP_WAIT_POLICY"] = "PASSIVE"
+os.environ["BEAM"] = "0"
+os.environ["NOOPT"] = "0"
+os.environ["CPU_COUNT"] = "1"
+os.environ["OPENCV_OPENCL_RUNTIME"] = "disabled"
+os.environ["OPENCV_DNN_OPENCL"] = "0"
+
+import threading
+import time
+from dataclasses import dataclass, replace
+from typing import Any
+
+from openpilot.selfdrive.speedsignd.debounce import SignDebounce
+from openpilot.selfdrive.speedsignd.hud import LiveSignHold, apply_live_sign, frame_reads
+from openpilot.selfdrive.speedsignd.jsonl import JsonlLogger, make_record, record_line
+from openpilot.selfdrive.speedsignd.detect import (
+  CAP_MS_DEFAULT,
+  CAP_MS_ENV,
+  THREADS_DEFAULT,
+  THREADS_ENV,
+  CompileGate,
+  SpeedSignDetector,
+  assert_cpu_backend,
+  backend_needs_compile,
+  describe_infer_runtimes,
+  limit_infer_threads,
+  ocr_tight_y,
+  parse_infer_cap_ms,
+  parse_infer_threads,
+  reader_session_warm,
+)
+from openpilot.selfdrive.speedsignd import others as other_signs_mod
+from openpilot.selfdrive.speedsignd import strip_geom
+from openpilot.selfdrive.speedsignd import sign_map
+from openpilot.selfdrive.speedsignd import confirm
+from openpilot.selfdrive.speedsignd.auto_confirm import AutoConfirm
+from openpilot.selfdrive.speedsignd.nv12 import copy_nv12_detect_crop, copy_nv12_rect, subcrop_nv12
+from openpilot.selfdrive.speedsignd.paths import (
+  OTHER_SIGNS_PARAM, PARAM_KEY, default_log_path, default_onnx_path, default_other_signs_path, default_proposer_path,
+)
+from openpilot.selfdrive.speedsignd import two_stage
+from openpilot.selfdrive.speedsignd.detect_types import SpeedSign
+from openpilot.selfdrive.speedsignd.yolo import REFINE_OVERRIDE_CONF, SIGN_LIKE_CONF
+
+# Safe default. 4 Hz YOLOv8s tinygrad on ROAD frames saturates a 3X CPU core
+# and Ratekeeper catch-up never sleeps. Override: env NAP_SPEED_SIGN_HZ.
+SPEEDSIGND_HZ = 1.0
+HZ_ENV = "NAP_SPEED_SIGN_HZ"
+HZ_MIN = 0.2
+HZ_MAX = 4.0
+# Poll selfdriveState faster than detect. 100 Hz service + 1 Hz update makes
+# SubMaster.alive flap (timeout is 10/freq = 100 ms) and stuck the WAIT plate.
+SM_HZ = 20.0
+# modelV2 is published at 20 Hz. SubMaster keeps only the latest message.
+MODEL_HZ = 20.0
+# After this, unread cereal allows throttled detect instead of forever-WAIT.
+UNKNOWN_GRACE_S = 2.0
+# Historical tinygrad budget. A real 3X infer is several seconds, so this
+# must not insert a second wait — that was the ~2× infer gap. Pressure
+# backoff (below) is the CPU safety valve.
+INFER_BUDGET_MS = 100.0
+INFER_LOG_PERIOD_S = 15.0
+# comma 3X. Host pressure uses os.cpu_count() when the device reports it.
+NCPU_DEFAULT = 8
+# procs_running above ncpu + this means the run queue is backed up.
+CPU_OVERSUBSCRIBE_EXTRA = 2
+# procs_blocked this high is the disk-stall shape that froze hardwared.
+DISK_BLOCKED_MIN = 4
+# One JSONL observation is a handful of numbers. Refuse anything larger.
+JSONL_LINE_MAX = 240
+# selfdriveState alert text. No extra subscriber: modeld lag and
+# communication-issue are already published on the socket we poll.
+LAG_ALERT_MARKERS = (
+  ("driving model lagging", "model-lag"),
+  ("modeldlagging", "model-lag"),
+  ("communication issue", "controls-lag"),
+  ("commissue", "controls-lag"),
+  ("high cpu", "cpu-load"),
+  ("highcpuusage", "cpu-load"),
+)
+# 3X little cores are 0–3. Core 2 is the only one without a dedicated
+# realtime owner: UI is CTRL_HIGH on 0, sensord is on 1, pandad (54) and
+# encoderd (52) share 3. Big cores: controlsd/card/selfdrived on 4,
+# plannerd/radard on 5, camerad on 6, modeld FIFO 54 on 7. locationd's
+# family is priority 5 across 0–3 and preempts SCHED_IDLE.
+SPEEDSIGND_NICE = 19
+SPEEDSIGND_CORE = 2
+SPEEDSIGND_CORES = (SPEEDSIGND_CORE,)
+# Idle at least 3× infer between *reads* → reader duty = infer / (4× infer) = 25%.
+# The strip proposer is not part of this budget. At 2 Hz it is already ~22%
+# of core 2, so charging it here turned every ~0.8 s read into a multi-second
+# cpu-budget blackout. Proposer cadence is PROPOSER_HZ / PROPOSER_BURST_HZ.
+IDLE_FACTOR = 3.0
+CPU_BUDGET = 1.0 / (1.0 + IDLE_FACTOR)
+CPU_BUDGET_SLACK = 0.03
+# Duty is averaged over this window, reader time only. A 2–3 frame burst may
+# run back-to-back; the idle after it brings the trailing average back to 25%.
+DUTY_WINDOW_S = 10.0
+# modeld-lag reasons. These pause the proposer and the reader. cpu-budget
+# and cpu-load pause the reader only.
+MODEL_PAUSE_REASONS = frozenset({"model-drop", "model-exec", "model-skip", "model-lag"})
+# Extra YOLO reads after the frame that scored ≥ SIGN_LIKE_CONF. Two extra
+# reads is three frames total, still on the tile that saw the sign.
+BURST_EXTRA = 2
+# modelV2.frameDropPerc. The lag alert fires near 20; back off earlier.
+MODEL_DROP_PERC = 5.0
+# modelV2.modelExecutionTime is seconds (perf_counter in modeld). 22–26 ms
+# healthy is ~0.024. Above 50 ms means something else is on modeld's GPU
+# or the model itself stalled. Pause at least 10 s. Same for any frameId skip.
+MODEL_EXEC_LIMIT_S = 0.050
+MODEL_GUARD_PAUSE_S = 10.0
+# Route 0000017f: a 177 s infer times IDLE_FACTOR made extra_ms 531828.
+# model-skip rest is capped so one slow compile cannot hide the plate for 9 min.
+MODEL_SKIP_BACKOFF_CAP_S = 60.0
+SECOND_LOOK_FRAMES = 2
+SECOND_LOOK_DEADLINE_S = 0.30
+VISION_TIMEOUT_MS = 200
+SERVICE_NAME = "liveSpeedSignNAP"
+# Retry ONNX after Settings → Install weights without requiring a reboot.
+ONNX_RETRY_S = 15.0
+
+# Matches selfdrive.selfdrived.state.ACTIVE_STATES (actuators on).
+CONTROLLING_STATES = frozenset({"enabled", "softDisabling", "overriding"})
+STATE_BY_RAW = {
+  0: "disabled",
+  1: "preEnabled",
+  2: "enabled",
+  3: "softDisabling",
+  4: "overriding",
+}
+
+
+def should_run_speed_sign_log(started: bool, params: Any, _cp: Any = None) -> bool:
+  """Manager gate. Default-off: unset/false param never starts the process."""
+  try:
+    enabled = params.get_bool(PARAM_KEY)
+  except Exception:
+    enabled = False
+  return bool(started) and bool(enabled)
+
+
+@dataclass(frozen=True)
+class EngagementSample:
+  """Last read of selfdriveState for the ONNX / WAIT gate."""
+  known: bool
+  controlling: bool
+  allow_detect: bool
+  detect_paused: bool  # HUD WAIT. Engaged driving does not set this.
+  enabled: bool | None = None
+  active: bool | None = None
+  state: str | None = None
+  alive: bool | None = None
+  valid: bool | None = None
+  recv_frame: int = 0
+  unknown_after_grace: bool = False
+
+
+def selfdrive_state_name(state: Any) -> str | None:
+  """Normalize cereal OpenpilotState to a short name."""
+  if state is None:
+    return None
+  if isinstance(state, str):
+    return state.split(".")[-1]
+  if isinstance(state, int):
+    return STATE_BY_RAW.get(state)
+  raw = getattr(state, "raw", None)
+  if raw is not None:
+    try:
+      mapped = STATE_BY_RAW.get(int(raw))
+      if mapped is not None:
+        return mapped
+    except (TypeError, ValueError):
+      pass
+  try:
+    return str(state).split(".")[-1]
+  except Exception:
+    return None
+
+
+def op_controlling(*, active: bool | None = None, state: Any = None,
+                   enabled: bool | None = None) -> bool:
+  """True only when openpilot is commanding actuators.
+
+  Prefer `active`. `state` in enabled / softDisabling / overriding also
+  counts. `disabled` and `preEnabled` do not. Unknown fields are not
+  controlling — the caller applies a short startup grace instead of
+  treating cereal silence as forever-WAIT.
+  """
+  name = selfdrive_state_name(state)
+  if name == "disabled" or name == "preEnabled":
+    return False
+  if name in CONTROLLING_STATES:
+    return True
+  if active is True:
+    return True
+  if active is False:
+    return False
+  if enabled is False:
+    return False
+  if enabled is True:
+    return True
+  return False
+
+
+def should_run_onnx_detect(controlling: bool) -> bool:
+  """ONNX runs while engaged. `controlling` is logged, not a pause."""
+  del controlling
+  return True
+
+
+def _sm_flag(sm: Any, flag_name: str, service: str) -> bool | None:
+  try:
+    flags = getattr(sm, flag_name, None)
+    if flags is None or service not in flags:
+      return None
+    return bool(flags[service])
+  except Exception:
+    return None
+
+
+def _sm_seen(sm: Any, service: str) -> bool:
+  """True after a real selfdriveState payload. Do not use recv_frame <= 0.
+
+  SubMaster starts recv_frame at 0 and writes frame 0 on the first receive.
+  The old `recv_frame <= 0` check treated that first (and only) packet as
+  unseen, then a 1 Hz loop left alive stale → permanent WAIT.
+  """
+  try:
+    seen = getattr(sm, "seen", None)
+    if seen is not None and service in seen:
+      return bool(seen[service])
+  except Exception:
+    pass
+  try:
+    return int(sm.recv_frame.get(service, -1)) > 0
+  except Exception:
+    return False
+
+
+def engagement_from_sm(
+  sm: Any,
+  *,
+  now: float | None = None,
+  started_at: float = 0.0,
+  grace_s: float = UNKNOWN_GRACE_S,
+) -> EngagementSample:
+  """Read engagement without treating alive/valid flaps as 'OP is driving'.
+
+  Last parsed active/state/enabled wins even if SubMaster marks the socket
+  dead — 1 Hz poll of a 100 Hz service makes alive timeout (100 ms) fire
+  every tick. Unknown cereal: no YOLO for `grace_s`, then throttled detect.
+  Engaged (controlling) still allows detect. detect_paused stays false so
+  the HUD shows mph instead of WAIT.
+  """
+  service = "selfdriveState"
+  try:
+    recv_frame = int(sm.recv_frame.get(service, 0) or 0)
+  except Exception:
+    recv_frame = 0
+  alive = _sm_flag(sm, "alive", service)
+  valid = _sm_flag(sm, "valid", service)
+  seen = _sm_seen(sm, service)
+
+  active = enabled = None
+  state: str | None = None
+  known = False
+  if seen:
+    try:
+      obj: Any = sm[service]
+      active = bool(obj.active)
+      enabled = bool(obj.enabled)
+      state = selfdrive_state_name(getattr(obj, "state", None))
+      known = True
+    except Exception:
+      known = False
+
+  controlling = op_controlling(active=active, state=state, enabled=enabled) if known else False
+  if known:
+    # Engaged used to set allow_detect false. That skipped ~95% of a drive.
+    # Priority, core mask, and pressure backoff protect modeld instead.
+    allow_detect = True
+    detect_paused = False
+    unknown_after = False
+  else:
+    # now is None (unit tests): treat as post-grace so unknown allows detect.
+    in_grace = False if now is None else (float(now) - float(started_at)) < float(grace_s)
+    allow_detect = not in_grace
+    detect_paused = False
+    unknown_after = not in_grace
+
+  return EngagementSample(
+    known=known,
+    controlling=controlling,
+    allow_detect=allow_detect,
+    detect_paused=detect_paused,
+    enabled=enabled,
+    active=active,
+    state=state,
+    alive=alive,
+    valid=valid,
+    recv_frame=recv_frame,
+    unknown_after_grace=unknown_after,
+  )
+
+
+def engagement_log_fields(sample: EngagementSample) -> str:
+  return (
+    f"controlling={sample.controlling} enabled={sample.enabled} "
+    + f"active={sample.active} state={sample.state} "
+    + f"alive={sample.alive} valid={sample.valid} known={sample.known}"
+  )
+
+
+def engaged_from_sm(sm: Any, **kwargs) -> bool:
+  """Back-compat: True when OP is commanding actuators (not cereal-unknown)."""
+  return engagement_from_sm(sm, **kwargs).controlling
+
+
+def parse_detect_hz(raw: str | None, default: float = SPEEDSIGND_HZ) -> float:
+  """Clamp env override. Default 1 Hz; refuse junk / out-of-range."""
+  if raw is None or str(raw).strip() == "":
+    return float(default)
+  try:
+    hz = float(raw)
+  except (TypeError, ValueError):
+    return float(default)
+  if not math.isfinite(hz):
+    return float(default)
+  return min(HZ_MAX, max(HZ_MIN, hz))
+
+
+def infer_overran(infer_s: float, period_s: float, budget_s: float) -> bool:
+  """True when this infer used more than the period or the CPU budget.
+
+  Diagnostic only. Spacing does not pay this back with a second infer.
+  """
+  return infer_s > period_s or infer_s > budget_s
+
+
+def read_gap_s(infer_s: float, period_s: float, backoff_s: float = 0.0) -> float:
+  """Start-to-start gap. Idle is at least 3× infer, and never faster than the period.
+
+  A 4 s infer waits 12 s, so the next start is 16 s later and the core
+  averages 25%. A 50 ms infer still waits out a 1 s period (5% of a core).
+  """
+  infer_s = max(0.0, float(infer_s))
+  period_s = max(0.0, float(period_s))
+  paced = max(period_s, infer_s * (1.0 + IDLE_FACTOR))
+  return paced + max(0.0, float(backoff_s))
+
+
+def steady_core_duty(infer_s: float, period_s: float, backoff_s: float = 0.0) -> float:
+  """Fraction of the one core speedsignd is pinned to."""
+  gap = read_gap_s(infer_s, period_s, backoff_s)
+  if gap <= 0.0:
+    return 1.0
+  return min(1.0, max(0.0, float(infer_s)) / gap)
+
+
+def next_detect_mono(infer_end: float, infer_s: float, period_s: float, budget_s: float,
+                     cap_s: float = 0.0, backoff_s: float = 0.0) -> float:
+  """Earliest monotonic time another ONNX infer may start.
+
+  Start-to-start is max(period, 4× infer) plus any extra rest. The road
+  test at 795d252f ran the next read as soon as the infer ended (~87% of
+  core 0). `budget_s` and `cap_s` stay in the signature; they do not add
+  a second wait on top of the duty cycle.
+  """
+  if not math.isfinite(budget_s) or not math.isfinite(cap_s):
+    raise ValueError("budget and cap must be finite")
+  gap = read_gap_s(infer_s, period_s, backoff_s)
+  return (float(infer_end) - float(infer_s)) + gap
+
+
+def window_compute(spans: list[tuple[float, float]], t: float, window: float = DUTY_WINDOW_S) -> float:
+  """Infer seconds overlapping [t-window, t]. spans are (end, duration)."""
+  lo = float(t) - float(window)
+  total = 0.0
+  for end, dur in spans:
+    end_f = float(end)
+    dur_f = max(0.0, float(dur))
+    start = end_f - dur_f
+    a = max(start, lo)
+    b = min(end_f, float(t))
+    if b > a:
+      total += b - a
+  return total
+
+
+def earliest_budget_start(
+  spans: list[tuple[float, float]], now: float, next_dur: float,
+  window: float = DUTY_WINDOW_S, budget: float = CPU_BUDGET,
+) -> float:
+  """Earliest t ≥ now such that the infer [t, t+next_dur] keeps the window ≤ budget.
+
+  Past spans age out of the trailing window. A burst that already spent the
+  allowance waits here until idle has repaid it.
+  """
+  now_f = float(now)
+  next_dur = max(0.0, float(next_dur))
+  allowance = float(window) * float(budget)
+
+  def fits(t: float) -> bool:
+    finish = t + next_dur
+    used = window_compute(spans, finish, window)
+    return used + next_dur <= allowance + 1e-6
+
+  if fits(now_f):
+    return now_f
+  candidates = [now_f]
+  for end, _dur in spans:
+    candidates.append(float(end) + float(window) - next_dur)
+  for t in sorted(candidates):
+    t = max(now_f, t)
+    if fits(t):
+      return t
+  newest = max((float(end) for end, _dur in spans), default=now_f)
+  return max(now_f, newest + float(window) - next_dur)
+
+
+def sign_burst_trigger(diag: dict | None, signs=None) -> bool:
+  """True when any speed-sign class scored ≥ SIGN_LIKE_CONF.
+
+  sl_peak covers sl_NN below YOLO_MIN_CONF. A decoded sign, or an
+  sl_unreadable peak, counts too. neg_* does not.
+  """
+  diag = diag or {}
+  try:
+    if float(diag.get("sl_peak_conf") or 0.0) >= SIGN_LIKE_CONF:
+      return True
+  except (TypeError, ValueError):
+    pass
+  peak_name = str(diag.get("peak_name") or "")
+  try:
+    peak = float(diag.get("peak_conf") or 0.0)
+  except (TypeError, ValueError):
+    peak = 0.0
+  if peak >= SIGN_LIKE_CONF and peak_name.startswith(("sl_", "speedLimit")):
+    return True
+  for s in signs or []:
+    try:
+      if float(getattr(s, "conf", 0.0) or 0.0) >= SIGN_LIKE_CONF:
+        return True
+    except (TypeError, ValueError):
+      continue
+  return False
+
+
+def schedule_after_read(
+  *,
+  now: float,
+  infer_s: float,
+  period_s: float,
+  budget_s: float,
+  cap_s: float,
+  backoff_s: float,
+  sign_like: bool,
+  window_used: int,
+  window_count: int,
+  burst_left: int,
+  burst_window: int,
+  burst_cluster_s: float,
+  spans: list[tuple[float, float]],
+) -> tuple[float, int, int, int, float, bool]:
+  """Next detect time plus burst state.
+
+  Returns (next_mono, burst_left, burst_window, next_window, cluster_s, bursting_next).
+
+  Steady reads keep max(period, 4× infer). A sign-like score schedules up to
+  BURST_EXTRA more reads on the same tile, immediately, while that cluster
+  still fits in the 10 s × 25% allowance. The following non-burst start waits
+  until the trailing window is back at 25%. A model-guard backoff cancels the
+  burst. `budget_s` and `cap_s` stay on next_detect_mono; they do not add a
+  second wait.
+  """
+  infer_s = max(0.0, float(infer_s))
+  spans_now = list(spans) + [(float(now), infer_s)]
+  paced = next_detect_mono(float(now), infer_s, period_s, budget_s, cap_s, backoff_s)
+  duty_t = earliest_budget_start(spans_now, float(now), infer_s)
+  steady = max(paced, duty_t)
+  nwin = max(1, int(window_count))
+  next_window = (int(window_used) + 1) % nwin
+  allowance = DUTY_WINDOW_S * CPU_BUDGET
+  if float(backoff_s) > 0.0:
+    return steady, 0, int(window_used), next_window, 0.0, False
+  if int(burst_left) > 0:
+    cluster = float(burst_cluster_s) + infer_s
+    left = int(burst_left) - 1
+    if left > 0 and cluster + infer_s <= allowance + 1e-6:
+      return float(now), left, int(burst_window), int(burst_window), cluster, True
+    return steady, 0, int(burst_window), next_window, 0.0, False
+  if sign_like:
+    cluster = infer_s
+    if BURST_EXTRA > 0 and cluster + infer_s <= allowance + 1e-6:
+      return float(now), BURST_EXTRA, int(window_used), int(window_used), cluster, True
+  return steady, 0, int(window_used), next_window, 0.0, False
+
+
+@dataclass(frozen=True)
+class HostPressure:
+  """CPU / disk / alert snapshot. No new cereal subscriber."""
+  procs_running: int | None = None
+  procs_blocked: int | None = None
+  ncpu: int = NCPU_DEFAULT
+  alert_text: str = ""
+
+
+def parse_proc_stat_pressure(text: str) -> tuple[int | None, int | None]:
+  """procs_running and procs_blocked from /proc/stat."""
+  running = blocked = None
+  for line in text.splitlines():
+    if line.startswith("procs_running "):
+      try:
+        running = int(line.split()[1])
+      except (IndexError, ValueError):
+        running = None
+    elif line.startswith("procs_blocked "):
+      try:
+        blocked = int(line.split()[1])
+      except (IndexError, ValueError):
+        blocked = None
+  return running, blocked
+
+
+def read_proc_stat_pressure(path: str = "/proc/stat") -> tuple[int | None, int | None]:
+  try:
+    with open(path, encoding="utf-8") as f:
+      return parse_proc_stat_pressure(f.read())
+  except OSError:
+    return None, None
+
+
+def lag_reason_from_alert(*parts: str | None) -> str:
+  """Map a selfdriveState alert onto a backoff reason, or ''."""
+  blob = " ".join(p for p in parts if p).lower()
+  if not blob:
+    return ""
+  for needle, reason in LAG_ALERT_MARKERS:
+    if needle in blob:
+      return reason
+  return ""
+
+
+def alert_text_from_sm(sm: Any) -> str:
+  try:
+    obj = sm["selfdriveState"]
+  except Exception:
+    return ""
+  parts: list[str] = []
+  for name in ("alertText1", "alertText2", "alertType"):
+    try:
+      val = getattr(obj, name, None)
+    except Exception:
+      val = None
+    if val:
+      parts.append(str(val))
+  return " ".join(parts)
+
+
+def pressure_reason(pressure: HostPressure) -> str:
+  """Why to rest, or '' when the host looks healthy."""
+  reasons: list[str] = []
+  alert = lag_reason_from_alert(pressure.alert_text)
+  if alert:
+    reasons.append(alert)
+  ncpu = int(pressure.ncpu) if pressure.ncpu else NCPU_DEFAULT
+  if pressure.procs_running is not None and pressure.procs_running > ncpu + CPU_OVERSUBSCRIBE_EXTRA:
+    reasons.append("cpu-load")
+  if pressure.procs_blocked is not None and pressure.procs_blocked >= DISK_BLOCKED_MIN:
+    reasons.append("disk-stall")
+  out: list[str] = []
+  for reason in reasons:
+    if reason not in out:
+      out.append(reason)
+  return "+".join(out)
+
+
+def disk_stalled(pressure: HostPressure) -> bool:
+  return pressure.procs_blocked is not None and pressure.procs_blocked >= DISK_BLOCKED_MIN
+
+
+def backoff_extra_s(infer_s: float, period_s: float, reason: str) -> float:
+  """Extra rest on top of the 3× idle. Empty reason → none.
+
+  Another 3× infer drops a long infer from 25% of a core to about 14%.
+  """
+  if not reason:
+    return 0.0
+  return max(float(period_s), IDLE_FACTOR * max(0.0, float(infer_s)))
+
+
+def model_guard_rest_s(infer_s: float, period_s: float, reason: str, hard: bool) -> float:
+  """Frame-drop backoff, with a 10 s floor on a frame skip or modeld > 50 ms.
+
+  Any reason that includes model-skip is also capped at 60 s, hard or not.
+  model-drop and model-exec keep the uncapped 3× rest.
+  """
+  extra = backoff_extra_s(infer_s, period_s, reason)
+  if hard:
+    extra = max(extra, MODEL_GUARD_PAUSE_S)
+  if reason and "model-skip" in reason:
+    return min(extra, MODEL_SKIP_BACKOFF_CAP_S)
+  return extra
+
+
+def collect_host_pressure(sm: Any, *, stat_path: str = "/proc/stat", ncpu: int | None = None) -> HostPressure:
+  running, blocked = read_proc_stat_pressure(stat_path)
+  if ncpu is None:
+    ncpu = os.cpu_count() or NCPU_DEFAULT
+  return HostPressure(
+    procs_running=running,
+    procs_blocked=blocked,
+    ncpu=int(ncpu),
+    alert_text=alert_text_from_sm(sm),
+  )
+
+
+def jsonl_line_is_light(record: dict) -> bool:
+  return len(record_line(record).encode("utf-8")) <= JSONL_LINE_MAX
+
+
+def reset_ratekeeper_if_behind(rk, now: float) -> bool:
+  """Drop Ratekeeper catch-up so an overrun does not burst more infers."""
+  if rk.remaining < 0:
+    rk._next_frame_time = now + rk._interval
+    return True
+  return False
+
+
+def model_frame_gap_allowed(dt_s: float, hz: float = MODEL_HZ) -> int:
+  """How far frameId may jump without modeld having dropped a frame.
+
+  Both sides are 20 Hz, and SubMaster keeps only the latest modelV2, so a
+  poll that lands between two publishes sees delta 2. A vision recv or an
+  infer that blocks this poll for dt seconds misses about dt*20 publishes.
+  +1 is that one coalesced message. frameDropPerc is the real modeld drop.
+  """
+  dt_s = max(0.0, float(dt_s))
+  return max(2, math.ceil(dt_s * float(hz)) + 1)
+
+
+@dataclass
+class ModelWatch:
+  """modelV2 frame drops, frame-id gaps, and modelExecutionTime. No new socket."""
+  last_frame: int | None = None
+  last_mono: float | None = None
+  last_drop: float | None = None
+  last_exec: float | None = None
+  drop_hot: bool = False
+  exec_hot: bool = False
+  skipped: bool = False
+
+  def observe(self, frame_id: int | None, drop: float | None, exec_s: float | None = None,
+              now: float | None = None) -> None:
+    if now is None:
+      now = time.monotonic()
+    if frame_id is not None and self.last_frame is not None and self.last_mono is not None:
+      gap = int(frame_id) - int(self.last_frame)
+      allowed = model_frame_gap_allowed(float(now) - float(self.last_mono))
+      if gap > allowed:
+        self.skipped = True
+    if drop is not None:
+      value = float(drop)
+      # Jitter under 5% is not a drop. 5% is well before modeld's ~20% lag alert.
+      if value >= MODEL_DROP_PERC:
+        self.drop_hot = True
+      self.last_drop = value
+    if exec_s is not None:
+      try:
+        exec_value = float(exec_s)
+      except (TypeError, ValueError):
+        exec_value = None
+      if exec_value is not None and math.isfinite(exec_value):
+        self.last_exec = exec_value
+        if exec_value > MODEL_EXEC_LIMIT_S:
+          self.exec_hot = True
+    if frame_id is not None:
+      self.last_frame = int(frame_id)
+      self.last_mono = float(now)
+
+  def hard_guard(self) -> bool:
+    """Any skipped frame id, or modeld execution above 50 ms."""
+    return bool(self.skipped or self.exec_hot)
+
+  def reason(self) -> str:
+    parts: list[str] = []
+    if self.drop_hot:
+      parts.append("model-drop")
+    if self.exec_hot:
+      parts.append("model-exec")
+    if self.skipped:
+      parts.append("model-skip")
+    return "+".join(parts)
+
+  def consume(self) -> str:
+    """Return the reason and clear a one-shot skip. A hot drop or exec stays hot."""
+    reason = self.reason()
+    self.skipped = False
+    if self.last_drop is None or self.last_drop < MODEL_DROP_PERC:
+      self.drop_hot = False
+    if self.last_exec is None or self.last_exec <= MODEL_EXEC_LIMIT_S:
+      self.exec_hot = False
+    return reason
+
+
+def drop_cpu_reasons(reason: str, exempt: bool) -> str:
+  """While a confirmed sign track is live, skip the cpu-load / cpu-budget rest.
+
+  modeld lag, alert-lag and disk-stall reasons are kept.
+  """
+  if not exempt:
+    return reason
+  return "+".join(p for p in (reason or "").split("+") if p and p not in ("cpu-load", "cpu-budget"))
+
+
+def calib_rpy_from_sm(sm):
+  """extrinsicsCalibration rpyCalib when calibrated, else None. Never raises."""
+  try:
+    if not sm.alive.get("extrinsicsCalibration", False):
+      return None
+    lc = sm["extrinsicsCalibration"]
+    if str(lc.calStatus) != "calibrated":
+      return None
+    rpy = list(lc.rpyCalib)
+    return rpy if len(rpy) == 3 else None
+  except Exception:
+    return None
+
+
+OTHERS_PARAM_PERIOD_S = 5.0
+OTHERS_PUBLISH_PERIOD_S = 1.0
+
+
+def read_others_param(params) -> bool:
+  try:
+    return bool(params.get_bool(OTHER_SIGNS_PARAM))
+  except Exception:
+    return False
+
+
+def read_plan_params(params) -> float:
+  """NAPSignReadDistM clamped to 15-60 m; bad / missing -> default."""
+  try:
+    v = params.get(two_stage.READ_DIST_PARAM)
+    if v is None or v == "" or v == b"":
+      return two_stage.READ_DIST_DEFAULT_M
+    return two_stage.clamp_read_dist(v)
+  except Exception:
+    return two_stage.READ_DIST_DEFAULT_M
+
+
+def apply_plan_params(tracker, dist_m: float) -> None:
+  tracker.target_m = float(dist_m)
+
+
+def join_reasons(*parts: str) -> str:
+  out: list[str] = []
+  for part in parts:
+    for piece in (part or "").split("+"):
+      if piece and piece not in out:
+        out.append(piece)
+  return "+".join(out)
+
+
+def parse_proc_thread_count(text: str) -> int | None:
+  for line in text.splitlines():
+    if line.startswith("Threads:"):
+      try:
+        return int(line.split()[1])
+      except (IndexError, ValueError):
+        return None
+  return None
+
+
+def read_proc_thread_count(path: str = "/proc/self/status") -> int | None:
+  try:
+    with open(path, encoding="utf-8") as f:
+      return parse_proc_thread_count(f.read())
+  except OSError:
+    return None
+
+
+def parse_proc_stat_jiffies(text: str) -> int | None:
+  """utime+stime from /proc/self/stat. comm may contain spaces."""
+  end = text.rfind(")")
+  if end < 0:
+    return None
+  parts = text[end + 2:].split()
+  try:
+    return int(parts[11]) + int(parts[12])
+  except (IndexError, ValueError):
+    return None
+
+
+def read_proc_stat_jiffies(path: str = "/proc/self/stat") -> int | None:
+  try:
+    with open(path, encoding="utf-8") as f:
+      return parse_proc_stat_jiffies(f.read())
+  except OSError:
+    return None
+
+
+class CpuShareMeter:
+  """CPU seconds of this process divided by wall seconds. 1.0 is one full core."""
+
+  def __init__(self) -> None:
+    self._mono: float | None = None
+    self._jiffies: int | None = None
+    self.last_dt: float | None = None
+    self._clk = os.sysconf(os.sysconf_names["SC_CLK_TCK"]) if hasattr(os, "sysconf_names") else 100
+
+  def sample(self, now: float, jiffies: int | None) -> float | None:
+    if jiffies is None:
+      return None
+    if self._mono is None or self._jiffies is None:
+      self._mono = float(now)
+      self._jiffies = int(jiffies)
+      self.last_dt = None
+      return None
+    dt = float(now) - self._mono
+    dj = int(jiffies) - self._jiffies
+    self._mono = float(now)
+    self._jiffies = int(jiffies)
+    self.last_dt = dt
+    if dt <= 1e-6 or self._clk <= 0:
+      return None
+    return (dj / float(self._clk)) / dt
+
+
+def cpu_over_budget(share: float | None) -> bool:
+  return share is not None and float(share) > CPU_BUDGET + CPU_BUDGET_SLACK
+
+
+def share_without_proposer(share: float | None, wall_s: float, proposer_s: float) -> float | None:
+  """Process CPU share with proposer time removed. The read budget sees the rest."""
+  if share is None:
+    return None
+  wall = float(wall_s)
+  if wall <= 1e-6:
+    return float(share)
+  adjusted = float(share) - max(0.0, float(proposer_s)) / wall
+  if adjusted < 0.0:
+    return 0.0
+  return adjusted
+
+
+def model_reason_pauses_proposer(reason: str) -> bool:
+  """modeld lag / drop / skip / exec. cpu-budget and cpu-load do not."""
+  return any(piece in MODEL_PAUSE_REASONS for piece in (reason or "").split("+"))
+
+
+def yield_to_modeld() -> str:
+  """SCHED_IDLE on core 2, else nice 19. Lowers speedsignd only."""
+  from openpilot.common.realtime import drop_realtime, set_core_affinity
+  drop_realtime()
+  policy = "nice"
+  try:
+    idle = getattr(os, "SCHED_IDLE", None)
+    if idle is None:
+      raise OSError("no SCHED_IDLE")
+    os.sched_setscheduler(0, idle, os.sched_param(0))
+    policy = "idle"
+  except OSError:
+    try:
+      os.nice(SPEEDSIGND_NICE)
+    except OSError:
+      pass
+  try:
+    set_core_affinity(list(SPEEDSIGND_CORES))
+  except Exception:
+    pass
+  limit_infer_threads(1)
+  return policy
+
+
+def should_reset_detect_after_wait(last_allow: bool | None, allow_detect: bool) -> bool:
+  """First manual tick after WAIT: do not sit out a leftover next_detect."""
+  return bool(allow_detect) and last_allow is False
+
+
+def drop_inflight_for_compile(*, controlling: bool, busy: bool, allowed_now: bool) -> bool:
+  """Drop an in-flight realize only while the compile gate is still shut.
+
+  onnxruntime and a gate that has timed out report allowed_now. Pausing
+  those reads is how a new weights sha produced zero reader inferences.
+  """
+  return bool(controlling and busy and not allowed_now)
+
+
+def arm_compile_gate(gate: CompileGate, detector, *, now: float, known: bool, controlling: bool):
+  """Apply the compile gate and return (permitted, warning).
+
+  A loaded onnxruntime session is ready even when the per-sha stamp is
+  missing: that backend has no compile step. The warning is the one
+  swaglog line when the timeout is what opens the gate.
+  """
+  needs = backend_needs_compile(detector.backend_name())
+  ready = bool(detector.compile_ready())
+  if detector.onnx is not None and not needs:
+    ready = True
+  permitted = gate.permitted(
+    now=now, known=bool(known), controlling=bool(controlling),
+    ready=ready, needs_compile=needs,
+  )
+  warn = gate.warning_text(backend=detector.backend_name(), sha=detector.weights_sha_short())
+  detector.allow_compile(permitted)
+  return permitted, warn
+
+
+def drain_vision_latest(client) -> None:
+  """Non-blocking ROAD recv so WAIT idle does not wedge the VisionIPC socket."""
+  if client is None:
+    return
+  try:
+    client.recv(timeout_ms=0)
+  except Exception:
+    pass
+
+
+def process_frame(
+  y,
+  lat: float,
+  lon: float,
+  bearing: float | None,
+  gps_ok: bool,
+  detector: SpeedSignDetector,
+  logger: JsonlLogger,
+  now: float,
+  rgb=None,
+  debounce: SignDebounce | None = None,
+  nv12=None,
+  write_jsonl: bool = True,
+) -> tuple[list, list[dict]]:
+  """Detect on every ROAD frame. JSONL only with a GNSS fix and a short line.
+
+  With `debounce`: HUD and JSONL both need two agreeing frames. The returned
+  list is the signs that cast a vote this call, not a plate that is already
+  lit. Tests omit debounce and see raw detections.
+  `write_jsonl` is false while engaged during a disk stall.
+  """
+  signs = [] if (y is None and rgb is None and nv12 is None) else detector.detect(y, rgb=rgb, nv12=nv12)
+  hud_signs = signs
+  jsonl_signs = signs
+  if debounce is not None:
+    split = debounce.update_split(signs, now)
+    hud_signs = split.hud
+    jsonl_signs = split.confirmed
+  written: list[dict] = []
+  if gps_ok and write_jsonl:
+    for sign in jsonl_signs:
+      rec = make_record(now, lat, lon, bearing, sign.mph, sign.conf)
+      if not jsonl_line_is_light(rec):
+        continue
+      if logger.write(rec):
+        written.append(rec)
+  return hud_signs, written
+
+
+def process_observations(
+  y,
+  lat: float,
+  lon: float,
+  bearing: float | None,
+  gps_ok: bool,
+  detector: SpeedSignDetector,
+  logger: JsonlLogger,
+  now: float,
+) -> list[dict]:
+  """Detect + append. No GPS fix → no row (lat/lon would be junk)."""
+  _signs, written = process_frame(y, lat, lon, bearing, gps_ok, detector, logger, now)
+  return written
+
+
+@dataclass
+class InferOutcome:
+  signs: list
+  written: list[dict]
+  infer_s: float
+  error: str | None = None
+  diag: dict | None = None
+
+
+def format_refine_token(class_mph, hud_mph, ref_mph, ref_conf) -> str:
+  """Unambiguous refine= token. Fail is `refine=- class=65`, never `-(65)`.
+
+  Agree: `65:0.47`. Override: `50:0.43 class=65`. Parentheses around 65
+  were misread as refine=(65) in Justin's journalctl paste.
+  """
+  if ref_mph is None:
+    return f"- class={int(class_mph)}"
+  token = f"{int(ref_mph)}:{float(ref_conf):.2f}"
+  if int(ref_mph) == int(hud_mph) == int(class_mph):
+    return token
+  return f"{int(hud_mph)}:{float(ref_conf):.2f} class={int(class_mph)}"
+
+
+def format_infer_diag(diag: dict | None, *, allow_detect: bool) -> str:
+  """One-line on-car fields: backend, frame, letterbox, crop, sha, peak."""
+  d = diag or {}
+  crop = d.get("crop") or (0, 0, 0, 0)
+  if isinstance(crop, (list, tuple)) and len(crop) == 4:
+    crop_s = f"{int(crop[0])},{int(crop[1])} {int(crop[2])}x{int(crop[3])}"
+  else:
+    crop_s = str(crop)
+  out = d.get("out_shape", ())
+  if isinstance(out, (list, tuple)):
+    out_s = "x".join(str(int(v)) for v in out) if out else "-"
+  else:
+    out_s = str(out)
+  sl_conf = float(d.get("sl_peak_conf", 0.0) or 0.0)
+  sl_name = d.get("sl_peak_name", "") or ""
+  n_over = int(d.get("n_over", 0) or 0)
+  # Always log sl_peak — Justin's R2-1 miss is n_over=0 with a weak speedLimit*.
+  # When n_over>0 the global peak is often stop; sl_peak is the HUD-relevant head.
+  sl_s = f" sl_peak={sl_conf:.2f}/{sl_name}"
+  top3 = d.get("top3") or ()
+  if top3:
+    top_s = " top=" + ",".join(f"{n}:{c:.2f}" for n, c in list(top3)[:3])
+  else:
+    top_s = ""
+  posted = d.get("posted") or ()
+  if posted:
+    posted_s = " cls=" + ",".join(f"{int(mph)}:{float(c):.2f}" for mph, c in posted)
+  else:
+    posted_s = ""
+  refine = d.get("refine") or ()
+  if refine:
+    parts = []
+    for row in refine:
+      if not row or len(row) < 4:
+        continue
+      class_mph, hud_mph, ref_mph, ref_conf = row[0], row[1], row[2], row[3]
+      parts.append(format_refine_token(class_mph, hud_mph, ref_mph, ref_conf))
+    refine_s = " refine=" + ",".join(parts) if parts else ""
+  else:
+    refine_s = ""
+  return (
+    f"backend={d.get('backend', '?')} "
+    + f"frame={int(d.get('frame_w', 0) or 0)}x{int(d.get('frame_h', 0) or 0)} "
+    + f"letterbox={int(d.get('letterbox', 0) or 0)} crop={crop_s} "
+    + f"onnx={d.get('weights_path', '')} sha={d.get('weights_sha', '')} "
+    + f"allow={int(bool(allow_detect))} out={out_s} "
+    + f"peak={float(d.get('peak_conf', 0.0) or 0.0):.2f}/{d.get('peak_name', '')} "
+    + f"n_over={n_over}"
+    + sl_s
+    + f" n_over_sl={int(d.get('n_over_sl', 0) or 0)}"
+    + top_s
+    + posted_s
+    + refine_s
+    + " "
+    + f"luma={float(d.get('luma_mean', 0.0) or 0.0):.0f}/{float(d.get('luma_std', 0.0) or 0.0):.0f} "
+    + f"chroma={int(d.get('chroma', 0) or 0)} "
+    + f"prep={float(d.get('prep_ms', 0.0) or 0.0):.0f} "
+    + f"sess={float(d.get('sess_ms', 0.0) or 0.0):.0f}"
+  )
+
+
+def detect_skip_reason(
+  *,
+  connected: bool,
+  onnx: bool,
+  busy: bool,
+  holdoff: bool,
+  buf_empty: bool | None = None,
+  parse_fail: bool = False,
+) -> str:
+  """Why YOLO did not start. Distinguishes infer-never-ran from raw=[]."""
+  if not connected:
+    return "vision-disconnected"
+  if not onnx:
+    return "no-onnx"
+  if parse_fail:
+    return "nv12-parse"
+  if buf_empty:
+    return "road-recv-empty"
+  if busy:
+    return "infer-busy"
+  if holdoff:
+    return "holdoff"
+  return "ok"
+
+
+class InferSlot:
+  """At most one ONNX infer. The 20 Hz loop never joins on engage.
+
+  Re-engage used to block speedsignd for 300–1500 ms on an in-flight YOLO
+  (and leave a core hot) → Communication Issue Between Processes. pause()
+  drops the result immediately and refuses new work. The leftover infer may
+  still finish at nice 19; we do not start another and we do not wait.
+
+  resume() only clears the start-gate. A generation counter keeps the
+  abandoned infer from publishing after WAIT clears (that used to apply
+  skip-on-overrun to a stale leftover and delay the first real manual detect).
+  """
+
+  def __init__(self):
+    self._lock = threading.Lock()
+    self._cancel = threading.Event()
+    self._busy = False
+    self._outcome: InferOutcome | None = None
+    self._gen = 0
+
+  @property
+  def busy(self) -> bool:
+    with self._lock:
+      return self._busy
+
+  def pause(self) -> bool:
+    """Cancel in-flight work and drop results. True if an infer was busy."""
+    self._cancel.set()
+    with self._lock:
+      was_busy = self._busy
+      self._outcome = None
+      self._gen += 1
+      return was_busy
+
+  def resume(self) -> None:
+    self._cancel.clear()
+
+  def take(self) -> InferOutcome | None:
+    with self._lock:
+      out = self._outcome
+      self._outcome = None
+      return out
+
+  def start(self, fn) -> bool:
+    """Run fn() in a daemon thread. fn returns (signs, written) or + diag."""
+    with self._lock:
+      if self._busy or self._cancel.is_set():
+        return False
+      self._busy = True
+      self._outcome = None
+      gen = self._gen
+
+    def run():
+      t0 = time.monotonic()
+      signs: list = []
+      written: list[dict] = []
+      diag = None
+      error = None
+      try:
+        if self._cancel.is_set():
+          return
+        result = fn()
+        if isinstance(result, tuple) and len(result) >= 3:
+          signs, written, diag = result[0], result[1], result[2]
+        else:
+          signs, written = result
+      except Exception as e:
+        error = f"{type(e).__name__}: {e}"
+        signs, written = [], []
+      finally:
+        infer_s = time.monotonic() - t0
+        with self._lock:
+          if not self._cancel.is_set() and gen == self._gen:
+            self._outcome = InferOutcome(
+              list(signs), list(written), infer_s, error=error, diag=diag,
+            )
+          self._busy = False
+
+    threading.Thread(target=run, name="speedsignd-onnx", daemon=True).start()
+    return True
+
+
+def detect_if_allowed(
+  y,
+  lat: float,
+  lon: float,
+  bearing: float | None,
+  gps_ok: bool,
+  detector: SpeedSignDetector,
+  logger: JsonlLogger,
+  now: float,
+  *,
+  controlling: bool,
+  rgb=None,
+  debounce: SignDebounce | None = None,
+  nv12=None,
+  disk_stalled: bool = False,
+) -> tuple[list, list[dict]]:
+  """ONNX while engaged or manual. Skip the JSONL write if engaged and disk-stalled."""
+  if not should_run_onnx_detect(controlling):
+    return [], []
+  write_jsonl = not (bool(controlling) and bool(disk_stalled))
+  return process_frame(
+    y, lat, lon, bearing, gps_ok, detector, logger, now,
+    rgb=rgb, debounce=debounce, nv12=nv12, write_jsonl=write_jsonl,
+  )
+
+
+def _connect_road_camera():
+  from msgq.visionipc import VisionIpcClient, VisionStreamType
+  client = VisionIpcClient("camerad", VisionStreamType.VISION_STREAM_ROAD, True)
+  return client
+
+
+def live_sign_publish_fields(
+  hold: LiveSignHold,
+  signs,
+  now_mono: float,
+  weights_missing: bool,
+  detect_paused: bool = False,
+) -> tuple[bool, int, float, bool, bool]:
+  """msg.valid, mph, conf, weights_missing, detect_paused for liveSpeedSignNAP.
+
+  When ONNX is missing, keep msg.valid so the HUD can show NO WT — never a
+  numpy-fallback mph. Controlling does not freeze the hold: mph stays 0
+  until two different frames agree, then the plate shows that mph while
+  engaged. Unknown cereal must not set detect_paused (no false WAIT).
+  """
+  if weights_missing:
+    return True, 0, 0.0, True, False
+  if detect_paused:
+    return True, 0, 0.0, False, True
+  live, mph, conf = hold.update(signs, now_mono)
+  return live, mph if live else 0, conf if live else 0.0, False, False
+
+
+def _publish_live(
+  pm, hold: LiveSignHold, signs, now_mono: float, messaging,
+  weights_missing: bool, detect_paused: bool = False, sign_loc: dict | None = None,
+  plate: confirm.PlateState | None = None, way: tuple | None = None, gps: tuple | None = None,
+) -> None:
+  msg_valid, mph, conf, missing, paused = live_sign_publish_fields(
+    hold, signs, now_mono, weights_missing, detect_paused,
+  )
+  if plate is not None:
+    plate.expire(now_mono)
+    # v2.3: a lit hold (non-planned path) only proposes; the plate is the
+    # last Yes. Missing weights / WAIT still blank it.
+    # One lit hold episode at one mph is one read: its way/heading/location
+    # are taken when it lights and never refreshed from later ticks.
+    lit = int(mph) if mph and not missing and not paused else 0
+    if lit and lit != getattr(plate, "_hold_mph", 0):
+      plate._hold_ep = getattr(plate, "_hold_ep", 0) + 1
+    plate._hold_mph = lit
+    if lit:
+      way_id, hdg = way or (0, None)
+      lat, lon, bearing = gps or (None, None, None)
+      plate.propose(lit, float(conf), way_id=way_id, heading=hdg if hdg is not None else bearing,
+                    lat=lat, lon=lon, read_id=("hold", plate._hold_ep), now=now_mono)
+    mph, conf = (plate.plate_mph, plate.plate_conf) if not missing and not paused else (0, 0.0)
+    msg_valid = True
+  msg = messaging.new_message(SERVICE_NAME)
+  msg.valid = msg_valid
+  apply_live_sign(
+    getattr(msg, SERVICE_NAME),
+    mph=mph, conf=conf, valid=bool(mph), weights_missing=missing, detect_paused=paused,
+  )
+  if plate is not None:
+    confirm.fill_proposal(getattr(msg, SERVICE_NAME), None if (missing or paused) else plate.proposal)
+  if sign_loc:
+    fill_sign_loc(getattr(msg, SERVICE_NAME), sign_loc)
+  pm.send(SERVICE_NAME, msg)
+
+
+def gps_sigma_from_sm(sm) -> float | None:
+  for sock in ("gpsLocationExternal", "gpsLocation"):
+    try:
+      if sm.recv_frame.get(sock, -1) > 0:
+        acc = float(sm[sock].horizontalAccuracy)
+        if math.isfinite(acc) and acc > 0:
+          return acc
+    except Exception:
+      pass
+  return None
+
+
+def place_sign(diag: dict, released, tr, sm, path: str | None = None) -> dict | None:
+  """Place a burst decision on the ground and append it to sign_map.jsonl."""
+  meta = diag.get("read_jpg_meta") or {}
+  box = diag.get("read_box")
+  if not meta.get("gps_ok") or box is None:
+    return None
+  try:
+    rpy = calib_rpy_from_sm(sm)
+  except Exception:
+    rpy = None
+  loc = sign_map.locate(
+    float(meta.get("lat") or 0.0), float(meta.get("lon") or 0.0), meta.get("bearing"), box,
+    rpy=rpy, gps_sigma_m=gps_sigma_from_sm(sm),
+  )
+  if loc is None:
+    return None
+  top = max(released, key=lambda s: float(s.conf))
+  rec = sign_map.record(int(top.mph), float(top.conf), float(box[3]), loc,
+                        float(meta.get("t") or 0.0), int(tr.reads))
+  sign_map.append(rec, path or sign_map.SIGN_MAP_PATH)
+  return rec
+
+
+def fill_sign_loc(m, loc: dict) -> None:
+  try:
+    m.signSeq = int(loc.get("seq", 0))
+    m.signLat = float(loc["lat"])
+    m.signLon = float(loc["lon"])
+    m.signHeading = float(loc["heading"])
+    m.signSigmaM = float(loc["sigma_m"])
+    m.signRangeM = float(loc["range_m"])
+    m.signPx = float(loc["px"])
+    m.signMph = int(loc["mph"])
+  except Exception:
+    pass
+
+
+def format_read_timing(
+  *,
+  read_interval_ms: float,
+  infer_ms: float,
+  engaged: bool,
+  backoff: bool,
+  reason: str,
+  cpu_share: float | None = None,
+  threads: int = 1,
+  backend: str = "",
+  os_threads: int | None = None,
+) -> str:
+  """One greppable line per finished read. `speedsignd timing`.
+
+  `threads` is the pinned BLAS/OpenMP/OpenCV pool (1). `os_threads` is
+  /proc/self/status Threads, which also counts the main loop, the infer
+  worker, and VisionIPC. Route 0000017e logged the proc count in `threads`
+  and showed 11.
+  """
+  share = "na" if cpu_share is None else f"{float(cpu_share):.3f}"
+  os_s = "" if os_threads is None else f"os_threads={int(os_threads)} "
+  return (
+    "speedsignd timing "
+    + f"read_interval_ms={read_interval_ms:.0f} "
+    + f"infer_ms={infer_ms:.0f} "
+    + f"cpu_share={share} "
+    + f"threads={int(threads)} "
+    + os_s
+    + f"backend={backend or 'unset'} "
+    + f"engaged={int(bool(engaged))} "
+    + f"backoff={int(bool(backoff))} "
+    + f"reason={reason or 'pace'}"
+  )
+
+
+def format_backoff_timing(
+  *,
+  extra_ms: float,
+  infer_ms: float,
+  engaged: bool,
+  reason: str,
+  backend: str = "",
+) -> str:
+  """Greppable back-off event. Still starts with `speedsignd timing`."""
+  return (
+    "speedsignd timing "
+    + f"backoff=1 reason={reason or 'pressure'} "
+    + f"extra_ms={extra_ms:.0f} "
+    + f"infer_ms={infer_ms:.0f} "
+    + f"engaged={int(bool(engaged))} "
+    + f"backend={backend or 'unset'}"
+  )
+
+
+def _log_infer_timing(cloudlog, infer_ms: list[float], skip_count: int, hz: float, engaged: bool,
+                      threads: int = 1) -> None:
+  n = len(infer_ms)
+  mean_ms = sum(infer_ms) / n if n else 0.0
+  max_ms = max(infer_ms) if n else 0.0
+  os_n = read_proc_thread_count()
+  os_s = "na" if os_n is None else str(int(os_n))
+  cloudlog.info(
+    "speedsignd timing hz=%.2f infer_ms mean=%.1f max=%.1f n=%d skip=%d engaged=%d threads=%d os_threads=%s",
+    hz, mean_ms, max_ms, n, skip_count, int(bool(engaged)), int(threads), os_s,
+  )
+
+
+@dataclass
+class PendingSecondLook:
+  bbox: tuple[int, int, int, int]
+  frames_left: int
+  deadline: float
+
+
+def sign_like_bbox(signs, diag) -> tuple[int, int, int, int] | None:
+  """Box for an immediate OCR follow-up. None when this frame already agrees."""
+  for s in signs or []:
+    _pending, pair = frame_reads(s)
+    if pair is not None:
+      return None
+  for s in signs or []:
+    pending, _pair = frame_reads(s)
+    conf = float(getattr(s, "conf", 0.0) or 0.0)
+    if pending or conf >= SIGN_LIKE_CONF:
+      box = getattr(s, "bbox", None)
+      if box is not None and len(box) == 4:
+        return (int(box[0]), int(box[1]), int(box[2]), int(box[3]))
+  raw = (diag or {}).get("sign_like_bbox") if diag else None
+  if raw is not None and len(raw) == 4:
+    return (int(raw[0]), int(raw[1]), int(raw[2]), int(raw[3]))
+  return None
+
+
+def tight_rect(bbox, frame_w: int, frame_h: int, pad_frac: float = 0.50) -> tuple[int, int, int, int]:
+  x, y, w, h = (int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3]))
+  pad = int(max(w, h) * pad_frac)
+  x0 = max(0, x - pad)
+  y0 = max(0, y - pad)
+  x1 = min(int(frame_w), x + w + pad)
+  y1 = min(int(frame_h), y + h + pad)
+  x0 -= x0 % 2
+  y0 -= y0 % 2
+  return x0, y0, max(2, x1 - x0), max(2, y1 - y0)
+
+
+def second_look_sign(buf, bbox) -> SpeedSign | None:
+  """OCR a tight full-res crop. Not a second YOLO."""
+  width = int(getattr(buf, "width", 0) or 0)
+  height = int(getattr(buf, "height", 0) or 0)
+  if width < 2 or height < 2:
+    return None
+  crop = copy_nv12_rect(buf, tight_rect(bbox, width, height))
+  if crop is None:
+    return None
+  mph, conf = ocr_tight_y(crop.y)
+  if mph is None or float(conf) < REFINE_OVERRIDE_CONF:
+    return None
+  return SpeedSign(
+    mph=int(mph), conf=float(conf), bbox=tuple(int(v) for v in bbox),
+    refine_mph=int(mph), refine_conf=float(conf),
+  )
+
+
+def observe_model(watch: ModelWatch, sm, now: float | None = None) -> None:
+  try:
+    if not sm.updated["modelV2"]:
+      return
+    msg = sm["modelV2"]
+  except Exception:
+    return
+  try:
+    watch.observe(
+      getattr(msg, "frameId", None),
+      getattr(msg, "frameDropPerc", None),
+      getattr(msg, "modelExecutionTime", None),
+      now=time.monotonic() if now is None else now,
+    )
+  except Exception:
+    return
+
+
+def main():
+  from openpilot.cereal import messaging
+  from openpilot.common.realtime import Ratekeeper
+  from openpilot.common.swaglog import cloudlog
+  from openpilot.selfdrive.mapd.gps_fix import gps_sample_from_sm
+
+  # Child of manager: shrink the BLAS pool the parent already started.
+  limit_infer_threads(1)
+  sched_name = yield_to_modeld()
+
+  hz = parse_detect_hz(os.environ.get(HZ_ENV))
+  period_s = 1.0 / hz
+  budget_s = INFER_BUDGET_MS / 1000.0
+  threads = parse_infer_threads(os.environ.get(THREADS_ENV), THREADS_DEFAULT)
+  cap_ms = parse_infer_cap_ms(os.environ.get(CAP_MS_ENV), CAP_MS_DEFAULT)
+  cap_s = cap_ms / 1000.0 if cap_ms > 0 else 0.0
+
+  log_path = default_log_path()
+  onnx_path = default_onnx_path()
+  detector = SpeedSignDetector(onnx_path=onnx_path)
+  logger = JsonlLogger(log_path)
+  hold = LiveSignHold()
+  debounce = SignDebounce()
+  # Two-stage reader: strip proposer + tracker + one sharp read per sign.
+  # Missing proposer file -> legacy fixed tiles (unchanged behavior).
+  proposer = two_stage.Proposer(default_proposer_path())
+  tracker = two_stage.SignTracker()
+  two_period_s = 1.0 / two_stage.PROPOSER_HZ
+  last_speed_ms = None
+  scan_i = 0
+  # Other signs (NAPSignOthers, default Off): same proposer / tracker / crop,
+  # optional classifier, display / log only. Never touches longitudinal.
+  from openpilot.common.params import Params
+  others_params = Params()
+  apply_plan_params(tracker, read_plan_params(others_params))
+  others = other_signs_mod.OtherSigns(other_signs_mod.OnnxFamilyReader(default_other_signs_path()))
+  others.set_enabled(read_others_param(others_params))
+  others_param_t = time.monotonic()
+  others_pub_t = 0.0
+  others_last_sent = None
+  last_proposer_try = time.monotonic()
+  last_stopped_log = 0.0
+  backend = detector.backend_name()
+  weights_sha = detector.weights_sha_short()
+  if detector.onnx is not None and detector.onnx.session is not None:
+    backend = assert_cpu_backend(detector.onnx.session)
+  runtimes = describe_infer_runtimes()
+  os_threads = read_proc_thread_count()
+  from openpilot.selfdrive.speedsignd.install import runtime_missing, runtime_status_summary
+  runtime_label = runtime_status_summary()
+  cloudlog.info(
+    "speedsignd cpu-only asserted backend=%s runtimes=%s dev=%s qcom=%s gpu=%s cpu_count=%s",
+    backend, runtimes, os.environ.get("DEV", ""), os.environ.get("QCOM", ""),
+    os.environ.get("GPU", ""), os.environ.get("CPU_COUNT", ""),
+  )
+  cloudlog.info(
+    "speedsignd starting log=%s backend=%s onnx=%s sha=%s sm_hz=%.1f detect_hz=%.2f "
+    + "budget_ms=%.0f cap_ms=%.0f threads=%d os_threads=%s cores=%s nice=%d sched=%s "
+    + "detect_while_engaged=1 crop_rgb=1 duty=%.2f runtime=%s",
+    log_path, backend, onnx_path, weights_sha, SM_HZ, hz, INFER_BUDGET_MS, cap_ms, threads,
+    "na" if os_threads is None else str(int(os_threads)),
+    ",".join(str(c) for c in SPEEDSIGND_CORES), SPEEDSIGND_NICE, sched_name, CPU_BUDGET,
+    runtime_label,
+  )
+  # tinygrad-clang already logged its own fallback inside _onnx_session.
+  if runtime_missing() and backend != "tinygrad-clang":
+    cloudlog.warning(
+      "speedsignd runtime missing — Settings → NAP → Install weights also installs "
+      + "onnxruntime into /data/media/0/nap/pylib (not the system venv). "
+      + "The plate shows NO RT. CLANG will not run while engaged.",
+    )
+  if detector.onnx is None:
+    cloudlog.warning(
+      "speedsignd: no ONNX at %s — numpy fallback will not see real roadside signs. "
+      + "HUD will show NO WT. Settings → NAP → Install weights, or: "
+      + "python -m scripts.nap.install_speed_sign_weights",
+      onnx_path,
+    )
+
+  cloudlog.info(
+    "speedsignd two-stage proposer=%s path=%s err=%s hz=%.1f burst_hz=%.1f conf=%.2f "
+    + "solo_prop=%.2f reads_after_mph=%d strip=%s",
+    int(proposer.ok), proposer.path, proposer.error, two_stage.PROPOSER_HZ,
+    two_stage.PROPOSER_BURST_HZ, two_stage.PROPOSER_CONF,
+    two_stage.TRACK_SOLO_PROPOSAL_CONF, two_stage.READS_AFTER_MPH, two_stage.STRIP_RECT,
+  )
+  sm = messaging.SubMaster(
+    ["gpsLocationExternal", "gpsLocation", "selfdriveState", "modelV2", "extrinsicsCalibration", "liveMapDataNAP"],
+    frequency=SM_HZ,
+  )
+  pm = messaging.PubMaster([SERVICE_NAME, "otherSignsNAP"])
+  rk = Ratekeeper(SM_HZ, print_delay_threshold=None)
+  client = None
+  last_connect = 0.0
+  last_onnx_try = time.monotonic()
+  next_detect = 0.0
+  next_propose = 0.0
+  # v2.1: proposer duty cap (all passes) and the exempt-read clock.
+  prop_duty = two_stage.ProposerDuty()
+  sign_seq = 0
+  sign_loc: dict | None = None
+  plate = confirm.PlateState()
+  auto_conf = AutoConfirm()   # NAPSignAutoConfirm, default off
+  answer_t = 0.0
+  exempt_next = 0.0
+  # Proposer CPU seconds since the last reader sample. Subtracted from the
+  # process share so the 25% read budget does not see the strip proposer.
+  proposer_cpu_s = 0.0
+  infer_ms: list[float] = []
+  skip_count = 0
+  last_timing_log = time.monotonic()
+  started_at = time.monotonic()
+  last_allow: bool | None = None
+  last_paused: bool | None = None
+  compile_gate = CompileGate()
+  reader_warmed = False
+  next_reader_warmup = 0.0
+  cloudlog.info(
+    "speedsignd compile-gate backend=%s needs_compile=%s ready=%s timeout_s=%.0f",
+    backend, int(backend_needs_compile(backend)), int(detector.compile_ready()),
+    compile_gate.timeout_s,
+  )
+  last_unknown_warn = 0.0
+  last_empty_frame_log = 0.0
+  last_empty_raw_log = 0.0
+  last_infer_done = 0.0
+  last_gate_log = 0.0
+  last_skip_reason = "init"
+  in_holdoff = False
+  slot = InferSlot()
+  last_read_start = 0.0
+  pending_interval_ms = 0.0
+  pending_backoff = False
+  pending_reason = "pace"
+  scheduled_backoff = False
+  scheduled_reason = "pace"
+  model_watch = ModelWatch()
+  cpu_meter = CpuShareMeter()
+  second_look: PendingSecondLook | None = None
+  model_extended = False
+  last_infer_s = period_s
+  window_i = 0
+  pending_window = 0
+  burst_left = 0
+  burst_window = 0
+  burst_cluster_s = 0.0
+  duty_spans: list[tuple[float, float]] = []
+
+  while True:
+    sm.update(0)
+    observe_model(model_watch, sm)
+    now_mono = time.monotonic()
+    sample = engagement_from_sm(sm, now=now_mono, started_at=started_at)
+    # Refresh every tick, before any infer starts. The first frame of a boot
+    # that is already engaged sees controlling=True and does not compile a
+    # backend that needs it. onnxruntime is already ready. Unknown cereal is
+    # not permission either. The worker re-reads this flag inside run().
+    _permitted, gate_warn = arm_compile_gate(
+      compile_gate, detector, now=now_mono,
+      known=bool(sample.known), controlling=bool(sample.controlling),
+    )
+    if gate_warn:
+      cloudlog.warning("%s", gate_warn)
+    live_model = model_watch.reason()
+    if live_model and not model_extended:
+      hard_now = model_watch.hard_guard()
+      extra_now = model_guard_rest_s(last_infer_s, period_s, live_model, hard_now)
+      # A frame skip or modeld > 50 ms pauses even before the first infer.
+      # A frameDropPerc backoff still only extends a schedule that already exists.
+      if next_detect > 0.0 or hard_now:
+        next_detect = max(next_detect, now_mono + extra_now)
+      if next_propose > 0.0 or hard_now:
+        next_propose = max(next_propose, now_mono + extra_now)
+      # A model pause is not a burst. Do not dump the extra reads when it ends.
+      burst_left = 0
+      burst_cluster_s = 0.0
+      model_extended = True
+      cloudlog.warning(
+        "%s",
+        format_backoff_timing(
+          extra_ms=extra_now * 1000.0,
+          infer_ms=last_infer_s * 1000.0,
+          engaged=sample.controlling,
+          reason=live_model,
+          backend=detector.backend_name(),
+        ),
+      )
+    elif not live_model:
+      model_extended = False
+    if not sample.allow_detect:
+      abandoned = slot.pause()
+      if abandoned:
+        cloudlog.info("speedsignd abandon in-flight ONNX (%s)", engagement_log_fields(sample))
+    else:
+      if should_reset_detect_after_wait(last_allow, sample.allow_detect):
+        next_detect = 0.0
+        next_propose = 0.0
+        in_holdoff = False
+      slot.resume()
+      # Engaged + compile still forbidden: drop a queued realize. A no-compile
+      # backend and a gate timeout are allowed_now, so they are not dropped.
+      # A realize that has already entered clang cannot be killed; that only
+      # happens after a known-disengaged start.
+      if drop_inflight_for_compile(
+        controlling=bool(sample.controlling), busy=bool(slot.busy),
+        allowed_now=detector.compile_allowed_now(),
+      ):
+        slot.pause()
+    if last_allow != sample.allow_detect or last_paused != sample.detect_paused:
+      cloudlog.info(
+        "speedsignd detect %s (%s)",
+        "paused" if not sample.allow_detect else "running",
+        engagement_log_fields(sample),
+      )
+      last_allow = sample.allow_detect
+      last_paused = sample.detect_paused
+    if sample.unknown_after_grace and now_mono - last_unknown_warn >= INFER_LOG_PERIOD_S:
+      cloudlog.warning(
+        "speedsignd selfdriveState unread after %.1fs; allowing throttled detect (not WAIT) %s",
+        now_mono - started_at, engagement_log_fields(sample),
+      )
+      last_unknown_warn = now_mono
+    if now_mono - last_timing_log >= INFER_LOG_PERIOD_S:
+      _log_infer_timing(cloudlog, infer_ms, skip_count, hz, sample.controlling, threads)
+      infer_ms = []
+      skip_count = 0
+      last_timing_log = now_mono
+    # Retry the weights read at nice 19. Install itself stays offroad.
+    # Building the lazy session is not the clang realize. A replaced file
+    # (Install Weights, new sha) reloads here, including while engaged:
+    # onnxruntime is ready immediately; tinygrad stays gated until the
+    # disengaged warmup or the timeout.
+    if sample.allow_detect and not slot.busy and now_mono - last_onnx_try >= ONNX_RETRY_S:
+      last_onnx_try = now_mono
+      if detector.onnx is None:
+        if not sample.controlling and detector.try_reload():
+          reader_warmed = False
+          next_reader_warmup = 0.0
+          cloudlog.info(
+            "speedsignd: ONNX loaded after retry backend=%s onnx=%s sha=%s",
+            detector.backend_name(), onnx_path, detector.weights_sha_short(),
+          )
+      elif detector.reload_if_weights_changed():
+        reader_warmed = False
+        next_reader_warmup = 0.0
+        cloudlog.info(
+          "speedsignd weights replaced backend=%s sha=%s",
+          detector.backend_name(), detector.weights_sha_short(),
+        )
+    # One blank reader pass while known-disengaged, at startup and after a
+    # new weights file. It runs on the infer thread (SCHED_IDLE, core 2),
+    # not the 20 Hz loop, and the outcome is budgeted like any other read
+    # (idle at least 3×). Not while engaged and not during modeld lag:
+    # that would be an infer on top of the normal reader budget.
+    if (
+      not reader_warmed and detector.onnx is not None
+      and reader_session_warm(detector.onnx.session)
+    ):
+      reader_warmed = True
+    elif (
+      not reader_warmed
+      and detector.onnx is not None
+      and sample.allow_detect
+      and sample.known
+      and not sample.controlling
+      and not slot.busy
+      and not model_watch.reason()
+      and now_mono >= next_reader_warmup
+    ):
+      def _warm(det=detector):
+        ok = det.warmup(controlling=False, model_paused=False)
+        return [], [], {"warmup": 1, "warmup_ok": int(bool(ok))}
+
+      if slot.start(_warm):
+        reader_warmed = True
+        next_reader_warmup = now_mono + ONNX_RETRY_S
+        cloudlog.info(
+          "speedsignd reader warmup starting backend=%s sha=%s",
+          detector.backend_name(), detector.weights_sha_short(),
+        )
+    signs: list = []
+    if sample.allow_detect:
+      outcome = slot.take()
+      if outcome is not None and isinstance(outcome.diag, dict) and outcome.diag.get("warmup"):
+        if outcome.diag.get("warmup_ok"):
+          cloudlog.info(
+            "speedsignd reader warmup done %.0fms backend=%s sha=%s",
+            outcome.infer_s * 1000.0, detector.backend_name(), detector.weights_sha_short(),
+          )
+        else:
+          reader_warmed = False
+          next_reader_warmup = now_mono + ONNX_RETRY_S
+          cloudlog.warning(
+            "speedsignd reader warmup failed backend=%s sha=%s err=%s",
+            detector.backend_name(), detector.weights_sha_short(), outcome.error or "",
+          )
+      if outcome is not None:
+        signs = outcome.signs
+        infer_ms.append(outcome.infer_s * 1000.0)
+        raw = list(getattr(debounce, "last_raw", []))
+        diag = outcome.diag if outcome.diag is not None else detector.diag_dict()
+        two = isinstance(diag, dict) and bool(diag.get("two_stage"))
+        reader_ran = bool(two and diag.get("reader_ran"))
+        reader_s = float(diag.get("reader_s") or 0.0) if two else float(outcome.infer_s)
+        if two:
+          proposer_cpu_s += max(0.0, float(diag.get("prop_ms") or 0.0) / 1000.0)
+          prop_duty.add(
+            float(diag.get("t_frame", now_mono)), int(diag.get("prop_passes") or 1),
+            max(0.0, float(diag.get("prop_ms") or 0.0) / 1000.0),
+          )
+          if not diag.get("tracker_applied"):
+            tracker.update(diag.get("props") or [], float(diag.get("t_frame", now_mono)))
+          read_tid = diag.get("read_tid")
+          if reader_ran and read_tid is not None:
+            for tr in tracker.tracks:
+              if tr.tid == read_tid and tr.planned:
+                # v2.2: the HUD sees only a burst decision (2 agreeing reads,
+                # or one >= 0.85 on a >= 56 px box). JSONL already ran.
+                # v2.3: the burst votes on the main reader's raw class mph.
+                released = tracker.mark_planned_read(
+                  tr, raw, diag.get("read_h"), neg=two_stage.neg_read(diag.get("read_diag")),
+                  t=float(diag.get("t_frame", now_mono)),
+                )
+                # The plate never follows a read; a decision only raises the prompt.
+                signs = []
+                placed = None
+                if released:
+                  # Locate the sign first: the prompt carries where the sign stands, so a Yes /
+                  # auto-confirm starts the map section at the sign, not at the car.
+                  placed = place_sign(diag, released, tr, sm)
+                  way_id, way_hdg = diag.get("read_way") or (0, None)
+                  meta = diag.get("read_jpg_meta") or {}
+                  top = max(released, key=lambda s: float(s.conf))
+                  pr = plate.propose(
+                    int(top.mph), float(top.conf), way_id=way_id,
+                    heading=way_hdg if way_hdg is not None else meta.get("bearing"),
+                    lat=meta.get("lat"), lon=meta.get("lon"),
+                    read_id=("read", read_tid, float(diag.get("t_frame", now_mono))), now=now_mono,
+                    sign=placed,
+                  )
+                  if pr is not None and diag.get("read_jpg_meta") is not None:
+                    # pending.json is this prompt's read only (keyed by seq).
+                    pmeta = dict(meta, mph=int(top.mph), conf=round(float(top.conf), 3), seq=int(pr.seq),
+                                 way_id=int(way_id or 0), **pr.sign_fields())
+                    two_stage.write_pending(pmeta, diag.get("read_jpg"))
+                if released:
+                  if placed is not None:
+                    sign_seq += 1
+                    sign_loc = dict(placed, seq=sign_seq)
+              elif tr.tid == read_tid:
+                tracker.mark_read(
+                  tr, got_mph=bool(signs), neg=two_stage.neg_read(diag.get("read_diag")),
+                  read_h=diag.get("read_h"), top_conf=two_stage.top_conf(signs),
+                )
+            if signs and diag.get("read_jpg_meta") is not None:
+              top = max(signs, key=lambda s: float(s.conf))
+              meta = dict(diag["read_jpg_meta"])
+              meta.update(
+                mph=int(top.mph), conf=round(float(top.conf), 3),
+                refine_mph=None if getattr(top, "refine_mph", None) is None else int(top.refine_mph),
+                refine_conf=round(float(getattr(top, "refine_conf", 0.0) or 0.0), 3),
+                **{"class": (diag.get("read_diag") or {}).get("peak_name")},
+              )
+              two_stage.write_pending(meta, diag.get("read_jpg"))
+        # Proposer-only ticks must not reset the CPU meter. The sample that
+        # ends on a read covers the idle plus the proposer, and the proposer
+        # seconds are subtracted before the 25% check.
+        share = None
+        read_share = None
+        if not two or reader_ran:
+          share = cpu_meter.sample(now_mono, read_proc_stat_jiffies())
+          if two:
+            read_share = share_without_proposer(share, cpu_meter.last_dt or 0.0, proposer_cpu_s)
+            proposer_cpu_s = 0.0
+          else:
+            read_share = share
+        os_threads = read_proc_thread_count()
+        if not two or reader_ran:
+          cloudlog.info(
+            "%s",
+            format_read_timing(
+              read_interval_ms=pending_interval_ms,
+              infer_ms=(reader_s if two else outcome.infer_s) * 1000.0,
+              engaged=sample.controlling,
+              backoff=pending_backoff,
+              reason=pending_reason,
+              cpu_share=read_share if two else share,
+              threads=threads,
+              os_threads=os_threads,
+              backend=detector.backend_name(),
+            ),
+          )
+        pressure = collect_host_pressure(sm)
+        model_reason = model_watch.reason()
+        hard = model_watch.hard_guard()
+        model_watch.consume()
+        if two and not reader_ran:
+          # cpu-load / cpu-budget used to rest ~1 s after every proposer
+          # tick (period is 1 s, infer is ~110 ms). Those rests stay on
+          # the reader. modeld lag still pauses both.
+          reason = model_reason
+        else:
+          reason = drop_cpu_reasons(join_reasons(
+            pressure_reason(pressure),
+            model_reason,
+            "cpu-budget" if cpu_over_budget(read_share) else "",
+          ), two and tracker.budget_exempt(float(diag.get("t_frame", now_mono))))
+        pace_infer = reader_s if two and reader_ran else outcome.infer_s
+        extra_s = model_guard_rest_s(pace_infer, period_s, reason, hard)
+        scheduled_backoff = extra_s > 0.0
+        scheduled_reason = reason or "pace"
+        if scheduled_backoff and (not two or reader_ran or model_reason_pauses_proposer(reason)):
+          cloudlog.warning(
+            "%s",
+            format_backoff_timing(
+              extra_ms=extra_s * 1000.0,
+              infer_ms=pace_infer * 1000.0,
+              engaged=sample.controlling,
+              reason=reason,
+              backend=detector.backend_name(),
+            ),
+          )
+        bursting_next = False
+        if two:
+          t_frame = float(diag.get("t_frame", now_mono))
+          propose_at = t_frame + tracker.proposer_period_s(now_mono, last_speed_ms)
+          if model_reason_pauses_proposer(reason) and extra_s > 0.0:
+            propose_at = max(propose_at, now_mono + extra_s)
+            next_detect = max(next_detect, now_mono + extra_s)
+            exempt_next = max(exempt_next, now_mono + extra_s)
+          next_propose = max(next_propose, propose_at)
+          if reader_ran:
+            read_backoff = 0.0 if model_reason_pauses_proposer(reason) else extra_s
+            (
+              next_mono, burst_left, burst_window, window_i, burst_cluster_s, bursting_next,
+            ) = schedule_after_read(
+              now=now_mono,
+              infer_s=max(0.0, reader_s),
+              period_s=period_s,
+              budget_s=budget_s,
+              cap_s=cap_s,
+              backoff_s=read_backoff,
+              sign_like=False,
+              window_used=pending_window,
+              window_count=1,
+              burst_left=0,
+              burst_window=0,
+              burst_cluster_s=0.0,
+              spans=duty_spans,
+            )
+            duty_spans.append((now_mono, reader_s))
+            duty_spans = [(end, dur) for end, dur in duty_spans if now_mono - float(end) <= DUTY_WINDOW_S]
+            # v2.1: a live confirmed track (<= EXEMPT_READS_PER_TRACK reads)
+            # skips the pacing (gap ~1x infer, none after an empty read); the
+            # span above is charged, so the next steady read waits it off. An
+            # empty read is not paced but stays inside the 25%/10 s cap.
+            empty_read = not signs
+            exempt_now = tracker.budget_exempt(float(diag.get("t_frame", now_mono)))
+            paused = model_reason_pauses_proposer(reason) and extra_s > 0.0
+            duty_t = earliest_budget_start(duty_spans, now_mono, max(0.0, reader_s))
+            if reader_s > 0.0:
+              tracker.read_s = 0.8 * tracker.read_s + 0.2 * reader_s
+            if exempt_now and not paused:
+              in_burst = tracker.in_burst(float(diag.get("t_frame", now_mono)))
+              exempt_next = two_stage.reader_next_after(
+                end=now_mono, infer_s=0.0 if in_burst else reader_s, steady=next_mono, duty_t=duty_t, exempt=True, empty=empty_read,
+              )
+              next_detect = max(next_detect, next_mono)
+            elif empty_read and not paused and read_backoff <= 0.0:
+              next_detect = two_stage.reader_next_after(
+                end=now_mono, infer_s=reader_s, steady=next_mono, duty_t=duty_t, exempt=False, empty=True,
+              )
+            else:
+              next_detect = max(next_detect, next_mono)
+        else:
+          (
+            next_mono, burst_left, burst_window, window_i, burst_cluster_s, bursting_next,
+          ) = schedule_after_read(
+            now=now_mono,
+            infer_s=outcome.infer_s,
+            period_s=period_s,
+            budget_s=budget_s,
+            cap_s=cap_s,
+            backoff_s=extra_s,
+            sign_like=sign_burst_trigger(diag, raw),
+            window_used=pending_window,
+            window_count=2,
+            burst_left=burst_left,
+            burst_window=burst_window,
+            burst_cluster_s=burst_cluster_s,
+            spans=duty_spans,
+          )
+          duty_spans.append((now_mono, outcome.infer_s))
+          duty_spans = [(end, dur) for end, dur in duty_spans if now_mono - float(end) <= DUTY_WINDOW_S]
+          next_detect = max(next_detect, next_mono)
+        if bursting_next and not scheduled_backoff:
+          scheduled_reason = "burst"
+        err = f" err={outcome.error}" if outcome.error else ""
+        if outcome.error and not diag.get("error"):
+          diag = dict(diag)
+          diag["error"] = outcome.error
+        if two:
+          err = err + (
+            f" two=props:{len(diag.get('props') or [])}/{float(diag.get('prop_ms') or 0.0):.0f}ms"
+            + f" read={diag.get('read_tid')} tracks={len(tracker.tracks)}"
+          )
+        (cloudlog.debug if (two and diag.get("read_tid") is None) else cloudlog.info)(
+          "speedsignd infer %.0fms %s raw=%s hud=%s jsonl=%s%s",
+          outcome.infer_s * 1000.0,
+          format_infer_diag(diag, allow_detect=sample.allow_detect),
+          [(int(s.mph), round(float(s.conf), 2)) for s in raw],
+          [(int(s.mph), round(float(s.conf), 2)) for s in signs],
+          [w.get("mph") for w in outcome.written],
+          err,
+        )
+        last_infer_done = now_mono
+        last_infer_s = outcome.infer_s
+        last_skip_reason = "ok"
+        # A burst re-reads the same tile with YOLO. The OCR second look would
+        # spend those frames and push the confirm past the sign.
+        if bursting_next or two:
+          second_look = None
+        else:
+          box = sign_like_bbox(outcome.signs, diag)
+          if box is not None:
+            second_look = PendingSecondLook(
+              bbox=box,
+              frames_left=SECOND_LOOK_FRAMES,
+              deadline=now_mono + SECOND_LOOK_DEADLINE_S,
+            )
+          else:
+            second_look = None
+        if not raw and now_mono - last_empty_raw_log >= INFER_LOG_PERIOD_S:
+          cloudlog.info(
+            "speedsignd empty-raw %s",
+            format_infer_diag(diag, allow_detect=sample.allow_detect),
+          )
+          last_empty_raw_log = now_mono
+    if sample.allow_detect and now_mono - last_gate_log >= INFER_LOG_PERIOD_S:
+      if last_infer_done == 0.0 or now_mono - last_infer_done >= INFER_LOG_PERIOD_S:
+        connected = client is not None and bool(getattr(client, "is_connected", lambda: False)())
+        cloudlog.info(
+          "speedsignd waiting-infer reason=%s connected=%s busy=%s holdoff=%s onnx=%s allow=1",
+          last_skip_reason, connected, slot.busy, in_holdoff, detector.onnx is not None,
+        )
+      last_gate_log = now_mono
+    if client is None or not client.is_connected():
+      last_skip_reason = detect_skip_reason(
+        connected=False, onnx=detector.onnx is not None, busy=slot.busy, holdoff=in_holdoff,
+      )
+      if now_mono - last_connect >= 0.5:
+        last_connect = now_mono
+        try:
+          if client is None:
+            client = _connect_road_camera()
+          client.connect(False)
+        except Exception:
+          client = None
+    elif not sample.allow_detect:
+      # Do not idle the ROAD client for the whole engage — first manual recv
+      # after WAIT used to timeout / return nothing while modeld stayed healthy.
+      drain_vision_latest(client)
+    elif (
+      second_look is not None and sample.allow_detect and not slot.busy
+      and now_mono <= second_look.deadline
+    ):
+      buf = client.recv(timeout_ms=VISION_TIMEOUT_MS)
+      looked = second_look_sign(buf, second_look.bbox) if buf is not None else None
+      second_look.frames_left -= 1
+      if looked is not None:
+        signs = list(signs) + [looked]
+        now_look = time.monotonic()
+        split = debounce.update_split([looked], now_look)
+        cloudlog.info(
+          "speedsignd second-look mph=%d conf=%.2f",
+          int(looked.mph), float(looked.conf),
+        )
+        if split.confirmed:
+          lat, lon, bearing, gps_ok = gps_sample_from_sm(sm, now=now_look)
+          stalled = bool(sample.controlling) and disk_stalled(collect_host_pressure(sm))
+          if gps_ok and not stalled:
+            for sign in split.confirmed:
+              rec = make_record(now_look, lat, lon, bearing, sign.mph, sign.conf)
+              if jsonl_line_is_light(rec):
+                logger.write(rec)
+      if second_look.frames_left <= 0 or now_mono > second_look.deadline:
+        second_look = None
+    elif sample.allow_detect and not slot.busy and now_mono >= (
+      next_propose if proposer.ok and detector.onnx is not None else next_detect
+    ):
+      in_holdoff = False
+      buf = client.recv(timeout_ms=VISION_TIMEOUT_MS)
+      # Engage can happen during the vision wait — re-read before ONNX.
+      sm.update(0)
+      observe_model(model_watch, sm)
+      sample = engagement_from_sm(sm, now=time.monotonic(), started_at=started_at)
+      if not sample.allow_detect:
+        slot.pause()
+      else:
+        which = window_i
+        speed_ms = two_stage.speed_from_sm(sm)
+        last_speed_ms = speed_ms
+        if (
+          proposer.ok is False and not sample.controlling
+          and now_mono - last_proposer_try >= ONNX_RETRY_S
+        ):
+          last_proposer_try = now_mono
+          if proposer.load():
+            cloudlog.info("speedsignd two-stage proposer loaded after retry")
+        use_two = proposer.ok and detector.onnx is not None and buf is not None
+        stopped_skip = False
+        if use_two and not two_stage.proposals_allowed(speed_ms):
+          # Stopped: no proposer, no read. Holds / plate unchanged.
+          next_propose = now_mono + two_period_s
+          last_skip_reason = "stopped"
+          if now_mono - last_stopped_log >= INFER_LOG_PERIOD_S:
+            cloudlog.info("speedsignd two-stage skip stopped v=%.1f", float(speed_ms or 0.0))
+            last_stopped_log = now_mono
+          stopped_skip = True
+          use_two = False
+          nv12 = None
+          two_job = None
+        elif use_two and not prop_duty.fits(
+          now_mono, 1, two_stage.burst_headroom(tracker, now_mono, speed_ms),
+        ):
+          # v2.1: proposer duty cap (25% of a core over 10 s, all passes).
+          next_propose = max(now_mono + 1.0 / two_stage.PROPOSER_BURST_HZ, prop_duty.next_fit(now_mono, 1))
+          last_skip_reason = "prop-duty"
+          stopped_skip = True
+          use_two = False
+          nv12 = None
+          two_job = None
+        elif use_two:
+          # Copy the strip and a padded bank, then let the worker propose,
+          # update the tracker, and subcrop the measured box. The crop is
+          # not the box predicted from the previous frame.
+          fw = int(getattr(buf, "width", 1928) or 1928)
+          fh = int(getattr(buf, "height", 1208) or 1208)
+          # Calibration-placed main strip; the upper strip (right road edge,
+          # top ~y350) alternates scans. Missing inputs -> legacy STRIP_RECT.
+          main_rect, upper_rect = strip_geom.strips(
+            fw, fh, rpy=calib_rpy_from_sm(sm), edge=strip_geom.edge_from_model(sm["modelV2"]),
+          )
+          scan_i += 1
+          if upper_rect is not None and (scan_i % two_stage.UPPER_EVERY or not prop_duty.fits(now_mono, 2)):
+            upper_rect = None
+          scan_rect = two_stage.union_rect(main_rect, upper_rect)
+          strip = copy_nv12_rect(buf, main_rect)
+          upper = copy_nv12_rect(buf, upper_rect) if upper_rect is not None else None
+          bank = copy_nv12_rect(buf, two_stage.frame_bank_rect(fw, fh, scan_rect))
+          t_frame = time.monotonic()
+          allow_read = now_mono >= next_detect
+          allow_exempt = now_mono >= exempt_next
+          nv12 = strip
+          stop_plan_now = other_signs_mod.model_stop_plan(sm["modelV2"], speed_ms) if others.active else False
+          two_job = None if strip is None else (strip, bank, allow_read, t_frame, upper, scan_rect, speed_ms, stop_plan_now, allow_exempt,
+                                                 confirm.map_way_from_sm(sm))
+        else:
+          nv12 = copy_nv12_detect_crop(buf, which) if buf is not None else None
+          two_job = None
+        if stopped_skip:
+          pass
+        elif buf is None:
+          last_skip_reason = detect_skip_reason(
+            connected=True, onnx=detector.onnx is not None, busy=False, holdoff=False,
+            buf_empty=True,
+          )
+          now_empty = time.monotonic()
+          if now_empty - last_empty_frame_log >= INFER_LOG_PERIOD_S:
+            cloudlog.info("speedsignd ROAD recv empty (timeout_ms=%d)", VISION_TIMEOUT_MS)
+            last_empty_frame_log = now_empty
+        elif nv12 is None:
+          last_skip_reason = detect_skip_reason(
+            connected=True, onnx=detector.onnx is not None, busy=False, holdoff=False,
+            parse_fail=True,
+          )
+          now_empty = time.monotonic()
+          if now_empty - last_empty_frame_log >= INFER_LOG_PERIOD_S:
+            stride = getattr(buf, "stride", 0)
+            uv_off = getattr(buf, "uv_offset", 0)
+            cloudlog.info(
+              "speedsignd NV12 parse failed w=%s h=%s stride=%s uv_offset=%s",
+              getattr(buf, "width", None), getattr(buf, "height", None), stride, uv_off,
+            )
+            last_empty_frame_log = now_empty
+        lat, lon, bearing, gps_ok = gps_sample_from_sm(sm, now=time.monotonic())
+        # On-road: do not run numpy-mutcd when weights are missing (no fake mph / JSONL).
+        have_frame = detector.onnx is not None and nv12 is not None
+        if have_frame:
+          pressure_now = collect_host_pressure(sm)
+          stalled = bool(sample.controlling) and disk_stalled(pressure_now)
+          engaged_now = bool(sample.controlling)
+
+          # Compile only when this read is known-disengaged, unless the
+          # backend has no compile step, the weights already loaded, or the
+          # gate has been shut long enough that the reader would miss the
+          # drive. A warm cache runs while engaged, on CPU.
+          permitted, gate_warn = arm_compile_gate(
+            compile_gate, detector, now=time.monotonic(),
+            known=bool(sample.known), controlling=engaged_now,
+          )
+          if gate_warn:
+            cloudlog.warning("%s", gate_warn)
+
+          def _run2(job=two_job, lat=lat, lon=lon, bearing=bearing, gps_ok=gps_ok,
+                    engaged_now=engaged_now, stalled=stalled):
+            if not detector.compile_allowed_now():
+              raise RuntimeError("compile-blocked while driving")
+            assert job is not None
+            strip_c, bank_c, allow_read, t_fr, upper_c, scan_rect, v_job, stop_plan_job, allow_ex, way_job = job
+            t0 = time.monotonic()
+            props = proposer.propose(strip_c)
+            if upper_c is not None:
+              props = list(props) + list(proposer.propose(upper_c))
+            prop_ms = (time.monotonic() - t0) * 1000.0
+            cand = two_stage.select_read_target(
+              tracker, props, t_fr, allow_read=bool(allow_read),
+              v_ego=v_job, next_t=t_fr + tracker.proposer_period_s(t_fr, v_job), strip=scan_rect,
+              allow_exempt=bool(allow_ex),
+            )
+            cap_c = None
+            rect = None
+            tid = None
+            if cand is not None and bank_c is not None:
+              rect = two_stage.capture_rect(
+                cand.read_box(t_fr, v_job) if cand.planned else cand.crop_box(),
+              int(bank_c.frame_w), int(bank_c.frame_h),
+              )
+              cap_c = subcrop_nv12(bank_c, rect)
+              tid = None if cap_c is None else cand.tid
+            signs_r: list = []
+            written_r: list = []
+            read_diag = None
+            jpg = None
+            reader_s = 0.0
+            if cap_c is not None:
+              t_r = time.monotonic()
+              signs_r, written_r = detect_if_allowed(
+                cap_c.y, lat, lon, bearing, gps_ok, detector, logger, time.monotonic(),
+                controlling=engaged_now, rgb=None, debounce=debounce, nv12=cap_c,
+                disk_stalled=stalled,
+              )
+              reader_s = time.monotonic() - t_r
+              read_diag = detector.diag_dict()
+              if others.active:
+                others.on_read(cap_c, tid, stop_plan=stop_plan_job)
+              if signs_r and not (engaged_now and stalled):
+                jpg = two_stage.crop_jpeg_bytes(cap_c)
+              signs_r = [replace(s, track_id=tid) for s in signs_r]
+            d = dict(read_diag or {})
+            d.update(
+              two_stage=1, t_frame=t_fr, props=props, prop_ms=round(prop_ms, 1),
+              prop_passes=1 if upper_c is None else 2,
+              read_way=way_job,
+              read_box=None if cand is None or cap_c is None else [float(v) for v in (
+                cand.read_box(t_fr, v_job) if cand.planned else cand.box)],
+              read_h=None if cand is None or cap_c is None else float(
+                (cand.read_box(t_fr, v_job) if cand.planned else cand.box)[3]),
+              read_tid=tid, read_diag=read_diag, read_jpg=jpg,
+              tracker_applied=1, reader_ran=cap_c is not None, reader_s=reader_s,
+              read_jpg_meta=None if cap_c is None else dict(
+                t=round(time.time(), 3),  # noqa: TID251
+                track_id=tid, crop=list(rect) if rect else None,
+                lat=lat if gps_ok else None, lon=lon if gps_ok else None,
+                bearing=bearing if gps_ok else None, gps_ok=bool(gps_ok),
+              ),
+            )
+            return signs_r, written_r, d
+
+          def _run(nv12=nv12, lat=lat, lon=lon, bearing=bearing, gps_ok=gps_ok,
+                   engaged_now=engaged_now, stalled=stalled):
+            # Live flag, not the value captured when this read was scheduled.
+            if not detector.compile_allowed_now():
+              raise RuntimeError("compile-blocked while driving")
+            signs_w = detect_if_allowed(
+              nv12.y, lat, lon, bearing, gps_ok, detector, logger, time.monotonic(),
+              controlling=engaged_now, rgb=None, debounce=debounce, nv12=nv12,
+              disk_stalled=stalled,
+            )
+            return signs_w[0], signs_w[1], detector.diag_dict()
+
+          if not permitted:
+            last_skip_reason = "compile-wait"
+            next_detect = max(next_detect, time.monotonic() + 1.0)
+            if two_job is not None:
+              next_propose = max(next_propose, time.monotonic() + 1.0)
+            if now_mono - last_gate_log >= INFER_LOG_PERIOD_S:
+              cloudlog.warning(
+                "%s",
+                format_backoff_timing(
+                  extra_ms=1000.0, infer_ms=0.0, engaged=True,
+                  reason="compile-wait", backend=detector.backend_name(),
+                ),
+              )
+              last_gate_log = now_mono
+          elif slot.start(_run2 if two_job is not None else _run):
+            pending_window = which
+            now_start = time.monotonic()
+            pending_interval_ms = 0.0 if last_read_start <= 0.0 else (now_start - last_read_start) * 1000.0
+            pending_backoff = scheduled_backoff
+            pending_reason = scheduled_reason
+            last_read_start = now_start
+            if two_job is not None:
+              # Floor at the fastest proposer period so a dropped outcome
+              # cannot spin. The outcome handler sets the real 2 Hz / 5 Hz
+              # cadence and, if a read ran, the reader duty gap. Do not
+              # push next_detect here: a proposer tick must not black out
+              # the next sharp read.
+              next_propose = max(next_propose, now_start + (1.0 / two_stage.PROPOSER_BURST_HZ))
+            else:
+              # Floor at one period. The outcome handler then applies the
+              # 3× idle duty cycle, which is longer whenever the infer is.
+              next_detect = now_start + period_s
+            last_skip_reason = "ok"
+          else:
+            last_skip_reason = detect_skip_reason(
+              connected=True, onnx=True, busy=True, holdoff=False,
+            )
+        elif detector.onnx is None:
+          last_skip_reason = detect_skip_reason(
+            connected=True, onnx=False, busy=slot.busy, holdoff=False,
+          )
+    elif sample.allow_detect and (
+      slot.busy
+      or (next_detect > 0 and now_mono < next_detect and not (proposer.ok and detector.onnx is not None))
+      or (
+        proposer.ok and detector.onnx is not None and next_propose > 0 and now_mono < next_propose
+      )
+    ):
+      last_skip_reason = detect_skip_reason(
+        connected=True, onnx=detector.onnx is not None, busy=slot.busy, holdoff=True,
+      )
+      if not in_holdoff:
+        skip_count += 1
+        in_holdoff = True
+      if slot.busy:
+        try:
+          os.sched_yield()
+        except Exception:
+          pass
+    if now_mono - answer_t >= confirm.ANSWER_POLL_S:
+      answer_t = now_mono
+      try:
+        raw_answer = others_params.get(confirm.ANSWER_PARAM)
+        if raw_answer is not None:
+          others_params.remove(confirm.ANSWER_PARAM)
+          plate.answer(raw_answer)
+      except Exception:
+        pass
+    g_lat, g_lon, g_bearing, g_ok = gps_sample_from_sm(sm, now=now_mono)
+    auto_conf.refresh(others_params, now_mono)
+    if auto_conf.enabled and plate.proposal is not None and sm.valid.get("liveMapDataNAP", False):
+      try:
+        src = auto_conf.tick(plate, sm["liveMapDataNAP"], (g_lat, g_lon, g_bearing) if g_ok else None, now_mono)
+        if src is not None:
+          cloudlog.info("speedsignd: auto-confirmed sign source=%s", src)
+      except Exception:
+        cloudlog.exception("speedsignd: auto-confirm failed")
+    _publish_live(
+      pm, hold, signs, now_mono, messaging,
+      detector.weights_missing(), detect_paused=sample.detect_paused, sign_loc=sign_loc,
+      plate=plate, way=confirm.map_way_from_sm(sm), gps=(g_lat, g_lon, g_bearing) if g_ok else None,
+    )
+    if now_mono - others_param_t >= OTHERS_PARAM_PERIOD_S:
+      others_param_t = now_mono
+      apply_plan_params(tracker, read_plan_params(others_params))
+      others.set_enabled(read_others_param(others_params))
+      others.prune(tr.tid for tr in tracker.tracks)
+    snap = (others.state.enabled, others.state.track_id, others.state.family, others.state.reads,
+            others.state.hud, others.state.confirmed)
+    if others.enabled and (snap != others_last_sent or now_mono - others_pub_t >= OTHERS_PUBLISH_PERIOD_S):
+      omsg = messaging.new_message("otherSignsNAP")
+      other_signs_mod.fill_message(omsg.otherSignsNAP, others.state)
+      pm.send("otherSignsNAP", omsg)
+      others_last_sent, others_pub_t = snap, now_mono
+    rk.keep_time()
+    reset_ratekeeper_if_behind(rk, time.monotonic())
+
+
+if __name__ == "__main__":
+  main()

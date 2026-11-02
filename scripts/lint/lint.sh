@@ -9,12 +9,9 @@ NC='\033[0m'
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null && pwd )"
 ROOT="$DIR/../../"
-cd $ROOT
+cd "$ROOT"
 
 FAILED=0
-
-IGNORED_FILES="uv\.lock|docs\/CARS.md|scripts\/nap\/firmware\/.*\.bin"
-IGNORED_DIRS="^msgq.*|^msgq_repo.*|^opendbc.*|^opendbc_repo.*|^cereal.*|^panda.*|^rednose.*|^rednose_repo.*|^tinygrad.*|^tinygrad_repo.*|^teleoprtc.*|^teleoprtc_repo.*"
 
 function run() {
   shopt -s extglob
@@ -29,10 +26,10 @@ function run() {
   done
 
   shift 1;
-  CMD="$@"
+  CMD=("$@")
 
   set +e
-  log="$((eval "$CMD" ) 2>&1)"
+  log="$("${CMD[@]}" 2>&1)"
 
   if [[ $? -eq 0 ]]; then
     echo -e "[${GREEN}✔${NC}]"
@@ -45,24 +42,26 @@ function run() {
 }
 
 function run_tests() {
-  ALL_FILES=$1
-  PYTHON_FILES=$2
-
-  run "ruff" ruff check $ROOT --quiet
+  run "ruff" ruff check openpilot --quiet
+  run "check_shell" python3 "$DIR/check_shell.py" "${SHELL_FILES[@]}"
+  run "check_dependencies" python3 "$DIR/check_dependencies.py"
+  run "check_indentation" "$DIR/check_indentation.py" "${PYTHON_FILES[@]}"
   # NAP: replay/frame fixtures (base64 test data) and the single large body-controls test are known, reviewed exceptions
-  LARGE_FILE_EXEMPT="/tests/.*\.b64$|^selfdrive/car/tesla/tests/test_preap_body_controls\.py$"
-  LARGE_CHECK_FILES=$(echo "$ALL_FILES" | grep -vE "$LARGE_FILE_EXEMPT" || true)
-  run "check_added_large_files" python3 -m pre_commit_hooks.check_added_large_files --enforce-all $LARGE_CHECK_FILES --maxkb=120
-  run "check_shebang_scripts_are_executable" python3 -m pre_commit_hooks.check_shebang_scripts_are_executable $ALL_FILES
-  run "check_shebang_format" $DIR/check_shebang_format.sh $ALL_FILES
-  run "check_nomerge_comments" $DIR/check_nomerge_comments.sh $ALL_FILES
+  local LARGE_FILES=()
+  for f in "${ALL_FILES[@]}"; do
+    [[ "$f" =~ /tests/.*\.b64$ || "$f" =~ (^|/)selfdrive/car/tesla/tests/test_preap_body_controls\.py$ || "$f" =~ ^scripts/nap/firmware/.*\.bin$ ]] || LARGE_FILES+=("$f")
+  done
+  run "check_added_large_files" "$DIR/check_added_large_files.py" --maxkb=120 "${LARGE_FILES[@]}"
+  run "check_shebang_scripts_are_executable" "$DIR/check_shebang_scripts_are_executable.py" "${ALL_FILES[@]}"
+  run "check_shebang_format" "$DIR/check_shebang_format.sh" "${ALL_FILES[@]}"
+  run "check_nomerge_comments" "$DIR/check_nomerge_comments.sh" "${ALL_FILES[@]}"
 
   if [[ -z "$FAST" ]]; then
-    run "ty" ty check
-    run "codespell" codespell $ALL_FILES
+    run "ty" ty check openpilot
+    run "codespell" codespell "${ALL_FILES[@]}"
   fi
 
-  return $FAILED
+  return "$FAILED"
 }
 
 function help() {
@@ -72,6 +71,9 @@ function help() {
   echo ""
   echo -e "${BOLD}${UNDERLINE}Tests:${NC}"
   echo -e "  ${BOLD}ruff${NC}"
+  echo -e "  ${BOLD}check_shell${NC}"
+  echo -e "  ${BOLD}check_dependencies${NC}"
+  echo -e "  ${BOLD}check_indentation${NC}"
   echo -e "  ${BOLD}ty${NC}"
   echo -e "  ${BOLD}codespell${NC}"
   echo -e "  ${BOLD}check_added_large_files${NC}"
@@ -105,16 +107,26 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-RUN=$([ -z "$RUN" ] && echo "" || echo "!($(echo $RUN | sed 's/ /|/g'))")
-SKIP="@($(echo $SKIP | sed 's/ /|/g'))"
+RUN=$([ -z "$RUN" ] && echo "" || echo "!($(echo "$RUN" | sed 's/ /|/g'))")
+SKIP="@($(echo "$SKIP" | sed 's/ /|/g'))"
 
-GIT_FILES="$(git ls-files | sed -E "s/$IGNORED_FILES|$IGNORED_DIRS//g")"
-ALL_FILES=""
-for f in $GIT_FILES; do
+ALL_FILES=()
+PYTHON_FILES=()
+while IFS= read -r -d '' f; do
   if [[ -f $f ]]; then
-    ALL_FILES+="$f"$'\n'
+    ALL_FILES+=("$f")
+    if [[ $f == *.py ]]; then
+      PYTHON_FILES+=("$f")
+    fi
   fi
-done
-PYTHON_FILES=$(echo "$ALL_FILES" | grep --color=never '.py$' || true)
+done < <(git ls-files -z openpilot)
 
-run_tests "$ALL_FILES" "$PYTHON_FILES"
+# Include tooling, launchers, and the extensionless Git hook.
+SHELL_FILES=()
+while IFS= read -r -d '' f; do
+  if [[ -f $f ]]; then
+    SHELL_FILES+=("$f")
+  fi
+done < <(git ls-files -z '*.sh' '*.bash' scripts/post-commit)
+
+run_tests

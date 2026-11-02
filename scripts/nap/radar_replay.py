@@ -215,7 +215,7 @@ def read_rlog(path):
     import capnp
     # Find the log.capnp schema
     try:
-        from cereal import log as cereal_log
+        from openpilot.cereal import log as cereal_log
         schema = cereal_log.Event.schema
     except ImportError:
         # Fallback: try to find the schema file
@@ -310,7 +310,7 @@ def read_rlog_simple(path):
     print(f"  Decompressed: {len(raw)} bytes", flush=True)
 
     try:
-        from cereal import log as cereal_log
+        from openpilot.cereal import log as cereal_log
         events = list(cereal_log.Event.read_multiple_bytes(raw))
         print(f"  Parsed {len(events)} events (cereal)", flush=True)
         return events
@@ -377,9 +377,9 @@ def read_rlog_simple(path):
                     events.append({'which': w, 'logMonoTime': mono_time, 'can': frames})
                 elif w == 'carState':
                     events.append({'which': w, 'logMonoTime': mono_time, 'vEgo': event.carState.vEgo})
-                elif w == 'liveTracks':
+                elif w == 'radarTracks':
                     points = []
-                    for pt in event.liveTracks.points:
+                    for pt in event.radarTracks.points:
                         points.append({
                             'trackId': pt.trackId,
                             'dRel': pt.dRel,
@@ -466,9 +466,9 @@ def replay(log_path, radar_dt=0.125):
                 pass
             continue
 
-        # Process on liveTracks (radar cycle boundary)
-        if which == 'liveTracks':
-            # Parse radar points from liveTracks.points (RadarData struct)
+        # Process on radarTracks (radar cycle boundary)
+        if which == 'radarTracks':
+            # Parse radar points from radarTracks.points (RadarData struct)
             ar_pts = {}
             if isinstance(event, dict):
                 points = event['points']
@@ -476,7 +476,7 @@ def replay(log_path, radar_dt=0.125):
                     ar_pts[pt['trackId']] = (pt['dRel'], pt['yRel'], pt['vRel'], pt['measured'])
             else:
                 try:
-                    live_tracks = event.liveTracks
+                    live_tracks = event.radarTracks
                     for pt in live_tracks.points:
                         ar_pts[pt.trackId] = (pt.dRel, pt.yRel, pt.vRel, bool(pt.measured))
                 except Exception:

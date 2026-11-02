@@ -1,0 +1,258 @@
+"""Tesla Pre-AP pedal calibration and authority-failure events.
+
+CarEvents must raise pedalNotCalibrated only when:
+  carFingerprint == TESLA_MODEL_S_PREAP  (pre-AP car)
+  and not pcmCruise                      (pedal mode — we're the longitudinal actuator)
+  and nap_conf.pedal_calibrated is False (calibration not trusted)
+
+All three conditions together.
+
+The authority-failure regression also crosses the real controller, engagement,
+CarState publication, event-selection, and alert-definition seams.
+"""
+from unittest.mock import PropertyMock, patch  # noqa: TID251
+
+from openpilot.cereal import log
+
+from opendbc.car.structs import car
+from opendbc.can import CANPacker
+from opendbc.car import CanData
+from opendbc.car.car_helpers import interfaces
+
+from openpilot.selfdrive.car.car_events import CarEvents
+from openpilot.selfdrive.selfdrived.events import ET, EVENTS, pcm_disable_alert, reverse_gear_disable_alert
+
+
+EventName = log.OnroadEvent.EventName
+NAP_CONF_PATH = "opendbc.car.tesla.preap.nap_conf.NAPConf.pedal_calibrated"
+NAP_USE_PEDAL_PATH = "opendbc.car.tesla.preap.nap_conf.NAPConf.use_pedal"
+NAP_PEDAL_FACTOR_PATH = "opendbc.car.tesla.preap.nap_conf.NAPConf.pedal_factor"
+GAS_COMMAND_ID = 0x551
+
+
+def _make_cp(*, fingerprint="TESLA_MODEL_S_PREAP", brand="tesla", pcm_cruise=False,
+             op_long=True):
+  cp = car.CarParams.new_message()
+  cp.carFingerprint = fingerprint
+  cp.brand = brand
+  cp.pcmCruise = pcm_cruise
+  cp.openpilotLongitudinalControl = op_long
+  return cp
+
+
+def _make_cs():
+  cs = car.CarState.new_message()
+  cs.cruiseState.available = True
+  cs.gearShifter = "drive"
+  return cs
+
+
+def _run(cp, calibrated, cs=None):
+  with patch(NAP_CONF_PATH, new_callable=PropertyMock, return_value=calibrated):
+    ce = CarEvents(cp)
+    events = ce.update(cs or _make_cs(), _make_cs(), car.CarControl.new_message())
+  return events.names
+
+
+def _preap_can_packet(message, values):
+  address, dat, bus = CANPacker("tesla_preap").make_can_msg(message, 0, values)
+  return [(1, [CanData(address, dat, bus)])]
+
+
+def test_fires_in_preap_pedal_mode_when_uncalibrated():
+  cp = _make_cp(pcm_cruise=False, op_long=True)
+  assert EventName.pedalNotCalibrated in _run(cp, calibrated=False)
+
+
+def test_silent_in_preap_pedal_mode_when_calibrated():
+  cp = _make_cp(pcm_cruise=False, op_long=True)
+  assert EventName.pedalNotCalibrated not in _run(cp, calibrated=True)
+
+
+def test_silent_in_preap_nopedal_mode_even_when_uncalibrated():
+  # no-pedal mode doesn't use the Comma Pedal; calibration is irrelevant
+  cp = _make_cp(pcm_cruise=True, op_long=False)
+  assert EventName.pedalNotCalibrated not in _run(cp, calibrated=False)
+
+
+def test_silent_on_non_preap_tesla():
+  cp = _make_cp(fingerprint="TESLA_MODEL_S", pcm_cruise=False, op_long=True)
+  assert EventName.pedalNotCalibrated not in _run(cp, calibrated=False)
+
+
+def test_silent_on_non_tesla_brand():
+  cp = _make_cp(fingerprint="HONDA_CIVIC_2022", brand="honda", pcm_cruise=True, op_long=False)
+  assert EventName.pedalNotCalibrated not in _run(cp, calibrated=False)
+
+
+def test_pedal_authority_failure_warns_only_in_preap_pedal_mode():
+  cs = _make_cs()
+  cs.pedalAuthorityFailed = True
+
+  pedal_mode = _make_cp(pcm_cruise=False, op_long=True)
+  assert EventName.pedalUnavailable in _run(pedal_mode, calibrated=True, cs=cs)
+
+  no_pedal_mode = _make_cp(pcm_cruise=True, op_long=False)
+  assert EventName.pedalUnavailable not in _run(no_pedal_mode, calibrated=True, cs=cs)
+
+  longitudinal_disabled = _make_cp(pcm_cruise=False, op_long=False)
+  assert EventName.pedalUnavailable not in _run(longitudinal_disabled, calibrated=True, cs=cs)
+
+  non_preap = _make_cp(fingerprint="TESLA_MODEL_S", pcm_cruise=False, op_long=True)
+  assert EventName.pedalUnavailable not in _run(non_preap, calibrated=True, cs=cs)
+
+
+def test_pedal_acquisition_failure_keeps_lateral_and_surfaces_alert():
+  with (
+    patch(NAP_USE_PEDAL_PATH, new_callable=PropertyMock, return_value=True),
+    patch(NAP_PEDAL_FACTOR_PATH, new_callable=PropertyMock, return_value=1.0),
+    patch(NAP_CONF_PATH, new_callable=PropertyMock, return_value=True),
+  ):
+    CarInterface = interfaces["TESLA_MODEL_S_PREAP"]
+    cp = CarInterface.get_params(
+      "TESLA_MODEL_S_PREAP", {bus: {} for bus in range(8)}, [],
+      alpha_long=False, is_release=False, docs=False,
+    )
+    interface = CarInterface(cp)
+    drive_packet = _preap_can_packet("DI_torque2", {"DI_gear": 4})
+    interface.update(drive_packet)
+
+    internal_state = interface.CS
+    internal_state.engagement.cruiseEnabled = True
+    internal_state.engagement.enableLongControl = True
+    internal_state.cruiseEnabled = True
+    internal_state.enableLongControl = True
+    internal_state.enableJustCC = False
+    internal_state.pedal.available = False
+    internal_state.pedal.interceptor_state = 5
+    internal_state.pedal.idx = 0
+
+    control = car.CarControl.new_message()
+    control.enabled = True
+    control.latActive = True
+    control.longActive = True
+    control.actuators.accel = 0.5
+    control = control.as_reader()
+
+    pedal_commands = []
+    for update_index in range(9):
+      if interface.CC.frame % 2 == 0:
+        internal_state.pedal.idx = (internal_state.pedal.idx + 1) % 16
+      _, can_sends = interface.apply(control, now_nanos=update_index * 10_000_000)
+      pedal_commands.extend(command for command in can_sends if command[0] == GAS_COMMAND_ID)
+
+    assert len(pedal_commands) == 4
+    assert all(not command[1][4] & 0x80 for command in pedal_commands)
+    assert internal_state.engagement.cruiseEnabled
+    assert not internal_state.engagement.enableLongControl
+    assert internal_state.engagement.enableJustCC
+    assert internal_state.engagement.pedal_unavailable
+
+    public_state = interface.update(drive_packet)
+    assert public_state.cruiseState.enabled
+    assert not public_state.pedalLongActive
+    assert public_state.pedalAuthorityFailed
+
+    events = CarEvents(cp).update(public_state, _make_cs(), control)
+    assert EventName.pedalUnavailable in events.names
+
+    event_types = EVENTS[EventName.pedalUnavailable]
+    alert = event_types[ET.WARNING]
+    assert set(event_types) == {ET.WARNING}
+    assert alert.alert_text_1 == "Pedal Control Unavailable"
+    assert alert.alert_text_2 == "Speed Control Disabled"
+
+
+def test_pcm_disable_hud_is_steering_disengaged_not_steer_disengage():
+  """3X bottom-bar 'Steering Disengaged' is EventName.pcmDisable."""
+  assert EVENTS[EventName.pcmDisable][ET.USER_DISABLE] is pcm_disable_alert
+  cp = _make_cp()
+  disable = pcm_disable_alert(cp, _make_cs(), None, False, 100, log.LongitudinalPersonality.standard)
+  assert disable.alert_text_1 == "Steering Disengaged"
+  steer = EVENTS[EventName.steerDisengage][ET.USER_DISABLE]
+  assert steer.alert_text_1 == ""
+
+
+def _blinker_cs(*, enabled=True, left=True, stalk=1, steering_disengage=False):
+  cs = _make_cs()
+  cs.cruiseState.enabled = enabled
+  cs.leftBlinker = left
+  cs.rightBlinker = False
+  cs.turnSignalStalkState = stalk
+  cs.steeringDisengage = steering_disengage
+  return cs
+
+
+def test_preap_blinker_held_high_torque_does_not_add_pcm_disable():
+  """Keep cruiseEnabled and the HUD stays off. Pedal and no-pedal both pcm_enable."""
+  for pcm_cruise, op_long in ((True, False), (False, True)):
+    cse = CarEvents(_make_cp(pcm_cruise=pcm_cruise, op_long=op_long))
+    prev = _blinker_cs(enabled=True, steering_disengage=False)
+    for _ in range(50):
+      cs = _blinker_cs(enabled=True, steering_disengage=False)
+      events = cse.update(cs, prev, car.CarControl.new_message())
+      assert EventName.pcmDisable not in events.names
+      prev = cs
+    events = cse.update(
+      _blinker_cs(enabled=True, steering_disengage=True), prev,
+      car.CarControl.new_message())
+    assert EventName.steerDisengage not in events.names
+    assert EventName.pcmDisable not in events.names
+
+
+def test_preap_pcm_disable_still_fires_when_cruise_already_off():
+  """Do not hide the HUD after the FSM has already dropped cruise."""
+  cse = CarEvents(_make_cp(pcm_cruise=True, op_long=False))
+  events = cse.update(
+    _blinker_cs(enabled=False, steering_disengage=True),
+    _blinker_cs(enabled=True, steering_disengage=False),
+    car.CarControl.new_message())
+  assert EventName.pcmDisable in events.names
+
+
+def test_reverse_user_disables_and_blocks_entry():
+  """Reverse still USER_DISABLE + NO_ENTRY so OP drops and cannot re-enter."""
+  assert ET.USER_DISABLE in EVENTS[EventName.reverseGear]
+  assert ET.NO_ENTRY in EVENTS[EventName.reverseGear]
+  assert EVENTS[EventName.reverseGear][ET.USER_DISABLE] is reverse_gear_disable_alert
+  cse = CarEvents(_make_cp())
+  prev = _make_cs()
+  prev.cruiseState.enabled = True
+  prev.gearShifter = "drive"
+  cs = _make_cs()
+  cs.cruiseState.enabled = False
+  cs.gearShifter = "reverse"
+  events = cse.update(cs, prev, car.CarControl.new_message())
+  assert EventName.reverseGear in events.names
+  assert EventName.pcmDisable in events.names
+  assert EventName.wrongGear in events.names
+  assert EventName.controlsMismatch not in events.names
+  assert EventName.stockFcw not in events.names
+  assert EventName.stockAeb not in events.names
+
+
+def test_drive_after_reverse_rising_edge_can_pcm_enable():
+  """After Drive returns, a new cruise rising edge is a normal engage.
+
+  No leftover reverseGear / controlsMismatch. The FSM must have dropped
+  cruiseEnabled during reverse so this rising edge exists.
+  """
+  cse = CarEvents(_make_cp())
+  reverse = _make_cs()
+  reverse.cruiseState.enabled = False
+  reverse.gearShifter = "reverse"
+  parked = _make_cs()
+  parked.cruiseState.enabled = False
+  parked.gearShifter = "drive"
+  events = cse.update(parked, reverse, car.CarControl.new_message())
+  assert EventName.reverseGear not in events.names
+  assert EventName.pcmDisable in events.names
+  assert EventName.controlsMismatch not in events.names
+
+  engaged = _make_cs()
+  engaged.cruiseState.enabled = True
+  engaged.gearShifter = "drive"
+  events = cse.update(engaged, parked, car.CarControl.new_message())
+  assert EventName.pcmEnable in events.names
+  assert EventName.reverseGear not in events.names
+  assert EventName.controlsMismatch not in events.names

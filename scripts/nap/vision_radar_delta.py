@@ -36,7 +36,7 @@ def read_events(path):
 
     # Try cereal module first (faster)
     try:
-        from cereal import log as cereal_log
+        from openpilot.cereal import log as cereal_log
         events = list(cereal_log.Event.read_multiple_bytes(raw))
         print(f" {len(events)} events (cereal)", flush=True)
         return events
@@ -133,7 +133,7 @@ def extract_frames(events):
                 'vLead': float(l1.vLead),
                 'vLeadK': float(l1.vLeadK),
                 'aLeadK': float(l1.aLeadK),
-                'status': bool(l1.status),
+                'status': bool(l1.present),
                 'radar': bool(l1.radar),
                 'radarTrackId': int(l1.radarTrackId),
                 'modelProb': float(l1.modelProb),
