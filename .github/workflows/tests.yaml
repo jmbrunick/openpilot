@@ -42,7 +42,11 @@ jobs:
         max_attempts: 3
         command: ./tools/op.sh setup
     - name: Add venv to PATH
-      run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+      run: |
+        echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+        # upstream v0.11.2 dropped pytest from the venv; NAP CI still uses it
+        UV="$(command -v uv || echo "$HOME/.local/bin/uv")"
+        "$UV" pip install --python .venv/bin/python pytest pytest-xdist pytest-timeout pytest-mock pytest-subtests "hypothesis>=6.47"
     - name: Build focused test dependencies
       run: scons -j$(nproc)
     - name: Run focused longitudinal tests
@@ -144,7 +148,11 @@ jobs:
       run: TARGET_DIR=$STRIPPED_DIR tools/release/build_stripped.sh
     - run: ./tools/op.sh setup
     - name: Add venv to PATH
-      run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+      run: |
+        echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+        # upstream v0.11.2 dropped pytest from the venv; NAP CI still uses it
+        UV="$(command -v uv || echo "$HOME/.local/bin/uv")"
+        "$UV" pip install --python .venv/bin/python pytest pytest-xdist pytest-timeout pytest-mock pytest-subtests "hypothesis>=6.47"
     - name: Install video encoding deps
       run: sudo apt-get install -y libva-dev libva-drm2 libdrm-dev
     - name: Build openpilot and run checks
@@ -173,7 +181,11 @@ jobs:
         echo "PATH=${FILTERED}/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" >> $GITHUB_ENV
     - run: ./tools/op.sh setup
     - name: Add venv to PATH
-      run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+      run: |
+        echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+        # upstream v0.11.2 dropped pytest from the venv; NAP CI still uses it
+        UV="$(command -v uv || echo "$HOME/.local/bin/uv")"
+        "$UV" pip install --python .venv/bin/python pytest pytest-xdist pytest-timeout pytest-mock pytest-subtests "hypothesis>=6.47"
     - name: Building openpilot
       run: scons
 
@@ -191,7 +203,11 @@ jobs:
         submodules: true
     - run: ./tools/op.sh setup
     - name: Add venv to PATH
-      run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+      run: |
+        echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+        # upstream v0.11.2 dropped pytest from the venv; NAP CI still uses it
+        UV="$(command -v uv || echo "$HOME/.local/bin/uv")"
+        "$UV" pip install --python .venv/bin/python pytest pytest-xdist pytest-timeout pytest-mock pytest-subtests "hypothesis>=6.47"
     - name: Static analysis
       timeout-minutes: 1
       run: scripts/lint/lint.sh
@@ -210,7 +226,11 @@ jobs:
         submodules: true
     - run: ./tools/op.sh setup
     - name: Add venv to PATH
-      run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+      run: |
+        echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+        # upstream v0.11.2 dropped pytest from the venv; NAP CI still uses it
+        UV="$(command -v uv || echo "$HOME/.local/bin/uv")"
+        "$UV" pip install --python .venv/bin/python pytest pytest-xdist pytest-timeout pytest-mock pytest-subtests "hypothesis>=6.47"
     - name: Install extra deps
       run: |
         sudo apt-get install -y libva-dev libva-drm2 libdrm-dev
@@ -265,7 +285,11 @@ jobs:
         max_attempts: 3
         command: ./tools/op.sh setup
     - name: Add venv to PATH
-      run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+      run: |
+        echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+        # upstream v0.11.2 dropped pytest from the venv; NAP CI still uses it
+        UV="$(command -v uv || echo "$HOME/.local/bin/uv")"
+        "$UV" pip install --python .venv/bin/python pytest pytest-xdist pytest-timeout pytest-mock pytest-subtests "hypothesis>=6.47"
     - name: Install video encoding deps
       run: sudo apt-get install -y libva-dev libva-drm2 libdrm-dev
     - name: Build openpilot
@@ -361,7 +385,11 @@ jobs:
         submodules: true
     - run: ./tools/op.sh setup
     - name: Add venv to PATH
-      run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+      run: |
+        echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+        # upstream v0.11.2 dropped pytest from the venv; NAP CI still uses it
+        UV="$(command -v uv || echo "$HOME/.local/bin/uv")"
+        "$UV" pip install --python .venv/bin/python pytest pytest-xdist pytest-timeout pytest-mock pytest-subtests "hypothesis>=6.47"
     - name: Build openpilot
       run: scons -j$(nproc)
     - name: Driving test
@@ -383,7 +411,11 @@ jobs:
           submodules: true
       - run: ./tools/op.sh setup
       - name: Add venv to PATH
-        run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+        run: |
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+          # upstream v0.11.2 dropped pytest from the venv; NAP CI still uses it
+          UV="$(command -v uv || echo "$HOME/.local/bin/uv")"
+          "$UV" pip install --python .venv/bin/python pytest pytest-xdist pytest-timeout pytest-mock pytest-subtests "hypothesis>=6.47"
       - name: Install video encoding deps
         run: sudo apt-get install -y libva-dev libva-drm2 libdrm-dev
       - name: Build openpilot
