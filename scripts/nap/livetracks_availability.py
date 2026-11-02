@@ -2,12 +2,12 @@
 """
 LiveTracks Availability Analysis
 
-Investigate why liveTracks has zero points 90% of the time.
+Investigate why radarTracks has zero points 90% of the time.
 Checks:
-  1. liveTracks update rate vs radarState rate
-  2. When liveTracks has points vs when it doesn't
-  3. Number of points per liveTracks message
-  4. Timing gaps in liveTracks
+  1. radarTracks update rate vs radarState rate
+  2. When radarTracks has points vs when it doesn't
+  3. Number of points per radarTracks message
+  4. Timing gaps in radarTracks
 
 Usage:
   python scripts/nap/livetracks_availability.py [log_dir]
@@ -29,7 +29,7 @@ def read_events_all(path):
         raw = dctx.decompress(f.read(), max_output_size=500 * 1024 * 1024)
 
     try:
-        from cereal import log as cereal_log
+        from openpilot.cereal import log as cereal_log
         events = list(cereal_log.Event.read_multiple_bytes(raw))
         print(f" {len(events)} events", flush=True)
         return events
@@ -92,8 +92,8 @@ def analyze(log_paths):
     # Process first 2 files for detailed timing analysis
     paths_to_analyze = sorted(log_paths)[:3]
 
-    lt_times = []      # liveTracks timestamps
-    lt_n_points = []   # number of points per liveTracks message
+    lt_times = []      # radarTracks timestamps
+    lt_n_points = []   # number of points per radarTracks message
     rs_times = []      # radarState timestamps
     mv_times = []      # modelV2 timestamps
     all_event_types = defaultdict(int)
@@ -110,13 +110,13 @@ def analyze(log_paths):
 
             all_event_types[which] += 1
 
-            if which == 'liveTracks':
+            if which == 'radarTracks':
                 lt_times.append(mono)
                 try:
                     if isinstance(evt, dict) and '_raw' in evt:
-                        lt = evt['_raw'].liveTracks
+                        lt = evt['_raw'].radarTracks
                     else:
-                        lt = evt.liveTracks
+                        lt = evt.radarTracks
                     pts = list(lt.points)
                     lt_n_points.append(len(pts))
                 except Exception:
@@ -139,13 +139,13 @@ def analyze(log_paths):
     for etype, count in sorted(all_event_types.items(), key=lambda x: -x[1])[:15]:
         print(f"    {etype:<25} {count:>6}")
 
-    # liveTracks timing
+    # radarTracks timing
     if lt_times:
         lt_times.sort()
         lt_intervals = [(lt_times[i] - lt_times[i-1]) * 1e-9 for i in range(1, len(lt_times))]
         duration = (lt_times[-1] - lt_times[0]) * 1e-9
         rate = len(lt_times) / max(duration, 0.1)
-        print("\n  liveTracks:")
+        print("\n  radarTracks:")
         print(f"    Count:                {len(lt_times)}")
         print(f"    Duration:             {duration:.1f}s")
         print(f"    Rate:                 {rate:.1f} Hz")
@@ -158,11 +158,11 @@ def analyze(log_paths):
             print(f"    Gaps > 500ms:         {gaps_500ms}")
             print(f"    Gaps > 1s:            {gaps_1s}")
 
-    # liveTracks points per message
+    # radarTracks points per message
     if lt_n_points:
         zero_pts = sum(1 for n in lt_n_points if n == 0)
         nonzero_pts = sum(1 for n in lt_n_points if n > 0)
-        print("\n  liveTracks points per message:")
+        print("\n  radarTracks points per message:")
         print(f"    Zero points:          {zero_pts}/{len(lt_n_points)} ({100*zero_pts/len(lt_n_points):.1f}%)")
         print(f"    Non-zero points:      {nonzero_pts}/{len(lt_n_points)} ({100*nonzero_pts/len(lt_n_points):.1f}%)")
         if nonzero_pts > 0:
@@ -196,18 +196,18 @@ def analyze(log_paths):
         lt_rate = len(lt_times) / max(lt_dur, 0.1)
         rs_rate = len(rs_times) / max(rs_dur, 0.1)
         print("\n  Rate comparison:")
-        print(f"    liveTracks:           {lt_rate:.1f} Hz")
+        print(f"    radarTracks:           {lt_rate:.1f} Hz")
         print(f"    radarState:           {rs_rate:.1f} Hz")
         print(f"    Ratio (RS/LT):        {rs_rate/max(lt_rate, 0.1):.1f}x")
         print()
         print("  CRITICAL: radard polls on modelV2 (~20Hz) and only calls")
-        print("  RD.update() when sm.updated['liveTracks'] is True.")
-        print(f"  If liveTracks rate is {lt_rate:.0f}Hz but radarState is {rs_rate:.0f}Hz,")
-        print(f"  then {rs_rate/max(lt_rate, 0.1):.1f}x radarState frames run with STALE liveTracks.")
+        print("  RD.update() when sm.updated['radarTracks'] is True.")
+        print(f"  If radarTracks rate is {lt_rate:.0f}Hz but radarState is {rs_rate:.0f}Hz,")
+        print(f"  then {rs_rate/max(lt_rate, 0.1):.1f}x radarState frames run with STALE radarTracks.")
         print("  radard ALWAYS publishes on every modelV2 cycle, but only")
-        print("  calls RD.update() when liveTracks is updated.")
+        print("  calls RD.update() when radarTracks is updated.")
         print()
-        print("  BUT: if liveTracks messages have zero points, RD.update()")
+        print("  BUT: if radarTracks messages have zero points, RD.update()")
         print("  will clear self.tracks (line 258-260 in radard.py) on every")
         print("  radar cycle where no points exist.")
 

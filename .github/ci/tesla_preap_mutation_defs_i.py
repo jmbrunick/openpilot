@@ -8,8 +8,8 @@ rule and must fail the pinned tests with an AssertionError.
 """
 from tesla_preap_mutation_common import HistoricalMutation
 
-T = "selfdrive/controls/tests/test_unified_far_gap_gate.py"
-UL = "selfdrive/controls/lib/unified_lead.py"
+T = "openpilot/selfdrive/controls/tests/test_unified_far_gap_gate.py"
+UL = "openpilot/selfdrive/controls/lib/unified_lead.py"
 
 _BIT = "test_bit_identical_to_the_old_gate_inside_the_far_gap_line"
 _FIRM = "test_never_firmer_and_unchanged_where_the_old_command_braked"

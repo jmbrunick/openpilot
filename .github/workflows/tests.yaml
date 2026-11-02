@@ -41,66 +41,72 @@ jobs:
         timeout_minutes: 10
         max_attempts: 3
         command: ./tools/op.sh setup
+    - name: Add venv to PATH
+      run: |
+        echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+        # upstream v0.11.2 dropped pytest from the venv; NAP CI still uses it
+        UV="$(command -v uv || echo "$HOME/.local/bin/uv")"
+        "$UV" pip install --python .venv/bin/python pytest pytest-xdist pytest-timeout pytest-mock pytest-subtests "hypothesis>=6.47"
     - name: Build focused test dependencies
       run: scons -j$(nproc)
     - name: Run focused longitudinal tests
       run: |
         pytest -q -n 0 \
-          selfdrive/controls/tests/test_following_distance.py \
-          selfdrive/controls/tests/test_follow_distance.py \
-          selfdrive/controls/tests/test_lead_approach.py \
-          selfdrive/controls/tests/test_firm_brake_latch.py \
-          selfdrive/selfdrived/tests/test_preap_regen_cmd_pin.py \
-          selfdrive/mapd/tests/test_map_speed_policy.py \
-          selfdrive/mapd/tests/test_map_speed_policy_2.py \
-          selfdrive/mapd/tests/test_map_speed_offset_slew.py \
-          selfdrive/mapd/tests/test_map_match_frontage.py \
-          selfdrive/mapd/tests/test_map_match_road_class.py \
-          selfdrive/car/tests/test_preap_engage_max_after_pause.py \
-          selfdrive/controls/tests/test_radard.py \
-          selfdrive/controls/tests/test_path_obstacle_radar.py \
-          selfdrive/controls/lib/tests/test_path_obstacle.py \
-          selfdrive/controls/tests/test_radar_path_gate.py \
-          selfdrive/controls/tests/test_rain_radar_hold.py \
-          selfdrive/controls/tests/test_radar_sensor_dirty.py \
-          selfdrive/controls/tests/test_tesla_preap_following.py \
-          selfdrive/controls/tests/test_unified_lead.py \
-          selfdrive/controls/tests/test_farm_cutin_follow.py \
-          selfdrive/controls/tests/test_crossing_vehicle.py \
-          selfdrive/controls/tests/test_gap_lock_gesture.py \
-          selfdrive/controls/tests/test_gap_lock_latch.py \
-          selfdrive/controls/tests/test_unified_far_gap_gate.py \
-          selfdrive/controls/tests/test_unified_far_gap_catchup.py \
-          selfdrive/controls/tests/test_unified_lead_planner.py \
-          selfdrive/controls/tests/test_curve_preview.py \
-          selfdrive/controls/tests/test_curve_follow.py \
-          selfdrive/controls/tests/test_curve_follow_planner.py \
-          selfdrive/controls/tests/test_sight_cap_planner.py \
-          selfdrive/controls/tests/test_sight_cap_replay.py \
-          selfdrive/controls/tests/test_model_sight.py \
-          selfdrive/car/tests/test_curve_follow_card_max.py \
-          selfdrive/controls/tests/test_lead_leaving.py \
-          selfdrive/controls/lib/tests/test_curve_max_hold.py \
-          selfdrive/controls/lib/tests/test_lat_turn_geometry.py \
-          selfdrive/controls/lib/tests/test_lane_change_confirm_replay.py \
-          selfdrive/controls/lib/tests/test_lane_change_nudge.py \
-          selfdrive/controls/lib/tests/test_lane_change_target.py \
-          selfdrive/controls/lib/tests/test_lane_change_lock.py \
-          selfdrive/controls/lib/tests/test_lane_change_turn.py \
-          selfdrive/mapd/tests/test_roundabout.py \
-          selfdrive/mapd/tests/test_roundabout_map.py \
-          selfdrive/controls/lib/tests/test_roundabout_guide.py \
-          selfdrive/controls/lib/tests/test_roundabout_ring_hold.py \
-          selfdrive/controls/lib/tests/test_driver_lateral_handoff_early_yield.py \
-          selfdrive/controls/lib/tests/test_driver_lateral_handoff_wheel_resume.py \
-          selfdrive/controls/lib/tests/test_lat_yield_inference_guard.py \
-          selfdrive/car/tesla/tests/test_preap_lat_yield.py \
-          selfdrive/controls/tests/test_roundabout_planner.py \
-          selfdrive/controls/tests/test_tesla_preap_longcontrol.py \
-          selfdrive/controls/tests/test_tesla_preap_gas_lift_handoff.py \
-          selfdrive/controls/tests/test_tesla_preap_brake_cancel_regen.py \
-          selfdrive/controls/tests/test_preap_brake_long_active.py \
-          selfdrive/controls/tests/test_tesla_preap_one_pedal_long.py \
+          openpilot/selfdrive/controls/tests/test_following_distance.py \
+          openpilot/selfdrive/controls/tests/test_follow_distance.py \
+          openpilot/selfdrive/controls/tests/test_lead_approach.py \
+          openpilot/selfdrive/controls/tests/test_firm_brake_latch.py \
+          openpilot/selfdrive/selfdrived/tests/test_preap_regen_cmd_pin.py \
+          openpilot/selfdrive/mapd/tests/test_map_speed_policy.py \
+          openpilot/selfdrive/mapd/tests/test_map_speed_policy_2.py \
+          openpilot/selfdrive/mapd/tests/test_map_speed_offset_slew.py \
+          openpilot/selfdrive/mapd/tests/test_map_match_frontage.py \
+          openpilot/selfdrive/mapd/tests/test_map_match_road_class.py \
+          openpilot/selfdrive/car/tests/test_preap_engage_max_after_pause.py \
+          openpilot/selfdrive/controls/tests/test_radard.py \
+          openpilot/selfdrive/controls/tests/test_path_obstacle_radar.py \
+          openpilot/selfdrive/controls/lib/tests/test_path_obstacle.py \
+          openpilot/selfdrive/controls/tests/test_radar_path_gate.py \
+          openpilot/selfdrive/controls/tests/test_rain_radar_hold.py \
+          openpilot/selfdrive/controls/tests/test_radar_sensor_dirty.py \
+          openpilot/selfdrive/controls/tests/test_tesla_preap_following.py \
+          openpilot/selfdrive/controls/tests/test_unified_lead.py \
+          openpilot/selfdrive/controls/tests/test_farm_cutin_follow.py \
+          openpilot/selfdrive/controls/tests/test_crossing_vehicle.py \
+          openpilot/selfdrive/controls/tests/test_gap_lock_gesture.py \
+          openpilot/selfdrive/controls/tests/test_gap_lock_latch.py \
+          openpilot/selfdrive/controls/tests/test_unified_far_gap_gate.py \
+          openpilot/selfdrive/controls/tests/test_unified_far_gap_catchup.py \
+          openpilot/selfdrive/controls/tests/test_unified_lead_planner.py \
+          openpilot/selfdrive/controls/tests/test_curve_preview.py \
+          openpilot/selfdrive/controls/tests/test_curve_follow.py \
+          openpilot/selfdrive/controls/tests/test_curve_follow_planner.py \
+          openpilot/selfdrive/controls/tests/test_sight_cap_planner.py \
+          openpilot/selfdrive/controls/tests/test_sight_cap_replay.py \
+          openpilot/selfdrive/controls/tests/test_model_sight.py \
+          openpilot/selfdrive/car/tests/test_curve_follow_card_max.py \
+          openpilot/selfdrive/controls/tests/test_lead_leaving.py \
+          openpilot/selfdrive/controls/lib/tests/test_curve_max_hold.py \
+          openpilot/selfdrive/controls/lib/tests/test_lat_turn_geometry.py \
+          openpilot/selfdrive/controls/lib/tests/test_lane_change_confirm_replay.py \
+          openpilot/selfdrive/controls/lib/tests/test_lane_change_nudge.py \
+          openpilot/selfdrive/controls/lib/tests/test_lane_change_target.py \
+          openpilot/selfdrive/controls/lib/tests/test_lane_change_lock.py \
+          openpilot/selfdrive/controls/lib/tests/test_lane_change_turn.py \
+          openpilot/selfdrive/mapd/tests/test_roundabout.py \
+          openpilot/selfdrive/mapd/tests/test_roundabout_map.py \
+          openpilot/selfdrive/controls/lib/tests/test_roundabout_guide.py \
+          openpilot/selfdrive/controls/lib/tests/test_roundabout_ring_hold.py \
+          openpilot/selfdrive/controls/lib/tests/test_driver_lateral_handoff_early_yield.py \
+          openpilot/selfdrive/controls/lib/tests/test_driver_lateral_handoff_wheel_resume.py \
+          openpilot/selfdrive/controls/lib/tests/test_lat_yield_inference_guard.py \
+          openpilot/selfdrive/car/tesla/tests/test_preap_lat_yield.py \
+          openpilot/selfdrive/controls/tests/test_roundabout_planner.py \
+          openpilot/selfdrive/controls/tests/test_tesla_preap_longcontrol.py \
+          openpilot/selfdrive/controls/tests/test_tesla_preap_gas_lift_handoff.py \
+          openpilot/selfdrive/controls/tests/test_tesla_preap_brake_cancel_regen.py \
+          openpilot/selfdrive/controls/tests/test_preap_brake_long_active.py \
+          openpilot/selfdrive/controls/tests/test_tesla_preap_one_pedal_long.py \
           opendbc_repo/opendbc/car/tesla/preap/tests/test_preap_carstate.py \
           opendbc_repo/opendbc/car/tesla/preap/tests/test_preap_engagement.py \
           opendbc_repo/opendbc/car/tesla/preap/tests/test_lat_yield.py \
@@ -139,22 +145,28 @@ jobs:
         command: git config lfs.url "$OPENPILOT_LFS_URL" && git lfs pull
     - name: Build devel
       timeout-minutes: 1
-      run: TARGET_DIR=$STRIPPED_DIR release/build_stripped.sh
+      run: TARGET_DIR=$STRIPPED_DIR tools/release/build_stripped.sh
     - run: ./tools/op.sh setup
+    - name: Add venv to PATH
+      run: |
+        echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+        # upstream v0.11.2 dropped pytest from the venv; NAP CI still uses it
+        UV="$(command -v uv || echo "$HOME/.local/bin/uv")"
+        "$UV" pip install --python .venv/bin/python pytest pytest-xdist pytest-timeout pytest-mock pytest-subtests "hypothesis>=6.47"
     - name: Install video encoding deps
       run: sudo apt-get install -y libva-dev libva-drm2 libdrm-dev
     - name: Build openpilot and run checks
       timeout-minutes: 30
       working-directory: ${{ env.STRIPPED_DIR }}
-      run: python3 system/manager/build.py
+      run: python3 openpilot/system/manager/build.py
     - name: Run tests
       timeout-minutes: 1
       working-directory: ${{ env.STRIPPED_DIR }}
-      run: release/check-dirty.sh
+      run: tools/release/check-dirty.sh
     - name: Check submodules
       if: github.repository == 'commaai/openpilot'
       timeout-minutes: 3
-      run: release/check-submodules.sh
+      run: tools/release/check-submodules.sh
 
   build_mac:
     name: build macOS
@@ -168,6 +180,12 @@ jobs:
         FILTERED=$(echo "$PATH" | tr ':' '\n' | grep -v '/opt/homebrew' | tr '\n' ':')
         echo "PATH=${FILTERED}/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" >> $GITHUB_ENV
     - run: ./tools/op.sh setup
+    - name: Add venv to PATH
+      run: |
+        echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+        # upstream v0.11.2 dropped pytest from the venv; NAP CI still uses it
+        UV="$(command -v uv || echo "$HOME/.local/bin/uv")"
+        "$UV" pip install --python .venv/bin/python pytest pytest-xdist pytest-timeout pytest-mock pytest-subtests "hypothesis>=6.47"
     - name: Building openpilot
       run: scons
 
@@ -184,6 +202,12 @@ jobs:
       with:
         submodules: true
     - run: ./tools/op.sh setup
+    - name: Add venv to PATH
+      run: |
+        echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+        # upstream v0.11.2 dropped pytest from the venv; NAP CI still uses it
+        UV="$(command -v uv || echo "$HOME/.local/bin/uv")"
+        "$UV" pip install --python .venv/bin/python pytest pytest-xdist pytest-timeout pytest-mock pytest-subtests "hypothesis>=6.47"
     - name: Static analysis
       timeout-minutes: 1
       run: scripts/lint/lint.sh
@@ -201,6 +225,12 @@ jobs:
       with:
         submodules: true
     - run: ./tools/op.sh setup
+    - name: Add venv to PATH
+      run: |
+        echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+        # upstream v0.11.2 dropped pytest from the venv; NAP CI still uses it
+        UV="$(command -v uv || echo "$HOME/.local/bin/uv")"
+        "$UV" pip install --python .venv/bin/python pytest pytest-xdist pytest-timeout pytest-mock pytest-subtests "hypothesis>=6.47"
     - name: Install extra deps
       run: |
         sudo apt-get install -y libva-dev libva-drm2 libdrm-dev
@@ -214,11 +244,9 @@ jobs:
           .github/ci/test_validate_process_replay_release.py
     - name: Run unit tests
       timeout-minutes: ${{ contains(runner.name, 'nsc') && 2 || 20 }}
-      run: |
-        source selfdrive/test/setup_xvfb.sh
-        # Pre-compile Python bytecode so each pytest worker doesn't need to
-        $PYTEST --collect-only -m 'not slow' -qq
-        MAX_EXAMPLES=1 $PYTEST -m 'not slow'
+      env:
+        RAYLIB_BACKEND: headless
+      run: tools/op.sh test  # upstream v0.11.2 test runner (no pytest config at repo root anymore)
 
   process_replay:
     name: process replay (${{ matrix.shard }})
@@ -253,6 +281,12 @@ jobs:
         timeout_minutes: 10
         max_attempts: 3
         command: ./tools/op.sh setup
+    - name: Add venv to PATH
+      run: |
+        echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+        # upstream v0.11.2 dropped pytest from the venv; NAP CI still uses it
+        UV="$(command -v uv || echo "$HOME/.local/bin/uv")"
+        "$UV" pip install --python .venv/bin/python pytest pytest-xdist pytest-timeout pytest-mock pytest-subtests "hypothesis>=6.47"
     - name: Install video encoding deps
       run: sudo apt-get install -y libva-dev libva-drm2 libdrm-dev
     - name: Build openpilot
@@ -264,7 +298,7 @@ jobs:
         EXPECTED_TASKS: ${{ matrix.expected_tasks }}
       run: |
         set -euo pipefail
-        REPLAY=selfdrive/test/process_replay/test_processes.py
+        REPLAY=openpilot/selfdrive/test/process_replay/test_processes.py
 
         python3 - <<'PY'
         from openpilot.selfdrive.test.process_replay import test_processes as tp
@@ -313,24 +347,24 @@ jobs:
     - name: Run replay
       run: |
         set -euo pipefail
-        OUT_DIR="selfdrive/test/process_replay/out/${{ matrix.shard }}"
+        OUT_DIR="openpilot/selfdrive/test/process_replay/out/${{ matrix.shard }}"
         mkdir -p "${OUT_DIR}"
-        selfdrive/test/process_replay/test_processes.py \
+        openpilot/selfdrive/test/process_replay/test_processes.py \
           -j$(nproc) \
           --inventory active \
           --output-dir "${OUT_DIR}" \
           ${{ matrix.filter_args }}
     - name: Print diff
       if: always()
-      run: cat selfdrive/test/process_replay/out/${{ matrix.shard }}/diff.txt
+      run: cat openpilot/selfdrive/test/process_replay/out/${{ matrix.shard }}/diff.txt
     - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
       if: always()
       with:
         name: process_replay_${{ matrix.shard }}
         path: |
-          selfdrive/test/process_replay/out/${{ matrix.shard }}/diff.txt
-          selfdrive/test/process_replay/out/${{ matrix.shard }}/results.json
-          selfdrive/test/process_replay/fakedata
+          openpilot/selfdrive/test/process_replay/out/${{ matrix.shard }}/diff.txt
+          openpilot/selfdrive/test/process_replay/out/${{ matrix.shard }}/results.json
+          openpilot/selfdrive/test/process_replay/fakedata
         if-no-files-found: error
 
   simulator_driving:
@@ -347,13 +381,18 @@ jobs:
       with:
         submodules: true
     - run: ./tools/op.sh setup
+    - name: Add venv to PATH
+      run: |
+        echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+        # upstream v0.11.2 dropped pytest from the venv; NAP CI still uses it
+        UV="$(command -v uv || echo "$HOME/.local/bin/uv")"
+        "$UV" pip install --python .venv/bin/python pytest pytest-xdist pytest-timeout pytest-mock pytest-subtests "hypothesis>=6.47"
     - name: Build openpilot
       run: scons -j$(nproc)
     - name: Driving test
       timeout-minutes: 2
       run: |
-        source selfdrive/test/setup_xvfb.sh
-        pytest -s tools/sim/tests/test_metadrive_bridge.py
+        EGL_PLATFORM=surfaceless pytest -s openpilot/tools/sim/tests/test_metadrive_bridge.py
 
   create_ui_report:
     name: Create UI Report
@@ -368,17 +407,24 @@ jobs:
         with:
           submodules: true
       - run: ./tools/op.sh setup
+      - name: Add venv to PATH
+        run: |
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+          # upstream v0.11.2 dropped pytest from the venv; NAP CI still uses it
+          UV="$(command -v uv || echo "$HOME/.local/bin/uv")"
+          "$UV" pip install --python .venv/bin/python pytest pytest-xdist pytest-timeout pytest-mock pytest-subtests "hypothesis>=6.47"
       - name: Install video encoding deps
         run: sudo apt-get install -y libva-dev libva-drm2 libdrm-dev
       - name: Build openpilot
         run: scons -j$(nproc)
       - name: Create UI Report
+        env:
+          RAYLIB_BACKEND: headless
         run: |
-          source selfdrive/test/setup_xvfb.sh
-          python3 selfdrive/ui/tests/diff/replay.py
-          python3 selfdrive/ui/tests/diff/replay.py --big
+          python3 openpilot/selfdrive/ui/tests/diff/replay.py
+          python3 openpilot/selfdrive/ui/tests/diff/replay.py --big
       - name: Upload UI Report
         uses: actions/upload-artifact@v6
         with:
           name: ui-report-${{ inputs.run_number || '1' }}-${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'master' || github.event.number }}
-          path: selfdrive/ui/tests/diff/report
+          path: openpilot/selfdrive/ui/tests/diff/report

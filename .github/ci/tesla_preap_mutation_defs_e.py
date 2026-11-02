@@ -10,9 +10,9 @@ from tesla_preap_mutation_common import (
   TURN_GEOM_TEST_PATH,
 )
 
-TG = "selfdrive/controls/lib/lat_turn_geometry.py"
-MODELD = "selfdrive/modeld/modeld.py"
-MENU = "selfdrive/ui/layouts/settings/driving_mannerisms.py"
+TG = "openpilot/selfdrive/controls/lib/lat_turn_geometry.py"
+MODELD = "openpilot/selfdrive/modeld/modeld.py"
+MENU = "openpilot/selfdrive/ui/layouts/settings/driving_mannerisms.py"
 T = TURN_GEOM_TEST_PATH
 
 
@@ -83,7 +83,7 @@ MUTATIONS_E = (
      b"  def reset(self) -> None:\n    self.trim_s = 0.0\n",
      b"  def reset(self) -> None:\n",
      "test_turn_in_trim_needs_turn_geometry_on"),
-  _m("turn-in-default-step-one", "common/nap_params_keys.h",
+  _m("turn-in-default-step-one", "openpilot/common/nap_params_keys.h",
      b'{"NAPTurnInDelay", {PERSISTENT, INT, "0"}}', b'{"NAPTurnInDelay", {PERSISTENT, INT, "1"}}',
      "test_turn_in_param_defaults_to_zero_int"),
   _m("turn-in-modeld-drops-the-step", MODELD,

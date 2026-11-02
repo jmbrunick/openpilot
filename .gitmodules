@@ -1,20 +1,20 @@
 [submodule "panda"]
   path = panda
-  url = https://github.com/NotAutopilot/panda.git
-  branch = master-nap
+  url = https://github.com/commaai/panda.git
 [submodule "opendbc"]
   path = opendbc_repo
   url = https://github.com/jmbrunick/opendbc.git
-  branch = nap-dev
+  branch = nap-dev-0.11.2
 [submodule "msgq"]
   path = msgq_repo
-  url = ../../commaai/msgq.git
+  url = https://github.com/commaai/msgq.git
 [submodule "rednose_repo"]
   path = rednose_repo
-  url = ../../commaai/rednose.git
+  url = https://github.com/commaai/rednose.git
 [submodule "teleoprtc_repo"]
   path = teleoprtc_repo
-  url = ../../commaai/teleoprtc
+  url = https://github.com/commaai/teleoprtc.git
 [submodule "tinygrad"]
   path = tinygrad_repo
   url = https://github.com/tinygrad/tinygrad.git
+  branch = master

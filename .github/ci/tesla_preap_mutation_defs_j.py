@@ -7,8 +7,8 @@ and must fail the pinned tests with an AssertionError.
 """
 from tesla_preap_mutation_common import HistoricalMutation
 
-T = "selfdrive/controls/tests/test_unified_far_gap_catchup.py"
-UL = "selfdrive/controls/lib/unified_lead.py"
+T = "openpilot/selfdrive/controls/tests/test_unified_far_gap_catchup.py"
+UL = "openpilot/selfdrive/controls/lib/unified_lead.py"
 
 _BIT = "test_bit_identical_for_slack_at_or_under_15m"
 _SLACK = "test_slack_weight_keeps_the_near_gap_term"

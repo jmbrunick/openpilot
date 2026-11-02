@@ -9,9 +9,9 @@ AssertionError.
 """
 from tesla_preap_mutation_common import HistoricalMutation
 
-T = "selfdrive/controls/tests/test_firm_brake_latch.py"
-LA = "selfdrive/controls/lib/firm_brake_latch.py"
-LC = "selfdrive/controls/lib/longcontrol.py"
+T = "openpilot/selfdrive/controls/tests/test_firm_brake_latch.py"
+LA = "openpilot/selfdrive/controls/lib/firm_brake_latch.py"
+LC = "openpilot/selfdrive/controls/lib/longcontrol.py"
 
 
 def _m(name, path, original, replacement, *tests):

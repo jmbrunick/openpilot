@@ -1,0 +1,253 @@
+import copy
+import json
+import os
+import random
+
+from openpilot.common.test import OpenpilotTestCase
+from openpilot.cereal import log
+from opendbc.car.structs import car
+from openpilot.cereal.messaging import SubMaster
+from openpilot.common.basedir import BASEDIR
+from openpilot.common.params import Params
+from openpilot.common.realtime import DT_CTRL
+from openpilot.selfdrive.selfdrived.events import Alert, EVENTS, ET, AudibleAlert, hypermile_follow_changed_alert, nap_wiper_changed_alert
+from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
+from openpilot.selfdrive.test.process_replay.process_replay import CONFIGS
+
+AlertSize = log.SelfdriveState.AlertSize
+
+OFFROAD_ALERTS_PATH = os.path.join(BASEDIR, "openpilot/selfdrive/selfdrived/alerts_offroad.json")
+
+# TODO: add callback alerts
+ALERTS = []
+for event_types in EVENTS.values():
+  for alert in event_types.values():
+    ALERTS.append(alert)
+
+
+class TestAlerts(OpenpilotTestCase):
+
+  @classmethod
+  def setup_class(cls):
+    with open(OFFROAD_ALERTS_PATH) as f:
+      cls.offroad_alerts = json.loads(f.read())
+
+      # Create fake objects for callback
+      cls.CS = car.CarState.new_message()
+      cls.CP = car.CarParams.new_message()
+      cfg = [c for c in CONFIGS if c.proc_name == 'selfdrived'][0]
+      cls.sm = SubMaster(cfg.pubs)
+
+  def test_events_defined(self):
+    # Ensure all events in capnp schema are defined in events.py
+    events = log.OnroadEvent.EventName.schema.enumerants
+
+    for name, e in events.items():
+      if not name.endswith("DEPRECATED"):
+        fail_msg = f"{name} @{e} not in EVENTS"
+        assert e in EVENTS.keys(), fail_msg
+
+  def test_alert_sanity_check(self):
+    for event_types in EVENTS.values():
+      for event_type, a in event_types.items():
+        # TODO: add callback alerts
+        if not isinstance(a, Alert):
+          continue
+
+        if a.alert_size == AlertSize.none:
+          assert len(a.alert_text_1) == 0
+          assert len(a.alert_text_2) == 0
+        elif a.alert_size == AlertSize.small:
+          assert len(a.alert_text_1) > 0
+          assert len(a.alert_text_2) == 0
+        elif a.alert_size == AlertSize.mid:
+          assert len(a.alert_text_1) > 0
+          assert len(a.alert_text_2) > 0
+        else:
+          assert len(a.alert_text_1) > 0
+
+        assert a.duration >= 0.
+
+        if event_type not in (ET.WARNING, ET.PERMANENT, ET.PRE_ENABLE):
+          assert a.creation_delay == 0.
+
+  def test_preap_regen_alert_tells_driver_to_brake(self):
+    alert = EVENTS[log.OnroadEvent.EventName.pedalMaxRegen][ET.WARNING]
+
+    assert alert.alert_text_1 == "Regen Limit Reached"
+    assert alert.alert_text_2 == "Press Brake to Slow Down"
+    assert alert.alert_size == AlertSize.mid
+    assert alert.visual_alert == car.CarControl.HUDControl.VisualAlert.brakePressed
+    assert alert.audible_alert == AudibleAlert.promptRepeat
+    assert alert.duration == int(0.2 / DT_CTRL)
+
+  def test_preap_pedal_cruise_alerts_fire_while_disabled(self):
+    # ET.WARNING is omitted on the USER_DISABLE frame, so these must be
+    # permanent to play the disengage prompt on stalk cancel / full
+    # teardown. Brake long pause must not add this event.
+    for name, text, sound in (
+      (log.OnroadEvent.EventName.pedalCruiseEnabled, "Pedal Cruise Engaged", AudibleAlert.engage),
+      (log.OnroadEvent.EventName.pedalCruiseDisabled, "Pedal Cruise Disengaged", AudibleAlert.disengage),
+    ):
+      event_types = EVENTS[name]
+      assert set(event_types) == {ET.PERMANENT}
+      alert = event_types[ET.PERMANENT]
+      assert alert.alert_text_1 == text
+      assert alert.audible_alert == sound
+      assert alert.duration == int(0.8 / DT_CTRL)
+
+  def test_preap_pcm_alerts_show_steering_prompt(self):
+    from openpilot.selfdrive.selfdrived.events import pcm_disable_alert, pcm_enable_alert
+
+    cp = car.CarParams.new_message()
+    cp.brand = "tesla"
+    cp.carFingerprint = "TESLA_MODEL_S_PREAP"
+    args = (cp, self.CS, self.sm, False, 100, log.LongitudinalPersonality.standard)
+
+    enable = pcm_enable_alert(*args)
+    assert enable.alert_text_1 == "Steering Engaged"
+    assert enable.audible_alert == AudibleAlert.engage
+
+    disable = pcm_disable_alert(*args)
+    assert disable.alert_text_1 == "Steering Disengaged"
+    assert disable.audible_alert == AudibleAlert.disengage
+
+    stock = car.CarParams.new_message()
+    stock_enable = pcm_enable_alert(stock, *args[1:])
+    assert stock_enable.alert_text_1 == ""
+    assert stock_enable.audible_alert == AudibleAlert.engage
+
+  def test_preap_reverse_disable_is_quiet(self):
+    from openpilot.selfdrive.selfdrived.events import reverse_gear_disable_alert
+
+    cp = car.CarParams.new_message()
+    cp.brand = "tesla"
+    cp.carFingerprint = "TESLA_MODEL_S_PREAP"
+    args = (cp, self.CS, self.sm, False, 100, log.LongitudinalPersonality.standard)
+    alert = reverse_gear_disable_alert(*args)
+    assert alert.alert_text_1 == ""
+    assert alert.audible_alert == AudibleAlert.none
+    assert alert.alert_size == AlertSize.none
+
+    stock = reverse_gear_disable_alert(car.CarParams.new_message(), *args[1:])
+    assert stock.alert_text_1 == "TAKE CONTROL IMMEDIATELY"
+    assert stock.audible_alert == AudibleAlert.warningImmediate
+
+  def test_gap_lock_engaged_alert_is_obvious_and_clears(self):
+    from openpilot.selfdrive.controls.lib.gap_lock import HUD_ENGAGED, HUD_LOST, HUD_UNAVAILABLE
+    from openpilot.selfdrive.selfdrived.events import Priority, gap_lock_alert
+
+    # SubMaster holds read-only readers; swap in a writable plan for this test.
+    plan = log.LongitudinalPlan.new_message()
+    orig_plan = self.sm.data["longitudinalPlan"]
+    self.sm.data["longitudinalPlan"] = plan
+    try:
+      self._check_gap_lock_alert(plan, HUD_ENGAGED, HUD_LOST, HUD_UNAVAILABLE, Priority, gap_lock_alert)
+    finally:
+      self.sm.data["longitudinalPlan"] = orig_plan
+
+  def _check_gap_lock_alert(self, plan, HUD_ENGAGED, HUD_LOST, HUD_UNAVAILABLE, Priority, gap_lock_alert):
+    plan.gapLockM = 32.4
+    plan.gapLockEvent = HUD_ENGAGED
+    args = (self.CP, self.CS, self.sm, False, 100, log.LongitudinalPersonality.standard)
+    alert = gap_lock_alert(*args)
+    assert alert.alert_text_1 == "Gap lock engaged 32 m"
+    assert alert.alert_text_2 == ""
+    assert alert.alert_size == AlertSize.small
+    assert alert.priority == Priority.LOW
+    # Short refresh. The 2 s window is the planner pulse, so the line
+    # drops when that pulse ends instead of sticking for the whole lock.
+    assert alert.duration == int(0.2 / DT_CTRL)
+
+    plan.gapLockM = 0
+    plan.gapLockEvent = 0
+    cleared = gap_lock_alert(*args)
+    assert cleared.alert_text_1 == "Gap lock off"
+    assert cleared.duration == int(0.2 / DT_CTRL)
+
+    plan.gapLockEvent = HUD_LOST
+    lost = gap_lock_alert(*args)
+    assert lost.alert_text_1 == "Gap lock off"
+    assert lost.duration == int(0.2 / DT_CTRL)
+
+    plan.gapLockEvent = HUD_UNAVAILABLE
+    unavailable = gap_lock_alert(*args)
+    assert unavailable.alert_text_1 == "Gap lock unavailable"
+    assert unavailable.duration == int(0.2 / DT_CTRL)
+
+  def test_follow_distance_changed_alert_matches_mannerisms(self):
+    follow_evt = getattr(log.OnroadEvent.EventName, "hypermileFollowChanged", None) or getattr(
+      log.OnroadEvent.EventName, "followDistanceChanged", None,
+    )
+    assert follow_evt is not None
+    event_types = EVENTS[follow_evt]
+    assert ET.WARNING in event_types
+    assert ET.PERMANENT in event_types
+    alert = hypermile_follow_changed_alert(
+      self.CP, self.CS, self.sm, False, 100, log.LongitudinalPersonality.standard,
+    )
+    assert alert.alert_text_1.startswith("Follow Distance:")
+    assert alert.duration == int(1.5 / DT_CTRL)
+
+  def test_nap_wiper_changed_alert_is_brief_nonblocking(self):
+    wiper_evt = getattr(log.OnroadEvent.EventName, "napWiperChanged", None)
+    assert wiper_evt is not None
+    event_types = EVENTS[wiper_evt]
+    assert ET.WARNING in event_types
+    assert ET.PERMANENT in event_types
+    assert ET.SOFT_DISABLE not in event_types
+    assert ET.IMMEDIATE_DISABLE not in event_types
+    assert ET.NO_ENTRY not in event_types
+    alert = nap_wiper_changed_alert(
+      self.CP, self.CS, self.sm, False, 100, log.LongitudinalPersonality.standard,
+    )
+    assert alert.alert_text_1 in ("Wipers Off", "Wipers Auto")
+    assert alert.alert_text_2 == ""
+    assert alert.duration == int(2.5 / DT_CTRL)
+
+  def test_preap_pedal_unavailable_alert_is_visible_without_disabling_lateral(self):
+    event_types = EVENTS[log.OnroadEvent.EventName.pedalUnavailable]
+    alert = event_types[ET.WARNING]
+
+    assert set(event_types) == {ET.WARNING}
+    assert alert.alert_text_1 == "Pedal Control Unavailable"
+    assert alert.alert_text_2 == "Speed Control Disabled"
+    assert alert.alert_size == AlertSize.mid
+    assert alert.duration == int(3.0 / DT_CTRL)
+
+  def test_radar_prefer_fallback_alert_is_visible_without_disengaging(self):
+    event_types = EVENTS[log.OnroadEvent.EventName.radarPreferFallback]
+    assert ET.SOFT_DISABLE not in event_types
+    assert ET.IMMEDIATE_DISABLE not in event_types
+    assert ET.NO_ENTRY not in event_types
+    alert = event_types[ET.WARNING]
+    if not isinstance(alert, Alert):  # text follows radarPreferReason (sensorDirty variant)
+      alert = alert(self.CP, self.CS, self.sm, False, 100, log.LongitudinalPersonality.standard)
+    assert alert.alert_text_1 == "Radar Unreliable"
+    assert alert.alert_text_2 == "Using camera lead"
+    assert alert.alert_size == AlertSize.mid
+
+  def test_offroad_alerts(self):
+    params = Params()
+    for a in self.offroad_alerts:
+      # set the alert
+      alert = copy.copy(self.offroad_alerts[a])
+      set_offroad_alert(a, True)
+      alert['extra'] = ''
+      assert alert == params.get(a)
+
+      # then delete it
+      set_offroad_alert(a, False)
+      assert params.get(a) is None
+
+  def test_offroad_alerts_extra_text(self):
+    params = Params()
+    for i in range(50):
+      # set the alert
+      a = random.choice(list(self.offroad_alerts))
+      alert = self.offroad_alerts[a]
+      set_offroad_alert(a, True, extra_text="a"*i)
+
+      written_alert = params.get(a)
+      assert "a"*i == written_alert['extra']
+      assert alert["text"] == written_alert['text']

@@ -433,7 +433,7 @@ def parse_args(cli_args=None):
 
 
 def main(cli_args=None):
-  from cereal import car
+  from opendbc.car.structs import car
   from opendbc.car.uds import UdsClient
   SafetyModel = car.CarParams.SafetyModel
   args = parse_args(cli_args)

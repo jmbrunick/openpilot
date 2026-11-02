@@ -339,7 +339,7 @@ def cereal_monitor():
     p("=" * 65)
 
     try:
-        from cereal import messaging
+        from openpilot.cereal import messaging
     except ImportError:
         p("\nERROR: cereal not available. Run on-device with openpilot environment.")
         p("Alternatively, use --panda mode for direct panda access.")
