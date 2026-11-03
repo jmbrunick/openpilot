@@ -1056,9 +1056,8 @@ def test_stock_cc_update_primes_visionipc_helper(monkeypatch):
   reset_auto_gates()
   try:
     out = body.stock_cc_update_with_overlay(fake, cs, 10, None, 0)
-    # Auto dry still extra-forwards rest (cancel latched Int). Helper must start.
-    assert len(out) == 1
-    assert out[0][0] == STW_ACTN_RQ_ADDR
+    # Auto dry sends no 0x45 (no continuous rest TX). Helper must still start.
+    assert out == []
     assert rain._detector is not None
     assert rain._detector._helper_started
     assert rain._detector.poll() is False
@@ -1403,7 +1402,8 @@ def test_heavy_wipe_end_auto_rest_cancels(monkeypatch):
     _expire_wipe(det)
     assert not det.hold
     assert not body.rain_wiper_needed()
-    assert wiper_rest_tx_needed(False)
+    # Dry Auto no longer streams rest; only a stock_cc 1->0 edge arms a short burst.
+    assert not wiper_rest_tx_needed(False)
   finally:
     set_rain_wiper_needed(None)
     reset_auto_gates()
@@ -1595,7 +1595,7 @@ def test_clear_glass_after_wipe_stays_off_and_auto_cancels(monkeypatch):
     assert not det.hold
     assert not body.rain_wiper_needed()
     assert not body.requested_wiper_test()
-    assert wiper_rest_tx_needed(False)
+    assert not wiper_rest_tx_needed(False)
     _expire_wait(det)
     assert not det.update_from_y(dry)
     assert not det.hold
@@ -3212,14 +3212,18 @@ def test_auto_stock_cc_forwards_on_rain_and_cancels_when_dry(monkeypatch):
   assert len(out) == 1
   assert out[0][0] == STW_ACTN_RQ_ADDR
   fake.sent.clear()
+  # Same stalk frame (no new MC): never a second 0x45 — no 100 Hz hold.
   out = body.stock_cc_update_with_overlay(fake, cs, 11, None, 0)
+  assert out == []
+  cs.msg_stw_actn_req = {"SpdCtrlLvr_Stat": 0, "MC_STW_ACTN_RQ": 1}
+  out = body.stock_cc_update_with_overlay(fake, cs, 12, None, 0)
   assert len(out) == 1
-  assert extra_stw_forward_needed([], 11, True, False, collar_hold=True) is True
 
   rain["on"] = False
   fake.sent.clear()
-  # Falling edge must extra-forward rest immediately, not wait for the 10 Hz slot.
-  out = body.stock_cc_update_with_overlay(fake, cs, 11, None, 0)
+  # Falling edge: rest goes out on the next real stalk frame.
+  cs.msg_stw_actn_req = {"SpdCtrlLvr_Stat": 0, "MC_STW_ACTN_RQ": 2}
+  out = body.stock_cc_update_with_overlay(fake, cs, 13, None, 0)
   assert len(out) == 1
   assert out[0][0] == STW_ACTN_RQ_ADDR
   assert extra_stw_forward_needed([], 11, False, False, wiper_cancel=True, cancel_now=True) is True
@@ -3252,6 +3256,7 @@ def test_auto_stock_cc_forwards_when_gear_only_on_cs_out(monkeypatch):
     assert extra_stw_forward_needed([], 10, True, False) is True
     cs.out.gearShifter = "park"
     fake.sent.clear()
+    cs.msg_stw_actn_req = {"SpdCtrlLvr_Stat": 0, "MC_STW_ACTN_RQ": 1}
     out = body.stock_cc_update_with_overlay(fake, cs, 20, None, 0)
     assert len(out) == 1
     assert out[0][0] == STW_ACTN_RQ_ADDR
@@ -3284,6 +3289,7 @@ def test_auto_stock_cc_releases_when_shifted_to_park(monkeypatch):
     assert out[0][0] == STW_ACTN_RQ_ADDR
     cs.gearShifter = "park"
     fake.sent.clear()
+    cs.msg_stw_actn_req = {"SpdCtrlLvr_Stat": 0, "MC_STW_ACTN_RQ": 1}
     out = body.stock_cc_update_with_overlay(fake, cs, 20, None, 0)
     assert len(out) == 1
     assert out[0][0] == STW_ACTN_RQ_ADDR
@@ -3371,11 +3377,12 @@ def test_auto_dry_extra_forwards_rest_without_forcing_wipe(monkeypatch):
   set_auto_gates(True, "drive")
   try:
     assert not body.requested_wiper_test()
-    assert wiper_rest_tx_needed(False) is True
+    # Auto dry: no continuous rest TX (CAN collision fix).
+    assert wiper_rest_tx_needed(False) is False
     fake.sent.clear()
-    out = body.stock_cc_update_with_overlay(fake, cs, 10, None, 0)
-    assert len(out) == 1
-    assert out[0][0] == STW_ACTN_RQ_ADDR
+    for frame in range(10, 40):
+      cs.msg_stw_actn_req = {"SpdCtrlLvr_Stat": 0, "MC_STW_ACTN_RQ": frame // 10}
+      assert body.stock_cc_update_with_overlay(fake, cs, frame, None, 0) == []
     assert extra_stw_forward_needed([], 10, False, False, wiper_cancel=True) is True
     assert extra_stw_forward_needed([], 11, False, False, wiper_cancel=True) is False
   finally:
@@ -3401,7 +3408,7 @@ def test_auto_rain_rising_edge_stops_rest_cancel(monkeypatch):
   set_auto_gates(True, "drive")
   try:
     assert not body.requested_wiper_test()
-    assert wiper_rest_tx_needed(False) is True
+    assert wiper_rest_tx_needed(False) is False
     rest = _rest()
     dry = apply_stw_wiper_beam_nibbles(rest, False, False, clear_wiper=True)
     assert _byte(dry) != STW_WIPER_ON
@@ -3441,6 +3448,7 @@ def test_int_to_off_sends_rest_cancel_burst_then_leaves_stalk(monkeypatch):
     forwarded = 0
     for frame in range(11, 11 + STW_CANCEL_BURST_N):
       fake.sent.clear()
+      cs.msg_stw_actn_req = {"SpdCtrlLvr_Stat": 0, "MC_STW_ACTN_RQ": frame - 10}
       out = body.stock_cc_update_with_overlay(fake, cs, frame, None, 0)
       assert len(out) == 1
       assert out[0][0] == STW_ACTN_RQ_ADDR
@@ -3664,3 +3672,46 @@ def test_read_cereal_gear_never_subscribes(monkeypatch):
   card = Path(__file__).resolve().parents[2].joinpath("card.py").read_text()
   assert "note_published_car_state(cs_send.carState)" in card
 
+
+
+def test_auto_wipe_tx_is_one_frame_per_stalk_frame_phase_aligned(monkeypatch):
+  """Nov 2 2026 CAN collision: Auto sends <=1 0x45 per real stalk frame,
+  only right after it, with the next MC and a valid CRC. Never 100 Hz,
+  never on a stale/silent stalk, never in Auto dry."""
+  from types import SimpleNamespace
+
+  from openpilot.selfdrive.car.tesla import preap_body_controls as body
+
+  reset_auto_gates()
+  fake = _FakeSpoofer()
+  rain = {"on": True}
+  monkeypatch.setattr(body, "_param_int", lambda key, default=0: (
+    WIPER_SETTING_AUTO if key == NAP_WIPER_SPEED else default
+  ))
+  monkeypatch.setattr(body, "requested_wiper_test", lambda: wiper_test_requested(WIPER_SETTING_AUTO, rain["on"]))
+  monkeypatch.setattr(body, "requested_high_beam_test", lambda: False)
+  monkeypatch.setattr(body, "_ORIG_STOCK_CC_UPDATE", lambda self, CS, frame, tesla_can, bus: [])
+  cs = SimpleNamespace(msg_stw_actn_req={"SpdCtrlLvr_Stat": 0, "MC_STW_ACTN_RQ": 0})
+  try:
+    sent_frames = []
+    for frame in range(100):  # 1 s of card at 100 Hz, stalk at 10 Hz
+      if frame % 10 == 0:
+        cs.msg_stw_actn_req = {"SpdCtrlLvr_Stat": 0, "MC_STW_ACTN_RQ": (frame // 10) % 16}
+      if body.stock_cc_update_with_overlay(fake, cs, frame, None, 0):
+        sent_frames.append(frame)
+    assert sent_frames == list(range(0, 100, 10))
+    # Stalk goes silent (same MC): we stay silent too.
+    assert all(body.stock_cc_update_with_overlay(fake, cs, f, None, 0) == [] for f in range(100, 130))
+    assert body.phase_stw_counter({"MC_STW_ACTN_RQ": 15}) == 0
+    assert body.phase_stw_counter({"MC_STW_ACTN_RQ": 3}) == 4
+    # Release: a short burst, still one per stalk frame, then nothing.
+    rain["on"] = False
+    out_frames = []
+    for frame in range(130, 230):
+      if frame % 10 == 0:
+        cs.msg_stw_actn_req = {"SpdCtrlLvr_Stat": 0, "MC_STW_ACTN_RQ": (frame // 10) % 16}
+      if body.stock_cc_update_with_overlay(fake, cs, frame, None, 0):
+        out_frames.append(frame)
+    assert out_frames == [130, 140, 150][:STW_CANCEL_BURST_N]
+  finally:
+    reset_auto_gates()
