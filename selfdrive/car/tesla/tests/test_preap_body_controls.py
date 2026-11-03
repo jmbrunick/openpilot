@@ -3592,14 +3592,16 @@ def test_auto_collar_last_wins_live_off(monkeypatch):
     })
     for frame in range(5):
       fake.sent.clear()
-      out = body.stock_cc_update_with_overlay(fake, cs, frame, tc, CANBUS.party)
+      # One phase-aligned frame per new live stalk MC, carrying the next MC.
+      cs.msg_stw_actn_req["MC_STW_ACTN_RQ"] = (9 + frame) % 16
+      out = body.stock_cc_update_with_overlay(fake, cs, frame * 10, tc, CANBUS.party)
       assert len(out) == 1
       addr, held, bus = out[0]
       assert addr == STW_ACTN_RQ_ADDR
       assert stw_collar_posn(held) == STW_COLLAR_INTERVAL1
       assert stw_wash(held) == 0
       assert _byte(held) != STW_WIPER_ON
-      assert (held[6] >> 4) & 0x0F == 9
+      assert (held[6] >> 4) & 0x0F == (10 + frame) % 16
       assert held[7] == tc.stw_crc(held[:7])
       assert fake.sent == []  # live-MC replace, not _send +1
   finally:
