@@ -67,6 +67,12 @@ coerce those values to Off.
 
 Known risk: pre-AP may still see the real stalk rest on bus 0. Auto
 holds INTERVAL1 at high rate so Off cannot last-win, not a pulse.
+
+SUPERSEDED for Auto (Nov 2 2026 CAN collision): the high-rate hold and
+10 Hz dry rest were a second free-running 0x45 transmitter and caused
+16-17x TX-error bursts and one canError / TC-regen latch. Auto now sends
+at most one phase-aligned frame per real stalk frame (see
+STW_PHASE_* below). The inline ESP32 stalk gateway is the proper fix.
 """
 
 # Params / UI. 0 is off (today's forwarded stalk). Indexes, not raw DBC.
@@ -110,7 +116,22 @@ STW_COLLAR_MASK = 0x07  # WprSw6Posn bits 0-2. MC lives in the high nibble.
 STW_COLLAR_INTERVAL1 = 1  # Physical Int1. Camera Auto wipe command.
 STW_FORWARD_SLOT = 10
 # Falling-edge rest: several 10 ms frames so Pre-AP drops latched Int now.
-STW_CANCEL_BURST_N = 8
+STW_CANCEL_BURST_N = 3
+# Phase-aligned Auto TX (CAN collision fix, Nov 2 2026 incident). The real
+# stalk sends 0x45 every 100 ms (rlog 1eb: median 100.0 ms, p5 90.9, p95
+# 109.3, MC +1 every frame). Our old 10 Hz rest + ~100 Hz INTERVAL1 hold
+# put a second transmitter on the same ID at random phase; when both start
+# arbitration together the data differs (collar/CRC), both see a bit error
+# and retry in lockstep ~16x until the panda goes error-passive, and once
+# (seg 72) the stalk's frames vanished for 730 ms -> canError, car latched
+# TC/regen off. Now Auto TXes at most ONE 0x45 per real stalk frame, on the
+# first card frame after a new stalk MC is seen (~0-15 ms after it, ~85 ms
+# before the next one), so the two transmitters never queue together.
+# Never TX on a stale stalk (no new MC) — if the stalk is silent we stay silent.
+STW_PHASE_MAX_AGE_FRAMES = 1  # card frames (10 ms) after the new stalk MC.
+# Ours carries the stalk's NEXT counter so a counter-checking receiver takes
+# ours as the newest frame (the stalk's following frame then repeats it).
+STW_PHASE_MC_OFFSET = 1
 
 _ORIG_CREATE_ACTION_REQUEST = None
 _ORIG_STOCK_CC_UPDATE = None
@@ -151,6 +172,9 @@ _status_disk_once = True
 _last_gear_src = "none"
 _last_wiper_req = False
 _wiper_cancel_burst = 0
+_stw_last_mc = None
+_stw_mc_age = 0
+_stw_sent_mc = None
 _params = None
 _rain_mod = None
 _rain_import_started = False
@@ -541,6 +565,7 @@ def reset_auto_gates() -> None:
   _last_gear_src = "none"
   _last_wiper_req = False
   _wiper_cancel_burst = 0
+  reset_stw_phase()
   _last_auto_log_t = 0.0
   _last_status_put_t = 0.0
   _last_status_gate = None
@@ -1041,14 +1066,52 @@ def _log_auto_status(setting: int, on: bool, drive: bool, rain: bool, wipe: bool
 
 
 def wiper_rest_tx_needed(wiper_on: bool | None = None) -> bool:
-  """Auto dry, or a wipe 1→0 burst, still extra-forwards rest. Off-never-wiped does not."""
+  """Only a wipe 1→0 release sends rest (a few phase-aligned frames).
+
+  Auto dry no longer streams 10 Hz rest frames: that was a continuous
+  second 0x45 transmitter (CAN collision). The live stalk already sends
+  collar=0 while dry.
+  """
   if wiper_on is None:
     wiper_on = _last_wiper_req
   if wiper_on:
     return False
-  if _wiper_cancel_burst > 0:
-    return True
-  return read_wiper_setting() == WIPER_SETTING_AUTO
+  return _wiper_cancel_burst > 0
+
+
+def reset_stw_phase() -> None:
+  global _stw_last_mc, _stw_mc_age, _stw_sent_mc
+  _stw_last_mc = None
+  _stw_mc_age = 0
+  _stw_sent_mc = None
+
+
+def note_stw_rx(msg_stw) -> None:
+  """Track the live stalk MC once per card frame (age in 10 ms frames)."""
+  global _stw_last_mc, _stw_mc_age
+  if not msg_stw:
+    return
+  mc = live_stw_counter(msg_stw)
+  if mc != _stw_last_mc:
+    _stw_last_mc = mc
+    _stw_mc_age = 0
+  else:
+    _stw_mc_age += 1
+
+
+def stw_phase_slot_open() -> bool:
+  """True once per real stalk frame, right after it. Never on a stale stalk."""
+  return (_stw_last_mc is not None and _stw_mc_age <= STW_PHASE_MAX_AGE_FRAMES
+          and _stw_sent_mc != _stw_last_mc)
+
+
+def _mark_stw_phase_sent() -> None:
+  global _stw_sent_mc
+  _stw_sent_mc = _stw_last_mc
+
+
+def phase_stw_counter(msg_stw) -> int:
+  return (live_stw_counter(msg_stw) + STW_PHASE_MC_OFFSET) & 0x0F
 
 
 def _arm_wiper_cancel(prev_wiper: bool, wiper_on: bool) -> None:
@@ -1149,16 +1212,31 @@ def stock_cc_update_with_overlay(self, CS, frame, tesla_can, can_bus_party):
   high_setting = requested_high_beam_test()
   cancel = wiper_rest_tx_needed(wiper)
   cancel_now = bool(cancel and _wiper_cancel_burst > 0)
+  msg_stw = getattr(CS, "msg_stw_actn_req", None)
+  note_stw_rx(msg_stw)
   can_sends = orig(self, CS, frame, tesla_can, can_bus_party)
   had_stw = any(msg[0] == STW_ACTN_RQ_ADDR for msg in can_sends)
-  if extra_stw_forward_needed(can_sends, frame, wiper, high_setting,
-                              wiper_cancel=cancel, cancel_now=cancel_now,
-                              collar_hold=collar_hold):
-    msg_stw = getattr(CS, "msg_stw_actn_req", None)
+  wiper_tx = bool(collar_hold or cancel)
+  if wiper_tx and not high_setting:
+    # Auto wipe / release: at most one frame per real stalk frame, phase-
+    # aligned right after it, next MC, CRC resigned. No 100 Hz hold.
+    if not had_stw and msg_stw is not None and stw_phase_slot_open():
+      button = int(msg_stw.get("SpdCtrlLvr_Stat", 0) or 0)
+      if tesla_can is None:
+        sent = self._send(CS, tesla_can, can_bus_party, button)
+      else:
+        sent = tesla_can.create_action_request(button, can_bus_party, phase_stw_counter(msg_stw), msg_stw)
+      if sent is not None:
+        sent = overlay_collar_on_can_msg(sent, tesla_can, auto_collar)
+        can_sends.append(sent)
+        had_stw = True
+        _mark_stw_phase_sent()
+  elif extra_stw_forward_needed(can_sends, frame, wiper, high_setting,
+                                wiper_cancel=cancel, cancel_now=cancel_now,
+                                collar_hold=collar_hold):
+    # High beam path unchanged (separate feature; still a 100 Hz overlay).
     if msg_stw is not None:
       if high_setting or collar_hold:
-        # Same MC as the bus-0 RX rest — edit that frame, do not +1 a second 0x45.
-        # Auto INTERVAL1 must last-win like High: live Off repeats collar=0.
         sent = send_replaced_live_stw(self, CS, tesla_can, can_bus_party)
       else:
         sent = self._send(CS, tesla_can, can_bus_party,
