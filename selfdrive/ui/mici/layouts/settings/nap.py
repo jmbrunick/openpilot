@@ -1,9 +1,7 @@
 """NAP settings panel for the comma 4 / mici UI tree.
 
-Mirrors selfdrive/ui/layouts/settings/nap.py for the BigButton/NavScroller
-vocabulary used on the comma 4. Phase 1 stub: three controls (pedal
-interceptor toggle, radar enabled toggle, flash EPAS button).
-Subsequent phases add the rest.
+Mirrors selfdrive/ui/layouts/settings/nap.py. Emergency disable and reset
+write the same values as the 3X NAP page.
 """
 from openpilot.common.params import Params
 from openpilot.system.ui.lib.application import gui_app
@@ -23,6 +21,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   RADAR_OFFSET_MIN,
   RESTORE_EPAS_INSTRUCTIONS,
   INSTALL_SPEED_SIGN_WEIGHTS_INSTRUCTIONS,
+  apply_nap_factory_defaults,
   NAP_SIGN_AUTO_CONFIRM,
   NAP_SIGN_OTHERS,
   NAP_SPEED_SIGN_LOG,
@@ -334,6 +333,21 @@ class NAPLayoutMici(NavScroller):
       ))
     restore_epas_btn.set_enabled(ui_state.is_offroad)
 
+    emergency_disable_btn = BigButton("emergency disable", "disable")
+    emergency_disable_btn.set_click_callback(self._on_emergency_disable)
+
+    reset_defaults_btn = BigButton("reset to defaults", "reset")
+    reset_defaults_btn.set_click_callback(self._on_reset_defaults)
+    reset_defaults_btn.set_enabled(ui_state.is_offroad)
+
+    self._pedal_enabled = pedal_enabled
+    self._pedal_calib_status = pedal_calib_status
+    self._live_controls = (
+      speed_sign_log, sign_others, tesla_limit, sign_auto_confirm, pedal_enabled,
+      pedal_can_bus, wiper_control, wiper_sensitivity, high_low_beam,
+      ibooster_enabled, force_pre_ap,
+    )
+
     self._scroller.add_widgets([
       speed_sign_log,
       sign_others,
@@ -356,9 +370,42 @@ class NAPLayoutMici(NavScroller):
       backup_epas_btn,
       flash_epas_btn,
       restore_epas_btn,
+      emergency_disable_btn,
+      reset_defaults_btn,
     ])
+
+  def _on_emergency_disable(self) -> None:
+    def confirm():
+      self._params.put_bool(NAPParamKeys.PEDAL_ENABLED, False)
+      self._params.put_bool(NAPParamKeys.PEDAL_CALIB_DONE, False)
+      self._pedal_enabled.refresh()
+      self._pedal_calib_status.set_value(self._pedal_calib_text())
+
+    icon = gui_app.texture("icons_mici/buttons/button_circle_red.png", 180, 180)
+    gui_app.push_widget(BigConfirmationDialog(
+      "slide to\ndisable pedal", icon, confirm, red=True,
+    ))
+
+  def _pedal_calib_text(self) -> str:
+    return "calibrated" if self._params.get_bool(NAPParamKeys.PEDAL_CALIB_DONE) else "not calibrated"
+
+  def _on_reset_defaults(self) -> None:
+    def confirm():
+      apply_nap_factory_defaults(self._params)
+      self._refresh_live()
+
+    icon = gui_app.texture("icons_mici/buttons/button_circle_red.png", 180, 180)
+    gui_app.push_widget(BigConfirmationDialog(
+      "slide to\nreset nap", icon, confirm, red=True,
+    ))
+
+  def _refresh_live(self) -> None:
+    for control in self._live_controls:
+      control.refresh()
+    self._pedal_calib_status.set_value(self._pedal_calib_text())
+    self._weights_status.set_value(install_status_summary())
 
   def show_event(self):
     super().show_event()
-    self._weights_status.set_value(install_status_summary())
+    self._refresh_live()
 

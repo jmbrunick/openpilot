@@ -514,7 +514,6 @@ def test_settings_and_docs_wire_hill_climb():
   root = Path(__file__).resolve().parents[3]
   tici = (root / "selfdrive/ui/layouts/settings/driving_mannerisms.py").read_text()
   mici = (root / "selfdrive/ui/mici/layouts/settings/driving_mannerisms.py").read_text()
-  nap = (root / "selfdrive/ui/layouts/settings/nap.py").read_text()
   content = (root / "selfdrive/ui/layouts/settings/nap_content.py").read_text()
   keys = params_keys_text(root)
   planner = (root / "selfdrive/controls/lib/longitudinal_planner.py").read_text()
@@ -527,7 +526,7 @@ def test_settings_and_docs_wire_hill_climb():
   assert "NAP_HYPERMILE_HILL_CLIMB" in tici
   assert "hill climb" in mici
   assert "NAP_HYPERMILE_HILL_CLIMB" in mici
-  assert "put_bool(NAP_HYPERMILE_HILL_CLIMB, True)" in nap
+  assert "put_bool(NAP_HYPERMILE_HILL_CLIMB, True)" in content
   assert "NAPHypermileHillClimb" in keys
   assert 'BOOL, "1"' in next(ln for ln in keys.splitlines() if '"NAPHypermileHillClimb"' in ln)
   assert "apply_hill_climb" in planner

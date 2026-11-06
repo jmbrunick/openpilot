@@ -89,10 +89,12 @@ def test_hidden_toggles_removed_from_normal_lists():
   assert "Go Offline" not in nap
   assert "simulate look" not in nap
   assert "false alert ignore" not in nap
-  assert 'put_bool(NAP_FORCE_OFFROAD, False)' in nap
-  assert "NAPForceOffroadConfirmed" in nap
-  assert 'put_bool(NAP_DM_SIMULATE_LOOKING, True)' in nap
-  assert 'put_bool(NAP_DM_FALSE_ALERT_IGNORE, False)' in nap
+  defaults = (ROOT / "selfdrive/ui/layouts/settings/nap_content.py").read_text()
+  assert "apply_nap_factory_defaults" in nap
+  assert 'put_bool(NAP_FORCE_OFFROAD, False)' in defaults
+  assert "NAPForceOffroadConfirmed" in defaults
+  assert 'put_bool(NAP_DM_SIMULATE_LOOKING, True)' in defaults
+  assert 'put_bool(NAP_DM_FALSE_ALERT_IGNORE, False)' in defaults
 
   assert 'BigParamControl("force offroad"' not in nap_mici
   assert "NAP_FORCE_OFFROAD" not in nap_mici
