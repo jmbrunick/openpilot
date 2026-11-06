@@ -638,9 +638,9 @@ def test_settings_and_docs_wire_hypermile():
     assert "NAP_HYPERMILE_HILL_CLIMB" in src
     assert "apply_hypermile_toggle" in src
   assert "Hypermile" in nap
-  assert "put_bool(NAP_HYPERMILE, False)" in nap
-  assert "put_bool(NAP_HYPERMILE_STEP_DOWN, False)" in nap
-  assert "put_bool(NAP_HYPERMILE_HILL_CLIMB, True)" in nap
+  assert "put_bool(NAP_HYPERMILE, False)" in content
+  assert "put_bool(NAP_HYPERMILE_STEP_DOWN, False)" in content
+  assert "put_bool(NAP_HYPERMILE_HILL_CLIMB, True)" in content
   assert "Step Down Speed" in tici
   assert "Hill Climb" in tici
   assert "step down speed" in mici

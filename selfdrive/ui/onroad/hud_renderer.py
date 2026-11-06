@@ -4,6 +4,7 @@ from openpilot.common.constants import CV
 from openpilot.selfdrive.controls.lib.gap_lock import gap_lock_hud_chip
 from openpilot.selfdrive.ui.onroad.exp_button import ExpButton
 from openpilot.selfdrive.ui.onroad.speed_sign_hud import SpeedSignHud
+from openpilot.selfdrive.ui.onroad.limit_popup import MAP_SOURCE_TAGS
 from openpilot.selfdrive.ui.onroad.limit_popup_hud import LimitPopupHud
 from openpilot.selfdrive.ui.onroad.temp_limit_hud import TempEndNote, draw_end_note, draw_temp_plate, temp_from_md
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
@@ -58,10 +59,6 @@ class Colors:
 UI_CONFIG = UIConfig()
 FONT_SIZES = FontSizes()
 COLORS = Colors()
-
-
-# liveMapDataNAP.source -> short tag under the LIMIT number
-MAP_SOURCE_TAGS = {"sign": "SIGN", "tesla": "TESLA", "tesla_learned": "LEARNED", "osm": "OSM", "osm_default": "OSM EST", "osm_fallback": "OSM*", "temp": "TEMP"}
 
 
 class HudRenderer(Widget):

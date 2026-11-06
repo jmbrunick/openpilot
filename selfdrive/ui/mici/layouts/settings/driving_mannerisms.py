@@ -23,7 +23,9 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   NAP_ONE_PEDAL_LONG,
 )
 from openpilot.selfdrive.ui.layouts.settings.nap_lateral import (
-  NAP_TURN_IN_DELAY, TURN_IN_DELAY_LABELS, TURN_IN_DELAY_STEPS,
+  LAT_REF_OFFSET_LABELS, LAT_REF_OFFSET_PRESETS, NAP_LAT_REF_OFFSET, NAP_LAT_TURN_GEOM,
+  NAP_ROUNDABOUT_ASSIST, NAP_TURN_IN_DELAY, TURN_IN_DELAY_LABELS, TURN_IN_DELAY_STEPS,
+  lat_ref_offset_index,
 )
 from opendbc.car.tesla.preap.nap_params import NAPParamKeys
 
@@ -72,6 +74,25 @@ class DrivingMannerismsLayoutMici(NavScroller):
       default_value=0,
     )
 
+    # Same three lateral controls as the 3X Driving Mannerisms page. The
+    # comma four button is shorter, so the value line is the short form.
+    turn_geom = BigParamControl("turn geometry", NAP_LAT_TURN_GEOM)
+    turn_geom.set_value("On — later low-speed turn-in")
+
+    presets = list(LAT_REF_OFFSET_PRESETS)
+    if self._params.get(NAP_LAT_REF_OFFSET, return_default=True) not in presets:
+      self._params.put(NAP_LAT_REF_OFFSET, float(presets[lat_ref_offset_index(self._params)]))
+    self._ref_offset = BigMultiValueParamToggle(
+      "rear reference offset",
+      NAP_LAT_REF_OFFSET,
+      values=presets,
+      labels=LAT_REF_OFFSET_LABELS,
+      default_value=0.35,
+    )
+
+    roundabout = BigParamControl("roundabout steering", NAP_ROUNDABOUT_ASSIST)
+    roundabout.set_value("Off — GPS blend on a mapped ring")
+
     lat_handoff = BigParamControl("soft lateral handoff", NAP_DRIVER_LAT_HANDOFF)
     lat_handoff.set_value("On — free-wheel yield; Off if false-yield")
 
@@ -101,12 +122,19 @@ class DrivingMannerismsLayoutMici(NavScroller):
     hill_climb.set_value("On — grade hold on climbs; light crest ease")
     hill_climb.set_visible(lambda: self._params.get_bool(NAP_HYPERMILE))
 
+    self._toggles = (
+      adaptive_accel, turn_geom, roundabout, lat_handoff, low_vis, cone_hold,
+      obstacle_chime, one_pedal, gap_lock, hypermile, step_down, hill_climb,
+    )
     self._scroller.add_widgets([
       self._accel,
       adaptive_accel,
       self._follow_distance_city,
       self._follow_distance_hwy,
       self._turn_in_delay,
+      turn_geom,
+      self._ref_offset,
+      roundabout,
       lat_handoff,
       low_vis,
       cone_hold,
@@ -126,6 +154,9 @@ class DrivingMannerismsLayoutMici(NavScroller):
     self._follow_distance_city._load_value()
     self._follow_distance_hwy._load_value()
     self._turn_in_delay._load_value()
+    self._ref_offset.refresh()
+    for toggle in self._toggles:
+      toggle.refresh()
 
 
 def open_driving_mannerisms_menu(page: DrivingMannerismsLayoutMici | None = None) -> DrivingMannerismsLayoutMici:

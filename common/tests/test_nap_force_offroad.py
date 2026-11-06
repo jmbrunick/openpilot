@@ -143,8 +143,9 @@ def test_settings_and_docs_cover_warning_and_reset():
   readme = (ROOT / "docs-nap" / "README.md").read_text(encoding="utf-8")
   ui_state = (ROOT / "selfdrive" / "ui" / "ui_state.py").read_text(encoding="utf-8")
 
-  assert "NAP_FORCE_OFFROAD" in nap
-  assert "put_bool(NAP_FORCE_OFFROAD, False)" in nap
+  assert "apply_nap_factory_defaults" in nap
+  assert "NAP_FORCE_OFFROAD" in content
+  assert "put_bool(NAP_FORCE_OFFROAD, False)" in content
   assert 'self._add_toggle(\n      NAP_FORCE_OFFROAD' not in nap
 
   assert "Force Offroad" in popup
