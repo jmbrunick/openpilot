@@ -615,6 +615,52 @@ def wiper_hud_text(setting) -> str:
   return WIPER_HUD_AUTO if normalize_wiper_speed(setting) == WIPER_SPEED_AUTO else WIPER_HUD_OFF
 
 
+def apply_nap_factory_defaults(params) -> None:
+  """Reset every NAP setting the 3X panel resets. Force Pre-AP stays on.
+
+  The 3X and comma four Reset buttons both call this, so a reset on either
+  screen writes the same values.
+  """
+  from opendbc.car.tesla.preap.nap_params import NAPParamKeys, DEFAULTS
+
+  for key, default in DEFAULTS.items():
+    if isinstance(default, bool):
+      params.put_bool(key, default)
+    elif isinstance(default, (int, float)):
+      params.put(key, default)
+  params.put("NAPMapSpeedMode", 0)
+  params.put("NAPMapSpeedOffsetMph", 0)
+  params.put("NAPMapSpeedLookahead", 2)
+  params.put("NAPMapSpeedAccel", MAP_SPEED_ACCEL_DEFAULT)
+  params.remove("NAPMapSpeedDbPath")
+  params.put_bool(NAP_SPEED_SIGN_LOG, False)
+  params.put_bool(NAP_TESLA_LIMIT_ENABLE, False)
+  params.put_bool(NAP_TESLA_LIMIT_PRIMARY, True)
+  params.put_bool(NAP_SPEED_LIMIT_PREFER_OSM, False)
+  params.put_bool(NAP_SPEED_LIMIT_OSM_FALLBACK, True)
+  params.put_bool(NAP_SIGN_AUTO_CONFIRM, False)
+  params.put_bool(NAP_DRIVER_LAT_HANDOFF, True)
+  params.put_bool(NAP_LOW_VIS_BACKOFF, True)
+  params.put_bool(NAP_CONE_LINE_HOLD, True)
+  params.put_bool(NAP_CONE_LINE_LOG, True)
+  params.put_bool(NAP_OBSTACLE_CHIME, True)
+  params.put_bool(NAP_OBSTACLE_LOG, True)
+  params.put_bool(NAP_DM_SIMULATE_LOOKING, True)
+  params.put_bool(NAP_DM_FALSE_ALERT_IGNORE, False)
+  params.put_bool(NAP_HYPERMILE, False)
+  params.put_bool(NAP_HYPERMILE_STEP_DOWN, False)
+  params.put_bool(NAP_HYPERMILE_HILL_CLIMB, True)
+  params.put_bool(NAP_ONE_PEDAL_LONG, False)
+  params.remove("NAPHypermileSaved")
+  params.put_bool(NAP_FORCE_OFFROAD, False)
+  params.put_bool("NAPForceOffroadConfirmed", False)
+  params.put_bool("NAPForceOffroadHandoffReady", False)
+  # Force Pre-AP is locked on in the panel but DEFAULTS keeps it off
+  # for non-UI consumers. Re-apply the lock after the wholesale loop
+  # so reset doesn't silently flip the invariant.
+  params.put_bool(NAPParamKeys.FORCE_PRE_AP, True)
+
+
 def coerce_wiper_speed_param(params) -> int:
   """Read NAPWiperSpeed, treat Int/On as Off, and persist the coercion."""
   try:

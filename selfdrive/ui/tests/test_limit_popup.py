@@ -81,3 +81,25 @@ def test_layout_hits():
     x, y, w, h = r[k]
     assert hit_name(x + w / 2, y + h / 2, r) == k
   assert hit_name(5, 5, r) is None
+  # 3X geometry stays the pre-comma-four layout.
+  assert r["panel"] == (630.0, 260.0, 900.0, 560.0)
+  assert r["tesla"] == (660.0, 330.0, 408.0, 130.0)
+
+
+def test_compact_layout_fits_comma_four():
+  """Comma four content area is about 476x240. Every control stays on that screen."""
+  sw, sh = 476.0, 240.0
+  r = popup_rects(0, 0, sw, sh)
+  px, py, pw, ph = r["panel"]
+  assert px >= 0 and py >= 0
+  assert px + pw <= sw + 0.1 and py + ph <= sh + 0.1
+  for k in ("tesla", "osm", "up", "down", "save", "clear", "source", "close", "value"):
+    x, y, w, h = r[k]
+    assert w > 8 and h > 8
+    assert x >= px - 0.1 and y >= py - 0.1
+    assert x + w <= px + pw + 0.1 and y + h <= py + ph + 0.1
+    if k != "value":
+      assert hit_name(x + w / 2, y + h / 2, r) == k
+  # The mph readout is not a button. Its center must not land on one.
+  vx, vy, vw, vh = r["value"]
+  assert hit_name(vx + vw / 2, vy + vh / 2, r) == "panel"

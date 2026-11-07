@@ -94,13 +94,18 @@ class LimitPopupHud(Widget):
 
   def _btn(self, key: str, label: str, size: int, sub: str = "", hot: bool = False) -> None:
     r = _r(self._rects[key])
+    # Comma four buttons are ~60 px tall. 3X buttons are 110–130 and keep the sizes passed in.
+    sub_size = 26
+    if r.height < 90:
+      size = max(14, int(r.height * 0.42))
+      sub_size = max(11, int(r.height * 0.24))
     rl.draw_rectangle_rounded(r, 0.2, 8, BTN_HOT if hot else BTN_BG)
     w = measure_text_cached(self._font_bold, label, size).x
-    ty = r.y + (r.height - size) / 2 - (14 if sub else 0)
+    ty = r.y + (r.height - size) / 2 - (sub_size * 0.5 if sub else 0)
     rl.draw_text_ex(self._font_bold, label, rl.Vector2(r.x + (r.width - w) / 2, ty), size, 0, INK)
     if sub:
-      sw = measure_text_cached(self._font, sub, 26).x
-      rl.draw_text_ex(self._font, sub, rl.Vector2(r.x + (r.width - sw) / 2, ty + size + 2), 26, 0, DIM)
+      sw = measure_text_cached(self._font, sub, sub_size).x
+      rl.draw_text_ex(self._font, sub, rl.Vector2(r.x + (r.width - sw) / 2, ty + size + 2), sub_size, 0, DIM)
 
   def _render(self, rect: rl.Rectangle) -> None:
     m = self.model
@@ -108,16 +113,25 @@ class LimitPopupHud(Widget):
       return
     rl.draw_rectangle_rounded(_r(self._rects["panel"]), 0.06, 10, PANEL_BG)
     p = self._rects["panel"]
-    title = "Speed limit for this road  (tap a map to use it)"
-    rl.draw_text_ex(self._font, title, rl.Vector2(p[0] + 30, p[1] + 22), 34, 0, DIM)
-    self._btn("tesla", str(m.tesla_mph) if m.tesla_mph > 0 else "--", 64, "TESLA")
-    self._btn("osm", str(m.osm_mph) if m.osm_mph > 0 else "--", 64, "OSM")
+    compact = p[3] < 400
+    if compact and m.note:
+      title = m.note
+    elif compact:
+      title = "this road — tap a map"
+    else:
+      title = "Speed limit for this road  (tap a map to use it)"
+    title_size = 16 if compact else 34
+    title_x = p[0] + (8 if compact else 30)
+    rl.draw_text_ex(self._font, title, rl.Vector2(title_x, p[1] + (1 if compact else 22)), title_size, 0, DIM)
+    num = 28 if compact else 64
+    self._btn("tesla", str(m.tesla_mph) if m.tesla_mph > 0 else "--", num, "TESLA")
+    self._btn("osm", str(m.osm_mph) if m.osm_mph > 0 else "--", num, "OSM")
     self._btn("down", "-5", 54)
-    self._btn("value", f"{m.value} mph", 64)
+    self._btn("value", f"{m.value}" if compact else f"{m.value} mph", num)
     self._btn("up", "+5", 54)
     self._btn("save", "Save", 40, hot=True)
     self._btn("clear", "Clear", 40)
     self._btn("source", "OSM" if m.prefer_osm else "TESLA", 36, "source")
     self._btn("close", "Close", 40)
-    if m.note:
+    if m.note and not compact:
       rl.draw_text_ex(self._font, m.note, rl.Vector2(p[0] + 30, p[1] + p[3] - 40), 28, 0, rl.Color(255, 190, 120, 255))

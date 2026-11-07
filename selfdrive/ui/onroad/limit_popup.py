@@ -29,25 +29,71 @@ def _inside(x: float, y: float, r: Rect) -> bool:
   return r[2] > 0 and r[3] > 0 and r[0] <= x <= r[0] + r[2] and r[1] <= y <= r[1] + r[3]
 
 
+# Same tags the 3X LIMIT plate draws under the number.
+MAP_SOURCE_TAGS = {
+  "sign": "SIGN",
+  "tesla": "TESLA",
+  "tesla_learned": "LEARNED",
+  "osm": "OSM",
+  "osm_default": "OSM EST",
+  "osm_fallback": "OSM*",
+  "temp": "TEMP",
+}
+
+
 def popup_rects(sx: float, sy: float, sw: float, sh: float) -> dict[str, Rect]:
-  """Panel + buttons for a screen rect (tici 2160x1080 class; scales with width)."""
-  pw, ph = min(900.0, sw - 80.0), 560.0
-  px, py = sx + (sw - pw) / 2.0, sy + max(40.0, (sh - ph) / 2.0)
-  pad, gap = 30.0, 24.0
-  col = (pw - 2 * pad - gap) / 2.0
-  r: dict[str, Rect] = {"panel": (px, py, pw, ph)}
-  y1 = py + 70.0
-  r["tesla"] = (px + pad, y1, col, 130.0)
-  r["osm"] = (px + pad + col + gap, y1, col, 130.0)
-  y2 = y1 + 130.0 + gap
-  bw = 130.0
-  r["down"] = (px + pad, y2, bw, 120.0)
-  r["value"] = (px + pad + bw + gap, y2, pw - 2 * pad - 2 * bw - 2 * gap, 120.0)
-  r["up"] = (px + pw - pad - bw, y2, bw, 120.0)
-  y3 = y2 + 120.0 + gap
-  qw = (pw - 2 * pad - 3 * gap) / 4.0
+  """Panel + buttons. 3X (tall screen) keeps the 2160x1080 layout.
+
+  Comma four is 536x240, so a short screen gets a compact panel that stays
+  on screen. The 3X branch below is the previous geometry.
+  """
+  if sh >= 700.0:
+    pw, ph = min(900.0, sw - 80.0), 560.0
+    px, py = sx + (sw - pw) / 2.0, sy + max(40.0, (sh - ph) / 2.0)
+    pad, gap = 30.0, 24.0
+    col = (pw - 2 * pad - gap) / 2.0
+    r: dict[str, Rect] = {"panel": (px, py, pw, ph)}
+    y1 = py + 70.0
+    r["tesla"] = (px + pad, y1, col, 130.0)
+    r["osm"] = (px + pad + col + gap, y1, col, 130.0)
+    y2 = y1 + 130.0 + gap
+    bw = 130.0
+    r["down"] = (px + pad, y2, bw, 120.0)
+    r["value"] = (px + pad + bw + gap, y2, pw - 2 * pad - 2 * bw - 2 * gap, 120.0)
+    r["up"] = (px + pw - pad - bw, y2, bw, 120.0)
+    y3 = y2 + 120.0 + gap
+    qw = (pw - 2 * pad - 3 * gap) / 4.0
+    for i, k in enumerate(("save", "clear", "source", "close")):
+      r[k] = (px + pad + i * (qw + gap), y3, qw, 110.0)
+    return r
+
+  pad, gap = 6.0, 4.0
+  pw = max(160.0, min(sw - 8.0, 520.0))
+  ph = max(140.0, min(sh - 8.0, 228.0))
+  if ph > sh:
+    ph = sh
+  if pw > sw:
+    pw = sw
+  px = sx + (sw - pw) / 2.0
+  py = sy + max(0.0, (sh - ph) / 2.0)
+  r = {"panel": (px, py, pw, ph)}
+  title_h = 18.0
+  inner_h = ph - title_h - pad
+  inner_w = pw - 2 * pad
+  row_h = (inner_h - 2 * gap) / 3.0
+  y = py + title_h
+  col = (inner_w - gap) / 2.0
+  r["tesla"] = (px + pad, y, col, row_h)
+  r["osm"] = (px + pad + col + gap, y, col, row_h)
+  y += row_h + gap
+  bw = min(64.0, inner_w * 0.22)
+  r["down"] = (px + pad, y, bw, row_h)
+  r["up"] = (px + pw - pad - bw, y, bw, row_h)
+  r["value"] = (px + pad + bw + gap, y, max(20.0, inner_w - 2 * bw - 2 * gap), row_h)
+  y += row_h + gap
+  qw = (inner_w - 3 * gap) / 4.0
   for i, k in enumerate(("save", "clear", "source", "close")):
-    r[k] = (px + pad + i * (qw + gap), y3, qw, 110.0)
+    r[k] = (px + pad + i * (qw + gap), y, qw, row_h)
   return r
 
 

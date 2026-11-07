@@ -18,21 +18,21 @@ from openpilot.selfdrive.ui.ui_state import ui_state
 class MapSpeedLimitLayoutMici(NavScroller):
   def __init__(self):
     super().__init__()
-    map_mode = BigMultiValueParamToggle(
+    self._map_mode = map_mode = BigMultiValueParamToggle(
       "map speed (max)",
       "NAPMapSpeedMode",
       values=MAP_SPEED_MODES,
       labels=[s.lower() for s in MAP_SPEED_MODE_LABELS],
       default_value=0,
     )
-    map_offset = BigMultiValueParamToggle(
+    self._map_offset = map_offset = BigMultiValueParamToggle(
       "map speed offset",
       "NAPMapSpeedOffsetMph",
       values=list(MAP_SPEED_OFFSETS_MPH),
       labels=["-5 mph", "0", "+5 mph"],
       default_value=0,
     )
-    map_lookahead = BigMultiValueParamToggle(
+    self._map_lookahead = map_lookahead = BigMultiValueParamToggle(
       "lookahead",
       "NAPMapSpeedLookahead",
       values=list(MAP_SPEED_LOOKAHEAD),
@@ -67,6 +67,9 @@ class MapSpeedLimitLayoutMici(NavScroller):
 
   def show_event(self):
     super().show_event()
+    self._map_mode.refresh()
+    self._map_offset.refresh()
+    self._map_lookahead.refresh()
     self._map_db_status.set_value(installed_db_summary())
     self._map_rings.set_value(installed_ring_summary())
     self._map_revision.set_value(installed_revision_summary())

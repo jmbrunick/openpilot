@@ -1,7 +1,10 @@
 import pyray as rl
 from dataclasses import dataclass
 from openpilot.common.constants import CV
+from openpilot.selfdrive.controls.lib.gap_lock import gap_lock_hud_chip
 from openpilot.selfdrive.ui.mici.onroad.torque_bar import TorqueBar
+from openpilot.selfdrive.ui.onroad.limit_popup import MAP_SOURCE_TAGS
+from openpilot.selfdrive.ui.onroad.limit_popup_hud import LimitPopupHud
 from openpilot.selfdrive.ui.onroad.temp_limit_hud import TempEndNote, draw_end_note, temp_from_md
 from openpilot.selfdrive.ui.onroad.speed_sign_hud import SpeedSignHud
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
@@ -109,9 +112,15 @@ class HudRenderer(Widget):
     self._engaged: bool = False
     self.map_speed_valid: bool = False
     self.map_speed_limit: float = 0.0
+    self.map_speed_source: str = ""
     self.map_speed_temp: bool = False
     self.temp_end_note: str | None = None
     self._temp_end = TempEndNote()
+    self.gap_lock_chip: str | None = None
+    self.map_tesla_mph = 0
+    self.map_osm_mph = 0
+    self._limit_sign_rect: rl.Rectangle | None = None
+    self._limit_popup = LimitPopupHud()
 
     self._can_draw_top_icons = True
     self._show_wheel_critical = False
@@ -151,8 +160,10 @@ class HudRenderer(Widget):
     sm = ui_state.sm
     if sm.recv_frame["carState"] < ui_state.started_frame:
       self.is_cruise_set = False
+      self.is_cruise_available = False
       self.set_speed = SET_SPEED_NA
       self.speed = 0.0
+      self._clear_map_limit()
       return
 
     controls_state = sm['controlsState']
@@ -174,16 +185,21 @@ class HudRenderer(Widget):
     speed_conversion = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
     self.speed = max(0.0, float(car_state.vEgo) * speed_conversion)
 
-    self.map_speed_valid = False
-    self.map_speed_limit = 0.0
-    self.map_speed_temp = False
-    self.temp_end_note = None
+    self._clear_map_limit()
+    if sm.valid.get("longitudinalPlan", False):
+      self.gap_lock_chip = gap_lock_hud_chip(getattr(sm["longitudinalPlan"], "gapLockM", 0.0))
     if "liveMapDataNAP" in sm.valid and sm.valid["liveMapDataNAP"]:
       md = sm["liveMapDataNAP"]
       if md.speedLimitValid and md.speedLimit > 0:
         self.map_speed_valid = True
         self.map_speed_limit = md.speedLimit * speed_conversion
+        self.map_speed_source = str(getattr(md, "source", "") or "")
         self.map_speed_temp = temp_from_md(md)[0]
+      try:
+        self.map_tesla_mph = int(md.teslaBaseMph) if bool(md.teslaValid) else 0
+        self.map_osm_mph = int(md.osmRawMph)
+      except Exception:
+        pass
       self.temp_end_note = self._temp_end.update(md.tempEndSeq, md.tempEndReason)
 
   def _render(self, rect: rl.Rectangle) -> None:
@@ -194,11 +210,30 @@ class HudRenderer(Widget):
     if self.is_cruise_set:
       self._draw_set_speed(rect)
 
+    # A Yes/No under an open LIMIT popup must not also answer the sign.
+    self._speed_sign_hud.set_enabled(not self._limit_popup.is_open)
     self._speed_sign_hud.render(rect)
     self._draw_steering_wheel(rect)
+    self._draw_map_limit(rect)
+    sign = self._limit_sign_rect if (
+      self.is_cruise_available and self.map_speed_valid and not ui_state.is_metric
+    ) else None
+    self._limit_popup.set_inputs(sign, self.map_speed_limit, self.map_tesla_mph, self.map_osm_mph)
+    self._limit_popup.render(rect)
 
   def user_interacting(self) -> bool:
-    return self._speed_sign_hud.is_pressed
+    return (self._speed_sign_hud.is_pressed or self._limit_popup.is_pressed
+            or self._limit_popup.is_open)
+
+  def _clear_map_limit(self) -> None:
+    self.map_speed_valid = False
+    self.map_speed_limit = 0.0
+    self.map_speed_source = ""
+    self.map_speed_temp = False
+    self.temp_end_note = None
+    self.gap_lock_chip = None
+    self.map_tesla_mph = 0
+    self.map_osm_mph = 0
 
   def _draw_steering_wheel(self, rect: rl.Rectangle) -> None:
     wheel_txt = self._txt_wheel_critical if self._show_wheel_critical else self._txt_wheel
@@ -284,20 +319,53 @@ class HudRenderer(Widget):
       max_color,
     )
 
+  def _draw_map_limit(self, rect: rl.Rectangle) -> None:
+    """Persistent LIMIT chip. The 3X plate stays up whenever cruise is available.
+
+    The comma four MAX number fades after 2.5 s. The limit used to be drawn
+    inside that fade and always labeled OSM, so Tesla / sign / learned limits
+    disappeared and the hold-to-edit popup had nothing to grab.
+    """
+    self._limit_sign_rect = None
+    if not self.is_cruise_available:
+      return
+    lines: list[tuple[str, rl.Color]] = []
     if self.map_speed_valid:
       lim = str(round(self.map_speed_limit))
-      temp = self.map_speed_temp   # speed-sign Temp: this road, this drive (orange)
-      rl.draw_text_ex(
-        self._font_semi_bold,
-        f"TEMP {lim}" if temp else f"OSM {lim}",
-        rl.Vector2(x + 25, y + FONT_SIZES.set_speed + FONT_SIZES.max_speed - 4),
-        22,
-        0,
-        rl.Color(255, 150, 60, int(255 * alpha)) if temp else rl.Color(255, 255, 255, int(200 * alpha)),
-      )
+      if self.map_speed_temp:
+        lines.append((f"TEMP {lim}", rl.Color(255, 150, 60, 255)))
+      else:
+        tag = MAP_SOURCE_TAGS.get(self.map_speed_source, "")
+        lines.append((f"LIMIT {lim}" + (f" {tag}" if tag else ""), rl.WHITE))
+    if self.gap_lock_chip:
+      lines.append((self.gap_lock_chip, rl.Color(128, 216, 166, 255)))
+    if not lines and not self.temp_end_note:
+      return
+    size = 22
+    gap = 4
+    widths = [measure_text_cached(self._font_semi_bold, text, size).x for text, _ in lines]
+    text_w = max(widths) if widths else 0.0
+    pad_x, pad_y = 10.0, 6.0
+    w = text_w + pad_x * 2
+    h = (len(lines) * (size + gap) - gap) + pad_y * 2 if lines else 0.0
+    max_w = max(40.0, rect.width - 16.0)
+    w = min(w, max_w)
+    x = rect.x + rect.width - w - 8
+    y = rect.y + 8
+    if lines:
+      chip = rl.Rectangle(x, y, w, h)
+      rl.draw_rectangle_rounded(chip, 0.25, 6, rl.Color(0, 0, 0, 170))
+      for i, (text, color) in enumerate(lines):
+        rl.draw_text_ex(
+          self._font_semi_bold, text,
+          rl.Vector2(x + pad_x, y + pad_y + i * (size + gap)),
+          size, 0, color,
+        )
+      if self.map_speed_valid:
+        self._limit_sign_rect = chip
     if self.temp_end_note:
-      draw_end_note(self._font_semi_bold, self.temp_end_note, x + 25,
-                    y + FONT_SIZES.set_speed + FONT_SIZES.max_speed + 20, size=18)
+      note_y = y + h + 4 if lines else y
+      draw_end_note(self._font_semi_bold, self.temp_end_note, x, note_y, size=16)
 
   def _draw_current_speed(self, rect: rl.Rectangle) -> None:
     """Draw the current vehicle speed and unit."""

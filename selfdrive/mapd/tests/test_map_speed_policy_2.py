@@ -603,10 +603,11 @@ def test_driving_mannerisms_submenu_wires_params():
   assert "_close_driving_mannerisms" in nap
   assert 'self._page = "driving_mannerisms"' in nap
   assert "self._driving_mannerisms_page.render" in nap
-  assert "NAP_DM_SIMULATE_LOOKING" in nap
-  assert "put_bool(NAP_DM_SIMULATE_LOOKING, True)" in nap
-  assert "NAP_DM_FALSE_ALERT_IGNORE" in nap
-  assert "put_bool(NAP_DM_FALSE_ALERT_IGNORE, False)" in nap
+  defaults = (root / "selfdrive/ui/layouts/settings/nap_content.py").read_text()
+  assert "def apply_nap_factory_defaults" in defaults
+  assert "apply_nap_factory_defaults(self._params)" in nap
+  assert "put_bool(NAP_DM_SIMULATE_LOOKING, True)" in defaults
+  assert "put_bool(NAP_DM_FALSE_ALERT_IGNORE, False)" in defaults
   keys = params_keys_text(root)
   assert "NAPDmSimulateLooking" in keys
   assert "NAPDmFalseAlertIgnore" in keys
