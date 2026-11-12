@@ -1,3 +1,5 @@
+import time
+
 import pyray as rl
 from dataclasses import dataclass
 from openpilot.common.constants import CV
@@ -7,6 +9,7 @@ from openpilot.selfdrive.ui.onroad.limit_popup import MAP_SOURCE_TAGS
 from openpilot.selfdrive.ui.onroad.limit_popup_hud import LimitPopupHud
 from openpilot.selfdrive.ui.onroad.temp_limit_hud import TempEndNote, draw_end_note, temp_from_md
 from openpilot.selfdrive.ui.onroad.speed_sign_hud import SpeedSignHud
+from openpilot.selfdrive.ui.onroad.stoplight_chip import StoplightChip, chip_from_sm
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.multilang import tr
@@ -117,6 +120,8 @@ class HudRenderer(Widget):
     self.temp_end_note: str | None = None
     self._temp_end = TempEndNote()
     self.gap_lock_chip: str | None = None
+    self._stoplight = StoplightChip()
+    self.stoplight_chip: tuple[str, tuple[int, int, int, int]] | None = None
     self.map_tesla_mph = 0
     self.map_osm_mph = 0
     self._limit_sign_rect: rl.Rectangle | None = None
@@ -164,7 +169,9 @@ class HudRenderer(Widget):
       self.set_speed = SET_SPEED_NA
       self.speed = 0.0
       self._clear_map_limit()
+      self.stoplight_chip = None
       return
+    self.stoplight_chip = chip_from_sm(self._stoplight, sm, time.monotonic())
 
     controls_state = sm['controlsState']
     car_state = sm['carState']
@@ -327,19 +334,23 @@ class HudRenderer(Widget):
     disappeared and the hold-to-edit popup had nothing to grab.
     """
     self._limit_sign_rect = None
-    if not self.is_cruise_available:
-      return
     lines: list[tuple[str, rl.Color]] = []
-    if self.map_speed_valid:
+    # Stoplight chip (stopped in Drive) shows with or without cruise.
+    if self.stoplight_chip:
+      lines.append((self.stoplight_chip[0], rl.Color(*self.stoplight_chip[1])))
+    if not self.is_cruise_available:
+      if not lines:
+        return
+    elif self.map_speed_valid:
       lim = str(round(self.map_speed_limit))
       if self.map_speed_temp:
         lines.append((f"TEMP {lim}", rl.Color(255, 150, 60, 255)))
       else:
         tag = MAP_SOURCE_TAGS.get(self.map_speed_source, "")
         lines.append((f"LIMIT {lim}" + (f" {tag}" if tag else ""), rl.WHITE))
-    if self.gap_lock_chip:
+    if self.gap_lock_chip and self.is_cruise_available:
       lines.append((self.gap_lock_chip, rl.Color(128, 216, 166, 255)))
-    if not lines and not self.temp_end_note:
+    if not lines and not (self.temp_end_note and self.is_cruise_available):
       return
     size = 22
     gap = 4
@@ -361,9 +372,9 @@ class HudRenderer(Widget):
           rl.Vector2(x + pad_x, y + pad_y + i * (size + gap)),
           size, 0, color,
         )
-      if self.map_speed_valid:
+      if self.map_speed_valid and self.is_cruise_available:
         self._limit_sign_rect = chip
-    if self.temp_end_note:
+    if self.temp_end_note and self.is_cruise_available:
       note_y = y + h + 4 if lines else y
       draw_end_note(self._font_semi_bold, self.temp_end_note, x, note_y, size=16)
 

@@ -102,6 +102,9 @@ _services: dict[str, tuple] = {
   # Decimation 1 keeps every published message in the qlog.
   "pathObstacleNAP": (True, 0., 1),
   "pathObstacleVisionNAP": (True, 0., 1),
+  # Stoplight-green chime. ~4 Hz while stopped in Drive, 1 Hz otherwise.
+  # Frequency 0 is not health-checked; decimation 1 keeps it all in the qlog.
+  "stoplightNAP": (True, 0., 1),
   "customReservedRawData0": (True, 0.),
 }
 SERVICE_LIST = {name: Service(*vals) for
