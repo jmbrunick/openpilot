@@ -55,7 +55,7 @@ def test_soundd_plays_ding():
   assert "sound_list[STOPLIGHT_CHIME_ID] = (STOPLIGHT_CHIME_FILE, 1, MAX_VOLUME)" in sound
   assert "'stoplightNAP'" in sound.split("def soundd_thread", 1)[0] or "'stoplightNAP'" in sound
   alert = sound.split("def get_audible_alert", 1)[1].split("\n  def ", 1)[0]
-  # The ding is checked after selfdriveState and never pre-empts a playing alert.
+  # The ding is checked after selfdriveState and never preempts a playing alert.
   assert alert.index("selfdriveState") < alert.index("stoplightNAP")
   assert "self.current_alert == AudibleAlert.none or self.current_alert == STOPLIGHT_CHIME_ID" in alert
   assert "stoplight_floor_volume(self.current_alert" in sound

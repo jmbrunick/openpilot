@@ -4,7 +4,7 @@ Real frames from Justin's own drives (dongle 1c95345a3286a5db, Pre-AP Model S,
 road camera OX03C10 1928x1208). Each file is a 256x256 full-resolution crop
 around one signal head, JPEG q92 (4:4:4), base64 so it pushes as text.
 `manifest.json` has the route, the route time (s from route start), the crop
-origin, and the red / green lamp centres inside the crop.
+origin, and the red / green lamp centers inside the crop.
 
 Every red/green pair is the last red frame (~1.6 s before the switch) and the
 first green frame of a stop where the car sat in Drive at 0 m/s and pulled
@@ -24,12 +24,12 @@ away on the green. Times below are route start, America/Chicago.
 | `000001f7--051a1a1d2d` | Nov  9 17:21 | dusk, right-arrow head, brake lights below |
 | `000001f7--051a1a1d2d` | Nov  9 17:21 | **negative**: digital billboard flipping red to green content beside a signal |
 
-`../sequences.json` is the per-frame lamp list (5 Hz) the detector produced on
+`../sequences.json.gz.b64` (gzip + base64 JSON) is the per-frame lamp list (5 Hz) the detector produced on
 52 stopped-in-Drive intervals from 60 drives (Oct 23 - Nov 11): 24 stops with a
 real red-to-green change, 22 stops with no signal change (parking lots,
 garage, car wash, stop signs, the billboard), one right turn on red, and 5
 where the signal was out of view.
 Positives keep the last 12 s before the car moved (stop 16: all 92 s, it
 has two changes); the rest keep up to 60 s. Each lamp is
-`[colour, x, y, w, h, coloured px, core px, chroma, peak luma]`, t is seconds
+`[color, x, y, w, h, colored px, core px, chroma, peak luma]`, t is seconds
 relative to the car moving off.
