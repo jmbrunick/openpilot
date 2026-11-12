@@ -1,5 +1,6 @@
 """Lamp detector + tracker on real Scallywag frames (see samples/README.md)."""
 import base64
+import dataclasses
 import io
 import json
 from pathlib import Path
@@ -36,23 +37,32 @@ def _planes(name):
 
 
 def _lamps(entry):
+  """Lamps in the crop, moved back to full-frame coordinates, that pass every sanity check."""
   y, u, v = _planes(entry["file"])
-  return [lp for lp in find_lamps(y[::2, ::2], u, v, roi_top=0.0, roi_bottom=1.0) if tk.lamp_ok(lp)]
+  x0, y0 = entry["crop_xy"]
+  found = [dataclasses.replace(lp, x=lp.x + x0, y=lp.y + y0)
+           for lp in find_lamps(y[::2, ::2], u, v, roi_top=0.0, roi_bottom=1.0)]
+  reds, greens = tk.lamp_filter(found)
+  return reds + greens
 
 
-def _near(lamps, color, xy):
-  return [lp for lp in lamps if lp.color == color and abs(lp.x - xy[0]) <= NEAR_PX and abs(lp.y - xy[1]) <= NEAR_PX]
+def _near(lamps, color, xy, entry):
+  x0, y0 = entry["crop_xy"]
+  return [lp for lp in lamps if lp.color == color and
+          abs(lp.x - x0 - xy[0]) <= NEAR_PX and abs(lp.y - y0 - xy[1]) <= NEAR_PX]
 
 
 @pytest.mark.parametrize("entry", PAIRS, ids=lambda e: e["file"][:-8])
 def test_real_lamp_color(entry):
   lamps = _lamps(entry)
   if entry["label"] == "red":
-    assert _near(lamps, RED, entry["red_xy"]), lamps
-    assert not _near(lamps, GREEN, entry["green_xy"]), lamps
+    assert _near(lamps, RED, entry["red_xy"], entry), lamps
+    assert not _near(lamps, GREEN, entry["green_xy"], entry), lamps
   else:
-    assert _near(lamps, GREEN, entry["green_xy"]), lamps
-    assert not _near(lamps, RED, entry["red_xy"]), lamps
+    assert _near(lamps, GREEN, entry["green_xy"], entry), lamps
+    assert not _near(lamps, RED, entry["red_xy"], entry), lamps
+  # Every lamp the detector reports carries its peak luma; real lenses are bright.
+  assert all(lp.peak >= tk.RED_MIN_PEAK for lp in lamps)
 
 
 def _play(red_lamps, green_lamps, n_red=6, n_green=4, dt=0.25):
@@ -93,18 +103,46 @@ def _seq_lamps(rows):
 SEQ = json.loads((HERE / "sequences.json").read_text())
 
 
-@pytest.mark.parametrize("seq", SEQ, ids=lambda s: f"{s['label']}_{s['route'][:8]}_{s['t_end']}")
-def test_real_stop_sequences(seq):
+def _replay(seq):
   tr = tk.StoplightTracker()
-  chimes = [t for t, lamps in _seq_lamps(seq["rows"]) if tr.update(t, lamps).chime]
+  outs = [(t, tr.update(t, lamps)) for t, lamps in _seq_lamps(seq["rows"])]
+  return [t for t, o in outs if o.chime], outs
+
+
+@pytest.mark.parametrize("seq", SEQ, ids=lambda s: f"{s['stop']}_{s['label']}_{s['route'][:8]}")
+def test_real_stop_sequences(seq):
+  chimes, _ = _replay(seq)
   if seq["label"] == "pos":
-    assert len(chimes) == 1
     # Before the car moved (t is relative to the move; the gate closes then).
-    assert chimes[0] <= 0.2
+    assert chimes and chimes[0] <= 0.2
+    # One per signal change: heads of one approach never ding twice together.
+    assert len(chimes) == (2 if seq["stop"] == 16 else 1)
   elif seq["label"] in ("neg", "red_no_green"):
     assert chimes == []
   else:
     assert len(chimes) <= 1
+
+
+def test_real_side_head_first_then_his_head():
+  """Stop 16 (route 000001ca, Oct 24): the right-hand ball went green 85 s
+  before he moved, but he was waiting on the more central left arrow, which
+  went green 1.3 s before he moved. The arrow still dings."""
+  seq = next(s for s in SEQ if s["stop"] == 16)
+  chimes, outs = _replay(seq)
+  assert len(chimes) == 2
+  assert chimes[0] < -80.0 and -2.0 < chimes[1] <= 0.0
+  # Between the two, his (more central) arrow is red: the HUD says so.
+  mid = [o for t, o in outs if chimes[0] + 5 < t < chimes[1] - 1]
+  assert mid and sum(o.red for o in mid) > 0.9 * len(mid)
+
+
+def test_real_false_red_flags_are_rare():
+  """Stops with no signal ahead: the RED LIGHT chip stays off almost always.
+  Was 11 frames on the Menards sign (stop 61) and 23 on tower lights (22)."""
+  for stop in (0, 4, 11, 12, 19, 22, 24, 26, 27, 28, 35, 38, 46, 47, 49, 50, 53, 54, 55, 60, 61, 62):
+    seq = next(s for s in SEQ if s["stop"] == stop)
+    _, outs = _replay(seq)
+    assert not any(o.red for _, o in outs), stop
 
 
 def test_sequence_totals():

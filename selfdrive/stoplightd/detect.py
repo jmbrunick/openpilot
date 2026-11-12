@@ -59,6 +59,7 @@ class Lamp:
   px: int         # coloured half-res px
   core: int       # bright px in the bbox
   chroma: float   # mean |V-128| of the coloured px
+  peak: int = -1  # brightest luma in the bbox (-1: unknown)
 
   @property
   def size(self) -> float:
@@ -131,10 +132,11 @@ def _blobs(color: str, mask: np.ndarray, y: np.ndarray, v: np.ndarray, row0: int
     my0, my1 = max(0, py0 - CELL), min(y.shape[0], py1 + CELL)
     mx0, mx1 = max(0, px0 - CELL), min(y.shape[1], px1 + CELL)
     core = int((y[my0:my1, mx0:mx1] >= CORE_Y).sum())
+    peak = int(y[py0:py1, px0:px1].max())
     chroma = float(np.abs(v[py0:py1, px0:px1][sub]).mean())
     cx = (px0 + float(sx.mean()) + 0.5) * 2.0
     cy = (row0 + py0 + float(sy.mean()) + 0.5) * 2.0
-    out.append(Lamp(color, cx, cy, bw * 2.0, bh * 2.0, n, core, chroma))
+    out.append(Lamp(color, cx, cy, bw * 2.0, bh * 2.0, n, core, chroma, peak))
   out.sort(key=lambda lamp: -lamp.px)
   return out[:MAX_BLOBS]
 

@@ -4,12 +4,12 @@ from openpilot.selfdrive.stoplightd.detect import GREEN, RED, Lamp
 from openpilot.selfdrive.stoplightd.gate import StoppedInDrive, in_drive_from_events, speed_from_pose
 
 
-def red(x=1000.0, y=300.0, size=24.0, chroma=90.0):
-  return Lamp(RED, x, y, size, size, 120, 40, chroma)
+def red(x=1000.0, y=300.0, size=24.0, chroma=90.0, w=None, core=40, peak=230):
+  return Lamp(RED, x, y, w or size, size, 120, core, chroma, peak)
 
 
-def green(x=1000.0, y=355.0, size=24.0, chroma=90.0):
-  return Lamp(GREEN, x, y, size, size, 120, 40, chroma)
+def green(x=1000.0, y=355.0, size=24.0, chroma=90.0, peak=230):
+  return Lamp(GREEN, x, y, size, size, 120, 40, chroma, peak)
 
 
 def run(frames, dt=0.25, t0=10.0):
@@ -161,3 +161,100 @@ def test_speed_from_pose():
   assert speed_from_pose(3.0, 4.0) == 5.0
   assert speed_from_pose(1.0, 0.0, valid=False) is None
   assert speed_from_pose(float("nan"), 0.0) is None
+
+
+# --- lamp sanity -------------------------------------------------------------
+
+def test_sanity_rejects_non_lenses():
+  assert tk.lamp_ok(red())
+  assert not tk.lamp_ok(red(size=150))                 # sign / truck body, not a lens
+  assert not tk.lamp_ok(red(size=6))
+  assert not tk.lamp_ok(red(size=20, w=50))            # wide: brake-light bar, sign stroke
+  assert not tk.lamp_ok(red(core=0, chroma=50))        # dull red paint, no bright core
+  assert tk.lamp_ok(red(core=0, chroma=70))            # day LED: saturated, no blown core
+  assert not tk.lamp_ok(red(peak=80))                  # dim: price-sign digits
+  assert not tk.lamp_ok(green(peak=90))
+  assert not tk.lamp_ok(red(y=760, size=30))           # at the horizon: car lights
+  assert not tk.lamp_ok(red(y=8, size=24))             # cut by the top edge
+  assert not tk.lamp_ok(red(y=60, size=12))            # tiny and far too high: tower light
+  assert tk.lamp_ok(red(y=60, size=40))                # close mast-arm signal
+
+
+def test_brake_light_pair_near_horizon_dropped():
+  pair = [red(x=900, y=730, size=30), red(x=1100, y=732, size=28)]
+  reds, _ = tk.lamp_filter(pair)
+  assert reds == []
+  # Two signal heads side by side, high up: kept.
+  heads = [red(x=900, y=300, size=24), red(x=1100, y=301, size=24)]
+  reds, _ = tk.lamp_filter(heads)
+  assert len(reds) == 2
+
+
+def test_wandering_red_never_confirms():
+  # Billboard content slides; a lens stays put.
+  frames = [[red(x=900 + 6 * i)] for i in range(16)]
+  outs = run(frames)
+  assert not any(o.red for o in outs)
+
+
+# --- head arbitration --------------------------------------------------------
+
+MAIN_X = 1000.0     # straight ahead
+SIDE_X = 300.0      # a left-turn head well off to the side
+
+
+def test_side_arrow_green_while_his_red_stays_red_is_quiet_then_his_dings():
+  """Reported case: the left arrow goes green first, the driver waits; his light
+  ahead goes red -> green later. Only his light dings."""
+  both_red = [red(x=MAIN_X), red(x=SIDE_X)]
+  arrow_green = [red(x=MAIN_X), green(x=SIDE_X)]
+  main_green = [green(x=MAIN_X), green(x=SIDE_X)]
+  outs = run([both_red] * 8 + [arrow_green] * 40 + [main_green] * 8)
+  chimes = [i for i, o in enumerate(outs) if o.chime]
+  assert len(chimes) == 1 and chimes[0] >= 48
+  # While the arrow is green his light is still red: the HUD says RED.
+  assert all(o.red for o in outs[12:46])
+  assert outs[-1].green and not outs[-1].red
+
+
+def test_side_head_ding_does_not_use_up_the_stop():
+    """A side head dings first (his head not seen yet); his head ahead
+    changes later and still dings."""
+    frames = [[red(x=SIDE_X)]] * 8 + [[green(x=SIDE_X)]] * 8 + \
+             [[green(x=SIDE_X), red(x=MAIN_X)]] * 30 + [[green(x=SIDE_X), green(x=MAIN_X)]] * 6
+    outs = run(frames)
+    chimes = [i for i, o in enumerate(outs) if o.chime]
+    assert len(chimes) == 2 and chimes[0] < 16 <= 46 <= chimes[1]
+
+
+def test_less_central_head_after_his_ding_is_quiet():
+    frames = [[red(x=MAIN_X), red(x=SIDE_X)]] * 8 + [[green(x=MAIN_X), red(x=SIDE_X)]] * 30 + \
+             [[green(x=MAIN_X), green(x=SIDE_X)]] * 8
+    outs = run(frames)
+    assert sum(o.chime for o in outs) == 1
+
+
+def test_heads_of_one_approach_ding_once():
+  frames = [[red(x=900), red(x=1150)]] * 8 + [[green(x=900), green(x=1150)]] * 8
+  assert sum(o.chime for o in run(frames)) == 1
+  # Also when the second head lags a few frames.
+  frames = [[red(x=900), red(x=1150)]] * 8 + [[green(x=900), red(x=1150)]] * 3 + [[green(x=900), green(x=1150)]] * 8
+  assert sum(o.chime for o in run(frames)) == 1
+
+
+def test_main_head_next_to_central_red_turn_head_still_dings():
+  """Stop 10 (Oct 24): his light was a little right of centre while a red
+  left-turn head sat dead ahead and stayed red."""
+  frames = [[red(x=964), red(x=1134)]] * 8 + [[red(x=964), green(x=1134)]] * 8
+  assert sum(o.chime for o in run(frames)) == 1
+
+
+def test_same_head_does_not_re_ding_without_a_new_red_phase():
+  frames = [[red()]] * 8 + [[green()]] * 4 + [[red()]] * 6 + [[green()]] * 4
+  assert sum(o.chime for o in run(frames)) == 1
+
+
+def test_same_head_dings_again_after_a_full_new_red():
+  # Long stop: green for 6 s (he did not go), red again for 8 s, green again.
+  frames = [[red()]] * 8 + [[green()]] * 24 + [[red()]] * 32 + [[green()]] * 6
+  assert sum(o.chime for o in run(frames)) == 2
