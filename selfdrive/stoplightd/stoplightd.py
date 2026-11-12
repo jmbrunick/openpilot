@@ -166,6 +166,7 @@ class Stoplight:
       (y_half, u, v), width = frame
       if width > 0:
         self.tracker.scale = width / REF_WIDTH
+        self.tracker.height = float(y_half.shape[0] * 2)
       t0 = time.monotonic()
       try:
         lamps = find_lamps(y_half, u, v)
@@ -180,7 +181,9 @@ class Stoplight:
       out.update(redLight=res.red, green=res.green, chime=res.chime, redCount=min(res.red_count, 255),
                  greenCount=min(res.green_count, 255), redX=res.red_x, redY=res.red_y, reason=res.reason)
     else:
-      out.update(green=self.tracker.chimed)
+      # No frame this tick: hold the last flags for the HUD, never ding.
+      last = self.tracker.last_out
+      out.update(redLight=last.red, green=last.green)
     out["chimeCount"] = self.chime_count
     return out
 

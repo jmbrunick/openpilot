@@ -25,8 +25,11 @@ away on the green. Times below are route start, America/Chicago.
 | `000001f7--051a1a1d2d` | Nov  9 17:21 | **negative**: digital billboard flipping red to green content beside a signal |
 
 `../sequences.json` is the per-frame lamp list (5 Hz) the detector produced on
-52 stopped-in-Drive intervals from 60 drives (Oct 23 - Nov 11): 24 real
-red-to-green changes (23 where the car pulled away, plus one mid-stop change),
-22 stops with no signal change (parking lots, garage, car wash, stop signs,
-a right turn on red, the billboard), and 6 where the signal was out of view.
-Positives keep the last 12 s before the car moved; the rest keep up to 60 s.
+52 stopped-in-Drive intervals from 60 drives (Oct 23 - Nov 11): 24 stops with a
+real red-to-green change, 22 stops with no signal change (parking lots,
+garage, car wash, stop signs, the billboard), one right turn on red, and 5
+where the signal was out of view.
+Positives keep the last 12 s before the car moved (stop 16: all 92 s, it
+has two changes); the rest keep up to 60 s. Each lamp is
+`[colour, x, y, w, h, coloured px, core px, chroma, peak luma]`, t is seconds
+relative to the car moving off.
