@@ -12,6 +12,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   MAP_SPEED_ACCEL, MAP_SPEED_ACCEL_DEFAULT, MAP_SPEED_ACCEL_LABELS,
   NAP_CONE_LINE_HOLD,
   NAP_OBSTACLE_CHIME,
+  NAP_STOPLIGHT_CHIME,
   NAP_DRIVER_LAT_HANDOFF,
   NAP_LOW_VIS_BACKOFF,
   NAP_FOLLOW_DISTANCE_CITY,
@@ -84,6 +85,9 @@ class DrivingMannerismsLayoutMici(NavScroller):
     obstacle_chime = BigParamControl("live object detection chime", NAP_OBSTACLE_CHIME)
     obstacle_chime.set_value("On — solid objects in the lane; animals or people near the road")
 
+    stoplight_chime = BigParamControl("green light chime", NAP_STOPLIGHT_CHIME)
+    stoplight_chime.set_value("On — ding when the red turns green while stopped")
+
     one_pedal = BigParamControl("one-pedal long", NAP_ONE_PEDAL_LONG)
     one_pedal.set_value("Off default — gas pause stays until SET")
 
@@ -111,6 +115,7 @@ class DrivingMannerismsLayoutMici(NavScroller):
       low_vis,
       cone_hold,
       obstacle_chime,
+      stoplight_chime,
       one_pedal,
       gap_lock,
       hypermile,

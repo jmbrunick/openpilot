@@ -29,6 +29,7 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   NAP_CONE_LINE_HOLD,
   NAP_CONE_LINE_LOG,
   NAP_OBSTACLE_CHIME,
+  NAP_STOPLIGHT_CHIME,
   NAP_OBSTACLE_LOG,
   NAP_DRIVER_LAT_HANDOFF,
   NAP_LOW_VIS_BACKOFF,
@@ -842,6 +843,7 @@ class NAPLayout(Widget):
     self._params.put_bool(NAP_CONE_LINE_HOLD, True)
     self._params.put_bool(NAP_CONE_LINE_LOG, True)
     self._params.put_bool(NAP_OBSTACLE_CHIME, True)
+    self._params.put_bool(NAP_STOPLIGHT_CHIME, True)
     self._params.put_bool(NAP_OBSTACLE_LOG, True)
     self._params.put_bool(NAP_DM_SIMULATE_LOOKING, True)
     self._params.put_bool(NAP_DM_FALSE_ALERT_IGNORE, False)
