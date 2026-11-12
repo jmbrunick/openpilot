@@ -19,6 +19,12 @@ from openpilot.selfdrive.ui.obstacle_chime import (
   alert_sound_id,
   floor_volume,
 )
+from openpilot.selfdrive.ui.stoplight_chime import (
+  STOPLIGHT_CHIME_FILE,
+  STOPLIGHT_CHIME_ID,
+  floor_volume as stoplight_floor_volume,
+  should_ding as stoplight_should_ding,
+)
 
 SAMPLE_RATE = 48000
 SAMPLE_BUFFER = 4096 # (approx 100ms)
@@ -59,6 +65,8 @@ if HARDWARE.get_device_type() == "tizi":
   })
 # Negative id: not an AudibleAlert ordinal. Played from alertType obstacleChime/*.
 sound_list[OBSTACLE_CHIME_ID] = (OBSTACLE_CHIME_FILE, 1, MAX_VOLUME)
+# Stoplight-green ding. Played from stoplightNAP.chime, not from an alert.
+sound_list[STOPLIGHT_CHIME_ID] = (STOPLIGHT_CHIME_FILE, 1, MAX_VOLUME)
 
 def check_selfdrive_timeout_alert(sm):
   ss_missing = time.monotonic() - sm.recv_time['selfdriveState']
@@ -103,6 +111,9 @@ class Soundd:
       except Exception:
         if sound == OBSTACLE_CHIME_ID:
           cloudlog.exception("obstacle chime wav failed to load")
+          continue
+        if sound == STOPLIGHT_CHIME_ID:
+          cloudlog.exception("stoplight ding wav failed to load")
           continue
         raise
 
@@ -160,6 +171,14 @@ class Soundd:
       self.update_alert(AudibleAlert.none)
       self.selfdrive_timeout_alert = False
 
+    # Stoplight green: one ding, only when no selfdrived sound is playing.
+    # A later AudibleAlert.none cannot cut it short (update_alert waits for
+    # one full play); a real alert sound still takes over.
+    if sm.updated.get('stoplightNAP', False) and stoplight_should_ding(sm['stoplightNAP']):
+      if self.current_alert == AudibleAlert.none or self.current_alert == STOPLIGHT_CHIME_ID:
+        self.current_alert = STOPLIGHT_CHIME_ID
+        self.current_sound_frame = 0
+
   def calculate_volume(self, weighted_db):
     volume = ((weighted_db - AMBIENT_DB) / DB_SCALE) * (MAX_VOLUME - MIN_VOLUME) + MIN_VOLUME
     return math.pow(VOLUME_BASE, (np.clip(volume, MIN_VOLUME, MAX_VOLUME) - 1))
@@ -175,7 +194,7 @@ class Soundd:
     # sounddevice must be imported after forking processes
     import sounddevice as sd
 
-    sm = messaging.SubMaster(['selfdriveState', 'soundPressure'])
+    sm = messaging.SubMaster(['selfdriveState', 'soundPressure', 'stoplightNAP'])
 
     with self.get_stream(sd) as stream:
       rk = Ratekeeper(20)
@@ -199,6 +218,7 @@ class Soundd:
 
         # Quiet cabin cannot drop the obstacle chime below 0.7. Other sounds stay scaled.
         self.current_volume = floor_volume(self.current_alert, self.current_volume)
+        self.current_volume = stoplight_floor_volume(self.current_alert, self.current_volume)
 
         rk.keep_time()
 

@@ -1,9 +1,12 @@
+import time
+
 import pyray as rl
 from dataclasses import dataclass
 from openpilot.common.constants import CV
 from openpilot.selfdrive.controls.lib.gap_lock import gap_lock_hud_chip
 from openpilot.selfdrive.ui.onroad.exp_button import ExpButton
 from openpilot.selfdrive.ui.onroad.speed_sign_hud import SpeedSignHud
+from openpilot.selfdrive.ui.onroad.stoplight_chip import StoplightChip, chip_from_sm
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.multilang import tr
@@ -69,6 +72,8 @@ class HudRenderer(Widget):
     self.map_speed_valid: bool = False
     self.map_speed_limit: float = 0.0
     self.gap_lock_chip: str | None = None
+    self._stoplight = StoplightChip()
+    self.stoplight_chip: tuple[str, tuple[int, int, int, int]] | None = None
 
     self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
     self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
@@ -85,7 +90,9 @@ class HudRenderer(Widget):
       self.set_speed = SET_SPEED_NA
       self.speed = 0.0
       self.gap_lock_chip = None
+      self.stoplight_chip = None
       return
+    self.stoplight_chip = chip_from_sm(self._stoplight, sm, time.monotonic())
 
     controls_state = sm['controlsState']
     car_state = sm['carState']
@@ -134,6 +141,7 @@ class HudRenderer(Widget):
       self._draw_set_speed(rect)
       self._draw_map_speed_limit(rect)
       self._draw_gap_lock(rect)
+    self._draw_stoplight(rect)
 
     self._draw_current_speed(rect)
     self._speed_sign_hud.render(rect)
@@ -213,6 +221,37 @@ class HudRenderer(Widget):
       font_size,
       0,
       COLORS.ENGAGED,
+    )
+
+  def _draw_stoplight(self, rect: rl.Rectangle) -> None:
+    """RED LIGHT / GREEN - GO chip in the MAX column while stopped in Drive."""
+    if not self.stoplight_chip:
+      return
+    text, rgba = self.stoplight_chip
+    color = rl.Color(*rgba)
+    set_speed_width = UI_CONFIG.set_speed_width_metric if ui_state.is_metric else UI_CONFIG.set_speed_width_imperial
+    x = rect.x + 60 + (UI_CONFIG.set_speed_width_imperial - set_speed_width) // 2
+    y = rect.y + 45
+    if self.is_cruise_available:
+      y += UI_CONFIG.set_speed_height + 14
+      if self.gap_lock_chip:
+        y += 58 + 12
+    font_size = 36
+    text_size = measure_text_cached(self._font_bold, text, font_size)
+    h = 58
+    dot_r = 13
+    w = max(float(set_speed_width), text_size.x + 28 + dot_r * 2 + 12)
+    chip = rl.Rectangle(x, y, w, h)
+    rl.draw_rectangle_rounded(chip, 0.35, 8, COLORS.BLACK_TRANSLUCENT)
+    rl.draw_rectangle_rounded_lines_ex(chip, 0.35, 8, 4, color)
+    rl.draw_circle(int(x + 14 + dot_r), int(y + h / 2), dot_r, color)
+    rl.draw_text_ex(
+      self._font_bold,
+      text,
+      rl.Vector2(x + 14 + dot_r * 2 + 12, y + (h - text_size.y) / 2),
+      font_size,
+      0,
+      color,
     )
 
   def _draw_map_speed_limit(self, rect: rl.Rectangle) -> None:
