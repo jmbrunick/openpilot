@@ -13,6 +13,7 @@ Documentation for contributors working on NotAutopilot. These are NAP-specific �
 - **[engagement.md](engagement.md)** — stalk FSM, pedal-vs-no-pedal engagement paths, brake behavior, driver-wheel lateral handoff (default On; intent-to-steer yield; emergency hard-brake full cancel; Settings can disable)
 - **[hypermile.md](hypermile.md)** — Hypermile eco snap + Hill Climb (nap-dev experimental, default Off). Stock Follow Distance 1–7 is shared; Hypermile does not own follow.
 - **[nap-dash.md](nap-dash.md)** — comma web UI at `http://100.99.9.1/` (Params + `/api/software`, no cereal). Hotspot `100.99.9.0/24`. Optional process. Flash `cursor/mcu-web-ui-c588`. Do not merge until Justin confirms.
+- **[stoplight-green.md](stoplight-green.md)** — Ding when a red light turns green while stopped in Drive; HUD RED LIGHT / GREEN - GO chip. Road camera only, `stoplightd`, default On. Never brakes or steers.
 
 ## Layout
 

@@ -2604,7 +2604,7 @@ struct Event {
     pathObstacleNAP @110 :Custom.PathObstacleNAP;
     pathObstacleVisionNAP @111 :Custom.PathObstacleVisionNAP;
     otherSignsNAP @112 :Custom.OtherSignsNAP;
-    customReserved6 @113 :Custom.CustomReserved6;
+    stoplightNAP @113 :Custom.StoplightNAP;
     customReserved7 @114 :Custom.CustomReserved7;
     customReserved8 @115 :Custom.CustomReserved8;
     customReserved9 @116 :Custom.CustomReserved9;
