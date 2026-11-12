@@ -2,22 +2,22 @@
 
 Works on the half-resolution grid of an NV12 road frame: luma subsampled
 2x2 so it lines up with the U and V planes. A lit signal lamp is a small,
-compact blob of strongly coloured pixels around a bright core:
+compact blob of strongly colored pixels around a bright core:
 
   red    V - 128 >= RED_MIN_V and the hue is red, not amber/sodium:
          V - 128 >= RED_HUE_K * (128 - U)  (amber has a much lower U)
   green  128 - V >= GREEN_MIN_V and U - 128 >= GREEN_MIN_U
          (signal green is blue-green; foliage and green signs are dull)
   core   luma >= CORE_Y somewhere inside the blob, or the blob itself is
-         that bright (daytime lamps are coloured edge to edge)
+         that bright (daytime lamps are colored edge to edge)
 
 Calibrated on Scallywag's own drives (comma 3X road camera, 1928x1208):
 red halos sit at V-128 ~ +100..+115 with U-128 ~ -20..-35, green halos at
 V-128 ~ -100..-120 with U-128 ~ +30..+40, and the lamp core blows out to
 white (luma 230+, neutral chroma) at night. See tests/samples/README.md.
 
-Pixels are binned into CELL x CELL cells. A cell is coloured when at least
-CELL_MIN_PX of its pixels are; coloured cells are joined 8-connected. Only
+Pixels are binned into CELL x CELL cells. A cell is colored when at least
+CELL_MIN_PX of its pixels are; colored cells are joined 8-connected. Only
 blobs with a lamp-like size and aspect survive. No OpenCV or scipy: they
 are not on the device.
 """
@@ -31,19 +31,19 @@ RED = "red"
 GREEN = "green"
 
 CELL = 4                  # half-res px per cell side (8 full-res px)
-CELL_MIN_PX = 3           # coloured px (of 16) for a cell to count
+CELL_MIN_PX = 3           # colored px (of 16) for a cell to count
 RED_MIN_V = 40
 RED_HUE_K = 1.25
 RED_MAX_U = 20
 GREEN_MIN_V = 40
 GREEN_MIN_U = -8
-COLOR_MIN_Y = 30          # ignore coloured noise in black areas
+COLOR_MIN_Y = 30          # ignore colored noise in black areas
 CORE_Y = 170
-MIN_PX = 5                # coloured px per blob
+MIN_PX = 5                # colored px per blob
 MAX_CELLS_SIDE = 22       # 88 half-res px: a lamp ~6 m away; larger is a body or sign
 MAX_ASPECT = 2.6
 MAX_BLOBS = 24
-MAX_COLORED_CELLS = 900   # sunset sky / red wall: give up on that colour this frame
+MAX_COLORED_CELLS = 900   # sunset sky / red wall: give up on that color this frame
 # Region of interest: signals hang above the horizon. Fractions of the frame height.
 ROI_TOP = 0.0
 ROI_BOTTOM = 0.56
@@ -56,9 +56,9 @@ class Lamp:
   y: float
   w: float        # bbox, full-res px
   h: float
-  px: int         # coloured half-res px
+  px: int         # colored half-res px
   core: int       # bright px in the bbox
-  chroma: float   # mean |V-128| of the coloured px
+  chroma: float   # mean |V-128| of the colored px
   peak: int = -1  # brightest luma in the bbox (-1: unknown)
 
   @property

@@ -28,7 +28,7 @@ edge). The head most likely to be the driver's own is the most central one.
               horizontal head, at the same spot it stayed in), within
               GREEN_AFTER_RED_S. Then it dings unless:
                 * that head already dinged this cycle (one ding per change),
-                * it is a side head (> SIDE_CENTER off centre) and a main
+                * it is a side head (> SIDE_CENTER off center) and a main
                   head is still red (a turn arrow or another approach going
                   green while his light stays red),
                 * a clearly more central head already dinged this stop,
@@ -54,7 +54,7 @@ RED_CONFIRM_FRAMES = 4
 RED_CONFIRM_S = 0.6
 RED_OFF_S = 0.35
 RED_FLAG_HOLD_S = 1.2       # the red flag outlives a missed frame or two
-# Mean |V-128| of a lamp's coloured pixels. Real lamps on Scallywag's drives:
+# Mean |V-128| of a lamp's colored pixels. Real lamps on Scallywag's drives:
 # red 50..115 (dull daytime LEDs sit at 50..60 and always have a bright
 # core), green 62..98. Green street signs sit at 45..58.
 RED_MIN_CHROMA = 48.0
@@ -303,7 +303,7 @@ class StoplightTracker:
     # A side head going green while a main head (more central) stays red is
     # someone else's signal, e.g. a turn arrow. A main head never waits on
     # another head: on Scallywag's drives his light was often a little off
-    # centre with a red turn head dead ahead.
+    # center with a red turn head dead ahead.
     if c >= SIDE_CENTER and any(o is not r and self.center(o.x) < SIDE_CENTER and
                                 self.center(o.x) + CENTER_MARGIN < c for o in lit):
       return "central_red"

@@ -1,6 +1,7 @@
 """Lamp detector + tracker on real Scallywag frames (see samples/README.md)."""
 import base64
 import dataclasses
+import gzip
 import io
 import json
 from pathlib import Path
@@ -100,7 +101,8 @@ def _seq_lamps(rows):
     yield t, [Lamp(RED if c == "r" else GREEN, *a) for c, *a in ls]
 
 
-SEQ = json.loads((HERE / "sequences.json").read_text())
+# gzip + base64, like the cone replay fixtures (keeps it a small text file).
+SEQ = json.loads(gzip.decompress(base64.b64decode((HERE / "sequences.json.gz.b64").read_bytes())))
 
 
 def _replay(seq):

@@ -243,7 +243,7 @@ def test_heads_of_one_approach_ding_once():
 
 
 def test_main_head_next_to_central_red_turn_head_still_dings():
-  """Stop 10 (Oct 24): his light was a little right of centre while a red
+  """Stop 10 (Oct 24): his light was a little right of center while a red
   left-turn head sat dead ahead and stayed red."""
   frames = [[red(x=964), red(x=1134)]] * 8 + [[red(x=964), green(x=1134)]] * 8
   assert sum(o.chime for o in run(frames)) == 1
