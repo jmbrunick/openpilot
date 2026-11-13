@@ -3,6 +3,7 @@ import time
 import pyray as rl
 from dataclasses import dataclass
 from openpilot.common.constants import CV
+from openpilot.selfdrive.controls.lib.gap_lock import gap_lock_hud_chip
 from openpilot.selfdrive.ui.mici.onroad.torque_bar import TorqueBar
 from openpilot.selfdrive.ui.onroad.speed_sign_hud import SpeedSignHud
 from openpilot.selfdrive.ui.onroad.stoplight_chip import StoplightChip, chip_from_sm
@@ -111,8 +112,10 @@ class HudRenderer(Widget):
     self._engaged: bool = False
     self.map_speed_valid: bool = False
     self.map_speed_limit: float = 0.0
+    self.gap_lock_chip: str | None = None
     self._stoplight = StoplightChip()
     self.stoplight_chip: tuple[str, tuple[int, int, int, int]] | None = None
+    self._limit_chip_bottom: float = 0.0
 
     self._can_draw_top_icons = True
     self._show_wheel_critical = False
@@ -152,8 +155,12 @@ class HudRenderer(Widget):
     sm = ui_state.sm
     if sm.recv_frame["carState"] < ui_state.started_frame:
       self.is_cruise_set = False
+      self.is_cruise_available = False
       self.set_speed = SET_SPEED_NA
       self.speed = 0.0
+      self.map_speed_valid = False
+      self.map_speed_limit = 0.0
+      self.gap_lock_chip = None
       self.stoplight_chip = None
       return
     self.stoplight_chip = chip_from_sm(self._stoplight, sm, time.monotonic())
@@ -179,6 +186,9 @@ class HudRenderer(Widget):
 
     self.map_speed_valid = False
     self.map_speed_limit = 0.0
+    self.gap_lock_chip = None
+    if sm.valid.get("longitudinalPlan", False):
+      self.gap_lock_chip = gap_lock_hud_chip(getattr(sm["longitudinalPlan"], "gapLockM", 0.0))
     if "liveMapDataNAP" in sm.valid and sm.valid["liveMapDataNAP"]:
       md = sm["liveMapDataNAP"]
       if md.speedLimitValid and md.speedLimit > 0:
@@ -192,10 +202,11 @@ class HudRenderer(Widget):
 
     if self.is_cruise_set:
       self._draw_set_speed(rect)
-    self._draw_stoplight(rect)
 
     self._speed_sign_hud.render(rect)
     self._draw_steering_wheel(rect)
+    self._draw_map_limit(rect)
+    self._draw_stoplight(rect)
 
   def user_interacting(self) -> bool:
     return self._speed_sign_hud.is_pressed
@@ -284,15 +295,38 @@ class HudRenderer(Widget):
       max_color,
     )
 
+  def _draw_map_limit(self, rect: rl.Rectangle) -> None:
+    """Persistent LIMIT chip. The 3X plate stays up whenever cruise is available.
+
+    The comma four MAX number fades after 2.5 s. The limit used to be drawn
+    inside that fade and labeled OSM, so it disappeared and did not match
+    the 3X LIMIT plate.
+    """
+    self._limit_chip_bottom = 0.0
+    if not self.is_cruise_available:
+      return
+    lines: list[tuple[str, rl.Color]] = []
     if self.map_speed_valid:
-      lim = str(round(self.map_speed_limit))
+      lines.append((f"LIMIT {round(self.map_speed_limit)}", rl.WHITE))
+    if self.gap_lock_chip:
+      lines.append((self.gap_lock_chip, rl.Color(128, 216, 166, 255)))
+    if not lines:
+      return
+    size = 22
+    gap = 4
+    text_w = max(measure_text_cached(self._font_semi_bold, text, size).x for text, _ in lines)
+    pad_x, pad_y = 10.0, 6.0
+    w = min(text_w + pad_x * 2, max(40.0, rect.width - 16.0))
+    h = len(lines) * (size + gap) - gap + pad_y * 2
+    x = rect.x + rect.width - w - 8
+    y = rect.y + 8
+    self._limit_chip_bottom = y + h
+    rl.draw_rectangle_rounded(rl.Rectangle(x, y, w, h), 0.25, 6, rl.Color(0, 0, 0, 170))
+    for i, (text, color) in enumerate(lines):
       rl.draw_text_ex(
-        self._font_semi_bold,
-        f"OSM {lim}",
-        rl.Vector2(x + 25, y + FONT_SIZES.set_speed + FONT_SIZES.max_speed - 4),
-        22,
-        0,
-        rl.Color(255, 255, 255, int(200 * alpha)),
+        self._font_semi_bold, text,
+        rl.Vector2(x + pad_x, y + pad_y + i * (size + gap)),
+        size, 0, color,
       )
 
   def _draw_stoplight(self, rect: rl.Rectangle) -> None:
@@ -306,7 +340,8 @@ class HudRenderer(Widget):
     w = min(measure_text_cached(self._font_semi_bold, text, size).x + pad_x * 2, max(40.0, rect.width - 16.0))
     h = size + pad_y * 2
     x = rect.x + rect.width - w - 8
-    y = rect.y + 8
+    # LIMIT / gap-lock already occupies the top-right corner. Sit under it.
+    y = self._limit_chip_bottom + 6 if self._limit_chip_bottom else rect.y + 8
     chip = rl.Rectangle(x, y, w, h)
     rl.draw_rectangle_rounded(chip, 0.25, 6, rl.Color(0, 0, 0, 170))
     rl.draw_rectangle_rounded_lines_ex(chip, 0.25, 6, 2, color)

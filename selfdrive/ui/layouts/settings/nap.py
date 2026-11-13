@@ -23,21 +23,6 @@ from openpilot.selfdrive.ui.layouts.settings.nap_content import (
   FLASH_EPAS_INSTRUCTIONS,
   INSTALL_SPEED_SIGN_WEIGHTS_INSTRUCTIONS, PEDAL_CAN_BUS_VALUES,
   HIGH_LOW_BEAM_DESCRIPTION, HIGH_LOW_BEAM_LABELS, HIGH_LOW_BEAM_VALUES,
-  MAP_SPEED_ACCEL_DEFAULT,
-  NAP_DM_FALSE_ALERT_IGNORE,
-  NAP_DM_SIMULATE_LOOKING,
-  NAP_CONE_LINE_HOLD,
-  NAP_CONE_LINE_LOG,
-  NAP_OBSTACLE_CHIME,
-  NAP_STOPLIGHT_CHIME,
-  NAP_OBSTACLE_LOG,
-  NAP_DRIVER_LAT_HANDOFF,
-  NAP_LOW_VIS_BACKOFF,
-  NAP_FORCE_OFFROAD,
-  NAP_HYPERMILE,
-  NAP_HYPERMILE_HILL_CLIMB,
-  NAP_HYPERMILE_STEP_DOWN,
-  NAP_ONE_PEDAL_LONG,
   NAP_SIGN_AUTO_CONFIRM,
   NAP_SIGN_OTHERS,
   NAP_SPEED_SIGN_LOG,
@@ -61,7 +46,7 @@ from openpilot.selfdrive.ui.layouts.settings.map_speed import MapSpeedLimitLayou
 # weights_status_summary remains the weights-only label ("Installed" / "Out of date" / "Missing").
 from openpilot.selfdrive.speedsignd.install import install_status_summary
 from openpilot.selfdrive.car.tesla.preap_body_controls import register_nap_body_params
-from opendbc.car.tesla.preap.nap_params import NAPParamKeys, DEFAULTS
+from opendbc.car.tesla.preap.nap_params import NAPParamKeys
 
 register_nap_body_params()
 from openpilot.selfdrive.ui.radar.radar_view import RadarMonitorDialog
@@ -825,41 +810,9 @@ class NAPLayout(Widget):
 
   def _reset_all_to_defaults(self):
     """Write default value for each NAP param."""
-    for key, default in DEFAULTS.items():
-      if isinstance(default, bool):
-        self._params.put_bool(key, default)
-      elif isinstance(default, (int, float)):
-        self._params.put(key, default)
-    self._params.put("NAPMapSpeedMode", 0)
-    self._params.put("NAPMapSpeedOffsetMph", 0)
-    self._params.put("NAPMapSpeedLookahead", 2)
-    self._params.put("NAPMapSpeedAccel", MAP_SPEED_ACCEL_DEFAULT)
-    self._params.remove("NAPMapSpeedDbPath")
-    self._params.put_bool(NAP_SPEED_SIGN_LOG, False)
-    self._params.put_bool(NAP_TESLA_LIMIT_ENABLE, False)
-    self._params.put_bool(NAP_SIGN_AUTO_CONFIRM, False)
-    self._params.put_bool(NAP_DRIVER_LAT_HANDOFF, True)
-    self._params.put_bool(NAP_LOW_VIS_BACKOFF, True)
-    self._params.put_bool(NAP_CONE_LINE_HOLD, True)
-    self._params.put_bool(NAP_CONE_LINE_LOG, True)
-    self._params.put_bool(NAP_OBSTACLE_CHIME, True)
-    self._params.put_bool(NAP_STOPLIGHT_CHIME, True)
-    self._params.put_bool(NAP_OBSTACLE_LOG, True)
-    self._params.put_bool(NAP_DM_SIMULATE_LOOKING, True)
-    self._params.put_bool(NAP_DM_FALSE_ALERT_IGNORE, False)
-    self._params.put_bool(NAP_HYPERMILE, False)
-    self._params.put_bool(NAP_HYPERMILE_STEP_DOWN, False)
-    self._params.put_bool(NAP_HYPERMILE_HILL_CLIMB, True)
-    self._params.put_bool(NAP_ONE_PEDAL_LONG, False)
-    self._params.remove("NAPHypermileSaved")
-    self._params.put_bool(NAP_FORCE_OFFROAD, False)
-    self._params.put_bool("NAPForceOffroadConfirmed", False)
-    self._params.put_bool("NAPForceOffroadHandoffReady", False)
+    from openpilot.selfdrive.ui.layouts.settings.nap_content import apply_nap_factory_defaults
+    apply_nap_factory_defaults(self._params)
     self._page = "main"
-    # Force Pre-AP is locked on in the panel but DEFAULTS keeps it off
-    # for non-UI consumers. Re-apply the lock after the wholesale loop
-    # so reset doesn't silently flip the invariant.
-    self._params.put_bool(NAPParamKeys.FORCE_PRE_AP, True)
 
   # ── Render / lifecycle ──
 
