@@ -114,6 +114,7 @@ NAP_CONE_LINE_HOLD = "NAPConeLineHold"
 NAP_CONE_LINE_LOG = "NAPConeLineLog"
 NAP_OBSTACLE_CHIME = "NAPObstacleChime"
 NAP_OBSTACLE_LOG = "NAPObstacleLog"
+NAP_STOPLIGHT_CHIME = "NAPStoplightChime"
 NAP_DM_SIMULATE_LOOKING = "NAPDmSimulateLooking"
 NAP_DM_FALSE_ALERT_IGNORE = "NAPDmFalseAlertIgnore"
 NAP_FORCE_OFFROAD = "NAPForceOffroad"
@@ -136,6 +137,12 @@ OBSTACLE_CHIME_DESCRIPTION = (
   + "animal or a person is near the road. A still mailbox or post on "
   + "the shoulder stays quiet. It does not brake, steer, or turn "
   + "cruise off. Off stops the chime; the log still runs."
+)
+STOPLIGHT_CHIME_DESCRIPTION = (
+  "Default On. While you are stopped in Drive, the road camera watches "
+  + "for the signal ahead. A red light shows a red flag on the screen; "
+  + "when that red turns green you hear a ding, once per stop. Camera "
+  + "only: it never brakes, steers, or changes engagement."
 )
 CONE_LINE_HOLD_DESCRIPTION = (
   "Default On. After you push the wheel away from a line of cones or "
@@ -610,6 +617,7 @@ def apply_nap_factory_defaults(params) -> None:
   params.put_bool(NAP_CONE_LINE_HOLD, True)
   params.put_bool(NAP_CONE_LINE_LOG, True)
   params.put_bool(NAP_OBSTACLE_CHIME, True)
+  params.put_bool(NAP_STOPLIGHT_CHIME, True)
   params.put_bool(NAP_OBSTACLE_LOG, True)
   params.put_bool(NAP_DM_SIMULATE_LOOKING, True)
   params.put_bool(NAP_DM_FALSE_ALERT_IGNORE, False)

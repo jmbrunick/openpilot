@@ -1,9 +1,12 @@
+import time
+
 import pyray as rl
 from dataclasses import dataclass
 from openpilot.common.constants import CV
 from openpilot.selfdrive.controls.lib.gap_lock import gap_lock_hud_chip
 from openpilot.selfdrive.ui.mici.onroad.torque_bar import TorqueBar
 from openpilot.selfdrive.ui.onroad.speed_sign_hud import SpeedSignHud
+from openpilot.selfdrive.ui.onroad.stoplight_chip import StoplightChip, chip_from_sm
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.multilang import tr
@@ -110,6 +113,9 @@ class HudRenderer(Widget):
     self.map_speed_valid: bool = False
     self.map_speed_limit: float = 0.0
     self.gap_lock_chip: str | None = None
+    self._stoplight = StoplightChip()
+    self.stoplight_chip: tuple[str, tuple[int, int, int, int]] | None = None
+    self._limit_chip_bottom: float = 0.0
 
     self._can_draw_top_icons = True
     self._show_wheel_critical = False
@@ -155,7 +161,9 @@ class HudRenderer(Widget):
       self.map_speed_valid = False
       self.map_speed_limit = 0.0
       self.gap_lock_chip = None
+      self.stoplight_chip = None
       return
+    self.stoplight_chip = chip_from_sm(self._stoplight, sm, time.monotonic())
 
     controls_state = sm['controlsState']
     car_state = sm['carState']
@@ -198,6 +206,7 @@ class HudRenderer(Widget):
     self._speed_sign_hud.render(rect)
     self._draw_steering_wheel(rect)
     self._draw_map_limit(rect)
+    self._draw_stoplight(rect)
 
   def user_interacting(self) -> bool:
     return self._speed_sign_hud.is_pressed
@@ -293,6 +302,7 @@ class HudRenderer(Widget):
     inside that fade and labeled OSM, so it disappeared and did not match
     the 3X LIMIT plate.
     """
+    self._limit_chip_bottom = 0.0
     if not self.is_cruise_available:
       return
     lines: list[tuple[str, rl.Color]] = []
@@ -310,6 +320,7 @@ class HudRenderer(Widget):
     h = len(lines) * (size + gap) - gap + pad_y * 2
     x = rect.x + rect.width - w - 8
     y = rect.y + 8
+    self._limit_chip_bottom = y + h
     rl.draw_rectangle_rounded(rl.Rectangle(x, y, w, h), 0.25, 6, rl.Color(0, 0, 0, 170))
     for i, (text, color) in enumerate(lines):
       rl.draw_text_ex(
@@ -317,6 +328,24 @@ class HudRenderer(Widget):
         rl.Vector2(x + pad_x, y + pad_y + i * (size + gap)),
         size, 0, color,
       )
+
+  def _draw_stoplight(self, rect: rl.Rectangle) -> None:
+    """RED LIGHT / GREEN - GO chip, top right, while stopped in Drive."""
+    if not self.stoplight_chip:
+      return
+    text, rgba = self.stoplight_chip
+    color = rl.Color(*rgba)
+    size = 22
+    pad_x, pad_y = 10.0, 6.0
+    w = min(measure_text_cached(self._font_semi_bold, text, size).x + pad_x * 2, max(40.0, rect.width - 16.0))
+    h = size + pad_y * 2
+    x = rect.x + rect.width - w - 8
+    # LIMIT / gap-lock already occupies the top-right corner. Sit under it.
+    y = self._limit_chip_bottom + 6 if self._limit_chip_bottom else rect.y + 8
+    chip = rl.Rectangle(x, y, w, h)
+    rl.draw_rectangle_rounded(chip, 0.25, 6, rl.Color(0, 0, 0, 170))
+    rl.draw_rectangle_rounded_lines_ex(chip, 0.25, 6, 2, color)
+    rl.draw_text_ex(self._font_semi_bold, text, rl.Vector2(x + pad_x, y + pad_y), size, 0, color)
 
   def _draw_current_speed(self, rect: rl.Rectangle) -> None:
     """Draw the current vehicle speed and unit."""

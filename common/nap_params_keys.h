@@ -139,6 +139,10 @@
     // Does not brake, steer, or change engagement.
     {"NAPObstacleChime", {PERSISTENT, BOOL, "1"}},
     {"NAPObstacleBrake", {PERSISTENT, BOOL, "0"}},
+    // Ding when a red light turns green while stopped in Drive (stoplightd,
+    // road camera only). The HUD also flags the red. Default On. Does not
+    // brake, steer, or change engagement. Off stops the camera reads.
+    {"NAPStoplightChime", {PERSISTENT, BOOL, "1"}},
     // Pre-AP DM: while engaged, full looking-path wipe on the stock
     // vision path (no-face / uncertain / phone / pose / eye). After
     // drain past 1.0 s, fire at random in the next 2.0 s (fire in
