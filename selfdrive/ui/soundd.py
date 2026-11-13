@@ -65,7 +65,7 @@ if HARDWARE.get_device_type() == "tizi":
   })
 # Negative id: not an AudibleAlert ordinal. Played from alertType obstacleChime/*.
 sound_list[OBSTACLE_CHIME_ID] = (OBSTACLE_CHIME_FILE, 1, MAX_VOLUME)
-# Stoplight-green ding. Played from stoplightNAP.chime, not from an alert.
+# Stoplight-green ding. Played from napVision.stoplight.chime, not from an alert.
 sound_list[STOPLIGHT_CHIME_ID] = (STOPLIGHT_CHIME_FILE, 1, MAX_VOLUME)
 
 def check_selfdrive_timeout_alert(sm):
@@ -174,7 +174,7 @@ class Soundd:
     # Stoplight green: one ding, only when no selfdrived sound is playing.
     # A later AudibleAlert.none cannot cut it short (update_alert waits for
     # one full play); a real alert sound still takes over.
-    if sm.updated.get('stoplightNAP', False) and stoplight_should_ding(sm['stoplightNAP']):
+    if sm.updated.get('napVision', False) and stoplight_should_ding(sm['napVision'].stoplight):
       if self.current_alert == AudibleAlert.none or self.current_alert == STOPLIGHT_CHIME_ID:
         self.current_alert = STOPLIGHT_CHIME_ID
         self.current_sound_frame = 0
@@ -194,7 +194,7 @@ class Soundd:
     # sounddevice must be imported after forking processes
     import sounddevice as sd
 
-    sm = messaging.SubMaster(['selfdriveState', 'soundPressure', 'stoplightNAP'])
+    sm = messaging.SubMaster(['selfdriveState', 'soundPressure', 'napVision'])
 
     with self.get_stream(sd) as stream:
       rk = Ratekeeper(20)
