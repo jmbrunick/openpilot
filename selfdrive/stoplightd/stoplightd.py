@@ -4,7 +4,7 @@
 While the car is stopped in Drive, look for lit signal lamps in the top of
 the road camera frame about 4 times a second. A confirmed red raises the
 HUD red flag. When that red goes out and a new green comes on in the same
-signal head, publish stoplightNAP.chime once; soundd plays the ding.
+signal head, publish napVision.stoplight.chime once; soundd plays the ding.
 
 Gate inputs are livePose (speed) and onroadEvents (gear), not carState:
 carState is at the msgq reader cap. Nothing here brakes, steers, or
@@ -142,7 +142,7 @@ class Stoplight:
     self.chime_count = 0
 
   def step(self, now: float, enabled: bool, frame_fn):
-    """Returns a dict for the stoplightNAP message.
+    """Returns a dict of napVision.stoplight fields.
 
     frame_fn(now) -> ((y_half, u, v), width) or (None, reason); only
     called while the gate is open.
@@ -189,11 +189,11 @@ class Stoplight:
 
 
 def _publish(pm, messaging, out: dict) -> None:
-  msg = messaging.new_message("stoplightNAP", valid=True)
-  body = msg.stoplightNAP
+  msg = messaging.new_message("napVision", valid=True)
+  body = msg.napVision.stoplight
   for key, value in out.items():
     setattr(body, key, value)
-  pm.send("stoplightNAP", msg)
+  pm.send("napVision", msg)
 
 
 def _run() -> None:
@@ -204,7 +204,7 @@ def _run() -> None:
   # livePose and onroadEvents are far below the msgq reader cap; carState is at it.
   pose_sock = messaging.sub_sock("livePose", conflate=True)
   events_sock = messaging.sub_sock("onroadEvents", conflate=True)
-  pm = messaging.PubMaster(["stoplightNAP"])
+  pm = messaging.PubMaster(["napVision"])
   core = Stoplight()
   cam = RoadCamera()
   enabled = _bool_param(params, PARAM, True)

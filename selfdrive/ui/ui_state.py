@@ -60,7 +60,7 @@ class UIState:
         "liveParameters",
         "liveMapDataNAP",
         "liveSpeedSignNAP",
-        "stoplightNAP",
+        "napVision",
         "testJoystick",
         "rawAudioData",
         "liveTracks",
