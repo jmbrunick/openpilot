@@ -40,9 +40,31 @@ assert arch in [
   "Darwin",   # macOS arm64 (x86 not supported)
 ]
 
-pkg_names = ['acados', 'bzip2', 'capnproto', 'catch2', 'eigen', 'ffmpeg', 'json11', 'libjpeg', 'libyuv', 'ncurses', 'zeromq', 'zstd']
+pkg_names = ['acados', 'capnproto', 'eigen', 'ffmpeg', 'json11', 'ncurses', 'zeromq', 'zstd']
 pkgs = [importlib.import_module(name) for name in pkg_names]
 acados = pkgs[pkg_names.index('acados')]
+ffmpeg = pkgs[pkg_names.index('ffmpeg')]
+
+# AGNOS 19.x venvs (comma-deps-*) no longer ship bzip2/catch2. They are only
+# needed for desktop tools and native tests, so pick them up when present.
+for _optional_pkg in ('bzip2', 'catch2'):
+  try:
+    pkgs.append(importlib.import_module(_optional_pkg))
+  except ImportError:
+    pass
+
+# AGNOS 19.x ships comma-deps-ffmpeg as shared libs (x264/va/drm are linked in).
+# AGNOS 18.x and older PC venvs ship static libs that need the extra deps.
+_ffmpeg_lib_names = os.listdir(ffmpeg.LIB_DIR) if os.path.isdir(ffmpeg.LIB_DIR) else []
+ffmpeg_shared = any(
+  n.startswith('libavcodec.so') or (n.startswith('libavcodec') and n.endswith('.dylib'))
+  for n in _ffmpeg_lib_names
+)
+ffmpeg_libs = ['avformat', 'avcodec', 'swresample', 'avutil']
+if not ffmpeg_shared:
+  ffmpeg_libs += ['x264', 'z']
+  if arch != "Darwin":
+    ffmpeg_libs += ['va', 'va-drm', 'drm']
 acados_include_dirs = [
   acados.INCLUDE_DIR,
   os.path.join(acados.INCLUDE_DIR, "blasfeo", "include"),
@@ -124,7 +146,7 @@ env = Environment(
     "#rednose/helpers",
     [x.LIB_DIR for x in pkgs],
   ],
-  RPATH=[],
+  RPATH=[ffmpeg.LIB_DIR] if ffmpeg_shared else [],
   CYTHONCFILESUFFIX=".cpp",
   COMPILATIONDB_USE_ABSPATH=True,
   REDNOSE_ROOT="#",
@@ -190,7 +212,7 @@ else:
 np_version = SCons.Script.Value(np.__version__)
 Export('envCython', 'np_version')
 
-Export('env', 'arch', 'acados')
+Export('env', 'arch', 'acados', 'ffmpeg_libs', 'ffmpeg_shared')
 
 # Setup cache dir
 cache_dir = '/data/scons_cache' if arch == "larch64" else '/tmp/scons_cache'

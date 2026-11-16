@@ -126,8 +126,10 @@ procs = [
 
   # debug procs
   NativeProcess("bridge", "cereal/messaging", ["./bridge"], notcar),
-  PythonProcess("webrtcd", "system.webrtc.webrtcd", notcar),
-  PythonProcess("webjoystick", "tools.bodyteleop.web", notcar),
+  # AGNOS 19.x dropped aiohttp/aiortc from the device venv (upstream moved to
+  # libdatachannel). Body-only processes; keep them from blocking manager startup.
+  PythonProcess("webrtcd", "system.webrtc.webrtcd", notcar, optional=True),
+  PythonProcess("webjoystick", "tools.bodyteleop.web", notcar, optional=True),
   PythonProcess("joystick", "tools.joystick.joystick_control", and_(joystick, iscar)),
 ]
 
