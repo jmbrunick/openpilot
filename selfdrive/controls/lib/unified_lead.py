@@ -176,6 +176,10 @@ K_CATCH = 0.14                  # 1/s
 GAP_CATCH_A_ON = 0.15           # classic a_pd at which the rewrite is full
 GAP_CATCH_A_BOUND_LO = -0.10    # at or below this the bound is a real brake
 GAP_CATCH_A_BOUND_RAMP = 0.10
+# The bound handed to the soft law for the planned-approach ceiling: at or
+# above 0 the bound weight is 1, so that law applies in full. The ceiling
+# only lowers a positive command, so a real-brake bound still owns braking.
+CATCHUP_PLAN_A_BOUND = 0.0
 
 # Short headway: pull firmer below ~0.6 s even at small closing.
 SHORT_HW_S = 0.60
@@ -793,13 +797,26 @@ def unified_follow_desired(gap: float, v_ego: float, v_lead: float, a_lead: floa
     a_bound_cmd = a_bound
   # Swap only the command's gap piece. The gate below still reads a_pd.
   a_gap_classic = (k_g * slack) * keep
+  a_pd_far = a_pd_cmd
   if not locked:
     a_gap = _far_gap_catchup_gap(a_gap_classic, slack, v_err, keep, a_pd, a_bound)
     a_pd_cmd = a_pd_cmd + (a_gap - a_gap_classic)
+    # The same soft closing law with no bound weight: the far approach the
+    # catch-up plans whatever the lead's accel reads (Nov 17 13:14:13 CST,
+    # aLeadK -0.06…-0.2 at 75 m handed the command back to k_g·slack).
+    a_gap_far = _far_gap_catchup_gap(a_gap_classic, slack, v_err, keep, a_pd, CATCHUP_PLAN_A_BOUND)
+    a_pd_far = a_pd_far + (a_gap_far - a_gap_classic)
   gate_w = KIN_GATE_MS + _kin_gate_widen(slack, a_pd, a_bound)
   gate = _smooth01(v_close / gate_w) if v_close > 0.0 else 0.0
   limited = min(a_pd_cmd, a_bound_cmd)
   a_cmd = ((1.0 - gate) * a_pd_cmd) + (gate * limited)
+  if a_cmd > 0.0 and a_pd_far < a_pd_cmd:
+    # Far catch-up is the planned approach, not a push: a positive command
+    # may not exceed the soft closing law's own command. It only ever
+    # removes catch-up accel, never below 0, and a braking command (a
+    # real-brake bound included) is left exactly as it is.
+    a_far = ((1.0 - gate) * a_pd_far) + (gate * min(a_pd_far, a_bound_cmd))
+    a_cmd = min(a_cmd, max(a_far, 0.0))
 
   # Pulling away near the gap: trickle, not a catch-up lunge.
   # A locked setpoint is the distance the driver asked to hold, so a

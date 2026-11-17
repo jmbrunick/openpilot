@@ -14,10 +14,13 @@ _BIT = "test_bit_identical_for_slack_at_or_under_15m"
 _SLACK = "test_slack_weight_keeps_the_near_gap_term"
 _ACCEL = "test_accel_weight_keeps_a_braking_pd_term"
 _BOUND = "test_bound_weight_keeps_the_gap_term_on_a_real_brake"
-_BRAKE = "test_braking_lead_at_a_far_gap_keeps_the_classic_command"
+_BRAKE = "test_braking_lead_at_a_far_gap_gets_no_catchup_push"
 _SOFT = "test_matched_far_command_is_a_soft_ease"
 _CLIP = "test_closing_faster_than_desired_adds_no_gap_brake"
 _PROP = "test_never_firmer_on_catchup_and_never_deeper_when_classic_brakes"
+_NOV17 = "test_nov17_far_catchup_is_a_taper_not_a_push_and_drop"
+_SLOW = "test_slowing_lead_never_gets_a_harder_catchup_than_a_steady_one"
+_ONLY = "test_planned_approach_ceiling_only_removes_accel"
 
 
 def _m(name, original, replacement, *tests):
@@ -47,4 +50,17 @@ MUTATIONS_J = (
      b"  a_gap = (1.0 - w) * a_gap_classic + w * max(0.0, a_soft)\n",
      b"  a_gap = (1.0 - w) * a_gap_classic + w * a_soft\n",
      _CLIP),
+  # Nov 17: planned-approach ceiling (the soft law without the bound weight).
+  _m("catchup-plan-ceiling-removed",
+     b"    a_cmd = min(a_cmd, max(a_far, 0.0))\n",
+     b"    a_cmd = a_cmd\n",
+     _NOV17, _SLOW, _BRAKE, _ONLY),
+  _m("catchup-plan-ceiling-may-brake",
+     b"    a_cmd = min(a_cmd, max(a_far, 0.0))\n",
+     b"    a_cmd = min(a_cmd, a_far)\n",
+     _ONLY),
+  _m("catchup-plan-keeps-the-bound-weight",
+     b"CATCHUP_PLAN_A_BOUND = 0.0\n",
+     b"CATCHUP_PLAN_A_BOUND = -1.0\n",
+     _NOV17, _SLOW, _BRAKE),
 )

@@ -208,15 +208,223 @@ def test_closing_faster_than_desired_adds_no_gap_brake():
   assert -0.03 < cmd < 0.0
 
 
-def test_braking_lead_at_a_far_gap_keeps_the_classic_command(monkeypatch):
-  """Lead brake makes a real bound. The gap rewrite stays off, so no new brake."""
+def test_braking_lead_at_a_far_gap_gets_no_catchup_push(monkeypatch):
+  """Nov 17: a lead braking 60 m past the gap is not chased.
+
+  The bound weight used to hand the command back to k_g·slack whenever the
+  lead's accel read negative, so a matched car 60 m back was told +1.8 m/s²
+  toward a lead braking at -1.0. The planned-approach ceiling holds it to the
+  soft closing law. It removes accel only: no brake is added.
+  """
   vl, tf, slack, al = 25.0, 1.3, 60.0, -1.0
   gap = gap_set_m(vl, tf) + slack
   new = unified_follow_desired(gap, vl, vl, al, tf)
   _baseline(monkeypatch)
   old = unified_follow_desired(gap, vl, vl, al, tf)
-  assert new == old
-  assert new > 0.5
+  assert old > 0.5  # the shipped push
+  assert 0.0 <= new <= K_CATCH * (V_DES_CLOSE_LO + V_DES_CLOSE_SPAN) + 1e-6
+
+
+def test_slowing_lead_never_gets_a_harder_catchup_than_a_steady_one():
+  """A far lead easing off (aLeadK -0.05…-0.5) is chased no harder than the same lead holding speed."""
+  rng = np.random.default_rng(1117)
+  for _ in range(4000):
+    vl = float(rng.uniform(8.0, 35.0))
+    tf = float(rng.choice([0.7, 0.9, 1.1, 1.3, 1.5, 1.7, 1.9]))
+    slack = float(rng.uniform(GAP_FADE_HI_M, 120.0))
+    v_open = float(rng.uniform(-0.4, 2.0))  # matched to opening
+    al = float(rng.uniform(-0.5, -0.05))
+    gap = gap_set_m(vl, tf) + slack
+    v_e = max(0.0, vl - v_open)
+    steady = unified_follow_desired(gap, v_e, vl, 0.0, tf)
+    slowing = unified_follow_desired(gap, v_e, vl, al, tf)
+    assert slowing <= steady + 1e-9, (gap, v_e, vl, al, tf)
+
+
+def test_planned_approach_ceiling_only_removes_accel(monkeypatch):
+  """The rework can only lower a positive command, never below 0; a braking command is bit-identical."""
+  rng = np.random.default_rng(17)
+  cases = []
+  for _ in range(40000):
+    vl = float(rng.uniform(0.0, 40.0))
+    tf = float(rng.choice([0.7, 0.9, 1.1, 1.3, 1.5, 1.8]))
+    slack = float(rng.uniform(-8.0, 120.0))
+    v_close = float(rng.uniform(-3.0, 8.0))
+    al = float(rng.uniform(-3.0, 1.0))
+    gap = max(0.0, gap_set_m(vl, tf) + slack)
+    cases.append((gap, max(0.0, vl + v_close), vl, al, tf))
+  new = [unified_follow_desired(*c) for c in cases]
+  monkeypatch.setattr(ul, "CATCHUP_PLAN_A_BOUND", -1.0e9)  # plan law = shipped law: ceiling is a no-op
+  old = [unified_follow_desired(*c) for c in cases]
+  lowered = 0
+  for n, o, c in zip(new, old, cases, strict=True):
+    if o <= 0.0:
+      assert n == o, c
+    else:
+      assert 0.0 <= n <= o + 1e-12, c
+      lowered += n < o - 0.05
+  assert lowered > 100
+
+
+# Nov 17 2026 13:14:11-17 CST, route 00000008 seg 5, nap-alpha ef0c30ca, Follow
+# Hwy 1 (0.70 s): lead ~75 m ahead at ~25.3 m/s with aLeadK drifting from 0
+# to -0.2. The far catch-up pushed +0.30 → +0.80 and dropped to ~0 in 0.3 s
+# (2.5 m/s³) as ego passed the lead's speed.
+NOV17_1314 = (  # (dRel, vEgo, vLead, aLeadK, logged aTarget) 13:14:11.00-17.00 CST, 20 Hz
+  (73.62, 24.555, 25.491, 0.003, 0.34),
+  (73.69, 24.549, 25.43, 0.003, 0.342),
+  (73.75, 24.557, 25.424, 0.007, 0.338),
+  (73.75, 24.568, 25.434, 0.012, 0.338),
+  (73.81, 24.564, 25.443, 0.019, 0.34),
+  (73.88, 24.566, 25.501, 0.041, 0.348),
+  (73.88, 24.543, 25.501, 0.041, 0.358),
+  (73.94, 24.55, 25.418, 0.034, 0.357),
+  (74.0, 24.547, 25.488, 0.048, 0.363),
+  (74.0, 24.561, 25.485, 0.058, 0.364),
+  (74.06, 24.562, 25.561, 0.087, 0.375),
+  (74.06, 24.564, 25.561, 0.087, 0.38),
+  (74.12, 24.57, 25.564, 0.11, 0.39),
+  (74.12, 24.571, 25.564, 0.11, 0.394),
+  (74.19, 24.597, 25.508, 0.107, 0.393),
+  (74.19, 24.614, 25.534, 0.111, 0.39),
+  (74.19, 24.635, 25.534, 0.111, 0.387),
+  (74.31, 24.658, 25.51, 0.105, 0.388),
+  (74.31, 24.669, 25.51, 0.105, 0.38),
+  (74.44, 24.677, 25.544, 0.106, 0.383),
+  (74.5, 24.683, 25.552, 0.106, 0.381),
+  (74.5, 24.716, 25.552, 0.106, 0.375),
+  (74.62, 24.719, 25.529, 0.106, 0.374),
+  (74.62, 24.753, 25.529, 0.106, 0.368),
+  (74.62, 24.739, 25.566, 0.111, 0.371),
+  (74.69, 24.773, 25.551, 0.109, 0.364),
+  (74.75, 24.768, 25.586, 0.115, 0.371),
+  (74.81, 24.764, 25.578, 0.115, 0.372),
+  (74.81, 24.773, 25.578, 0.115, 0.374),
+  (74.81, 24.775, 25.523, 0.098, 0.369),
+  (74.88, 24.803, 25.462, 0.066, 0.355),
+  (74.88, 24.803, 25.462, 0.066, 0.349),
+  (74.94, 24.826, 25.425, 0.029, 0.331),
+  (74.94, 24.833, 25.425, 0.029, 0.322),
+  (74.94, 24.829, 25.458, 0.009, 0.313),
+  (75.0, 24.844, 25.391, 0.009, 0.304),
+  (75.0, 24.844, 25.407, -0.021, 0.292),
+  (75.0, 24.869, 25.406, -0.045, 0.279),
+  (75.0, 24.853, 25.406, -0.045, 0.28),
+  (75.06, 24.875, 25.415, -0.061, 0.301),
+  (75.06, 24.915, 25.438, -0.061, 0.33),
+  (75.06, 24.894, 25.415, -0.072, 0.377),
+  (75.06, 24.927, 25.457, -0.068, 0.411),
+  (75.06, 24.918, 25.457, -0.068, 0.441),
+  (75.06, 24.915, 25.48, -0.057, 0.452),
+  (75.12, 24.895, 25.477, -0.048, 0.448),
+  (75.19, 24.895, 25.456, -0.063, 0.466),
+  (75.19, 24.895, 25.456, -0.063, 0.48),
+  (75.19, 24.918, 25.456, -0.063, 0.483),
+  (75.25, 24.939, 25.48, -0.049, 0.466),
+  (75.25, 24.931, 25.439, -0.049, 0.454),
+  (75.31, 24.948, 25.431, -0.051, 0.446),
+  (75.38, 24.942, 25.385, -0.065, 0.463),
+  (75.38, 24.985, 25.385, -0.065, 0.465),
+  (75.38, 25.008, 25.36, -0.081, 0.496),
+  (75.38, 25.039, 25.383, -0.086, 0.525),
+  (75.5, 25.054, 25.298, -0.12, 0.602),
+  (75.5, 25.058, 25.298, -0.12, 0.678),
+  (75.5, 25.092, 25.298, -0.12, 0.74),
+  (75.5, 25.114, 25.342, -0.125, 0.768),
+  (75.5, 25.164, 25.301, -0.137, 0.793),
+  (75.5, 25.182, 25.301, -0.137, 0.798),
+  (75.44, 25.213, 25.307, -0.142, 0.797),
+  (75.5, 25.235, 25.269, -0.142, 0.797),
+  (75.56, 25.256, 25.297, -0.146, 0.797),
+  (75.56, 25.308, 25.256, -0.146, 0.796),
+  (75.56, 25.349, 25.256, -0.146, 0.796),
+  (75.56, 25.391, 25.271, -0.152, 0.795),
+  (75.56, 25.439, 25.266, -0.156, 0.794),
+  (75.44, 25.501, 25.189, -0.178, 0.669),
+  (75.44, 25.565, 25.189, -0.178, 0.544),
+  (75.44, 25.573, 25.189, -0.178, 0.419),
+  (75.38, 25.62, 25.198, -0.189, 0.294),
+  (75.38, 25.646, 25.183, -0.199, 0.169),
+  (75.31, 25.717, 25.208, -0.196, 0.044),
+  (75.25, 25.787, 25.217, -0.196, -0.006),
+  (75.25, 25.845, 25.217, -0.196, -0.006),
+  (75.25, 25.87, 25.269, -0.173, -0.007),
+  (75.19, 25.877, 25.308, -0.173, -0.007),
+  (75.12, 25.888, 25.189, -0.174, -0.007),
+  (75.06, 25.894, 25.138, -0.185, -0.008),
+  (75.06, 25.867, 25.138, -0.185, -0.008),
+  (75.0, 25.866, 25.182, -0.179, -0.008),
+  (74.94, 25.835, 25.116, -0.189, -0.007),
+  (74.88, 25.825, 25.085, -0.203, -0.008),
+  (74.88, 25.809, 25.013, -0.23, -0.008),
+  (74.88, 25.8, 25.013, -0.23, -0.008),
+  (74.75, 25.813, 24.987, -0.257, -0.009),
+  (74.69, 25.795, 24.938, -0.286, -0.01),
+  (74.62, 25.775, 24.983, -0.295, -0.01),
+  (74.62, 25.737, 24.983, -0.295, -0.01),
+  (74.62, 25.719, 24.737, -0.363, -0.011),
+  (74.56, 25.717, 24.594, -0.452, -0.013),
+  (74.5, 25.712, 24.592, -0.515, -0.015),
+  (74.44, 25.728, 24.65, -0.544, -0.017),
+  (74.38, 25.719, 24.79, -0.514, -0.018),
+  (74.38, 25.693, 24.79, -0.514, -0.018),
+  (74.31, 25.683, 24.764, -0.491, -0.018),
+  (74.25, 25.659, 24.746, -0.467, -0.018),
+  (74.19, 25.658, 24.721, -0.45, -0.019),
+  (74.12, 25.648, 24.72, -0.425, -0.018),
+  (74.12, 25.642, 24.72, -0.425, -0.019),
+  (74.12, 25.626, 24.767, -0.386, -0.017),
+  (74.06, 25.601, 24.75, -0.352, -0.017),
+  (74.06, 25.605, 24.73, -0.326, -0.016),
+  (74.0, 25.598, 24.855, -0.262, -0.015),
+  (74.0, 25.608, 24.855, -0.262, -0.014),
+  (74.0, 25.601, 24.796, -0.223, -0.014),
+  (73.94, 25.583, 24.789, -0.19, -0.013),
+  (73.88, 25.578, 24.77, -0.166, -0.012),
+  (73.88, 25.565, 24.701, -0.163, -0.012),
+  (73.88, 25.574, 24.701, -0.163, -0.012),
+  (73.81, 25.573, 24.636, -0.176, -0.012),
+  (73.75, 25.574, 24.698, -0.165, -0.012),
+  (73.69, 25.568, 24.637, -0.172, -0.013),
+  (73.56, 25.555, 24.63, -0.175, -0.013),
+  (73.56, 25.57, 24.63, -0.175, -0.013),
+  (73.44, 25.576, 24.569, -0.193, -0.014),
+  (73.44, 25.595, 24.569, -0.193, -0.015),
+  (73.38, 25.597, 24.595, -0.192, -0.015),
+)
+
+
+def _replay_nov17():
+  ctrl = UnifiedLeadController()
+  out = []
+  for d, v, vl, al, _log in NOV17_1314:
+    a_max = float(np.interp(v, [0.0, 10.0, 25.0, 40.0], [1.6, 1.2, 0.8, 0.6]))
+    out.append(ctrl.step(dt=DT, present=True, gap=d, v_ego=v, v_lead=vl, a_lead=al, t_follow=0.7,
+                         lead_id=1, seed_a=0.34, v_ceiling=104.6 / 3.6, a_max=a_max))
+  return np.array(out)
+
+
+def test_nov17_far_catchup_is_a_taper_not_a_push_and_drop():
+  cmds = _replay_nov17()
+  logged = np.array([r[4] for r in NOV17_1314])
+  assert logged.max() > 0.75  # the event is in the fixture
+  assert cmds.max() <= 0.40
+  assert np.abs(np.diff(cmds)).max() / DT <= 0.75  # comfort-scale release, was 2.5 m/s³
+  # Once the lead reads as slowing, the command does not climb again.
+  k = next(i for i, r in enumerate(NOV17_1314) if r[3] <= -0.05)
+  assert np.all(np.diff(cmds[k:]) <= 0.02)
+
+
+def test_nov17_braking_after_the_event_is_unchanged(monkeypatch):
+  """Where the shipped command already braked, the rework is bit-identical."""
+  new = _replay_nov17()
+  monkeypatch.setattr(ul, "CATCHUP_PLAN_A_BOUND", -1.0e9)
+  old = _replay_nov17()
+  assert old.max() > 0.75
+  first_brake = int(np.argmax(old < 0.0))
+  assert first_brake > 0
+  tail = slice(first_brake + 40, None)  # slew state converged
+  assert np.allclose(new[tail], old[tail], atol=0.02)
 
 
 def test_bit_identical_for_slack_at_or_under_15m(monkeypatch):
