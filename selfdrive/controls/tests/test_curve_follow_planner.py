@@ -9,7 +9,7 @@ import pytest
 from openpilot.selfdrive.controls.lib import longitudinal_planner as lp
 from openpilot.selfdrive.controls.lib.curve_preview import PREVIEW_FREE_A_MS2
 from openpilot.selfdrive.controls.tests.test_curve_preview import _set_model_path
-from openpilot.selfdrive.controls.tests.test_unified_lead_planner import _own_lead, _planner
+from openpilot.selfdrive.controls.tests.test_unified_lead_planner import _ConstantAccelerationMpc, _own_lead, _planner
 
 DT = 0.05
 BEND = (120.0, 60.0, 1.0 / 45.0)
@@ -324,3 +324,168 @@ def test_lead_and_gap_lock_do_not_receive_the_curve_as_a_map(monkeypatch):
   assert all(s[0] is None for s in locked)
   assert all(s[1] is None for s in locked)
 
+
+
+# ---- Curve ceiling inside the lead controller (Nov 17) ---------------------
+# The curve ceiling is an input to the unified controller's jerk-limited
+# target (a_ceiling), not only a min() after it. While a bend holds the car
+# down, the controller's own state must not wind up to the follow +a, so a
+# lead brake mid-curve builds from the command the car is actually on, and a
+# ceiling that lifts (handover to another owner) is released at the
+# controller's own rate instead of a one-frame step.
+
+def _ctrl_state(planner):
+  prev = planner._unified._prev
+  return float("nan") if prev is None else float(prev)
+
+
+def _drive_with_state(mode, v, bend, n, hook):
+  rows = []
+
+  def spy(k, planner, inputs):
+    hook(k, planner, inputs)
+
+  planner, inputs, params = _planner(v, accel=0.4)
+  params.curve_follow = mode
+  s = 0.0
+  for k in range(n):
+    _set_model_path(inputs["modelV2"], v, s, bend)
+    spy(k, planner, inputs)
+    planner.update(inputs)
+    rows.append((float(planner.output_a_target), float(planner.curve_preview_a), _ctrl_state(planner)))
+    s += v * DT
+  return planner, rows
+
+
+def _faster_lead(k, planner, inputs):
+  _own_lead(inputs, 30.0, 26.0)
+
+
+def test_follow_state_does_not_wind_up_above_the_bend():
+  """A faster lead asks for +a while the bend holds the car down: the controller's state stays on the curve."""
+  _, rows = _drive_with_state(2, 20.0, BEND, 120, _faster_lead)
+  bound = [r for r in rows if r[1] < PREVIEW_FREE_A_MS2 - 0.05 and r[2] == r[2]]
+  assert len(bound) > 60
+  assert min(r[1] for r in bound) < -1.0
+  # The published command and the controller's state are the same signal.
+  assert max(r[2] - r[1] for r in bound) < 0.30
+  assert all(r[0] <= r[1] + 1e-9 for r in bound)
+
+
+def test_lead_brake_mid_curve_builds_from_the_curve_command():
+  """Nov 17: a lead braking in a bend starts from the curve's command, not a wound-up +a."""
+  brake = 50
+
+  def hook(k, planner, inputs):
+    if k < brake:
+      _own_lead(inputs, 30.0, 26.0)
+    else:
+      _own_lead(inputs, 26.0, 16.0, a_lead=-4.0)
+
+  _, rows = _drive_with_state(2, 20.0, BEND, 100, hook)
+  cf_at = rows[brake - 1][1]
+  assert cf_at < -1.0
+  # Deeper than the curve within 0.2 s of the lead's brake ...
+  assert min(r[0] for r in rows[brake:brake + 4]) < cf_at - 0.2
+  # ... and past -3 m/s² inside 0.6 s (a wound-up +a took 1.2 s).
+  assert min(r[0] for r in rows[brake:brake + 12]) <= -3.0
+  # Never softer than the curve or than following the lead alone.
+  _, lead_only = _drive(2, 20.0, STRAIGHT, 100, hook=hook)
+  _not_softer(rows[brake:], lead_only[brake:])
+
+
+def test_ceiling_handover_mid_curve_is_released_not_stepped():
+  """The bend's owner hands over to a looser ceiling: the follow command releases at bounded jerk."""
+  swap = 40
+
+  def hook(k, planner, inputs):
+    _own_lead(inputs, 30.0, 26.0)
+    if k >= swap:
+      planner._params.curve_follow = 0
+      planner._cf_mode = 0
+
+  _, rows = _drive_with_state(2, 20.0, BEND, 80, hook)
+  assert rows[swap][1] > rows[swap - 1][1] + 0.5  # the ceiling itself steps up
+  jerk = max(abs(b[0] - a[0]) for a, b in zip(rows[swap - 2:swap + 20], rows[swap - 1:swap + 21], strict=True)) / DT
+  assert jerk < 2.5  # controller release, not a one-frame jump
+  assert all(r[0] <= r[1] + 1e-9 for r in rows)
+
+
+def test_ceiling_that_deepens_in_one_frame_still_caps_every_frame():
+  """A ceiling that drops faster than the controller's build rate is enforced on that frame too."""
+  swap = 40
+
+  def hook(k, planner, inputs):
+    _own_lead(inputs, 30.0, 26.0)
+    if k == swap:
+      cf = planner._curve_follow
+      real_step = cf.step
+      def deeper(**kw):
+        return min(float(real_step(**kw)), -3.0)
+      cf.step = deeper
+
+  _, rows = _drive_with_state(2, 20.0, BEND, 60, hook)
+  assert rows[swap][1] < rows[swap - 1][1] - 1.0  # the ceiling steps down
+  assert all(r[0] <= r[1] + 1e-9 for r in rows)
+
+
+def _closed_loop(bend, hook, n, v0=22.0, mpc_accel=0.6):
+  """Planner in a loop: speed follows the command (0.3 s lag), lead integrates its own accel."""
+  planner, inputs, params = _planner(v0, accel=mpc_accel)
+  params.curve_follow = 2
+  v, a, s = v0, 0.0, 0.0
+  lead = {"d": 40.0, "v": v0, "a": 0.0}
+  rows = []
+  for k in range(n):
+    planner.mpc = _ConstantAccelerationMpc(v, mpc_accel)
+    inputs["carState"].vEgo = v
+    inputs["carState"].aEgo = a
+    _set_model_path(inputs["modelV2"], v, s, bend)
+    hook(k, planner, inputs, lead)
+    _own_lead(inputs, lead["d"], lead["v"], a_lead=lead["a"])
+    planner.update(inputs)
+    cmd = float(planner.output_a_target)
+    rows.append((cmd, float(planner.curve_preview_a), _ctrl_state(planner), v, lead["d"]))
+    a += (cmd - a) * DT / 0.3
+    v = max(0.0, v + a * DT)
+    s += v * DT
+    lead["v"] = max(0.0, lead["v"] + lead["a"] * DT)
+    lead["d"] += (lead["v"] - v) * DT
+  return rows
+
+
+def _lead_takes_the_bend_faster(k, planner, inputs, lead):
+  lead["a"] = -0.8 if (k * DT > 2.0 and lead["v"] > 16.0) else 0.0
+
+
+def test_curve_release_with_a_faster_lead_is_smooth_and_no_windup():
+  """Closed loop: a lead takes the bend faster than our curve speed, the gap opens, the bend releases."""
+  rows = _closed_loop((150.0, 160.0, 1.0 / 60.0), _lead_takes_the_bend_faster, 600)
+  bound = [r for r in rows if r[1] < PREVIEW_FREE_A_MS2 - 0.05 and r[2] == r[2]]
+  assert len(bound) > 300 and min(r[1] for r in bound) < -1.0
+  assert max(r[2] - r[1] for r in bound) < 0.30  # no follow +a stored under the bend
+  release = [i for i, r in enumerate(rows) if r[1] >= PREVIEW_FREE_A_MS2 - 0.05 and i > 100]
+  assert release  # the bend does end
+  jerk = max(abs(b[0] - a[0]) for a, b in zip(rows[100:], rows[101:], strict=False)) / DT
+  assert jerk <= 1.0 + 1e-6  # the exit is the curve's own comfort release, then follow
+  assert all(r[0] <= r[1] + 1e-9 for r in rows)
+
+
+def test_gap_lock_lead_braking_mid_curve_builds_from_the_curve_command():
+  """Gap Lock still supersedes the bend: a locked lead's brake starts from the curve's command."""
+  brake = 50
+
+  def hook(k, planner, inputs):
+    _arm_gap_lock(planner, inputs, 30.0)
+    if k < brake:
+      _own_lead(inputs, 32.0, 26.0, track=1)
+    else:
+      _own_lead(inputs, 28.0, 16.0, a_lead=-4.0, track=1)
+
+  planner, rows = _drive_with_state(2, 20.0, BEND, 100, hook)
+  _, lock_only = _drive(2, 20.0, STRAIGHT, 100, hook=hook)
+  assert planner._gap_lock.gap_m == 30.0
+  cf_at = rows[brake - 1][1]
+  assert cf_at < -1.0
+  assert min(r[0] for r in rows[brake:brake + 4]) < cf_at - 0.2
+  _not_softer(rows[brake:], lock_only[brake:])

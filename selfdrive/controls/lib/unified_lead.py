@@ -1028,8 +1028,18 @@ class UnifiedLeadController:
            radar: bool | None = None, leave_w: float = 0.0,
            gap_set_override_m: float | None = None,
            v_curve_cap: float | None = None,
-           v_lat: float = 0.0, long_on: bool = True) -> float:
-    """One planner frame. Returns the slewed road-relative accel, or 0 with no lead."""
+           v_lat: float = 0.0, long_on: bool = True,
+           a_ceiling: float | None = None) -> float:
+    """One planner frame. Returns the slewed road-relative accel, or 0 with no lead.
+
+    `a_ceiling` is the path-ahead accel ceiling (curve follow / curve
+    preview), already jerk-limited by its owner. It caps the target the
+    jerk limiter tracks, so the one slewed state that publishes the
+    command never sits above the curve: no follow +a winds up under a
+    bend, a lead brake mid-curve starts from the curve's command, and the
+    curve's release is followed at this controller's own release rate.
+    It is a ceiling only; a lead or Gap Lock that wants less still wins.
+    """
     frame_dt = 0.05 if dt is None or float(dt) <= 1e-6 else float(dt)
     if not present:
       self.reset()
@@ -1224,6 +1234,8 @@ class UnifiedLeadController:
       # The held command is the blend. Confidence must not fade a lead
       # brake back in, and the handover later slews from this command.
       target = float(desired)
+    if a_ceiling is not None and math.isfinite(float(a_ceiling)):
+      target = min(float(target), float(a_ceiling))
     prev = float(self._prev if self._prev is not None else seed_a)
     if fresh:
       prev = trust_bound(prev, carry, carry_trust)
