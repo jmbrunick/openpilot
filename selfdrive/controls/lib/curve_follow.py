@@ -44,7 +44,6 @@ retires the CurveMaxHold MAX cap).
 from __future__ import annotations
 
 import json
-import math
 
 from openpilot.selfdrive.controls.lib.curve_preview import (
   PREVIEW_FREE_A_MS2,
