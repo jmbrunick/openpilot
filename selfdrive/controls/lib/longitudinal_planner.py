@@ -594,11 +594,10 @@ class LongitudinalPlanner:
     else:
       self._rb_a_jl = 0.0
 
-    # Curve preview: accel ceiling from the model path (0–5 s) that slows
-    # ahead of a bend, finished ~1.5 s before the tight point, and holds
-    # back +a just under a bend's comfort speed. min() only: never raises
-    # the command. A lead, if any, is then followed by the continuous
-    # controller, which takes this ceiling as its own map/curve term.
+    # Curve preview / curve-follow: accel ceiling from the model path.
+    # min() only: never raises the command. Applied to the lead-free
+    # command here, then again after lead / Gap Lock follow so a harder
+    # follow brake is never softened and exit +a cannot exceed follow.
     self.curve_preview_a = PREVIEW_FREE_A_MS2
     if self._is_preap:
       if reset_state or curve_path is None:
@@ -607,8 +606,8 @@ class LongitudinalPlanner:
         a_prev_raw = curve_preview_accel(v_ego, *curve_path)
         self.curve_preview_a = float(self._curve_preview.update(v_ego, a_prev_raw, self.dt))
       # Curve-follow: computed and logged in shadow (1) and active (2). Only
-      # active replaces the old preview's ceiling; the lead law still takes it
-      # through the same a_map slot, so nothing else changes.
+      # active replaces the old preview's ceiling. The curve term is a
+      # ceiling only (min); it is not fed into the lead / Gap Lock law.
       old_preview_a = float(self.curve_preview_a)
       self._update_curve_follow(sm, float(v_ego), curve_path, old_preview_a, rb_v is not None,
                                 float(output_a_target))
@@ -993,17 +992,19 @@ class LongitudinalPlanner:
       v_cap = min(v_cap, float(v_curve))
       curve_cap = float(v_curve)
     # Locked meters are the setpoint, including above MAX. Map-speed
-    # braking back to the cap is skipped while the lock is on. A curve
-    # cap is passed separately so a bend still slows the car.
+    # braking back to the cap is skipped while the lock is on, same as
+    # MAX. The curve term is not mixed into a_map or v_curve_cap: Gap
+    # Lock and lead follow run first, then a post-hoc min() applies the
+    # curve as a ceiling only (must not delay, soften, or fight the hold).
     override = self._gap_set_override(lead, live, held)
     a_map = None
     if override is None and self._map_speed_mode in (MODE_CAP, MODE_FOLLOW):
       a_map = map_track_decel_ms2(
         v_ego, map_cap, map_brake_a_ms2(self._map_speed_lookahead),
       )
-    if self.curve_preview_a < PREVIEW_FREE_A_MS2:
-      a_map = self.curve_preview_a if a_map is None else min(float(a_map), self.curve_preview_a)
-    v_curve_cap = curve_cap if override is not None else None
+    # Present-curvature cap stays only as the dead-camera fallback while
+    # Gap Lock is on and curve-follow does not own the bend.
+    v_curve_cap = curve_cap if (override is not None and not cf_owns_curve) else None
     a_max_u = float(get_max_accel(v_ego))
     if self._turn_a_max is not None:
       a_max_u = min(a_max_u, float(self._turn_a_max))
@@ -1097,6 +1098,12 @@ class LongitudinalPlanner:
     if self.fcw or self.output_should_stop or bool(sm["controlsState"].forceDecel):
       command = min(command, existing)
     self.output_a_target = float(command)
+    # Curve is a ceiling only. A deeper lead / Gap Lock brake is kept;
+    # a shallower follow command (including exit +a) is capped. Must not
+    # be folded into the follow law (a_map / v_curve_cap), or it can
+    # delay or fight the hold the way MAX used to.
+    if self.curve_preview_a < PREVIEW_FREE_A_MS2:
+      self.output_a_target = min(float(self.output_a_target), float(self.curve_preview_a))
 
   def _obstacle_brake_log(self, sm) -> tuple[bool, float, int]:
     """Oct 14 path-object brake, LOG-ONLY. Never touches the plan or accel.

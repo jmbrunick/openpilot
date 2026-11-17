@@ -13,7 +13,6 @@ import time
 import numpy as np
 import pytest
 
-import openpilot.selfdrive.controls.lib.curve_follow as cfmod
 from openpilot.selfdrive.controls.lib.curve_follow import (
   CONF_FALL_1_S,
   FREE_A_MS2,
@@ -21,7 +20,6 @@ from openpilot.selfdrive.controls.lib.curve_follow import (
   MODE_ACTIVE,
   MODE_OFF,
   MODE_SHADOW,
-  RELEASE_BEFORE_TIGHTEST_S,
   CurveFollow,
   curve_follow_raw,
   curve_speed_for_curvature,
@@ -29,7 +27,16 @@ from openpilot.selfdrive.controls.lib.curve_follow import (
   format_log_line,
   read_curve_follow_mode,
 )
-from openpilot.selfdrive.controls.tests.test_curve_preview import _bend_kappa
+def _bend_kappa(s, start, length, kappa, ramp=15.0):
+  """Curvature at arc length s: clothoid ramps in/out around a constant arc."""
+  if s < start - ramp or s > start + length + ramp:
+    return 0.0
+  if s < start:
+    return kappa * (s - (start - ramp)) / ramp
+  if s <= start + length:
+    return kappa
+  return kappa * (start + length + ramp - s) / ramp
+
 from openpilot.selfdrive.modeld.constants import ModelConstants
 
 DT = 0.05
@@ -190,18 +197,15 @@ def test_s_curve_family_regens_back_down_without_chatter_or_latch(gap_s):
   # Speed at each tight arc stays on the table.
   assert _speed_at(rows, bends[0][0] + 20.0) <= v_env * 1.2
   assert _speed_at(rows, bends[1][0] + 20.0) <= v_env * 1.2
-  # Sign changes of the ceiling around zero between the two bends (hysteresis band).
-  state, flips = 0, 0
-  for a in a_cf:
-    new = 1 if a > 0.15 else (-1 if a < -0.15 else state)
-    if state and new != state:
-      flips += 1
-    state = new
-  assert flips <= 2
-  if gap_s >= 10.0:
-    assert between and max(r[3] for r in between) >= 0.15  # accelerates out of bend 1
-  if gap_s <= 4.0:
-    assert not between or max(r[3] for r in between) < 0.15
+  # One event (or a coast between equal-radius bends): no brake-accel-brake pulse.
+  pulses = _sign_flips(a_cf)
+  if gap_s <= 10.0:
+    assert pulses == 0
+    assert not between or max(r[4] for r in between) <= 0.15
+  else:
+    # A far second bend may appear only after the first event ends; at most
+    # one re-entry after that exit, never chatter.
+    assert pulses <= 1
 
 
 def test_s_curve_has_no_state_a_fresh_filter_agrees_mid_scene():
@@ -216,8 +220,8 @@ def test_s_curve_has_no_state_a_fresh_filter_agrees_mid_scene():
   for k in range(int(3.0 / DT)):
     _step(fresh, v_mid, s_mid, bends)
     _step(cf, v_mid, s_mid, bends)
-    # The post-apex +a hold is deliberate state (it follows a bend that slowed the car).
-    if k * DT >= 0.5 and fresh._post_t < 0.0 and cf._post_t < 0.0:
+    # The curve-event latch is deliberate state (it follows a bend that slowed the car).
+    if k * DT >= 0.5 and (not fresh.event) and (not cf.event):
       worst = max(worst, abs(fresh.raw - cf.raw))
     s_mid += v_mid * DT
   assert worst <= 0.2
@@ -366,16 +370,19 @@ def test_mode_param_reader_defaults_to_shadow_and_clamps():
 
 
 # 13 --------------------------------------------------------------------
-def test_release_buffer_is_one_named_constant_and_is_wired(monkeypatch):
-  assert RELEASE_BEFORE_TIGHTEST_S == pytest.approx(0.5)
+def test_full_distance_demand_is_milder_than_a_shortened_room():
+  """The raw law uses the full remaining distance: shrinking the room (the old
+  time-based finish-early buffer) makes the same bend ask for a harder bite."""
   v = 15.0
   xs = (v * T).tolist()
   ks = [0.0 if x < 70.0 else 1.0 / 40.0 for x in xs]
   w = [1.0] * len(TL)
-  a1 = curve_follow_raw(v, TL, xs, ks, w)[0]
-  monkeypatch.setattr(cfmod, "RELEASE_BEFORE_TIGHTEST_S", 2.4)
-  a24 = curve_follow_raw(v, TL, xs, ks, w)[0]
-  assert a24 < a1 < 0.0
+  a_full = curve_follow_raw(v, TL, xs, ks, w)[0]
+  assert a_full < 0.0
+  lead_s = 2.4
+  xs_short = [max(2.0, x - lead_s * v) for x in xs]
+  a_short = curve_follow_raw(v, TL, xs_short, ks, w)[0]
+  assert a_short < a_full < 0.0
 
 
 def test_cycle_time_stays_small():
@@ -532,3 +539,104 @@ def test_mild_demand_at_speed_stays_within_the_lift_limit():
   assert v_env is not None and v_env < v
   rows = _drive([(250.0, 300.0, 1.0 / 250.0)], v, 20.0, v_max=v)
   assert min(r[4] for r in rows) >= -0.8 - 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Gradual glide law: no pulsing, comfort jerk, earlier onset, exit only opening
+# ---------------------------------------------------------------------------
+def _sign_flips(a_list, band=0.15):
+  """Pulses: returning to a brake after the ceiling has already released to +a.
+
+  Entering a curve (free -> brake) and leaving it once (brake -> free) is
+  not a pulse. brake-accel-brake is.
+  """
+  state, seen_brake, pulses = 0, False, 0
+  for a in a_list:
+    new = 1 if a > band else (-1 if a < -band else state)
+    if new == -1 and state == 1 and seen_brake:
+      pulses += 1
+    if new == -1:
+      seen_brake = True
+    if new:
+      state = new
+  return pulses
+
+
+def test_curve_event_does_not_pulse_the_ceiling():
+  """Once a curve event starts, the ceiling never flips to +a and back to braking."""
+  rows = _drive([(150.0, 80.0, 1.0 / 50.0)], 16.0, 28.0, v_max=16.0)
+  a_cf = [r[4] for r in rows]
+  assert _sign_flips(a_cf) == 0
+  # After the first ease, the command may deepen or relax toward zero, not chatter.
+  started = next(i for i, a in enumerate(a_cf) if a < -0.05)
+  event = a_cf[started:]
+  # Until the ceiling is clearly free again, it stays <= a small +a deadband.
+  free_i = next((i for i, a in enumerate(event) if a > 0.15), len(event))
+  assert all(a <= 0.15 for a in event[:free_i])
+  assert _brake_jerk(a_cf) <= 0.55  # comfort jerk on a bend seen early
+
+
+def test_s_curve_holds_speed_between_close_bends():
+  """Equal-radius S with a 6 s gap: one event, coast/hold between, no re-accel."""
+  v0 = 11.0
+  bends = _sbend(6.0, v=v0)
+  rows = _drive(bends, v0, 14.0 + 6.0 + 8.0, v_max=18.0)
+  arc1_end = bends[0][0] + bends[0][1]
+  arc2_start = bends[1][0]
+  between = [r[4] for r in rows if arc1_end + 8.0 <= r[1] <= arc2_start - 10.0]
+  a_cf = [r[4] for r in rows]
+  assert _sign_flips(a_cf) == 0
+  assert between and max(between) <= 0.15
+  v_env = curve_speed_for_curvature(1.0 / 50.0)
+  assert _speed_at(rows, bends[0][0] + 20.0) <= v_env * 1.2
+  assert _speed_at(rows, bends[1][0] + 20.0) <= v_env * 1.2
+
+
+def test_comfort_jerk_is_bounded_and_late_emergency_may_use_the_firm_tier():
+  # Early, gentle sweeper: comfort jerk only.
+  rows = _drive([(250.0, 300.0, 1.0 / 250.0)], 25.0, 20.0, v_max=25.0)
+  assert _brake_jerk([r[4] for r in rows]) <= 0.55
+  # Late sharp wall: emergency cap, jerk still bounded at the emergency limit.
+  cf = CurveFollow()
+  v = 30.0
+  ds = (v * T).tolist()
+  a_prev = FREE_A_MS2
+  worst = 0.0
+  for _ in range(80):
+    a = cf.step(dt=DT, v_ego=v, ts=TL, ds=ds, ks=[0.0] * 3 + [0.06] * (len(TL) - 3))
+    if a < 0.0 and a_prev < 0.0:
+      worst = max(worst, (a_prev - a) / DT)
+    a_prev = a
+  assert cf.emergency and a_prev == pytest.approx(-3.4)
+  assert worst <= 4.0 + 1e-6
+
+
+def test_onset_starts_as_soon_as_the_bend_is_visible():
+  """A 50 m radius bend 160 m out at 15 m/s must start easing several seconds before entry."""
+  start = 160.0
+  rows = _drive([(start, 80.0, 1.0 / 50.0)], 15.0, 26.0, v_max=15.0)
+  t_entry = _time_at(rows, start)
+  t_on = next(t for t, _, _, a, *_ in rows if a < -0.05)
+  assert t_entry - t_on >= 5.0
+  v_env = curve_speed_for_curvature(1.0 / 50.0)
+  mid = _speed_at(rows, start + 40.0)
+  assert v_env * 0.80 <= mid <= v_env * 1.15  # ~2 mph band at these speeds is ~10%
+
+
+def test_exit_reaccel_only_while_the_path_is_opening():
+  start, length = 130.0, 70.0
+  rows = _drive([(start, length, 1.0 / 40.0)], 14.0, 32.0, v_max=14.0)
+  # Once the event has started, no +a until the path is clearly opening.
+  started = next(i for i, r in enumerate(rows) if r[4] < -0.05)
+  mid_event = []
+  for r in rows[started:]:
+    if r[4] > 0.15:
+      break
+    mid_event.append(r)
+  assert mid_event
+  in_entry = [r[4] for r in mid_event if r[1] <= start + 15.0]
+  assert in_entry and all(a <= 0.15 for a in in_entry)
+  # After the exit, the ceiling eventually lets cruise back in, without a new bite.
+  after = [r[4] for r in rows if r[1] >= start + length + 20.0]
+  assert after and min(after) >= -0.1
+  assert _sign_flips([r[4] for r in rows]) == 0

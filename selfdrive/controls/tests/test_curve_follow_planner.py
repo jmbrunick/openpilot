@@ -157,3 +157,170 @@ def test_dead_camera_keeps_the_reactive_cap_in_active(monkeypatch):
   planner, seen = _ceiling_seen(monkeypatch, 2, break_path=True)
   assert not planner._cf_trusted
   assert seen and min(seen) < 15.0
+
+
+def _long_on(inputs):
+  cs = inputs["carState"]
+  cs.enableLongControl = True
+  cs.cruiseState.enabled = True
+
+
+def _arm_gap_lock(planner, inputs, gap_m, track=1):
+  _long_on(inputs)
+  # The planner rereads NAPGapLock every frame from params (unknown keys
+  # stay off on the test double). Keep the param true so the latch is not
+  # cleared mid-drive, same as MAX being skipped while the lock is on.
+  params = planner._params
+  if not getattr(params, "_gap_lock_param", False):
+    orig = params.get_bool
+    def get_bool(key):
+      if key == "NAPGapLock":
+        return True
+      return orig(key)
+    params.get_bool = get_bool
+    params._gap_lock_param = True
+  planner._gap_lock_enabled = True
+  planner._gap_lock.gap_m = float(gap_m)
+  planner._gap_lock.track_id = int(track)
+
+
+def _not_softer(both, only, slack=1e-6):
+  assert all(b[0] <= o[0] + slack for b, o in zip(both, only, strict=True))
+
+
+def test_lead_appearing_mid_curve_is_not_delayed_or_softened():
+  """A closer, slower lead mid-curve takes the command immediately; the curve event must not delay or soften it."""
+  appear = 80
+
+  def hook(k, planner, inputs):
+    if k >= appear:
+      _own_lead(inputs, 25.0, 8.0, a_lead=-1.0)
+
+  _, both = _drive(2, 20.0, BEND, 160, hook=hook)
+  _, lead_only = _drive(2, 20.0, STRAIGHT, 160, hook=hook)
+  _not_softer(both[appear:], lead_only[appear:])
+  # Within ~1 s the command is as firm as lead-only (no event-slew delay).
+  later = slice(appear + 8, appear + 24)
+  assert min(r[0] for r in both[later]) <= min(r[0] for r in lead_only[later]) + 0.15
+  assert min(r[0] for r in both[later]) < -0.5
+
+
+def test_slower_lead_in_a_curve_is_not_softened():
+  lead = (25.0, 8.0)
+  _, lead_only = _drive(2, 20.0, STRAIGHT, 160, lead=lead)
+  _, both = _drive(2, 20.0, BEND, 160, lead=lead)
+  _not_softer(both, lead_only)
+  # The lead is clearly the stricter term: the command matches lead-only,
+  # the curve may only cap further, never lift it.
+  assert min(r[0] for r in both) <= min(r[0] for r in lead_only) + 1e-6
+  assert min(r[0] for r in lead_only) < -0.5
+
+
+def test_lead_braking_in_a_curve_is_not_delayed_or_softened():
+  brake = 60
+
+  def hook(k, planner, inputs):
+    if k < brake:
+      _own_lead(inputs, 35.0, 20.0)
+    else:
+      _own_lead(inputs, 32.0, 12.0, a_lead=-1.5)
+
+  _, both = _drive(2, 20.0, BEND, 160, hook=hook)
+  _, lead_only = _drive(2, 20.0, STRAIGHT, 160, hook=hook)
+  _not_softer(both[brake:], lead_only[brake:])
+  later = slice(brake + 8, brake + 24)
+  assert min(r[0] for r in both[later]) <= min(r[0] for r in lead_only[later]) + 0.15
+  assert min(r[0] for r in both[later]) < min(r[0] for r in both[:brake]) - 0.2
+
+
+def test_lead_pulling_away_on_exit_does_not_exceed_follow():
+  """Exit re-accel stays within what lead follow allows."""
+  pull = 200  # past the 120 m + 60 m bend at 20 m/s
+
+  def hook(k, planner, inputs):
+    if k < pull:
+      _own_lead(inputs, 35.0, 20.0)
+    else:
+      _own_lead(inputs, 45.0, 28.0, a_lead=0.8)
+
+  _, both = _drive(2, 20.0, BEND, 260, hook=hook)
+  _, lead_only = _drive(2, 20.0, STRAIGHT, 260, hook=hook)
+  _not_softer(both[pull:], lead_only[pull:])
+  # May still be curve-capped, but never above the follow command.
+  assert max(r[0] for r in both[pull:]) <= max(r[0] for r in lead_only[pull:]) + 1e-6
+
+
+def test_gap_lock_through_a_curve_is_a_ceiling_only():
+  """Gap Lock holding a gap on a lead wins; the curve term may only cap as a ceiling."""
+
+  def hook(k, planner, inputs):
+    _arm_gap_lock(planner, inputs, 30.0)
+    _own_lead(inputs, 30.0, 20.0, track=1)
+
+  planner, both = _drive(2, 20.0, BEND, 160, hook=hook)
+  _, lock_only = _drive(2, 20.0, STRAIGHT, 160, hook=hook)
+  assert planner._gap_lock.gap_m == 30.0
+  _not_softer(both, lock_only)
+  # The curve may still cap (stricter than a locked same-speed hold), but
+  # the follow command is never lifted.
+  assert any(b[0] < l[0] - 0.05 for b, l in zip(both, lock_only, strict=True)) or min(r[1] for r in both) < -0.05
+
+
+def test_gap_lock_braking_in_a_curve_is_not_delayed_or_softened():
+  """A locked lead that slows in the bend is followed immediately; the curve event must not fight the hold."""
+
+  def hook(k, planner, inputs):
+    _arm_gap_lock(planner, inputs, 30.0)
+    if k < 60:
+      _own_lead(inputs, 30.0, 20.0, track=1)
+    else:
+      _own_lead(inputs, 28.0, 10.0, a_lead=-1.5, track=1)
+
+  planner, both = _drive(2, 20.0, BEND, 160, hook=hook)
+  _, lock_only = _drive(2, 20.0, STRAIGHT, 160, hook=hook)
+  assert planner._gap_lock.gap_m == 30.0
+  _not_softer(both[60:], lock_only[60:])
+  later = slice(68, 84)
+  assert min(r[0] for r in both[later]) <= min(r[0] for r in lock_only[later]) + 0.15
+  assert min(r[0] for r in both[later]) < -0.5
+
+
+def test_gap_lock_exit_reaccel_stays_within_the_hold():
+  pull = 200
+
+  def hook(k, planner, inputs):
+    _arm_gap_lock(planner, inputs, 30.0)
+    if k < pull:
+      _own_lead(inputs, 30.0, 20.0, track=1)
+    else:
+      _own_lead(inputs, 40.0, 28.0, a_lead=0.6, track=1)
+
+  planner, both = _drive(2, 20.0, BEND, 260, hook=hook)
+  _, lock_only = _drive(2, 20.0, STRAIGHT, 260, hook=hook)
+  assert planner._gap_lock.gap_m == 30.0
+  _not_softer(both[pull:], lock_only[pull:])
+  assert max(r[0] for r in both[pull:]) <= max(r[0] for r in lock_only[pull:]) + 1e-6
+
+
+def test_lead_and_gap_lock_do_not_receive_the_curve_as_a_map(monkeypatch):
+  """Follow is computed without the curve in a_map / v_curve_cap; the curve is applied after as a ceiling."""
+  seen = []
+  real = lp.unified_follow_desired
+
+  def spy(*a, **k):
+    seen.append((k.get("a_map"), k.get("v_curve_cap"), k.get("gap_set_override_m")))
+    return real(*a, **k)
+
+  monkeypatch.setattr(lp, "unified_follow_desired", spy)
+
+  def hook(k, planner, inputs):
+    _arm_gap_lock(planner, inputs, 30.0)
+    _own_lead(inputs, 30.0, 20.0, track=1)
+
+  _drive(2, 20.0, BEND, 80, hook=hook)
+  locked = [s for s in seen if s[2] is not None]
+  assert locked
+  assert all(s[2] == pytest.approx(30.0) for s in locked)
+  assert all(s[0] is None for s in locked)
+  assert all(s[1] is None for s in locked)
+
