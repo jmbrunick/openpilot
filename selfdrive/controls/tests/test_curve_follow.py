@@ -173,7 +173,8 @@ def test_proportional_release_rate_is_bounded():
       worst_rise = max(worst_rise, (a - prev) / DT)
     prev = a
     s += v * DT
-  assert worst_rise <= 2.6
+  # The release blends back at the comfort jerk (~0.45 m/s^3), never a snap.
+  assert worst_rise <= 0.55
 
 
 # 6 ---------------------------------------------------------------------
@@ -280,9 +281,16 @@ def test_lane_change_fades_the_term_out_without_a_step():
   for _ in range(40):
     a0 = _step(cf, v, 0.0, bend)
   assert a0 < -0.2
-  seq = [_step(cf, v, 0.0, bend, lane_change=True) for _ in range(30)]
+  seq, confs = [], []
+  for _ in range(30):
+    seq.append(_step(cf, v, 0.0, bend, lane_change=True))
+    confs.append(cf.conf)
   assert seq[-1] > a0 + 0.5
   assert _brake_jerk([a0] + seq) <= 2.1
+  # The confidence itself fades (a ramp, not a step to zero) ...
+  assert confs[0] > 0.8
+  assert all(c1 <= c0 for c0, c1 in zip(confs, confs[1:], strict=False))
+  # ... and is gone within the 1.5 s window.
   assert cf.conf < 0.1
 
 
@@ -336,6 +344,10 @@ def test_low_speed_rules():
   # 6 m/s, no blinker: no anticipation at an intersection.
   cf = CurveFollow()
   assert all(_step(cf, 6.0, 0.0, bend_near) == FREE_A_MS2 for _ in range(20))
+  # Still under the 6.5 m/s gate (and above the 6 m/s corner-speed floor, so
+  # the turn really would ask to slow): no blinker, no anticipation.
+  cf = CurveFollow()
+  assert all(_step(cf, 6.4, 0.0, bend_near) == FREE_A_MS2 for _ in range(40))
   # With the blinker a near turn is anticipated ...
   cf = CurveFollow()
   v = 7.5
@@ -383,6 +395,18 @@ def test_full_distance_demand_is_milder_than_a_shortened_room():
   xs_short = [max(2.0, x - lead_s * v) for x in xs]
   a_short = curve_follow_raw(v, TL, xs_short, ks, w)[0]
   assert a_short < a_full < 0.0
+
+
+def test_raw_law_spreads_the_slowdown_over_the_full_distance():
+  """a = (v_safe^2 - v^2) / (2 d) with d the full distance to the binding
+  point: no time-based finish-before-apex buffer shortens it."""
+  for v, start, radius in ((20.0, 150.0, 60.0), (15.0, 110.0, 40.0), (25.0, 190.0, 120.0)):
+    xs = (v * T).tolist()
+    ks = [0.0 if x < start else 1.0 / radius for x in xs]
+    a, idx, v_env, _near = curve_follow_raw(v, TL, xs, ks, [1.0] * len(TL))
+    assert idx >= 0 and v_env is not None and a < 0.0
+    expected = (v_env * v_env - v * v) / (2.0 * xs[idx])
+    assert a == pytest.approx(expected, rel=0.03)
 
 
 def test_cycle_time_stays_small():
@@ -440,6 +464,16 @@ def test_zero_mean_curvature_noise_does_not_accumulate_into_a_bend():
   # Never brakes; the median table's 42 mph plateau may trim the +a ceiling a
   # little (1.6 here), unsigned accumulation would build a bend (1.2).
   assert lo >= 1.4
+  # The reliability weights themselves: zero-mean noise mostly stays inside
+  # the path's own std (signed: median mean weight ~0.16); summing |k| would
+  # build a displacement and trust every point (~1.0).
+  v = 20.0
+  mean_w = []
+  for seed in range(20):
+    ks = np.random.default_rng(seed).normal(0.0, 0.0015, len(TL)).tolist()
+    w = CurveFollow._snr_weights(TL, (v * T).tolist(), ks, (0.3 + 0.2 * T).tolist())
+    mean_w.append(float(np.mean(w)))
+  assert float(np.median(mean_w)) < 0.5
 
 
 def test_curvature_filter_clips_a_spike_and_opens_slowly():
