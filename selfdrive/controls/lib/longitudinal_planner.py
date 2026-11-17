@@ -1023,6 +1023,10 @@ class LongitudinalPlanner:
     existing = float(self.output_a_target)
     seed = existing
     command = None
+    # Path-ahead (curve) ceiling. It is an input to the controller's own
+    # jerk-limited state, so the published follow command never winds up
+    # above the bend, and leaving the bend is the controller's release.
+    a_curve = float(self.curve_preview_a) if self.curve_preview_a < PREVIEW_FREE_A_MS2 else None
     if not self._unified_faulted:
       try:
         if gap is not None and not self._unified_following:
@@ -1068,6 +1072,7 @@ class LongitudinalPlanner:
           v_curve_cap=v_curve_cap,
           v_lat=v_lat,
           long_on=long_on,
+          a_ceiling=a_curve,
         ))
       except Exception:
         self._note_unified_fault()
@@ -1099,11 +1104,14 @@ class LongitudinalPlanner:
       command = min(command, existing)
     self.output_a_target = float(command)
     # Curve is a ceiling only. A deeper lead / Gap Lock brake is kept;
-    # a shallower follow command (including exit +a) is capped. Must not
-    # be folded into the follow law (a_map / v_curve_cap), or it can
-    # delay or fight the hold the way MAX used to.
-    if self.curve_preview_a < PREVIEW_FREE_A_MS2:
-      self.output_a_target = min(float(self.output_a_target), float(self.curve_preview_a))
+    # a shallower follow command (including exit +a) is capped. It is not
+    # folded into the follow law (a_map / v_curve_cap), which would delay
+    # or fight the hold the way MAX used to: the controller takes it as a
+    # ceiling on its jerk-limited target (a_ceiling above). This min is
+    # only the backstop for a frame where the curve deepens faster than
+    # the controller's build rate; it is a no-op otherwise.
+    if a_curve is not None:
+      self.output_a_target = min(float(self.output_a_target), a_curve)
 
   def _obstacle_brake_log(self, sm) -> tuple[bool, float, int]:
     """Oct 14 path-object brake, LOG-ONLY. Never touches the plan or accel.

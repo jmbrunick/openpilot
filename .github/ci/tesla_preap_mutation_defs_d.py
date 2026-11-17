@@ -417,4 +417,36 @@ MUTATIONS_D = (
       f"{CURVE_FOLLOW_CARD_TEST_PATH}::test_active_never_touches_max",
     ),
   ),
+  # Nov 17: the curve ceiling is an input to the unified controller's
+  # jerk-limited target, so the follow state cannot wind up under a bend.
+  HistoricalMutation(
+    name="curve-ceiling-not-passed-to-the-lead-controller",
+    source_path="selfdrive/controls/lib/longitudinal_planner.py",
+    original=b"          a_ceiling=a_curve,\n",
+    replacement=b"          a_ceiling=None,\n",
+    test_nodes=(
+      f"{CURVE_FOLLOW_PLANNER_TEST_PATH}::test_follow_state_does_not_wind_up_above_the_bend",
+      f"{CURVE_FOLLOW_PLANNER_TEST_PATH}::test_lead_brake_mid_curve_builds_from_the_curve_command",
+      f"{CURVE_FOLLOW_PLANNER_TEST_PATH}::test_gap_lock_lead_braking_mid_curve_builds_from_the_curve_command",
+    ),
+  ),
+  HistoricalMutation(
+    name="lead-controller-ignores-the-curve-ceiling",
+    source_path="selfdrive/controls/lib/unified_lead.py",
+    original=b"      target = min(float(target), float(a_ceiling))\n",
+    replacement=b"      target = float(target)\n",
+    test_nodes=(
+      f"{CURVE_FOLLOW_PLANNER_TEST_PATH}::test_ceiling_handover_mid_curve_is_released_not_stepped",
+      f"{CURVE_FOLLOW_PLANNER_TEST_PATH}::test_curve_release_with_a_faster_lead_is_smooth_and_no_windup",
+    ),
+  ),
+  HistoricalMutation(
+    name="curve-ceiling-backstop-removed",
+    source_path="selfdrive/controls/lib/longitudinal_planner.py",
+    original=b"      self.output_a_target = min(float(self.output_a_target), a_curve)\n",
+    replacement=b"      pass\n",
+    test_nodes=(
+      f"{CURVE_FOLLOW_PLANNER_TEST_PATH}::test_ceiling_that_deepens_in_one_frame_still_caps_every_frame",
+    ),
+  ),
 )
