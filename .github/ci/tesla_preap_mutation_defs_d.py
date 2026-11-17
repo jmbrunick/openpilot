@@ -13,17 +13,21 @@ from tesla_preap_mutation_common import (
 
 
 MUTATIONS_D = (
+  # The time-based RELEASE_BEFORE_TIGHTEST_S buffer (finish slowing 0.5 s
+  # before the tightest point) was removed on purpose: the curve law now
+  # spreads the slowdown over the full remaining distance. The guard is
+  # inverted: putting a time-based buffer back must fail.
   HistoricalMutation(
-    name="release-buffer-removed",
+    name="full-distance-room-shortened",
     source_path="selfdrive/controls/lib/curve_follow.py",
     original=(
-      b'float(d) - RELEASE_BEFORE_TIGHTEST_S * v - min_room'
+      b'room = min_room + _softplus(float(d) - min_room, ROOM_SOFT_M)'
     ),
     replacement=(
-      b'float(d) - 0.0 * v - min_room'
+      b'room = min_room + _softplus(float(d) - 0.5 * v - min_room, ROOM_SOFT_M)'
     ),
     test_nodes=(
-      f"{CURVE_FOLLOW_TEST_PATH}::test_release_buffer_is_one_named_constant_and_is_wired",
+      f"{CURVE_FOLLOW_TEST_PATH}::test_raw_law_spreads_the_slowdown_over_the_full_distance",
     ),
   ),
   HistoricalMutation(
@@ -199,23 +203,38 @@ MUTATIONS_D = (
     name="brake-build-jerk-limit-removed",
     source_path="selfdrive/controls/lib/curve_follow.py",
     original=(
-      b'build = min(BUILD_MAX_MS3, base + BUILD_PROP_1_S * (-err)) * dt'
+      b'delta = max(err, -jerk * dt)'
     ),
     replacement=(
-      b'build = 1e9 * dt'
+      b'delta = err'
     ),
     test_nodes=(
       f"{CURVE_FOLLOW_TEST_PATH}::test_constant_radius_bend_slows_early_gently_and_to_the_table",
+      f"{CURVE_FOLLOW_TEST_PATH}::test_curve_event_does_not_pulse_the_ceiling",
     ),
   ),
   HistoricalMutation(
     name="brake-release-rate-unbounded",
     source_path="selfdrive/controls/lib/curve_follow.py",
+    # The brake release and the rising-ceiling bound are both comfort-jerk
+    # limited (either alone bounds the output), so unbound both together.
     original=(
-      b'release = min(RELEASE_MAX_MS3, rel_base + RELEASE_PROP_1_S * max(0.0, err)) * dt'
+      b'      delta = min(err, jerk * dt)\n' +
+      b'    self._brake = min(0.0, self._brake + delta)\n' +
+      b'    out = self._brake + max(0.0, self._f)\n' +
+      b'    # Bound a rising ceiling so a coast at 0 cannot snap to FREE in one\n' +
+      b'    # frame when the event ends (_f may already have climbed). Exit +a\n' +
+      b'    # uses the gate-release jerk (soft blend into Accel 1); a still-braking\n' +
+      b'    # ceiling eases at comfort unless the path dropped.\n' +
+      b'    if out > self.a:\n' +
+      b'      rising_off_brake = self.a < 0.0 and not gated_off\n' +
+      b'      rel = (COMFORT_JERK_MS3 if rising_off_brake else GATE_RELEASE_JERK_MS3) * dt\n' +
+      b'      out = min(out, self.a + rel)\n'
     ),
     replacement=(
-      b'release = 1e9 * dt'
+      b'      delta = err\n' +
+      b'    self._brake = min(0.0, self._brake + delta)\n' +
+      b'    out = self._brake + max(0.0, self._f)\n'
     ),
     test_nodes=(
       f"{CURVE_FOLLOW_TEST_PATH}::test_proportional_release_rate_is_bounded",
@@ -247,17 +266,20 @@ MUTATIONS_D = (
       f"{CURVE_FOLLOW_TEST_PATH}::test_apex_detection_reads_the_path_peaking",
     ),
   ),
+  # The old per-point "relief" was replaced by the curve-event latch: a
+  # later S-bend still on the path holds the event (coast, no re-accel).
   HistoricalMutation(
-    name="relief-removed",
+    name="s-curve-hold-for-next-removed",
     source_path="selfdrive/controls/lib/curve_follow.py",
     original=(
-      b'relief = r0 * (1.0 - _smooth01((v - v_env) / max(v_prof - v_env, 0.5)))'
+      b'hold_for_next = bool(self._hold_ahead)'
     ),
     replacement=(
-      b'relief = 0.0'
+      b'hold_for_next = False'
     ),
     test_nodes=(
       f"{CURVE_FOLLOW_TEST_PATH}::test_s_curve_family_regens_back_down_without_chatter_or_latch",
+      f"{CURVE_FOLLOW_TEST_PATH}::test_s_curve_holds_speed_between_close_bends",
     ),
   ),
   HistoricalMutation(

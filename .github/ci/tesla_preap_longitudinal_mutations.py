@@ -121,6 +121,11 @@ def main() -> int:
           source_path.write_bytes(original_source)
           restored = source_path.read_bytes() == original_source
 
+      if source_path is None and mutation_error is not None:
+        # The mutation never applied (usually its original text is gone from
+        # the source), so there was nothing to restore: report the real cause.
+        print(f"INVALID: {mutation.name} could not be applied: {mutation_error}")
+        return 1
       if not restored:
         print(f"INVALID: {mutation.name} source restoration was not byte-identical")
         return 1
