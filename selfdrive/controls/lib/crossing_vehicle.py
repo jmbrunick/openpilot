@@ -26,6 +26,11 @@ from collections import deque
 # About 2 mph. E1's entry sweep was 1.5–1.6 m/s. A stopped car's
 # ground-frame wander over a couple of seconds stays under this.
 CROSS_VY_MS = 0.89
+# Radar lateral-speed noise grows with range (angle noise times distance).
+# Nov 17 13:14:50 CST: a stopped car at 117–130 m read 0.66–0.95 m/s of
+# lateral speed and was taken for a crosser. Past this range the lateral
+# speed a crosser has to show grows in proportion to the gap.
+CROSS_VY_RANGE_REF_M = 70.0
 # Net ground-frame shift in the first moments, same direction as the sweep.
 CROSS_DY_M = 0.8
 CROSS_AGE_S = 0.8
@@ -47,8 +52,17 @@ CROSS_COMEBACK_M = 0.30
 CROSS_Y_TAU_S = 0.08
 
 # Model still says this is a lead in our lane: it is stopped, not crossing.
-CROSS_VISION_RANGE_M = 55.0
+# Nov 17 13:14:51 CST: the model held 0.98–0.99 on a stopped car from about
+# 103 m while it was still classified as a crosser. 55 m let the crossing
+# ease and the exit handover run on it, so the range covers the radar.
+CROSS_VISION_RANGE_M = 150.0
 CROSS_VISION_PROB = 0.7
+
+# A stop is physically needed when the kinematic stop decel for a lead that
+# stays put is firmer than this. The crossing ease and the exit handover may
+# then not command less braking than that stop, or any positive accel,
+# unless the crosser is verified clearing (see crossing_stop_guard_active).
+CROSS_GUARD_NEED_MS2 = 0.5
 
 # Still overlapping the lane and too close to keep easing off.
 CROSS_IMMINENT_GAP_M = 10.0
@@ -77,6 +91,32 @@ def crossing_may_resume(long_on: bool) -> bool:
   crosser is already leaving.
   """
   return bool(long_on)
+
+
+def crossing_vy_required(gap: float) -> float:
+  """Lateral speed a return must show to count as a crosser at this range."""
+  return CROSS_VY_MS * max(1.0, float(gap) / CROSS_VY_RANGE_REF_M)
+
+
+def crossing_stop_guard_active(need: float, model_prob: float | None, resuming: bool,
+                               v_lat: float, direction: float) -> bool:
+  """True when the crossing path must not soften past the stop need.
+
+  `need` is the kinematic stop decel (<= 0) for a lead that does not move.
+  The guard holds when a stop is physically needed and either the model
+  still calls the return an in-path lead, or the exit handover is running
+  without a ground-frame lateral speed that moves the return out along the
+  crossing direction. A verified crosser (E1) keeps its ease and exit.
+  """
+  if float(need) > -CROSS_GUARD_NEED_MS2:
+    return False
+  prob = 0.0 if model_prob is None or not math.isfinite(float(model_prob)) else float(model_prob)
+  if prob >= CROSS_VISION_PROB:
+    return True
+  if resuming:
+    leaving = float(direction) != 0.0 and float(v_lat) * float(direction) >= CROSS_EXIT_VY_MS
+    return not leaving
+  return False
 
 
 def _filt(prev: float | None, sample: float, dt: float, tau: float) -> float:
@@ -198,13 +238,14 @@ class CrossingFollow:
     self.age += frame
     vlat = float(v_lat)
     along = abs(float(v_lead))
-    if not self.credited and abs(vlat) >= CROSS_VY_MS:
+    vy_req = crossing_vy_required(gap)
+    if not self.credited and abs(vlat) >= vy_req:
       # The published speed is already a fit over the window, so the
       # motion that produced it counts. Later frames add themselves.
       self.dy += vlat * CROSS_FIT_MIN_S
       self.credited = True
     self.dy += vlat * frame
-    if (not self.classified) and abs(vlat) >= CROSS_VY_MS and vlat * self.dy >= 0.0:
+    if (not self.classified) and abs(vlat) >= vy_req and vlat * self.dy >= 0.0:
       self.speed_ok = True
 
     prob = 0.0 if model_prob is None or not math.isfinite(float(model_prob)) else float(model_prob)

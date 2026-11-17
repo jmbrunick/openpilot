@@ -76,6 +76,8 @@ def test_focused_tests_and_mutations_are_pinned():
     "selfdrive/controls/tests/test_model_sight.py",
     "selfdrive/car/tests/test_curve_follow_card_max.py",
     "selfdrive/controls/tests/test_lead_leaving.py",
+    "selfdrive/controls/tests/test_crossing_vehicle.py",
+    "selfdrive/controls/tests/test_crossing_stopped_guard.py",
     "selfdrive/controls/lib/tests/test_curve_max_hold.py",
     "selfdrive/controls/lib/tests/test_lat_turn_geometry.py",
     "selfdrive/controls/lib/tests/test_lane_change_confirm_replay.py",

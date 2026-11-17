@@ -68,7 +68,12 @@ from __future__ import annotations
 
 import math
 
-from openpilot.selfdrive.controls.lib.crossing_vehicle import X2_ROOM_FRAC, X2_V_LEAD_MS, CrossingFollow
+from openpilot.selfdrive.controls.lib.crossing_vehicle import (
+  X2_ROOM_FRAC,
+  X2_V_LEAD_MS,
+  CrossingFollow,
+  crossing_stop_guard_active,
+)
 from openpilot.selfdrive.controls.lib.lead_leaving import CLEAR_MARGIN_M, EGO_HALF_WIDTH_M, LEAD_HALF_WIDTH_M
 
 # Same standstill gap long_mpc uses for the follow obstacle.
@@ -1007,6 +1012,7 @@ class UnifiedLeadController:
     self._approach = ApproachInputs()
     self._cross = CrossingFollow()
     self.crossing_classified = False
+    self.crossing_stop_guard = False
     self._track_age = 0.0
     self._vrel_f: float | None = None  # v_lead - v_ego, positive opens
     self._pullaway = False
@@ -1147,6 +1153,17 @@ class UnifiedLeadController:
     if resume_w > 0.0:
       free = lead_free_accel(float(v_ego), v_ceiling, a_map, v_curve_cap)
       desired = (1.0 - resume_w) * float(desired) + resume_w * free
+    # Stop guard (Nov 17 13:14:54 CST, +1.08 m/s² toward a stopped car at
+    # 70→55 m). When a stop is physically needed and the crosser is not
+    # verified clearing, the crossing path may not brake less than that
+    # stop, nor command any positive accel. Acts on this frame, ahead of
+    # the filtered ease / handover weights.
+    self.crossing_stop_guard = False
+    if scale < 0.999 or resume_w > 0.0:
+      need = approach_physics_need(gap, v_ego, self._v_f, t_follow)
+      if crossing_stop_guard_active(need, model_prob, resume_w > 0.0, v_lat, self._cross.direction):
+        self.crossing_stop_guard = True
+        desired = min(float(desired), float(need), 0.0)
     if a_max is not None:
       desired = min(desired, float(a_max))
     if self._pullaway:
