@@ -610,7 +610,7 @@ class LongitudinalPlanner:
       # ceiling only (min); it is not fed into the lead / Gap Lock law.
       old_preview_a = float(self.curve_preview_a)
       self._update_curve_follow(sm, float(v_ego), curve_path, old_preview_a, rb_v is not None,
-                                float(output_a_target))
+                                float(output_a_target), long_active=not reset_state)
       self._update_sight_cap(sm, float(v_ego), curve_path, rb_v is not None, rb_hint)
       output_a_target = min(float(output_a_target), self.curve_preview_a)
 
@@ -621,7 +621,7 @@ class LongitudinalPlanner:
     self._apply_lead_follow(sm, float(v_ego))
 
   def _update_curve_follow(self, sm, v_ego: float, curve_path, old_preview_a: float, rb_active: bool,
-                           a_target: float) -> None:
+                           a_target: float, long_active: bool = True) -> None:
     """Curve-follow step. Never raises; a fault latches it off (old preview stays)."""
     self._cf_trusted = False
     self.curve_follow_a = PREVIEW_FREE_A_MS2
@@ -640,6 +640,7 @@ class LongitudinalPlanner:
       a_cf = float(self._curve_follow.step(
         dt=self.dt, v_ego=v_ego, ts=ts, ds=ds, ks=ks, y_std=y_std, lane_change=lane_change,
         blinker=blinker, frame_drop_pct=frame_drop, rb_active=rb_active, valid=curve_path is not None,
+        long_active=long_active,
       ))
       self.curve_follow_a = a_cf
       self._cf_trusted = bool(self._curve_follow.trusted)

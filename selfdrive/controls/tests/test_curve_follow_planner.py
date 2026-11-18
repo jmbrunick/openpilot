@@ -6,12 +6,14 @@ import json
 
 import pytest
 
+from cereal import car
 from openpilot.selfdrive.controls.lib import longitudinal_planner as lp
 from openpilot.selfdrive.controls.lib.curve_preview import PREVIEW_FREE_A_MS2
 from openpilot.selfdrive.controls.tests.test_curve_preview import _set_model_path
 from openpilot.selfdrive.controls.tests.test_unified_lead_planner import _ConstantAccelerationMpc, _own_lead, _planner
 
 DT = 0.05
+LongCtrlState = car.CarControl.Actuators.LongControlState
 BEND = (120.0, 60.0, 1.0 / 45.0)
 STRAIGHT = (1e6, 1.0, 0.0)
 
@@ -489,3 +491,40 @@ def test_gap_lock_lead_braking_mid_curve_builds_from_the_curve_command():
   assert cf_at < -1.0
   assert min(r[0] for r in rows[brake:brake + 4]) < cf_at - 0.2
   _not_softer(rows[brake:], lock_only[brake:])
+
+
+GENTLE = (200.0, 250.0, 0.0043)
+
+
+@pytest.mark.parametrize("gas", [False, True])
+def test_planner_reset_ends_the_curve_event(gas):
+  """Disengage (long control off) or a gas override clears the latch; re-engage starts fresh."""
+  st = {"latched": None, "seen": []}
+
+  def hook(k, planner, inputs):
+    if st["latched"] is None and planner._curve_follow.event:
+      st["latched"] = k
+    lk = st["latched"]
+    off = lk is not None and lk + 5 <= k < lk + 25
+    inputs["controlsState"].longControlState = LongCtrlState.off if off else LongCtrlState.pid
+    inputs["carState"].gasPressed = bool(gas and off)
+    if lk is not None and lk + 6 <= k < lk + 25:
+      st["seen"].append((planner._curve_follow.event, planner.curve_follow_a))
+
+  planner, rows = _drive(2, 25.0, GENTLE, 200, hook=hook)
+  lk = st["latched"]
+  assert lk is not None, "the bend should latch an event"
+  # Every inactive frame: no event, the term is free.
+  assert st["seen"] and all((not ev) and a == PREVIEW_FREE_A_MS2 for ev, a in st["seen"])
+  # Re-engaged on the approach: starts from free, then brakes again.
+  after = [r[2] for r in rows[lk + 25:]]
+  assert after[0] >= -0.05
+  assert min(after) < -0.2
+  assert planner._curve_follow.event
+
+
+def test_gentle_sweeper_then_straight_releases_in_the_planner():
+  planner, rows = _drive(2, 25.0, (100.0, 120.0, 0.0043), 400)
+  assert min(r[2] for r in rows) < -0.2
+  assert not planner._curve_follow.event
+  assert rows[-1][2] >= 1.9
