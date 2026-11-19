@@ -674,3 +674,105 @@ def test_exit_reaccel_only_while_the_path_is_opening():
   after = [r[4] for r in rows if r[1] >= start + length + 20.0]
   assert after and min(after) >= -0.1
   assert _sign_flips([r[4] for r in rows]) == 0
+
+
+# Nov 18 2026 drive (ef0c30ca): a 55 mph highway sweeper (|k| peak ~0.0043,
+# |k| under the car never above PEAK_MIN_K) latched an event that never
+# released; the ceiling sat at 0 for 25 min and cruise held 50-54 under MAX 60.
+@pytest.mark.parametrize("kappa", [0.0030, 0.0038, 0.0043])
+def test_gentle_sweeper_event_releases_on_the_straight_after(kappa):
+  start, length = 300.0, 250.0
+  rows = _drive([(start, length, kappa)], 25.0, 70.0, v_max=26.8)
+  assert any(cf_a < -0.05 for *_, cf_a, _ in rows), "sweeper should have slowed the car"
+  end = start + length + 15.0
+  straight = [(s, v, a_cf) for _, s, v, _, a_cf, _ in rows if s >= end + 150.0]
+  assert straight, "drive long enough to reach the straight"
+  assert min(a for *_, a in straight) >= 1.0, "ceiling must be free again on the straight"
+  assert not rows[-1][5].event
+  assert rows[-1][2] > 26.0, "cruise climbs back to MAX"
+
+
+def _latched_sweeper(kappa=0.0043, v=25.0):
+  """Hold v into a gentle sweeper until the event latches; return (cf, s)."""
+  cf = CurveFollow()
+  bends = [(300.0, 250.0, kappa)]
+  s = 0.0
+  for _ in range(int(20.0 / DT)):
+    _step(cf, v, s, bends)
+    s += v * DT
+    if cf.event and cf.a < -0.2:
+      return cf, s, bends
+  raise AssertionError("event never latched")
+
+
+@pytest.mark.parametrize("why", ["disengage", "gas_override"])
+def test_not_in_control_ends_a_latched_event(why):
+  # Disengage and the driver's gas override both reach the term as
+  # long_active=False (the planner's reset); no event or brake survives it.
+  cf, s, bends = _latched_sweeper()
+  v = 25.0
+  for _ in range(int(1.0 / DT)):
+    a = _step(cf, v, s, bends, long_active=False)
+    s += v * DT
+    assert a == FREE_A_MS2
+    assert not cf.event and cf.raw == FREE_A_MS2 and not cf.emergency
+  # Filters keep tracking the path while inactive.
+  assert cf._kf is not None and cf.conf > 0.9
+
+
+def test_reengage_mid_approach_starts_fresh_and_still_brakes_to_the_table():
+  kappa = 1.0 / 120.0
+  bends = [(250.0, 120.0, kappa)]
+  v_table = curve_speed_for_curvature(kappa)
+  cf = CurveFollow()
+  s, v = 0.0, 27.0
+  rows = []
+  for k in range(int(30.0 / DT)):
+    t = k * DT
+    active = not (3.0 <= t < 5.0)  # a 2 s gas override on the approach
+    a_cf = _step(cf, v, s, bends, long_active=active)
+    a = min(max(-0.5, min(1.2, 0.25 * (27.0 - v))), a_cf) if active else 0.3
+    rows.append((t, s, v, a_cf, active, cf.event))
+    v = max(0.0, v + a * DT)
+    s += v * DT
+  during = [r for r in rows if not r[4]]
+  assert all(r[3] == FREE_A_MS2 and not r[5] for r in during)
+  after = [r for r in rows if r[0] >= 5.0]
+  # Starts from free (no step into a stale brake), then brakes for the bend.
+  assert after[0][3] >= -0.05
+  assert min(r[3] for r in after) < -0.3
+  assert _brake_jerk([r[3] for r in after]) <= 3.0
+  # Inside the arc it holds the table, same as a car never overridden.
+  mid = _speed_at(rows, 250.0 + 60.0)
+  assert v_table * 0.85 <= mid <= v_table * 1.15
+  ref = _drive(bends, 27.0, 30.0, v_max=27.0)
+  assert abs(mid - _speed_at(ref, 250.0 + 60.0)) <= 0.5
+
+
+def _kappa_for_speed(v_target):
+  lo, hi = 1e-4, 0.2
+  for _ in range(60):
+    mid = 0.5 * (lo + hi)
+    v = curve_speed_for_curvature(mid)
+    if v is None or v > v_target:
+      lo = mid
+    else:
+      hi = mid
+  return 0.5 * (lo + hi)
+
+
+def test_near_envelope_sweeper_stays_one_event_then_releases_on_the_straight():
+  # Oct 10 2026 17:42 CDT shape: a tighter entry, then a long sweeper whose
+  # corner speed sits ~1 m/s above the car. Clearing only the hold margin
+  # must not release (that pulses brake / +a / brake on a noisy path); the
+  # straight after it must.
+  k1 = _kappa_for_speed(22.0)
+  k2 = _kappa_for_speed(23.0)
+  bends = [(200.0, 60.0, k1), (275.0, 500.0, k2)]
+  rows = _drive(bends, 26.0, 60.0, v_max=27.0)
+  assert min(r[4] for r in rows) < -0.3, "the tighter entry should brake"
+  sweep = [r[4] for r in rows if 320.0 <= r[1] <= 740.0]
+  assert sweep and max(sweep) <= 0.05, "no +a mid-sweeper"
+  end = 775.0 + 15.0
+  after = [r[4] for r in rows if r[1] >= end + 150.0]
+  assert after and min(after) >= 1.0

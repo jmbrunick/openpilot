@@ -111,6 +111,12 @@ EASE_FLOOR_MS2 = 0.05
 DEADBAND_MS2 = 0.03
 EXIT_MARGIN_MS = 0.45          # ~1 mph: v_safe must clear this to allow +a
 EXIT_CONFIRM_S = 0.30
+# Exit without a passed apex (gentle sweeper, or the road is straight): the
+# whole trusted path must clear v by this much, for this long. Wider and
+# slower than the apex exit so a near-envelope sweeper stays one event.
+EXIT_OPEN_MARGIN_MS = 2.0      # ~4.5 mph
+EXIT_OPEN_MIN_W = 0.3
+EXIT_OPEN_CONFIRM_S = 1.5
 EVENT_START_S = 0.15
 
 # Comfort-path jerk (onset and release). Urgent / emergency keep their
@@ -299,6 +305,29 @@ def hold_constraint_ahead(v_ego: float, ts, ds, ks, weights, margin: float = EXI
   return False
 
 
+def bend_open_at_car(v_ego: float, ts, ks, weights, margin: float | None = None) -> bool:
+  """True when the road ahead is clearly no longer a bend at this speed.
+
+  Every point the path still trusts (and the first PEAK_LOOKAHEAD_S under
+  the car regardless of trust) must have a corner speed at least `margin`
+  above v. The margin is wider than the hold margin so a long sweeper
+  driven near its envelope stays one event (no brake / +a / brake).
+  """
+  if ts is None or len(ts) == 0:
+    return False
+  m = EXIT_OPEN_MARGIN_MS if margin is None else float(margin)
+  v = float(v_ego)
+  for t, k, w in zip(ts, ks, weights, strict=True):
+    if float(t) < 0.0:
+      continue
+    if float(t) > PEAK_LOOKAHEAD_S and w < EXIT_OPEN_MIN_W:
+      continue
+    v_env = curve_speed_for_curvature(k)
+    if v_env is not None and v_env < v + m:
+      return False
+  return True
+
+
 def curve_follow_raw(v_ego: float, ts, ds, ks, weights, passed: float = 0.0):
   """Unslewed ceiling from the (filtered) path ahead.
 
@@ -338,6 +367,8 @@ class CurveFollow:
     self.urgent = 0.0
     self.event = False
     self._hold_ahead = False
+    self._open_at_car = False
+    self._open_t = 0.0
     self._exit_t = 0.0
     self._demand_t = 0.0
     self._desired = FREE_A_MS2
@@ -429,7 +460,14 @@ class CurveFollow:
   # ---- one cycle --------------------------------------------------------
   def step(self, *, dt: float, v_ego: float, ts, ds, ks, y_std=None, lane_change: bool = False,
            blinker: bool = False, frame_drop_pct: float = 0.0, rb_active: bool = False,
-           valid: bool = True) -> float:
+           valid: bool = True, long_active: bool = True) -> float:
+    """One planner cycle.
+
+    `long_active` False (disengaged, or the driver's gas override) ends any
+    curve event: the path filters and confidence keep tracking so a
+    re-engage sees the road at once, but the latch, its timers and the
+    jerk-limited output start fresh and the term is free while inactive.
+    """
     dt = max(1e-3, float(dt))
     v = float(v_ego)
     path_ok = bool(valid) and ts is not None and len(ts) >= 2 and len(ts) == len(ds) == len(ks)
@@ -465,8 +503,10 @@ class CurveFollow:
         self.limit_t, self.limit_d = float(ts[idx]), float(ds[idx])
         self.limit_k = float(kf[idx])
       self._hold_ahead = hold_constraint_ahead(v, ts, ds, kf, weights)
+      self._open_at_car = bend_open_at_car(v, ts, kf, weights)
     else:
       self._hold_ahead = False
+      self._open_at_car = False
       self._kf = None
       self._af = None
 
@@ -486,15 +526,10 @@ class CurveFollow:
       # The map roundabout funnel owns the entry (it brakes for the ring
       # itself, and the planner takes the lower of the two): hand over at once.
       self._conf = self.conf = 0.0
-      self._brake, self._f, self.a = 0.0, FREE_A_MS2, FREE_A_MS2
-      self.event = False
-      self._exit_t = 0.0
-      self._demand_t = 0.0
-      self._desired = FREE_A_MS2
-      self.raw = FREE_A_MS2
-      self.urgent = 0.0
-      self.emergency = False
-      return self.a
+      return self._end_event()
+    if not long_active:
+      # Not in control (disengaged / gas override): no event survives it.
+      return self._end_event()
 
     a_c = FREE_A_MS2 + self._conf * (a_raw - FREE_A_MS2)
     self.urgent = _smooth01((-a_c - CF_URGENT_A0_MS2) / CF_URGENT_BAND_MS2)
@@ -512,6 +547,19 @@ class CurveFollow:
     self._since_bound = 0.0 if out < -DEADBAND_MS2 else self._since_bound + dt
     return out
 
+  def _end_event(self) -> float:
+    """Drop the event latch and the jerk-limited output state; the term is free."""
+    self._brake, self._f, self.a = 0.0, FREE_A_MS2, FREE_A_MS2
+    self.event = False
+    self._exit_t = 0.0
+    self._open_t = 0.0
+    self._demand_t = 0.0
+    self._desired = FREE_A_MS2
+    self.raw = FREE_A_MS2
+    self.urgent = 0.0
+    self.emergency = False
+    return self.a
+
   def _event_ceiling(self, a_c: float, v: float, dt: float) -> float:
     """Latch a curve event so the ceiling cannot pulse +a / -a mid-curve.
 
@@ -522,7 +570,15 @@ class CurveFollow:
     """
     brake_demand = a_c < -EASE_FLOOR_MS2
     hold_for_next = bool(self._hold_ahead)
-    opening = self.passed >= 0.5
+    open_clear = self._open_at_car and self.trusted and not brake_demand and not hold_for_next
+    self._open_t = self._open_t + dt if open_clear else 0.0
+    # The bend is behind us when either the apex has been passed (curvature
+    # ahead falling off a real bend) or the whole trusted path has cleared v
+    # by EXIT_OPEN_MARGIN_MS for EXIT_OPEN_CONFIRM_S. The apex test alone can
+    # never fire on a gentle sweeper (|k| under PEAK_MIN_K) or once the road
+    # is straight (k_now ~ 0), which left the event latched with a 0 ceiling
+    # for 28 min (Nov 18 2026 drive).
+    opening = self.passed >= 0.5 or self._open_t >= EXIT_OPEN_CONFIRM_S
     # Exit only once the path is opening and nothing ahead still requires a
     # hold or a brake. Do not use a "we've been at v_safe for a moment"
     # shortcut: that lets cruise climb mid-arc and then pulse back.
